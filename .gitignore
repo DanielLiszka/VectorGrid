@@ -1,0 +1,28 @@
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+
+# Local build scratch (created during debugging)
+/target_check/
+/target_check*/
+/_write_test/
+
+# App data caches (binary candle cache sidecars)
+*.vta
+*.vta.tmp
+
+# Logs
+*.log
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python leftovers (not used by the Rust/Tauri app)
+__pycache__/
+*.pyc
+.venv/
+__init__.py
