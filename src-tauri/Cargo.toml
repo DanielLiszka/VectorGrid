@@ -9,7 +9,7 @@ doctest = false
 
 [features]
 default = []
-cuda = ["ta_app_core/cuda"]
+cuda = ["ta_app_core/cuda", "vector-ta/cuda", "cust"]
 cuda-backtest-kernel = ["cuda", "ta_app_core/cuda-backtest-kernel"]
 
 [dependencies]
@@ -18,9 +18,16 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 vector-ta = "0.1.2"
 ta_app_core = { path = "../crates/app_core" }
+ta_optimizer = { path = "../crates/optimizer" }
+ta_strategies = { path = "../crates/strategies" }
 chrono = { version = "0.4", features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 keyring = "3"
+base64 = "0.22"
+rust_xlsxwriter = "0.92.4"
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+cust = { version = "0.3", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs"] }

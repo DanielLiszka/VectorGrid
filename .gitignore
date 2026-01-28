@@ -6,6 +6,8 @@
 # Local build scratch (created during debugging)
 /target_check/
 /target_check*/
+/target_codex/
+/target_codex*/
 /_write_test/
 
 # App data caches (binary candle cache sidecars)

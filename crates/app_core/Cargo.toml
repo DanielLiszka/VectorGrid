@@ -16,6 +16,7 @@ rayon = "1.10.0"
 ta_strategies = { path = "../strategies" }
 ta_optimizer = { path = "../optimizer" }
 vector-ta = "0.1.2"
+rand = "0.8.5"
 cust = { version = "0.3", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 
@@ -31,6 +32,22 @@ harness = false
 
 [[bench]]
 name = "double_ma_metrics"
+harness = false
+
+[[bench]]
+name = "composite_mo_opt"
+harness = false
+
+[[bench]]
+name = "composite_cpu_opt"
+harness = false
+
+[[bench]]
+name = "composite_validation_workflow"
+harness = false
+
+[[bench]]
+name = "meta_select_workflow"
 harness = false
 
 [[bin]]

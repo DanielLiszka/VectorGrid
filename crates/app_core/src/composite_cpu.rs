@@ -1,21 +1,25 @@
 use rayon::prelude::*;
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationMode, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig};
 
+use crate::composite_mo::CompositeGpuPrescanConfig;
 use crate::double_ma::{
     compute_halftrend_trend, compute_log_returns_f64, cpu_tile_sizes, estimate_pairs_fast_lt_slow,
     expand_u16_range, first_finite_idx, lookup_ma_info, ma_matrix_cpu_f64,
-    resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg,
+    resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles, validate_ma_kind,
+    validate_strategy_cfg, Backend, DoubleMaRequest,
     BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, HalfTrendRegimeFilter,
+    LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary,
     OptimizationModeResolved,
 };
+use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MaczGateParams {
     #[serde(default = "default_macz_fast_length")]
     pub fast_length: u16,
@@ -81,7 +85,7 @@ impl Default for MaczGateParams {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OttGateParams {
     #[serde(default = "default_ott_period")]
     pub period: u16,
@@ -131,6 +135,10 @@ pub struct CompositeCpuRequest {
     pub ott: OttGateParams,
     pub objective: ObjectiveKind,
     pub mode: OptimizationMode,
+    /// Optional stage-0 prescan (double-MA optimization) to narrow MA-length ranges before running
+    /// the composite grid search.
+    #[serde(default)]
+    pub gpu_prescan: Option<CompositeGpuPrescanConfig>,
     pub top_k: Option<usize>,
     pub include_all: Option<bool>,
     pub heatmap_bins: Option<u16>,
@@ -158,6 +166,34 @@ pub struct CompositeCpuDrilldownRequest {
     pub bins: Option<usize>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct CompositeCpuLocalStabilityRequest {
+    pub data_id: String,
+    pub params: DoubleMaParamsResolved,
+    #[serde(default = "default_ma_source")]
+    pub ma_source: String,
+    pub fast_ma_params: Option<HashMap<String, f64>>,
+    pub slow_ma_params: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    pub strategy: StrategyConfig,
+    pub halftrend: HalfTrendRegimeFilter,
+    #[serde(default)]
+    pub macz: MaczGateParams,
+    #[serde(default)]
+    pub ott: OttGateParams,
+    pub objective: ObjectiveKind,
+    pub radius: Option<u16>,
+    pub step: Option<u16>,
+}
+
+fn objective_score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
+    match objective {
+        ObjectiveKind::Sharpe => metrics.sharpe,
+        ObjectiveKind::Pnl => metrics.pnl,
+        ObjectiveKind::MaxDrawdown => -metrics.max_dd,
+    }
+}
+
 pub fn run_composite_cpu_optimization_blocking_with_candles(
     req: CompositeCpuRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -180,6 +216,10 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     }
     let mode_used = OptimizationModeResolved::Grid;
 
+    let objective = req.objective;
+    let top_k = req.top_k.unwrap_or(0);
+    let include_all = req.include_all.unwrap_or(false);
+
     if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
         return Err("Select exactly one fast MA and one slow MA.".to_string());
     }
@@ -197,12 +237,12 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     let (slow_alma_offset, slow_alma_sigma) =
         resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
 
-    let fast_periods = expand_u16_range(req.fast_range)?;
-    let slow_periods = expand_u16_range(req.slow_range)?;
+    let mut fast_periods = expand_u16_range(req.fast_range)?;
+    let mut slow_periods = expand_u16_range(req.slow_range)?;
     if fast_periods.is_empty() || slow_periods.is_empty() {
         return Err("empty period range".to_string());
     }
-    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    let mut total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
     if total_pairs == 0 {
         return Err("no valid parameter combinations (fast must be < slow)".to_string());
     }
@@ -216,6 +256,111 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     let n = candles.close.len();
     if n < 2 {
         return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    // Optional stage-0 prescan: use the fast double-MA optimizer (GPU-kernel if available) to
+    // narrow the (fast_len, slow_len) search space for the composite grid search.
+    const AUTO_PRESCAN_MIN_PAIRS: usize = 250_000;
+    const AUTO_PRESCAN_TOP_K: usize = 128;
+    const AUTO_PRESCAN_WINDOW: u16 = 8;
+    const AUTO_PRESCAN_MAX_PERIODS: usize = 256;
+
+    if req.gpu_prescan.is_some() || total_pairs > AUTO_PRESCAN_MIN_PAIRS {
+        let cfg = req.gpu_prescan.as_ref();
+        let prescan_top_k = cfg.map(|c| c.top_k).unwrap_or(AUTO_PRESCAN_TOP_K);
+        let prescan_window = cfg.map(|c| c.window).unwrap_or(AUTO_PRESCAN_WINDOW);
+        let device_id = cfg.and_then(|c| c.device_id).unwrap_or(0);
+        let require_gpu = cfg.map(|c| c.require_gpu).unwrap_or(false);
+        let prescan_mode = cfg.map(|c| c.mode).unwrap_or(OptimizationMode::Auto);
+
+        let dm_req = DoubleMaRequest {
+            backend: Backend::Auto { device_id },
+            data_id: req.data_id.clone(),
+            fast_range: req.fast_range,
+            slow_range: req.slow_range,
+            fast_ma_types: vec![fast_ma.clone()],
+            slow_ma_types: vec![slow_ma.clone()],
+            ma_source: req.ma_source.clone(),
+            export_all_csv_path: None,
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+            strategy: req.strategy.clone(),
+            halftrend_filter: None,
+            objective,
+            mode: prescan_mode,
+            top_k: Some(prescan_top_k),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let dm_res = run_double_ma_optimization_blocking_with_candles(
+            dm_req,
+            candles,
+            cancel,
+            // Forward progress so the UI shows the prescan phase too.
+            progress,
+        )?;
+        if require_gpu && matches!(dm_res.backend_used, BackendUsed::Cpu) {
+            return Err(
+                "gpu_prescan require_gpu=true but GPU backend was not available (CPU used)"
+                    .to_string(),
+            );
+        }
+
+        let mut pairs: Vec<(u16, u16)> = Vec::with_capacity(dm_res.top.len().saturating_add(1));
+        pairs.push((dm_res.best_params.fast_len, dm_res.best_params.slow_len));
+        for (p, _) in &dm_res.top {
+            pairs.push((p.fast_len, p.slow_len));
+        }
+        pairs.sort();
+        pairs.dedup();
+
+        let mut fast_set: BTreeSet<u16> = BTreeSet::new();
+        let mut slow_set: BTreeSet<u16> = BTreeSet::new();
+
+        let add_window = |allowed: &[u16], center: u16, window: u16, out: &mut BTreeSet<u16>| {
+            let lo = center.saturating_sub(window);
+            let hi = center.saturating_add(window);
+            let start = allowed.partition_point(|&x| x < lo);
+            let end = allowed.partition_point(|&x| x <= hi);
+            for &p in &allowed[start..end] {
+                out.insert(p);
+            }
+        };
+
+        for (f, s) in pairs {
+            add_window(&fast_periods, f, prescan_window, &mut fast_set);
+            add_window(&slow_periods, s, prescan_window, &mut slow_set);
+        }
+
+        let best_fast = dm_res.best_params.fast_len;
+        let best_slow = dm_res.best_params.slow_len;
+
+        let mut fast_candidates: Vec<u16> = fast_set.into_iter().collect();
+        let mut slow_candidates: Vec<u16> = slow_set.into_iter().collect();
+
+        // Cap candidate set sizes to keep memory use and total work bounded.
+        if fast_candidates.len() > AUTO_PRESCAN_MAX_PERIODS {
+            fast_candidates.sort_by_key(|&p| (p.abs_diff(best_fast), p));
+            fast_candidates.truncate(AUTO_PRESCAN_MAX_PERIODS);
+            fast_candidates.sort_unstable();
+        }
+        if slow_candidates.len() > AUTO_PRESCAN_MAX_PERIODS {
+            slow_candidates.sort_by_key(|&p| (p.abs_diff(best_slow), p));
+            slow_candidates.truncate(AUTO_PRESCAN_MAX_PERIODS);
+            slow_candidates.sort_unstable();
+        }
+
+        if fast_candidates.is_empty() || slow_candidates.is_empty() {
+            return Err("gpu_prescan produced empty candidate set".to_string());
+        }
+
+        fast_periods = fast_candidates;
+        slow_periods = slow_candidates;
+        total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+        if total_pairs == 0 {
+            return Err("gpu_prescan produced no valid parameter combinations".to_string());
+        }
     }
 
     let ma_source = req.ma_source;
@@ -256,9 +401,6 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     first_valid = first_valid.max(fv_ott);
 
     let start = std::time::Instant::now();
-    let objective = req.objective;
-    let top_k = req.top_k.unwrap_or(0);
-    let include_all = req.include_all.unwrap_or(false);
     if include_all && total_pairs > 2_000_000 {
         return Err(format!(
             "include_all=true would return {} rows; disable it or reduce ranges.",
@@ -318,11 +460,34 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     });
     let heatmap = result.heatmap.clone();
 
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() { None } else { Some(top_cols) };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
         mode_used,
         backend_used: BackendUsed::Cpu,
+        matrix_index,
+        best_col,
+        top_cols,
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
@@ -458,6 +623,222 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     )
 }
 
+pub fn compute_composite_cpu_local_stability_blocking_with_candles(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    let fast_ma = req.params.fast_ma_type.trim();
+    let slow_ma = req.params.slow_ma_type.trim();
+    validate_ma_kind(fast_ma)?;
+    validate_ma_kind(slow_ma)?;
+
+    let base_fast = req.params.fast_len;
+    let base_slow = req.params.slow_len;
+    if base_fast == 0 || base_slow == 0 {
+        return Err("periods must be > 0".to_string());
+    }
+    if base_fast >= base_slow {
+        return Err("invalid params: fast_len must be < slow_len".to_string());
+    }
+    if base_fast as usize > n || base_slow as usize > n {
+        return Err(format!(
+            "period exceeds series length: fast_len={base_fast} slow_len={base_slow} n={n}"
+        ));
+    }
+
+    validate_strategy_cfg(&req.strategy)?;
+    validate_macz_params(&req.macz)?;
+    validate_ott_params(&req.ott)?;
+    if req.macz.use_volume && !candles.fields.volume {
+        return Err("MACZ with volume requires a CSV with volume column.".to_string());
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let mut first_valid = fv_close.max(fv_ma);
+
+    let halftrend_trend = compute_halftrend_trend(candles, &req.halftrend)?;
+    if halftrend_trend.len() != n {
+        return Err("HalfTrend trend series length mismatch".to_string());
+    }
+    let fv_ht = first_finite_idx(&halftrend_trend)
+        .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+    first_valid = first_valid.max(fv_ht);
+
+    let macz_hist = compute_macz_hist(candles, &req.ma_source, &req.macz)?;
+    if macz_hist.len() != n {
+        return Err("MACZ series length mismatch".to_string());
+    }
+    let fv_macz =
+        first_finite_idx(&macz_hist).ok_or_else(|| "macz series all non-finite".to_string())?;
+    first_valid = first_valid.max(fv_macz);
+
+    let ott_line = compute_ott_line(candles, &req.ma_source, &req.ott)?;
+    if ott_line.len() != n {
+        return Err("OTT series length mismatch".to_string());
+    }
+    let fv_ott =
+        first_finite_idx(&ott_line).ok_or_else(|| "ott series all non-finite".to_string())?;
+    first_valid = first_valid.max(fv_ott);
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+
+    let mut fast_periods: Vec<u16> = Vec::new();
+    let mut df = -(radius as i32);
+    while df <= radius as i32 {
+        let v = base_fast as i32 + df;
+        if v > 0 {
+            fast_periods.push(v as u16);
+        }
+        df += step as i32;
+    }
+    let mut slow_periods: Vec<u16> = Vec::new();
+    let mut ds = -(radius as i32);
+    while ds <= radius as i32 {
+        let v = base_slow as i32 + ds;
+        if v > 0 {
+            slow_periods.push(v as u16);
+        }
+        ds += step as i32;
+    }
+
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty neighborhood".to_string());
+    }
+    fast_periods.sort_unstable();
+    slow_periods.sort_unstable();
+
+    // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
+    let trade_offset = if req.strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let max_p = (fast_periods[fast_periods.len() - 1] as usize)
+        .max(slow_periods[slow_periods.len() - 1] as usize)
+        .max(1);
+    let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
+    let start_t = t_valid.saturating_add(trade_offset);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let (fast_alma_offset, fast_alma_sigma) =
+        resolve_alma_params_for_side("fast", fast_ma, req.fast_ma_params.as_ref())?;
+    let (slow_alma_offset, slow_alma_sigma) =
+        resolve_alma_params_for_side("slow", slow_ma, req.slow_ma_params.as_ref())?;
+
+    let (fast_mat, cols) = ma_matrix_cpu_f64(
+        candles,
+        fast_ma,
+        &req.ma_source,
+        &fast_periods,
+        req.fast_ma_params.as_ref(),
+        fast_alma_offset,
+        fast_alma_sigma,
+    )?;
+    if cols != n {
+        return Err("fast MA series length mismatch".to_string());
+    }
+    let (slow_mat, cols2) = ma_matrix_cpu_f64(
+        candles,
+        slow_ma,
+        &req.ma_source,
+        &slow_periods,
+        req.slow_ma_params.as_ref(),
+        slow_alma_offset,
+        slow_alma_sigma,
+    )?;
+    if cols2 != n {
+        return Err("slow MA series length mismatch".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+
+    let mut points: Vec<LocalStabilityPoint> = Vec::new();
+    for (fi, &fast_len) in fast_periods.iter().enumerate() {
+        let fast_off = fi.saturating_mul(n);
+        let fast = fast_mat
+            .get(fast_off..fast_off + n)
+            .ok_or_else(|| "fast MA matrix indexing error".to_string())?;
+
+        for (si, &slow_len) in slow_periods.iter().enumerate() {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let slow_off = si.saturating_mul(n);
+            let slow = slow_mat
+                .get(slow_off..slow_off + n)
+                .ok_or_else(|| "slow MA matrix indexing error".to_string())?;
+
+            let metrics = ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+                &lr,
+                ma_prices,
+                fast,
+                slow,
+                &halftrend_trend,
+                &macz_hist,
+                &ott_line,
+                start_t,
+                &req.strategy,
+            );
+            let score = objective_score(&metrics, objective);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                metrics,
+                score,
+            });
+        }
+    }
+
+    let base_score = points
+        .iter()
+        .find(|p| p.fast_len == base_fast && p.slow_len == base_slow)
+        .map(|p| p.score)
+        .unwrap_or(0.0);
+
+    let mut scores: Vec<f64> = points.iter().map(|p| p.score).collect();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min = *scores.first().unwrap_or(&0.0);
+    let max = *scores.last().unwrap_or(&0.0);
+    let median = if scores.is_empty() {
+        0.0
+    } else {
+        scores[scores.len() / 2]
+    };
+
+    Ok(LocalStabilityResult {
+        base: DoubleMaParamsResolved {
+            fast_len: base_fast,
+            slow_len: base_slow,
+            fast_ma_type: req.params.fast_ma_type,
+            slow_ma_type: req.params.slow_ma_type,
+        },
+        objective,
+        radius,
+        step,
+        start_t,
+        points,
+        summary: LocalStabilitySummary {
+            base: base_score,
+            min,
+            median,
+            max,
+        },
+    })
+}
+
 fn validate_macz_params(p: &MaczGateParams) -> Result<(), String> {
     if p.fast_length == 0
         || p.slow_length == 0
@@ -482,7 +863,7 @@ fn validate_macz_params(p: &MaczGateParams) -> Result<(), String> {
     Ok(())
 }
 
-fn compute_macz_hist(
+pub(crate) fn compute_macz_hist(
     candles: &vector_ta::utilities::data_loader::Candles,
     source: &str,
     p: &MaczGateParams,
@@ -529,7 +910,7 @@ fn validate_ott_params(p: &OttGateParams) -> Result<(), String> {
     Ok(())
 }
 
-fn compute_ott_line(
+pub(crate) fn compute_ott_line(
     candles: &vector_ta::utilities::data_loader::Candles,
     source: &str,
     p: &OttGateParams,
@@ -958,6 +1339,7 @@ mod tests {
             ott: OttGateParams::default(),
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
+            gpu_prescan: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
@@ -973,6 +1355,53 @@ mod tests {
         assert!(res.heatmap.is_some());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
         assert!(matches!(res.mode_used, OptimizationModeResolved::Grid));
+    }
+
+    #[test]
+    fn composite_cpu_prescan_can_narrow_ranges() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            data_id: "test".to_string(),
+            fast_range: (5, 50, 1),
+            slow_range: (20, 200, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: Some(crate::composite_mo::CompositeGpuPrescanConfig {
+                top_k: 0,
+                window: 0,
+                device_id: None,
+                require_gpu: false,
+                objectives: crate::composite_mo::CompositeGpuPrescanObjectives::Both,
+                ma_pairs: None,
+                mode: OptimizationMode::Auto,
+            }),
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("composite cpu run");
+
+        assert_eq!(res.num_combos, 1);
+        assert!(res.best_params.fast_len < res.best_params.slow_len);
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
     }
 
     #[test]
@@ -1021,5 +1450,47 @@ mod tests {
             .minmax
             .iter()
             .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0));
+    }
+
+    #[test]
+    fn composite_cpu_local_stability_smoke_has_base_point_and_summary() {
+        let candles = make_trending_candles(4096);
+
+        let req = CompositeCpuLocalStabilityRequest {
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 9,
+                slow_len: 21,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            objective: ObjectiveKind::Sharpe,
+            radius: Some(1),
+            step: Some(1),
+        };
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("composite local stability");
+
+        assert_eq!(res.base.fast_len, 9);
+        assert_eq!(res.base.slow_len, 21);
+        assert_eq!(res.radius, 1);
+        assert_eq!(res.step, 1);
+        assert!(!res.points.is_empty());
+        assert!(res.points.iter().any(|p| p.fast_len == 9 && p.slow_len == 21));
+        assert!(res.summary.min <= res.summary.median);
+        assert!(res.summary.median <= res.summary.max);
+        assert!(res.summary.base.is_finite());
     }
 }

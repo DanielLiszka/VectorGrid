@@ -1,9 +1,9 @@
 use chrono::{Duration, NaiveDate};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,10 +24,27 @@ pub struct PolygonDatasetMeta {
     pub market: String,
     pub display_symbol: String,
     pub polygon_ticker: String,
+    #[serde(default = "default_polygon_timeframe")]
+    pub timeframe: String,
     pub csv_path: String,
     pub min_ts: i64,
     pub max_ts: i64,
     pub last_updated_utc_ms: i64,
+    #[serde(default)]
+    pub row_count: u64,
+    #[serde(default)]
+    pub adjusted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<PolygonDatasetIntegrity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolygonDatasetIntegrity {
+    pub checked_utc_ms: i64,
+    pub parse_errors: u64,
+    pub duplicates: u64,
+    pub out_of_order: u64,
+    pub same_day_gaps_gt_2min: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -48,6 +65,10 @@ pub struct PolygonDownloadRequest {
     pub symbol: String,
     pub from: String,
     pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjusted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +103,54 @@ impl Market {
             Market::Crypto => "crypto",
         }
     }
+}
+
+fn default_polygon_timeframe() -> String {
+    "1m".to_string()
+}
+
+#[derive(Clone, Debug)]
+struct TimeframeSpec {
+    label: String,
+    multiplier: u32,
+    timespan: &'static str,
+    interval_ms: i64,
+}
+
+fn parse_timeframe(raw: Option<&str>) -> Result<TimeframeSpec, String> {
+    let s0 = raw.unwrap_or("1m");
+    let s = s0.trim().to_ascii_lowercase();
+    let s = if s.is_empty() { "1m".to_string() } else { s };
+
+    let (num_str, unit) = s.split_at(s.len().saturating_sub(1));
+    let unit = unit.chars().next().unwrap_or('m');
+    let n: u32 = num_str
+        .parse()
+        .map_err(|_| format!("invalid timeframe '{s0}' (expected e.g. 1m, 2m, 2h)"))?;
+    if n == 0 {
+        return Err(format!("invalid timeframe '{s0}' (multiplier must be > 0)"));
+    }
+
+    let (timespan, interval_ms) = match unit {
+        'm' => ("minute", (n as i64).saturating_mul(60_000)),
+        'h' => ("hour", (n as i64).saturating_mul(3_600_000)),
+        'd' => ("day", (n as i64).saturating_mul(86_400_000)),
+        _ => {
+            return Err(format!(
+                "invalid timeframe '{s0}' (supported suffixes: m, h, d)"
+            ))
+        }
+    };
+    if interval_ms <= 0 {
+        return Err(format!("invalid timeframe '{s0}' (interval must be > 0)"));
+    }
+
+    Ok(TimeframeSpec {
+        label: format!("{n}{unit}"),
+        multiplier: n,
+        timespan,
+        interval_ms,
+    })
 }
 
 fn now_utc_ms() -> i64 {
@@ -206,7 +275,13 @@ fn load_manifest(cache_dir: &Path) -> Result<PolygonCacheManifest, String> {
         return Ok(PolygonCacheManifest::default());
     }
     let text = fs::read_to_string(p).map_err(|e| e.to_string())?;
-    let m: PolygonCacheManifest = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let mut m: PolygonCacheManifest = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    // Back-compat: earlier manifests didn't persist this and only supported adjusted stocks.
+    for (k, ds) in m.datasets.iter_mut() {
+        if ds.market == "stocks" && !ds.adjusted && k.starts_with("stocks:") {
+            ds.adjusted = true;
+        }
+    }
     Ok(m)
 }
 
@@ -332,9 +407,13 @@ fn fetch_chunk(
     from: &str,
     to: &str,
     adjusted: bool,
+    tf: &TimeframeSpec,
 ) -> Result<Vec<AggBar>, String> {
     let ticker = encode_path_segment(polygon_ticker);
-    let url = format!("{API_BASE}/v2/aggs/ticker/{ticker}/range/1/minute/{from}/{to}");
+    let url = format!(
+        "{API_BASE}/v2/aggs/ticker/{ticker}/range/{}/{}/{from}/{to}",
+        tf.multiplier, tf.timespan
+    );
 
     #[derive(Serialize)]
     struct AggQuery<'a> {
@@ -484,6 +563,316 @@ fn overwrite_bars(path: &Path, all_bars: &[AggBar]) -> Result<(usize, i64, i64),
     Ok((wrote, min_ts, max_ts))
 }
 
+fn csv_day_id_utc(ts_ms: i64) -> i64 {
+    ts_ms.div_euclid(86_400_000)
+}
+
+fn scan_csv_integrity(
+    path: &Path,
+    timeframe_interval_ms: i64,
+) -> Result<(u64, i64, i64, PolygonDatasetIntegrity), String> {
+    let f = fs::File::open(path).map_err(|e| e.to_string())?;
+    let r = BufReader::new(f);
+
+    let mut row_count: u64 = 0;
+    let mut min_ts: i64 = 0;
+    let mut max_ts: i64 = 0;
+
+    let mut parse_errors: u64 = 0;
+    let mut duplicates: u64 = 0;
+    let mut out_of_order: u64 = 0;
+    let mut gaps: u64 = 0;
+
+    let mut prev_ts: Option<i64> = None;
+    let mut prev_day: i64 = 0;
+    let gap_threshold_ms = timeframe_interval_ms.saturating_mul(2).max(120_000);
+
+    for (i, line) in r.lines().enumerate() {
+        let line = line.map_err(|e| e.to_string())?;
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if i == 0 && t.to_ascii_lowercase().starts_with("timestamp") {
+            continue;
+        }
+
+        let ts_str = t.split(',').next().unwrap_or("").trim();
+        if ts_str.is_empty() {
+            continue;
+        }
+        let ts: i64 = match ts_str.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                parse_errors = parse_errors.saturating_add(1);
+                continue;
+            }
+        };
+
+        if let Some(prev) = prev_ts {
+            let diff = ts - prev;
+            if diff == 0 {
+                duplicates = duplicates.saturating_add(1);
+            } else if diff < 0 {
+                out_of_order = out_of_order.saturating_add(1);
+            } else if diff > gap_threshold_ms {
+                let day = csv_day_id_utc(ts);
+                if day == prev_day {
+                    gaps = gaps.saturating_add(1);
+                }
+            }
+        }
+        prev_ts = Some(ts);
+        prev_day = csv_day_id_utc(ts);
+
+        if min_ts == 0 || ts < min_ts {
+            min_ts = ts;
+        }
+        if ts > max_ts {
+            max_ts = ts;
+        }
+        row_count = row_count.saturating_add(1);
+    }
+
+    if row_count == 0 || min_ts == 0 || max_ts == 0 {
+        return Err("dataset CSV has no valid rows".to_string());
+    }
+
+    Ok((
+        row_count,
+        min_ts,
+        max_ts,
+        PolygonDatasetIntegrity {
+            checked_utc_ms: now_utc_ms(),
+            parse_errors,
+            duplicates,
+            out_of_order,
+            same_day_gaps_gt_2min: gaps,
+        },
+    ))
+}
+
+fn parse_csv_bar(line: &str) -> Option<AggBar> {
+    let mut it = line.split(',');
+    let t = it.next()?.trim().parse::<i64>().ok()?;
+    let o = it.next()?.trim().parse::<f64>().ok()?;
+    let c = it.next()?.trim().parse::<f64>().ok()?;
+    let h = it.next()?.trim().parse::<f64>().ok()?;
+    let l = it.next()?.trim().parse::<f64>().ok()?;
+    let v = it.next()?.trim().parse::<f64>().ok()?;
+    Some(AggBar { t, o, c, h, l, v })
+}
+
+fn compute_same_day_gaps_gt_threshold(sorted: &[AggBar], threshold_ms: i64) -> u64 {
+    let mut gaps = 0u64;
+    let mut prev_ts: Option<i64> = None;
+    let mut prev_day: i64 = 0;
+    for b in sorted {
+        let ts = b.t;
+        if let Some(prev) = prev_ts {
+            let diff = ts - prev;
+            if diff > threshold_ms {
+                let day = csv_day_id_utc(ts);
+                if day == prev_day {
+                    gaps = gaps.saturating_add(1);
+                }
+            }
+        }
+        prev_ts = Some(ts);
+        prev_day = csv_day_id_utc(ts);
+    }
+    gaps
+}
+
+fn collect_same_day_gap_dates(sorted: &[AggBar], threshold_ms: i64) -> Vec<NaiveDate> {
+    let mut days: BTreeSet<NaiveDate> = BTreeSet::new();
+    let mut prev_ts: Option<i64> = None;
+    let mut prev_day: i64 = 0;
+    for b in sorted {
+        let ts = b.t;
+        if let Some(prev) = prev_ts {
+            let diff = ts - prev;
+            if diff > threshold_ms {
+                let day = csv_day_id_utc(ts);
+                if day == prev_day {
+                    if let Some(dt) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts) {
+                        days.insert(dt.date_naive());
+                    }
+                }
+            }
+        }
+        prev_ts = Some(ts);
+        prev_day = csv_day_id_utc(ts);
+    }
+    days.into_iter().collect()
+}
+
+pub fn validate_cached_dataset(cache_dir: &Path, csv_path: &str) -> Result<PolygonDatasetMeta, String> {
+    let p = Path::new(csv_path);
+    if !p.exists() {
+        return Err(format!("dataset file does not exist: {csv_path}"));
+    }
+
+    let mut manifest = load_manifest(cache_dir)?;
+    let mut key: Option<String> = None;
+    for (k, ds) in &manifest.datasets {
+        if ds.csv_path == csv_path {
+            key = Some(k.clone());
+            break;
+        }
+    }
+    let Some(key) = key else {
+        return Err("dataset not found in Polygon manifest".to_string());
+    };
+
+    let tf_label = manifest
+        .datasets
+        .get(&key)
+        .map(|d| d.timeframe.as_str())
+        .unwrap_or("1m");
+    let tf = parse_timeframe(Some(tf_label))?;
+    let (rows, min_ts, max_ts, integrity) = scan_csv_integrity(p, tf.interval_ms)?;
+    let Some(ds) = manifest.datasets.get_mut(&key) else {
+        return Err("dataset not found in Polygon manifest".to_string());
+    };
+
+    ds.row_count = rows;
+    ds.min_ts = min_ts;
+    ds.max_ts = max_ts;
+    ds.integrity = Some(integrity);
+
+    let out = ds.clone();
+    save_manifest(cache_dir, &manifest)?;
+    Ok(out)
+}
+
+pub fn repair_cached_dataset(
+    app_identifier: &str,
+    cache_dir: &Path,
+    csv_path: &str,
+) -> Result<PolygonDatasetMeta, String> {
+    let p = Path::new(csv_path);
+    if !p.exists() {
+        return Err(format!("dataset file does not exist: {csv_path}"));
+    }
+
+    let mut manifest = load_manifest(cache_dir)?;
+    let mut key: Option<String> = None;
+    for (k, ds) in &manifest.datasets {
+        if ds.csv_path == csv_path {
+            key = Some(k.clone());
+            break;
+        }
+    }
+    let Some(key) = key else {
+        return Err("dataset not found in Polygon manifest".to_string());
+    };
+
+    let ds0 = manifest
+        .datasets
+        .get(&key)
+        .cloned()
+        .ok_or_else(|| "dataset not found in Polygon manifest".to_string())?;
+    let tf = parse_timeframe(Some(&ds0.timeframe))?;
+    let gap_threshold_ms = tf.interval_ms.saturating_mul(2).max(120_000);
+    let market = Market::parse(&ds0.market)?;
+    let polygon_ticker = ds0.polygon_ticker.clone();
+    let adjusted = market == Market::Stocks && ds0.adjusted;
+
+    let f = fs::File::open(p).map_err(|e| e.to_string())?;
+    let r = BufReader::new(f);
+
+    // Hard limit to avoid accidental huge memory usage; for bigger datasets, a full re-download is safer.
+    const MAX_REPAIR_ROWS: usize = 2_000_000;
+    let mut bars: Vec<AggBar> = Vec::new();
+    let mut parse_errors: u64 = 0;
+
+    for (i, line) in r.lines().enumerate() {
+        let line = line.map_err(|e| e.to_string())?;
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if i == 0 && t.to_ascii_lowercase().starts_with("timestamp") {
+            continue;
+        }
+
+        if let Some(b) = parse_csv_bar(t) {
+            bars.push(b);
+            if bars.len() > MAX_REPAIR_ROWS {
+                return Err(format!(
+                    "dataset is too large to repair in-place (>{MAX_REPAIR_ROWS} rows). Delete and re-download instead."
+                ));
+            }
+        } else {
+            parse_errors = parse_errors.saturating_add(1);
+        }
+    }
+
+    if bars.is_empty() {
+        return Err("dataset CSV has no valid rows".to_string());
+    }
+
+    bars.sort_by_key(|b| b.t);
+    bars.dedup_by_key(|b| b.t);
+
+    // Attempt to selectively refetch days with intra-day gaps (if API key is available).
+    let gappy_days = collect_same_day_gap_dates(&bars, gap_threshold_ms);
+    if !gappy_days.is_empty() {
+        // Best-effort: do not fail the repair if the API key can't be read or requests fail.
+        let api_key = match read_api_key(app_identifier, cache_dir) {
+            Ok(k) => k,
+            Err(_) => None,
+        };
+        if let Some(api_key) = api_key {
+            const MAX_GAP_REPAIR_DAYS: usize = 32;
+            if gappy_days.len() <= MAX_GAP_REPAIR_DAYS {
+                if let Ok(client) = Client::builder()
+                    .user_agent("vectorta-optimizer/0.1 (tauri)")
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()
+                {
+                    for day in &gappy_days {
+                        let d = day.format("%Y-%m-%d").to_string();
+                        if let Ok(mut fetched) =
+                            fetch_chunk(&client, &api_key, &polygon_ticker, &d, &d, adjusted, &tf)
+                        {
+                            bars.append(&mut fetched);
+                            if bars.len() > MAX_REPAIR_ROWS {
+                                break;
+                            }
+                        }
+                    }
+                    bars.sort_by_key(|b| b.t);
+                    bars.dedup_by_key(|b| b.t);
+                }
+            }
+        }
+    }
+
+    let gaps = compute_same_day_gaps_gt_threshold(&bars, gap_threshold_ms);
+    let (wrote, new_min, new_max) = overwrite_bars(p, &bars)?;
+
+    let Some(ds) = manifest.datasets.get_mut(&key) else {
+        return Err("dataset not found in Polygon manifest".to_string());
+    };
+    ds.row_count = wrote as u64;
+    ds.min_ts = new_min;
+    ds.max_ts = new_max;
+    ds.last_updated_utc_ms = now_utc_ms();
+    ds.integrity = Some(PolygonDatasetIntegrity {
+        checked_utc_ms: now_utc_ms(),
+        parse_errors,
+        duplicates: 0,
+        out_of_order: 0,
+        same_day_gaps_gt_2min: gaps,
+    });
+
+    let out = ds.clone();
+    save_manifest(cache_dir, &manifest)?;
+    Ok(out)
+}
+
 pub fn download_1m_to_cache(
     app_identifier: &str,
     cache_dir: &Path,
@@ -506,18 +895,37 @@ pub fn download_1m_to_cache(
     fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
     let mut manifest = load_manifest(cache_dir)?;
 
-    let dataset_key = format!("{}:{}:1m", market.as_str(), polygon_ticker);
-    let file_name = format!(
-        "polygon_{}_{}_1m.csv",
-        market.as_str(),
-        sanitize_filename_component(&polygon_ticker)
-    );
+    let adjusted = if market == Market::Stocks {
+        req.adjusted.unwrap_or(true)
+    } else {
+        false
+    };
+    let tf = parse_timeframe(req.timeframe.as_deref())?;
+
+    // Keep back-compat: adjusted stocks keep the original key/path. Unadjusted stocks get their own cache entry.
+    let dataset_key = if market == Market::Stocks && !adjusted {
+        format!("stocks_raw:{}:{}", polygon_ticker, tf.label)
+    } else {
+        format!("{}:{}:{}", market.as_str(), polygon_ticker, tf.label)
+    };
+    let file_name = if market == Market::Stocks && !adjusted {
+        format!(
+            "polygon_stocks_raw_{}_{}.csv",
+            sanitize_filename_component(&polygon_ticker),
+            tf.label
+        )
+    } else {
+        format!(
+            "polygon_{}_{}_{}.csv",
+            market.as_str(),
+            sanitize_filename_component(&polygon_ticker),
+            tf.label
+        )
+    };
     let csv_path = cache_dir.join(file_name);
 
     let mut used_cache_only = false;
     let mut downloaded = 0usize;
-
-    let adjusted = market == Market::Stocks;
 
     if let Some(meta) = manifest.datasets.get(&dataset_key) {
         let min_ts = meta.min_ts;
@@ -534,20 +942,18 @@ pub fn download_1m_to_cache(
     let cached_meta = manifest.datasets.get(&dataset_key).cloned();
     let mut min_ts = cached_meta.as_ref().map(|m| m.min_ts).unwrap_or(0);
     let mut max_ts = cached_meta.as_ref().map(|m| m.max_ts).unwrap_or(0);
+    let mut row_count = cached_meta.as_ref().map(|m| m.row_count).unwrap_or(0);
 
-    // Approximate requested range in ms. We don't need precise intraday bounds; this is used for cache decisions.
-    let req_from_ms = from_date
-        .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| "invalid from date".to_string())?
-        .and_utc()
-        .timestamp_millis();
-    let req_to_ms = to_date
-        .and_hms_opt(23, 59, 59)
-        .ok_or_else(|| "invalid to date".to_string())?
-        .and_utc()
-        .timestamp_millis();
+    // Cache coverage decisions are made at the date granularity (Polygon aggs API uses dates).
+    let cached_min_date = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(min_ts)
+        .map(|dt| dt.date_naive());
+    let cached_max_date = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(max_ts)
+        .map(|dt| dt.date_naive());
 
-    let have_full_range = min_ts > 0 && max_ts > 0 && req_from_ms >= min_ts && req_to_ms <= max_ts;
+    let have_full_range = match (cached_min_date, cached_max_date) {
+        (Some(min_d), Some(max_d)) => csv_path.exists() && from_date >= min_d && to_date <= max_d,
+        _ => false,
+    };
 
     if have_full_range && csv_path.exists() {
         used_cache_only = true;
@@ -560,12 +966,15 @@ pub fn download_1m_to_cache(
 
         // Append-only: if we have some data and the request starts within what we have, fetch only newer bars.
         // Otherwise, refresh the full requested range and overwrite.
-        let do_append_only = csv_path.exists() && min_ts > 0 && max_ts > 0 && req_from_ms >= min_ts;
+        let do_append_only = match cached_min_date {
+            Some(min_d) => csv_path.exists() && min_ts > 0 && max_ts > 0 && from_date >= min_d,
+            _ => false,
+        };
 
         if do_append_only {
             // Fetch from (cached max timestamp + 1 minute) up to requested to.
             // We convert cached max_ts to a date for Polygon requests.
-            let next_ms = max_ts + 60_000;
+            let next_ms = max_ts.saturating_add(tf.interval_ms);
             let next_dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(next_ms)
                 .ok_or_else(|| "cached timestamp out of range".to_string())?;
             let mut chunk_from = next_dt.date_naive();
@@ -577,8 +986,12 @@ pub fn download_1m_to_cache(
                 let from_s = chunk_from.format("%Y-%m-%d").to_string();
                 let to_s = chunk_to.format("%Y-%m-%d").to_string();
                 let bars =
-                    fetch_chunk(&client, &api_key, &polygon_ticker, &from_s, &to_s, adjusted)?;
-                downloaded += append_bars(&csv_path, &bars, &mut min_ts, &mut max_ts)?;
+                    fetch_chunk(&client, &api_key, &polygon_ticker, &from_s, &to_s, adjusted, &tf)?;
+                let wrote = append_bars(&csv_path, &bars, &mut min_ts, &mut max_ts)?;
+                downloaded += wrote;
+                if row_count > 0 {
+                    row_count = row_count.saturating_add(wrote as u64);
+                }
                 chunk_from = chunk_to + Duration::days(1);
             }
         } else {
@@ -590,7 +1003,7 @@ pub fn download_1m_to_cache(
                 let from_s = chunk_from.format("%Y-%m-%d").to_string();
                 let to_s = chunk_to.format("%Y-%m-%d").to_string();
                 let mut bars =
-                    fetch_chunk(&client, &api_key, &polygon_ticker, &from_s, &to_s, adjusted)?;
+                    fetch_chunk(&client, &api_key, &polygon_ticker, &from_s, &to_s, adjusted, &tf)?;
                 all.append(&mut bars);
                 chunk_from = chunk_to + Duration::days(1);
             }
@@ -604,6 +1017,7 @@ pub fn download_1m_to_cache(
             downloaded += wrote;
             min_ts = new_min;
             max_ts = new_max;
+            row_count = wrote as u64;
         }
     }
 
@@ -616,10 +1030,14 @@ pub fn download_1m_to_cache(
         market: market.as_str().to_string(),
         display_symbol,
         polygon_ticker: polygon_ticker.clone(),
+        timeframe: tf.label.clone(),
         csv_path: csv_path.to_string_lossy().to_string(),
         min_ts,
         max_ts,
         last_updated_utc_ms: now_utc_ms(),
+        row_count,
+        adjusted,
+        integrity: cached_meta.and_then(|m| m.integrity),
     };
     manifest.datasets.insert(dataset_key, meta);
     save_manifest(cache_dir, &manifest)?;
@@ -629,4 +1047,91 @@ pub fn download_1m_to_cache(
         downloaded_bars: downloaded,
         used_cache_only,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let name = format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            now_utc_ms().max(1)
+        );
+        p.push(name);
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).expect("create temp dir");
+        p
+    }
+
+    #[test]
+    fn polygon_validate_and_repair_detects_and_fixes_duplicates_and_ordering() {
+        let cache_dir = make_temp_dir("vectorta_polygon_test");
+        let csv_path = cache_dir.join("polygon_stocks_TEST_1m.csv");
+        let csv_path_s = csv_path.to_string_lossy().to_string();
+
+        let base_ts: i64 = 1_700_000_000_000;
+        let csv = format!(
+            "timestamp,open,close,high,low,volume\n\
+{},{},{},{},{},{}\n\
+{},{},{},{},{},{}\n\
+{},{},{},{},{},{}\n\
+{},{},{},{},{},{}\n\
+{},{},{},{},{},{}\n\
+badline\n",
+            base_ts, 1.0, 1.0, 1.0, 1.0, 10.0,
+            base_ts + 60_000, 1.0, 1.0, 1.0, 1.0, 10.0,
+            base_ts + 60_000, 1.0, 1.0, 1.0, 1.0, 10.0,
+            base_ts + 30_000, 1.0, 1.0, 1.0, 1.0, 10.0,
+            base_ts + 240_000, 1.0, 1.0, 1.0, 1.0, 10.0,
+        );
+        fs::write(&csv_path, csv).expect("write csv");
+
+        let mut manifest = PolygonCacheManifest::default();
+        manifest.datasets.insert(
+            "stocks:TEST:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "TEST".to_string(),
+                polygon_ticker: "TEST".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: csv_path_s.clone(),
+                min_ts: 0,
+                max_ts: 0,
+                last_updated_utc_ms: 0,
+                row_count: 0,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        save_manifest(&cache_dir, &manifest).expect("save manifest");
+
+        let meta = validate_cached_dataset(&cache_dir, &csv_path_s).expect("validate");
+        let integ = meta.integrity.expect("integrity");
+        assert_eq!(integ.parse_errors, 1);
+        assert_eq!(integ.duplicates, 1);
+        assert_eq!(integ.out_of_order, 1);
+        assert_eq!(integ.same_day_gaps_gt_2min, 1);
+
+        let repaired = repair_cached_dataset("vectorta_test", &cache_dir, &csv_path_s).expect("repair");
+        let integ2 = repaired.integrity.expect("integrity after repair");
+        assert_eq!(integ2.parse_errors, 1);
+        assert_eq!(integ2.duplicates, 0);
+        assert_eq!(integ2.out_of_order, 0);
+        assert_eq!(integ2.same_day_gaps_gt_2min, 1);
+        assert_eq!(repaired.row_count, 4);
+        assert!(repaired.min_ts > 0);
+        assert!(repaired.max_ts > repaired.min_ts);
+
+        let meta2 = validate_cached_dataset(&cache_dir, &csv_path_s).expect("validate after repair");
+        let integ3 = meta2.integrity.expect("integrity after re-validate");
+        assert_eq!(integ3.duplicates, 0);
+        assert_eq!(integ3.out_of_order, 0);
+        assert_eq!(integ3.same_day_gaps_gt_2min, 1);
+
+        let txt = fs::read_to_string(&csv_path).expect("read repaired csv");
+        assert!(txt.to_ascii_lowercase().starts_with("timestamp,open,close"));
+    }
 }

@@ -6,6 +6,7 @@ use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig};
 
+use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
 
 #[cfg(feature = "cuda")]
@@ -14,7 +15,7 @@ use vector_ta::cuda::{
     moving_averages::{CudaAlma, CudaMaData, CudaMaSelector},
 };
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "backend")]
 pub enum Backend {
     Auto { device_id: u32 },
@@ -23,7 +24,7 @@ pub enum Backend {
     GpuKernel { device_id: u32 },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HalfTrendRegimeFilter {
     #[serde(default = "default_halftrend_amplitude")]
     pub amplitude: u16,
@@ -45,7 +46,7 @@ fn default_halftrend_atr_period() -> u16 {
     100
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DoubleMaRequest {
     pub backend: Backend,
     pub data_id: String,
@@ -72,13 +73,13 @@ fn default_ma_source() -> String {
     "close".to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum OptimizationModeResolved {
     Grid,
     CoarseToFine,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum BackendUsed {
     Cpu,
     Gpu,
@@ -106,12 +107,61 @@ pub struct DoubleMaDrilldownRequest {
     pub bins: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
+pub struct DoubleMaLocalStabilityRequest {
+    pub data_id: String,
+    pub params: DoubleMaParamsResolved,
+    #[serde(default = "default_ma_source")]
+    pub ma_source: String,
+    pub fast_ma_params: Option<HashMap<String, f64>>,
+    pub slow_ma_params: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    pub strategy: StrategyConfig,
+    pub halftrend_filter: Option<HalfTrendRegimeFilter>,
+    pub objective: ObjectiveKind,
+    pub radius: Option<u16>,
+    pub step: Option<u16>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalStabilityPoint {
+    pub fast_len: u16,
+    pub slow_len: u16,
+    pub metrics: ta_strategies::double_ma::Metrics,
+    pub score: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalStabilitySummary {
+    pub base: f64,
+    pub min: f64,
+    pub median: f64,
+    pub max: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalStabilityResult {
+    pub base: DoubleMaParamsResolved,
+    pub objective: ObjectiveKind,
+    pub radius: u16,
+    pub step: u16,
+    pub start_t: usize,
+    pub points: Vec<LocalStabilityPoint>,
+    pub summary: LocalStabilitySummary,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BackendOptimizationResult {
     pub best_params: DoubleMaParamsResolved,
     pub best_metrics: ta_strategies::double_ma::Metrics,
     pub mode_used: OptimizationModeResolved,
     pub backend_used: BackendUsed,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix_index: Option<DoubleMaFastLtSlowIndex>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_col: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_cols: Option<Vec<u32>>,
     pub num_combos: usize,
     pub num_candles: usize,
     pub runtime_ms: u64,
@@ -120,6 +170,14 @@ pub struct BackendOptimizationResult {
     pub all: Option<Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heatmap: Option<OptimizationHeatmap>,
+}
+
+fn objective_score(metrics: &ta_strategies::double_ma::Metrics, objective: ObjectiveKind) -> f64 {
+    match objective {
+        ObjectiveKind::Sharpe => metrics.sharpe,
+        ObjectiveKind::Pnl => metrics.pnl,
+        ObjectiveKind::MaxDrawdown => -metrics.max_dd,
+    }
 }
 
 pub fn compute_double_ma_drilldown_blocking_with_candles(
@@ -242,6 +300,214 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
             ),
         )
     }
+}
+
+pub fn compute_double_ma_local_stability_blocking_with_candles(
+    req: DoubleMaLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    let fast_ma = req.params.fast_ma_type.trim();
+    let slow_ma = req.params.slow_ma_type.trim();
+    validate_ma_kind(fast_ma)?;
+    validate_ma_kind(slow_ma)?;
+
+    let base_fast = req.params.fast_len;
+    let base_slow = req.params.slow_len;
+    if base_fast == 0 || base_slow == 0 {
+        return Err("periods must be > 0".to_string());
+    }
+    if base_fast as usize > n || base_slow as usize > n {
+        return Err(format!(
+            "period exceeds series length: fast_len={base_fast} slow_len={base_slow} n={n}"
+        ));
+    }
+    if base_fast >= base_slow {
+        return Err("invalid params: fast_len must be < slow_len".to_string());
+    }
+
+    validate_strategy_cfg(&req.strategy)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let mut first_valid = fv_close.max(fv_ma);
+
+    let halftrend_trend: Option<Vec<f64>> = match req.halftrend_filter.as_ref() {
+        Some(f) => {
+            let trend = compute_halftrend_trend(candles, f)?;
+            if trend.len() != n {
+                return Err("HalfTrend trend series length mismatch".to_string());
+            }
+            let fv_ht = first_finite_idx(&trend)
+                .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+            first_valid = first_valid.max(fv_ht);
+            Some(trend)
+        }
+        None => None,
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+
+    let mut fast_periods: Vec<u16> = Vec::new();
+    let mut df = -(radius as i32);
+    while df <= radius as i32 {
+        let v = base_fast as i32 + df;
+        if v > 0 {
+            fast_periods.push(v as u16);
+        }
+        df += step as i32;
+    }
+    let mut slow_periods: Vec<u16> = Vec::new();
+    let mut ds = -(radius as i32);
+    while ds <= radius as i32 {
+        let v = base_slow as i32 + ds;
+        if v > 0 {
+            slow_periods.push(v as u16);
+        }
+        ds += step as i32;
+    }
+
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty neighborhood".to_string());
+    }
+    fast_periods.sort_unstable();
+    slow_periods.sort_unstable();
+
+    // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
+    let trade_offset = if req.strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let max_p = (fast_periods[fast_periods.len() - 1] as usize)
+        .max(slow_periods[slow_periods.len() - 1] as usize)
+        .max(1);
+    let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
+    let start_t = t_valid.saturating_add(trade_offset);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let (fast_alma_offset, fast_alma_sigma) =
+        resolve_alma_params_for_side("fast", fast_ma, req.fast_ma_params.as_ref())?;
+    let (slow_alma_offset, slow_alma_sigma) =
+        resolve_alma_params_for_side("slow", slow_ma, req.slow_ma_params.as_ref())?;
+
+    let (fast_mat, cols) = ma_matrix_cpu_f64(
+        candles,
+        fast_ma,
+        &req.ma_source,
+        &fast_periods,
+        req.fast_ma_params.as_ref(),
+        fast_alma_offset,
+        fast_alma_sigma,
+    )?;
+    if cols != n {
+        return Err("fast MA series length mismatch".to_string());
+    }
+    let (slow_mat, cols2) = ma_matrix_cpu_f64(
+        candles,
+        slow_ma,
+        &req.ma_source,
+        &slow_periods,
+        req.slow_ma_params.as_ref(),
+        slow_alma_offset,
+        slow_alma_sigma,
+    )?;
+    if cols2 != n {
+        return Err("slow MA series length mismatch".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+
+    let mut points: Vec<LocalStabilityPoint> = Vec::new();
+    for (fi, &fast_len) in fast_periods.iter().enumerate() {
+        let fast_off = fi.saturating_mul(n);
+        let fast = fast_mat
+            .get(fast_off..fast_off + n)
+            .ok_or_else(|| "fast MA matrix indexing error".to_string())?;
+
+        for (si, &slow_len) in slow_periods.iter().enumerate() {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let slow_off = si.saturating_mul(n);
+            let slow = slow_mat
+                .get(slow_off..slow_off + n)
+                .ok_or_else(|| "slow MA matrix indexing error".to_string())?;
+
+            let metrics = if let Some(trend) = halftrend_trend.as_ref() {
+                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
+                    &lr,
+                    fast,
+                    slow,
+                    trend,
+                    start_t,
+                    &req.strategy,
+                )
+            } else {
+                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
+                    &lr,
+                    fast,
+                    slow,
+                    start_t,
+                    &req.strategy,
+                )
+            };
+            let score = objective_score(&metrics, objective);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                metrics,
+                score,
+            });
+        }
+    }
+
+    let base_score = points
+        .iter()
+        .find(|p| p.fast_len == base_fast && p.slow_len == base_slow)
+        .map(|p| p.score)
+        .unwrap_or(0.0);
+
+    let mut scores: Vec<f64> = points.iter().map(|p| p.score).collect();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min = *scores.first().unwrap_or(&0.0);
+    let max = *scores.last().unwrap_or(&0.0);
+    let median = if scores.is_empty() {
+        0.0
+    } else {
+        scores[scores.len() / 2]
+    };
+
+    Ok(LocalStabilityResult {
+        base: DoubleMaParamsResolved {
+            fast_len: base_fast,
+            slow_len: base_slow,
+            fast_ma_type: req.params.fast_ma_type,
+            slow_ma_type: req.params.slow_ma_type,
+        },
+        objective,
+        radius,
+        step,
+        start_t,
+        points,
+        summary: LocalStabilitySummary {
+            base: base_score,
+            min,
+            median,
+            max,
+        },
+    })
 }
 
 pub fn run_double_ma_optimization_blocking_with_candles(
@@ -719,7 +985,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let best_params = resolve_params(&result.best_params, &fast_ma_types, &slow_ma_types);
-    let top = result
+    let top: Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)> = result
         .top
         .into_iter()
         .map(|(p, m)| (resolve_params(&p, &fast_ma_types, &slow_ma_types), m))
@@ -731,11 +997,42 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     });
     let heatmap = result.heatmap;
 
+    let (matrix_index, best_col, top_cols) = if matches!(mode_used, OptimizationModeResolved::Grid)
+    {
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() && !top.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        }
+    } else {
+        (None, None, None)
+    };
+
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
         mode_used,
         backend_used,
+        matrix_index,
+        best_col,
+        top_cols,
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
@@ -1246,8 +1543,8 @@ fn validate_halftrend_filter(f: &HalfTrendRegimeFilter) -> Result<(), String> {
     if f.atr_period == 0 {
         return Err("HalfTrend atr_period must be > 0".to_string());
     }
-    if !f.channel_deviation.is_finite() || f.channel_deviation < 0.0 {
-        return Err("HalfTrend channel_deviation must be finite and >= 0".to_string());
+    if !f.channel_deviation.is_finite() || f.channel_deviation <= 0.0 {
+        return Err("HalfTrend channel_deviation must be finite and > 0".to_string());
     }
     Ok(())
 }
@@ -2792,6 +3089,45 @@ mod tests {
             .minmax
             .iter()
             .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0));
+    }
+
+    #[test]
+    fn local_stability_smoke_has_base_point_and_summary() {
+        let candles = make_trending_candles(4096);
+
+        let req = DoubleMaLocalStabilityRequest {
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 9,
+                slow_len: 21,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            radius: Some(1),
+            step: Some(1),
+        };
+
+        let res =
+            compute_double_ma_local_stability_blocking_with_candles(req, &candles).expect("local stability");
+
+        assert_eq!(res.base.fast_len, 9);
+        assert_eq!(res.base.slow_len, 21);
+        assert_eq!(res.radius, 1);
+        assert_eq!(res.step, 1);
+        assert!(!res.points.is_empty());
+        assert!(res.points.iter().any(|p| p.fast_len == 9 && p.slow_len == 21));
+        assert!(res.summary.min <= res.summary.median);
+        assert!(res.summary.median <= res.summary.max);
+        assert!(res.summary.base.is_finite());
+        assert!(res.summary.min.is_finite());
+        assert!(res.summary.median.is_finite());
+        assert!(res.summary.max.is_finite());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

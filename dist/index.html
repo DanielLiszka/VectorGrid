@@ -18,6 +18,7 @@
             <button class="tabBtn" data-tab="opt">Optimize</button>
             <button class="tabBtn" data-tab="strategy">Strategy</button>
             <button class="tabBtn" data-tab="advanced">Advanced</button>
+            <button class="tabBtn" data-tab="distributed">Distributed</button>
           </div>
         </div>
 
@@ -56,6 +57,18 @@
               </div>
             </div>
 
+            <div class="row" style="margin-top: 0.65rem;">
+              <div>
+                <div class="muted">Dataset</div>
+                <div class="mono" id="datasetLabel">—</div>
+              </div>
+              <div>
+                <div class="muted">Timeframe / range</div>
+                <div class="mono" id="datasetRange">—</div>
+              </div>
+            </div>
+            <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="datasetContext">—</div>
+
             <div style="margin-top: 0.55rem;">
               <div class="muted">Fields</div>
               <div class="badges" id="dataFields"></div>
@@ -70,11 +83,30 @@
                 <select id="strategyKind">
                   <option value="DoubleMa" selected>Double MA crossover</option>
                   <option value="CompositeCpu">Composite (HalfTrend + MACZ + OTT + MA filters) [CPU]</option>
+                  <option value="CompositeMo">Composite (HalfTrend + MACZ + OTT + MA filters) [CPU + MO]</option>
                 </select>
               </div>
               <div>
                 <label>&nbsp;</label>
                 <div class="muted" style="font-size: 0.8rem;" id="strategyHint">—</div>
+              </div>
+            </div>
+
+            <div class="row" style="margin-top: 0.65rem;">
+              <div>
+                <label for="presetProfile">Preset</label>
+                <select id="presetProfile">
+                  <option value="Balanced" selected>Balanced (recommended)</option>
+                  <option value="Quick">Quick (fast iteration)</option>
+                  <option value="Deep">Deep (more robust)</option>
+                </select>
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnApplyPreset">Apply preset</button>
+                </div>
+                <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">Sets validation depth + defaults; does not change MA types or ranges.</div>
               </div>
             </div>
 
@@ -89,14 +121,21 @@
                 </select>
               </div>
               <div>
-                <label for="deviceId">GPU device id</label>
-                <input id="deviceId" type="number" min="0" step="1" value="0" />
+                <label for="deviceId">GPU device</label>
+                <select id="deviceId">
+                  <option value="0" selected>Auto</option>
+                </select>
               </div>
             </div>
 
             <div class="actions" style="margin-top: 0.65rem;">
               <button class="primary" id="btnPresetKernelSmaAlma">Preset: GPU kernel (SMA/ALMA)</button>
+              <button id="btnRefreshGpuStatus">Refresh GPU status</button>
+              <button id="btnGpuParityCheck">CPU ↔ GPU parity check (tiny)</button>
             </div>
+
+            <div class="muted" style="margin-top: 0.35rem; font-size: 0.85rem;" id="gpuStatus">GPU: —</div>
+            <div class="muted" style="margin-top: 0.25rem; font-size: 0.85rem;" id="gpuParityMeta">Parity: —</div>
 
             <div class="split" style="margin-top: 0.9rem;">
               <div>
@@ -150,6 +189,8 @@
               </div>
             </div>
 
+            <div class="muted" style="margin-top: 0.75rem; font-size: 0.85rem;" id="pairsPreview">Pairs: —</div>
+
             <div class="split" style="margin-top: 0.9rem;">
               <div id="fastMaParamsWrap" style="display: none;">
                 <div class="muted" style="margin-bottom: 0.35rem;">Fast MA parameters</div>
@@ -169,7 +210,7 @@
                 <input id="commission" type="number" min="0" step="0.0001" value="0" />
               </div>
               <div>
-                <label for="epsRel">Epsilon band (eps_rel)</label>
+                <label for="epsRel" title="Relative epsilon band around crossover (0 disables). Helps avoid churn around near-equal MAs.">Epsilon band (eps_rel)</label>
                 <input id="epsRel" type="number" min="0" step="0.0001" value="0" />
               </div>
               <div>
@@ -179,9 +220,9 @@
             </div>
 
             <div class="checks" style="margin-top: 0.55rem;">
-              <label><input id="longOnly" type="checkbox" checked /> Long-only</label>
-              <label><input id="allowFlip" type="checkbox" checked /> Allow flip</label>
-              <label><input id="tradeOnNext" type="checkbox" checked /> Trade on next bar</label>
+              <label title="Only take long positions. If enabled, shorts are disabled and 'Allow flip' has no effect."><input id="longOnly" type="checkbox" checked /> Long-only</label>
+              <label title="Allow switching long↔short on opposite signals (when Long-only is off)."><input id="allowFlip" type="checkbox" checked /> Allow flip</label>
+              <label title="Executes signals on the next bar (reduces lookahead risk)."><input id="tradeOnNext" type="checkbox" checked /> Trade on next bar</label>
             </div>
 
             <div id="compositeParamsWrap" style="display: none; margin-top: 0.9rem;">
@@ -319,6 +360,211 @@
               </div>
             </div>
 
+            <div id="compositeMoWrap" style="display: none; margin-top: 0.9rem;">
+              <div class="muted" style="margin-bottom: 0.35rem;">Composite multi-objective optimizer (CPU + optional GPU pre-scan)</div>
+
+              <div class="row">
+                <div>
+                  <label for="moObjectiveMin">Objective (minimize)</label>
+                  <select id="moObjectiveMin">
+                    <option value="MaxDrawdown" selected>Max drawdown</option>
+                    <option value="Sharpe">Sharpe</option>
+                    <option value="Pnl">PnL</option>
+                  </select>
+                  <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">The Objective field above is used as the maximize objective.</div>
+                </div>
+                <div>
+                  <label for="moSampler">Sampler</label>
+                  <select id="moSampler">
+                    <option value="Nsga2" selected>NSGA-II</option>
+                    <option value="Random">Random</option>
+                    <option value="Tpe">TPE (MO)</option>
+                    <option value="Qmc">QMC (Sobol/Halton)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div id="moNsga2Wrap" style="margin-top: 0.55rem;">
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.85rem;">NSGA-II config</div>
+                <div class="row3">
+                  <div>
+                    <label for="moNsga2Seed">Seed</label>
+                    <input id="moNsga2Seed" type="number" min="0" step="1" value="1" />
+                  </div>
+                  <div>
+                    <label for="moNsga2Population">Population</label>
+                    <input id="moNsga2Population" type="number" min="2" step="1" value="80" />
+                  </div>
+                  <div>
+                    <label for="moNsga2Generations">Generations</label>
+                    <input id="moNsga2Generations" type="number" min="1" step="1" value="40" />
+                  </div>
+                </div>
+                <div class="row3" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="moNsga2CrossoverProb">Crossover prob</label>
+                    <input id="moNsga2CrossoverProb" type="number" min="0" max="1" step="0.01" value="0.9" />
+                  </div>
+                  <div>
+                    <label for="moNsga2SwappingProb">Swapping prob</label>
+                    <input id="moNsga2SwappingProb" type="number" min="0" max="1" step="0.01" value="0.5" />
+                  </div>
+                  <div>
+                    <label for="moNsga2MutationProb">Mutation prob (blank = auto)</label>
+                    <input id="moNsga2MutationProb" type="number" min="0" max="1" step="0.01" placeholder="auto" />
+                  </div>
+                </div>
+              </div>
+
+              <div id="moRandomWrap" style="margin-top: 0.55rem; display: none;">
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.85rem;">Random sampler config</div>
+                <div class="row3">
+                  <div>
+                    <label for="moRandomSeed">Seed</label>
+                    <input id="moRandomSeed" type="number" min="0" step="1" value="1" />
+                  </div>
+                  <div>
+                    <label for="moRandomTrials">Trials</label>
+                    <input id="moRandomTrials" type="number" min="1" step="1" value="2000" />
+                  </div>
+                  <div></div>
+                </div>
+              </div>
+
+              <div id="moTpeWrap" style="margin-top: 0.55rem; display: none;">
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.85rem;">TPE config (multi-objective)</div>
+                <div class="row3">
+                  <div>
+                    <label for="moTpeSeed">Seed</label>
+                    <input id="moTpeSeed" type="number" min="0" step="1" value="1" />
+                  </div>
+                  <div>
+                    <label for="moTpeTrials">Trials</label>
+                    <input id="moTpeTrials" type="number" min="1" step="1" value="5000" />
+                  </div>
+                  <div>
+                    <label for="moTpeStartupTrials">Startup trials</label>
+                    <input id="moTpeStartupTrials" type="number" min="0" step="1" value="10" />
+                  </div>
+                </div>
+                <div class="row3" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="moTpeCandidates">EI candidates</label>
+                    <input id="moTpeCandidates" type="number" min="1" step="1" value="24" />
+                  </div>
+                  <div>
+                    <label for="moTpeGamma">Gamma (good fraction)</label>
+                    <input id="moTpeGamma" type="number" min="0" max="1" step="0.01" value="0.25" />
+                  </div>
+                  <div>
+                    <label for="moTpeBatchSize">Batch size</label>
+                    <input id="moTpeBatchSize" type="number" min="1" step="1" value="64" />
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="moTpeMaxModelPoints">Max model points</label>
+                    <input id="moTpeMaxModelPoints" type="number" min="32" step="1" value="2048" />
+                  </div>
+                </div>
+              </div>
+
+              <div id="moQmcWrap" style="margin-top: 0.55rem; display: none;">
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.85rem;">QMC config</div>
+                <div class="row3">
+                  <div>
+                    <label for="moQmcSeed">Seed</label>
+                    <input id="moQmcSeed" type="number" min="0" step="1" value="1" />
+                  </div>
+                  <div>
+                    <label for="moQmcTrials">Trials</label>
+                    <input id="moQmcTrials" type="number" min="1" step="1" value="5000" />
+                  </div>
+                  <div>
+                    <label for="moQmcSequence">Sequence</label>
+                    <select id="moQmcSequence">
+                      <option value="sobol" selected>Sobol</option>
+                      <option value="halton">Halton</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div style="margin-top: 0.9rem;">
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.85rem;">Constraints (optional)</div>
+                <div class="row3">
+                  <div>
+                    <label for="moConstraintMinTrades">Min trades</label>
+                    <input id="moConstraintMinTrades" type="number" min="0" step="1" placeholder="(optional)" />
+                  </div>
+                  <div>
+                    <label for="moConstraintMaxDd">Max drawdown</label>
+                    <input id="moConstraintMaxDd" type="number" min="0" step="any" placeholder="(optional)" />
+                  </div>
+                  <div>
+                    <label for="moConstraintMaxAbsExposure">Max abs exposure</label>
+                    <input id="moConstraintMaxAbsExposure" type="number" min="0" step="any" placeholder="(optional)" />
+                  </div>
+                </div>
+              </div>
+
+              <details style="margin-top: 0.9rem;">
+                <summary class="muted">GPU pre-scan (optional)</summary>
+                <div class="checks" style="margin-top: 0.55rem;">
+                  <label><input id="moPrescanEnable" type="checkbox" /> Enable GPU pre-scan to narrow MA period ranges</label>
+                  <label><input id="moPrescanRequireGpu" type="checkbox" /> Require GPU (error if CPU fallback)</label>
+                </div>
+
+                <div class="row3" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="moPrescanTopK">Top K</label>
+                    <input id="moPrescanTopK" type="number" min="1" step="1" value="128" />
+                  </div>
+                  <div>
+                    <label for="moPrescanWindow">Window</label>
+                    <input id="moPrescanWindow" type="number" min="0" step="1" value="8" />
+                  </div>
+                  <div>
+                    <label for="moPrescanObjectives">Objectives</label>
+                    <select id="moPrescanObjectives">
+                      <option value="both" selected>Both</option>
+                      <option value="maximize">Maximize</option>
+                      <option value="minimize">Minimize</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="row" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="moPrescanMode">Pre-scan mode</label>
+                    <select id="moPrescanMode">
+                      <option value="Auto" selected>Auto</option>
+                      <option value="Grid">Grid</option>
+                      <option value="CoarseToFine">Coarse→Fine</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div style="margin-top: 0.55rem;">
+                  <label for="moPrescanMaPairs">MA type pairs (optional; one per line: fast,slow)</label>
+                  <textarea id="moPrescanMaPairs" rows="3" placeholder="sma,ema&#10;ema,ema"></textarea>
+                  <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">Uses the GPU device selection from the Opt tab.</div>
+                </div>
+              </details>
+
+              <details style="margin-top: 0.9rem;">
+                <summary class="muted">Search space (JSON)</summary>
+                <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                  Defines additional parameters besides <span class="mono">fast_len</span>/<span class="mono">slow_len</span> (which are taken from the Opt ranges).
+                </div>
+                <textarea id="moSearchSpace" rows="10" class="mono" style="margin-top: 0.55rem; width: 100%;"
+                  placeholder='{"params":[{"name":"halftrend_amplitude","domain":{"IntRange":{"low":2,"high":20,"step":1,"log":false}}}]}'></textarea>
+                <div class="actions" style="margin-top: 0.55rem;">
+                  <button id="btnMoResetSearchSpace">Reset default search space</button>
+                </div>
+              </details>
+            </div>
+
             <div class="row" style="margin-top: 0.9rem;">
               <div>
                 <label for="heatmapBins">Heatmap bins (0 = off)</label>
@@ -358,6 +604,126 @@
               </div>
             </div>
           </div>
+
+          <div class="tabPanel" data-tab-panel="distributed">
+            <div class="muted" style="font-size: 0.85rem;">
+              LAN distributed compute (leader/worker). v1 supports Double MA only and assumes datasets are reachable by workers (recommended: Windows file share / UNC paths).
+            </div>
+
+            <div class="muted" style="margin-top: 0.45rem; font-size: 0.85rem;">
+              Planning doc: <span class="mono">DISTRIBUTED_COMPUTE_PLAN.md</span>
+            </div>
+
+            <div class="split" style="margin-top: 0.9rem;">
+              <div>
+                <h2 style="margin-top: 0;">Worker</h2>
+                <div class="muted" style="font-size: 0.85rem;">Enable this machine to accept jobs from a leader.</div>
+
+                <div style="margin-top: 0.75rem;">
+                  <label for="distWorkerBindAddr">Bind address</label>
+                  <input id="distWorkerBindAddr" type="text" placeholder="127.0.0.1:48991" value="127.0.0.1:48991" />
+                  <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">Use <span class="mono">0.0.0.0:48991</span> to accept LAN connections (Windows firewall may prompt).</div>
+                </div>
+
+                <div style="margin-top: 0.75rem;">
+                  <label for="distWorkerToken">Worker auth token</label>
+                  <div class="rowAuto">
+                    <input id="distWorkerToken" type="text" placeholder="(required)" />
+                    <button id="btnDistGenToken">Generate</button>
+                  </div>
+                </div>
+
+                <div class="actions" style="margin-top: 0.75rem;">
+                  <button class="primary" id="btnDistStartWorker">Start worker server</button>
+                  <button id="btnDistStopWorker">Stop</button>
+                  <button id="btnDistWorkerStatus">Status</button>
+                </div>
+                <div class="muted" style="margin-top: 0.4rem; font-size: 0.85rem;" id="distWorkerStatus">Worker: —</div>
+              </div>
+
+              <div>
+                <h2 style="margin-top: 0;">Leader</h2>
+                <div class="muted" style="font-size: 0.85rem;">Dispatch work to workers and aggregate results. Uses the current Double MA settings from the Optimize/Strategy/Advanced tabs.</div>
+
+                <div style="margin-top: 0.75rem;">
+                  <label for="distLeaderToken">Auth token</label>
+                  <input id="distLeaderToken" type="text" placeholder="(must match workers)" />
+                </div>
+
+                <div style="margin-top: 0.75rem;">
+                  <label for="distLeaderWorkers">Worker URLs (one per line)</label>
+                  <textarea id="distLeaderWorkers" rows="4" placeholder="http://192.168.1.50:48991"></textarea>
+                </div>
+
+                <div class="row" style="margin-top: 0.75rem;">
+                  <div>
+                    <label for="distLeaderMode">Mode</label>
+                    <select id="distLeaderMode">
+                      <option value="assets" selected>Assets (many CSVs)</option>
+                      <option value="tiles">Tiles (split one grid)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>&nbsp;</label>
+                    <div class="muted" style="font-size: 0.85rem;" id="distLeaderModeHint">—</div>
+                  </div>
+                </div>
+
+                <div id="distAssetsWrap" style="margin-top: 0.75rem;">
+                  <label for="distAssetsCsvs">Asset CSV paths (one per line)</label>
+                  <textarea id="distAssetsCsvs" rows="5" placeholder="\\\\SERVER\\share\\AAPL.csv"></textarea>
+
+                  <div class="row" style="margin-top: 0.65rem;">
+                    <div>
+                      <label for="distPathFrom">Path rewrite (from prefix)</label>
+                      <input id="distPathFrom" type="text" placeholder="C:\\Users\\you\\AppData\\...\\polygon_cache" />
+                    </div>
+                    <div>
+                      <label for="distPathTo">Path rewrite (to prefix)</label>
+                      <input id="distPathTo" type="text" placeholder="\\\\LEADERPC\\polygon_share" />
+                    </div>
+                  </div>
+
+                  <div class="actions" style="margin-top: 0.65rem;">
+                    <button id="btnDistFillFromPolygon">Fill from Polygon cache</button>
+                    <button class="primary" id="btnDistRunAssets">Run assets</button>
+                  </div>
+                </div>
+
+                <div id="distTilesWrap" style="margin-top: 0.75rem; display: none;">
+                  <label for="distTileCsvPath">Dataset CSV path (shared / UNC path)</label>
+                  <div class="rowAuto">
+                    <input id="distTileCsvPath" type="text" placeholder="\\\\SERVER\\share\\dataset.csv" />
+                    <button id="btnDistUseCurrentCsv">Use current</button>
+                  </div>
+
+                  <div class="row" style="margin-top: 0.65rem;">
+                    <div>
+                      <label for="distTilesPerWorker">Tiles per worker</label>
+                      <input id="distTilesPerWorker" type="number" min="1" step="1" value="4" />
+                    </div>
+                    <div>
+                      <label>&nbsp;</label>
+                      <div class="muted" style="font-size: 0.85rem;">Higher = more granular work stealing.</div>
+                    </div>
+                  </div>
+
+                  <div class="actions" style="margin-top: 0.65rem;">
+                    <button class="primary" id="btnDistRunTiles">Run tiled grid</button>
+                  </div>
+                </div>
+
+                <div class="actions" style="margin-top: 0.75rem;">
+                  <button class="danger-btn" id="btnDistCancel" disabled>Cancel distributed run</button>
+                </div>
+
+                <div style="margin-top: 0.75rem;">
+                  <div class="muted" style="margin-bottom: 0.35rem;">Distributed output</div>
+                  <pre class="mono" id="distOutput" style="white-space: pre-wrap; max-height: 220px; overflow: auto;">—</pre>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="cardFooter">
@@ -365,6 +731,7 @@
             <button class="primary" id="btnRun">Run optimization</button>
             <button class="danger-btn" id="btnCancel" disabled>Cancel</button>
           </div>
+          <div class="muted" style="margin-top: 0.55rem; font-size: 0.8rem;" id="runPlanMeta">Plan: —</div>
           <div class="muted" style="margin-top: 0.6rem; font-size: 0.8rem;">Tip: GPU (kernel) stays VRAM-resident and is best for large grids.</div>
         </div>
       </section>
@@ -380,13 +747,21 @@
             <div class="muted" id="progressMeta" style="margin-top: 0.35rem; font-size: 0.8rem;"></div>
           </div>
 
+          <div class="actions" style="margin-top: 0.65rem;" id="quickActions">
+            <button id="btnOpenLatestReport" disabled>Open latest report</button>
+            <button id="btnOpenLatestMetaReport" disabled>Open latest meta report</button>
+          </div>
+          <div class="muted" style="margin-top: 0.25rem; font-size: 0.8rem;" id="quickActionsMeta">—</div>
+
           <div class="tabBar" id="resultsTabBar" style="margin-top: 0.9rem;">
             <button class="tabBtn" data-tab="overview">Overview</button>
             <button class="tabBtn" data-tab="top">Top</button>
             <button class="tabBtn" data-tab="pareto">Pareto</button>
+            <button class="tabBtn" data-tab="validate">Validate</button>
             <button class="tabBtn" data-tab="drill">Drilldown</button>
             <button class="tabBtn" data-tab="heatmap">Heatmap</button>
             <button class="tabBtn" data-tab="history">History</button>
+            <button class="tabBtn" data-tab="meta">Meta</button>
             <button class="tabBtn" data-tab="debug">Debug</button>
           </div>
         </div>
@@ -502,6 +877,221 @@
             </div>
           </div>
 
+          <div class="tabPanel" data-tab-panel="validate">
+            <h2>Validate</h2>
+            <div class="muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+              Runs additional robustness checks on the current run’s Top/Pareto candidates (walk-forward + optional parameter perturbations / trade bootstrap).
+            </div>
+            <div class="muted" style="font-size: 0.85rem; margin-top: -0.35rem; margin-bottom: 0.75rem;" id="validationHint">—</div>
+
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="valCandidates">Candidates</label>
+                <input id="valCandidates" type="number" min="1" step="1" value="32" />
+              </div>
+              <div>
+                <label for="valSeed">Seed</label>
+                <input id="valSeed" type="number" min="0" step="1" value="1" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnValidate">Run validation</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0.55rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input id="valAutoRun" type="checkbox" checked />
+                <label for="valAutoRun" style="margin: 0;">Auto-run after optimization (composite)</label>
+              </div>
+            </div>
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <input id="valAutoExportXlsx" type="checkbox" checked />
+                  <label for="valAutoExportXlsx" style="margin: 0;">Auto-export report (XLSX)</label>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <input id="valAutoRevealReport" type="checkbox" />
+                  <label for="valAutoRevealReport" style="margin: 0;">Reveal report in folder after save</label>
+                </div>
+              </div>
+              <div>
+                <label for="valAutoExportTopN">Top N rows (0 = all)</label>
+                <input id="valAutoExportTopN" type="number" min="0" step="1" value="20" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnOpenReportsDir" type="button">Open reports folder</button>
+                </div>
+                <div class="muted" style="font-size: 0.8rem; margin-top: 0.25rem;">Saved to app data under <span class="mono">reports/</span>.</div>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0.55rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input id="valWfEnable" type="checkbox" checked />
+                <label for="valWfEnable" style="margin: 0;" title="Evaluate fixed params over rolling windows (out-of-sample slices) to gauge robustness.">Walk-forward</label>
+              </div>
+            </div>
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="valWfWindow">WF window (bars)</label>
+                <input id="valWfWindow" type="number" min="64" step="1" value="20000" />
+              </div>
+              <div>
+                <label for="valWfStep">WF step (bars)</label>
+                <input id="valWfStep" type="number" min="1" step="1" value="20000" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="font-size: 0.8rem;">Evaluates fixed params over rolling windows.</div>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0.55rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input id="valPerturbEnable" type="checkbox" />
+                <label for="valPerturbEnable" style="margin: 0;" title="Randomly perturbs parameters around each candidate to test sensitivity / fragility.">Parameter perturbations</label>
+              </div>
+            </div>
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="valPerturbIters">Iterations</label>
+                <input id="valPerturbIters" type="number" min="0" step="1" value="8" />
+              </div>
+              <div>
+                <label for="valPerturbMin">Min %</label>
+                <input id="valPerturbMin" type="number" step="any" value="0.015" />
+              </div>
+              <div>
+                <label for="valPerturbMax">Max %</label>
+                <input id="valPerturbMax" type="number" step="any" value="0.06" />
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0.55rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input id="valMcEnable" type="checkbox" />
+                <label for="valMcEnable" style="margin: 0;" title="Monte Carlo resampling of closed trades to estimate tail outcomes and drawdown risk.">Trade bootstrap (Monte Carlo)</label>
+              </div>
+            </div>
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="valMcSims">Simulations</label>
+                <input id="valMcSims" type="number" min="0" step="1" value="500" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="font-size: 0.8rem;">Resamples closed trades to estimate tail outcomes.</div>
+              </div>
+              <div></div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0.55rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input id="valCscvEnable" type="checkbox" />
+                <label for="valCscvEnable" style="margin: 0;" title="Combinatorially Symmetric Cross-Validation: estimates Probability of Backtest Overfitting (PBO).">CSCV/PBO (overfitting risk)</label>
+              </div>
+            </div>
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="valCscvSlices">Slices (even)</label>
+                <input id="valCscvSlices" type="number" min="4" step="2" value="16" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="font-size: 0.8rem;">Estimates the probability that “best in-sample” is below-median out-of-sample.</div>
+              </div>
+              <div></div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0.55rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input id="valCrossEnable" type="checkbox" />
+                <label for="valCrossEnable" style="margin: 0;" title="Runs the same params on other cached datasets to gauge cross-symbol generalization.">Cross-ticker</label>
+              </div>
+            </div>
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="valCrossMax">Max tickers</label>
+                <input id="valCrossMax" type="number" min="0" step="1" value="6" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnCrossRefresh">Refresh list</button>
+                </div>
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="font-size: 0.8rem;">Runs the same params on other cached datasets (same timeframe recommended).</div>
+              </div>
+            </div>
+            <div class="row3" style="margin-top: -0.25rem; margin-bottom: 0.75rem;">
+              <div>
+                <label for="valCrossSearch">Search</label>
+                <input id="valCrossSearch" type="text" placeholder="e.g. AAPL, btc, eur/usd" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnCrossSelectAll" type="button">All</button>
+                  <button id="btnCrossSelectNone" type="button">None</button>
+                  <button id="btnCrossSelectMatch" type="button">Match current</button>
+                </div>
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="font-size: 0.8rem;" id="valCrossMeta">—</div>
+              </div>
+            </div>
+            <input id="valCrossSelected" type="hidden" value="[]" />
+            <div class="muted" style="margin-top: -0.25rem; margin-bottom: 0.55rem; font-size: 0.8rem;">
+              Tip: Use Polygon to cache multiple symbols, then select them here to validate generalization.
+            </div>
+            <div id="valCrossDatasets" class="list" style="max-height: 240px; overflow: auto; margin-bottom: 0.75rem;"></div>
+
+            <div class="muted" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="validationMeta">-</div>
+            <div class="actions" style="margin-top: 0; margin-bottom: 0.65rem;">
+              <button id="btnExportValidationCsv" disabled>Export shortlist CSV</button>
+              <button id="btnExportValidationJson" disabled>Export validation JSON</button>
+              <button id="btnExportReportJson" disabled>Export report JSON</button>
+              <button id="btnExportReportXlsx" disabled>Export report XLSX</button>
+            </div>
+
+            <div class="muted" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="validationShortlistMeta">-</div>
+            <div class="table-wrap" id="validationTableWrap" style="display: none; margin-top: 0.45rem; margin-bottom: 0.75rem;">
+              <table id="validationTable">
+                <thead>
+                  <tr>
+                    <th class="left">#</th>
+                    <th class="left">Fast</th>
+                    <th class="left">Slow</th>
+                    <th>Robust</th>
+                    <th>CSCV</th>
+                    <th class="left">Pareto</th>
+                    <th>Cross</th>
+                    <th class="left">Pareto</th>
+                    <th>PnL</th>
+                    <th>Sharpe</th>
+                    <th>MaxDD</th>
+                    <th>Trades</th>
+                  </tr>
+                </thead>
+                <tbody id="validationTableBody"></tbody>
+              </table>
+            </div>
+
+            <details id="validationRawWrap">
+              <summary class="muted">Raw JSON</summary>
+              <pre class="mono" id="validationOutput" style="white-space: pre-wrap; max-height: 420px; overflow: auto; border: 1px solid var(--border); padding: 0.75rem; border-radius: 10px;">-</pre>
+            </details>
+          </div>
+
           <div class="tabPanel" data-tab-panel="drill">
             <h2>Drilldown</h2>
             <div id="drillEmptyHint" class="muted" style="font-size: 0.8rem;">Click a row in the Top tab to compute drilldown curves.</div>
@@ -515,6 +1105,30 @@
               <div style="margin-top: 0.75rem;">
                 <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Drawdown (min/max per bin)</div>
                 <canvas id="drawdownCanvas" class="chart" width="1024" height="160"></canvas>
+              </div>
+
+              <div id="stabilityWrap" style="margin-top: 1.1rem; display: none;">
+                <h2>Stability</h2>
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;" id="stabilityStatus">-</div>
+                <div class="muted" style="margin-bottom: 0.6rem; font-size: 0.8rem;" id="stabilityMeta">-</div>
+                <div class="muted" style="margin-bottom: 0.6rem; font-size: 0.8rem;" id="rejectMeta">-</div>
+                <div class="table-wrap" id="stabilityTableWrap" style="display: none; margin-top: 0.45rem;">
+                  <table id="stabilityTable">
+                    <thead>
+                      <tr>
+                        <th class="left">Fast</th>
+                        <th class="left">Slow</th>
+                        <th>Score</th>
+                        <th>PnL</th>
+                        <th>Sharpe</th>
+                        <th>MaxDD</th>
+                        <th>Trades</th>
+                      </tr>
+                    </thead>
+                    <tbody id="stabilityTableBody"></tbody>
+                  </table>
+                </div>
+                <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Evaluates a small neighborhood around the selected MA lengths to detect sharp peaks.</div>
               </div>
 
               <div id="tradeStatsWrap" style="margin-top: 1.1rem; display: none;">
@@ -568,6 +1182,293 @@
               </div>
             </div>
             <input id="presetFile" type="file" accept=".json,application/json" style="display: none;" />
+
+            <hr style="border: none; border-top: 1px solid var(--border); margin: 0.9rem 0;" />
+
+            <h3 style="margin: 0 0 0.4rem 0;">Saved runs (disk)</h3>
+            <div class="muted" style="font-size: 0.85rem; margin-bottom: 0.6rem;">
+              Automatically saved to app data under <span class="mono">runs/</span> for reproducibility and compare.
+            </div>
+            <div class="muted" style="font-size: 0.8rem; margin-top: -0.35rem; margin-bottom: 0.6rem;">
+              Retention: keeps the newest 200 untagged runs; add tags to preserve older runs.
+            </div>
+            <div class="row" style="margin-top: 0.35rem;">
+              <div>
+                <label for="savedRunsSearch">Search</label>
+                <input id="savedRunsSearch" type="text" placeholder="ts, strategy, tag, csv..." />
+              </div>
+              <div>
+                <label for="savedRunsTags">Tags (comma-separated)</label>
+                <div class="rowAuto">
+                  <input id="savedRunsTags" type="text" placeholder="aapl,1m,robust" />
+                  <button id="btnSaveSavedRunTags">Save</button>
+                </div>
+              </div>
+            </div>
+            <div class="row" style="margin-top: 0.35rem;">
+              <div>
+                <label for="savedRunsSelect">Saved runs</label>
+                <select id="savedRunsSelect"></select>
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnRefreshSavedRuns">Refresh</button>
+                  <button id="btnLoadSavedRun">Load</button>
+                  <button id="btnApplySavedRun">Apply to form</button>
+                  <button id="btnRerunSavedRun">Rerun</button>
+                  <button id="btnOpenSavedRunReport">Open report</button>
+                  <button id="btnRevealSavedRun">Reveal file</button>
+                  <button id="btnDeleteSavedRun">Delete</button>
+                  <button id="btnOpenRunsDir">Open runs folder</button>
+                </div>
+              </div>
+            </div>
+            <div class="muted" style="margin-top: 0.4rem; font-size: 0.8rem;" id="savedRunsMeta">—</div>
+          </div>
+
+          <div class="tabPanel" data-tab-panel="meta">
+            <h2>Meta (set-and-forget shortlist)</h2>
+            <div class="muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+              Aggregates validated candidates across your saved runs to recommend robust parameter sets.
+            </div>
+
+            <details id="batchWrap" style="margin-bottom: 0.85rem;">
+              <summary class="muted">Batch runs (generate run artifacts)</summary>
+              <div class="muted" style="font-size: 0.85rem; margin: 0.55rem 0 0.75rem;">
+                Runs optimize → validate → export XLSX across many cached Polygon datasets to build a robust pool for meta analysis.
+              </div>
+
+              <div class="row3" style="margin-bottom: 0.75rem;">
+                <div>
+                  <label for="batchDatasetSearch">Search</label>
+                  <input id="batchDatasetSearch" type="text" placeholder="e.g. AAPL, btc, eur" />
+                </div>
+                <div>
+                  <label for="batchTags">Tags (optional)</label>
+                  <input id="batchTags" type="text" placeholder="batch-20260127, 1m, fx" />
+                </div>
+                <div>
+                  <label>&nbsp;</label>
+                  <div class="actions" style="margin-top: 0;">
+                    <button class="primary" id="btnRunBatch">Run batch</button>
+                    <button id="btnBatchStop" disabled>Stop after current</button>
+                    <button id="btnBatchRefresh">Refresh</button>
+                    <button id="btnBatchSelectAll">All</button>
+                    <button id="btnBatchSelectNone">None</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row3" style="margin-bottom: 0.75rem;">
+                <div>
+                  <label for="batchHoldoutPct">Holdout %</label>
+                  <input id="batchHoldoutPct" type="number" min="0" max="50" step="1" value="15" />
+                </div>
+                <div>
+                  <label for="batchHoldoutTag">Holdout tag</label>
+                  <input id="batchHoldoutTag" type="text" value="holdout" />
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                  <label>&nbsp;</label>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input id="batchAutoMeta" type="checkbox" checked />
+                    <label for="batchAutoMeta" style="margin: 0;">Auto-run meta after batch</label>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input id="batchSkipDone" type="checkbox" checked />
+                    <label for="batchSkipDone" style="margin: 0;">Skip completed (same batch tag)</label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="muted" style="margin-top: -0.25rem; margin-bottom: 0.55rem; font-size: 0.8rem;">
+                Tip: Cache datasets via Polygon first. Batch runs are saved to <span class="mono">runs/</span> and can be filtered by tags.
+              </div>
+
+              <input id="batchSelected" type="hidden" value="[]" />
+              <div id="batchDatasets" class="list" style="max-height: 260px; overflow: auto; margin-bottom: 0.55rem;"></div>
+              <div class="muted" style="margin-top: 0.25rem; font-size: 0.8rem;" id="batchMeta">—</div>
+
+              <div class="actions" style="margin-top: 0.5rem;">
+                <button id="btnBatchRetryFailed" disabled>Retry failed</button>
+                <button id="btnBatchRevealSummary" disabled>Reveal summary</button>
+              </div>
+
+              <details id="batchRawWrap" style="margin-top: 0.6rem;">
+                <summary class="muted">Batch summary JSON</summary>
+                <pre class="mono" id="batchOutput" style="white-space: pre-wrap; max-height: 360px; overflow: auto; border: 1px solid var(--border); padding: 0.75rem; border-radius: 10px;">-</pre>
+              </details>
+            </details>
+
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="metaStrategyKind">Strategy</label>
+                <select id="metaStrategyKind">
+                  <option value="CompositeCpu">Composite [CPU]</option>
+                  <option value="CompositeMo" selected>Composite [CPU + MO]</option>
+                  <option value="DoubleMa">Double MA (requires validation artifacts)</option>
+                </select>
+              </div>
+              <div>
+                <label for="metaTimeframe">Timeframe filter (optional)</label>
+                <input id="metaTimeframe" type="text" placeholder="1m" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button class="primary" id="btnRunMeta">Run meta analysis</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="metaRequiredTag">Required tag (optional)</label>
+                <input id="metaRequiredTag" type="text" placeholder="e.g. 1m, forex, top50" />
+              </div>
+              <div>
+                <label for="metaMinSamples">Min samples</label>
+                <input id="metaMinSamples" type="number" min="1" step="1" value="30" />
+              </div>
+              <div>
+                <label for="metaTopK">Top K</label>
+                <input id="metaTopK" type="number" min="1" step="1" value="25" />
+              </div>
+            </div>
+
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="metaHoldoutTag">Holdout tag (optional)</label>
+                <input id="metaHoldoutTag" type="text" value="holdout" placeholder="holdout" />
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                <label>Holdout evaluation</label>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <input id="metaEvalHoldout" type="checkbox" checked />
+                  <label for="metaEvalHoldout" style="margin: 0;">Evaluate holdout (recommended)</label>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <label for="metaHoldoutMode" style="margin: 0;">Mode</label>
+                  <select id="metaHoldoutMode">
+                    <option value="light" selected>Light (fast)</option>
+                    <option value="heavy">Heavy (walk-forward + optional perturb/MC)</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label for="metaHoldoutReps">Holdout reps/cluster</label>
+                <select id="metaHoldoutReps">
+                  <option value="1">1 (fastest)</option>
+                  <option value="2" selected>2 (recommended)</option>
+                  <option value="3">3 (more robust)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="muted" style="font-size: 0.8rem; margin-top: -0.35rem; margin-bottom: 0.75rem;" id="metaHoldoutNote">
+              Holdout runs (tagged <span class="mono">holdout</span>) are excluded only when holdout evaluation is enabled.
+            </div>
+
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="metaGroupingMode">Grouping</label>
+                <select id="metaGroupingMode">
+                  <option value="clustered" selected>Clustered (recommended)</option>
+                  <option value="exact">Exact (strict)</option>
+                </select>
+              </div>
+              <div>
+                <label for="metaClusterIntBucket">Int bucket</label>
+                <input id="metaClusterIntBucket" type="number" min="1" step="1" value="5" />
+              </div>
+              <div>
+                <label for="metaClusterFloatBucket">Float bucket</label>
+                <input id="metaClusterFloatBucket" type="number" min="0" step="0.01" value="0.25" />
+              </div>
+            </div>
+
+            <div class="actions" style="margin-top: 0;">
+              <button id="btnOpenMetaReport" disabled>Open meta report (XLSX)</button>
+              <button id="btnRevealMetaFiles" disabled>Reveal files</button>
+            </div>
+
+            <hr style="border: none; border-top: 1px solid var(--border); margin: 0.9rem 0;" />
+
+            <h3 style="margin: 0 0 0.4rem 0;">Saved meta analyses (disk)</h3>
+            <div class="muted" style="font-size: 0.85rem; margin-bottom: 0.6rem;">
+              Meta runs are saved to app data under <span class="mono">runs/</span> for reproducibility and compare.
+            </div>
+            <div class="row" style="margin-top: 0.35rem;">
+              <div>
+                <label for="metaSavedSearch">Search</label>
+                <input id="metaSavedSearch" type="text" placeholder="ts, strategy, timeframe, tag..." />
+              </div>
+              <div>
+                <label for="metaSavedSelect">Saved meta</label>
+                <select id="metaSavedSelect"></select>
+              </div>
+            </div>
+            <div class="row" style="margin-top: 0.35rem;">
+              <div>
+                <label for="metaSavedTags">Tags (comma-separated)</label>
+                <div class="rowAuto">
+                  <input id="metaSavedTags" type="text" placeholder="holdout,1m,fx,final" />
+                  <button id="btnSaveMetaSavedTags">Save</button>
+                </div>
+              </div>
+              <div></div>
+            </div>
+            <div class="row" style="margin-top: 0.35rem;">
+              <div>
+                <label>&nbsp;</label>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnRefreshMetaSaved">Refresh</button>
+                  <button id="btnLoadMetaSaved">Load</button>
+                  <button id="btnOpenMetaSavedReport">Open report</button>
+                  <button id="btnRevealMetaSaved">Reveal file</button>
+                  <button id="btnDeleteMetaSaved">Delete</button>
+                </div>
+              </div>
+            </div>
+            <div class="muted" style="margin-top: 0.4rem; font-size: 0.8rem;" id="metaSavedMeta">—</div>
+
+            <h3 style="margin: 0.9rem 0 0.4rem 0;">Compare meta</h3>
+            <div class="row" style="margin-top: 0.35rem;">
+              <div>
+                <label for="metaCompareSelect">Baseline meta</label>
+                <select id="metaCompareSelect"></select>
+              </div>
+            </div>
+            <div class="mono" id="metaCompareSummary" style="white-space: pre-wrap;">-</div>
+
+            <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;" id="metaMeta">—</div>
+
+            <div class="table-wrap" style="margin-top: 0.75rem;">
+              <table id="metaTable">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Samples</th>
+                    <th>Pass</th>
+                    <th>Meta</th>
+                    <th>Robust p10</th>
+                    <th>Robust med</th>
+                    <th>DD p90</th>
+                    <th>H pass</th>
+                    <th>H p10</th>
+                    <th>H med</th>
+                    <th>H DD p90</th>
+                    <th class="left">Fast</th>
+                    <th class="left">Slow</th>
+                    <th class="left">Params</th>
+                  </tr>
+                </thead>
+                <tbody id="metaTableBody"></tbody>
+              </table>
+            </div>
+
+            <pre class="mono" id="metaOutput" style="margin-top: 0.75rem;">-</pre>
           </div>
 
           <div class="tabPanel" data-tab-panel="debug">
@@ -606,19 +1507,36 @@
 
           <hr style="border: none; border-top: 1px solid var(--border); margin: 0.9rem 0;" />
 
-          <div class="row">
+          <div class="row3">
             <div>
               <label for="polygonMarket">Market</label>
               <select id="polygonMarket">
-                <option value="stocks" selected>Stocks (adjusted)</option>
+                <option value="stocks" selected>Stocks</option>
                 <option value="crypto">Crypto</option>
                 <option value="fx">Forex</option>
               </select>
+              <div id="polygonStocksAdjustedWrap" style="margin-top: 0.35rem;">
+                <label style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                  <input id="polygonStocksAdjusted" type="checkbox" checked />
+                  Adjusted (stocks only)
+                </label>
+              </div>
             </div>
             <div>
               <label for="polygonSymbol">Symbol</label>
               <input id="polygonSymbol" type="text" placeholder="AAPL or btc/usd or eur/usd" list="polygonCachedSymbols" />
               <datalist id="polygonCachedSymbols"></datalist>
+            </div>
+            <div>
+              <label for="polygonTimeframe">Timeframe</label>
+              <select id="polygonTimeframe">
+                <option value="1m" selected>1m</option>
+                <option value="2m">2m</option>
+                <option value="3m">3m</option>
+                <option value="15m">15m</option>
+                <option value="30m">30m</option>
+                <option value="2h">2h</option>
+              </select>
             </div>
           </div>
 
@@ -634,7 +1552,7 @@
             <div>
               <label>&nbsp;</label>
               <div class="actions" style="margin-top: 0;">
-                <button class="primary" id="btnPolygonDownloadLoad">Download & Load (1m)</button>
+                <button class="primary" id="btnPolygonDownloadLoad">Download & Load</button>
               </div>
             </div>
           </div>

@@ -1,15 +1,19 @@
 pub mod commands;
 pub mod data_cache;
+pub mod distributed;
 pub mod ma_registry;
 pub mod polygon;
 pub mod state;
 
 use commands::*;
+use distributed::*;
+use distributed::DistributedState;
 use state::AppState;
 
 pub fn run_tauri() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .manage(DistributedState::default())
         .setup(|app| {
             let window_cfg = app.config().app.windows.get(0).cloned().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "missing window config")
@@ -31,15 +35,44 @@ pub fn run_tauri() {
             polygon_get_cache_info,
             polygon_set_api_key,
             polygon_clear_api_key,
+            polygon_validate_dataset,
+            polygon_repair_dataset,
             polygon_download_1m_and_load,
             pick_csv_file,
             pick_save_csv,
             run_double_ma_optimization,
             run_composite_cpu_optimization,
+            run_composite_mo_optimization,
+            run_composite_validation,
+            distributed_start_worker_server,
+            distributed_stop_worker_server,
+            distributed_worker_server_status,
+            distributed_run_double_ma_assets,
+            distributed_run_double_ma_tiled,
+            build_report_xlsx,
+            build_validation_shortlist_csv,
+            save_report_xlsx,
+            open_reports_dir,
+            open_runs_dir,
+            reveal_path,
+            open_path,
+            run_meta_selection,
+            save_run_artifact,
+            save_batch_summary,
+            list_run_artifacts,
+            list_meta_artifacts,
+            update_artifact_tags,
+            load_run_artifact,
+            delete_run_artifact,
             compute_double_ma_drilldown,
             compute_composite_cpu_drilldown,
-            cancel_double_ma_optimization,
-            list_moving_averages
+            compute_double_ma_local_stability,
+             compute_composite_cpu_local_stability,
+             cancel_current_run,
+             cancel_double_ma_optimization,
+             list_moving_averages,
+            get_gpu_status,
+            list_cuda_devices
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

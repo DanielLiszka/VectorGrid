@@ -131,22 +131,84 @@ function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
 let MA_LIST = [];
 let MA_BY_ID = {};
 let RUNNING = false;
+let RUNNING_COUNT = 0;
 let MA_PARAMS_STATE = { fast: {}, slow: {} };
+let NEXT_RUN_TAGS = null;
+let BATCH_RUNNING = false;
+let BATCH_STOP_REQUESTED = false;
+let BATCH_DATASETS_CACHE = [];
+let LAST_BATCH_SUMMARY = null;
+let LAST_GPU_STATUS = null;
+let LAST_GPU_STATUS_AT_MS = 0;
+let LAST_CUDA_DEVICES = null;
+let LAST_CUDA_DEVICES_AT_MS = 0;
+let CUDA_DEVICES_INFLIGHT = null;
 
 const SETTINGS_KEY = "vectorbt_settings_v1";
 const HISTORY_KEY = "vectorbt_history_v1";
 const RECENT_CSV_KEY = "vectorbt_recent_csv_v1";
 const RECENT_CSV_MAX = 12;
+const LAST_BATCH_SUMMARY_KEY = "vectorbt_last_batch_summary_path_v1";
 
 let CURRENT_RUN = null; // { ts, req, res }
+let CURRENT_VALIDATION = null; // { ts, req, res }
+let SAVED_RUNS = []; // disk-backed run artifacts
+let SAVED_META = []; // disk-backed meta artifacts
+let LAST_META_RUN = null; // last meta selection response (paths + result)
 let TOP_ROWS = [];
 let TOP_ROWS_FILTERED = [];
 let TOP_SORT = { key: "rank", dir: "asc" };
 let HEATMAP_META_BASE = "";
 let DRILL_SEQ = 0;
 let DRILL_SELECTED_KEY = "";
+let STABILITY_SEQ = 0;
+let STABILITY_CACHE = new Map();
 let PARETO_POINTS_RENDERED = [];
 let CURRENT_DATA_META = null;
+let CURRENT_DATASET_CTX = null;
+var COMPARE_SEQ = 0;
+var COMPARE_BASELINE_CACHE = {};
+var META_COMPARE_SEQ = 0;
+var META_BASELINE_CACHE = {};
+
+function fileBasename(path) {
+  const s = String(path || "");
+  if (!s) return "";
+  const parts = s.split(/[\\/]/g).filter((p) => !!p);
+  return parts.length ? parts[parts.length - 1] : s;
+}
+
+function buildDatasetMetaForArtifact(csvPath) {
+  const path = String(csvPath || "").trim();
+  if (!path) return null;
+
+  const meta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+  const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+
+  const label = String(ctx.label || "").trim() || fileBasename(path) || path;
+  const timeframe = String(ctx.timeframe || meta?.timeframe || "").trim() || null;
+  const source = String(ctx.source || "").trim() || null;
+  const market = String(ctx.market || "").trim() || null;
+  const symbol = String(ctx.symbol || "").trim() || null;
+  const adjusted = ctx.adjusted === true ? true : (ctx.adjusted === false ? false : null);
+
+  const len = Number(meta?.len || 0) || null;
+  const min_ts = Number(meta?.min_ts || 0) || null;
+  const max_ts = Number(meta?.max_ts || 0) || null;
+
+  return {
+    label,
+    csv_path: path,
+    timeframe,
+    source,
+    market,
+    symbol,
+    adjusted,
+    len,
+    min_ts,
+    max_ts,
+  };
+}
 
 function setStatus(msg, kind) {
   const el = $("status");
@@ -160,6 +222,196 @@ function pretty(obj) {
   } catch {
     return String(obj);
   }
+}
+
+function fmtFixed(n, digits) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "0";
+  const d = Math.max(0, Math.min(12, Math.floor(Number(digits ?? 3))));
+  return x.toFixed(d);
+}
+
+function formatCompositeParamsCompact(params) {
+  const p = params && typeof params === "object" ? params : {};
+  const ht = p.halftrend && typeof p.halftrend === "object" ? p.halftrend : {};
+  const macz = p.macz && typeof p.macz === "object" ? p.macz : {};
+  const ott = p.ott && typeof p.ott === "object" ? p.ott : {};
+  const parts = [];
+  if (ht && (ht.amplitude != null || ht.atr_period != null || ht.channel_deviation != null)) {
+    parts.push(`HT(amp=${Number(ht.amplitude || 0)},atr=${Number(ht.atr_period || 0)},dev=${fmtFixed(ht.channel_deviation || 0, 2)})`);
+  }
+  if (macz && (macz.fast_length != null || macz.slow_length != null || macz.signal_length != null)) {
+    parts.push(`MACZ(${Number(macz.fast_length || 0)}/${Number(macz.slow_length || 0)}/${Number(macz.signal_length || 0)})`);
+  }
+  if (ott && (ott.period != null || ott.percent != null || ott.ma_type != null)) {
+    parts.push(`OTT(p=${Number(ott.period || 0)},pct=${fmtFixed(ott.percent || 0, 2)}${ott.ma_type ? `,${String(ott.ma_type || "").toUpperCase()}` : ""})`);
+  }
+  return parts.join(" ");
+}
+
+function renderMetaSelection(resp) {
+  const outEl = $("metaOutput");
+  const metaEl = $("metaMeta");
+  const body = $("metaTableBody");
+
+  const result = resp?.result || null;
+  const groups = Array.isArray(result?.groups) ? result.groups : [];
+  const holdoutDatasets = Number(result?.holdout?.datasets || 0);
+  const holdoutSkipped = Number(result?.holdout?.skipped || 0);
+
+  if (outEl) outEl.textContent = result ? pretty(result) : "-";
+
+  if (metaEl) {
+    const warn = Array.isArray(result?.warnings) && result.warnings.length ? ` · warn=${result.warnings.length}` : "";
+    const holdout = holdoutDatasets ? ` · holdout=${holdoutDatasets}${holdoutSkipped ? ` (skipped ${holdoutSkipped})` : ""}` : "";
+    metaEl.textContent = result
+      ? `groups=${groups.length} · artifacts=${Number(result.artifacts_used || 0)}/${Number(result.artifacts_considered || 0)} · candidates=${Number(result.candidates_considered || 0)} · runtime=${Number(result.runtime_ms || 0)}ms${holdout}${warn}`
+      : "—";
+  }
+
+  if (body) {
+    body.innerHTML = "";
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i] || {};
+      const p = g.params && typeof g.params === "object" ? g.params : {};
+      const fast = `${String(p.fast_ma_type || "").toUpperCase()} ${Number(p.fast_len || 0)}`.trim();
+      const slow = `${String(p.slow_ma_type || "").toUpperCase()} ${Number(p.slow_len || 0)}`.trim();
+      const paramsCompact = formatCompositeParamsCompact(p);
+      const h = g.holdout && typeof g.holdout === "object" ? g.holdout : null;
+
+      const tr = document.createElement("tr");
+      const cells = [
+        String(i + 1),
+        String(Number(g.samples || 0)),
+        fmtFixed(Number(g.pass_rate || 0) * 100, 1) + "%",
+        fmtFixed(g.meta_score || 0, 6),
+        fmtFixed(g.robust_score_p10 || 0, 6),
+        fmtFixed(g.robust_score_median || 0, 6),
+        fmtFixed(g.max_dd_p90 || 0, 6),
+        h ? (fmtFixed(Number(h.pass_rate || 0) * 100, 1) + "%") : "-",
+        h ? fmtFixed(h.score_p10 || 0, 6) : "-",
+        h ? fmtFixed(h.score_median || 0, 6) : "-",
+        h ? fmtFixed(h.max_dd_p90 || 0, 6) : "-",
+        fast,
+        slow,
+        paramsCompact || JSON.stringify(p || {}),
+      ];
+      for (let c = 0; c < cells.length; c++) {
+        const td = document.createElement("td");
+        td.textContent = cells[c];
+        if (c === 11 || c === 12 || c === 13) td.className = "left";
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+  }
+
+  const reportBtn = $("btnOpenMetaReport");
+  const revealBtn = $("btnRevealMetaFiles");
+  const reportPath = String(resp?.report_xlsx_path || "").trim();
+  const metaPath = String(resp?.meta_json_path || "").trim();
+  if (reportBtn) reportBtn.disabled = RUNNING || !reportPath;
+  if (revealBtn) revealBtn.disabled = RUNNING || (!reportPath && !metaPath);
+}
+
+async function runMetaSelection(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  if (RUNNING && !opts?.allowWhileRunning) return;
+
+  const strategy_kind = String($("metaStrategyKind")?.value || "CompositeMo").trim() || "CompositeMo";
+  const isComposite = strategy_kind === "CompositeCpu" || strategy_kind === "CompositeMo";
+  const timeframeRaw = String($("metaTimeframe")?.value || "").trim();
+  const requiredTagRaw = String($("metaRequiredTag")?.value || "").trim();
+  const min_samples = Math.max(1, Math.floor(Number($("metaMinSamples")?.value || 30)));
+  const top_k = Math.max(1, Math.floor(Number($("metaTopK")?.value || 25)));
+  const holdoutTagRaw = String($("metaHoldoutTag")?.value || "").trim();
+  const eval_holdout = isComposite && !!$("metaEvalHoldout")?.checked;
+  const holdoutModeRaw = String($("metaHoldoutMode")?.value || "light").trim() || "light";
+  const holdout_mode = eval_holdout ? holdoutModeRaw : "light";
+  const repsRaw = Math.floor(Number($("metaHoldoutReps")?.value || 2));
+  const cluster_representatives = Math.min(3, Math.max(1, Number.isFinite(repsRaw) ? repsRaw : 2));
+  const grouping_mode = String($("metaGroupingMode")?.value || "clustered").trim() || "clustered";
+  const int_bucket = Math.max(1, Math.floor(Number($("metaClusterIntBucket")?.value || 5)));
+  const floatBucketRaw = Number($("metaClusterFloatBucket")?.value || 0.25);
+  const float_bucket = Number.isFinite(floatBucketRaw) ? Math.max(0, floatBucketRaw) : 0.25;
+
+  const holdout_validation = (eval_holdout && holdout_mode === "heavy")
+    ? (() => {
+      // Heavy holdout: always run walk-forward; perturb/MC follow Validation toggles.
+      const seed = Math.max(0, Math.floor(num($("valSeed")?.value, 1)));
+      const walk_forward = {
+        window_bars: Math.max(64, Math.floor(num($("valWfWindow")?.value, 20000))),
+        step_bars: Math.max(1, Math.floor(num($("valWfStep")?.value, 20000))),
+      };
+      const perturb = $("valPerturbEnable")?.checked
+        ? {
+          iterations: Math.max(0, Math.floor(num($("valPerturbIters")?.value, 8))),
+          pct_min: Math.max(0, num($("valPerturbMin")?.value, 0.015)),
+          pct_max: Math.max(0, num($("valPerturbMax")?.value, 0.06)),
+          flip_bool_prob: 0.02,
+        }
+        : null;
+      const trade_bootstrap = $("valMcEnable")?.checked
+        ? { simulations: Math.max(0, Math.floor(num($("valMcSims")?.value, 500))) }
+        : null;
+      return { seed, walk_forward, perturb, trade_bootstrap };
+    })()
+    : null;
+
+  const req = {
+    strategy_kind,
+    timeframe: timeframeRaw ? timeframeRaw : null,
+    required_tag: requiredTagRaw ? requiredTagRaw : null,
+    holdout_tag: eval_holdout && holdoutTagRaw ? holdoutTagRaw : null,
+    eval_holdout,
+    holdout_mode,
+    holdout_validation,
+    grouping_mode,
+    cluster_config: { int_bucket, float_bucket },
+    cluster_representatives,
+    min_samples,
+    top_k,
+    strict_shortlist: true,
+  };
+
+  const wasRunning = RUNNING;
+  setRunning(true);
+  clearProgressUi();
+  setProgressUi(0, 1, "meta_read", "");
+  setStatus("Running meta analysis...", "muted");
+  try {
+    const resp = await invoke("run_meta_selection", { req });
+    LAST_META_RUN = resp;
+    renderMetaSelection(resp);
+    await refreshMetaSaved(String(resp?.meta_json_path || "").trim());
+    const path = String(resp?.report_xlsx_path || "").trim();
+    setStatus(path ? `Meta complete. Saved report: ${path}` : "Meta complete.", "ok");
+    if (opts?.switchTab !== false) {
+      RESULTS_TABS?.set("meta", { save: true, focus: false });
+    }
+  } finally {
+    if (!wasRunning) clearProgressUi();
+    setRunning(false);
+  }
+}
+
+function isCancelledError(err) {
+  const s = String(err || "").toLowerCase();
+  return s.includes("cancelled") || s.includes("canceled");
+}
+
+function updateValidationExportButtons() {
+  const hasRun = !!CURRENT_RUN?.res;
+  const hasVal = !!CURRENT_VALIDATION?.res;
+  const btnCsv = $("btnExportValidationCsv");
+  const btnJson = $("btnExportValidationJson");
+  const btnReport = $("btnExportReportJson");
+  const btnXlsx = $("btnExportReportXlsx");
+  if (btnCsv) btnCsv.disabled = RUNNING || !hasVal;
+  if (btnJson) btnJson.disabled = RUNNING || !hasVal;
+  if (btnReport) btnReport.disabled = RUNNING || !hasRun;
+  if (btnXlsx) btnXlsx.disabled = RUNNING || !hasVal;
 }
 
 function maParamSchema(maId) {
@@ -384,6 +636,42 @@ function renderDataMeta(meta) {
   const lenEl = $("dataLen");
   if (lenEl) lenEl.textContent = meta && Number.isFinite(Number(meta.len)) ? String(meta.len) : "—";
 
+  const labelEl = $("datasetLabel");
+  const rangeEl = $("datasetRange");
+  const ctxEl = $("datasetContext");
+  if (labelEl || rangeEl || ctxEl) {
+    const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+    const csvPath = String($("csvPath")?.value || "").trim();
+    const label = String(ctx.label || "").trim() || fileBasename(csvPath) || "—";
+    const timeframe = String(ctx.timeframe || meta?.timeframe || "").trim();
+    const minTs = meta ? fmtYmdUtc(meta.min_ts) : "—";
+    const maxTs = meta ? fmtYmdUtc(meta.max_ts) : "—";
+
+    if (labelEl) labelEl.textContent = label || "—";
+    if (rangeEl) {
+      const parts = [];
+      if (timeframe) parts.push(timeframe);
+      if (minTs !== "—" || maxTs !== "—") parts.push(`${minTs} → ${maxTs}`);
+      rangeEl.textContent = parts.length ? parts.join(" • ") : "—";
+    }
+    if (ctxEl) {
+      const parts = [];
+      const source = String(ctx.source || "").trim();
+      if (source) parts.push(`source=${source}`);
+
+      const market = String(ctx.market || "").trim();
+      const symbol = String(ctx.symbol || "").trim();
+      const adjusted = ctx.adjusted === true ? true : (ctx.adjusted === false ? false : null);
+      if (market) {
+        const m = market === "stocks" && adjusted != null ? `${market} (${adjusted ? "adj" : "raw"})` : market;
+        parts.push(`market=${m}`);
+      }
+      if (symbol) parts.push(`symbol=${symbol}`);
+      if (csvPath) parts.push(`file=${fileBasename(csvPath)}`);
+      ctxEl.textContent = parts.length ? parts.join(" • ") : "—";
+    }
+  }
+
   const fieldsEl = $("dataFields");
   const hintEl = $("dataFieldHint");
   if (!fieldsEl) return;
@@ -461,12 +749,42 @@ function downloadText(filename, text, mime) {
   setTimeout(() => URL.revokeObjectURL(url), 2500);
 }
 
+function downloadBase64(filename, b64, mime) {
+  const raw = atob(String(b64 || ""));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mime || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2500);
+}
+
+async function requestCancelCurrentRun() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    await invoke("cancel_current_run");
+  } catch {
+    // Back-compat: older backend command name.
+    await invoke("cancel_double_ma_optimization");
+  }
+}
+
 function setRunning(running) {
-  RUNNING = !!running;
+  if (running) RUNNING_COUNT += 1;
+  else RUNNING_COUNT = Math.max(0, RUNNING_COUNT - 1);
+  RUNNING = RUNNING_COUNT > 0;
   const btnRun = $("btnRun");
   const btnCancel = $("btnCancel");
+  const btnDistCancel = $("btnDistCancel");
   if (btnRun) btnRun.disabled = RUNNING;
   if (btnCancel) btnCancel.disabled = !RUNNING;
+  if (btnDistCancel) btnDistCancel.disabled = !RUNNING;
 
   const ids = [
     "csvPath",
@@ -478,14 +796,20 @@ function setRunning(running) {
     "btnPolygonSaveKey",
     "btnPolygonClearKey",
     "polygonMarket",
+    "polygonStocksAdjusted",
     "polygonSymbol",
+    "polygonTimeframe",
     "polygonFrom",
     "polygonTo",
     "btnPolygonDownloadLoad",
     "strategyKind",
+    "presetProfile",
+    "btnApplyPreset",
     "backend",
     "deviceId",
     "btnPresetKernelSmaAlma",
+    "btnRefreshGpuStatus",
+    "btnGpuParityCheck",
     "fastStart",
     "fastEnd",
     "fastStep",
@@ -523,6 +847,133 @@ function setRunning(running) {
     "ottPeriod",
     "ottPercent",
     "ottMaType",
+    "moObjectiveMin",
+    "moSampler",
+    "moNsga2Seed",
+    "moNsga2Population",
+    "moNsga2Generations",
+    "moNsga2CrossoverProb",
+    "moNsga2SwappingProb",
+    "moNsga2MutationProb",
+    "moRandomSeed",
+    "moRandomTrials",
+    "moTpeSeed",
+    "moTpeTrials",
+    "moTpeStartupTrials",
+    "moTpeCandidates",
+    "moTpeGamma",
+    "moTpeBatchSize",
+    "moTpeMaxModelPoints",
+    "moQmcSeed",
+    "moQmcTrials",
+    "moQmcSequence",
+    "moConstraintMinTrades",
+    "moConstraintMaxDd",
+    "moConstraintMaxAbsExposure",
+    "moPrescanEnable",
+    "moPrescanRequireGpu",
+    "moPrescanTopK",
+    "moPrescanWindow",
+    "moPrescanObjectives",
+    "moPrescanMode",
+    "moPrescanMaPairs",
+    "moSearchSpace",
+    "btnMoResetSearchSpace",
+    "valCandidates",
+    "valSeed",
+    "valAutoRun",
+    "valAutoExportXlsx",
+    "valAutoRevealReport",
+    "valAutoExportTopN",
+    "valWfEnable",
+    "valWfWindow",
+    "valWfStep",
+    "valPerturbEnable",
+    "valPerturbIters",
+    "valPerturbMin",
+    "valPerturbMax",
+    "valMcEnable",
+    "valMcSims",
+    "valCscvEnable",
+    "valCscvSlices",
+    "valCrossEnable",
+    "valCrossMax",
+    "valCrossSelected",
+    "valCrossSearch",
+    "btnCrossRefresh",
+    "btnCrossSelectAll",
+    "btnCrossSelectNone",
+    "btnCrossSelectMatch",
+    "btnValidate",
+    "btnOpenReportsDir",
+    "btnOpenLatestReport",
+    "btnOpenLatestMetaReport",
+    "savedRunsSearch",
+    "savedRunsSelect",
+    "savedRunsTags",
+    "btnSaveSavedRunTags",
+    "btnRefreshSavedRuns",
+    "btnLoadSavedRun",
+    "btnApplySavedRun",
+    "btnRerunSavedRun",
+    "btnOpenSavedRunReport",
+    "btnRevealSavedRun",
+    "btnDeleteSavedRun",
+    "btnOpenRunsDir",
+    "metaStrategyKind",
+    "metaTimeframe",
+    "metaRequiredTag",
+    "metaMinSamples",
+    "metaTopK",
+    "metaHoldoutTag",
+    "metaEvalHoldout",
+    "metaHoldoutMode",
+    "metaHoldoutReps",
+    "metaGroupingMode",
+    "metaClusterIntBucket",
+    "metaClusterFloatBucket",
+    "btnRunMeta",
+    "btnOpenMetaReport",
+    "btnRevealMetaFiles",
+    "metaSavedSearch",
+    "metaSavedSelect",
+    "metaSavedTags",
+    "btnSaveMetaSavedTags",
+    "btnRefreshMetaSaved",
+    "btnLoadMetaSaved",
+    "btnOpenMetaSavedReport",
+    "btnRevealMetaSaved",
+    "btnDeleteMetaSaved",
+    "metaCompareSelect",
+    "batchDatasetSearch",
+    "batchTags",
+    "batchHoldoutPct",
+    "batchHoldoutTag",
+    "batchSkipDone",
+    "btnRunBatch",
+    "btnBatchRefresh",
+    "btnBatchSelectAll",
+    "btnBatchSelectNone",
+    "btnBatchRetryFailed",
+    "btnBatchRevealSummary",
+    "distWorkerBindAddr",
+    "distWorkerToken",
+    "btnDistGenToken",
+    "btnDistStartWorker",
+    "btnDistStopWorker",
+    "btnDistWorkerStatus",
+    "distLeaderToken",
+    "distLeaderWorkers",
+    "distLeaderMode",
+    "distAssetsCsvs",
+    "distPathFrom",
+    "distPathTo",
+    "btnDistFillFromPolygon",
+    "btnDistRunAssets",
+    "distTileCsvPath",
+    "btnDistUseCurrentCsv",
+    "distTilesPerWorker",
+    "btnDistRunTiles",
   ];
   for (const id of ids) {
     if (id === "btnRun" || id === "btnCancel") continue;
@@ -539,17 +990,27 @@ function setRunning(running) {
   for (const el of document.querySelectorAll("#polygonDatasets button")) {
     el.disabled = RUNNING;
   }
-  if (RUNNING) {
+  for (const el of document.querySelectorAll("#valCrossDatasets input[type=checkbox]")) {
+    el.disabled = RUNNING;
+  }
+  for (const el of document.querySelectorAll("#batchDatasets input[type=checkbox]")) {
+    el.disabled = RUNNING;
+  }
+  if (running) {
     const wrap = $("progressWrap");
     const fill = $("progressFill");
     if (wrap) wrap.style.display = "block";
     if (fill) fill.style.width = "0%";
     const meta = $("progressMeta");
     if (meta) meta.textContent = "";
-  } else {
+  } else if (!RUNNING) {
     clearProgressUi();
   }
   updateStrategyUi();
+  updateValidationExportButtons();
+  syncSavedRunSelectionUi();
+  syncMetaSavedSelectionUi();
+  syncBatchSummaryButtons();
 }
 
 function maSupportsKernel(id) {
@@ -658,15 +1119,26 @@ async function initMaSelects() {
     slowSel.value = isOk(prevSlow) ? prevSlow : defaultId;
     applyBackendMaConstraints();
     refreshMaParamsUi();
+    refreshGpuStatusUi();
 
-    fastSel.addEventListener("change", refreshMaParamsUi);
-    slowSel.addEventListener("change", refreshMaParamsUi);
+    fastSel.addEventListener("change", () => {
+      refreshMaParamsUi();
+      refreshGpuStatusUi();
+      saveSettingsSoon();
+    });
+    slowSel.addEventListener("change", () => {
+      refreshMaParamsUi();
+      refreshGpuStatusUi();
+      saveSettingsSoon();
+    });
   } catch (e) {
     setStatus(`Failed to load MA list: ${String(e)}`, "danger");
   }
 }
 
 function clearProgressUi() {
+  PROGRESS_ETA_BY_PHASE = {};
+  PROGRESS_EVENT_SEQ = 0;
   const wrap = $("progressWrap");
   const fill = $("progressFill");
   const meta = $("progressMeta");
@@ -675,7 +1147,156 @@ function clearProgressUi() {
   if (wrap) wrap.style.display = "none";
 }
 
-function setProgressUi(processed, total, phase) {
+const PHASE_LABELS = {
+  "cpu": "CPU",
+  "gpu-sweep": "GPU sweep",
+  "gpu-kernel": "GPU kernel",
+  "parity_cpu": "Parity (CPU)",
+  "parity_gpu_sweep": "Parity (GPU sweep)",
+  "parity_gpu_kernel": "Parity (GPU kernel)",
+  "composite_cpu": "Composite (CPU)",
+  "composite_validate": "Validation",
+  "composite_validate_cross": "Validation (cross-ticker)",
+  "composite_validate_cscv_prep": "Validation (CSCV prep)",
+  "composite_validate_cscv": "Validation (CSCV/PBO)",
+  "composite_mo_prep": "Composite MO (prep)",
+  "composite_mo_nsga2": "Composite MO (NSGA-II)",
+  "composite_mo_random": "Composite MO (Random)",
+  "composite_mo_tpe": "Composite MO (TPE)",
+  "composite_mo_qmc": "Composite MO (QMC)",
+  "meta_read": "Meta (read artifacts)",
+  "meta_scan": "Meta (scan candidates)",
+  "meta_aggregate": "Meta (aggregate)",
+  "meta_holdout": "Meta (holdout)",
+  "meta_export": "Meta (export XLSX)",
+  "meta_save": "Meta (save JSON)",
+  "export_xlsx": "XLSX report",
+  "reveal_report": "Reveal report",
+};
+
+const PHASE_GROUP_LABELS = {
+  optimize: "Optimize",
+  validate: "Validate",
+  meta: "Meta",
+  export: "Export",
+  reveal: "Reveal",
+};
+
+var PROGRESS_ETA_BY_PHASE = {};
+var PROGRESS_EVENT_SEQ = 0;
+
+function phaseGroup(phase) {
+  const ph = String(phase || "").trim();
+  if (!ph) return "";
+  if (ph.startsWith("meta_")) return "meta";
+  if (ph === "export_xlsx" || ph.startsWith("export_")) return "export";
+  if (ph === "reveal_report" || ph.startsWith("reveal_")) return "reveal";
+  if (ph.startsWith("composite_validate")) return "validate";
+  if (ph.startsWith("composite_")) return "optimize";
+  if (ph === "cpu" || ph.startsWith("gpu")) return "optimize";
+  return "";
+}
+
+function phaseDisplay(phase) {
+  const ph = String(phase || "").trim();
+  const detail = PHASE_LABELS[ph] || ph || "Working";
+  const group = phaseGroup(ph);
+  const groupLabel = PHASE_GROUP_LABELS[group] || "";
+  if (!groupLabel) return { group, groupLabel: "", detailLabel: detail, label: detail };
+  const label = detail && detail !== groupLabel ? `${groupLabel} · ${detail}` : groupLabel;
+  return { group, groupLabel, detailLabel: detail, label };
+}
+
+function phaseLabel(phase) {
+  return phaseDisplay(phase).label;
+}
+
+function formatDurationSeconds(sec) {
+  const s0 = Math.max(0, Math.floor(Number(sec || 0)));
+  if (!Number.isFinite(s0) || s0 <= 0) return "";
+  const h = Math.floor(s0 / 3600);
+  const m = Math.floor((s0 % 3600) / 60);
+  const s = s0 % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+function formatCompactNumber(n) {
+  const x0 = Number(n);
+  if (!Number.isFinite(x0)) return "";
+  const abs = Math.abs(x0);
+  let x = x0;
+  let suffix = "";
+  if (abs >= 1e9) {
+    x = x0 / 1e9;
+    suffix = "G";
+  } else if (abs >= 1e6) {
+    x = x0 / 1e6;
+    suffix = "M";
+  } else if (abs >= 1e3) {
+    x = x0 / 1e3;
+    suffix = "k";
+  }
+  const ax = Math.abs(x);
+  const digits = ax >= 100 ? 0 : (ax >= 10 ? 1 : 2);
+  const s = x
+    .toFixed(digits)
+    .replace(/\.0+$/, "")
+    .replace(/(\.\d*[1-9])0+$/, "$1");
+  return `${s}${suffix}`;
+}
+
+function formatPerSecond(rate, unit) {
+  const r = Number(rate);
+  if (!Number.isFinite(r) || r <= 0) return "";
+  const c = formatCompactNumber(r);
+  if (!c) return "";
+  return unit ? `${c} ${unit}/s` : `${c}/s`;
+}
+
+function updateProgressStats(phase, processed, total) {
+  const ph = String(phase || "").trim();
+  const proc = Number(processed || 0);
+  const tot = Number(total || 0);
+  if (!ph || !Number.isFinite(proc) || !Number.isFinite(tot) || tot <= 0 || proc <= 0) {
+    return { etaText: "", rateText: "" };
+  }
+
+  const now = performance.now();
+  let st = PROGRESS_ETA_BY_PHASE[ph];
+  if (!st || st.total !== tot || proc < st.lastProcessed) {
+    st = { lastTsMs: now, lastProcessed: proc, emaRate: 0, total: tot };
+    PROGRESS_ETA_BY_PHASE[ph] = st;
+    return { etaText: "", rateText: "" };
+  }
+
+  const dt = (now - st.lastTsMs) / 1000;
+  const dp = proc - st.lastProcessed;
+  if (dt > 0 && dp > 0) {
+    const rate = dp / dt;
+    if (Number.isFinite(rate) && rate > 0) {
+      const alpha = 0.2;
+      st.emaRate = st.emaRate > 0 ? (st.emaRate * (1 - alpha) + rate * alpha) : rate;
+    }
+  }
+
+  st.lastTsMs = now;
+  st.lastProcessed = proc;
+
+  const rateText = formatPerSecond(st.emaRate, "");
+  if (!Number.isFinite(st.emaRate) || st.emaRate <= 0 || proc >= tot) {
+    return { etaText: "", rateText };
+  }
+
+  const remaining = tot - proc;
+  const etaSec = remaining / st.emaRate;
+  if (!Number.isFinite(etaSec) || etaSec <= 0) return { etaText: "", rateText };
+  const pretty = formatDurationSeconds(etaSec);
+  return { etaText: pretty ? `ETA ${pretty}` : "", rateText };
+}
+
+function setProgressUi(processed, total, phase, suffixText) {
   const wrap = $("progressWrap");
   const fill = $("progressFill");
   const meta = $("progressMeta");
@@ -684,6 +1305,7 @@ function setProgressUi(processed, total, phase) {
   const proc = Number(processed || 0);
   const tot = Number(total || 0);
   const ph = String(phase || "").trim();
+  const label = phaseLabel(ph);
 
   wrap.style.display = "block";
 
@@ -695,7 +1317,9 @@ function setProgressUi(processed, total, phase) {
 
   if (meta) {
     const pct = tot > 0 ? ` (${(frac * 100).toFixed(1)}%)` : "";
-    meta.textContent = `${ph} ${proc}/${tot}${pct}`.trim();
+    const suffix = String(suffixText || "").trim();
+    const suffix2 = suffix ? ` · ${suffix}` : "";
+    meta.textContent = `${label} ${proc}/${tot}${pct}${suffix2}`.trim();
   }
 }
 
@@ -704,13 +1328,19 @@ async function initProgressListener() {
   if (!listen) return;
   try {
     await listen("double_ma_progress", (event) => {
+      if (!RUNNING) return;
+      PROGRESS_EVENT_SEQ = (PROGRESS_EVENT_SEQ + 1) >>> 0;
       const p = event?.payload || {};
       const processed = Number(p.processed_pairs || 0);
       const total = Number(p.total_pairs || 0);
       const phase = String(p.phase || "");
       const pct = total > 0 ? ((processed / total) * 100).toFixed(1) : "";
-      setStatus(`${phase} ${processed}/${total}${pct ? ` (${pct}%)` : ""}`, "muted");
-      setProgressUi(processed, total, phase);
+      const info = phaseDisplay(phase);
+      const stats = updateProgressStats(phase, processed, total);
+      const suffix = [stats.rateText, stats.etaText].filter((s) => !!String(s || "").trim()).join(" · ");
+      const suffix2 = suffix ? ` · ${suffix}` : "";
+      setStatus(`${info.label} ${processed}/${total}${pct ? ` (${pct}%)` : ""}${suffix2}`, "muted");
+      setProgressUi(processed, total, phase, suffix);
     });
   } catch {
     // no-op (events are optional for this demo)
@@ -782,6 +1412,15 @@ function ensurePolygonDateDefaults() {
     d.setDate(d.getDate() - 365);
     fromEl.value = ymdLocal(d);
   }
+}
+
+function updatePolygonAdjustedUi() {
+  const market = String($("polygonMarket")?.value || "stocks").trim();
+  const wrap = $("polygonStocksAdjustedWrap");
+  const cb = $("polygonStocksAdjusted");
+  const isStocks = market === "stocks";
+  if (wrap) wrap.style.display = isStocks ? "block" : "none";
+  if (cb) cb.disabled = RUNNING || !isStocks;
 }
 
 function openPolygonModal() {
@@ -868,8 +1507,30 @@ async function initPolygonUi() {
         const path = String(ds?.csv_path || "").trim();
         const title = String(ds?.display_symbol || ds?.polygon_ticker || "").trim();
         const market = String(ds?.market || "").trim();
+        const tfLabel = String(ds?.timeframe || "").trim() || "1m";
         const minTs = fmtYmdUtc(ds?.min_ts);
         const maxTs = fmtYmdUtc(ds?.max_ts);
+        const updated = fmtYmdUtc(ds?.last_updated_utc_ms);
+        const rowsN = Number(ds?.row_count || 0);
+        const rowsHint = rowsN > 0 ? rowsN.toLocaleString() : "—";
+        const adj = market === "stocks" && !!ds?.adjusted;
+        const marketLabel = market ? (market === "stocks" ? (adj ? `${market} (adj)` : `${market} (raw)`) : market) : "market";
+        const integ = ds?.integrity && typeof ds.integrity === "object" ? ds.integrity : null;
+        const checkedMs = integ ? Number(integ.checked_utc_ms || 0) : 0;
+        const checked = checkedMs > 0 ? fmtYmdUtc(checkedMs) : "";
+        const dupN = integ ? Number(integ.duplicates || 0) : 0;
+        const ooN = integ ? Number(integ.out_of_order || 0) : 0;
+        const parseN = integ ? Number(integ.parse_errors || 0) : 0;
+        const gapsN = integ ? Number(integ.same_day_gaps_gt_2min || 0) : 0;
+        const hasIntegrityIssues = (dupN + ooN + parseN + gapsN) > 0;
+        const integrityHint = checked ? (hasIntegrityIssues ? " • issues" : " • ok") : "";
+        const gapsHint = checked && gapsN > 0 ? ` • gaps=${gapsN}` : "";
+        const stale = (() => {
+          const mx = Number(ds?.max_ts || 0);
+          if (!Number.isFinite(mx) || mx <= 0) return false;
+          const ageMs = Date.now() - mx;
+          return Number.isFinite(ageMs) && ageMs > (3 * 24 * 60 * 60 * 1000);
+        })();
 
         const item = document.createElement("div");
         item.className = "listItem";
@@ -887,7 +1548,9 @@ async function initPolygonUi() {
         const t2 = document.createElement("div");
         t2.className = "muted";
         t2.style.fontSize = "0.8rem";
-        t2.textContent = `${market || "market"} • ${minTs} → ${maxTs}`;
+        const staleHint = stale ? " • stale" : "";
+        const checkedHint = checked ? ` • checked=${checked}` : "";
+        t2.textContent = `${marketLabel} • tf=${tfLabel} • ${minTs} → ${maxTs} • rows=${rowsHint} • updated=${updated}${checkedHint}${integrityHint}${gapsHint}${staleHint}`;
         left.appendChild(t1);
         left.appendChild(t2);
 
@@ -912,6 +1575,124 @@ async function initPolygonUi() {
         });
         actions.appendChild(btnLoad);
 
+        const btnUpdate = document.createElement("button");
+        btnUpdate.textContent = "Update";
+        btnUpdate.disabled = RUNNING;
+        btnUpdate.addEventListener("click", async () => {
+          if (RUNNING) return;
+          const sym = String(ds?.display_symbol || ds?.polygon_ticker || "").trim();
+          if (!sym) return;
+          if ($("polygonMarket")) $("polygonMarket").value = market || "stocks";
+          if ($("polygonStocksAdjusted") && (market || "stocks") === "stocks") $("polygonStocksAdjusted").checked = !!ds?.adjusted;
+          updatePolygonAdjustedUi();
+          if ($("polygonSymbol")) $("polygonSymbol").value = sym;
+          if ($("polygonTimeframe")) $("polygonTimeframe").value = tfLabel;
+          if ($("polygonFrom") && maxTs !== "—") $("polygonFrom").value = maxTs;
+          if ($("polygonTo")) $("polygonTo").value = ymdLocal(new Date());
+          try {
+            setRunning(true);
+            setStatus(`Updating ${sym} (${tfLabel})...`, "muted");
+            const adjFlag = (market || "stocks") === "stocks" ? !!ds?.adjusted : false;
+            const resp = await invoke("polygon_download_1m_and_load", { req: { market: market || "stocks", symbol: sym, from: maxTs !== "—" ? maxTs : ymdLocal(new Date()), to: ymdLocal(new Date()), adjusted: adjFlag, timeframe: tfLabel } });
+
+            const path2 = String(resp?.csv_path || "").trim();
+            if (path2 && $("csvPath")) $("csvPath").value = path2;
+
+            const id = String(resp?.id || "").trim();
+            const meta2 = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
+            CURRENT_DATA_META = meta2;
+            CURRENT_DATASET_CTX = { source: "polygon", label: sym, symbol: sym, market: market || "stocks", adjusted: adjFlag, timeframe: tfLabel };
+            $("dataId").textContent = id || "—";
+            renderDataMeta(meta2);
+            applyMaSourceConstraints();
+            applyBackendMaConstraints();
+
+            const dlBars = Number(resp?.downloaded_bars || 0);
+            const usedCacheOnly = !!resp?.used_cache_only;
+            const msg = usedCacheOnly ? "Dataset up to date (cache)." : `Downloaded ${dlBars} new bar${dlBars === 1 ? "" : "s"} and loaded.`;
+            setStatus(msg, "ok");
+            $("output").textContent = pretty(resp);
+
+            if (path2) addRecentCsvPath(path2);
+            saveSettingsSoon();
+            await initPolygonUi();
+            await initCrossTickerList();
+          } catch (e) {
+            setStatus(String(e), "danger");
+          } finally {
+            setRunning(false);
+          }
+        });
+        actions.appendChild(btnUpdate);
+
+        const btnReveal = document.createElement("button");
+        btnReveal.textContent = "Reveal";
+        btnReveal.disabled = RUNNING || !path;
+        btnReveal.addEventListener("click", async () => {
+          if (RUNNING) return;
+          if (!path) return;
+          try {
+            await invoke("reveal_path", { path });
+            setStatus("Revealed dataset file.", "ok");
+          } catch (e) {
+            setStatus(String(e), "danger");
+          }
+        });
+        actions.appendChild(btnReveal);
+
+        const btnValidate = document.createElement("button");
+        btnValidate.textContent = "Validate";
+        btnValidate.disabled = RUNNING || !path;
+        btnValidate.addEventListener("click", async () => {
+          if (RUNNING) return;
+          if (!path) return;
+          try {
+            setRunning(true);
+            setStatus(`Validating ${title || "dataset"}...`, "muted");
+            const out = await invoke("polygon_validate_dataset", { csvPath: path });
+            const r = out?.integrity && typeof out.integrity === "object" ? out.integrity : null;
+            const dup = Number(r?.duplicates || 0);
+            const oo = Number(r?.out_of_order || 0);
+            const perr = Number(r?.parse_errors || 0);
+            const gaps = Number(r?.same_day_gaps_gt_2min || 0);
+            const issues = (dup + oo + perr + gaps) > 0;
+            const msg = `Validated: dup=${dup} oo=${oo} parse=${perr} gaps=${gaps}`;
+            setStatus(msg, issues ? "danger" : "ok");
+            await initPolygonUi();
+            await initCrossTickerList();
+          } catch (e) {
+            setStatus(String(e), "danger");
+          } finally {
+            setRunning(false);
+          }
+        });
+        actions.appendChild(btnValidate);
+
+        const btnRepair = document.createElement("button");
+        btnRepair.textContent = "Repair";
+        btnRepair.disabled = RUNNING || !path || !checkedMs || !hasIntegrityIssues;
+        btnRepair.addEventListener("click", async () => {
+          if (RUNNING) return;
+          if (!path) return;
+          if (!confirm("Repair this dataset CSV? (rewrites file sorted + deduped; drops malformed rows; may re-fetch missing minutes if gaps are detected and API key is set)")) return;
+          try {
+            setRunning(true);
+            setStatus(`Repairing ${title || "dataset"}...`, "muted");
+            const out = await invoke("polygon_repair_dataset", { csvPath: path });
+            const r = out?.integrity && typeof out.integrity === "object" ? out.integrity : null;
+            const perr = Number(r?.parse_errors || 0);
+            const gaps = Number(r?.same_day_gaps_gt_2min || 0);
+            setStatus(`Repaired: parse_dropped=${perr} gaps=${gaps}`, "ok");
+            await initPolygonUi();
+            await initCrossTickerList();
+          } catch (e) {
+            setStatus(String(e), "danger");
+          } finally {
+            setRunning(false);
+          }
+        });
+        actions.appendChild(btnRepair);
+
         row.appendChild(left);
         row.appendChild(actions);
         item.appendChild(row);
@@ -926,11 +1707,956 @@ async function initPolygonUi() {
   }
 }
 
+function parseJsonArraySafe(text) {
+  try {
+    const v = JSON.parse(String(text || "[]"));
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+function setCrossSelectedPaths(paths) {
+  const el = $("valCrossSelected");
+  if (!el) return;
+  const uniq = [];
+  const seen = new Set();
+  for (const p of Array.isArray(paths) ? paths : []) {
+    const s = String(p || "").trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    uniq.push(s);
+  }
+  try {
+    el.value = JSON.stringify(uniq);
+  } catch {
+    el.value = "[]";
+  }
+}
+
+function getCrossSelectedPaths() {
+  const el = $("valCrossSelected");
+  const raw = el ? String(el.value || "[]") : "[]";
+  const arr = parseJsonArraySafe(raw);
+  const out = [];
+  const seen = new Set();
+  for (const p of arr) {
+    const s = String(p || "").trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+function syncCrossSelectedFromUi() {
+  const paths = [];
+  for (const cb of document.querySelectorAll("#valCrossDatasets input[type=checkbox][data-csv-path]")) {
+    if (!cb || !cb.checked) continue;
+    const p = String(cb.dataset?.csvPath || "").trim();
+    if (!p) continue;
+    paths.push(p);
+  }
+  setCrossSelectedPaths(paths);
+  updateCrossMeta("");
+  updateValidateTabUi();
+}
+
+function getCrossSelectedDatasets() {
+  const out = [];
+  const cbs = [...document.querySelectorAll("#valCrossDatasets input[type=checkbox][data-csv-path]")];
+  if (cbs.length) {
+    for (const cb of cbs) {
+      if (!cb || !cb.checked) continue;
+      const p = String(cb.dataset?.csvPath || "").trim();
+      if (!p) continue;
+      out.push({ csv_path: p, label: String(cb.dataset?.label || "").trim() });
+    }
+    return out;
+  }
+  // Fallback: if the list isn't populated, use the persisted selection (paths only).
+  for (const p of getCrossSelectedPaths()) {
+    out.push({ csv_path: p, label: "" });
+  }
+  return out;
+}
+
+function crossTickerQuery() {
+  return String($("valCrossSearch")?.value || "").trim().toLowerCase();
+}
+
+function crossFilterTokens() {
+  const q = crossTickerQuery();
+  if (!q) return [];
+  return q.split(/[\s,]+/g).map((t) => String(t || "").trim()).filter((t) => !!t);
+}
+
+function updateCrossMeta(extra) {
+  const meta = $("valCrossMeta");
+  if (!meta) return;
+
+  const items = [...document.querySelectorAll("#valCrossDatasets .listItem")];
+  const total = items.length;
+  const visible = items.filter((it) => it && it.style.display !== "none").length;
+  const selected = getCrossSelectedPaths().length;
+
+  const parts = [];
+  parts.push(`selected ${selected}/${total}${visible !== total ? ` (showing ${visible})` : ""}`);
+  const x = String(extra || "").trim();
+  if (x) parts.push(x);
+  meta.textContent = parts.join(" • ");
+
+  const btnMatch = $("btnCrossSelectMatch");
+  if (btnMatch) {
+    const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+    const market = String(ctx.market || "").trim();
+    const tf = String(ctx.timeframe || "").trim();
+    btnMatch.disabled = RUNNING || !market || !tf;
+    btnMatch.title = (market && tf)
+      ? "Select datasets that match the currently loaded dataset's market, adjusted/raw (stocks), and timeframe."
+      : "Match current requires the loaded dataset to have market + timeframe metadata (e.g. loaded from Polygon).";
+  }
+}
+
+function applyCrossTickerFilter() {
+  const list = $("valCrossDatasets");
+  if (!list) return;
+  const tokens = crossFilterTokens();
+
+  const items = [...list.querySelectorAll(".listItem")];
+  for (const it of items) {
+    const hay = String(it?.dataset?.search || "").toLowerCase();
+    const ok = !tokens.length || tokens.every((t) => hay.includes(t));
+    it.style.display = ok ? "" : "none";
+  }
+  updateCrossMeta(tokens.length ? `filter=${tokens.join(" ")}` : "");
+}
+
+function setCrossSelectionForVisible(fnKeepChecked) {
+  const list = $("valCrossDatasets");
+  if (!list) return;
+  const cbs = [...list.querySelectorAll("input[type=checkbox][data-csv-path]")];
+  for (const cb of cbs) {
+    const item = cb?.closest(".listItem");
+    if (!item || item.style.display === "none") continue;
+    if (cb.disabled) continue;
+    cb.checked = !!fnKeepChecked(cb, item);
+  }
+  syncCrossSelectedFromUi();
+  saveSettingsSoon();
+  updateCrossMeta("");
+}
+
+function selectAllVisibleCross() {
+  setCrossSelectionForVisible(() => true);
+}
+
+function selectNoneVisibleCross() {
+  setCrossSelectionForVisible(() => false);
+}
+
+function selectMatchCurrentCross() {
+  const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+  const market = String(ctx.market || "").trim();
+  if (!market) return;
+  const tf = String(ctx.timeframe || "").trim().toLowerCase();
+  if (!tf) return;
+  const adjusted = ctx.adjusted === true ? true : (ctx.adjusted === false ? false : null);
+  const curPath = String($("csvPath")?.value || "").trim();
+
+  setCrossSelectionForVisible((cb, item) => {
+    const p = String(cb?.dataset?.csvPath || "").trim();
+    if (curPath && p && p === curPath) return false;
+
+    const m = String(item?.dataset?.market || "").trim();
+    if (!m || m !== market) return false;
+
+    const tf2 = String(item?.dataset?.timeframe || "").trim().toLowerCase();
+    if (!tf2 || tf2 !== tf) return false;
+
+    if (market === "stocks" && adjusted != null) {
+      const a = String(item?.dataset?.adjusted || "").trim();
+      const want = adjusted ? "1" : "0";
+      if (a !== want) return false;
+    }
+    return true;
+  });
+}
+
+function setBatchSelectedPaths(paths) {
+  const el = $("batchSelected");
+  if (!el) return;
+  const uniq = [];
+  const seen = new Set();
+  for (const p of Array.isArray(paths) ? paths : []) {
+    const s = String(p || "").trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    uniq.push(s);
+  }
+  try {
+    el.value = JSON.stringify(uniq);
+  } catch {
+    el.value = "[]";
+  }
+}
+
+function getBatchSelectedPaths() {
+  const el = $("batchSelected");
+  const raw = el ? String(el.value || "[]") : "[]";
+  const arr = parseJsonArraySafe(raw);
+  const out = [];
+  const seen = new Set();
+  for (const p of arr) {
+    const s = String(p || "").trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+function syncBatchSelectedFromUi() {
+  const selected = new Set(getBatchSelectedPaths());
+  for (const cb of document.querySelectorAll("#batchDatasets input[type=checkbox][data-csv-path]")) {
+    const p = String(cb?.dataset?.csvPath || "").trim();
+    if (!p) continue;
+    if (cb.checked) selected.add(p);
+    else selected.delete(p);
+  }
+  setBatchSelectedPaths([...selected]);
+}
+
+function batchDatasetQuery() {
+  return String($("batchDatasetSearch")?.value || "").trim().toLowerCase();
+}
+
+function updateBatchMeta(extra) {
+  const meta = $("batchMeta");
+  if (!meta) return;
+  const total = Array.isArray(BATCH_DATASETS_CACHE) ? BATCH_DATASETS_CACHE.length : 0;
+  const selected = getBatchSelectedPaths().length;
+  const parts = [];
+  parts.push(`selected ${selected}/${total}`);
+  const x = String(extra || "").trim();
+  if (x) parts.push(x);
+  const last = LAST_BATCH_SUMMARY && typeof LAST_BATCH_SUMMARY === "object" ? LAST_BATCH_SUMMARY : null;
+  const p = last ? String(last.path || "").trim() : "";
+  if (p) parts.push(`summary=${fileBasename(p)}`);
+  meta.textContent = parts.join(" • ");
+}
+
+function setBatchSummaryUi(summary, path) {
+  const p = String(path || "").trim();
+  const s = summary && typeof summary === "object" ? summary : null;
+  LAST_BATCH_SUMMARY = s ? { path: p, summary: s } : null;
+
+  if ($("batchOutput")) $("batchOutput").textContent = s ? pretty({ path: p || null, summary: s }) : "-";
+  try {
+    if (p) localStorage.setItem(LAST_BATCH_SUMMARY_KEY, p);
+    else localStorage.removeItem(LAST_BATCH_SUMMARY_KEY);
+  } catch {}
+
+  updateBatchMeta("");
+  syncBatchSummaryButtons();
+}
+
+function syncBatchSummaryButtons() {
+  const p = String(LAST_BATCH_SUMMARY?.path || "").trim();
+  const s = LAST_BATCH_SUMMARY?.summary && typeof LAST_BATCH_SUMMARY.summary === "object" ? LAST_BATCH_SUMMARY.summary : null;
+  const failed = Number(s?.counts?.failed || s?.results?.failed?.length || 0);
+
+  const reveal = $("btnBatchRevealSummary");
+  if (reveal) reveal.disabled = RUNNING || !p;
+
+  const retry = $("btnBatchRetryFailed");
+  if (retry) retry.disabled = RUNNING || !s || failed <= 0;
+}
+
+async function loadLastBatchSummaryFromDisk() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  let p = "";
+  try {
+    p = String(localStorage.getItem(LAST_BATCH_SUMMARY_KEY) || "").trim();
+  } catch {
+    p = "";
+  }
+  if (!p) return;
+  try {
+    const v = await invoke("load_run_artifact", { path: p });
+    const kind = String(v?.kind || "").trim();
+    if (kind !== "vectorbt_batch_summary") return;
+    setBatchSummaryUi(v, p);
+  } catch {}
+}
+
+function filterBatchDatasets(datasets, query) {
+  const q = String(query || "").trim().toLowerCase();
+  const xs = Array.isArray(datasets) ? datasets : [];
+  if (!q) return xs;
+  const terms = q.split(/\s+/g).map((t) => t.trim()).filter((t) => !!t);
+  if (!terms.length) return xs;
+
+  return xs.filter((ds) => {
+    const market = String(ds?.market || "").trim();
+    const sym = String(ds?.display_symbol || ds?.polygon_ticker || "").trim();
+    const path = String(ds?.csv_path || "").trim();
+    const tf = String(ds?.timeframe || "").trim();
+    const hay = `${market} ${sym} ${path} tf=${tf}`.toLowerCase();
+    return terms.every((t) => hay.includes(t));
+  });
+}
+
+function renderBatchDatasetList() {
+  const list = $("batchDatasets");
+  if (!list) return;
+
+  const datasets = Array.isArray(BATCH_DATASETS_CACHE) ? BATCH_DATASETS_CACHE : [];
+  list.innerHTML = "";
+
+  if (!datasets.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.style.fontSize = "0.8rem";
+    empty.textContent = "No cached datasets yet. Use Polygon to download and cache a few symbols.";
+    list.appendChild(empty);
+    updateBatchMeta("");
+    return;
+  }
+
+  const q = batchDatasetQuery();
+  const items = filterBatchDatasets(datasets, q).sort((a, b) => {
+    const am = String(a?.market || "");
+    const bm = String(b?.market || "");
+    const as = String(a?.display_symbol || a?.polygon_ticker || "");
+    const bs = String(b?.display_symbol || b?.polygon_ticker || "");
+    return (am + as).localeCompare(bm + bs);
+  });
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.style.fontSize = "0.8rem";
+    empty.textContent = q ? "No matches for the current search." : "No datasets.";
+    list.appendChild(empty);
+    updateBatchMeta("");
+    return;
+  }
+
+  const selected = new Set(getBatchSelectedPaths());
+
+  for (const ds of items) {
+    const path = String(ds?.csv_path || "").trim();
+    const title = String(ds?.display_symbol || ds?.polygon_ticker || "").trim();
+    const market = String(ds?.market || "").trim();
+    const tfLabel = String(ds?.timeframe || "").trim() || "1m";
+    const minTs = fmtYmdUtc(ds?.min_ts);
+    const maxTs = fmtYmdUtc(ds?.max_ts);
+    const updated = fmtYmdUtc(ds?.last_updated_utc_ms);
+    const rowsN = Number(ds?.row_count || 0);
+    const rowsHint = rowsN > 0 ? rowsN.toLocaleString() : "—";
+    const adj = market === "stocks" && !!ds?.adjusted;
+    const marketLabel = market ? (market === "stocks" ? (adj ? `${market} (adj)` : `${market} (raw)`) : market) : "market";
+    if (!path || !title) continue;
+
+    const item = document.createElement("div");
+    item.className = "listItem";
+
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "space-between";
+    row.style.gap = "0.75rem";
+
+    const left = document.createElement("div");
+    const t1 = document.createElement("div");
+    t1.className = "mono";
+    t1.textContent = title;
+    const t2 = document.createElement("div");
+    t2.className = "muted";
+    t2.style.fontSize = "0.8rem";
+    t2.textContent = `${marketLabel} • tf=${tfLabel} • ${minTs} → ${maxTs} • rows=${rowsHint} • updated=${updated}`;
+    left.appendChild(t1);
+    left.appendChild(t2);
+
+    const right = document.createElement("div");
+    right.style.display = "flex";
+    right.style.alignItems = "center";
+    right.style.gap = "0.5rem";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = selected.has(path);
+    cb.disabled = RUNNING;
+    cb.dataset.csvPath = path;
+    cb.dataset.label = title;
+    cb.addEventListener("change", () => {
+      syncBatchSelectedFromUi();
+      updateBatchMeta("");
+      saveSettingsSoon();
+    });
+
+    row.addEventListener("click", (ev) => {
+      const isToggle = ev?.target === cb;
+      if (isToggle) return;
+      if (RUNNING) return;
+      cb.checked = !cb.checked;
+      syncBatchSelectedFromUi();
+      updateBatchMeta("");
+      saveSettingsSoon();
+    });
+
+    right.appendChild(cb);
+    row.appendChild(left);
+    row.appendChild(right);
+    item.appendChild(row);
+    list.appendChild(item);
+  }
+
+  updateBatchMeta("");
+}
+
+async function initBatchDatasetList() {
+  const list = $("batchDatasets");
+  if (!list) return;
+
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    list.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = "muted";
+    msg.style.fontSize = "0.8rem";
+    msg.textContent = "Batch list requires the Tauri backend.";
+    list.appendChild(msg);
+    updateBatchMeta("");
+    return;
+  }
+
+  try {
+    const info = await invoke("polygon_get_cache_info");
+    BATCH_DATASETS_CACHE = Array.isArray(info?.datasets) ? info.datasets : [];
+    renderBatchDatasetList();
+  } catch (e) {
+    list.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = "muted";
+    msg.style.fontSize = "0.8rem";
+    msg.textContent = `Polygon: ${String(e)}`;
+    list.appendChild(msg);
+    updateBatchMeta("");
+  }
+}
+
+async function initCrossTickerList() {
+  const list = $("valCrossDatasets");
+  if (!list) return;
+
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    list.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = "muted";
+    msg.style.fontSize = "0.8rem";
+    msg.textContent = "Cross-ticker list requires the Tauri backend.";
+    list.appendChild(msg);
+    updateCrossMeta("backend unavailable");
+    return;
+  }
+
+  try {
+    const info = await invoke("polygon_get_cache_info");
+    const datasets = Array.isArray(info?.datasets) ? info.datasets : [];
+
+    list.innerHTML = "";
+    const items = [...datasets].sort((a, b) => {
+      const am = String(a?.market || "");
+      const bm = String(b?.market || "");
+      const as = String(a?.display_symbol || a?.polygon_ticker || "");
+      const bs = String(b?.display_symbol || b?.polygon_ticker || "");
+      return (am + as).localeCompare(bm + bs);
+    });
+
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.style.fontSize = "0.8rem";
+      empty.textContent = "No cached datasets yet. Use Polygon to download and cache a few symbols.";
+      list.appendChild(empty);
+      setCrossSelectedPaths([]);
+      saveSettingsSoon();
+      updateCrossMeta("no cached datasets");
+      return;
+    }
+
+    const selected = new Set(getCrossSelectedPaths());
+
+    for (const ds of items) {
+      const path = String(ds?.csv_path || "").trim();
+      const title = String(ds?.display_symbol || ds?.polygon_ticker || "").trim();
+      const market = String(ds?.market || "").trim();
+      const tfLabel = String(ds?.timeframe || "").trim() || "1m";
+      const minTs = fmtYmdUtc(ds?.min_ts);
+      const maxTs = fmtYmdUtc(ds?.max_ts);
+      const updated = fmtYmdUtc(ds?.last_updated_utc_ms);
+      const rowsN = Number(ds?.row_count || 0);
+      const rowsHint = rowsN > 0 ? rowsN.toLocaleString() : "—";
+      const adj = market === "stocks" && !!ds?.adjusted;
+      const marketLabel = market ? (market === "stocks" ? (adj ? `${market} (adj)` : `${market} (raw)`) : market) : "market";
+      if (!path || !title) continue;
+
+      const item = document.createElement("div");
+      item.className = "listItem";
+      item.dataset.search = `${title} ${marketLabel} tf=${tfLabel} ${minTs} ${maxTs}`.toLowerCase();
+      item.dataset.market = market;
+      item.dataset.adjusted = adj ? "1" : "0";
+      item.dataset.timeframe = tfLabel;
+
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.justifyContent = "space-between";
+      row.style.gap = "0.75rem";
+
+      const left = document.createElement("div");
+      const t1 = document.createElement("div");
+      t1.className = "mono";
+      t1.textContent = title;
+      const t2 = document.createElement("div");
+      t2.className = "muted";
+      t2.style.fontSize = "0.8rem";
+      t2.textContent = `${marketLabel} • tf=${tfLabel} • ${minTs} → ${maxTs} • rows=${rowsHint} • updated=${updated}`;
+      left.appendChild(t1);
+      left.appendChild(t2);
+
+      const right = document.createElement("div");
+      right.style.display = "flex";
+      right.style.alignItems = "center";
+      right.style.gap = "0.5rem";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = selected.has(path);
+      cb.disabled = RUNNING;
+      cb.dataset.csvPath = path;
+      cb.dataset.label = title;
+      cb.addEventListener("change", () => {
+        syncCrossSelectedFromUi();
+        saveSettingsSoon();
+      });
+
+      row.addEventListener("click", (ev) => {
+        const isToggle = ev?.target === cb;
+        if (isToggle) return;
+        if (RUNNING) return;
+        cb.checked = !cb.checked;
+        syncCrossSelectedFromUi();
+        saveSettingsSoon();
+      });
+
+      right.appendChild(cb);
+      row.appendChild(left);
+      row.appendChild(right);
+      item.appendChild(row);
+      list.appendChild(item);
+    }
+
+    syncCrossSelectedFromUi();
+    saveSettingsSoon();
+    applyCrossTickerFilter();
+  } catch (e) {
+    list.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = "muted";
+    msg.style.fontSize = "0.8rem";
+    msg.textContent = `Polygon: ${String(e)}`;
+    list.appendChild(msg);
+    updateCrossMeta("failed to load datasets");
+  }
+}
+
 function updateDeviceIdEnabled() {
+  const kind = strategyKind();
   const backend = $("backend")?.value || "CpuOnly";
   const isGpu = ["GpuOnly", "GpuKernel", "Auto"].includes(backend);
   const dev = $("deviceId");
-  if (dev) dev.disabled = RUNNING || isCompositeStrategy() || !isGpu;
+  if (!dev) return;
+  const s = LAST_GPU_STATUS && typeof LAST_GPU_STATUS === "object" ? LAST_GPU_STATUS : null;
+  const gpuOk = !s ? true : (!!s?.built_with_cuda && !!s?.cuda_available);
+
+  if (kind === "CompositeCpu") {
+    dev.disabled = true;
+    return;
+  }
+  if (kind === "CompositeMo") {
+    const prescanOn = !!$("moPrescanEnable")?.checked;
+    dev.disabled = RUNNING || !prescanOn || !gpuOk;
+    return;
+  }
+  dev.disabled = RUNNING || !isGpu || !gpuOk;
+}
+
+function rememberDesiredDeviceIdFromUi() {
+  const sel = $("deviceId");
+  if (!sel) return;
+  sel.dataset.desired = String(sel.value || "0");
+}
+
+function desiredDeviceId() {
+  const sel = $("deviceId");
+  const raw = String(sel?.dataset?.desired || sel?.value || "0").trim();
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
+function formatBytesCompact(bytes) {
+  const b = Number(bytes || 0);
+  if (!Number.isFinite(b) || b <= 0) return "";
+  const gib = b / (1024 ** 3);
+  if (gib >= 1) return `${fmtFixed(gib, 1)} GiB`;
+  const mib = b / (1024 ** 2);
+  return `${fmtFixed(mib, 0)} MiB`;
+}
+
+function applyCudaBackendAvailabilityConstraints(status) {
+  if (strategyKind() !== "DoubleMa") return;
+  const backendSel = $("backend");
+  if (!backendSel) return;
+
+  const builtCuda = !!status?.built_with_cuda;
+  const builtKernel = !!status?.built_with_cuda_backtest_kernel;
+  const cudaOk = !!status?.cuda_available;
+
+  const disableGpuOnly = !builtCuda || !cudaOk;
+  const disableGpuKernel = !builtCuda || !builtKernel || !cudaOk;
+
+  for (const opt of backendSel.options) {
+    if (opt.value === "GpuOnly") opt.disabled = disableGpuOnly;
+    else if (opt.value === "GpuKernel") opt.disabled = disableGpuKernel;
+  }
+
+  const cur = String(backendSel.value || "CpuOnly");
+  if ((cur === "GpuOnly" && disableGpuOnly) || (cur === "GpuKernel" && disableGpuKernel)) {
+    backendSel.value = "Auto";
+    applyBackendMaConstraints();
+    updateDeviceIdEnabled();
+  }
+}
+
+async function refreshCudaDevicesUi(opts) {
+  const sel = $("deviceId");
+  if (!sel) return;
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+
+  const status = opts?.status && typeof opts.status === "object" ? opts.status : null;
+  const builtCuda = !!status?.built_with_cuda;
+  const cudaOk = !!status?.cuda_available;
+
+  if (!builtCuda || !cudaOk) {
+    if (sel.options.length !== 1 || sel.options[0]?.value !== "0") {
+      sel.innerHTML = "";
+      const opt = document.createElement("option");
+      opt.value = "0";
+      opt.textContent = "Auto";
+      sel.appendChild(opt);
+    }
+    if (!sel.dataset.desired) sel.dataset.desired = "0";
+    sel.value = "0";
+    return;
+  }
+
+  const force = opts?.force === true;
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+
+  let resp = null;
+  if (!force && LAST_CUDA_DEVICES && (now - LAST_CUDA_DEVICES_AT_MS) < 2000) {
+    resp = LAST_CUDA_DEVICES;
+  } else {
+    try {
+      if (!force && CUDA_DEVICES_INFLIGHT) resp = await CUDA_DEVICES_INFLIGHT;
+      else {
+        CUDA_DEVICES_INFLIGHT = invoke("list_cuda_devices");
+        resp = await CUDA_DEVICES_INFLIGHT;
+      }
+    } catch {
+      resp = null;
+    } finally {
+      CUDA_DEVICES_INFLIGHT = null;
+    }
+    if (resp && typeof resp === "object") {
+      LAST_CUDA_DEVICES = resp;
+      LAST_CUDA_DEVICES_AT_MS = now;
+    }
+  }
+
+  const devices = Array.isArray(resp?.devices) ? resp.devices : [];
+  const recRaw = resp?.recommended_device_id;
+  const recommended = recRaw == null ? null : Math.max(0, Math.floor(Number(recRaw)));
+
+  if (!devices.length) {
+    if (sel.options.length !== 1 || sel.options[0]?.value !== "0") {
+      sel.innerHTML = "";
+      const opt = document.createElement("option");
+      opt.value = "0";
+      opt.textContent = "Auto";
+      sel.appendChild(opt);
+    }
+    if (!sel.dataset.desired) sel.dataset.desired = "0";
+    sel.value = "0";
+    return;
+  }
+
+  const desired = desiredDeviceId();
+  const ids = devices.map((d) => Math.max(0, Math.floor(Number(d?.device_id ?? 0))));
+
+  sel.innerHTML = "";
+  for (const d of devices) {
+    const id = Math.max(0, Math.floor(Number(d?.device_id ?? 0)));
+    const name = String(d?.name || `GPU ${id}`).trim() || `GPU ${id}`;
+    const mem = formatBytesCompact(d?.total_memory_bytes);
+    const opt = document.createElement("option");
+    opt.value = String(id);
+    const parts = [];
+    if (mem) parts.push(mem);
+    parts.push(`#${id}`);
+    opt.textContent = `${name} (${parts.join(" • ")})${recommended != null && id === recommended ? " (recommended)" : ""}`;
+    sel.appendChild(opt);
+  }
+
+  let pick = ids.includes(desired) ? desired : null;
+  if (pick == null && recommended != null && ids.includes(recommended)) pick = recommended;
+  if (pick == null) pick = ids[0] || 0;
+
+  sel.dataset.desired = String(pick);
+  sel.value = String(pick);
+}
+
+async function refreshGpuStatusUi() {
+  const el = $("gpuStatus");
+  if (!el) return;
+
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    el.textContent = "GPU: (Tauri invoke not available)";
+    return;
+  }
+
+  let status = null;
+  try {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (LAST_GPU_STATUS && (now - LAST_GPU_STATUS_AT_MS) < 750) {
+      status = LAST_GPU_STATUS;
+    } else {
+      status = await invoke("get_gpu_status");
+      if (status && typeof status === "object") {
+        LAST_GPU_STATUS = status;
+        LAST_GPU_STATUS_AT_MS = now;
+      }
+    }
+  } catch (e) {
+    el.textContent = `GPU: status failed (${String(e)})`;
+    return;
+  }
+
+  const s = LAST_GPU_STATUS && typeof LAST_GPU_STATUS === "object" ? LAST_GPU_STATUS : null;
+  const builtCuda = !!s?.built_with_cuda;
+  const builtKernel = !!s?.built_with_cuda_backtest_kernel;
+  const cudaOk = !!s?.cuda_available;
+
+  applyCudaBackendAvailabilityConstraints(s);
+  await refreshCudaDevicesUi({ status: s });
+  updateDeviceIdEnabled();
+
+  const buildLabel = builtCuda ? (builtKernel ? "cuda+kernel" : "cuda") : "cpu-only build";
+  const backendSel = String($("backend")?.value || "CpuOnly");
+  const deviceId = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
+  const lastUsed = String(CURRENT_RUN?.res?.backend_used || "").trim() || "-";
+
+  const fastMa = String($("fastMaType")?.value || "").trim();
+  const slowMa = String($("slowMaType")?.value || "").trim();
+  const kernelOk = builtCuda && builtKernel && cudaOk && fastMa && slowMa && maSupportsKernel(fastMa) && maSupportsKernel(slowMa);
+  const sweepOk = builtCuda && cudaOk && fastMa && slowMa && maSupportsCuda(fastMa) && maSupportsCuda(slowMa);
+
+  const parts = [];
+  parts.push(`build=${buildLabel}`);
+  parts.push(`cuda_available=${builtCuda ? (cudaOk ? "true" : "false") : "n/a"}`);
+  parts.push(`backend_sel=${backendSel}`);
+  if (backendSel === "GpuOnly" || backendSel === "GpuKernel") parts.push(`device_id=${deviceId}`);
+  if (lastUsed !== "-") parts.push(`last_used=${lastUsed}`);
+
+  const wantsGpu = backendSel === "GpuOnly" || backendSel === "GpuKernel";
+  let hint = "";
+  if (!builtCuda && wantsGpu) {
+    hint = " (rebuild with --features cuda)";
+  } else if (builtCuda && !cudaOk && wantsGpu) {
+    hint = " (CUDA runtime unavailable)";
+  } else if (backendSel === "GpuKernel" && !kernelOk) {
+    hint = " (kernel not available for selected MA types/build)";
+  } else if (backendSel === "GpuOnly" && !sweepOk) {
+    hint = " (GPU sweep not available for selected MA types/build)";
+  }
+
+  el.textContent = `GPU: ${parts.join(" | ")}${hint}`;
+}
+
+function buildTinyDoubleMaRequestForParity(backendObj) {
+  const dataIdText = String($("dataId")?.textContent || "").trim();
+  const data_id = dataIdText === "—" ? "" : dataIdText;
+  if (!data_id || data_id === "-") throw new Error("Load CSV first (missing data id).");
+
+  const meta = CURRENT_DATA_META;
+  if (!meta || typeof meta !== "object") throw new Error("Load CSV first.");
+
+  const fastMaType = String($("fastMaType")?.value || "").trim();
+  const slowMaType = String($("slowMaType")?.value || "").trim();
+  if (!fastMaType) throw new Error("Select a fast MA type.");
+  if (!slowMaType) throw new Error("Select a slow MA type.");
+
+  const maSource = String($("maSource")?.value || "close");
+  validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource);
+
+  const f0 = Math.max(1, Math.floor(num($("fastStart")?.value, 5)));
+  const s0raw = Math.max(1, Math.floor(num($("slowStart")?.value, 20)));
+  const s0 = Math.max(s0raw, f0 + 1);
+  const f1 = f0 + 2;
+  const s1 = s0 + 3;
+  const fast_range = [f0, f1, 1];
+  const slow_range = [s0, s1, 1];
+
+  const objective = String($("objective")?.value || "Sharpe");
+
+  const commission = num($("commission")?.value, 0);
+  const epsRel = num($("epsRel")?.value, 0);
+  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
+  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
+
+  const strategy = {
+    long_only: !!$("longOnly")?.checked,
+    allow_flip: !!$("allowFlip")?.checked,
+    trade_on_next_bar: !!$("tradeOnNext")?.checked,
+    commission,
+    eps_rel: epsRel,
+  };
+
+  const req = {
+    strategy_kind: "DoubleMa",
+    backend: backendObj,
+    data_id,
+    fast_range,
+    slow_range,
+    fast_ma_types: [fastMaType],
+    slow_ma_types: [slowMaType],
+    ma_source: maSource,
+    export_all_csv_path: null,
+    fast_ma_params: resolvedMaParams("fast", fastMaType),
+    slow_ma_params: resolvedMaParams("slow", slowMaType),
+    strategy,
+    objective,
+    mode: "Grid",
+    top_k: 8,
+    include_all: false,
+    heatmap_bins: 0,
+  };
+
+  // Validate that the tiny grid actually has combos.
+  const fastPeriods = expandRangeU16Like(fast_range[0], fast_range[1], fast_range[2]);
+  const slowPeriods = expandRangeU16Like(slow_range[0], slow_range[1], slow_range[2]);
+  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
+  if (!pairs) throw new Error("Parity grid has no valid combinations (fast must be < slow). Adjust ranges.");
+
+  return req;
+}
+
+async function runGpuParityCheck() {
+  const metaEl = $("gpuParityMeta");
+  if (!metaEl) return;
+
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    metaEl.textContent = "Parity: (Tauri invoke not available)";
+    return;
+  }
+  if (RUNNING) return;
+  if (strategyKind() !== "DoubleMa") {
+    metaEl.textContent = "Parity: switch Strategy to Double MA to run the check.";
+    return;
+  }
+
+  metaEl.textContent = "Parity: checking GPU availability...";
+  await refreshGpuStatusUi();
+  const s = LAST_GPU_STATUS && typeof LAST_GPU_STATUS === "object" ? LAST_GPU_STATUS : null;
+  const builtCuda = !!s?.built_with_cuda;
+  const builtKernel = !!s?.built_with_cuda_backtest_kernel;
+  const cudaOk = !!s?.cuda_available;
+  if (!builtCuda) {
+    metaEl.textContent = "Parity: unavailable (app not built with CUDA).";
+    return;
+  }
+  if (!cudaOk) {
+    metaEl.textContent = "Parity: unavailable (CUDA runtime not available).";
+    return;
+  }
+
+  const device_id = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
+  const fastMa = String($("fastMaType")?.value || "").trim();
+  const slowMa = String($("slowMaType")?.value || "").trim();
+
+  let gpuBackend = null;
+  if (builtKernel && fastMa && slowMa && maSupportsKernel(fastMa) && maSupportsKernel(slowMa)) {
+    gpuBackend = "GpuKernel";
+  } else if (fastMa && slowMa && maSupportsCuda(fastMa) && maSupportsCuda(slowMa)) {
+    gpuBackend = "GpuOnly";
+  }
+
+  if (!gpuBackend) {
+    metaEl.textContent = "Parity: unavailable (selected MAs do not support CUDA sweep/kernel).";
+    return;
+  }
+
+  const cpuReq = buildTinyDoubleMaRequestForParity({ backend: "CpuOnly" });
+  const gpuReq = buildTinyDoubleMaRequestForParity({ backend: gpuBackend, device_id });
+
+  const tol = 1e-4;
+  const wasRunning = RUNNING;
+  setRunning(true);
+  try {
+    clearProgressUi();
+    setStatus("Running CPU ↔ GPU parity check (tiny grid)...", "muted");
+
+    setProgressUi(0, 1, "parity_cpu", "");
+    const cpuRes = await invoke("run_double_ma_optimization", { req: cpuReq });
+    setProgressUi(1, 1, "parity_cpu", "");
+
+    setProgressUi(0, 1, gpuBackend === "GpuKernel" ? "parity_gpu_kernel" : "parity_gpu_sweep", "");
+    const gpuRes = await invoke("run_double_ma_optimization", { req: gpuReq });
+    setProgressUi(1, 1, gpuBackend === "GpuKernel" ? "parity_gpu_kernel" : "parity_gpu_sweep", "");
+
+    const cm = cpuRes?.best_metrics && typeof cpuRes.best_metrics === "object" ? cpuRes.best_metrics : {};
+    const gm = gpuRes?.best_metrics && typeof gpuRes.best_metrics === "object" ? gpuRes.best_metrics : {};
+    const dp = Math.abs(Number(cm.pnl || 0) - Number(gm.pnl || 0));
+    const ds = Math.abs(Number(cm.sharpe || 0) - Number(gm.sharpe || 0));
+    const dd = Math.abs(Number(cm.max_dd || 0) - Number(gm.max_dd || 0));
+
+    const cpuP = cpuRes?.best_params && typeof cpuRes.best_params === "object" ? cpuRes.best_params : {};
+    const gpuP = gpuRes?.best_params && typeof gpuRes.best_params === "object" ? gpuRes.best_params : {};
+    const sameParams = JSON.stringify(cpuP) === JSON.stringify(gpuP);
+
+    const ok = dp <= tol && ds <= tol && dd <= tol;
+    const paramsHint = sameParams ? "" : " (best_params differ; may be tie)";
+    metaEl.textContent =
+      `Parity: ${ok ? "OK" : "CHECK"} • gpu=${gpuBackend} • |Δpnl|=${fmt(dp, 6)} |Δsharpe|=${fmt(ds, 6)} |Δdd|=${fmt(dd, 6)} tol=${tol}${paramsHint}`;
+    setStatus(ok ? "Parity check OK." : "Parity check completed (review diffs).", ok ? "ok" : "muted");
+  } catch (e) {
+    if (isCancelledError(e)) metaEl.textContent = "Parity: cancelled.";
+    else metaEl.textContent = `Parity: failed (${String(e)})`;
+    throw e;
+  } finally {
+    if (!wasRunning) clearProgressUi();
+    setRunning(false);
+    refreshGpuStatusUi();
+  }
 }
 
 function strategyKind() {
@@ -939,7 +2665,138 @@ function strategyKind() {
 }
 
 function isCompositeStrategy() {
-  return strategyKind() === "CompositeCpu";
+  const k = strategyKind();
+  return k === "CompositeCpu" || k === "CompositeMo";
+}
+
+function updatePairsPreviewUi() {
+  const el = $("pairsPreview");
+  if (!el) return;
+
+  const fast = [
+    Math.max(1, Math.floor(num($("fastStart")?.value, 5))),
+    Math.max(1, Math.floor(num($("fastEnd")?.value, 30))),
+    Math.floor(num($("fastStep")?.value, 1)),
+  ];
+  const slow = [
+    Math.max(1, Math.floor(num($("slowStart")?.value, 20))),
+    Math.max(1, Math.floor(num($("slowEnd")?.value, 120))),
+    Math.floor(num($("slowStep")?.value, 1)),
+  ];
+
+  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2]);
+  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2]);
+  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
+
+  const includeAll = String($("includeAll")?.value || "false") === "true";
+  const tooManyIncludeAll = includeAll && pairs > 2_000_000;
+
+  const pairsText = pairs ? pairs.toLocaleString() : "0";
+  el.textContent = tooManyIncludeAll
+    ? `Pairs: ${pairsText} (fast < slow) • includeAll will be rejected above 2,000,000 pairs`
+    : `Pairs: ${pairsText} (fast < slow)`;
+}
+
+function updateRunPlanUi() {
+  const el = $("runPlanMeta");
+  if (!el) return;
+
+  const kind = strategyKind();
+  const steps = [];
+  const parts = [];
+
+  if (kind === "CompositeMo") {
+    const prescan = !!$("moPrescanEnable")?.checked;
+    steps.push(prescan ? "Optimize (MO + GPU pre-scan)" : "Optimize (MO)");
+  } else if (kind === "CompositeCpu") {
+    steps.push("Optimize (Composite)");
+  } else {
+    const backend = String($("backend")?.value || "CpuOnly");
+    const b = backend === "CpuOnly" ? "CPU" : (backend === "Auto" ? "Auto" : backend);
+    steps.push(`Optimize (${b})`);
+  }
+
+  const autoVal = !!$("valAutoRun")?.checked && isCompositeStrategy();
+  const autoXlsx = autoVal && !!$("valAutoExportXlsx")?.checked;
+  const autoReveal = autoXlsx && !!$("valAutoRevealReport")?.checked;
+
+  if (autoVal) steps.push("Validate (auto)");
+  if (autoXlsx) steps.push("Export XLSX (auto)");
+  if (autoReveal) steps.push("Reveal report (auto)");
+
+  parts.push(`Plan: ${steps.join(" → ")}`);
+
+  // Quick reminder when validate is off for composite strategies.
+  if (isCompositeStrategy() && !autoVal) {
+    parts.push("tip: enable Auto-run validation for hands-off robustness");
+  }
+
+  el.textContent = parts.join(" • ");
+}
+
+function updateValidateTabUi() {
+  const btn = $("btnValidate");
+  const hint = $("validationHint");
+  if (!btn && !hint) return;
+
+  const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
+  const runKind = hasRun ? kindFromReq(CURRENT_RUN.req) : "";
+  const canValidate = hasRun && (runKind === "CompositeCpu" || runKind === "CompositeMo");
+
+  if (btn) btn.disabled = RUNNING || !canValidate;
+
+  if (!hint) return;
+  if (RUNNING) {
+    hint.textContent = "Validation: disabled while a task is running.";
+    return;
+  }
+  if (!hasRun) {
+    hint.textContent = "Run a Composite optimization first to enable validation.";
+    return;
+  }
+  if (!canValidate) {
+    hint.textContent = "Validation currently supports Composite runs only (current run is Double MA).";
+    return;
+  }
+
+  const maxCandidates = Math.max(1, Math.floor(num($("valCandidates")?.value, 32)));
+  const checks = [];
+  if (!!$("valWfEnable")?.checked) checks.push("WF");
+  if (!!$("valPerturbEnable")?.checked) checks.push("perturb");
+  if (!!$("valMcEnable")?.checked) checks.push("MC");
+  if (!!$("valCscvEnable")?.checked) checks.push("CSCV");
+  if (!!$("valCrossEnable")?.checked) {
+    const n = getCrossSelectedDatasets().length;
+    checks.push(n ? `cross(${n})` : "cross");
+  }
+  const checksText = checks.length ? ` • checks=${checks.join("+")}` : "";
+  hint.textContent = `Ready: validate up to ${maxCandidates} candidates from Top/Pareto.${checksText}`;
+}
+
+function updateQuickActionsUi() {
+  const btnReport = $("btnOpenLatestReport");
+  const btnMeta = $("btnOpenLatestMetaReport");
+  const meta = $("quickActionsMeta");
+  if (!btnReport && !btnMeta && !meta) return;
+
+  const invoke = tauriInvoke();
+  const okInvoke = !!invoke;
+
+  const reportPath = String(CURRENT_RUN?.report_xlsx_path || "").trim();
+  const metaReportPath = String(LAST_META_RUN?.report_xlsx_path || "").trim();
+
+  if (btnReport) btnReport.disabled = RUNNING || !okInvoke || !reportPath;
+  if (btnMeta) btnMeta.disabled = RUNNING || !okInvoke || !metaReportPath;
+
+  if (meta) {
+    const parts = [];
+    if (reportPath) parts.push(`report=${fileBasename(reportPath)}`);
+    else parts.push("report=—");
+    if (metaReportPath) parts.push(`meta=${fileBasename(metaReportPath)}`);
+    else parts.push("meta=—");
+    if (!okInvoke) parts.push("backend unavailable");
+    meta.textContent = parts.join(" • ");
+  }
 }
 
 function applyBackendSelectionConstraints() {
@@ -948,17 +2805,34 @@ function applyBackendSelectionConstraints() {
 
 function updateStrategyUi() {
   const kind = strategyKind();
-  const isComp = kind === "CompositeCpu";
+  const isDoubleMa = kind === "DoubleMa";
+  const isCompCpu = kind === "CompositeCpu";
+  const isCompMo = kind === "CompositeMo";
+  const isComp = isCompCpu || isCompMo;
 
   const hint = $("strategyHint");
   if (hint) {
-    hint.textContent = isComp
+    hint.textContent = isCompCpu
       ? "CPU-only. MA crossover gated by HalfTrend + MACZ histogram + OTT."
+      : isCompMo
+      ? "CPU multi-objective optimization (NSGA-II / Random) + optional GPU pre-scan for MA narrowing."
       : "Fast double moving-average crossover (CPU / GPU sweep / GPU kernel).";
   }
 
   const compWrap = $("compositeParamsWrap");
-  if (compWrap) compWrap.style.display = isComp ? "block" : "none";
+  if (compWrap) compWrap.style.display = isCompCpu ? "block" : "none";
+
+  const compMoWrap = $("compositeMoWrap");
+  if (compMoWrap) compMoWrap.style.display = isCompMo ? "block" : "none";
+
+  const valAuto = $("valAutoRun");
+  if (valAuto) valAuto.disabled = RUNNING || !isComp;
+  const valAutoXlsx = $("valAutoExportXlsx");
+  if (valAutoXlsx) valAutoXlsx.disabled = RUNNING || !isComp;
+  const valAutoReveal = $("valAutoRevealReport");
+  if (valAutoReveal) valAutoReveal.disabled = RUNNING || !isComp;
+  const valAutoTop = $("valAutoExportTopN");
+  if (valAutoTop) valAutoTop.disabled = RUNNING || !isComp;
 
   const backendSel = $("backend");
   if (backendSel) {
@@ -978,13 +2852,255 @@ function updateStrategyUi() {
   const presetBtn = $("btnPresetKernelSmaAlma");
   if (presetBtn) presetBtn.disabled = RUNNING || isComp;
 
+  const refreshGpuBtn = $("btnRefreshGpuStatus");
+  if (refreshGpuBtn) refreshGpuBtn.disabled = RUNNING;
+  const parityBtn = $("btnGpuParityCheck");
+  if (parityBtn) parityBtn.disabled = RUNNING || !isDoubleMa;
+  const parityMeta = $("gpuParityMeta");
+  if (parityMeta && !isDoubleMa) {
+    parityMeta.textContent = "Parity: (available for Double MA only)";
+  } else if (parityMeta && isDoubleMa && String(parityMeta.textContent || "").includes("available for Double MA")) {
+    parityMeta.textContent = "Parity: —";
+  }
+
+  const heatmapBins = $("heatmapBins");
+  if (heatmapBins) {
+    heatmapBins.disabled = RUNNING || isCompMo;
+    if (isCompMo) heatmapBins.value = "0";
+  }
+
+  const includeAllSel = $("includeAll");
+  if (includeAllSel) {
+    includeAllSel.disabled = RUNNING || isCompMo;
+    if (isCompMo) includeAllSel.value = "false";
+  }
+
+  const topKInput = $("topK");
+  if (topKInput) {
+    topKInput.disabled = RUNNING || isCompMo;
+  }
+
   const exportInput = $("exportAllCsvPath");
   if (exportInput) exportInput.disabled = RUNNING || isComp;
   const exportBtn = $("btnBrowseExportAll");
   if (exportBtn) exportBtn.disabled = RUNNING || isComp;
   if (isComp && exportInput) exportInput.value = "";
 
+  updateMoSamplerUi();
   updateDeviceIdEnabled();
+  updateMetaGroupingUi();
+  updateMetaHoldoutUi();
+  updatePairsPreviewUi();
+  updateRunPlanUi();
+  updateValidateTabUi();
+  updateQuickActionsUi();
+  refreshGpuStatusUi();
+}
+
+function updateMetaGroupingUi() {
+  const mode = String($("metaGroupingMode")?.value || "clustered");
+  const enableCluster = mode !== "exact";
+  const intEl = $("metaClusterIntBucket");
+  const floatEl = $("metaClusterFloatBucket");
+  if (intEl) intEl.disabled = RUNNING || !enableCluster;
+  if (floatEl) floatEl.disabled = RUNNING || !enableCluster;
+  updateMetaHoldoutUi();
+}
+
+function updateMetaHoldoutUi() {
+  const kind = String($("metaStrategyKind")?.value || "CompositeMo");
+  const isComposite = kind === "CompositeCpu" || kind === "CompositeMo";
+
+  const holdoutTag = $("metaHoldoutTag");
+  const evalEl = $("metaEvalHoldout");
+  const modeEl = $("metaHoldoutMode");
+  const repsEl = $("metaHoldoutReps");
+  const note = $("metaHoldoutNote");
+
+  if (evalEl) {
+    evalEl.disabled = RUNNING || !isComposite;
+    if (!isComposite && evalEl.checked) {
+      evalEl.checked = false;
+      saveSettingsSoon();
+    }
+  }
+
+  const evalOn = isComposite && !!evalEl?.checked;
+  if (holdoutTag) holdoutTag.disabled = RUNNING || !evalOn;
+  if (modeEl) modeEl.disabled = RUNNING || !evalOn;
+  const groupingMode = String($("metaGroupingMode")?.value || "clustered");
+  const clustered = groupingMode !== "exact";
+  if (repsEl) repsEl.disabled = RUNNING || !evalOn || !clustered;
+
+  if (note) {
+    note.innerHTML = isComposite
+      ? 'Holdout runs (tagged <span class="mono">holdout</span>) are excluded only when holdout evaluation is enabled. Heavy mode uses walk-forward and (optionally) the Validation perturb/MC toggles.'
+      : "Holdout evaluation is currently supported for Composite strategies only.";
+  }
+}
+
+const PRESET_PROFILES = {
+  Quick: {
+    name: "Quick",
+    topK: 20,
+    includeAll: false,
+    heatmapBins: 0,
+    valAutoRun: true,
+    valAutoExportXlsx: true,
+    valAutoRevealReport: false,
+    valAutoExportTopN: 20,
+    valCandidates: 16,
+    valWfEnable: false,
+    valWfWindow: 20000,
+    valWfStep: 20000,
+    valPerturbEnable: false,
+    valPerturbIters: 8,
+    valPerturbMin: 0.015,
+    valPerturbMax: 0.06,
+    valMcEnable: false,
+    valMcSims: 500,
+    valCscvEnable: false,
+    valCscvSlices: 16,
+    valCrossEnable: false,
+    valCrossMax: 4,
+  },
+  Balanced: {
+    name: "Balanced",
+    topK: 20,
+    includeAll: false,
+    heatmapBins: 128,
+    valAutoRun: true,
+    valAutoExportXlsx: true,
+    valAutoRevealReport: false,
+    valAutoExportTopN: 20,
+    valCandidates: 32,
+    valWfEnable: false,
+    valWfWindow: 20000,
+    valWfStep: 20000,
+    valPerturbEnable: true,
+    valPerturbIters: 8,
+    valPerturbMin: 0.015,
+    valPerturbMax: 0.06,
+    valMcEnable: true,
+    valMcSims: 500,
+    valCscvEnable: false,
+    valCscvSlices: 16,
+    valCrossEnable: false,
+    valCrossMax: 4,
+  },
+  Deep: {
+    name: "Deep",
+    topK: 50,
+    includeAll: false,
+    heatmapBins: 256,
+    valAutoRun: true,
+    valAutoExportXlsx: true,
+    valAutoRevealReport: false,
+    valAutoExportTopN: 50,
+    valCandidates: 64,
+    valWfEnable: true,
+    valWfWindow: 20000,
+    valWfStep: 20000,
+    valPerturbEnable: true,
+    valPerturbIters: 16,
+    valPerturbMin: 0.01,
+    valPerturbMax: 0.08,
+    valMcEnable: true,
+    valMcSims: 2000,
+    valCscvEnable: true,
+    valCscvSlices: 16,
+    valCrossEnable: true,
+    valCrossMax: 8,
+  },
+};
+
+function applyPresetProfile(profileId, opts) {
+  const silent = !!opts?.silent;
+  const id = String(profileId || "").trim();
+  const preset = PRESET_PROFILES[id] || PRESET_PROFILES.Balanced;
+
+  const setVal = (elId, value) => {
+    const el = $(elId);
+    if (!el) return;
+    el.value = String(value);
+  };
+  const setBool = (elId, checked) => {
+    const el = $(elId);
+    if (!el) return;
+    el.checked = !!checked;
+  };
+
+  // Optimization defaults (safe; avoids changing MA choices/ranges).
+  setVal("topK", preset.topK);
+  setVal("includeAll", preset.includeAll ? "true" : "false");
+  setVal("heatmapBins", preset.heatmapBins);
+
+  // Validation defaults (Composite strategies only; safe to set regardless).
+  setBool("valAutoRun", preset.valAutoRun);
+  setBool("valAutoExportXlsx", preset.valAutoExportXlsx);
+  setBool("valAutoRevealReport", preset.valAutoRevealReport);
+  setVal("valAutoExportTopN", preset.valAutoExportTopN);
+  setVal("valCandidates", preset.valCandidates);
+
+  setBool("valWfEnable", preset.valWfEnable);
+  setVal("valWfWindow", preset.valWfWindow);
+  setVal("valWfStep", preset.valWfStep);
+
+  setBool("valPerturbEnable", preset.valPerturbEnable);
+  setVal("valPerturbIters", preset.valPerturbIters);
+  setVal("valPerturbMin", preset.valPerturbMin);
+  setVal("valPerturbMax", preset.valPerturbMax);
+
+  setBool("valMcEnable", preset.valMcEnable);
+  setVal("valMcSims", preset.valMcSims);
+
+  setBool("valCscvEnable", preset.valCscvEnable);
+  setVal("valCscvSlices", preset.valCscvSlices);
+
+  // Cross-ticker: only enable if the user has any cached datasets selected.
+  const crossAvail = getCrossSelectedDatasets().length > 0;
+  setBool("valCrossEnable", preset.valCrossEnable && crossAvail);
+  setVal("valCrossMax", preset.valCrossMax);
+
+  updateStrategyUi();
+  applyBackendSelectionConstraints();
+  updateDeviceIdEnabled();
+  applyBackendMaConstraints();
+  refreshMaParamsUi();
+  updateValidationExportButtons();
+  saveSettingsSoon();
+
+  if (!silent) {
+    const crossNote = preset.valCrossEnable && !crossAvail ? " (cross-ticker skipped; no datasets selected)" : "";
+    setStatus(`Applied preset: ${preset.name}${crossNote}`, "ok");
+  }
+}
+
+function updateMoSamplerUi() {
+  if (strategyKind() !== "CompositeMo") return;
+
+  const sampler = ($("moSampler")?.value || "Nsga2").trim();
+  const nsga = $("moNsga2Wrap");
+  const rnd = $("moRandomWrap");
+  const tpe = $("moTpeWrap");
+  const qmc = $("moQmcWrap");
+  if (nsga) nsga.style.display = sampler === "Nsga2" ? "block" : "none";
+  if (rnd) rnd.style.display = sampler === "Random" ? "block" : "none";
+  if (tpe) tpe.style.display = sampler === "Tpe" ? "block" : "none";
+  if (qmc) qmc.style.display = sampler === "Qmc" ? "block" : "none";
+
+  const prescanOn = !!$("moPrescanEnable")?.checked;
+  const dis = RUNNING || !prescanOn;
+  const setDis = (id) => {
+    const el = $(id);
+    if (el) el.disabled = dis;
+  };
+  setDis("moPrescanRequireGpu");
+  setDis("moPrescanTopK");
+  setDis("moPrescanWindow");
+  setDis("moPrescanObjectives");
+  setDis("moPrescanMode");
+  setDis("moPrescanMaPairs");
 }
 
 function readSettingsFromUi() {
@@ -993,9 +3109,11 @@ function readSettingsFromUi() {
     "csvPath",
     "polygonMarket",
     "polygonSymbol",
+    "polygonTimeframe",
     "polygonFrom",
     "polygonTo",
     "strategyKind",
+    "presetProfile",
     "backend",
     "deviceId",
     "compareSelect",
@@ -1037,13 +3155,89 @@ function readSettingsFromUi() {
     "filterMinExposure",
     "paretoX",
     "paretoY",
+    "moObjectiveMin",
+    "moSampler",
+    "moNsga2Seed",
+    "moNsga2Population",
+    "moNsga2Generations",
+    "moNsga2CrossoverProb",
+    "moNsga2SwappingProb",
+    "moNsga2MutationProb",
+    "moRandomSeed",
+    "moRandomTrials",
+    "moTpeSeed",
+    "moTpeTrials",
+    "moTpeStartupTrials",
+    "moTpeCandidates",
+    "moTpeGamma",
+    "moTpeBatchSize",
+    "moTpeMaxModelPoints",
+    "moQmcSeed",
+    "moQmcTrials",
+    "moConstraintMinTrades",
+    "moConstraintMaxDd",
+    "moConstraintMaxAbsExposure",
+    "moPrescanTopK",
+    "moPrescanWindow",
+    "moPrescanObjectives",
+    "moPrescanMode",
+    "moPrescanMaPairs",
+    "moSearchSpace",
+    "valCandidates",
+    "valSeed",
+    "valWfWindow",
+    "valWfStep",
+    "valPerturbIters",
+    "valPerturbMin",
+    "valPerturbMax",
+    "valMcSims",
+    "valCscvSlices",
+    "valCrossMax",
+    "valCrossSelected",
+    "batchDatasetSearch",
+    "batchTags",
+    "batchSelected",
+    "batchHoldoutPct",
+    "batchHoldoutTag",
+    "metaStrategyKind",
+    "metaTimeframe",
+    "metaRequiredTag",
+    "metaMinSamples",
+    "metaTopK",
+    "metaHoldoutTag",
+    "metaHoldoutMode",
+    "metaHoldoutReps",
+    "metaGroupingMode",
+    "metaClusterIntBucket",
+    "metaClusterFloatBucket",
+    "metaCompareSelect",
   ];
   for (const id of fields) {
     const el = $(id);
     if (!el) continue;
     obj[id] = el.value;
   }
-  const checks = ["longOnly", "allowFlip", "tradeOnNext", "maczUseVolume", "maczUseLag"];
+  const checks = [
+    "longOnly",
+    "allowFlip",
+    "tradeOnNext",
+    "polygonStocksAdjusted",
+    "maczUseVolume",
+    "maczUseLag",
+    "moPrescanEnable",
+    "moPrescanRequireGpu",
+    "valAutoRun",
+    "valAutoExportXlsx",
+    "valAutoRevealReport",
+    "valWfEnable",
+    "valPerturbEnable",
+    "valMcEnable",
+    "valCscvEnable",
+    "valCrossEnable",
+    "metaEvalHoldout",
+    "batchAutoMeta",
+    "batchSkipDone",
+  ];
   for (const id of checks) {
     const el = $(id);
     if (!el) continue;
@@ -1070,7 +3264,7 @@ function loadSettings() {
   } catch {
     settings = null;
   }
-  if (!settings || typeof settings !== "object") return;
+  if (!settings || typeof settings !== "object") return false;
 
   if (settings.maParams && typeof settings.maParams === "object") {
     MA_PARAMS_STATE = settings.maParams;
@@ -1094,11 +3288,54 @@ function loadSettings() {
     const el = $(id);
     if (!el) continue;
     if (el.type === "checkbox") el.checked = !!value;
-    else el.value = String(value);
+    else {
+      const v = String(value);
+      el.value = v;
+      if (id === "deviceId") el.dataset.desired = v;
+    }
   }
+
+  // Back-compat: if new controls are missing from stored settings, apply Balanced defaults.
+  let patched = false;
+  const d = PRESET_PROFILES.Balanced;
+  const has = (id) => Object.prototype.hasOwnProperty.call(settings, id);
+  const setDef = (id, value) => {
+    if (has(id)) return;
+    const el = $(id);
+    if (!el) return;
+    if (el.type === "checkbox") el.checked = !!value;
+    else el.value = String(value);
+    patched = true;
+  };
+  setDef("presetProfile", "Balanced");
+  setDef("topK", d.topK);
+  setDef("includeAll", d.includeAll ? "true" : "false");
+  setDef("heatmapBins", d.heatmapBins);
+  setDef("valAutoRun", d.valAutoRun);
+  setDef("valAutoExportXlsx", d.valAutoExportXlsx);
+  setDef("valAutoRevealReport", d.valAutoRevealReport);
+  setDef("valAutoExportTopN", d.valAutoExportTopN);
+  setDef("valCandidates", d.valCandidates);
+  setDef("valWfEnable", d.valWfEnable);
+  setDef("valWfWindow", d.valWfWindow);
+  setDef("valWfStep", d.valWfStep);
+  setDef("valPerturbEnable", d.valPerturbEnable);
+  setDef("valPerturbIters", d.valPerturbIters);
+  setDef("valPerturbMin", d.valPerturbMin);
+  setDef("valPerturbMax", d.valPerturbMax);
+  setDef("valMcEnable", d.valMcEnable);
+  setDef("valMcSims", d.valMcSims);
+  setDef("valCscvEnable", d.valCscvEnable);
+  setDef("valCscvSlices", d.valCscvSlices);
+  setDef("valCrossEnable", d.valCrossEnable);
+  setDef("valCrossMax", d.valCrossMax);
+  setDef("metaHoldoutMode", "light");
+  if (patched) saveSettingsSoon();
   updateDeviceIdEnabled();
+  updatePolygonAdjustedUi();
   updateStrategyUi();
   applyBackendSelectionConstraints();
+  return true;
 }
 
 function applySettingsObject(settings) {
@@ -1122,6 +3359,7 @@ function applySettingsObject(settings) {
   updateStrategyUi();
   applyBackendSelectionConstraints();
   updateDeviceIdEnabled();
+  updatePolygonAdjustedUi();
   applyBackendMaConstraints();
   refreshMaParamsUi();
   saveSettingsSoon();
@@ -1131,7 +3369,7 @@ function applyRequestToUi(req) {
   if (!req || typeof req !== "object") return;
 
   const kindRaw = String(req.strategy_kind || req.strategyKind || "DoubleMa");
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : "DoubleMa";
+  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
   if ($("strategyKind")) $("strategyKind").value = kind;
   updateStrategyUi();
 
@@ -1140,38 +3378,81 @@ function applyRequestToUi(req) {
   const fast = Array.isArray(req.fast_range) ? req.fast_range : [0, 0, 0];
   const slow = Array.isArray(req.slow_range) ? req.slow_range : [0, 0, 0];
 
-  const fastMa = String((req.fast_ma_types?.[0] || "sma")).trim();
-  const slowMa = String((req.slow_ma_types?.[0] || "sma")).trim();
+  const fastMa = kind === "CompositeMo" ? String((req.fast_ma_type || "sma")).trim() : String((req.fast_ma_types?.[0] || "sma")).trim();
+  const slowMa = kind === "CompositeMo" ? String((req.slow_ma_type || "sma")).trim() : String((req.slow_ma_types?.[0] || "sma")).trim();
 
   if (kind === "DoubleMa") {
     if ($("backend")) $("backend").value = backend;
-    if ($("deviceId")) $("deviceId").value = String(deviceId);
+    if ($("deviceId")) {
+      $("deviceId").value = String(deviceId);
+      $("deviceId").dataset.desired = String(deviceId);
+    }
+  } else if (kind === "CompositeMo") {
+    const prescan = req.gpu_prescan && typeof req.gpu_prescan === "object" ? req.gpu_prescan : null;
+    if ($("backend")) $("backend").value = "CpuOnly";
+    if ($("deviceId")) {
+      const id = String(Number(prescan?.device_id || 0));
+      $("deviceId").value = id;
+      $("deviceId").dataset.desired = id;
+    }
   } else {
     if ($("backend")) $("backend").value = "CpuOnly";
-    if ($("deviceId")) $("deviceId").value = "0";
+    if ($("deviceId")) {
+      $("deviceId").value = "0";
+      $("deviceId").dataset.desired = "0";
+    }
   }
 
-  if ($("fastStart")) $("fastStart").value = String(Number(fast[0] || 0));
-  if ($("fastEnd")) $("fastEnd").value = String(Number(fast[1] || 0));
-  if ($("fastStep")) $("fastStep").value = String(Number(fast[2] || 0));
+  if (kind === "CompositeMo") {
+    const space = req.search_space && typeof req.search_space === "object" ? req.search_space : null;
+    const findIntRange = (name) => {
+      const params = Array.isArray(space?.params) ? space.params : [];
+      const p = params.find((x) => String(x?.name || "").toLowerCase() === String(name).toLowerCase());
+      const d = p?.domain && typeof p.domain === "object" ? p.domain : null;
+      const r = d?.IntRange && typeof d.IntRange === "object" ? d.IntRange : null;
+      if (!r) return null;
+      return { low: Number(r.low), high: Number(r.high), step: Number(r.step ?? 1) };
+    };
+    const fr = findIntRange("fast_len");
+    const sr = findIntRange("slow_len");
+    if (fr) {
+      if ($("fastStart")) $("fastStart").value = String(fr.low || 0);
+      if ($("fastEnd")) $("fastEnd").value = String(fr.high || 0);
+      if ($("fastStep")) $("fastStep").value = String(fr.step || 1);
+    }
+    if (sr) {
+      if ($("slowStart")) $("slowStart").value = String(sr.low || 0);
+      if ($("slowEnd")) $("slowEnd").value = String(sr.high || 0);
+      if ($("slowStep")) $("slowStep").value = String(sr.step || 1);
+    }
+  } else {
+    if ($("fastStart")) $("fastStart").value = String(Number(fast[0] || 0));
+    if ($("fastEnd")) $("fastEnd").value = String(Number(fast[1] || 0));
+    if ($("fastStep")) $("fastStep").value = String(Number(fast[2] || 0));
 
-  if ($("slowStart")) $("slowStart").value = String(Number(slow[0] || 0));
-  if ($("slowEnd")) $("slowEnd").value = String(Number(slow[1] || 0));
-  if ($("slowStep")) $("slowStep").value = String(Number(slow[2] || 0));
+    if ($("slowStart")) $("slowStart").value = String(Number(slow[0] || 0));
+    if ($("slowEnd")) $("slowEnd").value = String(Number(slow[1] || 0));
+    if ($("slowStep")) $("slowStep").value = String(Number(slow[2] || 0));
+  }
 
   if ($("fastMaType")) $("fastMaType").value = fastMa;
   if ($("slowMaType")) $("slowMaType").value = slowMa;
 
   if ($("maSource")) $("maSource").value = String(req.ma_source || "close");
-  if ($("objective")) $("objective").value = String(req.objective || "Sharpe");
-  if ($("mode")) $("mode").value = (kind === "CompositeCpu" ? "Grid" : String(req.mode || "Grid"));
+  if ($("objective")) {
+    $("objective").value = String(kind === "CompositeMo" ? (req?.objectives?.maximize || "Sharpe") : (req.objective || "Sharpe"));
+  }
+  if (kind === "CompositeMo" && $("moObjectiveMin")) {
+    $("moObjectiveMin").value = String(req?.objectives?.minimize || "MaxDrawdown");
+  }
+  if ($("mode")) $("mode").value = (kind !== "DoubleMa" ? "Grid" : String(req.mode || "Grid"));
 
   if ($("topK")) $("topK").value = String(Number(req.top_k || 0));
   if ($("includeAll")) $("includeAll").value = (req.include_all ? "true" : "false");
   if ($("heatmapBins")) $("heatmapBins").value = String(Number(req.heatmap_bins || 0));
   if ($("exportAllCsvPath")) $("exportAllCsvPath").value = String(req.export_all_csv_path || "");
 
-  const st = req.strategy || {};
+  const st = kind === "CompositeMo" ? (req.base_strategy || {}) : (req.strategy || {});
   if ($("commission")) $("commission").value = String(num(st.commission, 0));
   if ($("epsRel")) $("epsRel").value = String(num(st.eps_rel, 0));
   if ($("longOnly")) $("longOnly").checked = !!st.long_only;
@@ -1206,6 +3487,76 @@ function applyRequestToUi(req) {
       if ($("ottPercent")) $("ottPercent").value = String(num(ott.percent, 1.4));
       if ($("ottMaType")) $("ottMaType").value = String(ott.ma_type || "VAR");
     }
+  }
+
+  if (kind === "CompositeMo") {
+    const sampler = req.sampler && typeof req.sampler === "object" ? req.sampler : null;
+    const samplerKind = String(sampler?.sampler || "Nsga2");
+    if ($("moSampler")) $("moSampler").value = samplerKind;
+
+    if (samplerKind === "Nsga2") {
+      const cfg = sampler?.config && typeof sampler.config === "object" ? sampler.config : null;
+      if (cfg) {
+        if ($("moNsga2Seed")) $("moNsga2Seed").value = String(Number(cfg.seed ?? 1));
+        if ($("moNsga2Population")) $("moNsga2Population").value = String(Number(cfg.population_size ?? 80));
+        if ($("moNsga2Generations")) $("moNsga2Generations").value = String(Number(cfg.generations ?? 40));
+        if ($("moNsga2CrossoverProb")) $("moNsga2CrossoverProb").value = String(num(cfg.crossover_prob, 0.9));
+        if ($("moNsga2SwappingProb")) $("moNsga2SwappingProb").value = String(num(cfg.swapping_prob, 0.5));
+        if ($("moNsga2MutationProb")) $("moNsga2MutationProb").value = (cfg.mutation_prob == null ? "" : String(num(cfg.mutation_prob, "")));
+      }
+    } else if (samplerKind === "Random") {
+      const cfg = sampler?.config && typeof sampler.config === "object" ? sampler.config : null;
+      if (cfg) {
+        if ($("moRandomSeed")) $("moRandomSeed").value = String(Number(cfg.seed ?? 1));
+        if ($("moRandomTrials")) $("moRandomTrials").value = String(Number(cfg.trials ?? 2000));
+      }
+    } else if (samplerKind === "Tpe") {
+      const cfg = sampler?.config && typeof sampler.config === "object" ? sampler.config : null;
+      if (cfg) {
+        if ($("moTpeSeed")) $("moTpeSeed").value = String(Number(cfg.seed ?? 1));
+        if ($("moTpeTrials")) $("moTpeTrials").value = String(Number(cfg.trials ?? 5000));
+        if ($("moTpeStartupTrials")) $("moTpeStartupTrials").value = String(Number(cfg.startup_trials ?? 10));
+        if ($("moTpeCandidates")) $("moTpeCandidates").value = String(Number(cfg.n_ei_candidates ?? 24));
+        if ($("moTpeGamma")) $("moTpeGamma").value = String(num(cfg.gamma, 0.25));
+        if ($("moTpeBatchSize")) $("moTpeBatchSize").value = String(Number(cfg.batch_size ?? 64));
+        if ($("moTpeMaxModelPoints")) $("moTpeMaxModelPoints").value = String(Number(cfg.max_model_points ?? 2048));
+      }
+    } else if (samplerKind === "Qmc") {
+      const cfg = sampler?.config && typeof sampler.config === "object" ? sampler.config : null;
+      if (cfg) {
+        if ($("moQmcSeed")) $("moQmcSeed").value = String(Number(cfg.seed ?? 1));
+        if ($("moQmcTrials")) $("moQmcTrials").value = String(Number(cfg.trials ?? 5000));
+        if ($("moQmcSequence")) $("moQmcSequence").value = String(cfg.sequence ?? "halton");
+      }
+    }
+
+    const constraints = req.constraints && typeof req.constraints === "object" ? req.constraints : null;
+    if ($("moConstraintMinTrades")) $("moConstraintMinTrades").value = constraints?.min_trades == null ? "" : String(Number(constraints.min_trades));
+    if ($("moConstraintMaxDd")) $("moConstraintMaxDd").value = constraints?.max_drawdown == null ? "" : String(num(constraints.max_drawdown, ""));
+    if ($("moConstraintMaxAbsExposure")) $("moConstraintMaxAbsExposure").value = constraints?.max_abs_exposure == null ? "" : String(num(constraints.max_abs_exposure, ""));
+
+    const prescan = req.gpu_prescan && typeof req.gpu_prescan === "object" ? req.gpu_prescan : null;
+    if ($("moPrescanEnable")) $("moPrescanEnable").checked = !!prescan;
+    if ($("moPrescanRequireGpu")) $("moPrescanRequireGpu").checked = !!prescan?.require_gpu;
+    if ($("moPrescanTopK")) $("moPrescanTopK").value = String(Number(prescan?.top_k ?? 128));
+    if ($("moPrescanWindow")) $("moPrescanWindow").value = String(Number(prescan?.window ?? 8));
+    if ($("moPrescanObjectives")) $("moPrescanObjectives").value = String(prescan?.objectives ?? "both");
+    if ($("moPrescanMode")) $("moPrescanMode").value = String(prescan?.mode ?? "Auto");
+    if ($("moPrescanMaPairs")) {
+      const pairs = Array.isArray(prescan?.ma_pairs) ? prescan.ma_pairs : [];
+      $("moPrescanMaPairs").value = pairs
+        .map((p) => `${String(p?.fast_ma_type || "").trim()},${String(p?.slow_ma_type || "").trim()}`)
+        .filter((s) => s.trim())
+        .join("\n");
+    }
+
+    if ($("moSearchSpace")) {
+      const space = req.search_space && typeof req.search_space === "object" ? req.search_space : null;
+      $("moSearchSpace").value = space ? JSON.stringify(space, null, 2) : "";
+    }
+
+    updateMoSamplerUi();
+    updateDeviceIdEnabled();
   }
 
   const fastParams = req.fast_ma_params && typeof req.fast_ma_params === "object" ? req.fast_ma_params : null;
@@ -1314,29 +3665,658 @@ function populateCompareSelect(history, selectedTs) {
 
   const opt0 = document.createElement("option");
   opt0.value = "";
-  opt0.textContent = history.length ? "Compare against..." : "No runs yet";
+  const disk = Array.isArray(SAVED_RUNS) ? SAVED_RUNS : [];
+  opt0.textContent = (history.length || disk.length) ? "Compare against..." : "No runs yet";
   sel.appendChild(opt0);
 
-  for (const h of history) {
+  if (disk.length) {
+    const og = document.createElement("optgroup");
+    og.label = "Saved runs (disk)";
+    for (const r of disk) {
+      const opt = document.createElement("option");
+      opt.value = `disk:${r.path || ""}`;
+      const hasVal = r.has_validation ? "val" : "-";
+      const hasXlsx = r.report_xlsx_path ? "xlsx" : "-";
+      opt.textContent = `${r.ts || "unknown"} | ${r.strategy_kind || ""} | ${hasVal}/${hasXlsx}`;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+
+  if (history.length) {
+    const og = document.createElement("optgroup");
+    og.label = "Session history";
+    for (const h of history) {
+      const opt = document.createElement("option");
+      opt.value = `hist:${h.ts || ""}`;
+      opt.textContent = `${h.ts || "unknown"} | ${h.backend || ""} | ${h.pairs || 0} pairs`;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+
+  let v = String(selectedTs || "").trim();
+  if (v && !v.startsWith("hist:") && !v.startsWith("disk:")) {
+    // Back-compat: older saved value was a raw `ts`.
+    if (history.some((h) => String(h?.ts || "") === v)) v = `hist:${v}`;
+  }
+  sel.value = v;
+}
+
+function populateSavedRunsSelect(runs, selectedPath) {
+  const sel = $("savedRunsSelect");
+  if (!sel) return;
+  sel.innerHTML = "";
+
+  const items = Array.isArray(runs) ? runs : [];
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = items.length ? "Select a saved run..." : "No saved runs yet";
+  sel.appendChild(opt0);
+
+  for (const r of items) {
     const opt = document.createElement("option");
-    opt.value = h.ts || "";
-    opt.textContent = `${h.ts || "unknown"} | ${h.backend || ""} | ${h.pairs || 0} pairs`;
+    opt.value = r.path || "";
+    const hasVal = r.has_validation ? "val" : "-";
+    const hasXlsx = r.report_xlsx_path ? "xlsx" : "-";
+    const kind = r.strategy_kind || "";
+    const tagsN = Array.isArray(r.tags) ? r.tags.length : 0;
+    const tagsHint = tagsN ? ` | tags=${tagsN}` : "";
+    opt.textContent = `${r.ts || "unknown"} | ${kind} | ${hasVal}/${hasXlsx}${tagsHint}`;
     sel.appendChild(opt);
   }
-  sel.value = selectedTs || "";
+  sel.value = selectedPath || "";
+}
+
+function savedRunsQuery() {
+  return String($("savedRunsSearch")?.value || "").trim().toLowerCase();
+}
+
+function filterSavedRuns(runs, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return Array.isArray(runs) ? runs : [];
+  const terms = q.split(/\s+/).filter((t) => !!t);
+  if (!terms.length) return Array.isArray(runs) ? runs : [];
+
+  const xs = Array.isArray(runs) ? runs : [];
+  return xs.filter((r) => {
+    const ts = String(r?.ts || "").toLowerCase();
+    const kind = String(r?.strategy_kind || "").toLowerCase();
+    const csv = String(r?.csv_path || "").toLowerCase();
+    const tags = Array.isArray(r?.tags) ? r.tags.map((t) => String(t || "").toLowerCase()).join(" ") : "";
+    const hay = `${ts} ${kind} ${csv} ${tags}`;
+    return terms.every((t) => hay.includes(t));
+  });
+}
+
+function renderSavedRunsSelect(selectedPath) {
+  const cur = String(selectedPath || $("savedRunsSelect")?.value || "").trim();
+  const filtered = filterSavedRuns(SAVED_RUNS, savedRunsQuery());
+  populateSavedRunsSelect(filtered, cur);
+
+  const meta = $("savedRunsMeta");
+  if (meta) meta.textContent = `saved runs: ${filtered.length}/${SAVED_RUNS.length}`;
+  syncSavedRunSelectionUi();
+}
+
+async function refreshSavedRuns(selectedPath) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    const runs = await invoke("list_run_artifacts");
+    SAVED_RUNS = Array.isArray(runs) ? runs : [];
+    COMPARE_BASELINE_CACHE = {};
+    renderSavedRunsSelect(selectedPath);
+    populateCompareSelect(getHistory(), $("compareSelect")?.value || "");
+  } catch (e) {
+    const meta = $("savedRunsMeta");
+    if (meta) meta.textContent = `failed to list saved runs: ${String(e)}`;
+  }
+}
+
+function populateMetaSavedSelect(items, selectedPath) {
+  const sel = $("metaSavedSelect");
+  if (!sel) return;
+  sel.innerHTML = "";
+
+  const rows = Array.isArray(items) ? items : [];
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = rows.length ? "Select a saved meta run..." : "No meta runs yet";
+  sel.appendChild(opt0);
+
+  for (const r of rows) {
+    const opt = document.createElement("option");
+    opt.value = r.path || "";
+    const kind = String(r.strategy_kind || "");
+    const tf = String(r.timeframe || "");
+    const groups = Number(r.groups || 0);
+    const artifacts = Number(r.artifacts_used || 0);
+    const holdout = Number(r.holdout_datasets || 0);
+    const tagsN = Array.isArray(r.tags) ? r.tags.length : 0;
+    const tagsHint = tagsN ? ` | tags=${tagsN}` : "";
+    const tfHint = tf ? ` | ${tf}` : "";
+    const holdoutHint = holdout ? ` | holdout=${holdout}` : "";
+    opt.textContent = `${r.ts || "unknown"} | ${kind}${tfHint} | groups=${groups} | arts=${artifacts}${holdoutHint}${tagsHint}`;
+    sel.appendChild(opt);
+  }
+  sel.value = selectedPath || "";
+}
+
+function metaSavedQuery() {
+  return String($("metaSavedSearch")?.value || "").trim().toLowerCase();
+}
+
+function filterMetaSaved(items, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return Array.isArray(items) ? items : [];
+  const terms = q.split(/\s+/).filter((t) => !!t);
+  if (!terms.length) return Array.isArray(items) ? items : [];
+
+  const xs = Array.isArray(items) ? items : [];
+  return xs.filter((r) => {
+    const ts = String(r?.ts || "").toLowerCase();
+    const kind = String(r?.strategy_kind || "").toLowerCase();
+    const tf = String(r?.timeframe || "").toLowerCase();
+    const tag = String(r?.required_tag || "").toLowerCase();
+    const tags = Array.isArray(r?.tags) ? r.tags.map((t) => String(t || "").toLowerCase()).join(" ") : "";
+    const hay = `${ts} ${kind} ${tf} ${tag} ${tags}`;
+    return terms.every((t) => hay.includes(t));
+  });
+}
+
+function renderMetaSavedSelect(selectedPath) {
+  const cur = String(selectedPath || $("metaSavedSelect")?.value || "").trim();
+  const filtered = filterMetaSaved(SAVED_META, metaSavedQuery());
+  populateMetaSavedSelect(filtered, cur);
+  syncMetaSavedSelectionUi();
+  populateMetaCompareSelect(SAVED_META, $("metaCompareSelect")?.value || "");
+  renderMetaCompare();
+}
+
+async function refreshMetaSaved(selectedPath) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    const runs = await invoke("list_meta_artifacts");
+    SAVED_META = Array.isArray(runs) ? runs : [];
+    META_BASELINE_CACHE = {};
+    renderMetaSavedSelect(selectedPath);
+  } catch (e) {
+    const meta = $("metaSavedMeta");
+    if (meta) meta.textContent = `failed to list meta runs: ${String(e)}`;
+  }
+}
+
+function selectedMetaSavedEntry() {
+  const path = String($("metaSavedSelect")?.value || "").trim();
+  if (!path) return null;
+  return SAVED_META.find((r) => String(r?.path || "") === path) || null;
+}
+
+function syncMetaSavedSelectionUi() {
+  updateMetaSavedMeta();
+  const entry = selectedMetaSavedEntry();
+  const tagsEl = $("metaSavedTags");
+  if (tagsEl) tagsEl.value = entry && Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
+
+  const btnLoad = $("btnLoadMetaSaved");
+  const btnOpen = $("btnOpenMetaSavedReport");
+  const btnReveal = $("btnRevealMetaSaved");
+  const btnDelete = $("btnDeleteMetaSaved");
+  const btnSaveTags = $("btnSaveMetaSavedTags");
+
+  const has = !!entry;
+  if (btnLoad) btnLoad.disabled = RUNNING || !has;
+  if (btnOpen) btnOpen.disabled = RUNNING || !has || !String(entry?.report_xlsx_path || "").trim();
+  if (btnReveal) btnReveal.disabled = RUNNING || !has;
+  if (btnDelete) btnDelete.disabled = RUNNING || !has;
+  if (btnSaveTags) btnSaveTags.disabled = RUNNING || !has;
+  if (tagsEl) tagsEl.disabled = RUNNING || !has;
+}
+
+function updateMetaSavedMeta() {
+  const meta = $("metaSavedMeta");
+  if (!meta) return;
+  const entry = selectedMetaSavedEntry();
+  if (!entry) {
+    const filtered = filterMetaSaved(SAVED_META, metaSavedQuery());
+    meta.textContent = `saved meta: ${filtered.length}/${SAVED_META.length}`;
+    return;
+  }
+  const parts = [];
+  if (entry.ts) parts.push(`ts=${entry.ts}`);
+  if (entry.strategy_kind) parts.push(`strategy=${entry.strategy_kind}`);
+  if (entry.timeframe) parts.push(`tf=${entry.timeframe}`);
+  if (entry.required_tag) parts.push(`tag=${entry.required_tag}`);
+  parts.push(`groups=${Number(entry.groups || 0)}`);
+  parts.push(`artifacts=${Number(entry.artifacts_used || 0)}`);
+  const holdout = Number(entry.holdout_datasets || 0);
+  if (holdout) parts.push(`holdout=${holdout}`);
+  if (Array.isArray(entry.tags) && entry.tags.length) parts.push(`tags=${entry.tags.join(",")}`);
+  if (entry.bytes != null) parts.push(`bytes=${entry.bytes}`);
+  meta.textContent = parts.join(" • ");
+}
+
+function buildMetaSelectionResponseFromArtifact(artifact, path) {
+  const ts = String(artifact?.ts || "").trim() || new Date().toISOString();
+  const report_xlsx_path = String(artifact?.report_xlsx_path || "").trim();
+  const result = artifact?.res && typeof artifact.res === "object" ? artifact.res : null;
+  return {
+    ts,
+    report_xlsx_path,
+    report_xlsx_bytes: 0,
+    meta_json_path: String(path || "").trim(),
+    meta_json_bytes: 0,
+    result,
+  };
+}
+
+async function loadMetaSaved(path) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Select a saved meta run first.");
+
+  const artifact = await invoke("load_run_artifact", { path: p });
+  const kind = String(artifact?.kind || "");
+  if (kind !== "vectorbt_meta_selection") throw new Error(`Not a meta artifact: kind='${kind}'`);
+  const resp = buildMetaSelectionResponseFromArtifact(artifact, p);
+
+  LAST_META_RUN = resp;
+  renderMetaSelection(resp);
+  RESULTS_TABS?.set("meta", { save: true, focus: false });
+  renderMetaCompare();
+  updateQuickActionsUi();
+  setStatus(`Loaded meta run ${resp.ts}`, "muted");
+}
+
+async function openSelectedMetaSavedReport() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const entry = selectedMetaSavedEntry();
+  const reportPath = String(entry?.report_xlsx_path || "").trim();
+  if (!reportPath) {
+    setStatus("No report path for this meta run.", "muted");
+    return;
+  }
+  try {
+    await invoke("open_path", { path: reportPath });
+    setStatus("Opened report.", "ok");
+  } catch {
+    await invoke("reveal_path", { path: reportPath });
+    setStatus("Revealed report.", "ok");
+  }
+}
+
+async function revealSelectedMetaSaved() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const entry = selectedMetaSavedEntry();
+  const p = String(entry?.path || "").trim();
+  if (!p) return;
+  await invoke("reveal_path", { path: p });
+}
+
+async function deleteSelectedMetaSaved() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const entry = selectedMetaSavedEntry();
+  const p = String(entry?.path || "").trim();
+  if (!p) return;
+  await invoke("delete_run_artifact", { path: p });
+  if (LAST_META_RUN && String(LAST_META_RUN.meta_json_path || "") === p) {
+    LAST_META_RUN = null;
+    renderMetaSelection(null);
+    updateQuickActionsUi();
+  }
+  await refreshMetaSaved("");
+  setStatus("Deleted meta run.", "ok");
+}
+
+function populateMetaCompareSelect(items, selectedPath) {
+  const sel = $("metaCompareSelect");
+  if (!sel) return;
+  sel.innerHTML = "";
+
+  const rows = Array.isArray(items) ? items : [];
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = rows.length ? "Compare against..." : "No meta runs yet";
+  sel.appendChild(opt0);
+
+  for (const r of rows) {
+    const opt = document.createElement("option");
+    opt.value = r.path || "";
+    const kind = String(r.strategy_kind || "");
+    const tf = String(r.timeframe || "");
+    const groups = Number(r.groups || 0);
+    const tfHint = tf ? ` | ${tf}` : "";
+    opt.textContent = `${r.ts || "unknown"} | ${kind}${tfHint} | groups=${groups}`;
+    sel.appendChild(opt);
+  }
+  sel.value = selectedPath || "";
+}
+
+function fmtPct(x, digits) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "-";
+  const d = Number.isFinite(digits) ? digits : 1;
+  return (n * 100).toFixed(d) + "%";
+}
+
+async function loadMetaArtifactCached(path) {
+  const p = String(path || "").trim();
+  if (!p) return null;
+  const cached = META_BASELINE_CACHE[p];
+  if (cached) return cached;
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const artifact = await invoke("load_run_artifact", { path: p });
+  META_BASELINE_CACHE[p] = artifact;
+  return artifact;
+}
+
+async function renderMetaCompare() {
+  const el = $("metaCompareSummary");
+  if (!el) return;
+
+  const cur = LAST_META_RUN?.result && typeof LAST_META_RUN.result === "object" ? LAST_META_RUN.result : null;
+  const curGroups = Array.isArray(cur?.groups) ? cur.groups : [];
+  if (!cur || !curGroups.length) {
+    el.textContent = "—";
+    return;
+  }
+
+  const baselinePath = String($("metaCompareSelect")?.value || "").trim();
+  if (!baselinePath) {
+    el.textContent = "Select a baseline meta run to compare.";
+    return;
+  }
+
+  const seq = ++META_COMPARE_SEQ;
+  try {
+    const baselineArt = await loadMetaArtifactCached(baselinePath);
+    if (seq !== META_COMPARE_SEQ) return;
+
+    const base = baselineArt?.res && typeof baselineArt.res === "object" ? baselineArt.res : null;
+    const baseGroups = Array.isArray(base?.groups) ? base.groups : [];
+    if (!base || !baseGroups.length) {
+      el.textContent = "Baseline meta run has no groups.";
+      return;
+    }
+
+    const curTop = curGroups[0] || {};
+    const baseTop = baseGroups[0] || {};
+
+    const curKeys = new Set(curGroups.map((g) => String(g?.key || "")).filter((k) => !!k));
+    const baseKeys = new Set(baseGroups.map((g) => String(g?.key || "")).filter((k) => !!k));
+    let overlap = 0;
+    for (const k of curKeys) if (baseKeys.has(k)) overlap++;
+    const union = curKeys.size + baseKeys.size - overlap;
+    const jaccard = union ? overlap / union : 0;
+
+    const delta = (a, b) => {
+      const x = Number(a);
+      const y = Number(b);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return "-";
+      const d = x - y;
+      return (d >= 0 ? "+" : "") + d.toFixed(6);
+    };
+
+    const curHold = curTop?.holdout && typeof curTop.holdout === "object" ? curTop.holdout : null;
+    const baseHold = baseTop?.holdout && typeof baseTop.holdout === "object" ? baseTop.holdout : null;
+
+    const lines = [];
+    lines.push(`Current: groups=${curGroups.length} artifacts=${Number(cur.artifacts_used || 0)}/${Number(cur.artifacts_considered || 0)} runtime=${Number(cur.runtime_ms || 0)}ms`);
+    lines.push(`Baseline: groups=${baseGroups.length} artifacts=${Number(base.artifacts_used || 0)}/${Number(base.artifacts_considered || 0)} runtime=${Number(base.runtime_ms || 0)}ms`);
+    lines.push(`Overlap: ${overlap}/${Math.min(curKeys.size, baseKeys.size)} (Jaccard ${jaccard.toFixed(3)})`);
+    lines.push("");
+    lines.push("Top-1 deltas (current - baseline):");
+    lines.push(`  meta_score: ${delta(curTop.meta_score, baseTop.meta_score)}`);
+    lines.push(`  robust_p10: ${delta(curTop.robust_score_p10, baseTop.robust_score_p10)}`);
+    lines.push(`  robust_med: ${delta(curTop.robust_score_median, baseTop.robust_score_median)}`);
+    lines.push(`  dd_p90: ${delta(curTop.max_dd_p90, baseTop.max_dd_p90)}`);
+    lines.push(`  pass_rate: ${fmtPct(Number(curTop.pass_rate || 0), 1)} vs ${fmtPct(Number(baseTop.pass_rate || 0), 1)}`);
+
+    if (curHold || baseHold) {
+      lines.push("");
+      lines.push("Holdout (top-1):");
+      if (curHold) lines.push(`  current: pass=${fmtPct(Number(curHold.pass_rate || 0), 1)} p10=${Number(curHold.score_p10 || 0).toFixed(6)} dd_p90=${Number(curHold.max_dd_p90 || 0).toFixed(6)}`);
+      else lines.push("  current: -");
+      if (baseHold) lines.push(`  baseline: pass=${fmtPct(Number(baseHold.pass_rate || 0), 1)} p10=${Number(baseHold.score_p10 || 0).toFixed(6)} dd_p90=${Number(baseHold.max_dd_p90 || 0).toFixed(6)}`);
+      else lines.push("  baseline: -");
+    }
+
+    el.textContent = lines.join("\n");
+  } catch (e) {
+    if (seq !== META_COMPARE_SEQ) return;
+    el.textContent = `Meta compare failed: ${String(e)}`;
+  }
+}
+
+function selectedSavedRunEntry() {
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) return null;
+  return SAVED_RUNS.find((r) => String(r?.path || "") === path) || null;
+}
+
+function syncSavedRunSelectionUi() {
+  updateSavedRunsMeta();
+  const tagsEl = $("savedRunsTags");
+  if (!tagsEl) return;
+  const entry = selectedSavedRunEntry();
+  tagsEl.value = entry && Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
+}
+
+function updateSavedRunsMeta() {
+  const meta = $("savedRunsMeta");
+  if (!meta) return;
+  const entry = selectedSavedRunEntry();
+  if (!entry) {
+    const filtered = filterSavedRuns(SAVED_RUNS, savedRunsQuery());
+    meta.textContent = `saved runs: ${filtered.length}/${SAVED_RUNS.length}`;
+    return;
+  }
+  const parts = [];
+  if (entry.ts) parts.push(`ts=${entry.ts}`);
+  if (entry.strategy_kind) parts.push(`strategy=${entry.strategy_kind}`);
+  if (entry.has_validation) parts.push("validation=yes");
+  if (entry.report_xlsx_path) parts.push("xlsx=yes");
+  if (entry.csv_path) parts.push(`csv=${entry.csv_path}`);
+  if (Array.isArray(entry.tags) && entry.tags.length) parts.push(`tags=${entry.tags.join(",")}`);
+  if (entry.bytes != null) parts.push(`bytes=${entry.bytes}`);
+  meta.textContent = parts.join(" • ");
+}
+
+function parseTagsInput(raw) {
+  const s = String(raw || "");
+  const parts = s
+    .split(/[,;\n]+/g)
+    .flatMap((p) => String(p || "").trim().split(/\s+/g))
+    .map((p) => p.trim())
+    .filter((p) => !!p);
+
+  const seen = new Set();
+  const out = [];
+  for (const t of parts) {
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+async function loadRunArtifactJson(path) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Missing run artifact path.");
+  return await invoke("load_run_artifact", { path: p });
+}
+
+async function saveSavedRunTags(path, tags) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Select a saved run first.");
+
+  await invoke("update_artifact_tags", { path: p, tags: Array.isArray(tags) ? tags : [] });
+  await refreshSavedRuns(p);
+
+  if (CURRENT_RUN?.artifact_path && String(CURRENT_RUN.artifact_path) === p) {
+    CURRENT_RUN.tags = Array.isArray(tags) ? tags : [];
+  }
+  setStatus("Saved tags.", "ok");
+}
+
+async function saveMetaSavedTags(path, tags) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Select a saved meta run first.");
+
+  await invoke("update_artifact_tags", { path: p, tags: Array.isArray(tags) ? tags : [] });
+  await refreshMetaSaved(p);
+  setStatus("Saved meta tags.", "ok");
+}
+
+async function loadSavedRun(path) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Select a saved run first.");
+
+  const artifact = await invoke("load_run_artifact", { path: p });
+  const runReq = artifact?.run?.req || null;
+  const runRes = artifact?.run?.res || null;
+  const ts = String(artifact?.ts || "").trim() || new Date().toISOString();
+  if (!runReq || !runRes) throw new Error("Saved run artifact is missing run.req/run.res.");
+
+  CURRENT_RUN = { ts, req: runReq, res: runRes, artifact_path: p };
+  if (artifact?.report_xlsx_path) CURRENT_RUN.report_xlsx_path = String(artifact.report_xlsx_path || "").trim();
+  if (artifact?.data?.csv_path) CURRENT_RUN.csv_path = String(artifact.data.csv_path || "").trim();
+  if (Array.isArray(artifact?.tags)) CURRENT_RUN.tags = artifact.tags.map((t) => String(t || "").trim()).filter((t) => !!t);
+
+  clearValidationUi();
+  $("output").textContent = pretty(runRes);
+  renderRun(runRes, runReq);
+
+  const valRes = artifact?.validation?.res || null;
+  const valReq = artifact?.validation?.req || null;
+  if (valRes) {
+    CURRENT_VALIDATION = { ts, req: valReq, res: valRes };
+    if ($("validationOutput")) $("validationOutput").textContent = pretty(valRes);
+    if ($("validationMeta")) {
+      const crossN = Array.isArray(valRes?.cross_ticker?.datasets) ? valRes.cross_ticker.datasets.length : 0;
+      const crossSuffix = crossN ? ` • cross=${crossN}` : "";
+      $("validationMeta").textContent = `validated ${valRes?.candidates?.length || 0} candidates in ${Number(valRes?.runtime_ms || 0)}ms (backend)${crossSuffix}`;
+    }
+    renderValidationTable(valRes);
+    updateValidationExportButtons();
+    if (CURRENT_RUN?.res && CURRENT_RUN?.req) renderBest(CURRENT_RUN.res, CURRENT_RUN.req);
+  }
+
+  updateSavedRunsMeta();
+  updateValidateTabUi();
+  updateQuickActionsUi();
+  setStatus(`Loaded saved run ${ts}`, "muted");
+}
+
+async function applySavedRunToForm(path) {
+  const artifact = await loadRunArtifactJson(path);
+  const runReq = artifact?.run?.req || null;
+  if (!runReq) throw new Error("Saved run artifact is missing run.req.");
+  const csvPath = String(artifact?.data?.csv_path || "").trim();
+  if (csvPath && $("csvPath")) $("csvPath").value = csvPath;
+  applyRequestToUi(runReq);
+  setStatus("Applied saved run settings to form.", "ok");
+}
+
+async function rerunSavedRun(path) {
+  if (RUNNING) return;
+  const artifact = await loadRunArtifactJson(path);
+  const runReq = artifact?.run?.req || null;
+  if (!runReq) throw new Error("Saved run artifact is missing run.req.");
+
+  const csvPath = String(artifact?.data?.csv_path || "").trim();
+  if (!csvPath) {
+    throw new Error("Saved run is missing data.csv_path. Load a dataset first, then rerun.");
+  }
+
+  if ($("csvPath")) $("csvPath").value = csvPath;
+  await loadCsv();
+  applyRequestToUi(runReq);
+  await runWorkflow();
+}
+
+async function openSelectedSavedRunReport() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const entry = selectedSavedRunEntry();
+  const reportPath = String(entry?.report_xlsx_path || "").trim();
+  if (!reportPath) {
+    setStatus("No report path for this saved run yet (run validation + export XLSX).", "muted");
+    return;
+  }
+  try {
+    await invoke("open_path", { path: reportPath });
+    setStatus("Opened report.", "ok");
+  } catch {
+    await invoke("reveal_path", { path: reportPath });
+    setStatus("Revealed report.", "ok");
+  }
+}
+
+function buildRunArtifactPayload(extra) {
+  const ts = CURRENT_RUN?.ts || new Date().toISOString();
+  const reportPath = String(extra?.report_xlsx_path || CURRENT_RUN?.report_xlsx_path || "").trim();
+  const csvPath = String(extra?.csv_path || CURRENT_RUN?.csv_path || $("csvPath")?.value || "").trim();
+  const tags = Array.isArray(CURRENT_RUN?.tags) ? CURRENT_RUN.tags : [];
+  const datasetMeta = buildDatasetMetaForArtifact(csvPath);
+  const config_fingerprint = computeConfigFingerprint(CURRENT_RUN?.req || null, CURRENT_VALIDATION?.req || null);
+  return {
+    version: 1,
+    kind: "vectorbt_run_artifact",
+    ts,
+    config_fingerprint,
+    run: { req: CURRENT_RUN?.req || null, res: CURRENT_RUN?.res || null },
+    validation: CURRENT_VALIDATION ? { req: CURRENT_VALIDATION.req || null, res: CURRENT_VALIDATION.res || null } : null,
+    report_xlsx_path: reportPath,
+    data: { csv_path: csvPath },
+    dataset_meta: datasetMeta,
+    tags,
+  };
+}
+
+async function persistCurrentRunArtifact(extra) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (!CURRENT_RUN?.req || !CURRENT_RUN?.res) return;
+  try {
+    const artifact = buildRunArtifactPayload(extra);
+    const resp = await invoke("save_run_artifact", { artifact });
+    const path = String(resp?.path || "").trim();
+    if (path) CURRENT_RUN.artifact_path = path;
+    if (!BATCH_RUNNING) await refreshSavedRuns(path);
+  } catch {}
 }
 
 function addHistoryEntry(req, res) {
   const history = getHistory();
   const ts = new Date().toISOString();
   const backend = req?.backend?.backend || "CpuOnly";
-  const pairs = Number(res?.num_combos || 0);
+  const pairs = Number(res?.num_combos || res?.total_evaluations || 0);
   history.unshift({ ts, backend, pairs, req, res });
   while (history.length > 20) history.pop();
   setHistory(history);
   populateHistorySelect(history, ts);
   populateCompareSelect(history, $("compareSelect")?.value || "");
-  CURRENT_RUN = { ts, req, res };
+  const tags = Array.isArray(NEXT_RUN_TAGS) ? NEXT_RUN_TAGS : [];
+  NEXT_RUN_TAGS = null;
+  CURRENT_RUN = { ts, req, res, tags, csv_path: String($("csvPath")?.value || "").trim() };
+  clearValidationUi();
 }
 
 function scoreOf(metrics, objective) {
@@ -1391,6 +4371,34 @@ function applyTopFilters(rows, filters) {
 
 function collectTopRows(res) {
   const out = [];
+  const pareto = Array.isArray(res?.pareto) ? res.pareto : null;
+  if (pareto) {
+    const pts = pareto.map((p) => ({
+      params: (p && typeof p === "object" ? p.params : null) || {},
+      metrics: (p && typeof p === "object" ? p.metrics : null) || {},
+      maximize_value: Number(p?.maximize_value ?? NaN),
+      minimize_value: Number(p?.minimize_value ?? NaN),
+      violation: Number(p?.violation ?? 0),
+    }));
+    pts.sort((a, b) => {
+      const aFeas = a.violation <= 0;
+      const bFeas = b.violation <= 0;
+      if (aFeas !== bFeas) return aFeas ? -1 : 1;
+      if (a.maximize_value !== b.maximize_value) return b.maximize_value - a.maximize_value;
+      if (a.minimize_value !== b.minimize_value) return a.minimize_value - b.minimize_value;
+      return 0;
+    });
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      out.push({
+        rank: i + 1,
+        params: p.params,
+        metrics: p.metrics,
+        mo: { maximize_value: p.maximize_value, minimize_value: p.minimize_value, violation: p.violation },
+      });
+    }
+    return out;
+  }
   const top = Array.isArray(res?.top) ? res.top : [];
   for (let i = 0; i < top.length; i++) {
     const [params, metrics] = top[i] || [];
@@ -1413,6 +4421,8 @@ function sortRows(rows, key, dir, objective) {
     const pb = rb.params || {};
     const ma = ra.metrics || {};
     const mb = rb.metrics || {};
+    const moa = ra.mo || {};
+    const mob = rb.mo || {};
 
     if (k === "rank") return d * cmpNum(ra.rank, rb.rank);
     if (k === "fast") {
@@ -1432,6 +4442,9 @@ function sortRows(rows, key, dir, objective) {
     if (k === "max_dd") return d * cmpNum(Number(ma.max_dd || 0), Number(mb.max_dd || 0));
     if (k === "trades") return d * cmpNum(Number(ma.trades || 0), Number(mb.trades || 0));
     if (k === "exposure") return d * cmpNum(Number(ma.exposure || 0), Number(mb.exposure || 0));
+    if (k === "maximize_value") return d * cmpNum(Number(moa.maximize_value ?? -Infinity), Number(mob.maximize_value ?? -Infinity));
+    if (k === "minimize_value") return d * cmpNum(Number(moa.minimize_value ?? Infinity), Number(mob.minimize_value ?? Infinity));
+    if (k === "violation") return d * cmpNum(Number(moa.violation ?? 0), Number(mob.violation ?? 0));
     if (k === "score") return d * cmpNum(scoreOf(ma, obj), scoreOf(mb, obj));
     return d * cmpNum(ra.rank, rb.rank);
   });
@@ -1592,7 +4605,50 @@ function renderPareto(rows) {
   };
 }
 
+function updateTopTableHeader(isMo, req) {
+  const tr = document.querySelector("#topTable thead tr");
+  if (!tr) return;
+
+  const mode = isMo ? "mo" : "base";
+  if (tr.getAttribute("data-mode") === mode) return;
+  tr.setAttribute("data-mode", mode);
+
+  if (!isMo) {
+    tr.innerHTML = `
+      <th data-key="rank" class="left">#</th>
+      <th data-key="fast" class="left">Fast</th>
+      <th data-key="slow" class="left">Slow</th>
+      <th data-key="pnl">PnL</th>
+      <th data-key="sharpe">Sharpe</th>
+      <th data-key="max_dd">MaxDD</th>
+      <th data-key="trades">Trades</th>
+      <th data-key="exposure">Expo</th>
+    `;
+    return;
+  }
+
+  const maxObj = String(req?.objectives?.maximize || req?.objective || "maximize");
+  const minObj = String(req?.objectives?.minimize || "?");
+  tr.innerHTML = `
+    <th data-key="rank" class="left">#</th>
+    <th data-key="fast" class="left">Fast</th>
+    <th data-key="slow" class="left">Slow</th>
+    <th data-key="pnl">PnL</th>
+    <th data-key="sharpe">Sharpe</th>
+    <th data-key="max_dd">MaxDD</th>
+    <th data-key="trades">Trades</th>
+    <th data-key="exposure">Expo</th>
+    <th data-key="maximize_value">Max(${maxObj})</th>
+    <th data-key="minimize_value">Min(${minObj})</th>
+    <th data-key="violation">Viol</th>
+  `;
+}
+
 function renderTopTable(res, req) {
+  const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
+  const isMo = kindRaw === "CompositeMo" && Array.isArray(res?.pareto);
+  updateTopTableHeader(isMo, req);
+
   TOP_ROWS = collectTopRows(res);
   const obj = req?.objective || "Sharpe";
   const sorted = sortRows(TOP_ROWS, TOP_SORT.key, TOP_SORT.dir, obj);
@@ -1611,7 +4667,7 @@ function renderTopTable(res, req) {
   if (!TOP_ROWS_FILTERED.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 8;
+    td.colSpan = isMo ? 11 : 8;
     td.className = "left muted";
     td.textContent = sorted.length ? "No rows match the current filters." : "No rows.";
     tr.appendChild(td);
@@ -1623,6 +4679,7 @@ function renderTopTable(res, req) {
   for (const row of TOP_ROWS_FILTERED) {
     const p = row.params || {};
     const m = row.metrics || {};
+    const mo = row.mo || {};
     const key = paramsKey(p);
     const tr = document.createElement("tr");
 
@@ -1666,6 +4723,25 @@ function renderTopTable(res, req) {
     tr.appendChild(tdDd);
     tr.appendChild(tdTrades);
     tr.appendChild(tdExpo);
+
+    if (isMo) {
+      const tdMax = document.createElement("td");
+      tdMax.textContent = fmt(mo.maximize_value, 6);
+      tdMax.className = "mono";
+
+      const tdMin = document.createElement("td");
+      tdMin.textContent = fmt(mo.minimize_value, 6);
+      tdMin.className = "mono";
+
+      const tdViol = document.createElement("td");
+      tdViol.textContent = fmt(mo.violation, 6);
+      tdViol.className = "mono";
+
+      tr.appendChild(tdMax);
+      tr.appendChild(tdMin);
+      tr.appendChild(tdViol);
+    }
+
     if (key && key === DRILL_SELECTED_KEY) tr.classList.add("selected");
     tr.addEventListener("click", () => {
       for (const el of tbody.querySelectorAll("tr.selected")) el.classList.remove("selected");
@@ -1684,61 +4760,287 @@ function renderCompare() {
   const el = $("compareSummary");
   if (!el) return;
 
-  const history = getHistory();
-  const baseTs = $("compareSelect")?.value || "";
-  const base = history.find((h) => h.ts === baseTs) || null;
-  const cur = CURRENT_RUN;
-
-  if (!baseTs) {
+  const sel = String($("compareSelect")?.value || "").trim();
+  if (!sel) {
     el.textContent = "-";
     return;
   }
-  if (!base) {
-    el.textContent = "Baseline run not found (it may have been trimmed from history).";
-    return;
-  }
-  if (!cur?.res) {
+  if (!CURRENT_RUN?.res) {
     el.textContent = "Select a current run to compare.";
     return;
   }
 
-  const bReq = base.req || {};
-  const bRes = base.res || {};
-  const cReq = cur.req || {};
-  const cRes = cur.res || {};
+  COMPARE_SEQ = (COMPARE_SEQ + 1) >>> 0;
+  const seq = COMPARE_SEQ;
+  el.textContent = "Loading compare…";
 
-  const bm = bRes.best_metrics || {};
-  const cm = cRes.best_metrics || {};
-  const bp = bRes.best_params || {};
-  const cp = cRes.best_params || {};
+  const stableStringify = (v) => {
+    if (v == null) return "null";
+    if (typeof v !== "object") {
+      try { return JSON.stringify(v); } catch { return String(v); }
+    }
+    if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+    const keys = Object.keys(v).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(",")}}`;
+  };
 
-  const bObj = bReq.objective || "Sharpe";
-  const cObj = cReq.objective || "Sharpe";
-  const bScore = scoreOf(bm, bObj);
-  const cScore = scoreOf(cm, cObj);
+  const truncate = (s, n) => {
+    const t = String(s || "");
+    const lim = Math.max(8, Math.floor(Number(n || 0) || 120));
+    return t.length > lim ? `${t.slice(0, lim - 1)}…` : t;
+  };
 
-  const bRt = Number(bRes.runtime_ms || 0);
-  const cRt = Number(cRes.runtime_ms || 0);
-  const rtRatio = bRt > 0 && cRt > 0 ? (bRt / cRt) : 0;
+  const diffParams = (a, b, limit) => {
+    const aa = a && typeof a === "object" ? a : {};
+    const bb = b && typeof b === "object" ? b : {};
+    const keys = Array.from(new Set([...Object.keys(aa), ...Object.keys(bb)])).sort();
+    const out = [];
+    for (const k of keys) {
+      const av = stableStringify(aa[k]);
+      const bv = stableStringify(bb[k]);
+      if (av === bv) continue;
+      out.push({ key: k, a: av, b: bv });
+      if (out.length >= (limit || 12)) break;
+    }
+    return out;
+  };
 
-  const delta = (a, b) => Number(a || 0) - Number(b || 0);
+  const pickOptimizeBest = (res, req) => {
+    const kind = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
+    if (kind === "CompositeMo" && Array.isArray(res?.pareto) && res.pareto.length) {
+      const pts = res.pareto;
+      const best = [...pts].sort((a, b) => {
+        const av = Number(a?.violation ?? 0);
+        const bv = Number(b?.violation ?? 0);
+        const aFeas = av <= 0;
+        const bFeas = bv <= 0;
+        if (aFeas !== bFeas) return aFeas ? -1 : 1;
+        const aMax = Number(a?.maximize_value ?? -Infinity);
+        const bMax = Number(b?.maximize_value ?? -Infinity);
+        if (aMax !== bMax) return bMax - aMax;
+        const aMin = Number(a?.minimize_value ?? Infinity);
+        const bMin = Number(b?.minimize_value ?? Infinity);
+        if (aMin !== bMin) return aMin - bMin;
+        return 0;
+      })[0];
+      return { metrics: best?.metrics || {}, params: best?.params || {} };
+    }
+    return { metrics: res?.best_metrics || {}, params: res?.best_params || {} };
+  };
 
-  const lines = [];
-  lines.push(`baseline: ${base.ts} | backend=${bReq?.backend?.backend || base.backend || "?"} | combos=${Number(bRes.num_combos || 0)} | runtime_ms=${bRt || 0}`);
-  lines.push(`current:  ${cur.ts} | backend=${cReq?.backend?.backend || "?"} | combos=${Number(cRes.num_combos || 0)} | runtime_ms=${cRt || 0}${rtRatio ? ` | speedup=${rtRatio.toFixed(2)}x` : ""}`);
-  lines.push("");
-  lines.push(`baseline best: ${bp.fast_ma_type || "?"}(${bp.fast_len || "?"}) vs ${bp.slow_ma_type || "?"}(${bp.slow_len || "?"}) | pnl=${fmt(bm.pnl, 6)} sharpe=${fmt(bm.sharpe, 6)} dd=${fmt(bm.max_dd, 6)} trades=${Number(bm.trades || 0)} expo=${fmt(bm.exposure, 4)} score(${bObj})=${fmt(bScore, 6)}`);
-  lines.push(`current best:  ${cp.fast_ma_type || "?"}(${cp.fast_len || "?"}) vs ${cp.slow_ma_type || "?"}(${cp.slow_len || "?"}) | pnl=${fmt(cm.pnl, 6)} sharpe=${fmt(cm.sharpe, 6)} dd=${fmt(cm.max_dd, 6)} trades=${Number(cm.trades || 0)} expo=${fmt(cm.exposure, 4)} score(${cObj})=${fmt(cScore, 6)}`);
-  lines.push("");
-  lines.push(`deltas (current - baseline): pnl=${fmt(delta(cm.pnl, bm.pnl), 6)} sharpe=${fmt(delta(cm.sharpe, bm.sharpe), 6)} dd=${fmt(delta(cm.max_dd, bm.max_dd), 6)} trades=${delta(cm.trades, bm.trades)} expo=${fmt(delta(cm.exposure, bm.exposure), 4)}`);
+  const pickRecommended = (valRes) => {
+    if (!valRes) return null;
+    const { rows } = computeValidationShortlist(valRes);
+    return rows && rows.length ? (rows[0] || null) : null;
+  };
 
-  if (bObj === cObj) {
-    lines.push(`objective delta: score(${cObj})=${fmt(delta(cScore, bScore), 6)}`);
-  } else {
-    lines.push(`objective delta: (objectives differ: baseline=${bObj}, current=${cObj})`);
-  }
+  const resolveBaseline = async (value) => {
+    const v = String(value || "").trim();
+    if (!v) return null;
+    const history = getHistory();
+    if (v.startsWith("disk:")) {
+      const path = v.slice(5);
+      const cached = COMPARE_BASELINE_CACHE[path];
+      const art = cached || (await loadRunArtifactJson(path));
+      if (!cached) COMPARE_BASELINE_CACHE[path] = art;
+      return {
+        source: "disk",
+        ts: String(art?.ts || "").trim(),
+        req: art?.run?.req || null,
+        res: art?.run?.res || null,
+        validation: art?.validation?.res || null,
+        report_xlsx_path: String(art?.report_xlsx_path || "").trim(),
+        csv_path: String(art?.data?.csv_path || "").trim(),
+        tags: Array.isArray(art?.tags) ? art.tags : [],
+      };
+    }
+    const ts = v.startsWith("hist:") ? v.slice(5) : v;
+    const h = history.find((x) => String(x?.ts || "") === ts) || null;
+    if (!h) return null;
+    return { source: "hist", ts: h.ts, req: h.req || null, res: h.res || null, validation: null, report_xlsx_path: "", csv_path: "", tags: [] };
+  };
 
-  el.textContent = lines.join("\n");
+  (async () => {
+    const base = await resolveBaseline(sel);
+    const cur = CURRENT_RUN;
+    const curVal = (CURRENT_VALIDATION && CURRENT_VALIDATION.ts === cur.ts) ? CURRENT_VALIDATION.res : null;
+
+    if (seq !== COMPARE_SEQ) return;
+    if (!base?.res || !base?.req) {
+      el.textContent = "Baseline run not found (refresh saved runs or pick another baseline).";
+      return;
+    }
+
+    const bReq = base.req || {};
+    const bRes = base.res || {};
+    const cReq = cur.req || {};
+    const cRes = cur.res || {};
+
+    const bBest = pickOptimizeBest(bRes, bReq);
+    const cBest = pickOptimizeBest(cRes, cReq);
+
+    const bm = bBest.metrics || {};
+    const cm = cBest.metrics || {};
+    const bp = bBest.params || {};
+    const cp = cBest.params || {};
+
+    const bObj = bReq.objective || (bReq?.objectives?.maximize || "Sharpe");
+    const cObj = cReq.objective || (cReq?.objectives?.maximize || "Sharpe");
+    const bScore = scoreOf(bm, bObj);
+    const cScore = scoreOf(cm, cObj);
+
+    const bRt = Number(bRes.runtime_ms || 0);
+    const cRt = Number(cRes.runtime_ms || 0);
+    const rtRatio = bRt > 0 && cRt > 0 ? (bRt / cRt) : 0;
+
+    const delta = (a, b) => Number(a || 0) - Number(b || 0);
+
+    const lines = [];
+    const bKind = kindFromReq(bReq);
+    const cKind = kindFromReq(cReq);
+    const bCombos = Number(bRes.num_combos || bRes.total_evaluations || 0);
+    const cCombos = Number(cRes.num_combos || cRes.total_evaluations || 0);
+    lines.push(`baseline (${base.source}): ${base.ts} | strategy=${bKind} | combos=${bCombos} | runtime_ms=${bRt || 0}`);
+    lines.push(`current:          ${cur.ts} | strategy=${cKind} | combos=${cCombos} | runtime_ms=${cRt || 0}${rtRatio ? ` | speedup=${rtRatio.toFixed(2)}x` : ""}`);
+    if (bKind !== cKind) lines.push(`note: strategies differ (baseline=${bKind}, current=${cKind})`);
+    lines.push("");
+
+    lines.push("Optimization best:");
+    lines.push(`  baseline: pnl=${fmt(bm.pnl, 6)} sharpe=${fmt(bm.sharpe, 6)} dd=${fmt(bm.max_dd, 6)} trades=${Number(bm.trades || 0)} expo=${fmt(bm.exposure, 4)} score(${bObj})=${fmt(bScore, 6)}`);
+    lines.push(`  current:  pnl=${fmt(cm.pnl, 6)} sharpe=${fmt(cm.sharpe, 6)} dd=${fmt(cm.max_dd, 6)} trades=${Number(cm.trades || 0)} expo=${fmt(cm.exposure, 4)} score(${cObj})=${fmt(cScore, 6)}`);
+    lines.push(`  deltas:   pnl=${fmt(delta(cm.pnl, bm.pnl), 6)} sharpe=${fmt(delta(cm.sharpe, bm.sharpe), 6)} dd=${fmt(delta(cm.max_dd, bm.max_dd), 6)} trades=${delta(cm.trades, bm.trades)} expo=${fmt(delta(cm.exposure, bm.exposure), 4)}`);
+    if (bObj === cObj) lines.push(`  scoreΔ:   ${fmt(delta(cScore, bScore), 6)} (${cObj})`);
+    lines.push("");
+
+    const bRec = pickRecommended(base.validation);
+    const cRec = pickRecommended(curVal);
+    if (bRec || cRec) {
+      lines.push("Validation recommended:");
+      const fmtU = (x, d) => fmt(x, Number.isFinite(d) ? d : 4);
+      const fmtPct = (x, d) => {
+        const n = Number(x);
+        if (!Number.isFinite(n)) return "-";
+        return (n * 100).toFixed(Number.isFinite(d) ? d : 1) + "%";
+      };
+      const wfLine = (wf) => {
+        if (!wf || typeof wf !== "object") return "";
+        return `           wf: win=${Number(wf.windows || 0)} ` +
+          `sh_med=${fmtU(wf.sharpe_median, 4)} sh_worst=${fmtU(wf.sharpe_worst, 4)} ` +
+          `dd_worst=${fmtU(wf.max_dd_worst, 4)} pnl_worst=${fmtU(wf.pnl_worst, 6)}`;
+      };
+      const mcLine = (mc) => {
+        if (!mc || typeof mc !== "object") return "";
+        return `           mc: p+=${fmtPct(mc.prob_pnl_positive, 1)} pnl_p05=${fmtU(mc.pnl_p05, 6)} dd_p95=${fmtU(mc.max_dd_p95, 6)} sims=${Number(mc.simulations || 0)}`;
+      };
+      const perturbLine = (pt) => {
+        if (!pt || typeof pt !== "object") return "";
+        return `           perturb: sh_worst=${fmtU(pt.sharpe_worst, 4)} dd_worst=${fmtU(pt.max_dd_worst, 4)} pnl_worst=${fmtU(pt.pnl_worst, 6)} iters=${Number(pt.iterations || 0)}`;
+      };
+      const crossLine = (cross) => {
+        if (!cross || typeof cross !== "object") return "";
+        return `           cross: ds=${Number(cross.datasets || 0)} sh_worst=${fmtU(cross.sharpe_worst, 4)} dd_worst=${fmtU(cross.max_dd_worst, 4)} pnl_worst=${fmtU(cross.pnl_worst, 6)}`;
+      };
+      if (bRec) {
+        const p = bRec.params || {};
+        const m = bRec.in_sample || {};
+        const cross = bRec.cross_ticker && typeof bRec.cross_ticker === "object" ? bRec.cross_ticker : null;
+        lines.push(`  baseline: robust=${fmt(bRec.robust_score, 6)} ${bRec.robust_pareto ? "(robust pareto)" : ""}${cross ? ` | cross=${fmt(cross.score, 6)} ${bRec.cross_ticker_pareto ? "(cross pareto)" : ""}` : ""}`.trim());
+        lines.push(`           in_sample: pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | params=${truncate(stableStringify(p), 140)}`);
+        const l1 = wfLine(bRec.walk_forward);
+        const l2 = mcLine(bRec.trade_bootstrap);
+        const l3 = perturbLine(bRec.perturb);
+        const l4 = crossLine(cross);
+        if (l1) lines.push(l1);
+        if (l2) lines.push(l2);
+        if (l3) lines.push(l3);
+        if (l4) lines.push(l4);
+      } else {
+        lines.push("  baseline: (no validation saved)");
+      }
+      if (cRec) {
+        const p = cRec.params || {};
+        const m = cRec.in_sample || {};
+        const cross = cRec.cross_ticker && typeof cRec.cross_ticker === "object" ? cRec.cross_ticker : null;
+        lines.push(`  current:  robust=${fmt(cRec.robust_score, 6)} ${cRec.robust_pareto ? "(robust pareto)" : ""}${cross ? ` | cross=${fmt(cross.score, 6)} ${cRec.cross_ticker_pareto ? "(cross pareto)" : ""}` : ""}`.trim());
+        lines.push(`           in_sample: pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | params=${truncate(stableStringify(p), 140)}`);
+        const l1 = wfLine(cRec.walk_forward);
+        const l2 = mcLine(cRec.trade_bootstrap);
+        const l3 = perturbLine(cRec.perturb);
+        const l4 = crossLine(cross);
+        if (l1) lines.push(l1);
+        if (l2) lines.push(l2);
+        if (l3) lines.push(l3);
+        if (l4) lines.push(l4);
+      } else {
+        lines.push("  current:  (no validation loaded)");
+      }
+      if (bRec && cRec) {
+        const bm = bRec.in_sample || {};
+        const cm = cRec.in_sample || {};
+        const bCross = bRec.cross_ticker && typeof bRec.cross_ticker === "object" ? bRec.cross_ticker : null;
+        const cCross = cRec.cross_ticker && typeof cRec.cross_ticker === "object" ? cRec.cross_ticker : null;
+        const bCrossScore = bCross ? Number(bCross.score || 0) : NaN;
+        const cCrossScore = cCross ? Number(cCross.score || 0) : NaN;
+        const crossDelta = (Number.isFinite(bCrossScore) && Number.isFinite(cCrossScore)) ? fmt(delta(cCrossScore, bCrossScore), 6) : "-";
+        lines.push(
+          `  deltas:   robust=${fmt(delta(cRec.robust_score, bRec.robust_score), 6)} cross=${crossDelta} ` +
+          `pnl=${fmt(delta(cm.pnl, bm.pnl), 6)} sharpe=${fmt(delta(cm.sharpe, bm.sharpe), 6)} ` +
+          `dd=${fmt(delta(cm.max_dd, bm.max_dd), 6)} trades=${delta(cm.trades, bm.trades)}`
+        );
+
+        const bWf = bRec.walk_forward && typeof bRec.walk_forward === "object" ? bRec.walk_forward : null;
+        const cWf = cRec.walk_forward && typeof cRec.walk_forward === "object" ? cRec.walk_forward : null;
+        if (bWf && cWf) {
+          lines.push(
+            `  wfΔ:      sh_med=${fmt(delta(cWf.sharpe_median, bWf.sharpe_median), 4)} ` +
+            `sh_worst=${fmt(delta(cWf.sharpe_worst, bWf.sharpe_worst), 4)} ` +
+            `dd_worst=${fmt(delta(cWf.max_dd_worst, bWf.max_dd_worst), 4)} ` +
+            `pnl_worst=${fmt(delta(cWf.pnl_worst, bWf.pnl_worst), 6)}`
+          );
+        }
+
+        const bMc = bRec.trade_bootstrap && typeof bRec.trade_bootstrap === "object" ? bRec.trade_bootstrap : null;
+        const cMc = cRec.trade_bootstrap && typeof cRec.trade_bootstrap === "object" ? cRec.trade_bootstrap : null;
+        if (bMc && cMc) {
+          lines.push(
+            `  mcΔ:      p+=${fmt(delta(cMc.prob_pnl_positive, bMc.prob_pnl_positive), 4)} ` +
+            `pnl_p05=${fmt(delta(cMc.pnl_p05, bMc.pnl_p05), 6)} ` +
+            `dd_p95=${fmt(delta(cMc.max_dd_p95, bMc.max_dd_p95), 6)}`
+          );
+        }
+
+        const bPt = bRec.perturb && typeof bRec.perturb === "object" ? bRec.perturb : null;
+        const cPt = cRec.perturb && typeof cRec.perturb === "object" ? cRec.perturb : null;
+        if (bPt && cPt) {
+          lines.push(
+            `  perturbΔ: sh_worst=${fmt(delta(cPt.sharpe_worst, bPt.sharpe_worst), 4)} ` +
+            `dd_worst=${fmt(delta(cPt.max_dd_worst, bPt.max_dd_worst), 4)} ` +
+            `pnl_worst=${fmt(delta(cPt.pnl_worst, bPt.pnl_worst), 6)}`
+          );
+        }
+      }
+      lines.push("");
+    }
+
+    const aParams = (bRec?.params || bp);
+    const bParams = (cRec?.params || cp);
+    const diffs = diffParams(aParams, bParams, 12);
+    if (diffs.length) {
+      lines.push("Params diff (current - baseline):");
+      for (const d of diffs) {
+        lines.push(`  ${d.key}: ${truncate(d.a, 60)} -> ${truncate(d.b, 60)}`);
+      }
+      const totalKeys = new Set([...(aParams ? Object.keys(aParams) : []), ...(bParams ? Object.keys(bParams) : [])]).size;
+      if (totalKeys > diffs.length) lines.push(`  … (showing ${diffs.length}/${totalKeys} keys)`);
+      lines.push("");
+    }
+
+    if (seq !== COMPARE_SEQ) return;
+    el.textContent = lines.join("\n").trim() || "-";
+  })().catch((e) => {
+    if (seq !== COMPARE_SEQ) return;
+    el.textContent = `Compare failed: ${String(e)}`;
+  });
 }
 
 function paramsKey(p) {
@@ -1756,6 +5058,37 @@ function desiredDrillBins() {
   return Math.max(64, Math.min(4096, w));
 }
 
+function clearStabilityUi() {
+  const wrap = $("stabilityWrap");
+  if (wrap) wrap.style.display = "none";
+  const status = $("stabilityStatus");
+  if (status) {
+    status.textContent = "-";
+    status.className = "muted";
+  }
+  const meta = $("stabilityMeta");
+  if (meta) meta.textContent = "-";
+  const reject = $("rejectMeta");
+  if (reject) reject.textContent = "-";
+  const tbody = $("stabilityTableBody");
+  if (tbody) tbody.innerHTML = "";
+  const tableWrap = $("stabilityTableWrap");
+  if (tableWrap) tableWrap.style.display = "none";
+}
+
+function setStabilityVisible(visible) {
+  const wrap = $("stabilityWrap");
+  if (!wrap) return;
+  wrap.style.display = visible ? "block" : "none";
+}
+
+function setStabilityStatus(msg, kind) {
+  const el = $("stabilityStatus");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "muted " + (kind || "");
+}
+
 function setDrillVisible(visible) {
   const wrap = $("drillWrap");
   if (!wrap) return;
@@ -1767,6 +5100,7 @@ function setDrillVisible(visible) {
       : "Run an optimization, then click a row in the Top tab to compute drilldown curves.";
   }
   setHintVisible("drillEmptyHint", !visible);
+  if (!visible) clearStabilityUi();
 }
 
 function setDrillStatus(msg, kind) {
@@ -1973,6 +5307,22 @@ function renderTrades(curves) {
   }
 }
 
+function resolveRunMaParams(runReq, side, maId) {
+  const asObj = (x) => (x && typeof x === "object" ? x : null);
+  const legacyAlma = {
+    offset: num(runReq?.alma_offset ?? runReq?.almaOffset, 0.85),
+    sigma: num(runReq?.alma_sigma ?? runReq?.almaSigma, 6.0),
+  };
+  const id = String(maId || "").trim().toLowerCase();
+  const direct = side === "fast"
+    ? (asObj(runReq.fast_ma_params) || asObj(runReq.fastMaParams))
+    : (asObj(runReq.slow_ma_params) || asObj(runReq.slowMaParams));
+  if (direct) return direct;
+  if (id !== "alma") return null;
+  const hasLegacy = runReq?.alma_offset != null || runReq?.almaOffset != null || runReq?.alma_sigma != null || runReq?.almaSigma != null;
+  return hasLegacy ? legacyAlma : null;
+}
+
 async function requestDrilldown(params, runReqOverride) {
   const invoke = tauriInvoke();
   if (!invoke) return;
@@ -1983,32 +5333,16 @@ async function requestDrilldown(params, runReqOverride) {
 
   const seq = ++DRILL_SEQ;
   setDrillVisible(true);
+  clearStabilityUi();
   setDrillStatus("Computing drilldown…", "muted");
 
   const bins = desiredDrillBins();
-  const asObj = (x) => (x && typeof x === "object" ? x : null);
-  const legacyAlma = {
-    offset: num(runReq?.alma_offset ?? runReq?.almaOffset, 0.85),
-    sigma: num(runReq?.alma_sigma ?? runReq?.almaSigma, 6.0),
-  };
   const fastId = String(params.fast_ma_type || "").trim().toLowerCase();
   const slowId = String(params.slow_ma_type || "").trim().toLowerCase();
-  const fastParams =
-    asObj(runReq.fast_ma_params) ||
-    asObj(runReq.fastMaParams) ||
-    (fastId === "alma" &&
-    (runReq?.alma_offset != null || runReq?.almaOffset != null || runReq?.alma_sigma != null || runReq?.almaSigma != null)
-      ? legacyAlma
-      : null);
-  const slowParams =
-    asObj(runReq.slow_ma_params) ||
-    asObj(runReq.slowMaParams) ||
-    (slowId === "alma" &&
-    (runReq?.alma_offset != null || runReq?.almaOffset != null || runReq?.alma_sigma != null || runReq?.almaSigma != null)
-      ? legacyAlma
-      : null);
+  const fastParams = resolveRunMaParams(runReq, "fast", fastId);
+  const slowParams = resolveRunMaParams(runReq, "slow", slowId);
   const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : "DoubleMa";
+  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
 
   const base = {
     data_id: runReq.data_id,
@@ -2021,11 +5355,11 @@ async function requestDrilldown(params, runReqOverride) {
     ma_source: String(runReq.ma_source || "close"),
     fast_ma_params: fastParams,
     slow_ma_params: slowParams,
-    strategy: runReq.strategy || {},
+    strategy: runReq.strategy || runReq.base_strategy || {},
     bins,
   };
 
-  const cmd = kind === "CompositeCpu" ? "compute_composite_cpu_drilldown" : "compute_double_ma_drilldown";
+  const cmd = kind === "DoubleMa" ? "compute_double_ma_drilldown" : "compute_composite_cpu_drilldown";
   const req = kind === "CompositeCpu"
     ? {
       ...base,
@@ -2033,19 +5367,274 @@ async function requestDrilldown(params, runReqOverride) {
       macz: runReq.macz || {},
       ott: runReq.ott || {},
     }
-    : {
-      ...base,
-      halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null,
-    };
+    : (kind === "CompositeMo"
+      ? {
+        ...base,
+        halftrend: params.halftrend,
+        macz: params.macz || {},
+        ott: params.ott || {},
+        strategy: params.strategy || base.strategy,
+      }
+      : {
+        ...base,
+        halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null,
+      });
 
   try {
     const curves = await invoke(cmd, { req });
     if (seq !== DRILL_SEQ) return;
     setDrillStatus("Done.", "ok");
     renderDrilldown(curves, params);
+    requestLocalStability(params, runReq);
   } catch (e) {
     if (seq !== DRILL_SEQ) return;
     setDrillStatus(String(e), "danger");
+    clearStabilityUi();
+  }
+}
+
+function renderStability(res) {
+  const wrap = $("stabilityWrap");
+  const meta = $("stabilityMeta");
+  const reject = $("rejectMeta");
+  const tableWrap = $("stabilityTableWrap");
+  const tbody = $("stabilityTableBody");
+  if (!wrap || !meta || !tableWrap || !tbody) return;
+
+  const obj = res && typeof res === "object" ? res : {};
+  const base = obj.base && typeof obj.base === "object" ? obj.base : {};
+  const pts = Array.isArray(obj.points) ? obj.points : [];
+  const sum = obj.summary && typeof obj.summary === "object" ? obj.summary : {};
+
+  setStabilityVisible(true);
+  if (!pts.length) {
+    setStabilityStatus("No stability data.", "muted");
+    meta.textContent = "-";
+    if (reject) reject.textContent = "-";
+    tableWrap.style.display = "none";
+    tbody.innerHTML = "";
+    return;
+  }
+
+  setStabilityStatus("Done.", "ok");
+
+  const objective = String(obj.objective || "").trim() || "?";
+  const radius = Number(obj.radius || 0);
+  const step = Number(obj.step || 0);
+  const startT = Number(obj.start_t || 0);
+  const baseScore = Number(sum.base || 0);
+  const minScore = Number(sum.min || 0);
+  const medScore = Number(sum.median || 0);
+  const maxScore = Number(sum.max || 0);
+  const peakDelta = baseScore - medScore;
+  meta.textContent =
+    `objective=${objective} radius=${radius} step=${step} pts=${pts.length} start_t=${startT} | ` +
+    `score: base=${fmt(baseScore, 6)} median=${fmt(medScore, 6)} min=${fmt(minScore, 6)} max=${fmt(maxScore, 6)} peakΔ=${fmt(peakDelta, 6)}`;
+
+  tableWrap.style.display = "block";
+  tbody.innerHTML = "";
+
+  const bf = Number(base.fast_len || 0);
+  const bs = Number(base.slow_len || 0);
+  const basePoint = pts.find((p) => Number(p?.fast_len || 0) === bf && Number(p?.slow_len || 0) === bs);
+  renderRejectionChecklist(basePoint?.metrics || null);
+  const sorted = [...pts].sort((a, b) => Number(b?.score || 0) - Number(a?.score || 0));
+  for (const p of sorted) {
+    const m = p?.metrics && typeof p.metrics === "object" ? p.metrics : {};
+    const tr = document.createElement("tr");
+    const fast = Number(p?.fast_len || 0);
+    const slow = Number(p?.slow_len || 0);
+
+    const tdFast = document.createElement("td");
+    tdFast.className = "left mono";
+    tdFast.textContent = String(fast);
+    const tdSlow = document.createElement("td");
+    tdSlow.className = "left mono";
+    tdSlow.textContent = String(slow);
+
+    const tdScore = document.createElement("td");
+    tdScore.className = "mono";
+    tdScore.textContent = fmt(p?.score, 6);
+    if (Number.isFinite(p?.score)) {
+      if (Number(p.score) >= baseScore) tdScore.style.color = "rgba(52, 211, 153, 0.95)";
+      else tdScore.style.color = "rgba(148, 163, 184, 0.9)";
+    }
+
+    const tdPnl = document.createElement("td");
+    tdPnl.className = "mono";
+    tdPnl.textContent = fmt(m.pnl, 6);
+    const tdSharpe = document.createElement("td");
+    tdSharpe.className = "mono";
+    tdSharpe.textContent = fmt(m.sharpe, 6);
+    const tdDd = document.createElement("td");
+    tdDd.className = "mono";
+    tdDd.textContent = fmt(m.max_dd, 6);
+    const tdTrades = document.createElement("td");
+    tdTrades.className = "mono";
+    tdTrades.textContent = String(Number(m.trades || 0));
+
+    tr.appendChild(tdFast);
+    tr.appendChild(tdSlow);
+    tr.appendChild(tdScore);
+    tr.appendChild(tdPnl);
+    tr.appendChild(tdSharpe);
+    tr.appendChild(tdDd);
+    tr.appendChild(tdTrades);
+
+    if (fast === bf && slow === bs) {
+      tr.style.background = "rgba(56, 189, 248, 0.08)";
+      tr.style.borderLeft = "3px solid rgba(56, 189, 248, 0.9)";
+    }
+
+    tbody.appendChild(tr);
+  }
+}
+
+function renderRejectionChecklist(metrics) {
+  const el = $("rejectMeta");
+  if (!el) return;
+
+  const m = metrics && typeof metrics === "object" ? metrics : {};
+  const filters = readTopFiltersFromUi();
+
+  const pnl = Number(m.pnl);
+  const sharpe = Number(m.sharpe);
+  const dd = Number(m.max_dd);
+  const trades = Number(m.trades);
+  const expo = Number(m.exposure);
+
+  let any = false;
+  let allOk = true;
+
+  const spans = [];
+  function add(ok, text) {
+    any = true;
+    if (!ok) allOk = false;
+    const span = document.createElement("span");
+    span.className = "badge " + (ok ? "on" : "off");
+    span.textContent = text;
+    spans.push(span);
+  }
+
+  if (filters.minPnl != null) {
+    const ok = Number.isFinite(pnl) && pnl >= filters.minPnl;
+    add(ok, `PnL≥${fmt(filters.minPnl, 6)} (${fmt(pnl, 6)})`);
+  }
+  if (filters.minSharpe != null) {
+    const ok = Number.isFinite(sharpe) && sharpe >= filters.minSharpe;
+    add(ok, `Sharpe≥${fmt(filters.minSharpe, 6)} (${fmt(sharpe, 6)})`);
+  }
+  if (filters.maxDd != null) {
+    const ok = Number.isFinite(dd) && dd <= filters.maxDd;
+    add(ok, `MaxDD≤${fmt(filters.maxDd, 6)} (${fmt(dd, 6)})`);
+  }
+  if (filters.minTrades != null) {
+    const ok = Number.isFinite(trades) && trades >= filters.minTrades;
+    add(ok, `Trades≥${String(filters.minTrades)} (${String(Number.isFinite(trades) ? trades : "-")})`);
+  }
+  if (filters.minExposure != null) {
+    const ok = Number.isFinite(expo) && expo >= filters.minExposure;
+    add(ok, `Expo≥${fmt(filters.minExposure, 6)} (${fmt(expo, 6)})`);
+  }
+
+  if (!any) {
+    el.textContent = "No Top filters set (nothing to validate).";
+    return;
+  }
+
+  el.innerHTML = "";
+  const head = document.createElement("span");
+  head.className = "badge " + (allOk ? "on" : "off");
+  head.textContent = allOk ? "PASS" : "FAIL";
+  el.appendChild(head);
+  for (const s of spans) {
+    el.appendChild(document.createTextNode(" "));
+    el.appendChild(s);
+  }
+}
+
+async function requestLocalStability(params, runReqOverride) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+
+  const runReq = runReqOverride || CURRENT_RUN?.req;
+  if (!runReq || !runReq.data_id) return;
+  if (!params || !params.fast_ma_type || !params.slow_ma_type) return;
+
+  const seq = ++STABILITY_SEQ;
+  setStabilityVisible(true);
+  setStabilityStatus("Computing stability…", "muted");
+  const meta = $("stabilityMeta");
+  if (meta) meta.textContent = "-";
+  const reject = $("rejectMeta");
+  if (reject) reject.textContent = "-";
+  const tableWrap = $("stabilityTableWrap");
+  if (tableWrap) tableWrap.style.display = "none";
+
+  const fastId = String(params.fast_ma_type || "").trim().toLowerCase();
+  const slowId = String(params.slow_ma_type || "").trim().toLowerCase();
+  const fastParams = resolveRunMaParams(runReq, "fast", fastId);
+  const slowParams = resolveRunMaParams(runReq, "slow", slowId);
+
+  const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
+  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+  const objective = String(runReq.objective || "Sharpe");
+
+  const base = {
+    data_id: runReq.data_id,
+    params: {
+      fast_len: Number(params.fast_len || 0),
+      slow_len: Number(params.slow_len || 0),
+      fast_ma_type: String(params.fast_ma_type || ""),
+      slow_ma_type: String(params.slow_ma_type || ""),
+    },
+    ma_source: String(runReq.ma_source || "close"),
+    fast_ma_params: fastParams,
+    slow_ma_params: slowParams,
+    strategy: runReq.strategy || runReq.base_strategy || {},
+    objective,
+    radius: 1,
+    step: 1,
+  };
+
+  const cmd = kind === "DoubleMa" ? "compute_double_ma_local_stability" : "compute_composite_cpu_local_stability";
+  const req = kind === "CompositeCpu"
+    ? {
+      ...base,
+      halftrend: runReq.halftrend,
+      macz: runReq.macz || {},
+      ott: runReq.ott || {},
+    }
+    : (kind === "CompositeMo"
+      ? {
+        ...base,
+        halftrend: params.halftrend,
+        macz: params.macz || {},
+        ott: params.ott || {},
+        strategy: params.strategy || base.strategy,
+      }
+      : {
+        ...base,
+        halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null,
+      });
+
+  let cacheKey = "";
+  try { cacheKey = `${cmd}:${JSON.stringify(req)}`; } catch { cacheKey = `${cmd}:${Date.now()}`; }
+  const cached = cacheKey ? STABILITY_CACHE.get(cacheKey) : null;
+  if (cached) {
+    if (seq !== STABILITY_SEQ) return;
+    renderStability(cached);
+    return;
+  }
+
+  try {
+    const out = await invoke(cmd, { req });
+    if (seq !== STABILITY_SEQ) return;
+    if (cacheKey) STABILITY_CACHE.set(cacheKey, out);
+    renderStability(out);
+  } catch (e) {
+    if (seq !== STABILITY_SEQ) return;
+    setStabilityStatus(String(e), "danger");
   }
 }
 
@@ -2178,6 +5767,64 @@ function renderHeatmap(res, req) {
 function renderBest(res, req) {
   const el = $("bestSummary");
   if (!el) return;
+  const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
+  const isComp = kindRaw === "CompositeCpu" || kindRaw === "CompositeMo";
+
+  if (isComp && CURRENT_VALIDATION?.res && CURRENT_VALIDATION.ts === CURRENT_RUN?.ts) {
+    const { rows, hasCross, usedFallback } = computeValidationShortlist(CURRENT_VALIDATION.res);
+    const c = Array.isArray(rows) && rows.length ? rows[0] : null;
+    if (c) {
+      const p = c.params || {};
+      const m = c.in_sample || {};
+      const cross = c.cross_ticker && typeof c.cross_ticker === "object" ? c.cross_ticker : null;
+      const crossPart = hasCross && cross ? ` cross=${fmt(cross.score, 6)}${c.cross_ticker_pareto ? "" : "(!)"}` : "";
+      const fb = usedFallback ? " (fallback)" : "";
+      el.textContent =
+        `recommended${fb}: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
+        `robust=${fmt(c.robust_score, 6)}${c.robust_pareto ? "" : "(!)"}${crossPart} | ` +
+        `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
+      return;
+    }
+  }
+
+  if (kindRaw === "CompositeMo" && Array.isArray(res?.pareto)) {
+    const pts = res.pareto;
+    if (!pts.length) {
+      el.textContent = "pareto: 0 points";
+      return;
+    }
+    const best = [...pts].sort((a, b) => {
+      const av = Number(a?.violation ?? 0);
+      const bv = Number(b?.violation ?? 0);
+      const aFeas = av <= 0;
+      const bFeas = bv <= 0;
+      if (aFeas !== bFeas) return aFeas ? -1 : 1;
+      const aMax = Number(a?.maximize_value ?? -Infinity);
+      const bMax = Number(b?.maximize_value ?? -Infinity);
+      if (aMax !== bMax) return bMax - aMax;
+      const aMin = Number(a?.minimize_value ?? Infinity);
+      const bMin = Number(b?.minimize_value ?? Infinity);
+      if (aMin !== bMin) return aMin - bMin;
+      return 0;
+    })[0];
+
+    const p = best?.params || {};
+    const m = best?.metrics || {};
+    const maxObj = String(req?.objectives?.maximize || req?.objective || "?");
+    const minObj = String(req?.objectives?.minimize || "?");
+    const maxV = Number(best?.maximize_value ?? NaN);
+    const minV = Number(best?.minimize_value ?? NaN);
+    const viol = Number(best?.violation ?? NaN);
+    const runtimeMs = Number(res?.runtime_ms || 0);
+    const evals = Number(res?.total_evaluations || 0);
+    el.textContent =
+      `pareto best: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
+      `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} | ` +
+      `maximize(${maxObj})=${fmt(maxV, 6)} minimize(${minObj})=${fmt(minV, 6)} viol=${fmt(viol, 6)} | ` +
+      `pareto=${pts.length} evals=${evals} runtime_ms=${runtimeMs}`;
+    return;
+  }
+
   const p = res?.best_params || {};
   const m = res?.best_metrics || {};
   const obj = req?.objective || "-";
@@ -2193,7 +5840,26 @@ function renderBest(res, req) {
 }
 
 function renderRun(res, req) {
-  const best = res?.best_params;
+  const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
+  let best = res?.best_params;
+  if (!best && kindRaw === "CompositeMo" && Array.isArray(res?.pareto) && res.pareto.length) {
+    const pts = res.pareto;
+    const bestPt = [...pts].sort((a, b) => {
+      const av = Number(a?.violation ?? 0);
+      const bv = Number(b?.violation ?? 0);
+      const aFeas = av <= 0;
+      const bFeas = bv <= 0;
+      if (aFeas !== bFeas) return aFeas ? -1 : 1;
+      const aMax = Number(a?.maximize_value ?? -Infinity);
+      const bMax = Number(b?.maximize_value ?? -Infinity);
+      if (aMax !== bMax) return bMax - aMax;
+      const aMin = Number(a?.minimize_value ?? Infinity);
+      const bMin = Number(b?.minimize_value ?? Infinity);
+      if (aMin !== bMin) return aMin - bMin;
+      return 0;
+    })[0];
+    best = bestPt?.params || null;
+  }
   DRILL_SELECTED_KEY = best ? paramsKey(best) : "";
   renderBest(res, req);
   renderTopTable(res, req);
@@ -2330,6 +5996,718 @@ function getDoubleMaRequest() {
     top_k: topK,
     include_all: includeAll,
     heatmap_bins: heatmapBins,
+  };
+}
+
+function defaultCompositeMoSearchSpace() {
+  return {
+    params: [
+      { name: "halftrend_amplitude", domain: { IntRange: { low: 2, high: 20, step: 1, log: false } } },
+      { name: "halftrend_channel_deviation", domain: { FloatRange: { low: 0.5, high: 5.0, log: false } } },
+      { name: "halftrend_atr_period", domain: { IntRange: { low: 20, high: 200, step: 1, log: false } } },
+
+      { name: "macz_fast_length", domain: { IntRange: { low: 5, high: 30, step: 1, log: false } } },
+      { name: "macz_slow_length", domain: { IntRange: { low: 10, high: 60, step: 1, log: false } } },
+      { name: "macz_signal_length", domain: { IntRange: { low: 3, high: 30, step: 1, log: false } } },
+      { name: "macz_lengthz", domain: { IntRange: { low: 5, high: 50, step: 1, log: false } } },
+      { name: "macz_length_stdev", domain: { IntRange: { low: 5, high: 80, step: 1, log: false } } },
+      { name: "macz_a", domain: { FloatRange: { low: -2.0, high: 2.0, log: false } } },
+      { name: "macz_b", domain: { FloatRange: { low: -2.0, high: 2.0, log: false } } },
+      { name: "macz_gamma", domain: { FloatRange: { low: 0.0, high: 0.2, log: false } } },
+      { name: "macz_use_lag", domain: "Bool" },
+      { name: "macz_use_volume", domain: "Bool" },
+
+      { name: "ott_period", domain: { IntRange: { low: 1, high: 50, step: 1, log: false } } },
+      { name: "ott_percent", domain: { FloatRange: { low: 0.1, high: 5.0, log: false } } },
+      {
+        name: "ott_ma_type",
+        domain: { Categorical: { choices: ["VAR", "EMA", "SMA", "WMA", "TMA", "WWMA", "ZLEMA", "TSF"] } },
+      },
+
+      { name: "strategy_commission", domain: { FloatRange: { low: 0.0, high: 0.001, log: false } } },
+      { name: "strategy_eps_rel", domain: { FloatRange: { low: 0.0, high: 0.005, log: false } } },
+      { name: "strategy_long_only", domain: "Bool" },
+      { name: "strategy_allow_flip", domain: "Bool" },
+      { name: "strategy_trade_on_next_bar", domain: "Bool" },
+    ],
+  };
+}
+
+function parseCompositeMoSearchSpace() {
+  const el = $("moSearchSpace");
+  if (!el) return defaultCompositeMoSearchSpace();
+  const raw = String(el.value || "").trim();
+  if (!raw) {
+    const def = defaultCompositeMoSearchSpace();
+    el.value = JSON.stringify(def, null, 2);
+    return def;
+  }
+  let obj = null;
+  try {
+    obj = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`Invalid Composite MO search space JSON: ${String(e)}`);
+  }
+  if (!obj || typeof obj !== "object") throw new Error("Composite MO search space JSON must be an object.");
+  if (!Array.isArray(obj.params)) throw new Error("Composite MO search space JSON must contain a params array.");
+  return obj;
+}
+
+function normalizeCompositeMoSearchSpace(space, fastDomain, slowDomain) {
+  const paramsIn = Array.isArray(space?.params) ? space.params : [];
+  const params = [];
+  const seen = new Set();
+  for (const p of paramsIn) {
+    if (!p || typeof p !== "object") continue;
+    const name = String(p.name || "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (key === "fast_len" || key === "slow_len") continue;
+    if (seen.has(key)) continue;
+    if (p.domain == null) continue;
+    params.push({ name, domain: p.domain });
+    seen.add(key);
+  }
+  return {
+    params: [
+      { name: "fast_len", domain: fastDomain },
+      { name: "slow_len", domain: slowDomain },
+      ...params,
+    ],
+  };
+}
+
+function parseCompositeMoPrescanMaPairs(text) {
+  const raw = String(text || "");
+  const lines = raw.split(/\r?\n/);
+  const out = [];
+  for (const line of lines) {
+    const t = String(line || "").trim();
+    if (!t || t.startsWith("#")) continue;
+    const parts = t.split(",").map((s) => s.trim()).filter((s) => !!s);
+    if (parts.length !== 2) {
+      throw new Error(`Invalid MA pair line "${line}". Use "fast,slow" (one pair per line).`);
+    }
+    out.push({ fast_ma_type: parts[0], slow_ma_type: parts[1] });
+  }
+  return out.length ? out : null;
+}
+
+// ----------------------------
+// Distributed (LAN) UI helpers
+// ----------------------------
+
+const DIST_SETTINGS_KEY = "vta_dist_settings_v1";
+let DIST_SAVE_TIMER = null;
+
+function parseLines(text) {
+  const raw = String(text || "");
+  return raw
+    .split(/\r?\n/)
+    .map((s) => String(s || "").trim())
+    .filter((s) => !!s && !s.startsWith("#"));
+}
+
+function distRandomHex(bytes) {
+  const n = Math.max(1, Math.floor(Number(bytes || 0)));
+  if (typeof crypto?.getRandomValues === "function") {
+    const buf = new Uint8Array(n);
+    crypto.getRandomValues(buf);
+    return Array.from(buf)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  let s = "";
+  for (let i = 0; i < n; i++) s += Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+  return s;
+}
+
+function distGenToken() {
+  return distRandomHex(24);
+}
+
+function distRewritePath(p, fromPrefix, toPrefix) {
+  const path = String(p || "");
+  const from = String(fromPrefix || "").trim();
+  const to = String(toPrefix || "").trim();
+  if (!from || !to) return path;
+  const a = path.toLowerCase();
+  const b = from.toLowerCase();
+  if (!a.startsWith(b)) return path;
+  return to + path.slice(from.length);
+}
+
+function distRewritePaths(paths, fromPrefix, toPrefix) {
+  const out = [];
+  for (const p of Array.isArray(paths) ? paths : []) {
+    const s = String(p || "").trim();
+    if (!s) continue;
+    out.push(distRewritePath(s, fromPrefix, toPrefix));
+  }
+  return out;
+}
+
+function saveDistSettingsSoon() {
+  if (DIST_SAVE_TIMER) clearTimeout(DIST_SAVE_TIMER);
+  DIST_SAVE_TIMER = setTimeout(() => {
+    DIST_SAVE_TIMER = null;
+    const st = {
+      worker_bind: String($("distWorkerBindAddr")?.value || "").trim(),
+      worker_token: String($("distWorkerToken")?.value || "").trim(),
+      leader_token: String($("distLeaderToken")?.value || "").trim(),
+      leader_workers: String($("distLeaderWorkers")?.value || ""),
+      leader_mode: String($("distLeaderMode")?.value || "assets"),
+      assets_csvs: String($("distAssetsCsvs")?.value || ""),
+      path_from: String($("distPathFrom")?.value || ""),
+      path_to: String($("distPathTo")?.value || ""),
+      tile_csv: String($("distTileCsvPath")?.value || ""),
+      tiles_per_worker: Number($("distTilesPerWorker")?.value || 4),
+    };
+    try {
+      localStorage.setItem(DIST_SETTINGS_KEY, JSON.stringify(st));
+    } catch {
+      // ignore
+    }
+  }, 200);
+}
+
+function loadDistSettings() {
+  try {
+    const raw = String(localStorage.getItem(DIST_SETTINGS_KEY) || "");
+    if (!raw) return null;
+    const st = JSON.parse(raw);
+    return st && typeof st === "object" ? st : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyDistSettings(st) {
+  const obj = st && typeof st === "object" ? st : null;
+  if (!obj) return;
+  if ($("distWorkerBindAddr") && obj.worker_bind != null) $("distWorkerBindAddr").value = String(obj.worker_bind || "");
+  if ($("distWorkerToken") && obj.worker_token != null) $("distWorkerToken").value = String(obj.worker_token || "");
+  if ($("distLeaderToken") && obj.leader_token != null) $("distLeaderToken").value = String(obj.leader_token || "");
+  if ($("distLeaderWorkers") && obj.leader_workers != null) $("distLeaderWorkers").value = String(obj.leader_workers || "");
+  if ($("distLeaderMode") && obj.leader_mode != null) $("distLeaderMode").value = String(obj.leader_mode || "assets");
+  if ($("distAssetsCsvs") && obj.assets_csvs != null) $("distAssetsCsvs").value = String(obj.assets_csvs || "");
+  if ($("distPathFrom") && obj.path_from != null) $("distPathFrom").value = String(obj.path_from || "");
+  if ($("distPathTo") && obj.path_to != null) $("distPathTo").value = String(obj.path_to || "");
+  if ($("distTileCsvPath") && obj.tile_csv != null) $("distTileCsvPath").value = String(obj.tile_csv || "");
+  if ($("distTilesPerWorker") && obj.tiles_per_worker != null) $("distTilesPerWorker").value = String(Number(obj.tiles_per_worker || 4));
+}
+
+function updateDistModeUi() {
+  const mode = String($("distLeaderMode")?.value || "assets");
+  const assets = $("distAssetsWrap");
+  const tiles = $("distTilesWrap");
+  if (assets) assets.style.display = mode === "assets" ? "" : "none";
+  if (tiles) tiles.style.display = mode === "tiles" ? "" : "none";
+  const hint = $("distLeaderModeHint");
+  if (hint) {
+    hint.textContent =
+      mode === "tiles"
+        ? "Splits one Grid run into tiles (heatmap off). Load the dataset locally; provide a shared/UNC path for workers."
+        : "Runs one optimization per CSV. Load any CSV locally to define the settings template; provide shared/UNC paths for workers.";
+  }
+}
+
+async function refreshDistWorkerStatus() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    const st = await invoke("distributed_worker_server_status");
+    const running = !!st?.running;
+    const bind = String(st?.bind_addr || st?.bindAddr || "").trim();
+    const el = $("distWorkerStatus");
+    if (el) el.textContent = running ? `Worker: running on ${bind}` : "Worker: stopped";
+  } catch (e) {
+    const el = $("distWorkerStatus");
+    if (el) el.textContent = `Worker: error (${String(e)})`;
+  }
+}
+
+async function startDistWorkerServer() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  const bind_addr = String($("distWorkerBindAddr")?.value || "").trim() || "127.0.0.1:48991";
+  const auth_token = String($("distWorkerToken")?.value || "").trim();
+  if (!auth_token) throw new Error("Worker auth token is required.");
+  const st = await invoke("distributed_start_worker_server", { cfg: { bind_addr, auth_token } });
+  const running = !!st?.running;
+  const bind = String(st?.bind_addr || st?.bindAddr || "").trim();
+  const el = $("distWorkerStatus");
+  if (el) el.textContent = running ? `Worker: running on ${bind}` : "Worker: stopped";
+}
+
+async function stopDistWorkerServer() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  await invoke("distributed_stop_worker_server");
+  await refreshDistWorkerStatus();
+}
+
+function renderDistributedAssetsSummary(resp, req) {
+  const out = $("distOutput");
+  if (!out) return;
+  const results = Array.isArray(resp?.results) ? resp.results : [];
+  const objective = String(req?.objective || "Sharpe");
+  const ok = [];
+  const bad = [];
+  for (const r of results) {
+    const csv = String(r?.csv_path || "").trim();
+    const err = String(r?.error || "").trim();
+    const res = r?.result || null;
+    if (err) bad.push({ csv, err });
+    else if (res?.best_params && res?.best_metrics) {
+      const p = res.best_params;
+      const m = res.best_metrics;
+      const score = Number(scoreOf(m, objective) || 0);
+      ok.push({ csv, p, m, score });
+    }
+  }
+  ok.sort((a, b) => b.score - a.score);
+
+  const lines = [];
+  lines.push(`assets: ok=${ok.length} failed=${bad.length} cancelled=${!!resp?.cancelled}`);
+  lines.push(`objective=${objective}`);
+  lines.push("");
+  lines.push("top (by objective):");
+  const maxRows = 50;
+  for (let i = 0; i < Math.min(maxRows, ok.length); i++) {
+    const r = ok[i];
+    const p = r.p || {};
+    const m = r.m || {};
+    lines.push(
+      `${String(i + 1).padStart(3, " ")} score=${fmt(r.score, 6)} pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | ` +
+      `${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ${r.csv}`
+    );
+  }
+  if (bad.length) {
+    lines.push("");
+    lines.push("errors (first 25):");
+    for (let i = 0; i < Math.min(25, bad.length); i++) {
+      lines.push(`- ${bad[i].csv}: ${bad[i].err}`);
+    }
+  }
+  out.textContent = lines.join("\n");
+}
+
+async function runDistributedAssets() {
+  if (RUNNING) return;
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (String($("strategyKind")?.value || "DoubleMa") !== "DoubleMa") {
+    throw new Error("Distributed v1 supports Double MA only. Switch Strategy to 'Double MA crossover'.");
+  }
+
+  const req = getDoubleMaRequest();
+  const auth_token = String($("distLeaderToken")?.value || $("distWorkerToken")?.value || "").trim();
+  if (!auth_token) throw new Error("Auth token is required.");
+
+  const worker_urls = parseLines($("distLeaderWorkers")?.value || "");
+  if (!worker_urls.length) throw new Error("Add at least one worker URL.");
+
+  let csv_paths = parseLines($("distAssetsCsvs")?.value || "");
+  if (!csv_paths.length) throw new Error("Add at least one CSV path.");
+
+  const from = String($("distPathFrom")?.value || "");
+  const to = String($("distPathTo")?.value || "");
+  csv_paths = distRewritePaths(csv_paths, from, to);
+
+  const dist_req = { worker_urls, auth_token, csv_paths, req };
+
+  try {
+    clearProgressUi();
+    if ($("distOutput")) $("distOutput").textContent = "Starting distributed assets run...";
+    setStatus("Distributed assets: starting...", "muted");
+    setRunning(true);
+
+    const resp = await invoke("distributed_run_double_ma_assets", { dist_req });
+    renderDistributedAssetsSummary(resp, req);
+
+    const ok = Number(resp?.successes || 0);
+    const fail = Number(resp?.failures || 0);
+    const cancelled = !!resp?.cancelled;
+    if (cancelled) setStatus(`Distributed assets: cancelled (${Number(resp?.completed || 0)}/${Number(resp?.total || 0)}).`, "muted");
+    else if (fail) setStatus(`Distributed assets: done (${ok} ok, ${fail} failed).`, "danger");
+    else setStatus(`Distributed assets: done (${ok} ok).`, "ok");
+  } finally {
+    setRunning(false);
+  }
+}
+
+async function runDistributedTiles() {
+  if (RUNNING) return;
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (String($("strategyKind")?.value || "DoubleMa") !== "DoubleMa") {
+    throw new Error("Distributed v1 supports Double MA only. Switch Strategy to 'Double MA crossover'.");
+  }
+
+  const req = getDoubleMaRequest();
+  const auth_token = String($("distLeaderToken")?.value || $("distWorkerToken")?.value || "").trim();
+  if (!auth_token) throw new Error("Auth token is required.");
+
+  const worker_urls = parseLines($("distLeaderWorkers")?.value || "");
+  if (!worker_urls.length) throw new Error("Add at least one worker URL.");
+
+  let csv_path = String($("distTileCsvPath")?.value || "").trim();
+  if (!csv_path) throw new Error("Dataset CSV path is required (shared/UNC path).");
+
+  const from = String($("distPathFrom")?.value || "");
+  const to = String($("distPathTo")?.value || "");
+  csv_path = distRewritePath(csv_path, from, to);
+
+  const tiles_per_worker = Math.max(1, Math.floor(Number($("distTilesPerWorker")?.value || 4)));
+  const dist_req = { worker_urls, auth_token, csv_path, req, tiles_per_worker };
+
+  try {
+    clearProgressUi();
+    if ($("distOutput")) $("distOutput").textContent = "Starting tiled distributed run...";
+    setStatus("Distributed tiles: starting...", "muted");
+    setRunning(true);
+
+    const resp = await invoke("distributed_run_double_ma_tiled", { dist_req });
+    const cancelled = !!resp?.cancelled;
+    const result = resp?.result || null;
+    const errs = Array.isArray(resp?.errors) ? resp.errors : [];
+
+    if (cancelled) {
+      if ($("distOutput")) $("distOutput").textContent = `Cancelled (${Number(resp?.tiles_completed || 0)}/${Number(resp?.tiles_total || 0)} tiles).`;
+      setStatus("Distributed tiles: cancelled.", "muted");
+      return;
+    }
+    if (!result) {
+      if ($("distOutput")) $("distOutput").textContent = errs.length ? errs.join("\n") : "Tiled run failed (no result).";
+      setStatus("Distributed tiles: failed.", "danger");
+      return;
+    }
+
+    if ($("distOutput")) $("distOutput").textContent = `Tiled run complete (${Number(resp?.tiles_completed || 0)}/${Number(resp?.tiles_total || 0)} tiles). Result loaded into Results.`;
+    renderRun(result, req);
+    setStatus("Distributed tiles: done.", "ok");
+  } finally {
+    setRunning(false);
+  }
+}
+
+async function initDistributedProgressListener() {
+  const listen = tauriListen();
+  if (!listen) return;
+  try {
+    await listen("distributed_progress", (event) => {
+      if (!RUNNING) return;
+      const p = event?.payload || {};
+      const mode = String(p.mode || "");
+      const completed = Number(p.completed || 0);
+      const total = Number(p.total || 0);
+      const ok = Number(p.successes || 0);
+      const fail = Number(p.failures || 0);
+      const last = String(p.last || "").trim();
+
+      const label = mode === "tiles" ? "Distributed · Tiles" : "Distributed · Assets";
+      const suffix = [`ok=${ok}`, `err=${fail}`, last].filter((s) => !!String(s || "").trim()).join(" · ");
+      setStatus(`${label} ${completed}/${total}${suffix ? ` · ${suffix}` : ""}`, "muted");
+      setProgressUi(completed, total, mode === "tiles" ? "distributed_tiles" : "distributed_assets", suffix);
+    });
+  } catch {
+    // optional
+  }
+}
+
+function initDistributedUi() {
+  const panel = $("distLeaderMode");
+  if (!panel) return;
+
+  applyDistSettings(loadDistSettings());
+  updateDistModeUi();
+  refreshDistWorkerStatus();
+
+  $("distLeaderMode")?.addEventListener("change", () => {
+    updateDistModeUi();
+    saveDistSettingsSoon();
+  });
+
+  const watchIds = [
+    "distWorkerBindAddr",
+    "distWorkerToken",
+    "distLeaderToken",
+    "distLeaderWorkers",
+    "distAssetsCsvs",
+    "distPathFrom",
+    "distPathTo",
+    "distTileCsvPath",
+    "distTilesPerWorker",
+  ];
+  for (const id of watchIds) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener("input", saveDistSettingsSoon);
+    el.addEventListener("change", saveDistSettingsSoon);
+  }
+
+  $("btnDistGenToken")?.addEventListener("click", () => {
+    const tok = distGenToken();
+    if ($("distWorkerToken")) $("distWorkerToken").value = tok;
+    if ($("distLeaderToken")) $("distLeaderToken").value = tok;
+    saveDistSettingsSoon();
+    setStatus("Generated distributed auth token.", "muted");
+  });
+
+  $("btnDistStartWorker")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    try {
+      await startDistWorkerServer();
+      saveDistSettingsSoon();
+      setStatus("Worker server started.", "ok");
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+  $("btnDistStopWorker")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    try {
+      await stopDistWorkerServer();
+      setStatus("Worker server stopped.", "muted");
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+  $("btnDistWorkerStatus")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    await refreshDistWorkerStatus();
+  });
+
+  $("btnDistFillFromPolygon")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+    try {
+      const info = await invoke("polygon_get_cache_info");
+      const ds = Array.isArray(info?.datasets) ? info.datasets : [];
+      const paths = ds.map((d) => String(d?.csv_path || "").trim()).filter((p) => !!p);
+      if ($("distAssetsCsvs")) $("distAssetsCsvs").value = paths.join("\n");
+      saveDistSettingsSoon();
+      setStatus(`Loaded ${paths.length} Polygon CSV paths (local paths; use rewrite or UNC).`, "muted");
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+
+  $("btnDistUseCurrentCsv")?.addEventListener("click", () => {
+    if ($("distTileCsvPath")) $("distTileCsvPath").value = String($("csvPath")?.value || "").trim();
+    saveDistSettingsSoon();
+  });
+
+  $("btnDistRunAssets")?.addEventListener("click", async () => {
+    try {
+      await runDistributedAssets();
+    } catch (e) {
+      if (isCancelledError(e)) setStatus("Distributed assets: cancelled.", "muted");
+      else setStatus(String(e), "danger");
+    }
+  });
+  $("btnDistRunTiles")?.addEventListener("click", async () => {
+    try {
+      await runDistributedTiles();
+    } catch (e) {
+      if (isCancelledError(e)) setStatus("Distributed tiles: cancelled.", "muted");
+      else setStatus(String(e), "danger");
+    }
+  });
+
+  $("btnDistCancel")?.addEventListener("click", async () => {
+    if (!RUNNING) return;
+    try {
+      setStatus("Cancel requested... (may take a moment to stop safely)", "muted");
+      await requestCancelCurrentRun();
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+}
+
+function getCompositeMoRequest() {
+  const dataIdText = $("dataId").textContent.trim();
+  const dataId = dataIdText === "—" ? "" : dataIdText;
+  if (!dataId || dataId === "-") throw new Error("Load CSV first (missing data id).");
+
+  const meta = CURRENT_DATA_META;
+  if (!meta || typeof meta !== "object") throw new Error("Load CSV first.");
+  if (!meta.has_high || !meta.has_low) {
+    throw new Error("Composite strategy requires high/low candle fields. Load a CSV with high+low columns.");
+  }
+
+  const fast = [
+    Number($("fastStart").value),
+    Number($("fastEnd").value),
+    Number($("fastStep").value),
+  ];
+  const slow = [
+    Number($("slowStart").value),
+    Number($("slowEnd").value),
+    Number($("slowStep").value),
+  ];
+
+  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2]);
+  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2]);
+  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
+  if (!pairs) throw new Error("No valid parameter combinations (fast must be < slow).");
+
+  const fastMaType = ($("fastMaType")?.value || "").trim();
+  const slowMaType = ($("slowMaType")?.value || "").trim();
+  if (!fastMaType) throw new Error("Select a fast MA type.");
+  if (!slowMaType) throw new Error("Select a slow MA type.");
+
+  if (!maSupportsCpu(fastMaType) || !maSupportsCpu(slowMaType)) {
+    throw new Error("Composite strategy is CPU-only and does not support one of the selected MA types.");
+  }
+
+  const maSource = $("maSource").value;
+  validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource);
+
+  const commission = num($("commission")?.value, 0);
+  const epsRel = num($("epsRel")?.value, 0);
+  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
+  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
+  const baseStrategy = {
+    long_only: !!$("longOnly")?.checked,
+    allow_flip: !!$("allowFlip")?.checked,
+    trade_on_next_bar: !!$("tradeOnNext")?.checked,
+    commission,
+    eps_rel: epsRel,
+  };
+
+  const maximize = $("objective").value;
+  const minimize = $("moObjectiveMin")?.value || "MaxDrawdown";
+
+  const samplerKind = String($("moSampler")?.value || "Nsga2");
+  let sampler = null;
+  if (samplerKind === "Random") {
+    const seed = Math.max(0, Math.floor(num($("moRandomSeed")?.value, 1)));
+    const trials = Math.max(1, Math.floor(num($("moRandomTrials")?.value, 2000)));
+    if (trials > 200_000) throw new Error("Random trials too large (max 200000).");
+    sampler = { sampler: "Random", config: { seed, trials } };
+  } else if (samplerKind === "Tpe") {
+    const seed = Math.max(0, Math.floor(num($("moTpeSeed")?.value, 1)));
+    const trials = Math.max(1, Math.floor(num($("moTpeTrials")?.value, 5000)));
+    const startup_trials = Math.max(0, Math.floor(num($("moTpeStartupTrials")?.value, 10)));
+    const n_ei_candidates = Math.max(1, Math.floor(num($("moTpeCandidates")?.value, 24)));
+    const gamma = num($("moTpeGamma")?.value, 0.25);
+    const batch_size = Math.max(1, Math.floor(num($("moTpeBatchSize")?.value, 64)));
+    const max_model_points = Math.max(32, Math.floor(num($("moTpeMaxModelPoints")?.value, 2048)));
+    if (trials > 200_000) throw new Error("TPE trials too large (max 200000).");
+    if (!Number.isFinite(gamma) || gamma <= 0 || gamma >= 1) throw new Error("TPE gamma must be in (0, 1).");
+    if (n_ei_candidates > 512) throw new Error("TPE EI candidates too large (max 512).");
+    sampler = {
+      sampler: "Tpe",
+      config: { seed, trials, startup_trials, n_ei_candidates, gamma, batch_size, max_model_points },
+    };
+  } else if (samplerKind === "Qmc") {
+    const seed = Math.max(0, Math.floor(num($("moQmcSeed")?.value, 1)));
+    const trials = Math.max(1, Math.floor(num($("moQmcTrials")?.value, 5000)));
+    const sequence = String($("moQmcSequence")?.value || "sobol");
+    if (trials > 200_000) throw new Error("QMC trials too large (max 200000).");
+    sampler = { sampler: "Qmc", config: { seed, trials, sequence } };
+  } else {
+    const seed = Math.max(0, Math.floor(num($("moNsga2Seed")?.value, 1)));
+    const population_size = Math.max(2, Math.floor(num($("moNsga2Population")?.value, 80)));
+    const generations = Math.max(1, Math.floor(num($("moNsga2Generations")?.value, 40)));
+    const crossover_prob = num($("moNsga2CrossoverProb")?.value, 0.9);
+    const swapping_prob = num($("moNsga2SwappingProb")?.value, 0.5);
+    const mutRaw = String($("moNsga2MutationProb")?.value || "").trim();
+    const mutation_prob = mutRaw ? num(mutRaw, NaN) : null;
+    if (!Number.isFinite(crossover_prob) || crossover_prob < 0 || crossover_prob > 1) throw new Error("NSGA-II crossover_prob must be in [0, 1].");
+    if (!Number.isFinite(swapping_prob) || swapping_prob < 0 || swapping_prob > 1) throw new Error("NSGA-II swapping_prob must be in [0, 1].");
+    if (mutation_prob != null && (!Number.isFinite(mutation_prob) || mutation_prob < 0 || mutation_prob > 1)) {
+      throw new Error("NSGA-II mutation_prob must be blank or in [0, 1].");
+    }
+    const evals = population_size * (generations + 1);
+    if (evals > 200_000) throw new Error(`NSGA-II budget too large (${evals} evals; max 200000).`);
+    sampler = {
+      sampler: "Nsga2",
+      config: {
+        seed,
+        population_size,
+        generations,
+        crossover_prob,
+        swapping_prob,
+        mutation_prob: mutation_prob == null ? null : mutation_prob,
+      },
+    };
+  }
+
+  const minTrades = optNum($("moConstraintMinTrades")?.value);
+  const maxDd = optNum($("moConstraintMaxDd")?.value);
+  const maxAbsExpo = optNum($("moConstraintMaxAbsExposure")?.value);
+  let constraints = null;
+  if (Number.isFinite(minTrades) || Number.isFinite(maxDd) || Number.isFinite(maxAbsExpo)) {
+    constraints = {};
+    if (Number.isFinite(minTrades)) {
+      if (minTrades < 0) throw new Error("Min trades must be >= 0.");
+      constraints.min_trades = Math.floor(minTrades);
+    }
+    if (Number.isFinite(maxDd)) {
+      if (maxDd < 0) throw new Error("Max drawdown constraint must be >= 0.");
+      constraints.max_drawdown = maxDd;
+    }
+    if (Number.isFinite(maxAbsExpo)) {
+      if (maxAbsExpo < 0) throw new Error("Max abs exposure constraint must be >= 0.");
+      constraints.max_abs_exposure = maxAbsExpo;
+    }
+  }
+
+  let gpu_prescan = null;
+  const prescanOn = !!$("moPrescanEnable")?.checked;
+  if (prescanOn) {
+    const device_id = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
+    const top_k = Math.max(1, Math.floor(num($("moPrescanTopK")?.value, 128)));
+    const window = Math.max(0, Math.floor(num($("moPrescanWindow")?.value, 8)));
+    const objectives = String($("moPrescanObjectives")?.value || "both").trim();
+    const mode = String($("moPrescanMode")?.value || "Auto").trim();
+    const ma_pairs = parseCompositeMoPrescanMaPairs($("moPrescanMaPairs")?.value || "");
+    gpu_prescan = {
+      top_k,
+      window,
+      device_id,
+      require_gpu: !!$("moPrescanRequireGpu")?.checked,
+      objectives,
+      ma_pairs,
+      mode,
+    };
+  }
+
+  const space = parseCompositeMoSearchSpace();
+  const rawFastStep = Math.floor(num($("fastStep")?.value, 1));
+  const rawSlowStep = Math.floor(num($("slowStep")?.value, 1));
+  const fastStep = Math.max(1, rawFastStep);
+  const slowStep = Math.max(1, rawSlowStep);
+  const fastLow = Math.floor(fast[0]);
+  const slowLow = Math.floor(slow[0]);
+  const fastHigh = rawFastStep === 0 ? fastLow : Math.floor(fast[1]);
+  const slowHigh = rawSlowStep === 0 ? slowLow : Math.floor(slow[1]);
+  const fastDomain = { IntRange: { low: fastLow, high: fastHigh, step: fastStep, log: false } };
+  const slowDomain = { IntRange: { low: slowLow, high: slowHigh, step: slowStep, log: false } };
+  const search_space = normalizeCompositeMoSearchSpace(space, fastDomain, slowDomain);
+
+  return {
+    strategy_kind: "CompositeMo",
+    data_id: dataId,
+    fast_ma_type: fastMaType,
+    slow_ma_type: slowMaType,
+    ma_source: maSource,
+    fast_ma_params: resolvedMaParams("fast", fastMaType),
+    slow_ma_params: resolvedMaParams("slow", slowMaType),
+    base_strategy: baseStrategy,
+    strategy: baseStrategy,
+    search_space,
+    objective: maximize,
+    objectives: { maximize, minimize },
+    sampler,
+    constraints,
+    gpu_prescan,
+    mode: null,
   };
 }
 
@@ -2471,7 +6849,515 @@ function getCompositeRequest() {
 
 function getRequest() {
   const kind = strategyKind();
-  return kind === "CompositeCpu" ? getCompositeRequest() : getDoubleMaRequest();
+  return kind === "CompositeCpu" ? getCompositeRequest() : (kind === "CompositeMo" ? getCompositeMoRequest() : getDoubleMaRequest());
+}
+
+function kindFromReq(req) {
+  const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
+  return kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+}
+
+function getValidationRequest(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  if (!CURRENT_RUN?.req || !CURRENT_RUN?.res) throw new Error("Run an optimization first.");
+
+  const kind = kindFromReq(CURRENT_RUN.req);
+  if (kind !== "CompositeCpu" && kind !== "CompositeMo") {
+    throw new Error("Validation is currently supported for Composite strategies only.");
+  }
+
+  const dataId = String(CURRENT_RUN.req.data_id || "").trim();
+  if (!dataId) throw new Error("Missing data id (run an optimization first).");
+
+  const maxCandidates = Math.max(1, Math.floor(num($("valCandidates")?.value, 32)));
+  const seed = Math.max(0, Math.floor(num($("valSeed")?.value, 1)));
+
+  const useFiltered = opts?.useFiltered !== false;
+  const rowsFiltered = Array.isArray(TOP_ROWS_FILTERED) ? TOP_ROWS_FILTERED : [];
+  const rowsAll = Array.isArray(TOP_ROWS) ? TOP_ROWS : [];
+  const baseRows = (useFiltered && rowsFiltered.length) ? rowsFiltered : rowsAll;
+  if (!baseRows.length) throw new Error("No Top rows available. Go to the Top tab and run an optimization.");
+
+  const candidatesRaw = baseRows.slice(0, maxCandidates);
+
+  const candidates = candidatesRaw.map((row) => {
+    const p = row?.params && typeof row.params === "object" ? row.params : {};
+
+    const fast_ma_type = String(p.fast_ma_type || (kind === "CompositeCpu" ? (CURRENT_RUN.req.fast_ma_types?.[0] || "") : "")).trim();
+    const slow_ma_type = String(p.slow_ma_type || (kind === "CompositeCpu" ? (CURRENT_RUN.req.slow_ma_types?.[0] || "") : "")).trim();
+    const fast_len = Math.max(0, Math.floor(Number(p.fast_len || 0)));
+    const slow_len = Math.max(0, Math.floor(Number(p.slow_len || 0)));
+
+    const halftrend = kind === "CompositeMo"
+      ? (p.halftrend && typeof p.halftrend === "object" ? p.halftrend : null)
+      : (CURRENT_RUN.req.halftrend && typeof CURRENT_RUN.req.halftrend === "object" ? CURRENT_RUN.req.halftrend : null);
+
+    return {
+      fast_ma_type,
+      slow_ma_type,
+      fast_len,
+      slow_len,
+      halftrend: halftrend || undefined,
+      macz: kind === "CompositeMo" ? (p.macz || {}) : (CURRENT_RUN.req.macz || {}),
+      ott: kind === "CompositeMo" ? (p.ott || {}) : (CURRENT_RUN.req.ott || {}),
+      strategy: kind === "CompositeMo" ? (p.strategy || CURRENT_RUN.req.strategy || {}) : (CURRENT_RUN.req.strategy || {}),
+    };
+  }).filter((c) => c.fast_ma_type && c.slow_ma_type && c.fast_len > 0 && c.slow_len > 0 && c.halftrend);
+
+  if (!candidates.length) throw new Error("No valid candidates found (try lowering filters or increasing Candidates).");
+
+  const walk_forward = $("valWfEnable")?.checked
+    ? {
+      window_bars: Math.max(64, Math.floor(num($("valWfWindow")?.value, 20000))),
+      step_bars: Math.max(1, Math.floor(num($("valWfStep")?.value, 20000))),
+    }
+    : null;
+
+  const perturb = $("valPerturbEnable")?.checked
+    ? {
+      iterations: Math.max(0, Math.floor(num($("valPerturbIters")?.value, 8))),
+      pct_min: Math.max(0, num($("valPerturbMin")?.value, 0.015)),
+      pct_max: Math.max(0, num($("valPerturbMax")?.value, 0.06)),
+      flip_bool_prob: 0.02,
+    }
+    : null;
+
+  const trade_bootstrap = $("valMcEnable")?.checked
+    ? { simulations: Math.max(0, Math.floor(num($("valMcSims")?.value, 500))) }
+    : null;
+
+  const cscv_pbo = $("valCscvEnable")?.checked
+    ? (() => {
+      let slices = Math.max(4, Math.floor(num($("valCscvSlices")?.value, 16)));
+      if ((slices & 1) === 1) slices = Math.max(4, slices - 1);
+      return { slices, max_combinations: 50000, threshold: 0.0 };
+    })()
+    : null;
+
+  const cross_ticker = $("valCrossEnable")?.checked
+    ? (() => {
+      const max_datasets = Math.max(0, Math.floor(num($("valCrossMax")?.value, 6)));
+      if (max_datasets <= 0) return null;
+      const datasets = getCrossSelectedDatasets()
+        .map((d) => ({
+          csv_path: String(d?.csv_path || "").trim(),
+          label: String(d?.label || "").trim(),
+        }))
+        .filter((d) => !!d.csv_path)
+        .slice(0, max_datasets);
+      return datasets.length ? { max_datasets, datasets } : null;
+    })()
+    : null;
+
+  return {
+    data_id: dataId,
+    ma_source: String(CURRENT_RUN.req.ma_source || "close"),
+    fast_ma_params: CURRENT_RUN.req.fast_ma_params || null,
+    slow_ma_params: CURRENT_RUN.req.slow_ma_params || null,
+    candidates,
+    walk_forward,
+    perturb,
+    trade_bootstrap,
+    cross_ticker,
+    cscv_pbo,
+    seed,
+    max_candidates: maxCandidates,
+  };
+}
+
+function clearValidationUi() {
+  CURRENT_VALIDATION = null;
+  const meta = $("validationMeta");
+  if (meta) meta.textContent = "-";
+  const meta2 = $("validationShortlistMeta");
+  if (meta2) meta2.textContent = "-";
+  const out = $("validationOutput");
+  if (out) out.textContent = "-";
+  const tbody = $("validationTableBody");
+  if (tbody) tbody.innerHTML = "";
+  const wrap = $("validationTableWrap");
+  if (wrap) wrap.style.display = "none";
+  updateValidationExportButtons();
+}
+
+function validationCandidates(res) {
+  const xs = Array.isArray(res?.candidates) ? res.candidates : [];
+  return xs.filter((c) => c && typeof c === "object");
+}
+
+function computeValidationShortlist(res) {
+  const CSCV_RANK_FRAC_MIN = 0.55;
+  const candidates = validationCandidates(res);
+  const hasCross = candidates.some((c) => c.cross_ticker && typeof c.cross_ticker === "object");
+  const strict = candidates.filter((c) => {
+    if (!c.robust_pareto) return false;
+    if (hasCross) return !!c.cross_ticker_pareto;
+    return true;
+  });
+
+  const cscv = res?.cscv_pbo && typeof res.cscv_pbo === "object" ? res.cscv_pbo : null;
+  const cscvCombos = cscv ? Number(cscv.combinations || 0) : 0;
+  const cscvThreshold = cscv ? Number(cscv.threshold || 0) : 0;
+  const hasCscv = cscvCombos > 0 && candidates.some((c) => c.cscv_pbo && typeof c.cscv_pbo === "object");
+
+  const baseRows = strict.length ? strict : candidates;
+  const usedFallback = !strict.length;
+
+  const passCscv = (c) => {
+    const st = c?.cscv_pbo && typeof c.cscv_pbo === "object" ? c.cscv_pbo : null;
+    if (!st) return false;
+    const sel = Number(st.is_selected_frac || 0);
+    const rk = Number(st.oos_rank_frac_p50 || 0);
+    const m = Number(st.oos_metric_p50 || NaN);
+    if (!Number.isFinite(sel) || sel <= 0) return false;
+    if (!Number.isFinite(rk) || rk < CSCV_RANK_FRAC_MIN) return false;
+    if (!Number.isFinite(m) || m < cscvThreshold) return false;
+    return true;
+  };
+
+  const cscvFiltered = hasCscv ? baseRows.filter(passCscv) : baseRows;
+  const usedCscvFallback = hasCscv && baseRows.length && !cscvFiltered.length;
+  const pickedRows = usedCscvFallback ? baseRows : cscvFiltered;
+
+  const sortByFinal = (a, b) => {
+    const ar = Number(a?.robust_score || 0);
+    const br = Number(b?.robust_score || 0);
+    if (br !== ar) return br - ar;
+
+    const aSt = a?.cscv_pbo && typeof a.cscv_pbo === "object" ? a.cscv_pbo : null;
+    const bSt = b?.cscv_pbo && typeof b.cscv_pbo === "object" ? b.cscv_pbo : null;
+    const aRk = Number(aSt?.oos_rank_frac_p50 || 0);
+    const bRk = Number(bSt?.oos_rank_frac_p50 || 0);
+    if (bRk !== aRk) return bRk - aRk;
+
+    const aSel = Number(aSt?.is_selected_frac || 0);
+    const bSel = Number(bSt?.is_selected_frac || 0);
+    if (bSel !== aSel) return bSel - aSel;
+
+    const aM = Number(aSt?.oos_metric_p50 || 0);
+    const bM = Number(bSt?.oos_metric_p50 || 0);
+    if (bM !== aM) return bM - aM;
+
+    return 0;
+  };
+
+  const rows = [...pickedRows].sort(sortByFinal);
+  return {
+    candidates,
+    rows,
+    strictBase: strict,
+    hasCross,
+    usedFallback,
+    hasCscv,
+    cscvCombos,
+    cscvThreshold,
+    cscvRankMin: CSCV_RANK_FRAC_MIN,
+    usedCscvFallback,
+  };
+}
+
+function renderValidationTable(res) {
+  const wrap = $("validationTableWrap");
+  const tbody = $("validationTableBody");
+  const meta = $("validationShortlistMeta");
+  if (!wrap || !tbody) return;
+
+  const { candidates, rows, strictBase, hasCross, usedFallback, hasCscv, cscvCombos, cscvThreshold, cscvRankMin, usedCscvFallback } = computeValidationShortlist(res);
+
+  tbody.innerHTML = "";
+  if (!rows.length) {
+    wrap.style.display = "none";
+    if (meta) meta.textContent = "No validation result yet.";
+    return;
+  }
+
+  wrap.style.display = "block";
+
+  const robustParetoN = candidates.filter((c) => !!c.robust_pareto).length;
+  const crossParetoN = hasCross ? candidates.filter((c) => !!c.cross_ticker_pareto).length : 0;
+  const baseRule = hasCross ? "robust_pareto && cross_ticker_pareto" : "robust_pareto";
+  const cscvRule = hasCscv ? `cscv(oos_rank_p50>=${cscvRankMin}, oos_sharpe_p50>=${cscvThreshold})` : "";
+  const rule = [baseRule, cscvRule].filter((s) => !!s).join(" && ");
+  const baseFallbackNote = usedFallback ? " • (fallback: top robust score)" : "";
+  const cscvFallbackNote = usedCscvFallback ? " • (cscv fallback)" : "";
+  if (meta) {
+    const crossNote = hasCross ? ` • cross_pareto=${crossParetoN}/${candidates.length}` : "";
+    const cscvNote = hasCscv ? ` • cscv=${cscvCombos} combos` : "";
+    const baseN = strictBase.length ? strictBase.length : candidates.length;
+    const cscvPassN = rows.length;
+    const cscvPassNote = hasCscv ? ` • cscv_pass=${cscvPassN}/${baseN}` : "";
+    meta.textContent = `shortlist=${rows.length}/${candidates.length} • robust_pareto=${robustParetoN}/${candidates.length}${crossNote}${cscvNote}${cscvPassNote} • rule=${rule}${baseFallbackNote}${cscvFallbackNote}`;
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i] || {};
+    const p = c.params || {};
+    const m = c.in_sample || {};
+    const cross = c.cross_ticker && typeof c.cross_ticker === "object" ? c.cross_ticker : null;
+
+    const tr = document.createElement("tr");
+
+    const tdRank = document.createElement("td");
+    tdRank.textContent = String(i + 1);
+    tdRank.className = "left mono";
+
+    const tdFast = document.createElement("td");
+    tdFast.textContent = `${p.fast_ma_type || "?"}(${p.fast_len || "?"})`;
+    tdFast.className = "left mono";
+
+    const tdSlow = document.createElement("td");
+    tdSlow.textContent = `${p.slow_ma_type || "?"}(${p.slow_len || "?"})`;
+    tdSlow.className = "left mono";
+
+    const tdRobust = document.createElement("td");
+    tdRobust.textContent = fmt(c.robust_score, 6);
+    tdRobust.className = "mono";
+
+    const tdCscv = document.createElement("td");
+    const cscv = c.cscv_pbo && typeof c.cscv_pbo === "object" ? c.cscv_pbo : null;
+    const cscvRank = cscv ? Number(cscv.oos_rank_frac_p50 || 0) : NaN;
+    tdCscv.textContent = cscv ? fmtPct(cscvRank, 1) : "-";
+    tdCscv.className = "mono";
+
+    const tdRobustPareto = document.createElement("td");
+    tdRobustPareto.className = "left";
+    const b1 = document.createElement("span");
+    b1.className = "badge " + (c.robust_pareto ? "on" : "off");
+    b1.textContent = c.robust_pareto ? "robust" : "—";
+    tdRobustPareto.appendChild(b1);
+
+    const tdCross = document.createElement("td");
+    tdCross.textContent = cross ? fmt(cross.score, 6) : "-";
+    tdCross.className = "mono";
+
+    const tdCrossPareto = document.createElement("td");
+    tdCrossPareto.className = "left";
+    const b2 = document.createElement("span");
+    const crossPareto = !!c.cross_ticker_pareto;
+    b2.className = "badge " + (hasCross ? (crossPareto ? "on" : "off") : "off");
+    b2.textContent = hasCross ? (crossPareto ? "cross" : "—") : "—";
+    tdCrossPareto.appendChild(b2);
+
+    const tdPnl = document.createElement("td");
+    tdPnl.textContent = fmt(m.pnl, 6);
+    tdPnl.className = "mono";
+
+    const tdSharpe = document.createElement("td");
+    tdSharpe.textContent = fmt(m.sharpe, 6);
+    tdSharpe.className = "mono";
+
+    const tdDd = document.createElement("td");
+    tdDd.textContent = fmt(m.max_dd, 6);
+    tdDd.className = "mono";
+
+    const tdTrades = document.createElement("td");
+    tdTrades.textContent = String(Number(m.trades || 0));
+    tdTrades.className = "mono";
+
+    tr.appendChild(tdRank);
+    tr.appendChild(tdFast);
+    tr.appendChild(tdSlow);
+    tr.appendChild(tdRobust);
+    tr.appendChild(tdCscv);
+    tr.appendChild(tdRobustPareto);
+    tr.appendChild(tdCross);
+    tr.appendChild(tdCrossPareto);
+    tr.appendChild(tdPnl);
+    tr.appendChild(tdSharpe);
+    tr.appendChild(tdDd);
+    tr.appendChild(tdTrades);
+
+    tbody.appendChild(tr);
+  }
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (/[",\n\r]/.test(s)) return `"${s.replaceAll("\"", "\"\"")}"`;
+  return s;
+}
+
+function exportValidationShortlistCsv() {
+  if (!CURRENT_VALIDATION?.res) {
+    setStatus("No validation result to export yet.", "danger");
+    return;
+  }
+  const { rows } = computeValidationShortlist(CURRENT_VALIDATION.res);
+  if (!rows.length) {
+    setStatus("No validated rows to export.", "muted");
+    return;
+  }
+
+  const invoke = tauriInvoke();
+  if (invoke) {
+    const ts = CURRENT_RUN?.ts || new Date().toISOString();
+    invoke("build_validation_shortlist_csv", { validation_res: CURRENT_VALIDATION.res })
+      .then((csv) => {
+        downloadText(`vectorbt_validation_shortlist_${ts}.csv`, String(csv || ""), "text/csv");
+        setStatus("Exported validation shortlist CSV.", "ok");
+      })
+      .catch((e) => {
+        setStatus(`Failed to export validation shortlist CSV: ${String(e)}`, "danger");
+      });
+    return;
+  }
+
+  const lines = [
+    "rank,fast_ma,fast_len,slow_ma,slow_len,robust_score,robust_pareto,cross_score,cross_pareto,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_sharpe_p50,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,params_json",
+  ];
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i] || {};
+    const p = c.params || {};
+    const m = c.in_sample || {};
+    const cross = c.cross_ticker && typeof c.cross_ticker === "object" ? c.cross_ticker : null;
+    const cscv = c.cscv_pbo && typeof c.cscv_pbo === "object" ? c.cscv_pbo : null;
+    const paramsJson = (() => {
+      try { return JSON.stringify(p); } catch { return "{}"; }
+    })();
+    lines.push([
+      i + 1,
+      csvEscape(p.fast_ma_type || ""),
+      Number(p.fast_len || 0),
+      csvEscape(p.slow_ma_type || ""),
+      Number(p.slow_len || 0),
+      Number(c.robust_score || 0),
+      c.robust_pareto ? 1 : 0,
+      cross ? Number(cross.score || 0) : "",
+      c.cross_ticker_pareto ? 1 : 0,
+      cscv ? Number(cscv.is_selected_frac || 0) : "",
+      cscv ? Number(cscv.oos_rank_frac_p50 || 0) : "",
+      cscv ? Number(cscv.oos_metric_p50 || 0) : "",
+      Number(m.pnl || 0),
+      Number(m.sharpe || 0),
+      Number(m.max_dd || 0),
+      Number(m.trades || 0),
+      csvEscape(paramsJson),
+    ].join(","));
+  }
+
+  const ts = CURRENT_RUN?.ts || new Date().toISOString();
+  downloadText(`vectorbt_validation_shortlist_${ts}.csv`, lines.join("\n"), "text/csv");
+}
+
+function exportValidationJson() {
+  if (!CURRENT_VALIDATION?.res) {
+    setStatus("No validation result to export yet.", "danger");
+    return;
+  }
+  const ts = CURRENT_RUN?.ts || new Date().toISOString();
+  downloadText(`vectorbt_validation_${ts}.json`, pretty(CURRENT_VALIDATION.res), "application/json");
+}
+
+function exportReportJson() {
+  if (!CURRENT_RUN?.res) {
+    setStatus("No run result to export yet.", "danger");
+    return;
+  }
+  const ts = CURRENT_RUN?.ts || new Date().toISOString();
+  const payload = {
+    version: 1,
+    kind: "vectorbt_report",
+    ts,
+    run: { req: CURRENT_RUN.req || null, res: CURRENT_RUN.res || null },
+    validation: CURRENT_VALIDATION ? { req: CURRENT_VALIDATION.req || null, res: CURRENT_VALIDATION.res || null } : null,
+  };
+  downloadText(`vectorbt_report_${ts}.json`, JSON.stringify(payload, null, 2), "application/json");
+}
+
+async function exportReportXlsx() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  if (!CURRENT_VALIDATION?.res) {
+    setStatus("Run validation first (no validation result yet).", "muted");
+    return;
+  }
+
+  const wasRunning = RUNNING;
+  const ts = CURRENT_RUN?.ts || new Date().toISOString();
+  const payload = {
+    version: 1,
+    kind: "vectorbt_report",
+    ts,
+    run: { req: CURRENT_RUN?.req || null, res: CURRENT_RUN?.res || null },
+    validation: CURRENT_VALIDATION ? { req: CURRENT_VALIDATION.req || null, res: CURRENT_VALIDATION.res || null } : null,
+  };
+
+  const maxRows = Math.max(0, Math.floor(num($("valAutoExportTopN")?.value, 20)));
+  const max_rows = maxRows > 0 ? maxRows : null;
+  setProgressUi(0, 1, "export_xlsx", "");
+  setStatus("Saving XLSX report...", "muted");
+  const t0 = performance.now();
+  const resp = await invoke("save_report_xlsx", { report: payload, max_rows });
+  const dtMs = performance.now() - t0;
+  const path = String(resp?.path || "").trim();
+  const bytes = Number(resp?.bytes || 0);
+  const candidatesN = Array.isArray(CURRENT_VALIDATION?.res?.candidates) ? CURRENT_VALIDATION.res.candidates.length : 0;
+  const rowsN = Math.max(0, Math.min(max_rows || candidatesN, candidatesN));
+  const dtSec = dtMs > 0 ? dtMs / 1000 : 0;
+  const rowsPerSec = dtSec > 0 ? rowsN / dtSec : 0;
+  const exportSuffix = rowsPerSec > 0 ? formatPerSecond(rowsPerSec, "rows") : "";
+  setProgressUi(1, 1, "export_xlsx", exportSuffix);
+  setStatus(path ? `Saved XLSX report (${bytes} bytes): ${path}` : "Saved XLSX report.", "ok");
+  if (path && CURRENT_RUN) CURRENT_RUN.report_xlsx_path = path;
+  await persistCurrentRunArtifact({ report_xlsx_path: path });
+  updateQuickActionsUi();
+  if (path && !!$("valAutoRevealReport")?.checked) {
+    try {
+      setProgressUi(0, 1, "reveal_report", "");
+      await invoke("reveal_path", { path });
+      setProgressUi(1, 1, "reveal_report", "");
+    } catch (e) {
+      setStatus(`Reveal failed: ${String(e)}`, "danger");
+    }
+  }
+  if (!wasRunning) clearProgressUi();
+}
+
+async function runValidation(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+
+  const req = getValidationRequest(opts);
+  setRunning(true);
+  try {
+    setStatus("Running validation...", "muted");
+    const t0 = performance.now();
+    const res = await invoke("run_composite_validation", { req });
+    const dt = performance.now() - t0;
+    setStatus(`Validation done in ${dt.toFixed(0)}ms (frontend)`, "ok");
+    $("output").textContent = pretty(res);
+    if ($("validationOutput")) $("validationOutput").textContent = pretty(res);
+    if ($("validationMeta")) {
+      const crossN = Array.isArray(res?.cross_ticker?.datasets) ? res.cross_ticker.datasets.length : 0;
+      const crossSuffix = crossN ? ` • cross=${crossN}` : "";
+      const cscv = res?.cscv_pbo && typeof res.cscv_pbo === "object" ? res.cscv_pbo : null;
+      const cscvCombos = cscv ? Number(cscv.combinations || 0) : 0;
+      const cscvSkip = cscv ? String(cscv.skipped_reason || "").trim() : "";
+      const cscvSuffix = cscv && !cscvSkip && cscvCombos > 0
+        ? ` • pbo=${fmt(Number(cscv.pbo || 0), 3)} (cs=${cscvCombos})`
+        : (cscvSkip ? " • cscv skipped" : "");
+      $("validationMeta").textContent = `validated ${res?.candidates?.length || 0} candidates in ${Number(res?.runtime_ms || 0)}ms (backend)${crossSuffix}${cscvSuffix}`;
+    }
+    CURRENT_VALIDATION = { ts: CURRENT_RUN?.ts || new Date().toISOString(), req, res };
+    renderValidationTable(res);
+    if (CURRENT_RUN?.res && CURRENT_RUN?.req) renderBest(CURRENT_RUN.res, CURRENT_RUN.req);
+    updateValidationExportButtons();
+    if (!!$("valAutoExportXlsx")?.checked) {
+      try {
+        await exportReportXlsx();
+      } catch (e) {
+        if (isCancelledError(e)) setStatus("Auto-export cancelled.", "muted");
+        else setStatus(`Auto-export XLSX failed: ${String(e)}`, "danger");
+      }
+    }
+    if (opts?.switchTab !== false) {
+      RESULTS_TABS?.set("validate", { save: true, focus: false });
+    }
+    return res;
+  } finally {
+    setRunning(false);
+  }
 }
 
 async function loadCsv() {
@@ -2486,6 +7372,7 @@ async function loadCsv() {
   const cacheHit = !!resp?.cache_hit;
   const cachePath = String(resp?.cache_path || "").trim();
   CURRENT_DATA_META = meta;
+  CURRENT_DATASET_CTX = { source: "csv", label: fileBasename(path), timeframe: String(meta?.timeframe || "").trim() || null };
   $("dataId").textContent = id;
   renderDataMeta(meta);
   applyMaSourceConstraints();
@@ -2496,7 +7383,7 @@ async function loadCsv() {
   saveSettingsSoon();
 }
 
-async function runOptimization() {
+async function runOptimization(opts) {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
   const req = getRequest();
@@ -2505,17 +7392,773 @@ async function runOptimization() {
     setStatus("Running optimization...", "muted");
     const t0 = performance.now();
     const kindRaw = String(req.strategy_kind || req.strategyKind || "DoubleMa");
-    const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : "DoubleMa";
-    const cmd = kind === "CompositeCpu" ? "run_composite_cpu_optimization" : "run_double_ma_optimization";
+    const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+    const cmd = kind === "CompositeCpu"
+      ? "run_composite_cpu_optimization"
+      : (kind === "CompositeMo" ? "run_composite_mo_optimization" : "run_double_ma_optimization");
     const res = await invoke(cmd, { req });
     const dt = performance.now() - t0;
     setStatus(`Done in ${dt.toFixed(0)}ms (frontend)`, "ok");
     $("output").textContent = pretty(res);
     addHistoryEntry(req, res);
+    await persistCurrentRunArtifact();
     renderRun(res, req);
-    RESULTS_TABS?.set("top", { save: false, focus: false });
+    refreshGpuStatusUi();
+    if (opts?.switchTab !== false) {
+      RESULTS_TABS?.set("top", { save: false, focus: false });
+    }
     return res;
   } finally {
+    setRunning(false);
+  }
+}
+
+async function runWorkflow(opts) {
+  const res = await runOptimization(opts);
+  const autoVal = !!$("valAutoRun")?.checked;
+  if (autoVal && isCompositeStrategy()) {
+    try {
+      await runValidation({ useFiltered: false, switchTab: false });
+      if (opts?.switchTab !== false) {
+        RESULTS_TABS?.set("overview", { save: true, focus: false });
+      }
+    } catch (e) {
+      if (isCancelledError(e)) setStatus("Auto-validation cancelled.", "muted");
+      else setStatus(`Auto-validation failed: ${String(e)}`, "danger");
+    }
+  }
+  return res;
+}
+
+function defaultBatchTag() {
+  const d = new Date();
+  const pad = (n) => String(Math.max(0, Math.floor(Number(n || 0)))).padStart(2, "0");
+  const y = d.getUTCFullYear();
+  const m = pad(d.getUTCMonth() + 1);
+  const day = pad(d.getUTCDate());
+  const h = pad(d.getUTCHours());
+  const min = pad(d.getUTCMinutes());
+  const s = pad(d.getUTCSeconds());
+  return `batch-${y}${m}${day}-${h}${min}${s}`;
+}
+
+function dedupTags(tags) {
+  const xs = Array.isArray(tags) ? tags : [];
+  const seen = new Set();
+  const out = [];
+  for (const t of xs) {
+    const s = String(t || "").trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+function hashFNV1a32(text) {
+  let h = 2166136261;
+  const s = String(text || "");
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function canonicalizeJsonValue(v) {
+  if (v == null) return null;
+  const t = typeof v;
+  if (t === "number") return Number.isFinite(v) ? v : null;
+  if (t === "string" || t === "boolean") return v;
+  if (Array.isArray(v)) return v.map(canonicalizeJsonValue);
+  if (t !== "object") return null;
+  const out = {};
+  const keys = Object.keys(v).sort();
+  for (const k of keys) {
+    const vv = v[k];
+    if (vv === undefined) continue;
+    out[k] = canonicalizeJsonValue(vv);
+  }
+  return out;
+}
+
+function canonicalJsonString(v) {
+  return JSON.stringify(canonicalizeJsonValue(v));
+}
+
+function hashFNV1a64Hex(text) {
+  const s = String(text || "");
+  if (typeof BigInt !== "function") {
+    const h32 = hashFNV1a32(s);
+    return h32.toString(16).padStart(8, "0");
+  }
+  let h = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  for (let i = 0; i < s.length; i++) {
+    h ^= BigInt(s.charCodeAt(i));
+    h = (h * prime) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, "0");
+}
+
+function stripRunReqForFingerprint(runReq) {
+  const req = runReq && typeof runReq === "object" ? runReq : null;
+  if (!req) return null;
+  const out = canonicalizeJsonValue(req);
+  if (!out || typeof out !== "object") return null;
+  delete out.data_id;
+  delete out.dataId;
+  return out;
+}
+
+function stripValidationReqForFingerprint(valReq) {
+  const req = valReq && typeof valReq === "object" ? valReq : null;
+  if (!req) return null;
+  const out = canonicalizeJsonValue(req);
+  if (!out || typeof out !== "object") return null;
+  delete out.data_id;
+  delete out.dataId;
+  delete out.candidates;
+  const cross = out.cross_ticker && typeof out.cross_ticker === "object" ? out.cross_ticker : null;
+  if (cross && Array.isArray(cross.datasets)) {
+    const datasets = cross.datasets
+      .map((d) => ({ csv_path: String(d?.csv_path || "").trim() }))
+      .filter((d) => !!d.csv_path)
+      .sort((a, b) => a.csv_path.localeCompare(b.csv_path));
+    cross.datasets = datasets;
+  }
+  return out;
+}
+
+function computeConfigFingerprint(runReq, valReq) {
+  const payload = {
+    version: 1,
+    run_req: stripRunReqForFingerprint(runReq),
+    validation_req: stripValidationReqForFingerprint(valReq),
+  };
+  const canon = canonicalJsonString(payload);
+  const hex = hashFNV1a64Hex(canon);
+  return `cfg1-fnv1a64-${hex}`;
+}
+
+function getCompositeRequestForFingerprint() {
+  const fast = [
+    Number($("fastStart")?.value),
+    Number($("fastEnd")?.value),
+    Number($("fastStep")?.value),
+  ];
+  const slow = [
+    Number($("slowStart")?.value),
+    Number($("slowEnd")?.value),
+    Number($("slowStep")?.value),
+  ];
+
+  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2]);
+  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2]);
+  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
+  if (!pairs) throw new Error("No valid parameter combinations (fast must be < slow).");
+
+  const fastMaType = String($("fastMaType")?.value || "").trim();
+  const slowMaType = String($("slowMaType")?.value || "").trim();
+  if (!fastMaType) throw new Error("Select a fast MA type.");
+  if (!slowMaType) throw new Error("Select a slow MA type.");
+  if (!maSupportsCpu(fastMaType) || !maSupportsCpu(slowMaType)) {
+    throw new Error("Composite strategy is CPU-only and does not support one of the selected MA types.");
+  }
+
+  const maSource = String($("maSource")?.value || "close");
+
+  const amp = Math.floor(num($("halfTrendAmplitude")?.value, 2));
+  const atrP = Math.floor(num($("halfTrendAtrPeriod")?.value, 100));
+  const dev = num($("halfTrendChannelDev")?.value, 2.0);
+  if (!Number.isFinite(amp) || amp < 1 || amp > 65535) throw new Error("HalfTrend amplitude must be in [1, 65535].");
+  if (!Number.isFinite(atrP) || atrP < 1 || atrP > 65535) throw new Error("HalfTrend ATR period must be in [1, 65535].");
+  if (!Number.isFinite(dev) || dev < 0) throw new Error("HalfTrend channel deviation must be finite and >= 0.");
+  const halftrend = { amplitude: amp, atr_period: atrP, channel_deviation: dev };
+
+  const maczFast = Math.floor(num($("maczFastLength")?.value, 12));
+  const maczSlow = Math.floor(num($("maczSlowLength")?.value, 25));
+  const maczSig = Math.floor(num($("maczSignalLength")?.value, 9));
+  const maczLz = Math.floor(num($("maczLengthZ")?.value, 20));
+  const maczLsd = Math.floor(num($("maczLengthStdev")?.value, 25));
+  const maczGamma = num($("maczGamma")?.value, 0.02);
+  const maczA = num($("maczA")?.value, 1.0);
+  const maczB = num($("maczB")?.value, 1.0);
+  const maczUseVolume = !!$("maczUseVolume")?.checked;
+  const maczUseLag = !!$("maczUseLag")?.checked;
+
+  if (!Number.isFinite(maczFast) || maczFast < 1) throw new Error("MACZ fast_length must be >= 1.");
+  if (!Number.isFinite(maczSlow) || maczSlow < 1) throw new Error("MACZ slow_length must be >= 1.");
+  if (maczFast >= maczSlow) throw new Error("MACZ requires fast_length < slow_length.");
+  if (!Number.isFinite(maczSig) || maczSig < 1) throw new Error("MACZ signal_length must be >= 1.");
+  if (!Number.isFinite(maczLz) || maczLz < 1) throw new Error("MACZ lengthz must be >= 1.");
+  if (!Number.isFinite(maczLsd) || maczLsd < 1) throw new Error("MACZ length_stdev must be >= 1.");
+  if (!Number.isFinite(maczA) || maczA < -2 || maczA > 2) throw new Error("MACZ a must be in [-2, 2].");
+  if (!Number.isFinite(maczB) || maczB < -2 || maczB > 2) throw new Error("MACZ b must be in [-2, 2].");
+  if (!Number.isFinite(maczGamma) || maczGamma < 0 || maczGamma >= 1) throw new Error("MACZ gamma must be in [0, 1).");
+
+  const macz = {
+    fast_length: maczFast,
+    slow_length: maczSlow,
+    signal_length: maczSig,
+    lengthz: maczLz,
+    length_stdev: maczLsd,
+    a: maczA,
+    b: maczB,
+    use_lag: maczUseLag,
+    gamma: maczGamma,
+    use_volume: maczUseVolume,
+  };
+
+  const ottPeriod = Math.floor(num($("ottPeriod")?.value, 2));
+  const ottPercent = num($("ottPercent")?.value, 1.4);
+  const ottMaType = String($("ottMaType")?.value || "VAR").trim();
+  if (!Number.isFinite(ottPeriod) || ottPeriod < 1) throw new Error("OTT period must be >= 1.");
+  if (!Number.isFinite(ottPercent) || ottPercent < 0) throw new Error("OTT percent must be finite and >= 0.");
+  if (!ottMaType) throw new Error("OTT MA type is required.");
+  const ott = { period: ottPeriod, percent: ottPercent, ma_type: ottMaType };
+
+  const objective = String($("objective")?.value || "Sharpe");
+  const topK = Number($("topK")?.value || 0);
+  const includeAll = $("includeAll")?.value === "true";
+  if (includeAll && pairs > 2_000_000) {
+    throw new Error(`includeAll=true would return ${pairs} rows; disable it or reduce ranges.`);
+  }
+
+  const heatmapBins = Math.max(0, Math.floor(num($("heatmapBins")?.value, 0)));
+  if (heatmapBins > 512) throw new Error("heatmapBins must be <= 512.");
+
+  const commission = num($("commission")?.value, 0);
+  const epsRel = num($("epsRel")?.value, 0);
+  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
+  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
+
+  const strategy = {
+    long_only: !!$("longOnly")?.checked,
+    allow_flip: !!$("allowFlip")?.checked,
+    trade_on_next_bar: !!$("tradeOnNext")?.checked,
+    commission,
+    eps_rel: epsRel,
+  };
+
+  return {
+    strategy_kind: "CompositeCpu",
+    backend: { backend: "CpuOnly" },
+    data_id: "__cfg__",
+    fast_range: fast,
+    slow_range: slow,
+    fast_ma_types: [fastMaType],
+    slow_ma_types: [slowMaType],
+    ma_source: maSource,
+    fast_ma_params: resolvedMaParams("fast", fastMaType),
+    slow_ma_params: resolvedMaParams("slow", slowMaType),
+    strategy,
+    halftrend,
+    macz,
+    ott,
+    objective,
+    mode: "Grid",
+    top_k: topK,
+    include_all: includeAll,
+    heatmap_bins: heatmapBins,
+  };
+}
+
+function getCompositeMoRequestForFingerprint() {
+  const fast = [
+    Number($("fastStart")?.value),
+    Number($("fastEnd")?.value),
+    Number($("fastStep")?.value),
+  ];
+  const slow = [
+    Number($("slowStart")?.value),
+    Number($("slowEnd")?.value),
+    Number($("slowStep")?.value),
+  ];
+
+  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2]);
+  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2]);
+  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
+  if (!pairs) throw new Error("No valid parameter combinations (fast must be < slow).");
+
+  const fastMaType = String($("fastMaType")?.value || "").trim();
+  const slowMaType = String($("slowMaType")?.value || "").trim();
+  if (!fastMaType) throw new Error("Select a fast MA type.");
+  if (!slowMaType) throw new Error("Select a slow MA type.");
+
+  if (!maSupportsCpu(fastMaType) || !maSupportsCpu(slowMaType)) {
+    throw new Error("Composite strategy is CPU-only and does not support one of the selected MA types.");
+  }
+
+  const maSource = String($("maSource")?.value || "close");
+
+  const commission = num($("commission")?.value, 0);
+  const epsRel = num($("epsRel")?.value, 0);
+  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
+  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
+  const baseStrategy = {
+    long_only: !!$("longOnly")?.checked,
+    allow_flip: !!$("allowFlip")?.checked,
+    trade_on_next_bar: !!$("tradeOnNext")?.checked,
+    commission,
+    eps_rel: epsRel,
+  };
+
+  const maximize = String($("objective")?.value || "Sharpe");
+  const minimize = String($("moObjectiveMin")?.value || "MaxDrawdown");
+
+  const samplerKind = String($("moSampler")?.value || "Nsga2");
+  let sampler = null;
+  if (samplerKind === "Random") {
+    const seed = Math.max(0, Math.floor(num($("moRandomSeed")?.value, 1)));
+    const trials = Math.max(1, Math.floor(num($("moRandomTrials")?.value, 2000)));
+    if (trials > 200_000) throw new Error("Random trials too large (max 200000).");
+    sampler = { sampler: "Random", config: { seed, trials } };
+  } else if (samplerKind === "Tpe") {
+    const seed = Math.max(0, Math.floor(num($("moTpeSeed")?.value, 1)));
+    const trials = Math.max(1, Math.floor(num($("moTpeTrials")?.value, 5000)));
+    const startup_trials = Math.max(0, Math.floor(num($("moTpeStartupTrials")?.value, 10)));
+    const n_ei_candidates = Math.max(1, Math.floor(num($("moTpeCandidates")?.value, 24)));
+    const gamma = num($("moTpeGamma")?.value, 0.25);
+    const batch_size = Math.max(1, Math.floor(num($("moTpeBatchSize")?.value, 64)));
+    const max_model_points = Math.max(32, Math.floor(num($("moTpeMaxModelPoints")?.value, 2048)));
+    sampler = { sampler: "Tpe", config: { seed, trials, startup_trials, n_ei_candidates, gamma, batch_size, max_model_points } };
+  } else if (samplerKind === "Qmc") {
+    const seed = Math.max(0, Math.floor(num($("moQmcSeed")?.value, 1)));
+    const trials = Math.max(1, Math.floor(num($("moQmcTrials")?.value, 5000)));
+    const sequence = String($("moQmcSequence")?.value || "Sobol").trim() || "Sobol";
+    sampler = { sampler: "Qmc", config: { seed, trials, sequence } };
+  } else {
+    const seed = Math.max(0, Math.floor(num($("moNsga2Seed")?.value, 1)));
+    const population = Math.max(4, Math.floor(num($("moNsga2Population")?.value, 64)));
+    const generations = Math.max(1, Math.floor(num($("moNsga2Generations")?.value, 40)));
+    const crossover_prob = Math.max(0, Math.min(1, num($("moNsga2CrossoverProb")?.value, 0.9)));
+    const swapping_prob = Math.max(0, Math.min(1, num($("moNsga2SwappingProb")?.value, 0.5)));
+    const mutation_prob = Math.max(0, Math.min(1, num($("moNsga2MutationProb")?.value, 0.3)));
+    sampler = { sampler: "Nsga2", config: { seed, population, generations, crossover_prob, swapping_prob, mutation_prob } };
+  }
+
+  const minTrades = optNum($("moConstraintMinTrades")?.value);
+  const maxDd = optNum($("moConstraintMaxDd")?.value);
+  const maxAbsExpo = optNum($("moConstraintMaxAbsExposure")?.value);
+  let constraints = null;
+  if (Number.isFinite(minTrades) || Number.isFinite(maxDd) || Number.isFinite(maxAbsExpo)) {
+    constraints = {};
+    if (Number.isFinite(minTrades)) {
+      if (minTrades < 0) throw new Error("Min trades must be >= 0.");
+      constraints.min_trades = Math.floor(minTrades);
+    }
+    if (Number.isFinite(maxDd)) {
+      if (maxDd < 0) throw new Error("Max drawdown constraint must be >= 0.");
+      constraints.max_drawdown = maxDd;
+    }
+    if (Number.isFinite(maxAbsExpo)) {
+      if (maxAbsExpo < 0) throw new Error("Max abs exposure constraint must be >= 0.");
+      constraints.max_abs_exposure = maxAbsExpo;
+    }
+  }
+
+  let gpu_prescan = null;
+  const prescanOn = !!$("moPrescanEnable")?.checked;
+  if (prescanOn) {
+    const device_id = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
+    const top_k = Math.max(1, Math.floor(num($("moPrescanTopK")?.value, 128)));
+    const window = Math.max(0, Math.floor(num($("moPrescanWindow")?.value, 8)));
+    const objectives = String($("moPrescanObjectives")?.value || "both").trim();
+    const mode = String($("moPrescanMode")?.value || "Auto").trim();
+    const ma_pairs = parseCompositeMoPrescanMaPairs($("moPrescanMaPairs")?.value || "");
+    gpu_prescan = { top_k, window, device_id, require_gpu: !!$("moPrescanRequireGpu")?.checked, objectives, ma_pairs, mode };
+  }
+
+  const space = parseCompositeMoSearchSpace();
+  const rawFastStep = Math.floor(num($("fastStep")?.value, 1));
+  const rawSlowStep = Math.floor(num($("slowStep")?.value, 1));
+  const fastStep = Math.max(1, rawFastStep);
+  const slowStep = Math.max(1, rawSlowStep);
+  const fastLow = Math.floor(fast[0]);
+  const slowLow = Math.floor(slow[0]);
+  const fastHigh = rawFastStep === 0 ? fastLow : Math.floor(fast[1]);
+  const slowHigh = rawSlowStep === 0 ? slowLow : Math.floor(slow[1]);
+  const fastDomain = { IntRange: { low: fastLow, high: fastHigh, step: fastStep, log: false } };
+  const slowDomain = { IntRange: { low: slowLow, high: slowHigh, step: slowStep, log: false } };
+  const search_space = normalizeCompositeMoSearchSpace(space, fastDomain, slowDomain);
+
+  return {
+    strategy_kind: "CompositeMo",
+    data_id: "__cfg__",
+    fast_ma_type: fastMaType,
+    slow_ma_type: slowMaType,
+    ma_source: maSource,
+    fast_ma_params: resolvedMaParams("fast", fastMaType),
+    slow_ma_params: resolvedMaParams("slow", slowMaType),
+    base_strategy: baseStrategy,
+    strategy: baseStrategy,
+    search_space,
+    objective: maximize,
+    objectives: { maximize, minimize },
+    sampler,
+    constraints,
+    gpu_prescan,
+    mode: null,
+  };
+}
+
+function getValidationReqForFingerprintFromUi() {
+  const kind = strategyKind();
+  if (kind !== "CompositeCpu" && kind !== "CompositeMo") return null;
+
+  const max_candidates = Math.max(1, Math.floor(num($("valCandidates")?.value, 32)));
+  const seed = Math.max(0, Math.floor(num($("valSeed")?.value, 1)));
+
+  const walk_forward = $("valWfEnable")?.checked
+    ? {
+      window_bars: Math.max(64, Math.floor(num($("valWfWindow")?.value, 20000))),
+      step_bars: Math.max(1, Math.floor(num($("valWfStep")?.value, 20000))),
+    }
+    : null;
+
+  const perturb = $("valPerturbEnable")?.checked
+    ? {
+      iterations: Math.max(0, Math.floor(num($("valPerturbIters")?.value, 8))),
+      pct_min: Math.max(0, num($("valPerturbMin")?.value, 0.015)),
+      pct_max: Math.max(0, num($("valPerturbMax")?.value, 0.06)),
+      flip_bool_prob: 0.02,
+    }
+    : null;
+
+  const trade_bootstrap = $("valMcEnable")?.checked
+    ? { simulations: Math.max(0, Math.floor(num($("valMcSims")?.value, 500))) }
+    : null;
+
+  const cscv_pbo = $("valCscvEnable")?.checked
+    ? (() => {
+      let slices = Math.max(4, Math.floor(num($("valCscvSlices")?.value, 16)));
+      if ((slices & 1) === 1) slices = Math.max(4, slices - 1);
+      return { slices, max_combinations: 50000, threshold: 0.0 };
+    })()
+    : null;
+
+  const cross_ticker = $("valCrossEnable")?.checked
+    ? (() => {
+      const max_datasets = Math.max(0, Math.floor(num($("valCrossMax")?.value, 6)));
+      if (max_datasets <= 0) return null;
+      const datasets = getCrossSelectedPaths()
+        .map((csv_path) => ({ csv_path, label: "" }))
+        .slice(0, max_datasets);
+      return datasets.length ? { max_datasets, datasets } : null;
+    })()
+    : null;
+
+  const fastMaType = String($("fastMaType")?.value || "").trim();
+  const slowMaType = String($("slowMaType")?.value || "").trim();
+  const maSource = String($("maSource")?.value || "close");
+
+  return {
+    data_id: "__cfg__",
+    ma_source: maSource,
+    fast_ma_params: resolvedMaParams("fast", fastMaType) || null,
+    slow_ma_params: resolvedMaParams("slow", slowMaType) || null,
+    candidates: [],
+    walk_forward,
+    perturb,
+    trade_bootstrap,
+    cross_ticker,
+    cscv_pbo,
+    seed,
+    max_candidates,
+  };
+}
+
+function getRequestForFingerprint() {
+  const kind = strategyKind();
+  if (kind === "CompositeCpu") return getCompositeRequestForFingerprint();
+  if (kind === "CompositeMo") return getCompositeMoRequestForFingerprint();
+  return null;
+}
+
+function splitHoldoutPaths(paths, holdoutPct, seed) {
+  const xs = Array.isArray(paths) ? paths.map((p) => String(p || "").trim()).filter((p) => !!p) : [];
+  const pct = Number.isFinite(Number(holdoutPct)) ? Math.max(0, Math.min(50, Number(holdoutPct))) : 0;
+  if (!xs.length || pct <= 0) return { train: xs, holdout: [] };
+
+  const n = xs.length;
+  const k = Math.max(0, Math.min(n, Math.floor(n * (pct / 100))));
+  if (k <= 0) return { train: xs, holdout: [] };
+  if (k >= n) return { train: [], holdout: xs };
+
+  const seed32 = hashFNV1a32(String(seed ?? 0));
+  const scored = xs.map((p) => ({ p, s: (hashFNV1a32(p) ^ seed32) >>> 0 }));
+  scored.sort((a, b) => a.s - b.s);
+
+  const holdout = scored.slice(0, k).map((x) => x.p);
+  const train = scored.slice(k).map((x) => x.p);
+  return { train, holdout };
+}
+
+async function runBatchWorkflow() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  if (RUNNING) return;
+
+  if (!isCompositeStrategy()) {
+    setStatus("Batch runs currently support Composite strategies only (Composite [CPU] or Composite [CPU + MO]).", "danger");
+    return;
+  }
+
+  const selectedPaths = getBatchSelectedPaths();
+  if (!selectedPaths.length) {
+    setStatus("Select at least 1 dataset in Meta → Batch runs first.", "danger");
+    return;
+  }
+
+  const holdoutPctRaw = Math.floor(Number($("batchHoldoutPct")?.value || 0));
+  const holdout_pct = Number.isFinite(holdoutPctRaw) ? Math.max(0, Math.min(50, holdoutPctRaw)) : 0;
+  const holdoutTagRaw = String($("batchHoldoutTag")?.value || "").trim();
+  const holdout_tag = holdoutTagRaw || "holdout";
+  const auto_meta = !!$("batchAutoMeta")?.checked;
+  const skip_done = !!$("batchSkipDone")?.checked;
+
+  const prevAutoVal = !!$("valAutoRun")?.checked;
+  const prevAutoXlsx = !!$("valAutoExportXlsx")?.checked;
+  const prevAutoReveal = !!$("valAutoRevealReport")?.checked;
+
+  setRunning(true);
+  BATCH_RUNNING = true;
+  BATCH_STOP_REQUESTED = false;
+  if ($("btnBatchStop")) $("btnBatchStop").disabled = false;
+  try {
+    setBatchSummaryUi(null, "");
+    // Hands-off defaults for batch: validate + export, but don't pop open files for every dataset.
+    if ($("valAutoRun")) $("valAutoRun").checked = true;
+    if ($("valAutoExportXlsx")) $("valAutoExportXlsx").checked = true;
+    if ($("valAutoRevealReport")) $("valAutoRevealReport").checked = false;
+
+    let baseTags = parseTagsInput($("batchTags")?.value || "");
+    if (!baseTags.length) {
+      const t = defaultBatchTag();
+      baseTags = [t];
+      if ($("batchTags")) $("batchTags").value = t;
+      if ($("metaRequiredTag") && !String($("metaRequiredTag")?.value || "").trim()) $("metaRequiredTag").value = t;
+    }
+    saveSettingsSoon();
+
+    if (!Array.isArray(BATCH_DATASETS_CACHE) || !BATCH_DATASETS_CACHE.length) {
+      try {
+        const info = await invoke("polygon_get_cache_info");
+        BATCH_DATASETS_CACHE = Array.isArray(info?.datasets) ? info.datasets : [];
+      } catch {}
+    }
+
+    const byPath = new Map();
+    for (const ds of Array.isArray(BATCH_DATASETS_CACHE) ? BATCH_DATASETS_CACHE : []) {
+      const p = String(ds?.csv_path || "").trim();
+      if (!p) continue;
+      byPath.set(p, ds);
+    }
+
+    const selectedTimeframes = new Set();
+    const missingTimeframe = [];
+    for (const p0 of selectedPaths) {
+      const p = String(p0 || "").trim();
+      if (!p) continue;
+      const ds = byPath.get(p) || null;
+      const tf = String(ds?.timeframe || "").trim();
+      if (tf) selectedTimeframes.add(tf);
+      else missingTimeframe.push(fileBasename(p) || p);
+    }
+    if (missingTimeframe.length) {
+      setStatus(`Batch requires timeframe metadata for all selected datasets (missing: ${missingTimeframe.length}). Refresh the dataset list and re-select.`, "danger");
+      return;
+    }
+    if (selectedTimeframes.size > 1) {
+      const tfs = [...selectedTimeframes].sort().join(", ");
+      setStatus(`Batch requires a single timeframe across selected datasets (found: ${tfs}). Filter by 'tf=1m' (or similar) and select again.`, "danger");
+      return;
+    }
+
+    const batchTs = new Date().toISOString();
+    const batchStart = performance.now();
+    const n = selectedPaths.length;
+    const primary_tag = String(baseTags[0] || "").trim();
+    const split = splitHoldoutPaths(selectedPaths, holdout_pct, primary_tag || "0");
+    const holdoutSet = new Set(Array.isArray(split.holdout) ? split.holdout : []);
+    const expectedKind = strategyKind() === "CompositeCpu" ? "CompositeCpu" : "CompositeMo";
+    const expectedFingerprint = computeConfigFingerprint(getRequestForFingerprint(), getValidationReqForFingerprintFromUi());
+    const batchTimeframes = new Set();
+    for (const tf of selectedTimeframes) batchTimeframes.add(tf);
+    let doneSet = new Set();
+    if (skip_done && primary_tag) {
+      try {
+        const runs = await invoke("list_run_artifacts");
+        for (const r of Array.isArray(runs) ? runs : []) {
+          const strat = String(r?.strategy_kind || "").trim();
+          if (strat !== expectedKind) continue;
+          const fp = String(r?.config_fingerprint || "").trim();
+          if (!fp || fp !== expectedFingerprint) continue;
+          const tags = Array.isArray(r?.tags) ? r.tags.map((t) => String(t || "").toLowerCase()) : [];
+          if (!tags.includes(primary_tag.toLowerCase())) continue;
+          const csv = String(r?.csv_path || "").trim();
+          if (!csv) continue;
+          const hasVal = !!r?.has_validation;
+          const hasXlsx = !!String(r?.report_xlsx_path || "").trim();
+          if (!hasVal || !hasXlsx) continue;
+          doneSet.add(csv);
+        }
+      } catch {}
+    }
+    let ok = 0;
+    let skipped = 0;
+    let cancelled = false;
+    const failures = [];
+    const okRows = [];
+    const skippedRows = [];
+    const failedRows = [];
+
+    for (let i = 0; i < n; i++) {
+      if (BATCH_STOP_REQUESTED) break;
+      const path = String(selectedPaths[i] || "").trim();
+      if (!path) continue;
+
+      const isHoldout = holdoutSet.has(path);
+      const ds = byPath.get(path) || null;
+      const label = String(ds?.display_symbol || ds?.polygon_ticker || fileBasename(path) || path).trim();
+
+      const hoHint = holdoutSet.size ? ` • holdout=${holdoutSet.size}/${n}` : "";
+      updateBatchMeta(`running ${i + 1}/${n}: ${label || "dataset"}${isHoldout ? " [holdout]" : ""}${hoHint}`);
+
+      if (doneSet.has(path)) {
+        skipped += 1;
+        updateBatchMeta(`skipping ${label || "dataset"} (already completed for ${primary_tag})`);
+        skippedRows.push({ csv_path: path, label, is_holdout: isHoldout });
+        continue;
+      }
+
+      if ($("csvPath")) $("csvPath").value = path;
+      try {
+        await loadCsv();
+      } catch (e) {
+        failures.push({ label, error: `load: ${String(e)}` });
+        failedRows.push({ csv_path: path, label, is_holdout: isHoldout, error: `load: ${String(e)}` });
+        setStatus(`Batch: failed to load ${label}: ${String(e)}`, "danger");
+        continue;
+      }
+
+      if (ds) {
+        const market = String(ds?.market || "").trim() || null;
+        const adjFlag = market === "stocks" ? (!!ds?.adjusted) : null;
+        const sym = String(ds?.display_symbol || ds?.polygon_ticker || label).trim();
+        const tf = String(ds?.timeframe || CURRENT_DATA_META?.timeframe || "").trim() || null;
+        if (tf) batchTimeframes.add(tf);
+        CURRENT_DATASET_CTX = {
+          source: "polygon",
+          label: sym || label || fileBasename(path) || path,
+          symbol: sym || null,
+          market,
+          adjusted: adjFlag,
+          timeframe: tf,
+        };
+      }
+
+      const extraTags = isHoldout && holdout_pct > 0 ? [holdout_tag] : [];
+      const perRunTags = dedupTags([...baseTags, label, ...extraTags].filter((t) => !!String(t || "").trim()));
+      NEXT_RUN_TAGS = perRunTags;
+
+      try {
+        await runWorkflow({ switchTab: false });
+        ok += 1;
+        okRows.push({
+          csv_path: path,
+          label,
+          is_holdout: isHoldout,
+          ts: String(CURRENT_RUN?.ts || "").trim() || null,
+          artifact_path: String(CURRENT_RUN?.artifact_path || "").trim() || null,
+          report_xlsx_path: String(CURRENT_RUN?.report_xlsx_path || "").trim() || null,
+        });
+      } catch (e) {
+        if (isCancelledError(e)) {
+          cancelled = true;
+          setStatus("Batch cancelled.", "muted");
+          break;
+        }
+        NEXT_RUN_TAGS = null;
+        failures.push({ label, error: `run: ${String(e)}` });
+        failedRows.push({ csv_path: path, label, is_holdout: isHoldout, error: `run: ${String(e)}` });
+        setStatus(`Batch: failed on ${label}: ${String(e)}`, "danger");
+      }
+    }
+
+    await refreshSavedRuns();
+    const failed = failures.length;
+    const skipHint = skipped ? ` • skipped=${skipped}` : "";
+    const msg = `Batch done: ok=${ok}/${n}${skipHint}${failed ? ` • failed=${failed}` : ""}`;
+    setStatus(msg, failed ? "danger" : "ok");
+    updateBatchMeta(failed ? `${msg} • first=${failures[0]?.label}` : msg);
+
+    const summary = {
+      version: 1,
+      kind: "vectorbt_batch_summary",
+      ts: batchTs,
+      strategy_kind: expectedKind,
+      timeframe: batchTimeframes.size === 1 ? [...batchTimeframes][0] : null,
+      batch_tag: primary_tag || null,
+      config_fingerprint: expectedFingerprint,
+      tags: baseTags,
+      holdout_pct,
+      holdout_tag,
+      selected_paths: selectedPaths,
+      holdout_paths: [...holdoutSet],
+      counts: { total: n, ok, skipped, failed },
+      results: {
+        ok: okRows,
+        skipped: skippedRows,
+        failed: failedRows,
+        cancelled,
+      },
+      runtime_ms: Math.max(0, Math.round(performance.now() - batchStart)),
+    };
+    try {
+      const resp = await invoke("save_batch_summary", { summary });
+      const p = String(resp?.path || "").trim();
+      setBatchSummaryUi(summary, p);
+    } catch (e) {
+      setBatchSummaryUi(summary, "");
+      setStatus(`Saved batch runs, but failed to write summary JSON: ${String(e)}`, "danger");
+    }
+
+    if (auto_meta && !cancelled) {
+      try {
+        // Ensure meta defaults match this batch.
+        const kind = strategyKind();
+        if ($("metaStrategyKind")) $("metaStrategyKind").value = kind === "CompositeCpu" ? "CompositeCpu" : "CompositeMo";
+        const tf = batchTimeframes.size === 1 ? String([...batchTimeframes][0] || "").trim() : "";
+        if (tf && $("metaTimeframe") && !String($("metaTimeframe")?.value || "").trim()) $("metaTimeframe").value = tf;
+        if ($("metaRequiredTag")) $("metaRequiredTag").value = primary_tag || String($("metaRequiredTag")?.value || "").trim();
+        if ($("metaHoldoutTag")) $("metaHoldoutTag").value = holdout_tag;
+        if ($("metaEvalHoldout")) $("metaEvalHoldout").checked = holdoutSet.size > 0;
+        saveSettingsSoon();
+
+        // Stop controls no longer apply; meta is a separate phase.
+        BATCH_RUNNING = false;
+        BATCH_STOP_REQUESTED = false;
+        if ($("btnBatchStop")) $("btnBatchStop").disabled = true;
+
+        await runMetaSelection({ allowWhileRunning: true });
+      } catch (e) {
+        if (isCancelledError(e)) setStatus("Auto-meta cancelled.", "muted");
+        else setStatus(`Auto-meta failed: ${String(e)}`, "danger");
+      }
+    }
+  } finally {
+    BATCH_RUNNING = false;
+    BATCH_STOP_REQUESTED = false;
+    if ($("btnBatchStop")) $("btnBatchStop").disabled = true;
+
+    if ($("valAutoRun")) $("valAutoRun").checked = prevAutoVal;
+    if ($("valAutoExportXlsx")) $("valAutoExportXlsx").checked = prevAutoXlsx;
+    if ($("valAutoRevealReport")) $("valAutoRevealReport").checked = prevAutoReveal;
+    saveSettingsSoon();
     setRunning(false);
   }
 }
@@ -2604,7 +8247,9 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
   ensurePolygonDateDefaults();
 
   const market = String($("polygonMarket")?.value || "stocks").trim();
+  const adjusted = market === "stocks" ? !!$("polygonStocksAdjusted")?.checked : false;
   const symbol = String($("polygonSymbol")?.value || "").trim();
+  const timeframe = String($("polygonTimeframe")?.value || "1m").trim();
   const from = String($("polygonFrom")?.value || "").trim();
   const to = String($("polygonTo")?.value || "").trim();
 
@@ -2615,8 +8260,8 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
 
   setRunning(true);
   try {
-    setStatus("Downloading 1m bars from Polygon...", "muted");
-    const resp = await invoke("polygon_download_1m_and_load", { req: { market, symbol, from, to } });
+    setStatus(`Downloading ${timeframe || "1m"} bars from Polygon...`, "muted");
+    const resp = await invoke("polygon_download_1m_and_load", { req: { market, symbol, timeframe, from, to, adjusted } });
 
     const path = String(resp?.csv_path || "").trim();
     if (path && $("csvPath")) $("csvPath").value = path;
@@ -2624,6 +8269,7 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
     const id = String(resp?.id || "").trim();
     const meta = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
     CURRENT_DATA_META = meta;
+    CURRENT_DATASET_CTX = { source: "polygon", label: symbol, symbol, market, adjusted, timeframe: timeframe || "1m" };
     $("dataId").textContent = id || "—";
     renderDataMeta(meta);
     applyMaSourceConstraints();
@@ -2638,12 +8284,18 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
     if (path) addRecentCsvPath(path);
     saveSettingsSoon();
     await initPolygonUi();
+    await initCrossTickerList();
     closePolygonModal();
   } catch (e) {
     setStatus(String(e), "danger");
   } finally {
     setRunning(false);
   }
+});
+
+$("polygonMarket")?.addEventListener("change", () => {
+  updatePolygonAdjustedUi();
+  saveSettingsSoon();
 });
 
 $("btnBrowseExportAll")?.addEventListener("click", async () => {
@@ -2677,18 +8329,42 @@ $("btnPresetKernelSmaAlma")?.addEventListener("click", () => {
   applyMaSourceConstraints();
   applyBackendMaConstraints();
   refreshMaParamsUi();
+  refreshGpuStatusUi();
   saveSettingsSoon();
   setStatus("Applied preset: GPU kernel (SMA/ALMA)", "muted");
+});
+
+$("btnRefreshGpuStatus")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await refreshGpuStatusUi();
+    setStatus("Refreshed GPU status.", "muted");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnGpuParityCheck")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await runGpuParityCheck();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Parity cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
 });
 
 $("btnClear").addEventListener("click", () => {
   clearProgressUi();
   $("dataId").textContent = "—";
   CURRENT_DATA_META = null;
+  CURRENT_DATASET_CTX = null;
   renderDataMeta(null);
   applyMaSourceConstraints();
   applyBackendMaConstraints();
   $("output").textContent = "{}";
+  if ($("validationMeta")) $("validationMeta").textContent = "-";
+  if ($("validationOutput")) $("validationOutput").textContent = "-";
   $("bestSummary").textContent = "-";
   $("topTableBody").innerHTML = "";
   if ($("historySelect")) $("historySelect").value = "";
@@ -2708,26 +8384,128 @@ $("btnClear").addEventListener("click", () => {
   setHintVisible("heatmapEmptyHint", true);
   renderCompare();
   setStatus("Ready.", "");
+  updateValidateTabUi();
+  updateQuickActionsUi();
 });
 
 $("btnRun").addEventListener("click", async () => {
   try {
-    await runOptimization();
+    await runWorkflow();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnCancel").addEventListener("click", async () => {
+  try {
+    $("btnCancel").disabled = true;
+    if (BATCH_RUNNING) {
+      BATCH_STOP_REQUESTED = true;
+      updateBatchMeta("stop requested");
+    }
+    setStatus("Cancel requested... (may take a moment to stop safely)", "muted");
+    await requestCancelCurrentRun();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  } finally {
+    if ($("btnCancel")) $("btnCancel").disabled = !RUNNING;
+  }
+});
+
+$("btnValidate")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await runValidation();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Validation cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnOpenReportsDir")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    setStatus("Opening reports folder...", "muted");
+    const dir = await invoke("open_reports_dir");
+    setStatus(`Opened reports folder: ${String(dir || "").trim()}`, "ok");
   } catch (e) {
     setStatus(String(e), "danger");
   }
 });
 
-$("btnCancel").addEventListener("click", async () => {
+$("btnOpenLatestReport")?.addEventListener("click", async () => {
   const invoke = tauriInvoke();
   if (!invoke) return;
+  if (RUNNING) return;
+  const path = String(CURRENT_RUN?.report_xlsx_path || "").trim();
+  if (!path) {
+    setStatus("No report yet (run validation + export XLSX).", "muted");
+    return;
+  }
   try {
-    $("btnCancel").disabled = true;
-    setStatus("Cancel requested... (waiting for current tile to finish)", "muted");
-    await invoke("cancel_double_ma_optimization");
+    await invoke("open_path", { path });
+    setStatus("Opened report.", "ok");
+  } catch {
+    await invoke("reveal_path", { path });
+    setStatus("Revealed report.", "ok");
+  } finally {
+    updateQuickActionsUi();
+  }
+});
+
+$("btnOpenLatestMetaReport")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (RUNNING) return;
+  const path = String(LAST_META_RUN?.report_xlsx_path || "").trim();
+  if (!path) {
+    setStatus("No meta report yet (run meta analysis).", "muted");
+    return;
+  }
+  try {
+    await invoke("open_path", { path });
+    setStatus("Opened meta report.", "ok");
+  } catch {
+    await invoke("reveal_path", { path });
+    setStatus("Revealed meta report.", "ok");
+  } finally {
+    updateQuickActionsUi();
+  }
+});
+
+$("btnCrossRefresh")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await initCrossTickerList();
+    setStatus("Refreshed cross-ticker list.", "muted");
   } catch (e) {
     setStatus(String(e), "danger");
   }
+});
+
+$("valCrossSearch")?.addEventListener("input", () => {
+  applyCrossTickerFilter();
+});
+$("valCrossSearch")?.addEventListener("change", () => {
+  applyCrossTickerFilter();
+});
+
+$("btnCrossSelectAll")?.addEventListener("click", () => {
+  if (RUNNING) return;
+  selectAllVisibleCross();
+  setStatus("Cross-ticker: selected all (filtered view).", "muted");
+});
+$("btnCrossSelectNone")?.addEventListener("click", () => {
+  if (RUNNING) return;
+  selectNoneVisibleCross();
+  setStatus("Cross-ticker: cleared selection (filtered view).", "muted");
+});
+$("btnCrossSelectMatch")?.addEventListener("click", () => {
+  if (RUNNING) return;
+  selectMatchCurrentCross();
+  setStatus("Cross-ticker: selected datasets matching current dataset.", "muted");
 });
 
 $("strategyKind")?.addEventListener("change", () => {
@@ -2737,21 +8515,61 @@ $("strategyKind")?.addEventListener("change", () => {
   saveSettingsSoon();
 });
 
+$("btnApplyPreset")?.addEventListener("click", () => {
+  if (RUNNING) return;
+  applyPresetProfile($("presetProfile")?.value || "Balanced");
+});
+
 $("backend").addEventListener("change", () => {
   updateDeviceIdEnabled();
   applyBackendSelectionConstraints();
   applyBackendMaConstraints();
+  refreshGpuStatusUi();
   saveSettingsSoon();
 });
-$("deviceId").addEventListener("change", saveSettingsSoon);
+$("deviceId").addEventListener("change", () => {
+  rememberDesiredDeviceIdFromUi();
+  refreshGpuStatusUi();
+  saveSettingsSoon();
+});
+$("metaGroupingMode")?.addEventListener("change", updateMetaGroupingUi);
+$("metaStrategyKind")?.addEventListener("change", updateMetaHoldoutUi);
+$("metaEvalHoldout")?.addEventListener("change", updateMetaHoldoutUi);
+$("metaHoldoutMode")?.addEventListener("change", () => {
+  updateMetaHoldoutUi();
+  saveSettingsSoon();
+});
+
+$("moSampler")?.addEventListener("change", () => {
+  updateMoSamplerUi();
+  saveSettingsSoon();
+});
+
+$("moPrescanEnable")?.addEventListener("change", () => {
+  updateMoSamplerUi();
+  updateDeviceIdEnabled();
+  updateRunPlanUi();
+  saveSettingsSoon();
+});
+
+$("btnMoResetSearchSpace")?.addEventListener("click", () => {
+  const el = $("moSearchSpace");
+  if (!el) return;
+  el.value = JSON.stringify(defaultCompositeMoSearchSpace(), null, 2);
+  saveSettingsSoon();
+  setStatus("Reset Composite MO search space.", "muted");
+});
 
 for (const id of [
   "csvPath",
   "polygonMarket",
+  "polygonStocksAdjusted",
   "polygonSymbol",
+  "polygonTimeframe",
   "polygonFrom",
   "polygonTo",
   "strategyKind",
+  "presetProfile",
   "compareSelect",
   "fastMaType",
   "slowMaType",
@@ -2796,11 +8614,95 @@ for (const id of [
   "filterMinExposure",
   "paretoX",
   "paretoY",
+  "moObjectiveMin",
+  "moSampler",
+  "moNsga2Seed",
+  "moNsga2Population",
+  "moNsga2Generations",
+  "moNsga2CrossoverProb",
+  "moNsga2SwappingProb",
+  "moNsga2MutationProb",
+  "moRandomSeed",
+  "moRandomTrials",
+  "moTpeSeed",
+  "moTpeTrials",
+  "moTpeStartupTrials",
+  "moTpeCandidates",
+  "moTpeGamma",
+  "moTpeBatchSize",
+  "moTpeMaxModelPoints",
+  "moQmcSeed",
+  "moQmcTrials",
+  "moQmcSequence",
+  "moConstraintMinTrades",
+  "moConstraintMaxDd",
+  "moConstraintMaxAbsExposure",
+  "moPrescanEnable",
+  "moPrescanRequireGpu",
+  "moPrescanTopK",
+  "moPrescanWindow",
+  "moPrescanObjectives",
+  "moPrescanMode",
+  "moPrescanMaPairs",
+  "moSearchSpace",
+  "valCandidates",
+  "valSeed",
+  "valAutoRun",
+  "valAutoExportXlsx",
+  "valAutoRevealReport",
+  "valAutoExportTopN",
+  "valWfEnable",
+  "valWfWindow",
+  "valWfStep",
+  "valPerturbEnable",
+  "valPerturbIters",
+  "valPerturbMin",
+  "valPerturbMax",
+  "valMcEnable",
+  "valMcSims",
+  "valCscvEnable",
+  "valCscvSlices",
+  "valCrossEnable",
+  "valCrossMax",
+  "valCrossSelected",
+  "metaStrategyKind",
+  "metaTimeframe",
+  "metaRequiredTag",
+  "metaMinSamples",
+  "metaTopK",
+  "metaHoldoutTag",
+  "metaEvalHoldout",
+  "metaHoldoutReps",
+  "metaGroupingMode",
+  "metaClusterIntBucket",
+  "metaClusterFloatBucket",
+  "metaCompareSelect",
 ]) {
   const el = $(id);
   if (!el) continue;
   el.addEventListener("change", saveSettingsSoon);
   el.addEventListener("input", saveSettingsSoon);
+}
+
+for (const id of ["fastStart", "fastEnd", "fastStep", "slowStart", "slowEnd", "slowStep", "includeAll"]) {
+  const el = $(id);
+  if (!el) continue;
+  el.addEventListener("change", updatePairsPreviewUi);
+  el.addEventListener("input", updatePairsPreviewUi);
+}
+
+for (const id of ["valAutoRun", "valAutoExportXlsx", "valAutoRevealReport"]) {
+  const el = $(id);
+  if (!el) continue;
+  el.addEventListener("change", updateRunPlanUi);
+  el.addEventListener("input", updateRunPlanUi);
+}
+
+for (const id of ["valCandidates", "valWfEnable", "valPerturbEnable", "valMcEnable", "valCscvEnable", "valCrossEnable"]) {
+  const el = $(id);
+  if (!el) continue;
+  el.addEventListener("change", updateValidateTabUi);
+  el.addEventListener("input", updateValidateTabUi);
 }
 
 for (const id of [
@@ -2830,17 +8732,17 @@ $("btnClearTopFilters")?.addEventListener("click", () => {
   if (CURRENT_RUN) renderTopTable(CURRENT_RUN.res, CURRENT_RUN.req);
 });
 
-for (const th of document.querySelectorAll("#topTable th[data-key]")) {
-  th.addEventListener("click", () => {
-    const key = th.getAttribute("data-key") || "rank";
-    if (TOP_SORT.key === key) TOP_SORT.dir = TOP_SORT.dir === "asc" ? "desc" : "asc";
-    else {
-      TOP_SORT.key = key;
-      TOP_SORT.dir = key === "rank" ? "asc" : "desc";
-    }
-    if (CURRENT_RUN) renderRun(CURRENT_RUN.res, CURRENT_RUN.req);
-  });
-}
+$("topTable")?.addEventListener("click", (ev) => {
+  const th = ev?.target instanceof Element ? ev.target.closest("#topTable th[data-key]") : null;
+  if (!th) return;
+  const key = th.getAttribute("data-key") || "rank";
+  if (TOP_SORT.key === key) TOP_SORT.dir = TOP_SORT.dir === "asc" ? "desc" : "asc";
+  else {
+    TOP_SORT.key = key;
+    TOP_SORT.dir = (key === "rank" || key === "minimize_value" || key === "violation") ? "asc" : "desc";
+  }
+  if (CURRENT_RUN) renderRun(CURRENT_RUN.res, CURRENT_RUN.req);
+});
 
 $("btnExportJson")?.addEventListener("click", () => {
   if (!CURRENT_RUN?.res) {
@@ -2859,16 +8761,19 @@ $("btnExportCsv")?.addEventListener("click", () => {
   const obj = CURRENT_RUN.req?.objective || "Sharpe";
   const baseRows = Array.isArray(TOP_ROWS_FILTERED) ? TOP_ROWS_FILTERED : TOP_ROWS;
   const sorted = sortRows(baseRows, TOP_SORT.key, TOP_SORT.dir, obj);
-  const lines = ["rank,fast_ma,fast_len,slow_ma,slow_len,pnl,sharpe,max_dd,trades,exposure,net_exposure,score"];
+  const lines = ["rank,fast_ma,fast_len,slow_ma,slow_len,pnl,sharpe,max_dd,trades,exposure,net_exposure,score,params_json"];
   for (const row of sorted) {
     const p = row.params || {};
     const m = row.metrics || {};
     const score = scoreOf(m, obj);
+    const paramsJson = (() => {
+      try { return JSON.stringify(p); } catch { return "{}"; }
+    })();
     lines.push([
       row.rank,
-      p.fast_ma_type || "",
+      csvEscape(p.fast_ma_type || ""),
       p.fast_len || 0,
-      p.slow_ma_type || "",
+      csvEscape(p.slow_ma_type || ""),
       p.slow_len || 0,
       Number(m.pnl || 0),
       Number(m.sharpe || 0),
@@ -2877,9 +8782,30 @@ $("btnExportCsv")?.addEventListener("click", () => {
       Number(m.exposure || 0),
       Number(m.net_exposure || 0),
       Number(score || 0),
+      csvEscape(paramsJson),
     ].join(","));
   }
   downloadText(`vectorbt_top_${CURRENT_RUN.ts}.csv`, lines.join("\n"), "text/csv");
+});
+
+$("btnExportValidationCsv")?.addEventListener("click", () => {
+  exportValidationShortlistCsv();
+});
+
+$("btnExportValidationJson")?.addEventListener("click", () => {
+  exportValidationJson();
+});
+
+$("btnExportReportJson")?.addEventListener("click", () => {
+  exportReportJson();
+});
+
+$("btnExportReportXlsx")?.addEventListener("click", async () => {
+  try {
+    await exportReportXlsx();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
 });
 
 $("btnClearHistory")?.addEventListener("click", () => {
@@ -2887,6 +8813,7 @@ $("btnClearHistory")?.addEventListener("click", () => {
   populateHistorySelect([], "");
   populateCompareSelect([], "");
   CURRENT_RUN = null;
+  clearValidationUi();
   DRILL_SELECTED_KEY = "";
   DRILL_SEQ++;
   setDrillVisible(false);
@@ -2937,9 +8864,371 @@ $("historySelect")?.addEventListener("change", () => {
   const entry = history.find((h) => h.ts === ts);
   if (!entry) return;
   CURRENT_RUN = { ts: entry.ts, req: entry.req, res: entry.res };
+  clearValidationUi();
   $("output").textContent = pretty(entry.res);
   renderRun(entry.res, entry.req);
   setStatus(`Loaded run ${entry.ts}`, "muted");
+});
+
+$("savedRunsSelect")?.addEventListener("change", () => {
+  syncSavedRunSelectionUi();
+});
+
+$("savedRunsSearch")?.addEventListener("input", () => {
+  renderSavedRunsSelect();
+});
+
+$("btnSaveSavedRunTags")?.addEventListener("click", async () => {
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved run first.", "muted");
+    return;
+  }
+  try {
+    const tags = parseTagsInput($("savedRunsTags")?.value || "");
+    await saveSavedRunTags(path, tags);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRefreshSavedRuns")?.addEventListener("click", async () => {
+  await refreshSavedRuns();
+  setStatus("Refreshed saved runs.", "muted");
+});
+
+$("btnOpenRunsDir")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    setStatus("Opening runs folder...", "muted");
+    const dir = await invoke("open_runs_dir");
+    setStatus(`Opened runs folder: ${String(dir || "").trim()}`, "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRevealSavedRun")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved run first.", "muted");
+    return;
+  }
+  try {
+    await invoke("reveal_path", { path });
+    setStatus("Revealed saved run.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnDeleteSavedRun")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved run first.", "muted");
+    return;
+  }
+  if (!confirm("Delete this saved run artifact file?")) return;
+  try {
+    await invoke("delete_run_artifact", { path });
+    await refreshSavedRuns("");
+    setStatus("Deleted saved run.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnLoadSavedRun")?.addEventListener("click", async () => {
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved run first.", "muted");
+    return;
+  }
+  try {
+    await loadSavedRun(path);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnApplySavedRun")?.addEventListener("click", async () => {
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved run first.", "muted");
+    return;
+  }
+  try {
+    await applySavedRunToForm(path);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRerunSavedRun")?.addEventListener("click", async () => {
+  const path = String($("savedRunsSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved run first.", "muted");
+    return;
+  }
+  try {
+    await rerunSavedRun(path);
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnOpenSavedRunReport")?.addEventListener("click", async () => {
+  try {
+    await openSelectedSavedRunReport();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRunBatch")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await runBatchWorkflow();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Batch cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnBatchStop")?.addEventListener("click", () => {
+  if (!BATCH_RUNNING) return;
+  BATCH_STOP_REQUESTED = true;
+  updateBatchMeta("stop after current");
+  setStatus("Batch will stop after the current dataset.", "muted");
+});
+
+$("btnBatchRevealSummary")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (RUNNING) return;
+  const p = String(LAST_BATCH_SUMMARY?.path || "").trim();
+  if (!p) {
+    setStatus("No batch summary saved yet.", "muted");
+    return;
+  }
+  try {
+    await invoke("reveal_path", { path: p });
+    setStatus("Revealed batch summary.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnBatchRetryFailed")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  const summary = LAST_BATCH_SUMMARY?.summary && typeof LAST_BATCH_SUMMARY.summary === "object" ? LAST_BATCH_SUMMARY.summary : null;
+  if (!summary) {
+    setStatus("No batch summary loaded.", "muted");
+    return;
+  }
+  const failed = Number(summary?.counts?.failed || summary?.results?.failed?.length || 0);
+  if (failed <= 0) {
+    setStatus("No failures to retry.", "muted");
+    return;
+  }
+  try {
+    const tags = Array.isArray(summary.tags) ? summary.tags.join(", ") : "";
+    if ($("batchTags")) $("batchTags").value = tags;
+    if ($("batchHoldoutPct")) $("batchHoldoutPct").value = String(Math.floor(Number(summary.holdout_pct || 0)));
+    if ($("batchHoldoutTag")) $("batchHoldoutTag").value = String(summary.holdout_tag || "holdout");
+    if ($("batchSkipDone")) $("batchSkipDone").checked = true;
+
+    const sel = Array.isArray(summary.selected_paths) ? summary.selected_paths : [];
+    setBatchSelectedPaths(sel);
+    renderBatchDatasetList();
+    updateBatchMeta(`retrying failed (tag=${String(summary.batch_tag || "").trim() || "batch"})`);
+    saveSettingsSoon();
+    await runBatchWorkflow();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Retry cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnBatchRefresh")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await initBatchDatasetList();
+    setStatus("Refreshed batch dataset list.", "muted");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnBatchSelectAll")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    if (!Array.isArray(BATCH_DATASETS_CACHE) || !BATCH_DATASETS_CACHE.length) {
+      await initBatchDatasetList();
+    }
+    const q = batchDatasetQuery();
+    const items = filterBatchDatasets(Array.isArray(BATCH_DATASETS_CACHE) ? BATCH_DATASETS_CACHE : [], q);
+    const paths = [];
+    for (const ds of items) {
+      const p = String(ds?.csv_path || "").trim();
+      if (!p) continue;
+      paths.push(p);
+    }
+    setBatchSelectedPaths(paths);
+    renderBatchDatasetList();
+    updateBatchMeta("");
+    saveSettingsSoon();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnBatchSelectNone")?.addEventListener("click", () => {
+  if (RUNNING) return;
+  setBatchSelectedPaths([]);
+  renderBatchDatasetList();
+  updateBatchMeta("");
+  saveSettingsSoon();
+});
+
+$("batchDatasetSearch")?.addEventListener("input", () => {
+  renderBatchDatasetList();
+  updateBatchMeta("");
+  saveSettingsSoon();
+});
+
+$("batchTags")?.addEventListener("input", saveSettingsSoon);
+$("batchHoldoutPct")?.addEventListener("input", saveSettingsSoon);
+$("batchHoldoutTag")?.addEventListener("input", saveSettingsSoon);
+$("batchAutoMeta")?.addEventListener("change", saveSettingsSoon);
+$("batchSkipDone")?.addEventListener("change", saveSettingsSoon);
+
+$("btnRunMeta")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await runMetaSelection();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Meta cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnOpenMetaReport")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (RUNNING) return;
+  const path = String(LAST_META_RUN?.report_xlsx_path || "").trim();
+  if (!path) {
+    setStatus("No meta report path yet. Run meta analysis first.", "muted");
+    return;
+  }
+  try {
+    await invoke("open_path", { path });
+    setStatus("Opened meta report.", "ok");
+  } catch {
+    await invoke("reveal_path", { path });
+    setStatus("Revealed meta report.", "ok");
+  }
+});
+
+$("btnRevealMetaFiles")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (RUNNING) return;
+  const p1 = String(LAST_META_RUN?.report_xlsx_path || "").trim();
+  const p2 = String(LAST_META_RUN?.meta_json_path || "").trim();
+  const path = p1 || p2;
+  if (!path) {
+    setStatus("No meta files yet. Run meta analysis first.", "muted");
+    return;
+  }
+  try {
+    await invoke("reveal_path", { path });
+    setStatus("Revealed meta files.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("metaSavedSelect")?.addEventListener("change", () => {
+  syncMetaSavedSelectionUi();
+});
+
+$("metaSavedSearch")?.addEventListener("input", () => {
+  renderMetaSavedSelect();
+});
+
+$("btnSaveMetaSavedTags")?.addEventListener("click", async () => {
+  const path = String($("metaSavedSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved meta run first.", "muted");
+    return;
+  }
+  try {
+    const tags = parseTagsInput($("metaSavedTags")?.value || "");
+    await saveMetaSavedTags(path, tags);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRefreshMetaSaved")?.addEventListener("click", async () => {
+  await refreshMetaSaved();
+  setStatus("Refreshed saved meta runs.", "muted");
+});
+
+$("btnLoadMetaSaved")?.addEventListener("click", async () => {
+  const path = String($("metaSavedSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved meta run first.", "muted");
+    return;
+  }
+  try {
+    await loadMetaSaved(path);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnOpenMetaSavedReport")?.addEventListener("click", async () => {
+  try {
+    await openSelectedMetaSavedReport();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRevealMetaSaved")?.addEventListener("click", async () => {
+  try {
+    await revealSelectedMetaSaved();
+    setStatus("Revealed meta run.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnDeleteMetaSaved")?.addEventListener("click", async () => {
+  const entry = selectedMetaSavedEntry();
+  if (!entry) {
+    setStatus("Select a saved meta run first.", "muted");
+    return;
+  }
+  if (!confirm("Delete this saved meta artifact file?")) return;
+  try {
+    await deleteSelectedMetaSaved();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("metaCompareSelect")?.addEventListener("change", () => {
+  renderMetaCompare();
 });
 
 $("compareSelect")?.addEventListener("change", () => {
@@ -2954,7 +9243,8 @@ $("btnSetBaseline")?.addEventListener("click", () => {
   }
   const sel = $("compareSelect");
   if (!sel) return;
-  sel.value = CURRENT_RUN.ts;
+  if (CURRENT_RUN?.artifact_path) sel.value = `disk:${String(CURRENT_RUN.artifact_path || "").trim()}`;
+  else sel.value = `hist:${CURRENT_RUN.ts}`;
   saveSettingsSoon();
   renderCompare();
 });
@@ -2980,17 +9270,31 @@ RESULTS_TABS = initTabSystem({
   defaultTab: "overview",
 });
 
-loadSettings();
+const SETTINGS_LOADED = loadSettings();
+if (!SETTINGS_LOADED) {
+  applyPresetProfile($("presetProfile")?.value || "Balanced", { silent: true });
+}
+updatePolygonAdjustedUi();
+if ($("moSearchSpace") && !String($("moSearchSpace").value || "").trim()) {
+  $("moSearchSpace").value = JSON.stringify(defaultCompositeMoSearchSpace(), null, 2);
+}
 renderRecentCsvDatalist(getRecentCsvPaths());
 renderDataMeta(null);
 applyMaSourceConstraints();
 const hist0 = getHistory();
 populateHistorySelect(hist0, "");
 populateCompareSelect(hist0, $("compareSelect")?.value || "");
+refreshSavedRuns();
+refreshMetaSaved();
 updateDeviceIdEnabled();
 updateStrategyUi();
 
 initMaSelects();
 initProgressListener();
+initDistributedProgressListener();
 initSampleCsvs();
 initPolygonUi();
+initCrossTickerList();
+initBatchDatasetList();
+initDistributedUi();
+loadLastBatchSummaryFromDisk();
