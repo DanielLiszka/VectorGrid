@@ -680,6 +680,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         export_all_csv_path: None,
                         fast_ma_params: req.fast_ma_params.clone(),
                         slow_ma_params: req.slow_ma_params.clone(),
+                        fast_ma_param_sweeps: None,
+                        slow_ma_param_sweeps: None,
                         strategy: req.base_strategy.clone(),
                         halftrend_filter: None,
                         objective,

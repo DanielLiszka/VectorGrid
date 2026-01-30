@@ -3,9 +3,11 @@ pub mod composite_validate;
 pub mod composite_mo;
 pub mod cscv_pbo;
 pub mod double_ma;
+pub mod double_ma_validate;
 pub mod indicator_factory;
 pub mod matrix_index;
 pub mod meta_select;
+pub mod ml_confidence;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod gpu_backtest_kernel;
 pub mod progress;
@@ -45,10 +47,21 @@ pub use composite_validate::{
     WalkForwardConfigOptional,
 };
 
+pub use double_ma_validate::{
+    run_double_ma_validation_blocking_with_candles, DoubleMaValidationParams,
+    DoubleMaValidationRequest, DoubleMaValidationResult,
+};
+
 pub use cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult};
 
 pub use meta_select::{
     meta_group_key, meta_group_key_for_request, meta_select_from_artifacts, HoldoutAggregate,
     HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode, MetaScoreWeights,
     MetaHoldoutMode, MetaHoldoutValidationConfig, MetaSelectionRequest, MetaSelectionResult,
+};
+
+pub use ml_confidence::{
+    predict_ml_confidence_for_group, train_ml_confidence_model_from_meta_artifacts,
+    MlConfidenceCalibrationBin, MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceScope,
+    MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
 };

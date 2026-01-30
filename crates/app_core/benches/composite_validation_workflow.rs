@@ -76,7 +76,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("composite_validate/workflow/50k/32candidates");
     group.measurement_time(Duration::from_secs(8));
-    group.sample_size(8);
+    group.sample_size(10);
 
     let base = CompositeValidationRequest {
         data_id: "bench".to_string(),
@@ -167,4 +167,3 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
 
 criterion_group!(benches, bench_composite_validation_workflow);
 criterion_main!(benches);
-

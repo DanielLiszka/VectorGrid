@@ -50,6 +50,10 @@ harness = false
 name = "meta_select_workflow"
 harness = false
 
+[[bench]]
+name = "e2e_workflow_ml"
+harness = false
+
 [[bin]]
 name = "ta_cli"
 path = "src/bin/ta_cli.rs"

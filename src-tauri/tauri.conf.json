@@ -11,12 +11,14 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "VectorTA Optimizer",
         "create": false,
         "width": 1280,
-        "height": 720
+        "height": 720,
+        "transparent": true
       }
     ]
   }

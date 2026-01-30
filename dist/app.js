@@ -21,6 +21,200 @@ const RESULTS_TAB_KEY = "vectorbt_results_tab_v1";
 let CONTROLS_TABS = null;
 let RESULTS_TABS = null;
 
+const CONTROLS_WIDTH_KEY = "vta_controls_width_v1";
+const CONTROLS_COLLAPSED_KEY = "vta_controls_collapsed_v1";
+const CONTROLS_W_MIN = 320;
+const CONTROLS_W_MAX = 820;
+
+const WINDOW_EFFECT_KEY = "vta_window_effect_v1";
+
+const THEME_PREF_KEY = "vta_theme_pref_v1";
+let THEME_MQL = null;
+let THEME_MQL_HANDLER = null;
+
+function isValidThemePref(v) {
+  return v === "light" || v === "dark" || v === "system";
+}
+
+function resolvedThemeFromPref(pref) {
+  const p = String(pref || "").trim();
+  if (p === "dark") return "dark";
+  if (p === "light") return "light";
+  if (p !== "system") return "light";
+  if (!THEME_MQL && window.matchMedia) THEME_MQL = window.matchMedia("(prefers-color-scheme: dark)");
+  return THEME_MQL && THEME_MQL.matches ? "dark" : "light";
+}
+
+function detachThemeListener() {
+  if (!THEME_MQL || !THEME_MQL_HANDLER) return;
+  try {
+    if (THEME_MQL.removeEventListener) THEME_MQL.removeEventListener("change", THEME_MQL_HANDLER);
+    else THEME_MQL.removeListener(THEME_MQL_HANDLER);
+  } catch {}
+  THEME_MQL_HANDLER = null;
+}
+
+function applyThemePref(pref, opts) {
+  const p0 = String(pref || "").trim();
+  const p = isValidThemePref(p0) ? p0 : "light";
+  const persist = opts?.persist !== false;
+
+  const root = document.documentElement;
+  root.dataset.themePref = p;
+  root.dataset.theme = resolvedThemeFromPref(p);
+
+  if (persist) {
+    try { localStorage.setItem(THEME_PREF_KEY, p); } catch {}
+  }
+
+  const sel = $("themeSelect");
+  if (sel && String(sel.value || "") !== p) sel.value = p;
+
+  detachThemeListener();
+  if (p === "system") {
+    if (!THEME_MQL && window.matchMedia) THEME_MQL = window.matchMedia("(prefers-color-scheme: dark)");
+    if (THEME_MQL) {
+      THEME_MQL_HANDLER = () => {
+        const root2 = document.documentElement;
+        if (String(root2.dataset.themePref || "").trim() !== "system") return;
+        root2.dataset.theme = resolvedThemeFromPref("system");
+      };
+      try {
+        if (THEME_MQL.addEventListener) THEME_MQL.addEventListener("change", THEME_MQL_HANDLER);
+        else THEME_MQL.addListener(THEME_MQL_HANDLER);
+      } catch {}
+    }
+  }
+
+  scheduleApplyWindowEffect();
+}
+
+let WINDOW_EFFECT_APPLY_SEQ = 0;
+let WINDOW_EFFECT_APPLY_INFLIGHT = 0;
+
+function isValidWindowEffect(v) {
+  const x = String(v || "").trim().toLowerCase();
+  return x === "none" || x === "mica" || x === "acrylic" || x === "vibrancy";
+}
+
+function platformKind() {
+  const ua = String(navigator?.userAgent || "").toLowerCase();
+  if (ua.includes("windows")) return "windows";
+  if (ua.includes("mac")) return "macos";
+  if (ua.includes("linux")) return "linux";
+  return "unknown";
+}
+
+function supportedWindowEffects() {
+  const p = platformKind();
+  if (p === "windows") return new Set(["none", "mica", "acrylic"]);
+  if (p === "macos") return new Set(["none", "vibrancy"]);
+  return new Set(["none"]);
+}
+
+function currentWindowEffect() {
+  const eff = String(document.documentElement.dataset.windowEffect || "").trim().toLowerCase();
+  return isValidWindowEffect(eff) ? eff : "none";
+}
+
+async function applyWindowEffectNative(effect) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+
+  const eff = isValidWindowEffect(effect) ? String(effect).toLowerCase() : "none";
+  const dark = String(document.documentElement.dataset.theme || "light").trim() === "dark";
+
+  try {
+    WINDOW_EFFECT_APPLY_INFLIGHT += 1;
+    await invoke("set_window_effect", { effect: eff === "none" ? null : eff, dark });
+  } catch (e) {
+    setStatus(`Window effect failed: ${String(e)}`, "danger");
+  } finally {
+    WINDOW_EFFECT_APPLY_INFLIGHT = Math.max(0, WINDOW_EFFECT_APPLY_INFLIGHT - 1);
+  }
+}
+
+function scheduleApplyWindowEffect() {
+  const eff = currentWindowEffect();
+  if (!eff || eff === "none") return;
+  WINDOW_EFFECT_APPLY_SEQ = (WINDOW_EFFECT_APPLY_SEQ + 1) >>> 0;
+  const seq = WINDOW_EFFECT_APPLY_SEQ;
+  setTimeout(() => {
+    if (seq !== WINDOW_EFFECT_APPLY_SEQ) return;
+    if (WINDOW_EFFECT_APPLY_INFLIGHT > 0) return;
+    applyWindowEffectNative(eff);
+  }, 0);
+}
+
+function applyWindowEffectPref(pref, opts) {
+  const p0 = String(pref || "").trim().toLowerCase();
+  const p = isValidWindowEffect(p0) ? p0 : "none";
+  const supported = supportedWindowEffects();
+  const chosen = supported.has(p) ? p : "none";
+  const persist = opts?.persist !== false;
+
+  document.documentElement.dataset.windowEffect = chosen;
+  const sel = $("effectSelect");
+  if (sel && String(sel.value || "") !== chosen) sel.value = chosen;
+
+  if (persist) {
+    try {
+      if (chosen && chosen !== "none") localStorage.setItem(WINDOW_EFFECT_KEY, chosen);
+      else localStorage.removeItem(WINDOW_EFFECT_KEY);
+    } catch {}
+  }
+
+  applyWindowEffectNative(chosen);
+}
+
+function initWindowEffectUi() {
+  const sel = $("effectSelect");
+  if (!sel) return;
+
+  const supported = supportedWindowEffects();
+  for (const opt of Array.from(sel.options || [])) {
+    const v = String(opt.value || "").trim().toLowerCase();
+    opt.disabled = !supported.has(v);
+  }
+
+  let pref = String(document.documentElement.dataset.windowEffect || "").trim().toLowerCase();
+  if (!isValidWindowEffect(pref)) {
+    try {
+      const raw = localStorage.getItem(WINDOW_EFFECT_KEY);
+      pref = String(raw || "").trim().toLowerCase();
+    } catch {}
+  }
+  if (!isValidWindowEffect(pref)) pref = "none";
+  if (!supported.has(pref)) pref = "none";
+
+  sel.value = pref;
+  sel.addEventListener("change", () => {
+    applyWindowEffectPref(String(sel.value || "").trim().toLowerCase(), { persist: true });
+  });
+
+  applyWindowEffectPref(pref, { persist: false });
+}
+
+function initThemeUi() {
+  const sel = $("themeSelect");
+  if (!sel) return;
+
+  let pref = String(document.documentElement.dataset.themePref || "").trim();
+  if (!isValidThemePref(pref)) {
+    try {
+      const raw = localStorage.getItem(THEME_PREF_KEY);
+      pref = String(raw || "").trim();
+    } catch {}
+  }
+  if (!isValidThemePref(pref)) pref = "light";
+
+  sel.value = pref;
+  sel.addEventListener("change", () => {
+    applyThemePref(String(sel.value || "").trim(), { persist: true });
+  });
+  applyThemePref(pref, { persist: false });
+}
+
 function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
   const bar = $(barId);
   const panelsRoot = $(panelsId);
@@ -128,11 +322,135 @@ function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
   return { set: setActive, get: getActive, tabs: tabNames };
 }
 
+function readControlsWidthPx() {
+  const raw = String(getComputedStyle(document.documentElement).getPropertyValue("--controls-w") || "").trim();
+  const m = raw.match(/([0-9.]+)/);
+  const x = m ? Number(m[1]) : NaN;
+  return Number.isFinite(x) ? x : 420;
+}
+
+function isControlsCollapsed() {
+  return String(document.documentElement.dataset.controlsCollapsed || "").trim() === "1";
+}
+
+function setControlsCollapsed(collapsed, opts) {
+  const root = document.documentElement;
+  const on = collapsed ? "1" : "";
+  root.dataset.controlsCollapsed = on;
+  const persist = opts?.persist !== false;
+  if (persist) {
+    try {
+      if (on) localStorage.setItem(CONTROLS_COLLAPSED_KEY, "1");
+      else localStorage.removeItem(CONTROLS_COLLAPSED_KEY);
+    } catch {}
+  }
+  updateControlsToggleUi();
+}
+
+function applyControlsWidth(px, opts) {
+  const raw = Number(px);
+  if (!Number.isFinite(raw)) return;
+  const w = Math.max(CONTROLS_W_MIN, Math.min(CONTROLS_W_MAX, Math.round(raw)));
+  document.documentElement.style.setProperty("--controls-w", `${w}px`);
+
+  const persist = opts?.persist !== false;
+  if (persist) {
+    try { localStorage.setItem(CONTROLS_WIDTH_KEY, String(w)); } catch {}
+  }
+  updateControlsToggleUi();
+}
+
+function updateControlsToggleUi() {
+  const btn = $("btnToggleControls");
+  if (btn) btn.setAttribute("aria-pressed", isControlsCollapsed() ? "true" : "false");
+
+  const splitter = $("mainSplitter");
+  if (splitter) {
+    const w = readControlsWidthPx();
+    splitter.setAttribute("aria-valuemin", String(CONTROLS_W_MIN));
+    splitter.setAttribute("aria-valuemax", String(CONTROLS_W_MAX));
+    splitter.setAttribute("aria-valuenow", String(Math.round(w)));
+  }
+}
+
+function toggleControlsCollapsed() {
+  const collapsed = isControlsCollapsed();
+  setControlsCollapsed(!collapsed, { persist: true });
+  if (!collapsed) return;
+  // Ensure a sane width when expanding from collapsed.
+  const w = readControlsWidthPx();
+  if (!Number.isFinite(w) || w < CONTROLS_W_MIN) applyControlsWidth(420, { persist: true });
+}
+
+function initControlsSplitter() {
+  const splitter = $("mainSplitter");
+  const toggleBtn = $("btnToggleControls");
+  if (!splitter && !toggleBtn) return;
+
+  updateControlsToggleUi();
+  toggleBtn?.addEventListener("click", () => toggleControlsCollapsed());
+
+  if (!splitter) return;
+
+  splitter.addEventListener("dblclick", () => toggleControlsCollapsed());
+
+  splitter.addEventListener("keydown", (e) => {
+    const key = e.key;
+    if (key === "Enter" || key === " ") {
+      e.preventDefault();
+      toggleControlsCollapsed();
+      return;
+    }
+    if (isControlsCollapsed()) return;
+    const step = e.shiftKey ? 48 : 20;
+    if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+    e.preventDefault();
+    if (key === "Home") applyControlsWidth(CONTROLS_W_MIN, { persist: true });
+    else if (key === "End") applyControlsWidth(CONTROLS_W_MAX, { persist: true });
+    else if (key === "ArrowLeft") applyControlsWidth(readControlsWidthPx() - step, { persist: true });
+    else if (key === "ArrowRight") applyControlsWidth(readControlsWidthPx() + step, { persist: true });
+  });
+
+  let dragging = false;
+  let startX = 0;
+  let startW = 0;
+
+  const onMove = (ev) => {
+    if (!dragging) return;
+    const dx = Number(ev.clientX) - startX;
+    if (!Number.isFinite(dx)) return;
+    applyControlsWidth(startW + dx, { persist: false });
+  };
+  const endDrag = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    try { splitter.releasePointerCapture(ev.pointerId); } catch {}
+    applyControlsWidth(readControlsWidthPx(), { persist: true });
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+
+  splitter.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    if (isControlsCollapsed()) setControlsCollapsed(false, { persist: true });
+    dragging = true;
+    startX = Number(ev.clientX);
+    startW = readControlsWidthPx();
+    try { splitter.setPointerCapture(ev.pointerId); } catch {}
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+  splitter.addEventListener("pointermove", onMove);
+  splitter.addEventListener("pointerup", endDrag);
+  splitter.addEventListener("pointercancel", endDrag);
+}
+
 let MA_LIST = [];
 let MA_BY_ID = {};
 let RUNNING = false;
 let RUNNING_COUNT = 0;
 let MA_PARAMS_STATE = { fast: {}, slow: {} };
+let MA_PARAM_SWEEPS_STATE = { fast: {}, slow: {} };
 let NEXT_RUN_TAGS = null;
 let BATCH_RUNNING = false;
 let BATCH_STOP_REQUESTED = false;
@@ -213,7 +531,960 @@ function buildDatasetMetaForArtifact(csvPath) {
 function setStatus(msg, kind) {
   const el = $("status");
   el.textContent = msg;
-  el.className = "mono " + (kind || "");
+  el.className = "statusChip mono " + (kind || "");
+  maybeToastFromStatus(msg, kind);
+}
+
+function datasetSummaryLine() {
+  const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+  const meta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+
+  const label = String(ctx.label || "").trim();
+  const tf = String(ctx.timeframe || meta?.timeframe || "").trim();
+  const rows = Number(meta?.len || 0);
+  const parts = [];
+  if (label) parts.push(label);
+  if (tf) parts.push(`tf=${tf}`);
+  if (Number.isFinite(rows) && rows > 0) parts.push(`rows=${rows}`);
+  return parts.join(" · ");
+}
+
+function ctxChip(label, value, opts) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "chip";
+  const onClick = typeof opts?.onClick === "function" ? opts.onClick : null;
+  if (!onClick) btn.classList.add("passive");
+  else btn.addEventListener("click", onClick);
+
+  const title = String(opts?.title || "").trim();
+  if (title) btn.title = title;
+
+  const k = document.createElement("span");
+  k.className = "chipK";
+  k.textContent = String(label || "").trim() || "—";
+
+  const v = document.createElement("span");
+  v.className = "chipV";
+  v.textContent = String(value ?? "").trim() || "—";
+
+  btn.appendChild(k);
+  btn.appendChild(v);
+  return btn;
+}
+
+function renderContextChips() {
+  const host = $("contextChips");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+  const meta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+
+  const label = String(ctx.label || "").trim();
+  const tf = String(ctx.timeframe || meta?.timeframe || "").trim();
+  const rows = Number(meta?.len || 0);
+  const source = String(ctx.source || "").trim();
+  const market = String(ctx.market || "").trim();
+  const symbol = String(ctx.symbol || "").trim();
+  const csvPath = String($("csvPath")?.value || "").trim();
+
+  const range = meta ? `${fmtYmdUtc(meta.min_ts)} → ${fmtYmdUtc(meta.max_ts)}` : "—";
+  const dataValueParts = [];
+  if (label) dataValueParts.push(label);
+  else if (symbol) dataValueParts.push(symbol);
+  else if (csvPath) dataValueParts.push(fileBasename(csvPath) || csvPath);
+  if (tf) dataValueParts.push(tf);
+  if (Number.isFinite(rows) && rows > 0) dataValueParts.push(`${rows} rows`);
+  const dataValue = dataValueParts.length ? dataValueParts.join(" · ") : "—";
+
+  const dataTitleParts = [];
+  if (source) dataTitleParts.push(`source=${source}`);
+  if (market) dataTitleParts.push(`market=${market}`);
+  if (symbol) dataTitleParts.push(`symbol=${symbol}`);
+  if (csvPath) dataTitleParts.push(`file=${fileBasename(csvPath)}`);
+  if (range && range !== "—") dataTitleParts.push(`range=${range}`);
+  const dataTitle = dataTitleParts.join(" • ");
+
+  host.appendChild(ctxChip("Data", dataValue, {
+    title: dataTitle,
+    onClick: () => {
+      CONTROLS_TABS?.set("data", { save: true, focus: true });
+      try { $("csvPath")?.focus(); } catch {}
+    },
+  }));
+
+  const kind = CURRENT_RUN?.req ? kindFromReq(CURRENT_RUN.req) : strategyKind();
+  const kindLabel = kind === "CompositeCpu" ? "Composite CPU" : (kind === "CompositeMo" ? "Composite MO" : "Double MA");
+  host.appendChild(ctxChip("Strategy", kindLabel, {
+    title: kind === "DoubleMa" ? "Fast double moving-average crossover." : "Composite strategy optimization.",
+    onClick: () => CONTROLS_TABS?.set("strategy", { save: true, focus: true }),
+  }));
+
+  const backendFromRun = String(CURRENT_RUN?.res?.backend_used || "").trim();
+  const backendFromReq = String(CURRENT_RUN?.req?.backend?.backend || "").trim();
+  const backendFromUi = String($("backend")?.value || "").trim();
+  const backend = kind === "DoubleMa"
+    ? (backendFromRun || backendFromReq || backendFromUi || "CpuOnly")
+    : "CpuOnly";
+  const deviceFromReq = Number(CURRENT_RUN?.req?.backend?.device_id ?? NaN);
+  const deviceFromUi = Number($("deviceId")?.value ?? NaN);
+  const dev = Number.isFinite(deviceFromReq) ? deviceFromReq : (Number.isFinite(deviceFromUi) ? deviceFromUi : null);
+  const backendValue = dev != null && backend.toLowerCase().includes("gpu") ? `${backend} · dev ${dev}` : backend;
+  host.appendChild(ctxChip("Backend", backendValue, {
+    title: kind === "DoubleMa" ? "Execution backend used for optimization." : "Composite strategies currently run on CPU.",
+    onClick: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
+  }));
+
+  const objective = (() => {
+    if (kind === "CompositeMo") {
+      const max = String(CURRENT_RUN?.req?.objectives?.maximize || $("objective")?.value || "Sharpe").trim() || "Sharpe";
+      const min = String(CURRENT_RUN?.req?.objectives?.minimize || $("moObjectiveMin")?.value || "MaxDrawdown").trim() || "MaxDrawdown";
+      return `max ${max} / min ${min}`;
+    }
+    const obj = String(CURRENT_RUN?.req?.objective || $("objective")?.value || "Sharpe").trim() || "Sharpe";
+    return obj;
+  })();
+  host.appendChild(ctxChip("Objective", objective, {
+    title: "Optimization objective(s).",
+    onClick: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
+  }));
+
+  const mode = (() => {
+    const m = String(CURRENT_RUN?.res?.mode_used || CURRENT_RUN?.req?.mode || $("mode")?.value || "Grid").trim() || "Grid";
+    return m;
+  })();
+  host.appendChild(ctxChip("Mode", mode, {
+    title: "Search mode (Grid / Coarse→Fine).",
+    onClick: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
+  }));
+}
+
+function initOverviewEmptyUi() {
+  const primary = $("btnOverviewEmptyPrimary");
+  const secondary = $("btnOverviewEmptySecondary");
+  const onClick = (btn) => {
+    const action = String(btn?.dataset?.action || "").trim();
+    if (!action) return;
+    try {
+      if (action === "browse_csv") {
+        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        $("btnBrowseCsv")?.click();
+        return;
+      }
+      if (action === "polygon") {
+        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        $("btnPolygonOpen")?.click();
+        return;
+      }
+      if (action === "go_opt") {
+        CONTROLS_TABS?.set("opt", { save: true, focus: true });
+        return;
+      }
+      if (action === "run_opt") {
+        CONTROLS_TABS?.set("opt", { save: true, focus: false });
+        $("btnRun")?.click();
+        return;
+      }
+      if (action === "cancel_run") {
+        $("btnCancel")?.click();
+        return;
+      }
+    } catch {}
+  };
+  primary?.addEventListener("click", () => onClick(primary));
+  secondary?.addEventListener("click", () => onClick(secondary));
+}
+
+function updateOverviewEmptyUi() {
+  const empty = $("overviewEmpty");
+  const content = $("overviewContent");
+  const title = $("overviewEmptyTitle");
+  const body = $("overviewEmptyBody");
+  const hint = $("overviewEmptyHint");
+  const primary = $("btnOverviewEmptyPrimary");
+  const secondary = $("btnOverviewEmptySecondary");
+  if (!empty || !content || !title || !body || !hint || !primary || !secondary) return;
+
+  const dataIdText = String($("dataId")?.textContent || "").trim();
+  const hasDataId = !!dataIdText && dataIdText !== "—" && dataIdText !== "-";
+  const hasMetaRows = Number(CURRENT_DATA_META?.len || 0) > 0;
+  const hasData = hasDataId || hasMetaRows;
+  const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
+
+  if (hasRun) {
+    empty.style.display = "none";
+    content.style.display = "block";
+    return;
+  }
+
+  if (!hasData) {
+    empty.style.display = "block";
+    content.style.display = "none";
+    title.textContent = "Load data to begin";
+    body.textContent = "Load a CSV dataset or download candles from Polygon, then run an optimization to view results here.";
+    hint.textContent = "Tip: start with a small dataset to validate your strategy settings.";
+    primary.textContent = "Browse CSV…";
+    primary.dataset.action = "browse_csv";
+    secondary.style.display = "";
+    secondary.textContent = "Polygon…";
+    secondary.dataset.action = "polygon";
+    return;
+  }
+
+  if (RUNNING) {
+    empty.style.display = "block";
+    content.style.display = "none";
+    title.textContent = "Working…";
+    const ds = datasetSummaryLine();
+    const statusText = String($("status")?.textContent || "").trim();
+    const line = statusText && statusText !== "Ready." ? statusText : "Running…";
+    body.textContent = ds ? `${line} · ${ds}` : line;
+    hint.textContent = "Tip: You can cancel safely; some backends may take a moment to stop.";
+    primary.textContent = "Cancel";
+    primary.dataset.action = "cancel_run";
+    secondary.style.display = "";
+    secondary.textContent = "Go to Optimize";
+    secondary.dataset.action = "go_opt";
+    return;
+  }
+
+  if (!hasRun) {
+    empty.style.display = "block";
+    content.style.display = "none";
+    title.textContent = "Ready to optimize";
+    const ds = datasetSummaryLine();
+    body.textContent = ds
+      ? `Loaded dataset: ${ds}. Configure your strategy settings and run an optimization to populate results.`
+      : "Configure your strategy settings and run an optimization to populate results.";
+    hint.textContent = "Tip: GPU (kernel) is fastest for large grids and stays VRAM-resident.";
+    primary.textContent = "Run optimization";
+    primary.dataset.action = "run_opt";
+    secondary.style.display = "";
+    secondary.textContent = "Go to Optimize";
+    secondary.dataset.action = "go_opt";
+    return;
+  }
+}
+
+function resetBestCardUi() {
+  const kicker = $("bestKicker");
+  const title = $("bestTitle");
+  const meta = $("bestMeta");
+  const grid = $("bestGrid");
+  if (kicker) kicker.textContent = "—";
+  if (title) title.textContent = "—";
+  if (meta) meta.textContent = "—";
+  if (grid) grid.innerHTML = "";
+}
+
+function renderBestCard(model) {
+  const kicker = $("bestKicker");
+  const title = $("bestTitle");
+  const meta = $("bestMeta");
+  const grid = $("bestGrid");
+  if (!kicker || !title || !meta || !grid) return;
+
+  const m = model && typeof model === "object" ? model : {};
+  kicker.textContent = String(m.kicker || "Best").trim() || "Best";
+  title.textContent = String(m.title || "—").trim() || "—";
+  meta.textContent = String(m.meta || "—").trim() || "—";
+
+  grid.innerHTML = "";
+  const stats = Array.isArray(m.stats) ? m.stats : [];
+  for (const s0 of stats) {
+    const s = s0 && typeof s0 === "object" ? s0 : {};
+    const label = String(s.label || "").trim();
+    const value = String(s.value ?? "").trim();
+    if (!label) continue;
+    const tone = String(s.tone || "").trim();
+
+    const box = document.createElement("div");
+    box.className = `bestStat ${tone}`.trim();
+
+    const k = document.createElement("div");
+    k.className = "bestStatK";
+    k.textContent = label;
+
+    const v = document.createElement("div");
+    v.className = "bestStatV";
+    v.textContent = value || "—";
+    if (value && value.length > 18) v.title = value;
+
+    box.appendChild(k);
+    box.appendChild(v);
+    grid.appendChild(box);
+  }
+}
+
+async function copyTextToClipboard(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch {}
+
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = s;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return !!ok;
+  } catch {
+    return false;
+  }
+}
+
+function initBestCardUi() {
+  const btn = $("btnCopyBest");
+  if (btn) {
+    btn.addEventListener("click", async () => {
+      const txt = String($("bestSummary")?.textContent || "").trim();
+      if (!txt || txt === "-" || txt === "—") {
+        showToast("Nothing to copy yet.", "danger", { ms: 2600 });
+        return;
+      }
+      const ok = await copyTextToClipboard(txt);
+      showToast(ok ? "Copied best summary." : "Copy failed.", ok ? "ok" : "danger", { ms: ok ? 2200 : 4200 });
+    });
+  }
+  resetBestCardUi();
+}
+
+let LAST_TOAST_AT_MS = 0;
+let LAST_TOAST_MSG = "";
+
+function ensureToastHost() {
+  const existing = $("toastHost");
+  if (existing) return existing;
+  const host = document.createElement("div");
+  host.id = "toastHost";
+  host.className = "toastHost";
+  host.setAttribute("aria-live", "polite");
+  host.setAttribute("aria-relevant", "additions");
+  host.setAttribute("aria-atomic", "false");
+  document.body.appendChild(host);
+  return host;
+}
+
+function removeToast(el) {
+  if (!el) return;
+  try { el.classList.remove("in"); } catch {}
+  setTimeout(() => {
+    try { el.remove(); } catch {}
+  }, 220);
+}
+
+function showToast(msg, kind, opts) {
+  let text = String(msg || "").trim();
+  if (!text) return;
+  const maxCharsRaw = Number(opts?.maxChars ?? 240);
+  const maxChars = Number.isFinite(maxCharsRaw) ? Math.max(80, Math.min(800, Math.floor(maxCharsRaw))) : 240;
+  if (text.length > maxChars) {
+    text = text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
+  }
+  const k = String(kind || "").trim();
+
+  const host = ensureToastHost();
+
+  const toast = document.createElement("div");
+  toast.className = `toast ${k}`.trim();
+
+  const dot = document.createElement("div");
+  dot.className = "toastDot";
+
+  const body = document.createElement("div");
+  body.className = "toastBody";
+  body.textContent = text;
+
+  const close = document.createElement("button");
+  close.className = "toastClose";
+  close.type = "button";
+  close.title = "Dismiss";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "×";
+  close.addEventListener("click", () => removeToast(toast));
+
+  toast.appendChild(dot);
+  toast.appendChild(body);
+  toast.appendChild(close);
+  host.prepend(toast);
+
+  // Cap visible toasts.
+  while (host.children.length > 4) {
+    const last = host.lastElementChild;
+    if (!last) break;
+    last.remove();
+  }
+
+  requestAnimationFrame(() => {
+    try { toast.classList.add("in"); } catch {}
+  });
+
+  const ms = Number(opts?.ms || 0);
+  const ttl = Number.isFinite(ms) && ms > 0 ? ms : (k === "danger" ? 6500 : 3800);
+  setTimeout(() => removeToast(toast), ttl);
+}
+
+function maybeToastFromStatus(msg, kind) {
+  const k = String(kind || "").trim();
+  if (k !== "ok" && k !== "danger") return;
+
+  const text = String(msg || "").trim();
+  if (!text) return;
+  // Avoid spamming toasts during in-flight status updates.
+  if (text.includes("...")) return;
+
+  const now = Date.now();
+  if (!Number.isFinite(now)) return;
+  if ((now - LAST_TOAST_AT_MS) < 1200) return;
+  if (text === LAST_TOAST_MSG) return;
+
+  LAST_TOAST_AT_MS = now;
+  LAST_TOAST_MSG = text;
+  showToast(text, k);
+}
+
+let CMD_LAST_FOCUS = null;
+let CMD_SELECTED_IDX = 0;
+
+function isCmdPaletteOpen() {
+  const modal = $("cmdPaletteModal");
+  return !!modal && modal.classList.contains("open");
+}
+
+function setCmdPaletteOpen(open) {
+  const modal = $("cmdPaletteModal");
+  if (!modal) return;
+  if (open) {
+    modal.classList.add("open");
+    modal.setAttribute("aria-hidden", "false");
+  } else {
+    modal.classList.remove("open");
+    modal.setAttribute("aria-hidden", "true");
+  }
+}
+
+function hasLoadedData() {
+  const dataIdText = String($("dataId")?.textContent || "").trim();
+  const hasDataId = !!dataIdText && dataIdText !== "—" && dataIdText !== "-";
+  const hasMetaRows = Number(CURRENT_DATA_META?.len || 0) > 0;
+  return hasDataId || hasMetaRows;
+}
+
+function updateQuickBarUi() {
+  const browse = $("btnQaBrowseCsv");
+  const run = $("btnQaRun");
+  const cancel = $("btnQaCancel");
+  const validate = $("btnQaValidate");
+  const exportCsv = $("btnQaExportCsv");
+  const palette = $("btnQaPalette");
+  const hint = $("quickBarHint");
+
+  const hasData = hasLoadedData();
+  const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
+  const kind = strategyKind();
+  const isComp = kind === "CompositeCpu" || kind === "CompositeMo";
+
+  if (browse) browse.disabled = RUNNING;
+  if (run) run.disabled = RUNNING || !hasData;
+  if (cancel) cancel.disabled = !RUNNING;
+  if (validate) {
+    validate.disabled = RUNNING || !isComp || !hasRun;
+    validate.style.display = isComp ? "" : "none";
+  }
+  if (exportCsv) exportCsv.disabled = RUNNING || !hasRun;
+  if (palette) palette.disabled = false;
+
+  if (hint) {
+    const parts = [];
+    if (!hasData) parts.push("Load data first");
+    if (RUNNING) parts.push("running");
+    hint.textContent = parts.length ? `Tip: ${parts.join(" • ")} • Ctrl+K = commands` : "Tip: Use the command palette for everything (Ctrl+K).";
+  }
+}
+
+function initQuickBarUi() {
+  $("btnQaBrowseCsv")?.addEventListener("click", () => {
+    if (RUNNING) return;
+    CONTROLS_TABS?.set("data", { save: true, focus: false });
+    $("btnBrowseCsv")?.click();
+  });
+  $("btnQaRun")?.addEventListener("click", () => {
+    if (RUNNING) return;
+    CONTROLS_TABS?.set("opt", { save: true, focus: false });
+    $("btnRun")?.click();
+  });
+  $("btnQaCancel")?.addEventListener("click", () => {
+    if (!RUNNING) return;
+    $("btnCancel")?.click();
+  });
+  $("btnQaValidate")?.addEventListener("click", () => {
+    if (RUNNING) return;
+    $("btnValidate")?.click();
+  });
+  $("btnQaExportCsv")?.addEventListener("click", () => {
+    if (RUNNING) return;
+    $("btnExportCsv")?.click();
+  });
+  $("btnQaPalette")?.addEventListener("click", () => openCmdPalette());
+  updateQuickBarUi();
+}
+
+function buildCommandActions() {
+  const invoke = tauriInvoke();
+  const okInvoke = !!invoke;
+
+  const hasData = hasLoadedData();
+  const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
+  const kind = strategyKind();
+  const isComp = kind === "CompositeCpu" || kind === "CompositeMo";
+  const eff = currentWindowEffect();
+  const supportedEff = supportedWindowEffects();
+
+  const keyCaps = (s) => String(s || "").split("+").map((x) => x.trim()).filter((x) => !!x);
+
+  const actions = [
+    {
+      id: "effect_none",
+      name: `${eff === "none" ? "✓ " : ""}Window effects: None`,
+      desc: "Disable native window effects (use CSS only).",
+      keys: [],
+      enabled: () => true,
+      run: () => applyWindowEffectPref("none", { persist: true }),
+      keywords: ["effects", "window", "vibrancy", "mica"],
+    },
+    {
+      id: "effect_mica",
+      name: `${eff === "mica" ? "✓ " : ""}Window effects: Mica`,
+      desc: "Enable Mica (Windows 11).",
+      keys: [],
+      enabled: () => supportedEff.has("mica"),
+      run: () => applyWindowEffectPref("mica", { persist: true }),
+      keywords: ["effects", "mica", "windows"],
+    },
+    {
+      id: "effect_acrylic",
+      name: `${eff === "acrylic" ? "✓ " : ""}Window effects: Acrylic`,
+      desc: "Enable Acrylic blur (Windows).",
+      keys: [],
+      enabled: () => supportedEff.has("acrylic"),
+      run: () => applyWindowEffectPref("acrylic", { persist: true }),
+      keywords: ["effects", "acrylic", "windows"],
+    },
+    {
+      id: "effect_vibrancy",
+      name: `${eff === "vibrancy" ? "✓ " : ""}Window effects: Vibrancy`,
+      desc: "Enable vibrancy (macOS).",
+      keys: [],
+      enabled: () => supportedEff.has("vibrancy"),
+      run: () => applyWindowEffectPref("vibrancy", { persist: true }),
+      keywords: ["effects", "vibrancy", "mac"],
+    },
+    {
+      id: "toggle_controls",
+      name: isControlsCollapsed() ? "Show controls panel" : "Hide controls panel",
+      desc: "Collapse/expand the left Controls column.",
+      keys: keyCaps("Ctrl+\\"),
+      enabled: () => true,
+      run: () => toggleControlsCollapsed(),
+      keywords: ["controls", "sidebar", "resize"],
+    },
+    {
+      id: "browse_csv",
+      name: "Browse CSV…",
+      desc: "Pick a local CSV dataset file.",
+      keys: keyCaps("Ctrl+O"),
+      enabled: () => !RUNNING,
+      run: () => {
+        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        $("btnBrowseCsv")?.click();
+      },
+      keywords: ["data", "load", "csv"],
+    },
+    {
+      id: "open_polygon",
+      name: "Polygon…",
+      desc: "Download/cached datasets from Polygon and load into the app.",
+      keys: keyCaps("Ctrl+Shift+O"),
+      enabled: () => !RUNNING,
+      run: () => {
+        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        $("btnPolygonOpen")?.click();
+      },
+      keywords: ["polygon", "download", "cache"],
+    },
+    {
+      id: "run",
+      name: "Run optimization",
+      desc: "Run the current optimization workflow.",
+      keys: keyCaps("Ctrl+Enter"),
+      enabled: () => !RUNNING && hasData,
+      run: () => {
+        CONTROLS_TABS?.set("opt", { save: true, focus: false });
+        $("btnRun")?.click();
+      },
+      keywords: ["optimize", "run", "backtest"],
+    },
+    {
+      id: "cancel",
+      name: "Cancel",
+      desc: "Request cancellation of the current run.",
+      keys: keyCaps("Esc"),
+      enabled: () => RUNNING,
+      run: () => $("btnCancel")?.click(),
+      keywords: ["stop"],
+    },
+    {
+      id: "validate",
+      name: "Run validation",
+      desc: "Run robustness checks for Top/Pareto candidates (composite only).",
+      keys: keyCaps("Ctrl+Shift+V"),
+      enabled: () => !RUNNING && isComp && hasRun,
+      run: () => $("btnValidate")?.click(),
+      keywords: ["validate", "robust", "wf", "mc", "cscv"],
+    },
+    {
+      id: "export_csv",
+      name: "Export Top CSV",
+      desc: "Export current Top rows to CSV.",
+      keys: keyCaps("Ctrl+Shift+C"),
+      enabled: () => !RUNNING && hasRun,
+      run: () => $("btnExportCsv")?.click(),
+      keywords: ["export", "csv"],
+    },
+    {
+      id: "export_json",
+      name: "Export JSON",
+      desc: "Export current run result JSON.",
+      keys: keyCaps("Ctrl+Shift+J"),
+      enabled: () => !RUNNING && hasRun,
+      run: () => $("btnExportJson")?.click(),
+      keywords: ["export", "json"],
+    },
+    {
+      id: "open_latest_report",
+      name: "Open latest report",
+      desc: "Open the most recent XLSX report on disk.",
+      keys: keyCaps("Ctrl+Shift+R"),
+      enabled: () => !RUNNING && okInvoke && !!String(CURRENT_RUN?.report_xlsx_path || "").trim(),
+      run: () => $("btnOpenLatestReport")?.click(),
+      keywords: ["report", "xlsx"],
+    },
+    {
+      id: "open_latest_meta_report",
+      name: "Open latest meta report",
+      desc: "Open the most recent meta XLSX report on disk.",
+      keys: keyCaps("Ctrl+Shift+M"),
+      enabled: () => !RUNNING && okInvoke && !!String(LAST_META_RUN?.report_xlsx_path || "").trim(),
+      run: () => $("btnOpenLatestMetaReport")?.click(),
+      keywords: ["meta", "report", "xlsx"],
+    },
+    {
+      id: "go_data",
+      name: "Go to: Data tab",
+      desc: "Switch to the Data tab (controls).",
+      keys: [],
+      enabled: () => true,
+      run: () => CONTROLS_TABS?.set("data", { save: true, focus: true }),
+      keywords: ["nav", "tab", "controls"],
+    },
+    {
+      id: "go_opt",
+      name: "Go to: Optimize tab",
+      desc: "Switch to the Optimize tab (controls).",
+      keys: [],
+      enabled: () => true,
+      run: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
+      keywords: ["nav", "tab", "controls"],
+    },
+    {
+      id: "go_overview",
+      name: "Go to: Overview tab",
+      desc: "Switch to the Overview tab (results).",
+      keys: [],
+      enabled: () => true,
+      run: () => RESULTS_TABS?.set("overview", { save: true, focus: true }),
+      keywords: ["nav", "tab", "results"],
+    },
+    {
+      id: "go_top",
+      name: "Go to: Top tab",
+      desc: "Switch to the Top tab (results).",
+      keys: [],
+      enabled: () => true,
+      run: () => RESULTS_TABS?.set("top", { save: true, focus: true }),
+      keywords: ["nav", "tab", "results"],
+    },
+  ];
+
+  return actions;
+}
+
+function cmdScore(action, tokens) {
+  const hay = (String(action.name || "") + " " + String(action.desc || "") + " " + String((action.keywords || []).join(" ") || "")).toLowerCase();
+  let score = 0;
+  for (const t of tokens) {
+    const idx = hay.indexOf(t);
+    if (idx < 0) return null;
+    score += idx;
+  }
+  return score;
+}
+
+function renderCmdPaletteList(query) {
+  const list = $("cmdPaletteList");
+  if (!list) return;
+  list.innerHTML = "";
+
+  const q = String(query || "").trim().toLowerCase();
+  const tokens = q ? q.split(/\s+/g).filter((t) => !!t) : [];
+  const actions = buildCommandActions();
+
+  const scored = [];
+  for (const a of actions) {
+    const s = tokens.length ? cmdScore(a, tokens) : 0;
+    if (s == null) continue;
+    scored.push({ a, s });
+  }
+  scored.sort((x, y) => x.s - y.s);
+  const filtered = scored.map((x) => x.a);
+
+  if (CMD_SELECTED_IDX >= filtered.length) CMD_SELECTED_IDX = Math.max(0, filtered.length - 1);
+  if (CMD_SELECTED_IDX < 0) CMD_SELECTED_IDX = 0;
+
+  const onPick = (idx) => {
+    const a = filtered[idx];
+    if (!a) return;
+    if (!a.enabled()) return;
+    try { a.run(); } catch {}
+    closeCmdPalette({ restoreFocus: false });
+  };
+
+  for (let i = 0; i < filtered.length; i++) {
+    const a = filtered[i];
+    const enabled = !!a.enabled();
+    const row = document.createElement("div");
+    row.className = `cmdItem${i === CMD_SELECTED_IDX ? " selected" : ""}${enabled ? "" : " disabled"}`;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", i === CMD_SELECTED_IDX ? "true" : "false");
+    row.addEventListener("click", () => onPick(i));
+
+    const left = document.createElement("div");
+    left.className = "cmdLeft";
+    const name = document.createElement("div");
+    name.className = "cmdName";
+    name.textContent = String(a.name || "").trim() || "(unnamed)";
+    const desc = document.createElement("div");
+    desc.className = "cmdDesc";
+    desc.textContent = String(a.desc || "").trim() || "";
+    left.appendChild(name);
+    if (desc.textContent) left.appendChild(desc);
+
+    const right = document.createElement("div");
+    right.className = "cmdRight";
+    const keys = Array.isArray(a.keys) ? a.keys : [];
+    for (const k of keys) {
+      const el = document.createElement("kbd");
+      el.textContent = k;
+      right.appendChild(el);
+    }
+
+    row.appendChild(left);
+    row.appendChild(right);
+    list.appendChild(row);
+  }
+
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.style.fontSize = "0.85rem";
+    empty.textContent = "No matching commands.";
+    list.appendChild(empty);
+  }
+}
+
+function openCmdPalette() {
+  if (isCmdPaletteOpen()) return;
+  CMD_LAST_FOCUS = document.activeElement;
+  CMD_SELECTED_IDX = 0;
+  setCmdPaletteOpen(true);
+  const input = $("cmdPaletteInput");
+  if (input) {
+    input.value = "";
+    try { input.focus(); } catch {}
+  }
+  renderCmdPaletteList("");
+}
+
+function closeCmdPalette(opts) {
+  if (!isCmdPaletteOpen()) return;
+  setCmdPaletteOpen(false);
+  const restore = opts?.restoreFocus !== false;
+  if (restore && CMD_LAST_FOCUS && typeof CMD_LAST_FOCUS.focus === "function") {
+    try { CMD_LAST_FOCUS.focus(); } catch {}
+  }
+  CMD_LAST_FOCUS = null;
+}
+
+function initCmdPaletteUi() {
+  const modal = $("cmdPaletteModal");
+  const input = $("cmdPaletteInput");
+  const close = $("btnCmdPaletteClose");
+  const backdrop = $("cmdPaletteBackdrop");
+  if (!modal || !input || !close || !backdrop) return;
+
+  close.addEventListener("click", () => closeCmdPalette());
+  backdrop.addEventListener("click", () => closeCmdPalette());
+  input.addEventListener("input", () => renderCmdPaletteList(input.value));
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeCmdPalette();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const list = $("cmdPaletteList");
+      const items = list ? Array.from(list.querySelectorAll(".cmdItem")) : [];
+      if (!items.length) return;
+      CMD_SELECTED_IDX = e.key === "ArrowDown"
+        ? Math.min(items.length - 1, CMD_SELECTED_IDX + 1)
+        : Math.max(0, CMD_SELECTED_IDX - 1);
+      renderCmdPaletteList(input.value);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const q = String(input.value || "");
+      const actions = buildCommandActions();
+      const tokens = String(q || "").trim().toLowerCase().split(/\s+/g).filter((t) => !!t);
+      const filtered = tokens.length
+        ? actions.map((a) => ({ a, s: cmdScore(a, tokens) })).filter((x) => x.s != null).sort((x, y) => x.s - y.s).map((x) => x.a)
+        : actions;
+      const a = filtered[CMD_SELECTED_IDX] || null;
+      if (!a) return;
+      if (!a.enabled()) return;
+      try { a.run(); } catch {}
+      closeCmdPalette({ restoreFocus: false });
+      return;
+    }
+  });
+}
+
+function isTypingTarget(el) {
+  const t = el && el.tagName ? String(el.tagName).toLowerCase() : "";
+  if (t === "input" || t === "textarea" || t === "select") return true;
+  return !!el && !!el.isContentEditable;
+}
+
+function isMultilineEditorTarget(el) {
+  const t = el && el.tagName ? String(el.tagName).toLowerCase() : "";
+  if (t === "textarea") return true;
+  return !!el && !!el.isContentEditable;
+}
+
+function initGlobalShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
+    const key = String(e.key || "");
+    const lower = key.toLowerCase();
+    const mod = e.ctrlKey || e.metaKey;
+
+    if (key === "Escape") {
+      if (isCmdPaletteOpen()) {
+        e.preventDefault();
+        closeCmdPalette();
+        return;
+      }
+      if (RUNNING) {
+        // Let modals close first; otherwise treat Esc as cancel.
+        e.preventDefault();
+        $("btnCancel")?.click();
+        return;
+      }
+      return;
+    }
+
+    if (isCmdPaletteOpen()) return;
+
+    if (mod && lower === "k") {
+      e.preventDefault();
+      openCmdPalette();
+      return;
+    }
+
+    if (mod && lower === "o" && !e.shiftKey) {
+      e.preventDefault();
+      if (RUNNING) return;
+      CONTROLS_TABS?.set("data", { save: true, focus: false });
+      $("btnBrowseCsv")?.click();
+      return;
+    }
+
+    if (mod && lower === "o" && e.shiftKey) {
+      e.preventDefault();
+      if (RUNNING) return;
+      CONTROLS_TABS?.set("data", { save: true, focus: false });
+      $("btnPolygonOpen")?.click();
+      return;
+    }
+
+    if (mod && key === "\\") {
+      e.preventDefault();
+      toggleControlsCollapsed();
+      return;
+    }
+
+    if (mod && key === "Enter") {
+      if (isMultilineEditorTarget(document.activeElement) && !e.shiftKey) return;
+      e.preventDefault();
+      if (RUNNING) return;
+      if (!hasLoadedData()) return;
+      CONTROLS_TABS?.set("opt", { save: true, focus: false });
+      $("btnRun")?.click();
+      return;
+    }
+
+    if (mod && e.shiftKey && lower === "v") {
+      e.preventDefault();
+      if (RUNNING) return;
+      $("btnValidate")?.click();
+      return;
+    }
+
+    if (mod && e.shiftKey && lower === "c") {
+      e.preventDefault();
+      if (RUNNING) return;
+      $("btnExportCsv")?.click();
+      return;
+    }
+
+    if (mod && e.shiftKey && lower === "j") {
+      e.preventDefault();
+      if (RUNNING) return;
+      $("btnExportJson")?.click();
+      return;
+    }
+
+    if (mod && e.shiftKey && lower === "r") {
+      e.preventDefault();
+      if (RUNNING) return;
+      $("btnOpenLatestReport")?.click();
+      return;
+    }
+  }, true);
 }
 
 function pretty(obj) {
@@ -278,6 +1549,7 @@ function renderMetaSelection(resp) {
       const slow = `${String(p.slow_ma_type || "").toUpperCase()} ${Number(p.slow_len || 0)}`.trim();
       const paramsCompact = formatCompositeParamsCompact(p);
       const h = g.holdout && typeof g.holdout === "object" ? g.holdout : null;
+      const ml = typeof g.ml_confidence === "number" && Number.isFinite(g.ml_confidence) ? g.ml_confidence : null;
 
       const tr = document.createElement("tr");
       const cells = [
@@ -285,6 +1557,7 @@ function renderMetaSelection(resp) {
         String(Number(g.samples || 0)),
         fmtFixed(Number(g.pass_rate || 0) * 100, 1) + "%",
         fmtFixed(g.meta_score || 0, 6),
+        ml != null ? (fmtFixed(ml * 100, 1) + "%") : "-",
         fmtFixed(g.robust_score_p10 || 0, 6),
         fmtFixed(g.robust_score_median || 0, 6),
         fmtFixed(g.max_dd_p90 || 0, 6),
@@ -299,7 +1572,7 @@ function renderMetaSelection(resp) {
       for (let c = 0; c < cells.length; c++) {
         const td = document.createElement("td");
         td.textContent = cells[c];
-        if (c === 11 || c === 12 || c === 13) td.className = "left";
+        if (c === 12 || c === 13 || c === 14) td.className = "left";
         tr.appendChild(td);
       }
       body.appendChild(tr);
@@ -312,6 +1585,179 @@ function renderMetaSelection(resp) {
   const metaPath = String(resp?.meta_json_path || "").trim();
   if (reportBtn) reportBtn.disabled = RUNNING || !reportPath;
   if (revealBtn) revealBtn.disabled = RUNNING || (!reportPath && !metaPath);
+}
+
+let LAST_META_ML_STATUS = null;
+
+function metaMlEnabled() {
+  return !!$("metaUseMlConfidence")?.checked;
+}
+
+function metaMlAutopilotEnabled() {
+  return !!$("metaMlAutopilot")?.checked;
+}
+
+function metaMlScopeFromUi() {
+  const result = LAST_META_RUN?.result || null;
+  const strategy_kind = String(result?.strategy_kind || $("metaStrategyKind")?.value || "CompositeMo").trim() || "CompositeMo";
+  let timeframe = String(result?.timeframe || "").trim();
+  if (!timeframe) timeframe = String($("metaTimeframe")?.value || "").trim();
+  return { strategy_kind, timeframe };
+}
+
+function setMetaMlStatus(text) {
+  const el = $("metaMlStatus");
+  if (!el) return;
+  el.textContent = String(text || "—");
+}
+
+function updateMetaMlButtons() {
+  const scope = metaMlScopeFromUi();
+  const hasTf = !!String(scope.timeframe || "").trim();
+  const hasMeta = !!LAST_META_RUN?.result;
+  const hasModel = !!LAST_META_ML_STATUS?.exists && !LAST_META_ML_STATUS?.error;
+
+  const btnApply = $("btnMetaMlApply");
+  const btnTrain = $("btnMetaMlTrain");
+  const btnRefresh = $("btnMetaMlRefresh");
+  const btnDelete = $("btnMetaMlDelete");
+
+  if (btnRefresh) btnRefresh.disabled = RUNNING || !hasTf;
+  if (btnTrain) btnTrain.disabled = RUNNING || !hasTf;
+  if (btnApply) btnApply.disabled = RUNNING || !hasTf || !hasMeta || !hasModel;
+  if (btnDelete) btnDelete.disabled = RUNNING || !hasTf || !hasModel;
+}
+
+async function refreshMetaMlStatus() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  const scope = metaMlScopeFromUi();
+  if (!String(scope.timeframe || "").trim()) {
+    LAST_META_ML_STATUS = null;
+    setMetaMlStatus("Timeframe required (set Meta timeframe filter or run meta once).");
+    updateMetaMlButtons();
+    return;
+  }
+
+  try {
+    const st = await invoke("ml_confidence_model_status", { scope });
+    LAST_META_ML_STATUS = st;
+
+    if (!st?.exists) {
+      setMetaMlStatus(`No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}.`);
+    } else if (st?.error) {
+      setMetaMlStatus(`ML model exists but failed to load: ${String(st.error || "")}`);
+    } else {
+      const label = st?.model?.label || {};
+      const dd = label?.max_holdout_max_dd_p90 != null ? ` dd_p90<=${fmtFixed(label.max_holdout_max_dd_p90, 3)}` : "";
+      setMetaMlStatus(
+        `Model: ${fileBasename(st.model_path)} · bytes=${Number(st.bytes || 0)} · label: pass>=${fmtFixed(label.min_holdout_pass_rate || 0, 2)}, p10>=${fmtFixed(label.min_holdout_score_p10 || 0, 3)}, datasets>=${Number(label.min_holdout_datasets || 0)}${dd}`
+      );
+    }
+  } catch (e) {
+    LAST_META_ML_STATUS = null;
+    setMetaMlStatus(`ML status failed: ${String(e)}`);
+  } finally {
+    updateMetaMlButtons();
+  }
+}
+
+async function trainMetaMlModel(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const scope = metaMlScopeFromUi();
+  if (!String(scope.timeframe || "").trim()) throw new Error("Timeframe required for ML model training.");
+
+  if (!opts?.silent) setStatus("Training ML confidence model...", "muted");
+  const resp = await invoke("train_ml_confidence_model", { scope, cfg: null });
+  LAST_META_ML_STATUS = { exists: true, model_path: resp.model_path, bytes: resp.model_bytes, model: resp.model, error: null };
+
+  const m = resp.metrics || {};
+  const auc = (m.cv_auc != null ? m.cv_auc : m.train_auc);
+  const brier = (m.cv_brier != null ? m.cv_brier : m.train_brier);
+  const warnN = Array.isArray(m.warnings) ? m.warnings.length : 0;
+
+  setMetaMlStatus(
+    `Trained: rows=${Number(m.rows || 0)} · pos=${Number(m.positives || 0)} · neg=${Number(m.negatives || 0)} · auc=${fmtFixed(Number(auc || 0), 3)} · brier=${fmtFixed(Number(brier || 0), 4)}${warnN ? ` · warnings=${warnN}` : ""}`
+  );
+
+  if (!opts?.silent) {
+    if (warnN) {
+      // Keep the status bar clean; show details in the Meta panel.
+      setStatus("ML model trained (with warnings).", "ok");
+    } else {
+      setStatus("ML model trained.", "ok");
+    }
+  }
+  updateMetaMlButtons();
+  return resp;
+}
+
+function sortMetaGroupsByMl(groups) {
+  const gs = Array.isArray(groups) ? groups : [];
+  gs.sort((a, b) => {
+    const pa = typeof a?.ml_confidence === "number" ? a.ml_confidence : -1;
+    const pb = typeof b?.ml_confidence === "number" ? b.ml_confidence : -1;
+    return pb - pa;
+  });
+  return gs;
+}
+
+async function applyMetaMlConfidenceToLastMeta(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const resp = LAST_META_RUN;
+  const result = resp?.result || null;
+  const groups = Array.isArray(result?.groups) ? result.groups : [];
+  if (!result || !groups.length) throw new Error("Run or load a meta analysis first.");
+
+  const scope = metaMlScopeFromUi();
+  if (!String(scope.timeframe || "").trim()) throw new Error("Timeframe required for ML apply.");
+
+  const out = await invoke("apply_ml_confidence_model", { scope, groups });
+  const cs = Array.isArray(out?.confidences) ? out.confidences : [];
+
+  for (let i = 0; i < groups.length; i++) {
+    const c = cs[i];
+    groups[i].ml_confidence = typeof c === "number" && Number.isFinite(c) ? c : null;
+  }
+
+  if (metaMlEnabled()) sortMetaGroupsByMl(groups);
+  renderMetaSelection(resp);
+
+  const ws = Array.isArray(out?.warnings) ? out.warnings : [];
+  if (!opts?.silent) {
+    if (ws.length) setStatus(`Applied ML confidence (warnings: ${ws.length}).`, "muted");
+    else setStatus("Applied ML confidence.", "ok");
+  }
+  updateMetaMlButtons();
+  return out;
+}
+
+async function maybeAutoTrainAndApplyMetaMl(opts) {
+  if (!metaMlEnabled()) return;
+  if (!metaMlAutopilotEnabled()) return;
+
+  await refreshMetaMlStatus();
+  const hasModel = !!LAST_META_ML_STATUS?.exists && !LAST_META_ML_STATUS?.error;
+  if (!hasModel) {
+    try {
+      await trainMetaMlModel({ silent: true });
+    } catch (e) {
+      setMetaMlStatus(`Auto-train skipped: ${String(e)}`);
+      updateMetaMlButtons();
+      return;
+    }
+  }
+
+  // Apply if we have a meta result loaded.
+  if (LAST_META_RUN?.result?.groups?.length) {
+    try {
+      await applyMetaMlConfidenceToLastMeta({ silent: true });
+    } catch {}
+  }
+
+  if (!opts?.silent) setStatus("ML confidence autopilot applied.", "muted");
 }
 
 async function runMetaSelection(opts) {
@@ -387,6 +1833,7 @@ async function runMetaSelection(opts) {
     await refreshMetaSaved(String(resp?.meta_json_path || "").trim());
     const path = String(resp?.report_xlsx_path || "").trim();
     setStatus(path ? `Meta complete. Saved report: ${path}` : "Meta complete.", "ok");
+    await maybeAutoTrainAndApplyMetaMl({ silent: true });
     if (opts?.switchTab !== false) {
       RESULTS_TABS?.set("meta", { save: true, focus: false });
     }
@@ -427,6 +1874,13 @@ function ensureMaParamState(side, maId) {
   return MA_PARAMS_STATE[side][maId];
 }
 
+function ensureMaParamSweepState(side, maId) {
+  if (!MA_PARAM_SWEEPS_STATE || typeof MA_PARAM_SWEEPS_STATE !== "object") MA_PARAM_SWEEPS_STATE = { fast: {}, slow: {} };
+  if (!MA_PARAM_SWEEPS_STATE[side] || typeof MA_PARAM_SWEEPS_STATE[side] !== "object") MA_PARAM_SWEEPS_STATE[side] = {};
+  if (!MA_PARAM_SWEEPS_STATE[side][maId] || typeof MA_PARAM_SWEEPS_STATE[side][maId] !== "object") MA_PARAM_SWEEPS_STATE[side][maId] = {};
+  return MA_PARAM_SWEEPS_STATE[side][maId];
+}
+
 function resolvedMaParams(side, maId) {
   const schema = maParamSchema(maId);
   if (!schema.length) return null;
@@ -439,6 +1893,25 @@ function resolvedMaParams(side, maId) {
     out[k] = Number.isFinite(v) ? v : Number(p.default || 0);
   }
   return out;
+}
+
+function resolvedMaParamSweeps(side, maId) {
+  const schema = maParamSchema(maId);
+  if (!schema.length) return null;
+  const state = ensureMaParamSweepState(side, maId);
+  const out = {};
+  for (const p of schema) {
+    const k = String(p.key || "");
+    if (!k) continue;
+    const cfg = state[k];
+    if (!cfg || typeof cfg !== "object" || cfg.enabled !== true) continue;
+    const start = Number(cfg.start);
+    const end = Number(cfg.end);
+    const step = Number(cfg.step);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(step)) continue;
+    out[k] = [start, end, step];
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function renderMaParamForm(side, maId) {
@@ -455,6 +1928,7 @@ function renderMaParamForm(side, maId) {
   wrap.style.display = "block";
 
   const state = ensureMaParamState(side, maId);
+  const sweepState = ensureMaParamSweepState(side, maId);
   for (const p of schema) {
     const key = String(p.key || "");
     const labelText = String(p.label || key || "param");
@@ -494,6 +1968,92 @@ function renderMaParamForm(side, maId) {
 
     block.appendChild(label);
     block.appendChild(input);
+
+    if (!sweepState[key] || typeof sweepState[key] !== "object") sweepState[key] = {};
+    const sweepCfg = sweepState[key];
+    const curV = Number(input.value);
+    const defStep = p.step != null ? Number(p.step) : (p.kind === "int" ? 1 : 0.1);
+    if (!Number.isFinite(Number(sweepCfg.start))) sweepCfg.start = Number.isFinite(curV) ? curV : Number(p.default || 0);
+    if (!Number.isFinite(Number(sweepCfg.end))) sweepCfg.end = Number.isFinite(curV) ? curV : Number(p.default || 0);
+    if (!Number.isFinite(Number(sweepCfg.step))) sweepCfg.step = Number.isFinite(defStep) ? defStep : 0.1;
+
+    const sweepWrap = document.createElement("div");
+    sweepWrap.className = "checks";
+    sweepWrap.style.marginTop = "0.35rem";
+
+    const sweepLabel = document.createElement("label");
+    const sweepToggle = document.createElement("input");
+    sweepToggle.type = "checkbox";
+    sweepToggle.checked = sweepCfg.enabled === true;
+    sweepLabel.appendChild(sweepToggle);
+    sweepLabel.appendChild(document.createTextNode(" Optimize (sweep)"));
+    sweepWrap.appendChild(sweepLabel);
+
+    const rangeRow = document.createElement("div");
+    rangeRow.className = "row3";
+    rangeRow.style.marginTop = "0.35rem";
+    rangeRow.style.display = sweepToggle.checked ? "grid" : "none";
+
+    const mkField = (suffix, title, value, min, max, step) => {
+      const cell = document.createElement("div");
+      const lab = document.createElement("label");
+      const id2 = `${id}_${suffix}`;
+      lab.htmlFor = id2;
+      lab.textContent = title;
+      lab.style.fontSize = "0.78rem";
+      lab.style.opacity = "0.85";
+
+      const inp = document.createElement("input");
+      inp.id = id2;
+      inp.type = "number";
+      if (min != null) inp.min = String(min);
+      if (max != null) inp.max = String(max);
+      if (step != null) inp.step = String(step);
+      inp.value = String(value);
+
+      cell.appendChild(lab);
+      cell.appendChild(inp);
+      return { cell, inp };
+    };
+
+    const rangeMin = p.min != null ? Number(p.min) : null;
+    const rangeMax = p.max != null ? Number(p.max) : null;
+    const stepAttr = p.step != null ? Number(p.step) : (p.kind === "int" ? 1 : "any");
+
+    const fStart = mkField("sweep_start", "Start", sweepCfg.start, rangeMin, rangeMax, stepAttr);
+    const fEnd = mkField("sweep_end", "End", sweepCfg.end, rangeMin, rangeMax, stepAttr);
+    const fStep = mkField("sweep_step", "Step", sweepCfg.step, 0, null, stepAttr);
+    rangeRow.appendChild(fStart.cell);
+    rangeRow.appendChild(fEnd.cell);
+    rangeRow.appendChild(fStep.cell);
+
+    const syncSweepCfg = () => {
+      sweepCfg.start = Number(fStart.inp.value);
+      sweepCfg.end = Number(fEnd.inp.value);
+      sweepCfg.step = Number(fStep.inp.value);
+      saveSettingsSoon();
+    };
+    fStart.inp.addEventListener("change", syncSweepCfg);
+    fStart.inp.addEventListener("input", syncSweepCfg);
+    fEnd.inp.addEventListener("change", syncSweepCfg);
+    fEnd.inp.addEventListener("input", syncSweepCfg);
+    fStep.inp.addEventListener("change", syncSweepCfg);
+    fStep.inp.addEventListener("input", syncSweepCfg);
+
+    sweepToggle.addEventListener("change", () => {
+      sweepCfg.enabled = !!sweepToggle.checked;
+      if (sweepCfg.enabled) {
+        const nowV = Number(input.value);
+        if (!Number.isFinite(Number(sweepCfg.start)) && Number.isFinite(nowV)) sweepCfg.start = nowV;
+        if (!Number.isFinite(Number(sweepCfg.end)) && Number.isFinite(nowV)) sweepCfg.end = nowV;
+        if (!Number.isFinite(Number(sweepCfg.step))) sweepCfg.step = Number.isFinite(defStep) ? defStep : 0.1;
+      }
+      rangeRow.style.display = sweepCfg.enabled ? "grid" : "none";
+      saveSettingsSoon();
+    });
+
+    block.appendChild(sweepWrap);
+    block.appendChild(rangeRow);
 
     const notes = String(p.notes || "");
     if (notes) {
@@ -674,6 +2234,7 @@ function renderDataMeta(meta) {
 
   const fieldsEl = $("dataFields");
   const hintEl = $("dataFieldHint");
+  renderContextChips();
   if (!fieldsEl) return;
 
   fieldsEl.innerHTML = "";
@@ -1007,6 +2568,8 @@ function setRunning(running) {
     clearProgressUi();
   }
   updateStrategyUi();
+  updateOverviewEmptyUi();
+  updateTopTableNoRunUi();
   updateValidationExportButtons();
   syncSavedRunSelectionUi();
   syncMetaSavedSelectionUi();
@@ -1606,6 +3169,7 @@ async function initPolygonUi() {
             renderDataMeta(meta2);
             applyMaSourceConstraints();
             applyBackendMaConstraints();
+            updateOverviewEmptyUi();
 
             const dlBars = Number(resp?.downloaded_bars || 0);
             const usedCacheOnly = !!resp?.used_cache_only;
@@ -2669,6 +4233,33 @@ function isCompositeStrategy() {
   return k === "CompositeCpu" || k === "CompositeMo";
 }
 
+function countF64RangeValues(start, end, step) {
+  const a = Number(start);
+  const b = Number(end);
+  const s = Number(step);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(s)) return 1;
+  if (s === 0 || a === b) return 1;
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  const st = Math.abs(s);
+  if (!(st > 0) || !Number.isFinite(st)) return 1;
+  const n = Math.floor((hi - lo) / st) + 1;
+  return Math.max(1, Math.min(1_000_000, n));
+}
+
+function estimateMaParamVariantCount(side, maId) {
+  const sweeps = resolvedMaParamSweeps(side, maId);
+  if (!sweeps || typeof sweeps !== "object") return 1;
+  let total = 1;
+  for (const v of Object.values(sweeps)) {
+    const arr = Array.isArray(v) ? v : null;
+    if (!arr || arr.length < 3) continue;
+    total *= countF64RangeValues(arr[0], arr[1], arr[2]);
+    if (total > 1_000_000) return 1_000_000;
+  }
+  return Math.max(1, total);
+}
+
 function updatePairsPreviewUi() {
   const el = $("pairsPreview");
   if (!el) return;
@@ -2688,13 +4279,22 @@ function updatePairsPreviewUi() {
   const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2]);
   const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
 
+  const fastMaType = String($("fastMaType")?.value || "").trim();
+  const slowMaType = String($("slowMaType")?.value || "").trim();
+  const fastVar = fastMaType ? estimateMaParamVariantCount("fast", fastMaType) : 1;
+  const slowVar = slowMaType ? estimateMaParamVariantCount("slow", slowMaType) : 1;
+  const variantPairs = Math.max(1, fastVar) * Math.max(1, slowVar);
+  const combos = Number(pairs || 0) * variantPairs;
+
   const includeAll = String($("includeAll")?.value || "false") === "true";
-  const tooManyIncludeAll = includeAll && pairs > 2_000_000;
+  const tooManyIncludeAll = includeAll && combos > 2_000_000;
 
   const pairsText = pairs ? pairs.toLocaleString() : "0";
+  const combosText = combos ? combos.toLocaleString() : "0";
+  const varText = variantPairs > 1 ? ` • combos≈${combosText} (pairs×MA variants: ${fastVar}×${slowVar})` : "";
   el.textContent = tooManyIncludeAll
-    ? `Pairs: ${pairsText} (fast < slow) • includeAll will be rejected above 2,000,000 pairs`
-    : `Pairs: ${pairsText} (fast < slow)`;
+    ? `Pairs: ${pairsText} (fast < slow)${varText} • includeAll will be rejected above 2,000,000 combos`
+    : `Pairs: ${pairsText} (fast < slow)${varText}`;
 }
 
 function updateRunPlanUi() {
@@ -2716,7 +4316,8 @@ function updateRunPlanUi() {
     steps.push(`Optimize (${b})`);
   }
 
-  const autoVal = !!$("valAutoRun")?.checked && isCompositeStrategy();
+  const supportsVal = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa";
+  const autoVal = !!$("valAutoRun")?.checked && supportsVal;
   const autoXlsx = autoVal && !!$("valAutoExportXlsx")?.checked;
   const autoReveal = autoXlsx && !!$("valAutoRevealReport")?.checked;
 
@@ -2726,8 +4327,8 @@ function updateRunPlanUi() {
 
   parts.push(`Plan: ${steps.join(" → ")}`);
 
-  // Quick reminder when validate is off for composite strategies.
-  if (isCompositeStrategy() && !autoVal) {
+  // Quick reminder when validate is off.
+  if (supportsVal && !autoVal) {
     parts.push("tip: enable Auto-run validation for hands-off robustness");
   }
 
@@ -2741,7 +4342,7 @@ function updateValidateTabUi() {
 
   const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
   const runKind = hasRun ? kindFromReq(CURRENT_RUN.req) : "";
-  const canValidate = hasRun && (runKind === "CompositeCpu" || runKind === "CompositeMo");
+  const canValidate = hasRun && (runKind === "CompositeCpu" || runKind === "CompositeMo" || runKind === "DoubleMa");
 
   if (btn) btn.disabled = RUNNING || !canValidate;
 
@@ -2751,11 +4352,11 @@ function updateValidateTabUi() {
     return;
   }
   if (!hasRun) {
-    hint.textContent = "Run a Composite optimization first to enable validation.";
+    hint.textContent = "Run an optimization first to enable validation.";
     return;
   }
   if (!canValidate) {
-    hint.textContent = "Validation currently supports Composite runs only (current run is Double MA).";
+    hint.textContent = "Validation is not supported for this run.";
     return;
   }
 
@@ -2797,6 +4398,8 @@ function updateQuickActionsUi() {
     if (!okInvoke) parts.push("backend unavailable");
     meta.textContent = parts.join(" • ");
   }
+
+  updateQuickBarUi();
 }
 
 function applyBackendSelectionConstraints() {
@@ -2826,13 +4429,13 @@ function updateStrategyUi() {
   if (compMoWrap) compMoWrap.style.display = isCompMo ? "block" : "none";
 
   const valAuto = $("valAutoRun");
-  if (valAuto) valAuto.disabled = RUNNING || !isComp;
+  if (valAuto) valAuto.disabled = RUNNING || !(isComp || isDoubleMa);
   const valAutoXlsx = $("valAutoExportXlsx");
-  if (valAutoXlsx) valAutoXlsx.disabled = RUNNING || !isComp;
+  if (valAutoXlsx) valAutoXlsx.disabled = RUNNING || !(isComp || isDoubleMa);
   const valAutoReveal = $("valAutoRevealReport");
-  if (valAutoReveal) valAutoReveal.disabled = RUNNING || !isComp;
+  if (valAutoReveal) valAutoReveal.disabled = RUNNING || !(isComp || isDoubleMa);
   const valAutoTop = $("valAutoExportTopN");
-  if (valAutoTop) valAutoTop.disabled = RUNNING || !isComp;
+  if (valAutoTop) valAutoTop.disabled = RUNNING || !(isComp || isDoubleMa);
 
   const backendSel = $("backend");
   if (backendSel) {
@@ -2895,6 +4498,8 @@ function updateStrategyUi() {
   updateValidateTabUi();
   updateQuickActionsUi();
   refreshGpuStatusUi();
+  updateTopTableNoRunUi();
+  renderContextChips();
 }
 
 function updateMetaGroupingUi() {
@@ -3235,6 +4840,8 @@ function readSettingsFromUi() {
     "valCscvEnable",
     "valCrossEnable",
     "metaEvalHoldout",
+    "metaUseMlConfidence",
+    "metaMlAutopilot",
     "batchAutoMeta",
     "batchSkipDone",
   ];
@@ -3244,6 +4851,7 @@ function readSettingsFromUi() {
     obj[id] = !!el.checked;
   }
   obj.maParams = MA_PARAMS_STATE;
+  obj.maParamSweeps = MA_PARAM_SWEEPS_STATE;
   return obj;
 }
 
@@ -3272,6 +4880,12 @@ function loadSettings() {
     if (!MA_PARAMS_STATE.fast || typeof MA_PARAMS_STATE.fast !== "object") MA_PARAMS_STATE.fast = {};
     if (!MA_PARAMS_STATE.slow || typeof MA_PARAMS_STATE.slow !== "object") MA_PARAMS_STATE.slow = {};
   }
+  if (settings.maParamSweeps && typeof settings.maParamSweeps === "object") {
+    MA_PARAM_SWEEPS_STATE = settings.maParamSweeps;
+    if (!MA_PARAM_SWEEPS_STATE || typeof MA_PARAM_SWEEPS_STATE !== "object") MA_PARAM_SWEEPS_STATE = { fast: {}, slow: {} };
+    if (!MA_PARAM_SWEEPS_STATE.fast || typeof MA_PARAM_SWEEPS_STATE.fast !== "object") MA_PARAM_SWEEPS_STATE.fast = {};
+    if (!MA_PARAM_SWEEPS_STATE.slow || typeof MA_PARAM_SWEEPS_STATE.slow !== "object") MA_PARAM_SWEEPS_STATE.slow = {};
+  }
 
   const legacyOffset = num(settings.almaOffset, NaN);
   const legacySigma = num(settings.almaSigma, NaN);
@@ -3284,7 +4898,7 @@ function loadSettings() {
   }
 
   for (const [id, value] of Object.entries(settings)) {
-    if (id === "maParams") continue;
+    if (id === "maParams" || id === "maParamSweeps") continue;
     const el = $(id);
     if (!el) continue;
     if (el.type === "checkbox") el.checked = !!value;
@@ -3347,9 +4961,15 @@ function applySettingsObject(settings) {
     if (!MA_PARAMS_STATE.fast || typeof MA_PARAMS_STATE.fast !== "object") MA_PARAMS_STATE.fast = {};
     if (!MA_PARAMS_STATE.slow || typeof MA_PARAMS_STATE.slow !== "object") MA_PARAMS_STATE.slow = {};
   }
+  if (settings.maParamSweeps && typeof settings.maParamSweeps === "object") {
+    MA_PARAM_SWEEPS_STATE = settings.maParamSweeps;
+    if (!MA_PARAM_SWEEPS_STATE || typeof MA_PARAM_SWEEPS_STATE !== "object") MA_PARAM_SWEEPS_STATE = { fast: {}, slow: {} };
+    if (!MA_PARAM_SWEEPS_STATE.fast || typeof MA_PARAM_SWEEPS_STATE.fast !== "object") MA_PARAM_SWEEPS_STATE.fast = {};
+    if (!MA_PARAM_SWEEPS_STATE.slow || typeof MA_PARAM_SWEEPS_STATE.slow !== "object") MA_PARAM_SWEEPS_STATE.slow = {};
+  }
 
   for (const [id, value] of Object.entries(settings)) {
-    if (id === "maParams") continue;
+    if (id === "maParams" || id === "maParamSweeps") continue;
     const el = $(id);
     if (!el) continue;
     if (el.type === "checkbox") el.checked = !!value;
@@ -3573,6 +5193,51 @@ function applyRequestToUi(req) {
     for (const [k, v] of Object.entries(slowParams)) {
       const n = Number(v);
       if (Number.isFinite(n)) s[k] = n;
+    }
+  }
+
+  const hasSweepField =
+    Object.prototype.hasOwnProperty.call(req, "fast_ma_param_sweeps") ||
+    Object.prototype.hasOwnProperty.call(req, "slow_ma_param_sweeps") ||
+    Object.prototype.hasOwnProperty.call(req, "fastMaParamSweeps") ||
+    Object.prototype.hasOwnProperty.call(req, "slowMaParamSweeps");
+  const fastSweeps = (req.fast_ma_param_sweeps && typeof req.fast_ma_param_sweeps === "object")
+    ? req.fast_ma_param_sweeps
+    : ((req.fastMaParamSweeps && typeof req.fastMaParamSweeps === "object") ? req.fastMaParamSweeps : null);
+  const slowSweeps = (req.slow_ma_param_sweeps && typeof req.slow_ma_param_sweeps === "object")
+    ? req.slow_ma_param_sweeps
+    : ((req.slowMaParamSweeps && typeof req.slowMaParamSweeps === "object") ? req.slowMaParamSweeps : null);
+
+  if (hasSweepField) {
+    if (!MA_PARAM_SWEEPS_STATE || typeof MA_PARAM_SWEEPS_STATE !== "object") MA_PARAM_SWEEPS_STATE = { fast: {}, slow: {} };
+    if (!MA_PARAM_SWEEPS_STATE.fast || typeof MA_PARAM_SWEEPS_STATE.fast !== "object") MA_PARAM_SWEEPS_STATE.fast = {};
+    if (!MA_PARAM_SWEEPS_STATE.slow || typeof MA_PARAM_SWEEPS_STATE.slow !== "object") MA_PARAM_SWEEPS_STATE.slow = {};
+    MA_PARAM_SWEEPS_STATE.fast[fastMa] = {};
+    MA_PARAM_SWEEPS_STATE.slow[slowMa] = {};
+  }
+
+  if (fastSweeps) {
+    const s = ensureMaParamSweepState("fast", fastMa);
+    for (const [k, v] of Object.entries(fastSweeps)) {
+      const arr = Array.isArray(v) ? v : null;
+      if (!arr || arr.length < 3) continue;
+      const start = Number(arr[0]);
+      const end = Number(arr[1]);
+      const step = Number(arr[2]);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(step)) continue;
+      s[k] = { enabled: true, start, end, step };
+    }
+  }
+  if (slowSweeps) {
+    const s = ensureMaParamSweepState("slow", slowMa);
+    for (const [k, v] of Object.entries(slowSweeps)) {
+      const arr = Array.isArray(v) ? v : null;
+      if (!arr || arr.length < 3) continue;
+      const start = Number(arr[0]);
+      const end = Number(arr[1]);
+      const step = Number(arr[2]);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(step)) continue;
+      s[k] = { enabled: true, start, end, step };
     }
   }
 
@@ -3925,6 +5590,7 @@ async function loadMetaSaved(path) {
 
   LAST_META_RUN = resp;
   renderMetaSelection(resp);
+  await maybeAutoTrainAndApplyMetaMl({ silent: true });
   RESULTS_TABS?.set("meta", { save: true, focus: false });
   renderMetaCompare();
   updateQuickActionsUi();
@@ -4644,10 +6310,106 @@ function updateTopTableHeader(isMo, req) {
   `;
 }
 
+function topTablePreviewReq() {
+  const kind = strategyKind();
+  if (kind === "CompositeMo") {
+    const maximize = String($("objective")?.value || "Sharpe").trim() || "Sharpe";
+    const minimize = String($("moObjectiveMin")?.value || "MaxDrawdown").trim() || "MaxDrawdown";
+    return { objectives: { maximize, minimize }, objective: maximize };
+  }
+  const objective = String($("objective")?.value || "Sharpe").trim() || "Sharpe";
+  return { objective };
+}
+
+function renderTopTablePlaceholder(text) {
+  const tbody = $("topTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  const kind = strategyKind();
+  const isMo = kind === "CompositeMo";
+  updateTopTableHeader(isMo, topTablePreviewReq());
+  updateTopSortUi();
+
+  const cols = isMo ? 11 : 8;
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = cols;
+  td.className = "left muted";
+  td.textContent = String(text || "").trim() || "—";
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+function renderTopTableSkeleton(opts) {
+  const tbody = $("topTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  const kind = strategyKind();
+  const isMo = kind === "CompositeMo";
+  updateTopTableHeader(isMo, topTablePreviewReq());
+  updateTopSortUi();
+
+  const cols = isMo ? 11 : 8;
+  const rows = Math.max(4, Math.min(14, Math.floor(Number(opts?.rows ?? 8))));
+
+  for (let r = 0; r < rows; r++) {
+    const tr = document.createElement("tr");
+    tr.className = "skeletonRow";
+    for (let c = 0; c < cols; c++) {
+      const td = document.createElement("td");
+      if (c <= 2) td.className = "left";
+      const line = document.createElement("div");
+      line.className = "skeleton skeletonLine";
+      const w = 40 + ((r * 13 + c * 29) % 55);
+      line.style.width = `${w}%`;
+      td.appendChild(line);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+function updateTopTableNoRunUi() {
+  if (CURRENT_RUN?.res) return;
+  if (RUNNING) renderTopTableSkeleton({ rows: 9 });
+  else renderTopTablePlaceholder("Run an optimization to populate Top results.");
+}
+
+function updateTopSortUi() {
+  const ths = document.querySelectorAll("#topTable thead th[data-key]");
+  for (const th of ths) {
+    const key = String(th.getAttribute("data-key") || "").trim();
+    if (key && key === TOP_SORT.key) {
+      th.setAttribute("data-sort", TOP_SORT.dir);
+      th.setAttribute("aria-sort", TOP_SORT.dir === "asc" ? "ascending" : "descending");
+    } else {
+      th.removeAttribute("data-sort");
+      th.removeAttribute("aria-sort");
+    }
+  }
+}
+
+function formatMaParamsInline(m, maxKeys) {
+  const obj = m && typeof m === "object" ? m : null;
+  if (!obj) return "";
+  const keys = Object.keys(obj).sort();
+  if (!keys.length) return "";
+  const lim = Math.max(1, Math.floor(Number(maxKeys || 0) || 3));
+  const parts = [];
+  for (const k of keys.slice(0, lim)) {
+    parts.push(`${k}=${fmt(obj[k], 4)}`);
+  }
+  const more = keys.length > lim ? ",…" : "";
+  return ` {${parts.join(",")}${more}}`;
+}
+
 function renderTopTable(res, req) {
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
   const isMo = kindRaw === "CompositeMo" && Array.isArray(res?.pareto);
   updateTopTableHeader(isMo, req);
+  updateTopSortUi();
 
   TOP_ROWS = collectTopRows(res);
   const obj = req?.objective || "Sharpe";
@@ -4688,20 +6450,34 @@ function renderTopTable(res, req) {
     tdRank.className = "left mono";
 
     const tdFast = document.createElement("td");
-    tdFast.textContent = `${p.fast_ma_type || "?"}(${p.fast_len || "?"})`;
+    const fastExtra = formatMaParamsInline(p.fast_ma_params, 2);
+    tdFast.textContent = `${p.fast_ma_type || "?"}(${p.fast_len || "?"})${fastExtra}`;
     tdFast.className = "left mono";
+    if (fastExtra) tdFast.title = `Fast MA params${formatMaParamsInline(p.fast_ma_params, 99)}`;
 
     const tdSlow = document.createElement("td");
-    tdSlow.textContent = `${p.slow_ma_type || "?"}(${p.slow_len || "?"})`;
+    const slowExtra = formatMaParamsInline(p.slow_ma_params, 2);
+    tdSlow.textContent = `${p.slow_ma_type || "?"}(${p.slow_len || "?"})${slowExtra}`;
     tdSlow.className = "left mono";
+    if (slowExtra) tdSlow.title = `Slow MA params${formatMaParamsInline(p.slow_ma_params, 99)}`;
 
     const tdPnl = document.createElement("td");
     tdPnl.textContent = fmt(m.pnl, 6);
     tdPnl.className = "mono";
+    const pnl = Number(m.pnl ?? NaN);
+    if (Number.isFinite(pnl)) {
+      if (pnl > 0) tdPnl.classList.add("goodText");
+      else if (pnl < 0) tdPnl.classList.add("badText");
+    }
 
     const tdSharpe = document.createElement("td");
     tdSharpe.textContent = fmt(m.sharpe, 6);
     tdSharpe.className = "mono";
+    const sharpe = Number(m.sharpe ?? NaN);
+    if (Number.isFinite(sharpe)) {
+      if (sharpe > 0) tdSharpe.classList.add("goodText");
+      else if (sharpe < 0) tdSharpe.classList.add("badText");
+    }
 
     const tdDd = document.createElement("td");
     tdDd.textContent = fmt(m.max_dd, 6);
@@ -5045,7 +6821,20 @@ function renderCompare() {
 
 function paramsKey(p) {
   const pp = p || {};
-  return `${pp.fast_ma_type || ""}|${pp.fast_len || 0}|${pp.slow_ma_type || ""}|${pp.slow_len || 0}`;
+  const mapKey = (m) => {
+    if (!m || typeof m !== "object") return "";
+    const keys = Object.keys(m).sort();
+    if (!keys.length) return "";
+    const parts = [];
+    for (const k of keys) {
+      const v = Number(m[k]);
+      parts.push(`${k}=${Number.isFinite(v) ? v.toPrecision(12) : String(m[k])}`);
+    }
+    return parts.join(",");
+  };
+  const f = mapKey(pp.fast_ma_params);
+  const s = mapKey(pp.slow_ma_params);
+  return `${pp.fast_ma_type || ""}|${pp.fast_len || 0}|${pp.slow_ma_type || ""}|${pp.slow_len || 0}|${f}|${s}`;
 }
 
 function desiredDrillBins() {
@@ -5339,8 +7128,12 @@ async function requestDrilldown(params, runReqOverride) {
   const bins = desiredDrillBins();
   const fastId = String(params.fast_ma_type || "").trim().toLowerCase();
   const slowId = String(params.slow_ma_type || "").trim().toLowerCase();
-  const fastParams = resolveRunMaParams(runReq, "fast", fastId);
-  const slowParams = resolveRunMaParams(runReq, "slow", slowId);
+  const fastParams = (params.fast_ma_params && typeof params.fast_ma_params === "object")
+    ? params.fast_ma_params
+    : resolveRunMaParams(runReq, "fast", fastId);
+  const slowParams = (params.slow_ma_params && typeof params.slow_ma_params === "object")
+    ? params.slow_ma_params
+    : resolveRunMaParams(runReq, "slow", slowId);
   const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
   const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
 
@@ -5573,8 +7366,12 @@ async function requestLocalStability(params, runReqOverride) {
 
   const fastId = String(params.fast_ma_type || "").trim().toLowerCase();
   const slowId = String(params.slow_ma_type || "").trim().toLowerCase();
-  const fastParams = resolveRunMaParams(runReq, "fast", fastId);
-  const slowParams = resolveRunMaParams(runReq, "slow", slowId);
+  const fastParams = (params.fast_ma_params && typeof params.fast_ma_params === "object")
+    ? params.fast_ma_params
+    : resolveRunMaParams(runReq, "fast", fastId);
+  const slowParams = (params.slow_ma_params && typeof params.slow_ma_params === "object")
+    ? params.slow_ma_params
+    : resolveRunMaParams(runReq, "slow", slowId);
 
   const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
   const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
@@ -5783,6 +7580,27 @@ function renderBest(res, req) {
         `recommended${fb}: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
         `robust=${fmt(c.robust_score, 6)}${c.robust_pareto ? "" : "(!)"}${crossPart} | ` +
         `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
+
+      const title =
+        `${String(p.fast_ma_type || "?").toUpperCase()}(${p.fast_len || "?"}) vs ` +
+        `${String(p.slow_ma_type || "?").toUpperCase()}(${p.slow_len || "?"})`;
+      const robustV = `${fmt(c.robust_score, 6)}${c.robust_pareto ? "" : " (!)"}`;
+      const crossV = hasCross && cross ? `${fmt(cross.score, 6)}${c.cross_ticker_pareto ? "" : " (!)"}` : "";
+      const pnl = Number(m.pnl ?? NaN);
+      renderBestCard({
+        kicker: usedFallback ? "Recommended (fallback)" : "Recommended",
+        title,
+        meta: `validation shortlist · candidates=${Array.isArray(rows) ? rows.length : 0}${hasCross ? " · cross-ticker" : ""}`,
+        stats: [
+          { label: "Robust", value: robustV },
+          ...(crossV ? [{ label: "Cross", value: crossV }] : []),
+          { label: "PnL", value: fmt(m.pnl, 6), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+          { label: "Sharpe", value: fmt(m.sharpe, 6) },
+          { label: "MaxDD", value: fmt(m.max_dd, 6) },
+          { label: "Trades", value: String(Number(m.trades || 0)) },
+          { label: "Exposure", value: fmt(m.exposure, 4) },
+        ],
+      });
       return;
     }
   }
@@ -5791,6 +7609,7 @@ function renderBest(res, req) {
     const pts = res.pareto;
     if (!pts.length) {
       el.textContent = "pareto: 0 points";
+      renderBestCard({ kicker: "Pareto", title: "0 points", meta: "—", stats: [] });
       return;
     }
     const best = [...pts].sort((a, b) => {
@@ -5822,6 +7641,26 @@ function renderBest(res, req) {
       `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} | ` +
       `maximize(${maxObj})=${fmt(maxV, 6)} minimize(${minObj})=${fmt(minV, 6)} viol=${fmt(viol, 6)} | ` +
       `pareto=${pts.length} evals=${evals} runtime_ms=${runtimeMs}`;
+
+    const title =
+      `${String(p.fast_ma_type || "?").toUpperCase()}(${p.fast_len || "?"}) vs ` +
+      `${String(p.slow_ma_type || "?").toUpperCase()}(${p.slow_len || "?"})`;
+    const pnl = Number(m.pnl ?? NaN);
+    renderBestCard({
+      kicker: "Pareto best",
+      title,
+      meta: `pareto=${pts.length} · evals=${evals} · runtime=${runtimeMs}ms`,
+      stats: [
+        { label: "PnL", value: fmt(m.pnl, 6), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+        { label: "Sharpe", value: fmt(m.sharpe, 6) },
+        { label: "MaxDD", value: fmt(m.max_dd, 6) },
+        { label: "Trades", value: String(Number(m.trades || 0)) },
+        { label: "Exposure", value: fmt(m.exposure, 4) },
+        { label: `Max (${maxObj})`, value: fmt(maxV, 6) },
+        { label: `Min (${minObj})`, value: fmt(minV, 6) },
+        { label: "Violation", value: fmt(viol, 6), tone: Number.isFinite(viol) && viol > 0 ? "bad" : "" },
+      ],
+    });
     return;
   }
 
@@ -5837,6 +7676,24 @@ function renderBest(res, req) {
     `best: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
     `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} score(${obj})=${s} | ` +
     `backend=${backendUsed} mode=${modeUsed} combos=${combos} runtime_ms=${runtimeMs}`;
+
+  const title =
+    `${String(p.fast_ma_type || "?").toUpperCase()}(${p.fast_len || "?"}) vs ` +
+    `${String(p.slow_ma_type || "?").toUpperCase()}(${p.slow_len || "?"})`;
+  const pnl = Number(m.pnl ?? NaN);
+  renderBestCard({
+    kicker: "Best",
+    title,
+    meta: `backend=${backendUsed} · mode=${modeUsed} · combos=${combos} · runtime=${runtimeMs}ms`,
+    stats: [
+      { label: "PnL", value: fmt(m.pnl, 6), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+      { label: "Sharpe", value: fmt(m.sharpe, 6) },
+      { label: "MaxDD", value: fmt(m.max_dd, 6) },
+      { label: "Trades", value: String(Number(m.trades || 0)) },
+      { label: "Exposure", value: fmt(m.exposure, 4) },
+      { label: `Score (${obj})`, value: s },
+    ],
+  });
 }
 
 function renderRun(res, req) {
@@ -5870,6 +7727,8 @@ function renderRun(res, req) {
   } else {
     setDrillVisible(false);
   }
+  updateOverviewEmptyUi();
+  renderContextChips();
 }
 
 function getDoubleMaRequest() {
@@ -5941,8 +7800,12 @@ function getDoubleMaRequest() {
 
   const topK = Number($("topK").value || 0);
   const includeAll = $("includeAll").value === "true";
-  if (includeAll && pairs > 2_000_000) {
-    throw new Error(`includeAll=true would return ${pairs} rows; disable it or reduce ranges.`);
+
+  const fastVar = estimateMaParamVariantCount("fast", fastMaType);
+  const slowVar = estimateMaParamVariantCount("slow", slowMaType);
+  const combos = pairs * fastVar * slowVar;
+  if (includeAll && combos > 2_000_000) {
+    throw new Error(`includeAll=true would return ${combos} rows; disable it or reduce ranges/sweeps.`);
   }
 
   const exportAllCsvPath = ($("exportAllCsvPath")?.value || "").trim();
@@ -5950,6 +7813,7 @@ function getDoubleMaRequest() {
     if (includeAll) throw new Error("exportAllCsvPath requires includeAll=false (stream export avoids huge RAM usage).");
     if (mode !== "Grid") throw new Error("exportAllCsvPath requires mode=Grid.");
     if (backend !== "GpuKernel") throw new Error("exportAllCsvPath is currently supported only for the GPU (kernel) backend.");
+    if (fastVar * slowVar > 1) throw new Error("exportAllCsvPath is not supported when optimizing MA parameters. Disable MA param sweeps or export.");
   }
 
   const heatmapBins = Math.max(0, Math.floor(num($("heatmapBins")?.value, 0)));
@@ -5990,6 +7854,8 @@ function getDoubleMaRequest() {
     export_all_csv_path: exportAllCsvPath || null,
     fast_ma_params: resolvedMaParams("fast", fastMaType),
     slow_ma_params: resolvedMaParams("slow", slowMaType),
+    fast_ma_param_sweeps: resolvedMaParamSweeps("fast", fastMaType),
+    slow_ma_param_sweeps: resolvedMaParamSweeps("slow", slowMaType),
     strategy,
     objective,
     mode,
@@ -6863,9 +8729,6 @@ function getValidationRequest(opts) {
   if (!CURRENT_RUN?.req || !CURRENT_RUN?.res) throw new Error("Run an optimization first.");
 
   const kind = kindFromReq(CURRENT_RUN.req);
-  if (kind !== "CompositeCpu" && kind !== "CompositeMo") {
-    throw new Error("Validation is currently supported for Composite strategies only.");
-  }
 
   const dataId = String(CURRENT_RUN.req.data_id || "").trim();
   if (!dataId) throw new Error("Missing data id (run an optimization first).");
@@ -6884,10 +8747,27 @@ function getValidationRequest(opts) {
   const candidates = candidatesRaw.map((row) => {
     const p = row?.params && typeof row.params === "object" ? row.params : {};
 
-    const fast_ma_type = String(p.fast_ma_type || (kind === "CompositeCpu" ? (CURRENT_RUN.req.fast_ma_types?.[0] || "") : "")).trim();
-    const slow_ma_type = String(p.slow_ma_type || (kind === "CompositeCpu" ? (CURRENT_RUN.req.slow_ma_types?.[0] || "") : "")).trim();
+    const fast_ma_type = String(p.fast_ma_type || (CURRENT_RUN.req.fast_ma_types?.[0] || "")).trim();
+    const slow_ma_type = String(p.slow_ma_type || (CURRENT_RUN.req.slow_ma_types?.[0] || "")).trim();
     const fast_len = Math.max(0, Math.floor(Number(p.fast_len || 0)));
     const slow_len = Math.max(0, Math.floor(Number(p.slow_len || 0)));
+
+    if (kind === "DoubleMa") {
+      const fast_ma_params = (p.fast_ma_params && typeof p.fast_ma_params === "object") ? p.fast_ma_params : null;
+      const slow_ma_params = (p.slow_ma_params && typeof p.slow_ma_params === "object") ? p.slow_ma_params : null;
+      const strategy = CURRENT_RUN.req.strategy || CURRENT_RUN.req.base_strategy || {};
+      const halftrend_filter = CURRENT_RUN.req.halftrend_filter || CURRENT_RUN.req.halftrendFilter || null;
+      return {
+        fast_ma_type,
+        slow_ma_type,
+        fast_len,
+        slow_len,
+        fast_ma_params: fast_ma_params || undefined,
+        slow_ma_params: slow_ma_params || undefined,
+        strategy,
+        halftrend_filter: halftrend_filter || undefined,
+      };
+    }
 
     const halftrend = kind === "CompositeMo"
       ? (p.halftrend && typeof p.halftrend === "object" ? p.halftrend : null)
@@ -6903,7 +8783,11 @@ function getValidationRequest(opts) {
       ott: kind === "CompositeMo" ? (p.ott || {}) : (CURRENT_RUN.req.ott || {}),
       strategy: kind === "CompositeMo" ? (p.strategy || CURRENT_RUN.req.strategy || {}) : (CURRENT_RUN.req.strategy || {}),
     };
-  }).filter((c) => c.fast_ma_type && c.slow_ma_type && c.fast_len > 0 && c.slow_len > 0 && c.halftrend);
+  }).filter((c) => {
+    if (!c.fast_ma_type || !c.slow_ma_type || c.fast_len <= 0 || c.slow_len <= 0) return false;
+    if (kind === "DoubleMa") return true;
+    return !!c.halftrend;
+  });
 
   if (!candidates.length) throw new Error("No valid candidates found (try lowering filters or increasing Candidates).");
 
@@ -7319,11 +9203,13 @@ async function runValidation(opts) {
   if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
 
   const req = getValidationRequest(opts);
+  const runKind = kindFromReq(CURRENT_RUN?.req);
+  const cmd = runKind === "DoubleMa" ? "run_double_ma_validation" : "run_composite_validation";
   setRunning(true);
   try {
     setStatus("Running validation...", "muted");
     const t0 = performance.now();
-    const res = await invoke("run_composite_validation", { req });
+    const res = await invoke(cmd, { req });
     const dt = performance.now() - t0;
     setStatus(`Validation done in ${dt.toFixed(0)}ms (frontend)`, "ok");
     $("output").textContent = pretty(res);
@@ -7381,6 +9267,7 @@ async function loadCsv() {
   $("output").textContent = pretty(resp);
   addRecentCsvPath(path);
   saveSettingsSoon();
+  updateOverviewEmptyUi();
 }
 
 async function runOptimization(opts) {
@@ -7416,7 +9303,7 @@ async function runOptimization(opts) {
 async function runWorkflow(opts) {
   const res = await runOptimization(opts);
   const autoVal = !!$("valAutoRun")?.checked;
-  if (autoVal && isCompositeStrategy()) {
+  if (autoVal) {
     try {
       await runValidation({ useFiltered: false, switchTab: false });
       if (opts?.switchTab !== false) {
@@ -8198,7 +10085,11 @@ $("btnPolygonOpen")?.addEventListener("click", async () => {
 $("btnPolygonClose")?.addEventListener("click", closePolygonModal);
 $("polygonModalBackdrop")?.addEventListener("click", closePolygonModal);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closePolygonModal();
+  if (e.defaultPrevented) return;
+  if (e.key !== "Escape") return;
+  const modal = $("polygonModal");
+  if (!modal || !modal.classList.contains("open")) return;
+  closePolygonModal();
 });
 
 $("btnPolygonSaveKey")?.addEventListener("click", async () => {
@@ -8274,6 +10165,7 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
     renderDataMeta(meta);
     applyMaSourceConstraints();
     applyBackendMaConstraints();
+    updateOverviewEmptyUi();
 
     const dlBars = Number(resp?.downloaded_bars || 0);
     const usedCacheOnly = !!resp?.used_cache_only;
@@ -8366,12 +10258,14 @@ $("btnClear").addEventListener("click", () => {
   if ($("validationMeta")) $("validationMeta").textContent = "-";
   if ($("validationOutput")) $("validationOutput").textContent = "-";
   $("bestSummary").textContent = "-";
+  resetBestCardUi();
   $("topTableBody").innerHTML = "";
   if ($("historySelect")) $("historySelect").value = "";
   CURRENT_RUN = null;
   TOP_ROWS = [];
   TOP_ROWS_FILTERED = [];
   PARETO_POINTS_RENDERED = [];
+  updateTopTableNoRunUi();
   const meta = $("topFilterMeta");
   if (meta) meta.textContent = "-";
   const pareto = $("paretoWrap");
@@ -8386,6 +10280,7 @@ $("btnClear").addEventListener("click", () => {
   setStatus("Ready.", "");
   updateValidateTabUi();
   updateQuickActionsUi();
+  updateOverviewEmptyUi();
 });
 
 $("btnRun").addEventListener("click", async () => {
@@ -8526,11 +10421,13 @@ $("backend").addEventListener("change", () => {
   applyBackendMaConstraints();
   refreshGpuStatusUi();
   saveSettingsSoon();
+  renderContextChips();
 });
 $("deviceId").addEventListener("change", () => {
   rememberDesiredDeviceIdFromUi();
   refreshGpuStatusUi();
   saveSettingsSoon();
+  renderContextChips();
 });
 $("metaGroupingMode")?.addEventListener("change", updateMetaGroupingUi);
 $("metaStrategyKind")?.addEventListener("change", updateMetaHoldoutUi);
@@ -8559,6 +10456,14 @@ $("btnMoResetSearchSpace")?.addEventListener("click", () => {
   saveSettingsSoon();
   setStatus("Reset Composite MO search space.", "muted");
 });
+
+for (const id of ["csvPath", "objective", "moObjectiveMin", "mode", "maSource"]) {
+  const el = $(id);
+  if (!el) continue;
+  const onChange = () => renderContextChips();
+  el.addEventListener("change", onChange);
+  el.addEventListener("input", onChange);
+}
 
 for (const id of [
   "csvPath",
@@ -9156,6 +11061,83 @@ $("btnRevealMetaFiles")?.addEventListener("click", async () => {
   }
 });
 
+$("btnMetaMlRefresh")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await refreshMetaMlStatus();
+    setStatus("Refreshed ML confidence status.", "muted");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnMetaMlTrain")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await trainMetaMlModel();
+    if (metaMlEnabled() && LAST_META_RUN?.result?.groups?.length) {
+      try {
+        await applyMetaMlConfidenceToLastMeta({ silent: true });
+      } catch {}
+    }
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnMetaMlApply")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await applyMetaMlConfidenceToLastMeta();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnMetaMlDelete")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (RUNNING) return;
+  if (!confirm("Delete the saved ML confidence model for this scope?")) return;
+  const scope = metaMlScopeFromUi();
+  if (!String(scope.timeframe || "").trim()) {
+    setStatus("Timeframe required (set Meta timeframe filter or run meta once).", "muted");
+    return;
+  }
+  try {
+    await invoke("delete_ml_confidence_model", { scope });
+    LAST_META_ML_STATUS = null;
+    setMetaMlStatus("Deleted model.");
+    updateMetaMlButtons();
+    setStatus("Deleted ML confidence model.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("metaUseMlConfidence")?.addEventListener("change", async () => {
+  saveSettingsSoon();
+  updateMetaMlButtons();
+  if (metaMlEnabled()) {
+    try {
+      await maybeAutoTrainAndApplyMetaMl({ silent: true });
+    } catch {}
+  } else if (LAST_META_RUN?.result?.groups?.length) {
+    // If disabling ML sorting, re-render in original order (meta_score order from backend).
+    renderMetaSelection(LAST_META_RUN);
+  }
+});
+
+$("metaMlAutopilot")?.addEventListener("change", async () => {
+  saveSettingsSoon();
+  updateMetaMlButtons();
+  if (metaMlEnabled() && metaMlAutopilotEnabled()) {
+    try {
+      await maybeAutoTrainAndApplyMetaMl({ silent: true });
+    } catch {}
+  }
+});
+
 $("metaSavedSelect")?.addEventListener("change", () => {
   syncMetaSavedSelectionUi();
 });
@@ -9257,6 +11239,9 @@ $("btnClearBaseline")?.addEventListener("click", () => {
   renderCompare();
 });
 
+initThemeUi();
+initWindowEffectUi();
+
 CONTROLS_TABS = initTabSystem({
   barId: "controlsTabBar",
   panelsId: "controlsTabPanels",
@@ -9269,6 +11254,15 @@ RESULTS_TABS = initTabSystem({
   storageKey: RESULTS_TAB_KEY,
   defaultTab: "overview",
 });
+
+initControlsSplitter();
+
+initOverviewEmptyUi();
+updateOverviewEmptyUi();
+initBestCardUi();
+initQuickBarUi();
+initCmdPaletteUi();
+initGlobalShortcuts();
 
 const SETTINGS_LOADED = loadSettings();
 if (!SETTINGS_LOADED) {

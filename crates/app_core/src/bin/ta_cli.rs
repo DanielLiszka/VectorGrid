@@ -256,6 +256,8 @@ fn main() -> Result<(), String> {
             .map(|p| p.to_string_lossy().to_string()),
         fast_ma_params,
         slow_ma_params,
+        fast_ma_param_sweeps: None,
+        slow_ma_param_sweeps: None,
         strategy: StrategyConfig::default(),
         halftrend_filter,
         objective,

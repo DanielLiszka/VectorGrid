@@ -17,7 +17,10 @@ pub use ta_app_core::{
     Backend, BackendOptimizationResult, BackendUsed, CompositeCpuDrilldownRequest,
     CompositeCpuLocalStabilityRequest, CompositeCpuRequest, CompositeMoRequest, CompositeMoResult,
     CompositeValidationRequest, CompositeValidationResult, DoubleMaCurves, DoubleMaDrilldownRequest,
-    DoubleMaLocalStabilityRequest, DoubleMaParamsResolved, DoubleMaRequest, LocalStabilityResult,
+    DoubleMaLocalStabilityRequest, DoubleMaParamsResolved, DoubleMaRequest, DoubleMaValidationRequest,
+    DoubleMaValidationResult, LocalStabilityResult,
+    MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceScope, MlConfidenceTrainConfig,
+    MlConfidenceTrainMetrics,
     MetaSelectionRequest, MetaSelectionResult, OptimizationModeResolved,
 };
 
@@ -770,6 +773,308 @@ fn apply_cross_ticker_validation(
 }
 
 #[tauri::command]
+pub async fn run_double_ma_validation(
+    req: DoubleMaValidationRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<DoubleMaValidationResult, String> {
+    let _run_guard = state.try_begin_run()?;
+    let cancel = state.cancel_token();
+    let candles = state.get_candles(&req.data_id)?;
+
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let app_cache_dir = crate::data_cache::app_data_cache_dir(&base);
+
+    let cancel2 = cancel.clone();
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let sink = TauriProgressSink { app: app2 };
+        let mut base_req = req;
+        let ma_source = base_req.ma_source.clone();
+        let fast_ma_params = base_req.fast_ma_params.clone();
+        let slow_ma_params = base_req.slow_ma_params.clone();
+        let seed = base_req.seed;
+        let cross_cfg = base_req.cross_ticker.take();
+        let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
+            base_req,
+            &candles,
+            cancel2.as_ref(),
+            Some(&sink),
+        )?;
+
+        if let Some(cross_cfg) = cross_cfg {
+            apply_cross_ticker_validation_double_ma(
+                &mut res,
+                cross_cfg,
+                &ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                seed,
+                &app_cache_dir,
+                cancel2.as_ref(),
+                Some(sink.app.clone()),
+            )?;
+        }
+        res.runtime_ms = started.elapsed().as_millis() as u64;
+        Ok(res)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn apply_cross_ticker_validation_double_ma(
+    res: &mut DoubleMaValidationResult,
+    mut cross_cfg: ta_app_core::CrossTickerConfig,
+    ma_source: &str,
+    fast_ma_params: Option<HashMap<String, f64>>,
+    slow_ma_params: Option<HashMap<String, f64>>,
+    seed: u64,
+    app_cache_dir: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    app_for_progress: Option<tauri::AppHandle>,
+) -> Result<(), String> {
+    // Sanitize dataset list (dedup + cap).
+    cross_cfg
+        .datasets
+        .retain(|d| !d.csv_path.trim().is_empty());
+    let mut seen: HashSet<String> = HashSet::with_capacity(cross_cfg.datasets.len() * 2);
+    cross_cfg
+        .datasets
+        .retain(|d| seen.insert(d.csv_path.trim().to_string()));
+    if cross_cfg.max_datasets == 0 {
+        return Ok(());
+    }
+    if cross_cfg.datasets.len() > cross_cfg.max_datasets {
+        cross_cfg.datasets.truncate(cross_cfg.max_datasets);
+    }
+    if cross_cfg.datasets.is_empty() || res.candidates.is_empty() {
+        return Ok(());
+    }
+
+    #[derive(Clone, Default)]
+    struct Acc {
+        sharpes: Vec<f64>,
+        dds: Vec<f64>,
+        pnls: Vec<f64>,
+        trades: Vec<u32>,
+        pnl_pos: usize,
+    }
+
+    fn canonicalize_json_value(v: &Value) -> Value {
+        match v {
+            Value::Array(xs) => Value::Array(xs.iter().map(canonicalize_json_value).collect()),
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                let mut out = serde_json::Map::new();
+                for k in keys {
+                    if let Some(v2) = map.get(k) {
+                        out.insert(k.clone(), canonicalize_json_value(v2));
+                    }
+                }
+                Value::Object(out)
+            }
+            _ => v.clone(),
+        }
+    }
+
+    let mut key_to_idx: HashMap<String, usize> = HashMap::with_capacity(res.candidates.len() * 2);
+    for (i, c) in res.candidates.iter().enumerate() {
+        let v = serde_json::to_value(&c.params).map_err(|e| e.to_string())?;
+        let key = serde_json::to_string(&canonicalize_json_value(&v)).map_err(|e| e.to_string())?;
+        key_to_idx.insert(key, i);
+    }
+
+    let total_candidates = res.candidates.len();
+    let cross_total = total_candidates.saturating_mul(cross_cfg.datasets.len());
+    let mut accs: Vec<Acc> = vec![Acc::default(); total_candidates];
+    let mut datasets_meta: Vec<ta_app_core::CrossTickerDatasetMeta> =
+        Vec::with_capacity(cross_cfg.datasets.len());
+
+    let mk_label = |csv_path: &str, label: &str| -> String {
+        let l = label.trim();
+        if !l.is_empty() {
+            return l.to_string();
+        }
+        Path::new(csv_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("dataset")
+            .to_string()
+    };
+
+    for (di, ds) in cross_cfg.datasets.iter().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+
+        let csv_path = ds.csv_path.trim();
+        if csv_path.is_empty() {
+            continue;
+        }
+        let outcome = crate::data_cache::load_or_build(Path::new(csv_path), app_cache_dir)?;
+        let candles2 = outcome.candles;
+        datasets_meta.push(ta_app_core::CrossTickerDatasetMeta {
+            label: mk_label(csv_path, &ds.label),
+            csv_path: csv_path.to_string(),
+            bars: candles2.close.len(),
+        });
+
+        let req2 = ta_app_core::DoubleMaValidationRequest {
+            data_id: format!("cross-{di}"),
+            ma_source: ma_source.to_string(),
+            fast_ma_params: fast_ma_params.clone(),
+            slow_ma_params: slow_ma_params.clone(),
+            candidates: res.candidates.iter().map(|c| c.params.clone()).collect(),
+            walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed,
+            max_candidates: total_candidates,
+        };
+        let offset = di.saturating_mul(total_candidates);
+
+        let res2 = if let Some(app) = app_for_progress.as_ref() {
+            let sink2 = OffsetProgressSink {
+                app: app.clone(),
+                base_offset: offset,
+                total: cross_total,
+                phase: "double_ma_validate_cross",
+            };
+            ta_app_core::run_double_ma_validation_blocking_with_candles(
+                req2,
+                &candles2,
+                cancel,
+                Some(&sink2),
+            )?
+        } else {
+            ta_app_core::run_double_ma_validation_blocking_with_candles(req2, &candles2, cancel, None)?
+        };
+
+        for c in &res2.candidates {
+            let v = serde_json::to_value(&c.params).map_err(|e| e.to_string())?;
+            let key = serde_json::to_string(&canonicalize_json_value(&v)).map_err(|e| e.to_string())?;
+            let Some(&idx) = key_to_idx.get(&key) else {
+                continue;
+            };
+            accs[idx].sharpes.push(c.in_sample.sharpe);
+            accs[idx].dds.push(c.in_sample.max_dd);
+            accs[idx].pnls.push(c.in_sample.pnl);
+            accs[idx].trades.push(c.in_sample.trades);
+            if c.in_sample.pnl > 0.0 {
+                accs[idx].pnl_pos = accs[idx].pnl_pos.saturating_add(1);
+            }
+        }
+    }
+
+    // Aggregate stats.
+    let quantile = |sorted: &[f64], q: f64| -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        if sorted.len() == 1 {
+            return if sorted[0].is_finite() { sorted[0] } else { 0.0 };
+        }
+        let qq = q.clamp(0.0, 1.0);
+        let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
+        let v = sorted[idx.min(sorted.len() - 1)];
+        if v.is_finite() { v } else { 0.0 }
+    };
+    let median = |sorted: &[f64]| -> f64 { quantile(sorted, 0.5) };
+    let worst_min = |xs: &[f64]| -> f64 {
+        xs.iter()
+            .copied()
+            .fold(f64::INFINITY, |a, b| if b < a { b } else { a })
+            .if_finite_or(0.0)
+    };
+    let worst_max = |xs: &[f64]| -> f64 {
+        xs.iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, |a, b| if b > a { b } else { a })
+            .if_finite_or(0.0)
+    };
+    trait FiniteOr {
+        fn if_finite_or(self, fallback: f64) -> f64;
+    }
+    impl FiniteOr for f64 {
+        fn if_finite_or(self, fallback: f64) -> f64 {
+            if self.is_finite() { self } else { fallback }
+        }
+    }
+
+    let median_u32 = |xs: &[u32]| -> u32 {
+        if xs.is_empty() {
+            return 0;
+        }
+        let mut ys = xs.to_vec();
+        ys.sort_unstable();
+        ys[ys.len() / 2]
+    };
+    let worst_min_u32 = |xs: &[u32]| -> u32 { xs.iter().copied().min().unwrap_or(0) };
+
+    for (i, cand) in res.candidates.iter_mut().enumerate() {
+        let acc = &mut accs[i];
+        let ds_n = acc.sharpes.len();
+        if ds_n == 0 {
+            continue;
+        }
+
+        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
+        acc.dds.sort_by(|a, b| a.total_cmp(b));
+        acc.pnls.sort_by(|a, b| a.total_cmp(b));
+
+        let sharpe_median = median(&acc.sharpes);
+        let max_dd_worst = worst_max(&acc.dds);
+        cand.cross_ticker = Some(ta_app_core::CrossTickerStats {
+            datasets: ds_n,
+            sharpe_median,
+            sharpe_worst: worst_min(&acc.sharpes),
+            max_dd_median: median(&acc.dds),
+            max_dd_worst,
+            pnl_median: median(&acc.pnls),
+            pnl_worst: worst_min(&acc.pnls),
+            trades_median: median_u32(&acc.trades),
+            trades_worst: worst_min_u32(&acc.trades),
+            pnl_positive_frac: acc.pnl_pos as f64 / ds_n as f64,
+            score: sharpe_median - 2.0 * max_dd_worst,
+        });
+    }
+
+    // Mark cross-ticker Pareto front using (Sharpe median, MaxDD worst).
+    for i in 0..res.candidates.len() {
+        let Some(si) = res.candidates[i].cross_ticker.as_ref() else {
+            continue;
+        };
+        let xi = si.sharpe_median;
+        let yi = si.max_dd_worst;
+        let mut dominated = false;
+        for j in 0..res.candidates.len() {
+            if i == j {
+                continue;
+            }
+            let Some(sj) = res.candidates[j].cross_ticker.as_ref() else {
+                continue;
+            };
+            let xj = sj.sharpe_median;
+            let yj = sj.max_dd_worst;
+            if xj >= xi && yj <= yi && (xj > xi || yj < yi) {
+                dominated = true;
+                break;
+            }
+        }
+        res.candidates[i].cross_ticker_pareto = Some(!dominated);
+    }
+
+    res.cross_ticker = Some(ta_app_core::CrossTickerValidationSummary {
+        datasets: datasets_meta,
+    });
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn compute_double_ma_drilldown(
     req: DoubleMaDrilldownRequest,
     state: tauri::State<'_, AppState>,
@@ -881,6 +1186,67 @@ pub async fn open_path(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub fn set_window_effect(
+    effect: Option<String>,
+    dark: Option<bool>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    let eff = effect.unwrap_or_else(|| "none".to_string()).trim().to_lowercase();
+
+    #[cfg(target_os = "windows")]
+    {
+        use window_vibrancy::{apply_acrylic, apply_blur, apply_mica, clear_acrylic, clear_blur, clear_mica};
+
+        let _ = clear_mica(&window);
+        let _ = clear_acrylic(&window);
+        let _ = clear_blur(&window);
+
+        let tint = match dark {
+            Some(true) => Some((18u8, 18u8, 18u8, 180u8)),
+            Some(false) => Some((245u8, 245u8, 245u8, 180u8)),
+            None => None,
+        };
+
+        match eff.as_str() {
+            "" | "none" => Ok(()),
+            "mica" => apply_mica(&window, dark).map_err(|e| e.to_string()),
+            "acrylic" => apply_acrylic(&window, tint).map_err(|e| e.to_string()),
+            "blur" => apply_blur(&window, tint).map_err(|e| e.to_string()),
+            _ => Err(format!("Unknown window effect: {eff}")),
+        }?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{
+            apply_vibrancy, clear_vibrancy, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+            NSVisualEffectState,
+        };
+
+        let _ = clear_vibrancy(&window);
+        match eff.as_str() {
+            "" | "none" => Ok(()),
+            "vibrancy" => apply_vibrancy(
+                &window,
+                NSVisualEffectMaterial::Sidebar,
+                NSVisualEffectBlendingMode::BehindWindow,
+                NSVisualEffectState::Active,
+            )
+            .map_err(|e| e.to_string()),
+            _ => Err(format!("Unknown window effect: {eff}")),
+        }?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = (eff, dark, window);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SaveRunArtifactResponse {
     pub path: String,
@@ -986,6 +1352,221 @@ pub async fn open_runs_dir(app: tauri::AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || open_runs_dir_blocking(app))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MlConfidenceModelStatus {
+    pub exists: bool,
+    pub model_path: String,
+    pub bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<MlConfidenceModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrainMlConfidenceResponse {
+    pub model_path: String,
+    pub model_bytes: usize,
+    pub model: MlConfidenceModel,
+    pub metrics: MlConfidenceTrainMetrics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplyMlConfidenceResponse {
+    pub model_path: String,
+    pub confidences: Vec<Option<f64>>,
+    pub warnings: Vec<String>,
+}
+
+fn normalize_ml_scope(mut scope: MlConfidenceScope) -> Result<MlConfidenceScope, String> {
+    scope.strategy_kind = scope.strategy_kind.trim().to_string();
+    scope.timeframe = normalize_timeframe_label(&scope.timeframe);
+    if scope.strategy_kind.is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+    if scope.timeframe.is_empty() {
+        return Err("timeframe is required (e.g. '1m')".to_string());
+    }
+    Ok(scope)
+}
+
+fn ml_confidence_models_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let dir = base.join("models").join("confidence");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn ml_confidence_model_path(
+    scope: &MlConfidenceScope,
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, String> {
+    let dir = ml_confidence_models_dir(app)?;
+    let sk = sanitize_filename_component(&scope.strategy_kind);
+    let tf = sanitize_filename_component(&scope.timeframe);
+    Ok(dir.join(format!("ml_confidence_{sk}_{tf}.json")))
+}
+
+fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let dir = runs_dir(app)?;
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("vectorbt_meta_") {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    let mut out: Vec<Value> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let raw = match std::fs::read_to_string(&p) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        out.push(v);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn ml_confidence_model_status(
+    scope: MlConfidenceScope,
+    app: tauri::AppHandle,
+) -> Result<MlConfidenceModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let path = ml_confidence_model_path(&scope, &app)?;
+        let model_path = path.to_string_lossy().to_string();
+        if !path.exists() {
+            return Ok(MlConfidenceModelStatus {
+                exists: false,
+                model_path,
+                bytes: 0,
+                model: None,
+                error: None,
+            });
+        }
+
+        let bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        match serde_json::from_str::<MlConfidenceModel>(&raw) {
+            Ok(model) => Ok(MlConfidenceModelStatus {
+                exists: true,
+                model_path,
+                bytes,
+                model: Some(model),
+                error: None,
+            }),
+            Err(e) => Ok(MlConfidenceModelStatus {
+                exists: true,
+                model_path,
+                bytes,
+                model: None,
+                error: Some(e.to_string()),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn train_ml_confidence_model(
+    scope: MlConfidenceScope,
+    cfg: Option<MlConfidenceTrainConfig>,
+    app: tauri::AppHandle,
+) -> Result<TrainMlConfidenceResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let cfg = cfg.unwrap_or_default();
+        let metas = load_meta_artifacts_blocking(&app)?;
+        let (model, metrics) =
+            ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope, &metas, cfg)?;
+
+        let path = ml_confidence_model_path(&model.scope, &app)?;
+        let bytes = serde_json::to_vec_pretty(&model).map_err(|e| e.to_string())?;
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+
+        Ok(TrainMlConfidenceResponse {
+            model_path: path.to_string_lossy().to_string(),
+            model_bytes: bytes.len(),
+            model,
+            metrics,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn apply_ml_confidence_model(
+    scope: MlConfidenceScope,
+    groups: Vec<Value>,
+    app: tauri::AppHandle,
+) -> Result<ApplyMlConfidenceResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let path = ml_confidence_model_path(&scope, &app)?;
+        if !path.exists() {
+            return Err("ML confidence model not found. Train it first.".to_string());
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let model: MlConfidenceModel = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+        let mut warnings: Vec<String> = Vec::new();
+        if normalize_timeframe_label(&model.scope.timeframe) != scope.timeframe
+            || model.scope.strategy_kind != scope.strategy_kind
+        {
+            warnings.push("Model scope does not match request scope. Results may be unreliable.".to_string());
+        }
+
+        let confidences: Vec<Option<f64>> = groups
+            .iter()
+            .map(|g| ta_app_core::predict_ml_confidence_for_group(&model, g))
+            .collect();
+
+        Ok(ApplyMlConfidenceResponse {
+            model_path: path.to_string_lossy().to_string(),
+            confidences,
+            warnings,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn delete_ml_confidence_model(
+    scope: MlConfidenceScope,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let path = ml_confidence_model_path(&scope, &app)?;
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize)]

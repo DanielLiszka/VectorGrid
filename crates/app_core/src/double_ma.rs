@@ -59,6 +59,8 @@ pub struct DoubleMaRequest {
     pub export_all_csv_path: Option<String>,
     pub fast_ma_params: Option<HashMap<String, f64>>,
     pub slow_ma_params: Option<HashMap<String, f64>>,
+    pub fast_ma_param_sweeps: Option<HashMap<String, (f64, f64, f64)>>,
+    pub slow_ma_param_sweeps: Option<HashMap<String, (f64, f64, f64)>>,
     #[serde(default)]
     pub strategy: StrategyConfig,
     pub halftrend_filter: Option<HalfTrendRegimeFilter>,
@@ -91,6 +93,10 @@ pub struct DoubleMaParamsResolved {
     pub slow_len: u16,
     pub fast_ma_type: String,
     pub slow_ma_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast_ma_params: Option<HashMap<String, f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_ma_params: Option<HashMap<String, f64>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -495,6 +501,8 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
             slow_len: base_slow,
             fast_ma_type: req.params.fast_ma_type,
             slow_ma_type: req.params.slow_ma_type,
+            fast_ma_params: req.fast_ma_params,
+            slow_ma_params: req.slow_ma_params,
         },
         objective,
         radius,
@@ -536,6 +544,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     });
     let fast_ma_params = req.fast_ma_params;
     let slow_ma_params = req.slow_ma_params;
+    let fast_ma_param_sweeps = req.fast_ma_param_sweeps;
+    let slow_ma_param_sweeps = req.slow_ma_param_sweeps;
     let strategy = req.strategy;
     let halftrend_filter = req.halftrend_filter;
     let heatmap_bins = req.heatmap_bins.unwrap_or(0) as usize;
@@ -556,11 +566,6 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     validate_ma_kind(&fast_ma)?;
     validate_ma_kind(&slow_ma)?;
 
-    let (fast_alma_offset, fast_alma_sigma) =
-        resolve_alma_params_for_side("fast", &fast_ma, fast_ma_params.as_ref())?;
-    let (slow_alma_offset, slow_alma_sigma) =
-        resolve_alma_params_for_side("slow", &slow_ma, slow_ma_params.as_ref())?;
-
     let fast_periods = expand_u16_range(fast)?;
     let slow_periods = expand_u16_range(slow)?;
     if fast_periods.is_empty() || slow_periods.is_empty() {
@@ -569,6 +574,44 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
     if total_pairs == 0 {
         return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+
+    let fast_param_variants =
+        build_ma_param_variants("fast", fast_ma_params, fast_ma_param_sweeps)?;
+    let slow_param_variants =
+        build_ma_param_variants("slow", slow_ma_params, slow_ma_param_sweeps)?;
+
+    if fast_param_variants.len() > u16::MAX as usize {
+        return Err(format!(
+            "fast MA parameter sweeps produce too many variants (max {}). Reduce sweeps.",
+            u16::MAX
+        ));
+    }
+    if slow_param_variants.len() > u16::MAX as usize {
+        return Err(format!(
+            "slow MA parameter sweeps produce too many variants (max {}). Reduce sweeps.",
+            u16::MAX
+        ));
+    }
+
+    let variant_pairs = fast_param_variants
+        .len()
+        .saturating_mul(slow_param_variants.len());
+    if variant_pairs == 0 {
+        return Err("no MA parameter variants".to_string());
+    }
+    if variant_pairs > MAX_MA_PARAM_VARIANT_PAIRS {
+        return Err(format!(
+            "MA parameter sweeps produce too many combinations ({variant_pairs}, max {MAX_MA_PARAM_VARIANT_PAIRS}). Reduce sweeps."
+        ));
+    }
+
+    let total_combos = total_pairs.saturating_mul(variant_pairs);
+    if export_all_csv_path.is_some() && variant_pairs > 1 {
+        return Err(
+            "export_all_csv_path is not supported when optimizing MA parameters. Disable MA param sweeps or export."
+                .to_string(),
+        );
     }
 
     let close = vector_ta::utilities::data_loader::source_type(candles, "close");
@@ -604,10 +647,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     if export_all_csv_path.is_some() && req.mode != OptimizationMode::Grid {
         return Err("export_all_csv_path requires mode=Grid".to_string());
     }
-    if include_all && total_pairs > 2_000_000 {
+    if include_all && total_combos > 2_000_000 {
         return Err(format!(
-            "include_all=true would return {} rows; disable it or reduce ranges.",
-            total_pairs
+            "include_all=true would return {} rows; disable it or reduce ranges/sweeps.",
+            total_combos
         ));
     }
     let mode_used = match req.mode {
@@ -615,7 +658,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         OptimizationMode::CoarseToFine => OptimizationModeResolved::CoarseToFine,
         OptimizationMode::Auto => {
             let can_adapt = !include_all && export_all_csv_path.is_none() && heatmap_bins == 0;
-            if can_adapt && total_pairs > 500_000 {
+            if can_adapt && total_combos > 500_000 {
                 OptimizationModeResolved::CoarseToFine
             } else {
                 OptimizationModeResolved::Grid
@@ -631,28 +674,6 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
         if export_all_csv_path.is_some() {
             return Err("CoarseToFine mode cannot be used with export_all_csv_path".to_string());
-        }
-    }
-
-    fn resolve_params(
-        p: &ta_strategies::double_ma::DoubleMaParams,
-        fast_ma_types: &[String],
-        slow_ma_types: &[String],
-    ) -> DoubleMaParamsResolved {
-        let fast_ma_type = fast_ma_types
-            .get(p.fast_ma_id as usize)
-            .cloned()
-            .unwrap_or_else(|| "<unknown>".to_string());
-        let slow_ma_type = slow_ma_types
-            .get(p.slow_ma_id as usize)
-            .cloned()
-            .unwrap_or_else(|| "<unknown>".to_string());
-
-        DoubleMaParamsResolved {
-            fast_len: p.fast_len,
-            slow_len: p.slow_len,
-            fast_ma_type,
-            slow_ma_type,
         }
     }
 
@@ -751,13 +772,36 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
     }
 
+    struct OffsetProgress<'a> {
+        inner: &'a dyn ProgressSink,
+        base_offset: usize,
+        total_pairs: usize,
+    }
+
+    impl ProgressSink for OffsetProgress<'_> {
+        fn emit_double_ma_progress(&self, payload: crate::progress::DoubleMaProgressPayload) {
+            self.inner.emit_double_ma_progress(crate::progress::DoubleMaProgressPayload {
+                processed_pairs: self.base_offset.saturating_add(payload.processed_pairs),
+                total_pairs: self.total_pairs,
+                phase: payload.phase,
+            });
+        }
+    }
+
     let run_grid = |fast_periods: &[u16],
                     slow_periods: &[u16],
                     top_k: usize,
                     include_all: bool,
                     heatmap_bins: usize,
                     export_all_csv_path: Option<&str>,
-                    total_pairs: usize|
+                    total_pairs: usize,
+                    fast_ma_params: Option<&HashMap<String, f64>>,
+                    slow_ma_params: Option<&HashMap<String, f64>>,
+                    fast_alma_offset: f64,
+                    fast_alma_sigma: f64,
+                    slow_alma_offset: f64,
+                    slow_alma_sigma: f64,
+                    progress: Option<&dyn ProgressSink>|
      -> Result<(OptimizationResult, BackendUsed), String> {
         match &backend {
             Backend::CpuOnly => {
@@ -771,8 +815,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     &fast_ma,
                     &slow_ma,
                     &ma_source,
-                    fast_ma_params.as_ref(),
-                    slow_ma_params.as_ref(),
+                    fast_ma_params,
+                    slow_ma_params,
                     halftrend_trend.as_deref(),
                     &strategy,
                     objective,
@@ -801,8 +845,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     &fast_ma,
                     &slow_ma,
                     &ma_source,
-                    fast_ma_params.as_ref(),
-                    slow_ma_params.as_ref(),
+                    fast_ma_params,
+                    slow_ma_params,
                     halftrend_trend.as_deref(),
                     &strategy,
                     objective,
@@ -828,8 +872,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     &fast_ma,
                     &slow_ma,
                     &ma_source,
-                    fast_ma_params.as_ref(),
-                    slow_ma_params.as_ref(),
+                    fast_ma_params,
+                    slow_ma_params,
                     &strategy,
                     objective,
                     top_k,
@@ -852,147 +896,388 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
     };
 
-    let (result, backend_used): (OptimizationResult, BackendUsed) = match mode_used {
-        OptimizationModeResolved::Grid => run_grid(
-            &fast_periods,
-            &slow_periods,
-            top_k,
-            include_all,
-            heatmap_bins,
-            export_all_csv_path.as_deref(),
-            total_pairs,
-        )?,
-        OptimizationModeResolved::CoarseToFine => {
-            let target_pairs = 200_000usize;
-            let mut factor = 1u32;
-            if total_pairs > target_pairs {
-                let ratio = (total_pairs as f64) / (target_pairs as f64);
-                let est = ratio.sqrt().ceil() as u32;
-                factor = est.max(2).min(64);
-            }
+    let run_mode_for_params = |fast_ma_params: Option<&HashMap<String, f64>>,
+                               slow_ma_params: Option<&HashMap<String, f64>>,
+                               fast_alma_offset: f64,
+                               fast_alma_sigma: f64,
+                               slow_alma_offset: f64,
+                               slow_alma_sigma: f64,
+                               progress: Option<&dyn ProgressSink>|
+     -> Result<(OptimizationResult, BackendUsed), String> {
+        match mode_used {
+            OptimizationModeResolved::Grid => run_grid(
+                &fast_periods,
+                &slow_periods,
+                top_k,
+                include_all,
+                heatmap_bins,
+                export_all_csv_path.as_deref(),
+                total_pairs,
+                fast_ma_params,
+                slow_ma_params,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                progress,
+            ),
+            OptimizationModeResolved::CoarseToFine => {
+                let target_pairs = 200_000usize;
+                let mut factor = 1u32;
+                if total_pairs > target_pairs {
+                    let ratio = (total_pairs as f64) / (target_pairs as f64);
+                    let est = ratio.sqrt().ceil() as u32;
+                    factor = est.max(2).min(64);
+                }
 
-            if factor <= 1 {
-                run_grid(
-                    &fast_periods,
-                    &slow_periods,
-                    top_k,
-                    include_all,
-                    heatmap_bins,
-                    export_all_csv_path.as_deref(),
-                    total_pairs,
-                )?
-            } else {
-                let coarse_fast = (
-                    fast.0,
-                    fast.1,
-                    if fast.2 == 0 {
-                        0
-                    } else {
-                        fast.2.saturating_mul(factor)
-                    },
-                );
-                let coarse_slow = (
-                    slow.0,
-                    slow.1,
-                    if slow.2 == 0 {
-                        0
-                    } else {
-                        slow.2.saturating_mul(factor)
-                    },
-                );
-                let coarse_fast_periods = expand_u16_range(coarse_fast)?;
-                let coarse_slow_periods = expand_u16_range(coarse_slow)?;
-                let coarse_pairs =
-                    estimate_pairs_fast_lt_slow(&coarse_fast_periods, &coarse_slow_periods);
-                if coarse_pairs == 0 {
-                    return Err(
-                        "coarse search produced no valid parameter combinations".to_string()
+                if factor <= 1 {
+                    run_grid(
+                        &fast_periods,
+                        &slow_periods,
+                        top_k,
+                        include_all,
+                        heatmap_bins,
+                        export_all_csv_path.as_deref(),
+                        total_pairs,
+                        fast_ma_params,
+                        slow_ma_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        progress,
+                    )
+                } else {
+                    let coarse_fast = (
+                        fast.0,
+                        fast.1,
+                        if fast.2 == 0 {
+                            0
+                        } else {
+                            fast.2.saturating_mul(factor)
+                        },
                     );
+                    let coarse_slow = (
+                        slow.0,
+                        slow.1,
+                        if slow.2 == 0 {
+                            0
+                        } else {
+                            slow.2.saturating_mul(factor)
+                        },
+                    );
+                    let coarse_fast_periods = expand_u16_range(coarse_fast)?;
+                    let coarse_slow_periods = expand_u16_range(coarse_slow)?;
+                    let coarse_pairs =
+                        estimate_pairs_fast_lt_slow(&coarse_fast_periods, &coarse_slow_periods);
+                    if coarse_pairs == 0 {
+                        return Err(
+                            "coarse search produced no valid parameter combinations".to_string()
+                        );
+                    }
+
+                    let (coarse_res, coarse_backend) = run_grid(
+                        &coarse_fast_periods,
+                        &coarse_slow_periods,
+                        0,
+                        false,
+                        0,
+                        None,
+                        coarse_pairs,
+                        fast_ma_params,
+                        slow_ma_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        progress,
+                    )?;
+
+                    let best_fast = coarse_res.best_params.fast_len as u32;
+                    let best_slow = coarse_res.best_params.slow_len as u32;
+
+                    let (fast_min, fast_max) = (fast.0.min(fast.1), fast.0.max(fast.1));
+                    let (slow_min, slow_max) = (slow.0.min(slow.1), slow.0.max(slow.1));
+
+                    let f_step = fast.2;
+                    let s_step = slow.2;
+                    let f_win = if f_step == 0 {
+                        0
+                    } else {
+                        f_step.saturating_mul(factor).saturating_mul(2).max(f_step)
+                    };
+                    let s_win = if s_step == 0 {
+                        0
+                    } else {
+                        s_step.saturating_mul(factor).saturating_mul(2).max(s_step)
+                    };
+
+                    let fine_fast = (
+                        best_fast.saturating_sub(f_win).max(fast_min),
+                        best_fast.saturating_add(f_win).min(fast_max),
+                        f_step,
+                    );
+                    let fine_slow = (
+                        best_slow.saturating_sub(s_win).max(slow_min),
+                        best_slow.saturating_add(s_win).min(slow_max),
+                        s_step,
+                    );
+
+                    let fine_fast_periods = expand_u16_range(fine_fast)?;
+                    let fine_slow_periods = expand_u16_range(fine_slow)?;
+                    let fine_pairs =
+                        estimate_pairs_fast_lt_slow(&fine_fast_periods, &fine_slow_periods);
+                    if fine_pairs == 0 {
+                        return Err(
+                            "fine search produced no valid parameter combinations".to_string()
+                        );
+                    }
+
+                    let (mut fine_res, fine_backend) = run_grid(
+                        &fine_fast_periods,
+                        &fine_slow_periods,
+                        top_k,
+                        include_all,
+                        heatmap_bins,
+                        None,
+                        fine_pairs,
+                        fast_ma_params,
+                        slow_ma_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        progress,
+                    )?;
+                    fine_res.num_combos =
+                        coarse_res.num_combos.saturating_add(fine_res.num_combos);
+
+                    let backend_used = if matches!(coarse_backend, BackendUsed::Cpu)
+                        && matches!(fine_backend, BackendUsed::Cpu)
+                    {
+                        BackendUsed::Cpu
+                    } else {
+                        BackendUsed::Gpu
+                    };
+
+                    Ok((fine_res, backend_used))
                 }
-
-                let (coarse_res, coarse_backend) = run_grid(
-                    &coarse_fast_periods,
-                    &coarse_slow_periods,
-                    0,
-                    false,
-                    0,
-                    None,
-                    coarse_pairs,
-                )?;
-
-                let best_fast = coarse_res.best_params.fast_len as u32;
-                let best_slow = coarse_res.best_params.slow_len as u32;
-
-                let (fast_min, fast_max) = (fast.0.min(fast.1), fast.0.max(fast.1));
-                let (slow_min, slow_max) = (slow.0.min(slow.1), slow.0.max(slow.1));
-
-                let f_step = fast.2;
-                let s_step = slow.2;
-                let f_win = if f_step == 0 {
-                    0
-                } else {
-                    f_step.saturating_mul(factor).saturating_mul(2).max(f_step)
-                };
-                let s_win = if s_step == 0 {
-                    0
-                } else {
-                    s_step.saturating_mul(factor).saturating_mul(2).max(s_step)
-                };
-
-                let fine_fast = (
-                    best_fast.saturating_sub(f_win).max(fast_min),
-                    best_fast.saturating_add(f_win).min(fast_max),
-                    f_step,
-                );
-                let fine_slow = (
-                    best_slow.saturating_sub(s_win).max(slow_min),
-                    best_slow.saturating_add(s_win).min(slow_max),
-                    s_step,
-                );
-
-                let fine_fast_periods = expand_u16_range(fine_fast)?;
-                let fine_slow_periods = expand_u16_range(fine_slow)?;
-                let fine_pairs =
-                    estimate_pairs_fast_lt_slow(&fine_fast_periods, &fine_slow_periods);
-                if fine_pairs == 0 {
-                    return Err("fine search produced no valid parameter combinations".to_string());
-                }
-
-                let (mut fine_res, fine_backend) = run_grid(
-                    &fine_fast_periods,
-                    &fine_slow_periods,
-                    top_k,
-                    include_all,
-                    heatmap_bins,
-                    None,
-                    fine_pairs,
-                )?;
-                fine_res.num_combos = coarse_res.num_combos.saturating_add(fine_res.num_combos);
-
-                let backend_used = if matches!(coarse_backend, BackendUsed::Cpu)
-                    && matches!(fine_backend, BackendUsed::Cpu)
-                {
-                    BackendUsed::Cpu
-                } else {
-                    BackendUsed::Gpu
-                };
-
-                (fine_res, backend_used)
             }
         }
     };
 
+    fn rewrite_result_ma_ids(res: &mut OptimizationResult, fast_id: u16, slow_id: u16) {
+        res.best_params.fast_ma_id = fast_id;
+        res.best_params.slow_ma_id = slow_id;
+        for (p, _) in res.top.iter_mut() {
+            p.fast_ma_id = fast_id;
+            p.slow_ma_id = slow_id;
+        }
+        if let Some(all) = res.all.as_mut() {
+            for (p, _) in all.iter_mut() {
+                p.fast_ma_id = fast_id;
+                p.slow_ma_id = slow_id;
+            }
+        }
+    }
+
+    fn merge_heatmap_max(dst: &mut Option<OptimizationHeatmap>, src: Option<OptimizationHeatmap>) {
+        let Some(src) = src else { return };
+        match dst {
+            None => *dst = Some(src),
+            Some(d) => {
+                if d.bins_fast != src.bins_fast
+                    || d.bins_slow != src.bins_slow
+                    || d.fast_min != src.fast_min
+                    || d.fast_max != src.fast_max
+                    || d.slow_min != src.slow_min
+                    || d.slow_max != src.slow_max
+                    || d.values.len() != src.values.len()
+                {
+                    return;
+                }
+                for (dv, sv) in d.values.iter_mut().zip(src.values.into_iter()) {
+                    match (&dv, sv) {
+                        (_, None) => {}
+                        (None, Some(x)) => *dv = Some(x),
+                        (Some(a), Some(b)) => {
+                            if b > *a {
+                                *dv = Some(b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut merged_backend_used = BackendUsed::Cpu;
+    let mut merged_best: Option<(DoubleMaParams, Metrics)> = None;
+    let mut merged_top_candidates: Vec<(DoubleMaParams, Metrics)> = Vec::new();
+    let mut merged_all: Option<Vec<(DoubleMaParams, Metrics)>> =
+        if include_all { Some(Vec::new()) } else { None };
+    let mut merged_heatmap: Option<OptimizationHeatmap> = None;
+    let mut merged_num_combos: usize = 0;
+
+    let multi_grid_offset_progress =
+        matches!(mode_used, OptimizationModeResolved::Grid) && variant_pairs > 1;
+    let mut run_idx: usize = 0;
+    for (fi, fast_params_opt) in fast_param_variants.iter().enumerate() {
+        for (si, slow_params_opt) in slow_param_variants.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let fast_params = fast_params_opt.as_ref();
+            let slow_params = slow_params_opt.as_ref();
+
+            let (fast_alma_offset, fast_alma_sigma) =
+                resolve_alma_params_for_side("fast", &fast_ma, fast_params)?;
+            let (slow_alma_offset, slow_alma_sigma) =
+                resolve_alma_params_for_side("slow", &slow_ma, slow_params)?;
+
+            let offset_sink;
+            let progress_for_run: Option<&dyn ProgressSink> = if multi_grid_offset_progress {
+                if let Some(inner) = progress {
+                    let base_offset = run_idx.saturating_mul(total_pairs);
+                    offset_sink = OffsetProgress {
+                        inner,
+                        base_offset,
+                        total_pairs: total_combos,
+                    };
+                    Some(&offset_sink)
+                } else {
+                    None
+                }
+            } else {
+                progress
+            };
+
+            let (mut res, backend_used) = run_mode_for_params(
+                fast_params,
+                slow_params,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                progress_for_run,
+            )?;
+
+            let fast_id = fi as u16;
+            let slow_id = si as u16;
+            rewrite_result_ma_ids(&mut res, fast_id, slow_id);
+
+            if matches!(backend_used, BackendUsed::Gpu) {
+                merged_backend_used = BackendUsed::Gpu;
+            }
+
+            merged_num_combos = merged_num_combos.saturating_add(res.num_combos);
+
+            let score = objective_score(&res.best_metrics, objective);
+            let score = if score.is_finite() {
+                score
+            } else {
+                f64::NEG_INFINITY
+            };
+            let is_better = match merged_best.as_ref() {
+                None => true,
+                Some((_, m)) => {
+                    let s = objective_score(m, objective);
+                    let s = if s.is_finite() { s } else { f64::NEG_INFINITY };
+                    score > s
+                }
+            };
+            if is_better {
+                merged_best = Some((res.best_params.clone(), res.best_metrics.clone()));
+            }
+
+            if top_k > 0 {
+                merged_top_candidates.extend(res.top.into_iter());
+            }
+            if let Some(all) = merged_all.as_mut() {
+                if let Some(mut rows) = res.all {
+                    all.append(&mut rows);
+                }
+            }
+            merge_heatmap_max(&mut merged_heatmap, res.heatmap);
+
+            run_idx = run_idx.saturating_add(1);
+        }
+    }
+
+    let Some((best_params_raw, best_metrics)) = merged_best else {
+        return Err("no results".to_string());
+    };
+
+    let top = if top_k == 0 {
+        Vec::new()
+    } else {
+        let mut rows = merged_top_candidates;
+        rows.sort_by(|a, b| {
+            let sa = objective_score(&a.1, objective);
+            let sb = objective_score(&b.1, objective);
+            let sa = if sa.is_finite() { sa } else { f64::NEG_INFINITY };
+            let sb = if sb.is_finite() { sb } else { f64::NEG_INFINITY };
+            sb.total_cmp(&sa)
+        });
+        rows.truncate(top_k);
+        rows
+    };
+
+    let result = OptimizationResult {
+        best_params: best_params_raw,
+        best_metrics,
+        top,
+        all: merged_all,
+        heatmap: merged_heatmap,
+        num_combos: merged_num_combos,
+        num_candles: n,
+    };
+
+    let backend_used = merged_backend_used;
+
     let runtime_ms = start.elapsed().as_millis() as u64;
 
-    let best_params = resolve_params(&result.best_params, &fast_ma_types, &slow_ma_types);
+    let fast_ma_label = fast_ma_types
+        .first()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fast_ma.clone());
+    let slow_ma_label = slow_ma_types
+        .first()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| slow_ma.clone());
+
+    let resolve_params = |p: &ta_strategies::double_ma::DoubleMaParams| -> DoubleMaParamsResolved {
+        let fast_ma_params = fast_param_variants
+            .get(p.fast_ma_id as usize)
+            .cloned()
+            .unwrap_or(None);
+        let slow_ma_params = slow_param_variants
+            .get(p.slow_ma_id as usize)
+            .cloned()
+            .unwrap_or(None);
+
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma_label.clone(),
+            slow_ma_type: slow_ma_label.clone(),
+            fast_ma_params,
+            slow_ma_params,
+        }
+    };
+
+    let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)> = result
         .top
         .into_iter()
-        .map(|(p, m)| (resolve_params(&p, &fast_ma_types, &slow_ma_types), m))
+        .map(|(p, m)| (resolve_params(&p), m))
         .collect();
     let all = result.all.map(|rows| {
         rows.into_iter()
-            .map(|(p, m)| (resolve_params(&p, &fast_ma_types, &slow_ma_types), m))
+            .map(|(p, m)| (resolve_params(&p), m))
             .collect()
     });
     let heatmap = result.heatmap;
@@ -1660,6 +1945,108 @@ pub(crate) fn estimate_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[
         total = total.saturating_add(s_len.saturating_sub(idx));
     }
     total
+}
+
+const MAX_MA_PARAM_SWEEP_VALUES: usize = 64;
+const MAX_MA_PARAM_VARIANTS_PER_SIDE: usize = 512;
+const MAX_MA_PARAM_VARIANT_PAIRS: usize = 4096;
+
+fn expand_f64_range_inclusive((start, end, step): (f64, f64, f64), label: &str) -> Result<Vec<f64>, String> {
+    if !start.is_finite() || !end.is_finite() || !step.is_finite() {
+        return Err(format!(
+            "MA param sweep '{label}' requires finite start/end/step"
+        ));
+    }
+
+    if step == 0.0 || start.to_bits() == end.to_bits() {
+        return Ok(vec![start]);
+    }
+
+    let step = step.abs();
+    if step <= 0.0 {
+        return Err(format!("MA param sweep '{label}' requires step != 0"));
+    }
+
+    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+    let span = hi - lo;
+    if !span.is_finite() || span < 0.0 {
+        return Err(format!(
+            "MA param sweep '{label}' has an invalid range: start={start} end={end}"
+        ));
+    }
+
+    let steps_f = span / step;
+    if !steps_f.is_finite() || steps_f < 0.0 {
+        return Err(format!(
+            "MA param sweep '{label}' has an invalid step: {step}"
+        ));
+    }
+    let count_f = steps_f.floor() + 1.0;
+    if count_f > MAX_MA_PARAM_SWEEP_VALUES as f64 {
+        return Err(format!(
+            "MA param sweep '{label}' has too many values (>{MAX_MA_PARAM_SWEEP_VALUES}). Reduce range or increase step."
+        ));
+    }
+    let count = (count_f as usize).clamp(1, MAX_MA_PARAM_SWEEP_VALUES);
+
+    let mut out: Vec<f64> = Vec::with_capacity(count);
+    for i in 0..count {
+        let v = lo + (i as f64) * step;
+        if v > hi + step * 0.5 {
+            break;
+        }
+        out.push(v);
+    }
+
+    if out.is_empty() {
+        return Err(format!("MA param sweep '{label}' produced no values"));
+    }
+
+    Ok(out)
+}
+
+fn build_ma_param_variants(
+    side: &'static str,
+    base: Option<HashMap<String, f64>>,
+    sweeps: Option<HashMap<String, (f64, f64, f64)>>,
+) -> Result<Vec<Option<HashMap<String, f64>>>, String> {
+    let base_map = base.unwrap_or_default();
+    let had_any_base = !base_map.is_empty();
+
+    let sweeps_map = sweeps.unwrap_or_default();
+    if sweeps_map.is_empty() {
+        return Ok(if had_any_base {
+            vec![Some(base_map)]
+        } else {
+            vec![None]
+        });
+    }
+
+    let mut entries: Vec<(String, (f64, f64, f64))> = sweeps_map.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut variants: Vec<HashMap<String, f64>> = vec![base_map];
+    for (key, range) in entries {
+        let values = expand_f64_range_inclusive(range, &key)?;
+        let mut next: Vec<HashMap<String, f64>> =
+            Vec::with_capacity(variants.len().saturating_mul(values.len()));
+        for vmap in variants.into_iter() {
+            for &val in &values {
+                let mut m = vmap.clone();
+                m.insert(key.clone(), val);
+                next.push(m);
+            }
+        }
+        variants = next;
+        if variants.len() > MAX_MA_PARAM_VARIANTS_PER_SIDE {
+            return Err(format!(
+                "{side} MA parameter sweeps produce {} variants (max {MAX_MA_PARAM_VARIANTS_PER_SIDE}). Reduce sweeps.",
+                variants.len()
+            ));
+        }
+    }
+
+    Ok(variants.into_iter().map(Some).collect())
 }
 
 fn tile_sizes_from_budget(
@@ -2930,6 +3317,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Sharpe,
@@ -2946,6 +3335,52 @@ mod tests {
         assert!(res.best_params.fast_len < res.best_params.slow_len);
         assert!(res.top.len() <= 5);
         assert!(res.heatmap.is_some());
+    }
+
+    #[test]
+    fn cpu_ma_param_sweep_increases_combo_count_and_reports_params() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mut base: HashMap<String, f64> = HashMap::new();
+        base.insert("offset".to_string(), 0.85);
+        base.insert("sigma".to_string(), 6.0);
+
+        let mut sweeps: HashMap<String, (f64, f64, f64)> = HashMap::new();
+        sweeps.insert("sigma".to_string(), (4.0, 5.0, 1.0)); // => [4.0, 5.0]
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: Some(base.clone()),
+            slow_ma_params: Some(base.clone()),
+            fast_ma_param_sweeps: Some(sweeps),
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu run");
+
+        // Base grid has 3*2=6 fast<slow pairs; sweep adds 2 variants => 12 combos.
+        assert_eq!(res.num_combos, 12);
+        let fast_p = res.best_params.fast_ma_params.as_ref().expect("fast params");
+        let sigma = fast_p.get("sigma").copied().unwrap_or(f64::NAN);
+        assert!(sigma.to_bits() == 4.0_f64.to_bits() || sigma.to_bits() == 5.0_f64.to_bits());
+        let slow_p = res.best_params.slow_ma_params.as_ref().expect("slow params");
+        assert_eq!(slow_p.get("sigma").copied().unwrap_or(f64::NAN).to_bits(), 6.0_f64.to_bits());
     }
 
     #[test]
@@ -3060,6 +3495,8 @@ mod tests {
                 slow_len: 30,
                 fast_ma_type: "sma".to_string(),
                 slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
             },
             ma_source: "close".to_string(),
             fast_ma_params: None,
@@ -3102,6 +3539,8 @@ mod tests {
                 slow_len: 21,
                 fast_ma_type: "sma".to_string(),
                 slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
             },
             ma_source: "close".to_string(),
             fast_ma_params: None,
