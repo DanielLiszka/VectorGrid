@@ -64,6 +64,10 @@ fn bench_meta_select(c: &mut Criterion) {
         required_tag: Some("bench".to_string()),
         holdout_tag: None,
         eval_holdout: true,
+        save_holdout_rows: false,
+        holdout_eval_top_n: None,
+        holdout_eval_explore_n: 0,
+        holdout_eval_rank_by: None,
         holdout_mode: MetaHoldoutMode::Light,
         holdout_validation: None,
         top_k: 25,
@@ -97,4 +101,3 @@ fn bench_meta_select(c: &mut Criterion) {
 
 criterion_group!(benches, bench_meta_select);
 criterion_main!(benches);
-

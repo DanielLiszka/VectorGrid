@@ -3,6 +3,7 @@ pub mod data_cache;
 pub mod distributed;
 pub mod ma_registry;
 pub mod polygon;
+pub mod settings;
 pub mod state;
 
 use commands::*;
@@ -32,6 +33,9 @@ pub fn run_tauri() {
         .invoke_handler(tauri::generate_handler![
             load_price_data,
             list_sample_csvs,
+            get_market_data_dir_info,
+            set_market_data_dir,
+            clear_market_data_dir,
             polygon_get_cache_info,
             polygon_set_api_key,
             polygon_clear_api_key,
@@ -40,6 +44,7 @@ pub fn run_tauri() {
             polygon_download_1m_and_load,
             pick_csv_file,
             pick_save_csv,
+            pick_folder,
             run_double_ma_optimization,
             run_composite_cpu_optimization,
             run_composite_mo_optimization,

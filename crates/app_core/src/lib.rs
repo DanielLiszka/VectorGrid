@@ -56,8 +56,9 @@ pub use cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult};
 
 pub use meta_select::{
     meta_group_key, meta_group_key_for_request, meta_select_from_artifacts, HoldoutAggregate,
-    HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode, MetaScoreWeights,
-    MetaHoldoutMode, MetaHoldoutValidationConfig, MetaSelectionRequest, MetaSelectionResult,
+    HoldoutDatasetRow, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode,
+    MetaScoreWeights, MetaHoldoutMode, MetaHoldoutValidationConfig, MetaSelectionRequest,
+    MetaSelectionResult,
 };
 
 pub use ml_confidence::{

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn default_min_holdout_pass_rate() -> f64 {
     0.60
@@ -11,6 +12,10 @@ fn default_min_holdout_score_p10() -> f64 {
 
 fn default_min_holdout_datasets() -> usize {
     30
+}
+
+fn default_model_target() -> MlConfidenceTarget {
+    MlConfidenceTarget::HoldoutGate
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,10 +63,37 @@ fn default_k_folds() -> usize {
     5
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlConfidenceTarget {
+    /// Pick the best target based on available artifacts:
+    /// - Prefer `holdout_rows` (per-dataset labels) when present.
+    /// - Fall back to `holdout` aggregates otherwise.
+    Auto,
+    /// Binary label computed from per-group `holdout` aggregates (v1 behavior).
+    HoldoutGate,
+    /// Binary label per holdout dataset row (`holdout_rows`), using the label thresholds.
+    HoldoutDatasetPass,
+}
+
+impl Default for MlConfidenceTarget {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MlConfidenceTargetResolved {
+    HoldoutGate,
+    HoldoutDatasetPass,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlConfidenceTrainConfig {
     #[serde(default)]
     pub label: MlConfidenceLabelConfig,
+    #[serde(default)]
+    pub target: MlConfidenceTarget,
     #[serde(default = "default_l2")]
     pub l2: f64,
     #[serde(default = "default_learning_rate")]
@@ -76,6 +108,7 @@ impl Default for MlConfidenceTrainConfig {
     fn default() -> Self {
         Self {
             label: MlConfidenceLabelConfig::default(),
+            target: MlConfidenceTarget::default(),
             l2: default_l2(),
             learning_rate: default_learning_rate(),
             max_iter: default_max_iter(),
@@ -97,14 +130,57 @@ pub struct MlConfidenceTrainMetrics {
     pub rows: usize,
     pub positives: usize,
     pub negatives: usize,
+    pub target: MlConfidenceTarget,
     pub train_auc: f64,
     pub train_brier: f64,
+    pub baseline_brier: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub train_brier_calibrated: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cv_auc: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cv_brier: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cv_brier_calibrated: Option<f64>,
+    pub healthy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_artifacts_used: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_meta_ts_used: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calibration: Vec<MlConfidenceCalibrationBin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MlConfidenceCalibration {
+    /// Platt scaling on logit(p): p_cal = sigmoid(a * logit(p_raw) + b)
+    pub method: String,
+    pub a: f64,
+    pub b: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MlConfidenceModelMeta {
+    pub trained_at_ms: u64,
+    pub trained_rows: usize,
+    pub trained_positives: usize,
+    pub trained_negatives: usize,
+    #[serde(default = "default_model_target")]
+    pub target: MlConfidenceTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_artifacts_used: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_meta_ts_used: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cv_auc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cv_brier: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cv_brier_calibrated: Option<f64>,
+    pub baseline_brier: f64,
+    pub healthy: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -119,6 +195,10 @@ pub struct MlConfidenceModel {
     pub weights: Vec<f64>,
     pub bias: f64,
     pub label: MlConfidenceLabelConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<MlConfidenceCalibration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<MlConfidenceModelMeta>,
 }
 
 const FEATURE_NAMES: [&str; 7] = [
@@ -136,6 +216,13 @@ struct DatasetRow {
     group_id: String,
     x: Vec<f64>,
     y: f64,
+}
+
+#[derive(Clone, Debug)]
+struct DatasetBuildSummary {
+    used_meta: usize,
+    newest_meta_ts: Option<String>,
+    target: MlConfidenceTargetResolved,
 }
 
 fn normalize_timeframe_label(raw: &str) -> String {
@@ -230,22 +317,95 @@ fn label_from_holdout(h: &Value, cfg: &MlConfidenceLabelConfig) -> Option<f64> {
     Some(if ok { 1.0 } else { 0.0 })
 }
 
+fn label_from_holdout_row(row: &Value, cfg: &MlConfidenceLabelConfig) -> Option<(String, f64)> {
+    let dataset = row
+        .get("dataset")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+
+    // NOTE: `min_holdout_score_p10` is interpreted as a threshold on the per-dataset median score.
+    // This aligns with how the meta holdout aggregate is computed (`score_p10` is the p10 quantile
+    // across datasets of each dataset's representative-median score).
+    let score_median = row.get("score_median").and_then(|v| v.as_f64())?;
+    let max_dd_worst = row
+        .get("max_dd_worst")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    if !score_median.is_finite() || !max_dd_worst.is_finite() {
+        return None;
+    }
+
+    let mut ok = score_median >= cfg.min_holdout_score_p10;
+    if let Some(dd_max) = cfg.max_holdout_max_dd_p90 {
+        ok = ok && max_dd_worst <= dd_max;
+    }
+
+    Some((dataset, if ok { 1.0 } else { 0.0 }))
+}
+
+fn scope_has_holdout_rows(
+    scope: &MlConfidenceScope,
+    meta_artifacts: &[Value],
+    cfg: &MlConfidenceLabelConfig,
+) -> bool {
+    let scope_tf = normalize_timeframe_label(&scope.timeframe);
+    let scope_strat = scope.strategy_kind.trim();
+
+    for meta in meta_artifacts {
+        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "vectorbt_meta_selection" {
+            continue;
+        }
+        let Some((strat, tf)) = extract_meta_scope(meta) else {
+            continue;
+        };
+        if strat != scope_strat || tf != scope_tf {
+            continue;
+        }
+
+        let groups = meta
+            .pointer("/res/groups")
+            .and_then(|v| v.as_array())
+            .map(|xs| xs.as_slice())
+            .unwrap_or(&[]);
+        for g in groups {
+            let holdout_rows = g.get("holdout_rows").and_then(|v| v.as_array());
+            let Some(rows) = holdout_rows else {
+                continue;
+            };
+            if rows.len() < cfg.min_holdout_datasets {
+                continue;
+            }
+            if rows.iter().any(|r| label_from_holdout_row(r, cfg).is_some()) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn build_dataset_from_meta_artifacts(
     scope: &MlConfidenceScope,
     meta_artifacts: &[Value],
     cfg: &MlConfidenceLabelConfig,
-) -> (Vec<DatasetRow>, Vec<String>) {
+    target: MlConfidenceTargetResolved,
+) -> (Vec<DatasetRow>, DatasetBuildSummary, Vec<String>) {
     let mut warnings: Vec<String> = Vec::new();
     let scope_tf = normalize_timeframe_label(&scope.timeframe);
     let scope_strat = scope.strategy_kind.trim();
 
     let mut rows: Vec<DatasetRow> = Vec::new();
     let mut used_meta = 0usize;
+    let mut newest_meta_ts: Option<String> = None;
     let mut skipped_kind = 0usize;
     let mut skipped_scope = 0usize;
     let mut skipped_missing = 0usize;
     let mut skipped_no_holdout = 0usize;
     let mut skipped_label = 0usize;
+    let mut skipped_row = 0usize;
 
     for meta in meta_artifacts {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -272,23 +432,58 @@ fn build_dataset_from_meta_artifacts(
         }
 
         used_meta += 1;
+        if let Some(ts) = meta.get("ts").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            let is_newest = newest_meta_ts
+                .as_ref()
+                .map(|cur| ts.as_str() > cur.as_str())
+                .unwrap_or(true);
+            if is_newest {
+                newest_meta_ts = Some(ts);
+            }
+        }
         for g in groups {
             let Some(x) = extract_features_from_meta_group(g) else {
                 continue;
             };
-            let Some(h) = g.get("holdout") else {
-                skipped_no_holdout += 1;
-                continue;
-            };
-            let Some(y) = label_from_holdout(h, cfg) else {
-                skipped_label += 1;
-                continue;
-            };
-            rows.push(DatasetRow {
-                group_id: group_id.clone(),
-                x,
-                y,
-            });
+
+            match target {
+                MlConfidenceTargetResolved::HoldoutGate => {
+                    let Some(h) = g.get("holdout") else {
+                        skipped_no_holdout += 1;
+                        continue;
+                    };
+                    let Some(y) = label_from_holdout(h, cfg) else {
+                        skipped_label += 1;
+                        continue;
+                    };
+                    rows.push(DatasetRow {
+                        group_id: group_id.clone(),
+                        x,
+                        y,
+                    });
+                }
+                MlConfidenceTargetResolved::HoldoutDatasetPass => {
+                    let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                        skipped_no_holdout += 1;
+                        continue;
+                    };
+                    if holdout_rows.len() < cfg.min_holdout_datasets {
+                        skipped_label += 1;
+                        continue;
+                    }
+                    for r in holdout_rows {
+                        let Some((ds, y)) = label_from_holdout_row(r, cfg) else {
+                            skipped_row += 1;
+                            continue;
+                        };
+                        rows.push(DatasetRow {
+                            group_id: ds,
+                            x: x.clone(),
+                            y,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -296,7 +491,15 @@ fn build_dataset_from_meta_artifacts(
         warnings.push("No matching meta artifacts found for this scope.".to_string());
     }
     if rows.is_empty() {
-        warnings.push("No labeled rows found (need meta artifacts with holdout results).".to_string());
+        let msg = match target {
+            MlConfidenceTargetResolved::HoldoutGate => {
+                "No labeled rows found (need meta artifacts with holdout aggregates)."
+            }
+            MlConfidenceTargetResolved::HoldoutDatasetPass => {
+                "No labeled rows found (need meta artifacts with holdout_rows enabled)."
+            }
+        };
+        warnings.push(msg.to_string());
     }
     if skipped_kind > 0 {
         warnings.push(format!("Skipped {skipped_kind} non-meta JSON file(s)."));
@@ -320,8 +523,21 @@ fn build_dataset_from_meta_artifacts(
             cfg.min_holdout_datasets
         ));
     }
+    if skipped_row > 0 {
+        warnings.push(format!(
+            "Skipped {skipped_row} holdout row(s) missing required fields."
+        ));
+    }
 
-    (rows, warnings)
+    (
+        rows,
+        DatasetBuildSummary {
+            used_meta,
+            newest_meta_ts,
+            target,
+        },
+        warnings,
+    )
 }
 
 fn sigmoid(z: f64) -> f64 {
@@ -331,6 +547,11 @@ fn sigmoid(z: f64) -> f64 {
         let ez = z.exp();
         ez / (1.0 + ez)
     }
+}
+
+fn logit(p: f64) -> f64 {
+    let pp = p.clamp(1e-15, 1.0 - 1e-15);
+    (pp / (1.0 - pp)).ln()
 }
 
 fn fnv1a64(s: &str) -> u64 {
@@ -473,6 +694,50 @@ fn brier_score(ps: &[f64], ys: &[f64]) -> f64 {
     acc / (ps.len() as f64)
 }
 
+fn baseline_brier(positives: usize, total: usize) -> f64 {
+    if total == 0 {
+        return 0.0;
+    }
+    let p = (positives as f64) / (total as f64);
+    p * (1.0 - p)
+}
+
+fn fit_platt_scaling_from_probs(ps: &[f64], ys: &[f64]) -> Option<MlConfidenceCalibration> {
+    if ps.is_empty() || ps.len() != ys.len() {
+        return None;
+    }
+    let pos = ys.iter().filter(|&&y| y > 0.5).count();
+    let neg = ys.len().saturating_sub(pos);
+    if pos == 0 || neg == 0 {
+        return None;
+    }
+    let mut xs: Vec<Vec<f64>> = Vec::with_capacity(ps.len());
+    for &p in ps {
+        xs.push(vec![logit(p)]);
+    }
+    let ys2: Vec<f64> = ys.to_vec();
+
+    // Lightweight 1D logistic regression (Platt scaling). Very small l2 to keep it stable.
+    let (w, b, _) = fit_logistic_regression(&xs, &ys2, 1e-6, 0.2, 200);
+    let a = w.first().copied().unwrap_or(1.0);
+    if !a.is_finite() || !b.is_finite() || a <= 0.0 {
+        return None;
+    }
+    Some(MlConfidenceCalibration {
+        method: "platt_logit".to_string(),
+        a,
+        b,
+    })
+}
+
+fn apply_calibration(p_raw: f64, cal: &MlConfidenceCalibration) -> f64 {
+    if cal.method != "platt_logit" {
+        return p_raw.clamp(0.0, 1.0);
+    }
+    let z = cal.a * logit(p_raw) + cal.b;
+    sigmoid(z)
+}
+
 fn auc_roc(ps: &[f64], ys: &[f64]) -> Option<f64> {
     if ps.is_empty() || ps.len() != ys.len() {
         return None;
@@ -561,7 +826,24 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         timeframe,
     };
 
-    let (rows, mut warnings) = build_dataset_from_meta_artifacts(&scope, meta_artifacts, &cfg.label);
+    let target = match cfg.target {
+        MlConfidenceTarget::HoldoutGate => MlConfidenceTargetResolved::HoldoutGate,
+        MlConfidenceTarget::HoldoutDatasetPass => MlConfidenceTargetResolved::HoldoutDatasetPass,
+        MlConfidenceTarget::Auto => {
+            if scope_has_holdout_rows(&scope, meta_artifacts, &cfg.label) {
+                MlConfidenceTargetResolved::HoldoutDatasetPass
+            } else {
+                MlConfidenceTargetResolved::HoldoutGate
+            }
+        }
+    };
+
+    let (rows, build, mut warnings) =
+        build_dataset_from_meta_artifacts(&scope, meta_artifacts, &cfg.label, target);
+    let target_used = match build.target {
+        MlConfidenceTargetResolved::HoldoutGate => MlConfidenceTarget::HoldoutGate,
+        MlConfidenceTargetResolved::HoldoutDatasetPass => MlConfidenceTarget::HoldoutDatasetPass,
+    };
 
     let n = rows.len();
     if n < 25 {
@@ -579,10 +861,14 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
 
     let xs_raw: Vec<Vec<f64>> = rows.iter().map(|r| r.x.clone()).collect();
     let ys: Vec<f64> = rows.iter().map(|r| r.y).collect();
+    let base_brier = baseline_brier(positives, n);
 
-    // CV metrics (out-of-fold) using group_id hashing to avoid leakage across meta runs.
+    // CV metrics (out-of-fold) using `group_id` hashing to avoid leakage.
+    // - Gate mode uses meta run `ts` as the group id.
+    // - Dataset mode uses holdout `dataset` as the group id (stronger generalization check).
     let mut cv_auc: Option<f64> = None;
     let mut cv_brier: Option<f64> = None;
+    let mut cv_brier_cal: Option<f64> = None;
     let mut cv_ps: Vec<f64> = Vec::new();
     let mut cv_ys: Vec<f64> = Vec::new();
     let mut cv_warnings: Vec<String> = Vec::new();
@@ -644,15 +930,45 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
             cv_ys.extend(test_y);
         }
 
+        if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
+            cv_brier = Some(brier_score(&cv_ps, &cv_ys));
+        }
         if let Some(auc) = auc_roc(&cv_ps, &cv_ys) {
             cv_auc = Some(auc);
-            cv_brier = Some(brier_score(&cv_ps, &cv_ys));
         } else {
             cv_warnings.push("CV AUC unavailable (need both classes in predictions).".to_string());
         }
     } else {
         cv_warnings.push("CV skipped (need at least 2 unique meta runs).".to_string());
     }
+
+    let calibration = if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
+        if let Some(cal) = fit_platt_scaling_from_probs(&cv_ps, &cv_ys) {
+            let ps_cal: Vec<f64> = cv_ps
+                .iter()
+                .copied()
+                .map(|p| apply_calibration(p, &cal))
+                .collect();
+            let b_cal = brier_score(&ps_cal, &cv_ys);
+            cv_brier_cal = Some(b_cal);
+
+            if let Some(b_raw) = cv_brier {
+                if b_cal <= b_raw {
+                    Some(cal)
+                } else {
+                    cv_brier_cal = None;
+                    warnings.push("Calibration skipped (did not improve CV Brier score).".to_string());
+                    None
+                }
+            } else {
+                Some(cal)
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     warnings.extend(cv_warnings);
 
@@ -669,15 +985,43 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
 
     let train_auc = auc_roc(&train_ps, &ys).unwrap_or(0.0);
     let train_brier = brier_score(&train_ps, &ys);
+    let train_brier_cal = calibration
+        .as_ref()
+        .map(|cal| {
+            let ps_cal: Vec<f64> = train_ps.iter().copied().map(|p| apply_calibration(p, cal)).collect();
+            brier_score(&ps_cal, &ys)
+        });
 
-    let calib = if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
-        calibration_bins(&cv_ps, &cv_ys, 10)
+    let calib_bins = if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
+        if let Some(cal) = calibration.as_ref() {
+            let ps_cal: Vec<f64> = cv_ps.iter().copied().map(|p| apply_calibration(p, cal)).collect();
+            calibration_bins(&ps_cal, &cv_ys, 10)
+        } else {
+            calibration_bins(&cv_ps, &cv_ys, 10)
+        }
     } else {
-        calibration_bins(&train_ps, &ys, 10)
+        if let Some(cal) = calibration.as_ref() {
+            let ps_cal: Vec<f64> = train_ps.iter().copied().map(|p| apply_calibration(p, cal)).collect();
+            calibration_bins(&ps_cal, &ys, 10)
+        } else {
+            calibration_bins(&train_ps, &ys, 10)
+        }
     };
 
+    let eval_auc = cv_auc.unwrap_or(train_auc);
+    let eval_brier = cv_brier_cal.or(cv_brier).unwrap_or(train_brier);
+    let mut healthy = true;
+    if eval_auc < 0.55 {
+        healthy = false;
+        warnings.push("Model health: AUC is low; treat ML confidence as untrustworthy.".to_string());
+    }
+    if eval_brier > base_brier {
+        healthy = false;
+        warnings.push("Model health: Brier score worse than baseline; treat ML confidence as untrustworthy.".to_string());
+    }
+
     let model = MlConfidenceModel {
-        version: 1,
+        version: 3,
         scope: scope.clone(),
         feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
         mean: scaler.mean,
@@ -685,17 +1029,44 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         weights,
         bias,
         label: cfg.label,
+        calibration: calibration.clone(),
+        meta: Some(MlConfidenceModelMeta {
+            trained_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
+            trained_rows: n,
+            trained_positives: positives,
+            trained_negatives: negatives,
+            target: target_used.clone(),
+            meta_artifacts_used: Some(build.used_meta),
+            newest_meta_ts_used: build.newest_meta_ts.clone(),
+            cv_auc,
+            cv_brier,
+            cv_brier_calibrated: cv_brier_cal,
+            baseline_brier: base_brier,
+            healthy,
+            warnings: warnings.clone(),
+        }),
     };
 
     let metrics = MlConfidenceTrainMetrics {
         rows: n,
         positives,
         negatives,
+        target: target_used,
         train_auc,
         train_brier,
+        baseline_brier: base_brier,
+        train_brier_calibrated: train_brier_cal,
         cv_auc,
         cv_brier,
-        calibration: calib,
+        cv_brier_calibrated: cv_brier_cal,
+        healthy,
+        meta_artifacts_used: Some(build.used_meta),
+        newest_meta_ts_used: build.newest_meta_ts,
+        calibration: calib_bins,
         warnings,
     };
 
@@ -718,7 +1089,12 @@ pub fn predict_ml_confidence_for_group(model: &MlConfidenceModel, group: &Value)
         let x = (x0[j] - model.mean[j]) / model.std[j];
         z += model.weights[j] * x;
     }
-    Some(sigmoid(z))
+    let p_raw = sigmoid(z);
+    if let Some(cal) = model.calibration.as_ref() {
+        Some(apply_calibration(p_raw, cal))
+    } else {
+        Some(p_raw)
+    }
 }
 
 #[cfg(test)]
@@ -835,6 +1211,89 @@ mod tests {
             "robust_score_median": -0.05,
             "max_dd_p90": 0.6,
             "cross_score_median": -0.1,
+            "meta_score": -0.2
+        });
+
+        let p_good = predict_ml_confidence_for_group(&model, &good_g).unwrap();
+        let p_bad = predict_ml_confidence_for_group(&model, &bad_g).unwrap();
+        assert!(p_good > p_bad);
+    }
+
+    #[test]
+    fn trains_from_holdout_rows_dataset_labels() {
+        // Build multiple groups with different feature strength. "Good" groups have more passing
+        // holdout datasets; "bad" groups have fewer.
+        let mk_group = |good: bool, gid: usize| {
+            let mut rows = Vec::new();
+            for ds in 0..50usize {
+                let pass = if good { ds % 5 != 0 } else { ds % 5 == 0 };
+                rows.push(json!({
+                    "dataset": format!("DS{ds:03}"),
+                    "score_median": if pass { 0.20 } else { -0.10 },
+                    "score_p10": if pass { 0.10 } else { -0.20 },
+                    "sharpe_median": if pass { 1.0 } else { -0.5 },
+                    "max_dd_worst": if pass { 0.25 } else { 0.60 },
+                    "pnl_median": if pass { 1.0 } else { -1.0 },
+                    "pass": pass
+                }));
+            }
+            json!({
+                "samples": 40,
+                "pass_rate": if good { 0.8 } else { 0.2 },
+                "robust_score_p10": if good { 0.2 } else { -0.1 },
+                "robust_score_median": if good { 0.25 } else { -0.05 },
+                "max_dd_p90": if good { 0.20 } else { 0.60 },
+                "cross_score_median": if good { 0.10 } else { -0.05 },
+                "meta_score": if good { 0.3 } else { -0.2 },
+                "key": format!("G{gid}"),
+                "holdout_rows": rows
+            })
+        };
+
+        let mut groups = Vec::new();
+        for i in 0..6usize {
+            let good = i < 3;
+            groups.push(mk_group(good, i));
+        }
+
+        let meta = json!({
+            "kind": "vectorbt_meta_selection",
+            "ts": "2026-01-29T12:00:00Z",
+            "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
+            "res": { "strategy_kind": "CompositeMo", "timeframe": "1m", "groups": groups }
+        });
+
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let mut cfg = MlConfidenceTrainConfig::default();
+        cfg.target = MlConfidenceTarget::HoldoutDatasetPass;
+        cfg.label.min_holdout_datasets = 1;
+        cfg.label.min_holdout_score_p10 = 0.0;
+
+        let (model, metrics) =
+            train_ml_confidence_model_from_meta_artifacts(scope, &[meta], cfg).unwrap();
+
+        assert_eq!(metrics.target, MlConfidenceTarget::HoldoutDatasetPass);
+        assert!(metrics.rows >= 6 * 50);
+
+        let good_g = json!({
+            "samples": 40,
+            "pass_rate": 0.8,
+            "robust_score_p10": 0.2,
+            "robust_score_median": 0.25,
+            "max_dd_p90": 0.20,
+            "cross_score_median": 0.10,
+            "meta_score": 0.3
+        });
+        let bad_g = json!({
+            "samples": 40,
+            "pass_rate": 0.2,
+            "robust_score_p10": -0.1,
+            "robust_score_median": -0.05,
+            "max_dd_p90": 0.60,
+            "cross_score_median": -0.05,
             "meta_score": -0.2
         });
 

@@ -160,8 +160,8 @@ fn now_utc_ms() -> i64 {
     dur.as_millis() as i64
 }
 
-pub fn polygon_cache_dir(app_local_data_dir: &Path) -> PathBuf {
-    app_local_data_dir.join("polygon_cache")
+pub fn polygon_cache_dir(data_root_dir: &Path) -> PathBuf {
+    data_root_dir.join("polygon_cache")
 }
 
 fn settings_path(cache_dir: &Path) -> PathBuf {

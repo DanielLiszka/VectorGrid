@@ -108,6 +108,33 @@
               <div class="actions" id="sampleCsvs" style="margin-top: 0;"></div>
             </div>
 
+            <div style="margin-top: 0.9rem;">
+              <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Market data storage</div>
+              <label for="marketDataDir">Market data folder (optional)</label>
+              <div class="rowAuto">
+                <input id="marketDataDir" type="text" placeholder="Default (AppData)" />
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnBrowseMarketDataDir">Browse…</button>
+                  <button id="btnSetMarketDataDir">Set</button>
+                </div>
+              </div>
+
+              <div class="row" style="margin-top: 0.35rem;">
+                <div>
+                  <label title="Move the existing Polygon cache to the new folder (may take a while for large datasets).">
+                    <input id="marketDataMoveExisting" type="checkbox" checked />
+                    Move existing Polygon cache
+                  </label>
+                </div>
+                <div class="actions" style="margin-top: 0;">
+                  <button id="btnResetMarketDataDir">Reset</button>
+                  <button id="btnOpenMarketDataDir">Open</button>
+                </div>
+              </div>
+
+              <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="marketDataDirHint">—</div>
+            </div>
+
             <div class="row" style="margin-top: 0.65rem;">
               <div>
                 <div class="muted">Loaded data id</div>
@@ -1468,6 +1495,10 @@
                   <label for="metaEvalHoldout" style="margin: 0;">Evaluate holdout (recommended)</label>
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <input id="metaSaveHoldoutRows" type="checkbox" />
+                  <label for="metaSaveHoldoutRows" style="margin: 0;">Save per-dataset holdout rows (for ML)</label>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
                   <label for="metaHoldoutMode" style="margin: 0;">Mode</label>
                   <select id="metaHoldoutMode">
                     <option value="light" selected>Light (fast)</option>
@@ -1482,6 +1513,25 @@
                   <option value="2" selected>2 (recommended)</option>
                   <option value="3">3 (more robust)</option>
                 </select>
+              </div>
+            </div>
+
+            <div class="row3" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="metaHoldoutEvalTopN">Holdout eval top N (0 = all)</label>
+                <input id="metaHoldoutEvalTopN" type="number" min="0" step="1" value="0" />
+              </div>
+              <div>
+                <label for="metaHoldoutEvalRankBy">Holdout rank by</label>
+                <select id="metaHoldoutEvalRankBy">
+                  <option value="auto" selected>Auto (ML if healthy else meta)</option>
+                  <option value="meta">Meta score</option>
+                  <option value="ml">ML confidence</option>
+                </select>
+              </div>
+              <div>
+                <label for="metaHoldoutExploreN">Explore N (optional)</label>
+                <input id="metaHoldoutExploreN" type="number" min="0" step="1" value="0" />
               </div>
             </div>
 

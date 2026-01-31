@@ -146,6 +146,21 @@ pub struct MetaSelectionRequest {
     pub holdout_tag: Option<String>,
     #[serde(default = "default_eval_holdout")]
     pub eval_holdout: bool,
+    /// When holdout evaluation is enabled, optionally persist per-dataset holdout rows
+    /// (useful for future ML improvements, but increases meta JSON size).
+    #[serde(default)]
+    pub save_holdout_rows: bool,
+    /// Optionally evaluate holdout for only a subset of meta groups (leave others unlabeled).
+    /// When `None` or `0`, evaluate all groups (default / backwards compatible).
+    #[serde(default)]
+    pub holdout_eval_top_n: Option<usize>,
+    /// Optional exploration budget: evaluate additional groups with highest uncertainty
+    /// (only relevant when the ranker is ML-based).
+    #[serde(default)]
+    pub holdout_eval_explore_n: usize,
+    /// Ranking strategy used when selecting holdout groups: "auto" (default), "meta", or "ml".
+    #[serde(default)]
+    pub holdout_eval_rank_by: Option<String>,
     #[serde(default)]
     pub holdout_mode: MetaHoldoutMode,
     #[serde(default)]
@@ -203,6 +218,19 @@ pub struct MetaCandidateAggregate {
     pub meta_score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holdout_rows: Vec<HoldoutDatasetRow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HoldoutDatasetRow {
+    pub dataset: String,
+    pub score_median: f64,
+    pub score_p10: f64,
+    pub sharpe_median: f64,
+    pub max_dd_worst: f64,
+    pub pnl_median: f64,
+    pub pass: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -386,6 +414,7 @@ pub fn meta_select_from_artifacts(
             cross_score_median,
             meta_score,
             holdout: None,
+            holdout_rows: Vec::new(),
         });
     }
 
@@ -904,6 +933,10 @@ mod tests {
             required_tag: Some("u1".to_string()),
             holdout_tag: None,
             eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
             holdout_mode: MetaHoldoutMode::Light,
             holdout_validation: None,
             top_k: 10,
@@ -946,6 +979,10 @@ mod tests {
             required_tag: None,
             holdout_tag: None,
             eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
             holdout_mode: MetaHoldoutMode::Light,
             holdout_validation: None,
             top_k: 10,
@@ -1016,6 +1053,10 @@ mod tests {
             required_tag: Some("u1".to_string()),
             holdout_tag: None,
             eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
             holdout_mode: MetaHoldoutMode::Light,
             holdout_validation: None,
             top_k: 10,

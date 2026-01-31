@@ -1643,15 +1643,46 @@ async function refreshMetaMlStatus() {
     const st = await invoke("ml_confidence_model_status", { scope });
     LAST_META_ML_STATUS = st;
 
+    const availMeta = Number(st?.available_meta_artifacts || 0);
+    const availRows = Number(st?.available_labeled_rows || 0);
+    const newestAvail = st?.newest_meta_ts_available ? String(st.newest_meta_ts_available) : "";
+    const stale = !!st?.stale;
+    const retrain = !!st?.retrain_recommended;
+    const retrainReason = st?.retrain_reason ? String(st.retrain_reason) : "";
+
     if (!st?.exists) {
-      setMetaMlStatus(`No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}.`);
+      setMetaMlStatus(
+        `No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}. · available: meta=${availMeta}, rows=${availRows}${newestAvail ? ` · newest=${newestAvail}` : ""}`
+      );
     } else if (st?.error) {
-      setMetaMlStatus(`ML model exists but failed to load: ${String(st.error || "")}`);
+      setMetaMlStatus(
+        `ML model exists but failed to load: ${String(st.error || "")} · available: meta=${availMeta}, rows=${availRows}${newestAvail ? ` · newest=${newestAvail}` : ""}`
+      );
     } else {
       const label = st?.model?.label || {};
       const dd = label?.max_holdout_max_dd_p90 != null ? ` dd_p90<=${fmtFixed(label.max_holdout_max_dd_p90, 3)}` : "";
+      const mm = st?.model?.meta || null;
+      const healthy = mm?.healthy === false ? "UNHEALTHY" : (mm?.healthy === true ? "healthy" : "unknown");
+      const target = mm?.target != null ? String(mm.target) : "";
+      const trainedRows = mm?.trained_rows != null ? Number(mm.trained_rows || 0) : null;
+      const trainedAt = mm?.trained_at_ms != null ? new Date(Number(mm.trained_at_ms || 0)).toLocaleString() : "";
+      const auc = mm?.cv_auc != null ? Number(mm.cv_auc) : null;
+      const brier = mm?.cv_brier_calibrated != null ? Number(mm.cv_brier_calibrated) : (mm?.cv_brier != null ? Number(mm.cv_brier) : null);
+      const baseBrier = mm?.baseline_brier != null ? Number(mm.baseline_brier) : null;
       setMetaMlStatus(
-        `Model: ${fileBasename(st.model_path)} · bytes=${Number(st.bytes || 0)} · label: pass>=${fmtFixed(label.min_holdout_pass_rate || 0, 2)}, p10>=${fmtFixed(label.min_holdout_score_p10 || 0, 3)}, datasets>=${Number(label.min_holdout_datasets || 0)}${dd}`
+        `Model: ${fileBasename(st.model_path)} · bytes=${Number(st.bytes || 0)} · ${healthy}` +
+          (target ? ` · target=${target}` : "") +
+          (trainedRows != null ? ` · trained_rows=${trainedRows}` : "") +
+          (trainedAt ? ` · trained=${trainedAt}` : "") +
+          (auc != null ? ` · cv_auc=${fmtFixed(auc, 3)}` : "") +
+          (brier != null ? ` · cv_brier=${fmtFixed(brier, 4)}` : "") +
+          (baseBrier != null ? ` · baseline=${fmtFixed(baseBrier, 4)}` : "") +
+          ` · label: pass>=${fmtFixed(label.min_holdout_pass_rate || 0, 2)}, p10>=${fmtFixed(label.min_holdout_score_p10 || 0, 3)}, datasets>=${Number(label.min_holdout_datasets || 0)}${dd}` +
+          ` · available: meta=${availMeta}, rows=${availRows}` +
+          (newestAvail ? ` · newest=${newestAvail}` : "") +
+          (stale ? " · stale" : " · fresh") +
+          (retrain ? " · retrain recommended" : "") +
+          (retrainReason ? ` · ${retrainReason}` : "")
       );
     }
   } catch (e) {
@@ -1670,15 +1701,21 @@ async function trainMetaMlModel(opts) {
 
   if (!opts?.silent) setStatus("Training ML confidence model...", "muted");
   const resp = await invoke("train_ml_confidence_model", { scope, cfg: null });
-  LAST_META_ML_STATUS = { exists: true, model_path: resp.model_path, bytes: resp.model_bytes, model: resp.model, error: null };
+  await refreshMetaMlStatus();
 
   const m = resp.metrics || {};
   const auc = (m.cv_auc != null ? m.cv_auc : m.train_auc);
-  const brier = (m.cv_brier != null ? m.cv_brier : m.train_brier);
+  const brier = (m.cv_brier_calibrated != null ? m.cv_brier_calibrated
+    : (m.cv_brier != null ? m.cv_brier
+      : (m.train_brier_calibrated != null ? m.train_brier_calibrated : m.train_brier)));
+  const baseBrier = (m.baseline_brier != null ? m.baseline_brier : null);
+  const health = (m.healthy === false ? "UNHEALTHY" : "healthy");
   const warnN = Array.isArray(m.warnings) ? m.warnings.length : 0;
 
   setMetaMlStatus(
-    `Trained: rows=${Number(m.rows || 0)} · pos=${Number(m.positives || 0)} · neg=${Number(m.negatives || 0)} · auc=${fmtFixed(Number(auc || 0), 3)} · brier=${fmtFixed(Number(brier || 0), 4)}${warnN ? ` · warnings=${warnN}` : ""}`
+    `Trained: rows=${Number(m.rows || 0)} · pos=${Number(m.positives || 0)} · neg=${Number(m.negatives || 0)} · ${health} · auc=${fmtFixed(Number(auc || 0), 3)} · brier=${fmtFixed(Number(brier || 0), 4)}` +
+      (baseBrier != null ? ` · baseline=${fmtFixed(Number(baseBrier || 0), 4)}` : "") +
+      `${warnN ? ` · warnings=${warnN}` : ""}`
   );
 
   if (!opts?.silent) {
@@ -1722,7 +1759,8 @@ async function applyMetaMlConfidenceToLastMeta(opts) {
     groups[i].ml_confidence = typeof c === "number" && Number.isFinite(c) ? c : null;
   }
 
-  if (metaMlEnabled()) sortMetaGroupsByMl(groups);
+  const healthy = LAST_META_ML_STATUS?.model?.meta?.healthy;
+  if (metaMlEnabled() && healthy !== false) sortMetaGroupsByMl(groups);
   renderMetaSelection(resp);
 
   const ws = Array.isArray(out?.warnings) ? out.warnings : [];
@@ -1739,8 +1777,10 @@ async function maybeAutoTrainAndApplyMetaMl(opts) {
   if (!metaMlAutopilotEnabled()) return;
 
   await refreshMetaMlStatus();
-  const hasModel = !!LAST_META_ML_STATUS?.exists && !LAST_META_ML_STATUS?.error;
-  if (!hasModel) {
+  const st0 = LAST_META_ML_STATUS;
+  const hasModel = !!st0?.exists && !st0?.error;
+  const needsRetrain = !!st0?.retrain_recommended;
+  if (!hasModel || needsRetrain) {
     try {
       await trainMetaMlModel({ silent: true });
     } catch (e) {
@@ -1775,6 +1815,9 @@ async function runMetaSelection(opts) {
   const eval_holdout = isComposite && !!$("metaEvalHoldout")?.checked;
   const holdoutModeRaw = String($("metaHoldoutMode")?.value || "light").trim() || "light";
   const holdout_mode = eval_holdout ? holdoutModeRaw : "light";
+  const holdoutEvalTopN = Math.max(0, Math.floor(Number($("metaHoldoutEvalTopN")?.value || 0)));
+  const holdoutExploreN = Math.max(0, Math.floor(Number($("metaHoldoutExploreN")?.value || 0)));
+  const holdoutRankBy = String($("metaHoldoutEvalRankBy")?.value || "auto").trim() || "auto";
   const repsRaw = Math.floor(Number($("metaHoldoutReps")?.value || 2));
   const cluster_representatives = Math.min(3, Math.max(1, Number.isFinite(repsRaw) ? repsRaw : 2));
   const grouping_mode = String($("metaGroupingMode")?.value || "clustered").trim() || "clustered";
@@ -1813,6 +1856,10 @@ async function runMetaSelection(opts) {
     eval_holdout,
     holdout_mode,
     holdout_validation,
+    save_holdout_rows: eval_holdout && !!$("metaSaveHoldoutRows")?.checked,
+    holdout_eval_top_n: eval_holdout && holdoutEvalTopN > 0 ? holdoutEvalTopN : null,
+    holdout_eval_explore_n: eval_holdout ? holdoutExploreN : 0,
+    holdout_eval_rank_by: eval_holdout ? holdoutRankBy : null,
     grouping_mode,
     cluster_config: { int_bucket, float_bucket },
     cluster_representatives,
@@ -2351,6 +2398,12 @@ function setRunning(running) {
     "csvPath",
     "btnBrowseCsv",
     "btnPolygonOpen",
+    "marketDataDir",
+    "btnBrowseMarketDataDir",
+    "btnSetMarketDataDir",
+    "btnResetMarketDataDir",
+    "btnOpenMarketDataDir",
+    "marketDataMoveExisting",
     "btnLoad",
     "btnClear",
     "polygonApiKey",
@@ -2952,6 +3005,127 @@ async function initSampleCsvs() {
   } catch {
     wrap.style.display = "none";
   }
+}
+
+let MARKET_DATA_DIR_INFO = null;
+let MARKET_DATA_DIR_UI_INIT = false;
+
+async function refreshMarketDataDirUi(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+
+  const input = $("marketDataDir");
+  const hint = $("marketDataDirHint");
+
+  try {
+    const info = await invoke("get_market_data_dir_info");
+    const defaultRoot = String(info?.default_root_dir || "").trim();
+    const configuredRoot = String(info?.configured_root_dir || "").trim();
+    const effectiveRoot = String(info?.effective_root_dir || "").trim();
+    const polygonCacheDir = String(info?.polygon_cache_dir || "").trim();
+
+    MARKET_DATA_DIR_INFO = { defaultRoot, configuredRoot, effectiveRoot, polygonCacheDir };
+
+    if (input && !opts?.preserveInput) {
+      input.value = configuredRoot || "";
+    }
+
+    if (hint) {
+      if (configuredRoot) {
+        hint.textContent = `Using custom root: ${configuredRoot} · Polygon cache: ${polygonCacheDir || "—"}`;
+      } else {
+        hint.textContent = `Using default root: ${defaultRoot || "—"} · Polygon cache: ${polygonCacheDir || "—"}`;
+      }
+    }
+  } catch (e) {
+    if (hint) hint.textContent = `Market data folder: ${String(e)}`;
+  }
+}
+
+async function initMarketDataDirUi() {
+  if (MARKET_DATA_DIR_UI_INIT) return;
+  MARKET_DATA_DIR_UI_INIT = true;
+
+  $("btnBrowseMarketDataDir")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+
+    try {
+      const picked = await invoke("pick_folder");
+      const path = String(picked || "").trim();
+      if (!path) return;
+      if ($("marketDataDir")) $("marketDataDir").value = path;
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+
+  $("btnSetMarketDataDir")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+
+    try {
+      const dir = String($("marketDataDir")?.value || "").trim();
+      const moveExisting = !!$("marketDataMoveExisting")?.checked;
+      if (!dir) {
+        setStatus("Enter a market data folder path first.", "danger");
+        return;
+      }
+
+      setStatus("Updating market data folder...", "muted");
+      await invoke("set_market_data_dir", { dir, moveExisting });
+      await refreshMarketDataDirUi({ preserveInput: false });
+      await initPolygonUi();
+      setStatus("Updated market data folder.", "ok");
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+
+  $("btnResetMarketDataDir")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+
+    try {
+      setStatus("Resetting market data folder...", "muted");
+      await invoke("clear_market_data_dir");
+      await refreshMarketDataDirUi({ preserveInput: false });
+      await initPolygonUi();
+      setStatus("Reset market data folder to default.", "ok");
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+
+  $("btnOpenMarketDataDir")?.addEventListener("click", async () => {
+    if (RUNNING) return;
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+
+    try {
+      if (!MARKET_DATA_DIR_INFO) await refreshMarketDataDirUi({ preserveInput: true });
+      const path = String(MARKET_DATA_DIR_INFO?.polygonCacheDir || MARKET_DATA_DIR_INFO?.effectiveRoot || "").trim();
+      if (!path) {
+        setStatus("No market data folder path available.", "muted");
+        return;
+      }
+
+      try {
+        await invoke("open_path", { path });
+        setStatus(`Opened: ${path}`, "ok");
+      } catch {
+        await invoke("reveal_path", { path });
+        setStatus(`Revealed: ${path}`, "ok");
+      }
+    } catch (e) {
+      setStatus(String(e), "danger");
+    }
+  });
+
+  await refreshMarketDataDirUi({ preserveInput: false });
 }
 
 function ymdLocal(d) {
@@ -11287,6 +11461,7 @@ initMaSelects();
 initProgressListener();
 initDistributedProgressListener();
 initSampleCsvs();
+initMarketDataDirUi();
 initPolygonUi();
 initCrossTickerList();
 initBatchDatasetList();
