@@ -1,3 +1,5 @@
+import { CandlestickSeries, createChart, createSeriesMarkers } from "./vendor/lightweight-charts.standalone.production.mjs";
+
 const $ = (id) => document.getElementById(id);
 
 function tauriInvoke() {
@@ -20,6 +22,25 @@ const CONTROLS_TAB_KEY = "vectorbt_controls_tab_v1";
 const RESULTS_TAB_KEY = "vectorbt_results_tab_v1";
 let CONTROLS_TABS = null;
 let RESULTS_TABS = null;
+
+const WORKFLOW_TAB_KEY = "vta_workflow_tab_v1";
+const WORKFLOW_STATE_KEY = "vta_workflow_state_v1";
+const WORKSPACE_TAB_KEY = "vta_workspace_tab_v1";
+const WORKFLOW_STEP_KEY = "vta_workflow_step_v1";
+const WORKFLOW_ADVANCED_KEY = "vta_workflow_advanced_v1";
+const AGGREGATE_TAB_KEY = "vta_aggregate_tab_v1";
+let CURRENT_WORKFLOW = "";
+let WORKFLOW_STATE = {};
+let WORKFLOW_STATE_SAVE_SEQ = 0;
+let WORKFLOW_SYNC_SUPPRESS = false;
+let WORKFLOW_UI = null;
+let CURRENT_WORKSPACE = "";
+let CURRENT_WORKFLOW_STEP = "data";
+let CURRENT_AGGREGATE_TAB = "meta";
+let WORKSPACE_NAV_UI = null;
+let WORKFLOW_STEP_NAV_UI = null;
+let WORKSPACE_OVERRIDE = "";
+let WORKSPACE_SYNC_SUPPRESS = false;
 
 const CONTROLS_WIDTH_KEY = "vta_controls_width_v1";
 const CONTROLS_COLLAPSED_KEY = "vta_controls_collapsed_v1";
@@ -78,6 +99,7 @@ function applyThemePref(pref, opts) {
         const root2 = document.documentElement;
         if (String(root2.dataset.themePref || "").trim() !== "system") return;
         root2.dataset.theme = resolvedThemeFromPref("system");
+        refreshDrillTvChartTheme();
       };
       try {
         if (THEME_MQL.addEventListener) THEME_MQL.addEventListener("change", THEME_MQL_HANDLER);
@@ -86,7 +108,9 @@ function applyThemePref(pref, opts) {
     }
   }
 
+  refreshDrillTvChartTheme();
   scheduleApplyWindowEffect();
+  syncSettingsWorkspaceUi();
 }
 
 let WINDOW_EFFECT_APPLY_SEQ = 0;
@@ -165,6 +189,7 @@ function applyWindowEffectPref(pref, opts) {
   }
 
   applyWindowEffectNative(chosen);
+  syncSettingsWorkspaceUi();
 }
 
 function initWindowEffectUi() {
@@ -213,6 +238,178 @@ function initThemeUi() {
     applyThemePref(String(sel.value || "").trim(), { persist: true });
   });
   applyThemePref(pref, { persist: false });
+}
+
+function syncSettingsWorkspaceUi() {
+  const themeMain = $("themeSelect");
+  const themeSettings = $("settingsThemeSelect");
+  if (themeMain && themeSettings && String(themeSettings.value || "") !== String(themeMain.value || "")) {
+    themeSettings.value = String(themeMain.value || "");
+  }
+
+  const effectMain = $("effectSelect");
+  const effectSettings = $("settingsEffectSelect");
+  if (effectMain && effectSettings) {
+    const byValue = {};
+    for (const opt of Array.from(effectMain.options || [])) byValue[String(opt.value || "").trim().toLowerCase()] = opt;
+    for (const opt of Array.from(effectSettings.options || [])) {
+      const key = String(opt.value || "").trim().toLowerCase();
+      const src = byValue[key];
+      opt.disabled = !!src?.disabled;
+    }
+    if (String(effectSettings.value || "") !== String(effectMain.value || "")) {
+      effectSettings.value = String(effectMain.value || "");
+    }
+  }
+
+  const marketDataMain = $("marketDataDir");
+  const marketDataSettings = $("settingsMarketDataDir");
+  if (
+    marketDataMain &&
+    marketDataSettings &&
+    document.activeElement !== marketDataSettings &&
+    String(marketDataSettings.value || "") !== String(marketDataMain.value || "")
+  ) {
+    marketDataSettings.value = String(marketDataMain.value || "");
+  }
+
+  const moveMain = $("marketDataMoveExisting");
+  const moveSettings = $("settingsMoveExisting");
+  if (moveMain && moveSettings) moveSettings.checked = !!moveMain.checked;
+
+  const hintMain = $("marketDataDirHint");
+  const hintSettings = $("settingsMarketDataDirHint");
+  if (hintSettings) hintSettings.textContent = String(hintMain?.textContent || "—").trim() || "—";
+
+  const wfAdv = $("settingsWorkflowAdvanced");
+  if (wfAdv) wfAdv.checked = String(document.documentElement.dataset.workflowAdvanced || "").trim() === "1";
+
+  const collapsed = $("settingsControlsCollapsed");
+  if (collapsed) collapsed.checked = isControlsCollapsed();
+
+  const running = !!RUNNING;
+  for (const id of [
+    "settingsThemeSelect",
+    "settingsEffectSelect",
+    "settingsWorkflowAdvanced",
+    "settingsControlsCollapsed",
+    "settingsMarketDataDir",
+    "settingsMoveExisting",
+    "btnSettingsBrowseMarketDataDir",
+    "btnSettingsSetMarketDataDir",
+    "btnSettingsResetMarketDataDir",
+    "btnSettingsOpenMarketDataDir",
+    "btnSettingsOpenWorkflowData",
+    "btnSettingsOpenRunsDir",
+    "btnSettingsOpenReportsDir",
+    "btnSettingsOpenPolygonModal",
+    "btnSettingsGotoLibrary",
+    "btnSettingsGotoAggregate",
+  ]) {
+    const el = $(id);
+    if (!el) continue;
+    if (id === "btnSettingsGotoLibrary" || id === "btnSettingsGotoAggregate") {
+      el.disabled = false;
+    } else {
+      el.disabled = running;
+    }
+  }
+}
+
+function initSettingsWorkspaceUi() {
+  if (!$("settingsWorkspaceCard")) return;
+
+  $("settingsThemeSelect")?.addEventListener("change", () => {
+    const v = String($("settingsThemeSelect")?.value || "").trim();
+    applyThemePref(v, { persist: true });
+  });
+
+  $("settingsEffectSelect")?.addEventListener("change", () => {
+    const v = String($("settingsEffectSelect")?.value || "").trim().toLowerCase();
+    applyWindowEffectPref(v, { persist: true });
+  });
+
+  $("settingsWorkflowAdvanced")?.addEventListener("change", () => {
+    setWorkflowAdvancedEnabled(!!$("settingsWorkflowAdvanced")?.checked, { persist: true });
+  });
+
+  $("settingsControlsCollapsed")?.addEventListener("change", () => {
+    setControlsCollapsed(!!$("settingsControlsCollapsed")?.checked, { persist: true });
+  });
+
+  $("settingsMarketDataDir")?.addEventListener("input", () => {
+    const target = $("marketDataDir");
+    if (!target) return;
+    target.value = String($("settingsMarketDataDir")?.value || "");
+  });
+
+  $("settingsMoveExisting")?.addEventListener("change", () => {
+    const target = $("marketDataMoveExisting");
+    if (!target) return;
+    target.checked = !!$("settingsMoveExisting")?.checked;
+  });
+
+  $("btnSettingsBrowseMarketDataDir")?.addEventListener("click", () => {
+    const src = $("btnBrowseMarketDataDir");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsSetMarketDataDir")?.addEventListener("click", () => {
+    const target = $("marketDataDir");
+    if (target) target.value = String($("settingsMarketDataDir")?.value || "").trim();
+    const move = $("marketDataMoveExisting");
+    if (move) move.checked = !!$("settingsMoveExisting")?.checked;
+    const src = $("btnSetMarketDataDir");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsResetMarketDataDir")?.addEventListener("click", () => {
+    const src = $("btnResetMarketDataDir");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsOpenMarketDataDir")?.addEventListener("click", () => {
+    const src = $("btnOpenMarketDataDir");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsOpenWorkflowData")?.addEventListener("click", () => {
+    setWorkspace("workflow", { save: true, focus: false, step: "data" });
+    const details = $("dataStorageOptions");
+    if (details && typeof details.open === "boolean") details.open = true;
+  });
+
+  $("btnSettingsOpenRunsDir")?.addEventListener("click", () => {
+    const src = $("btnOpenRunsDir");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsOpenReportsDir")?.addEventListener("click", () => {
+    const src = $("btnOpenReportsDir");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsOpenPolygonModal")?.addEventListener("click", () => {
+    const src = $("btnPolygonOpen");
+    if (src && !src.disabled) src.click();
+  });
+
+  $("btnSettingsGotoLibrary")?.addEventListener("click", () => {
+    setWorkspace("library", { save: true, focus: true });
+  });
+
+  $("btnSettingsGotoAggregate")?.addEventListener("click", () => {
+    setWorkspace("aggregate", { save: true, focus: true });
+    setAggregateTab("meta", { persist: true });
+  });
+
+  $("themeSelect")?.addEventListener("change", syncSettingsWorkspaceUi);
+  $("effectSelect")?.addEventListener("change", syncSettingsWorkspaceUi);
+  $("marketDataDir")?.addEventListener("input", syncSettingsWorkspaceUi);
+  $("marketDataDir")?.addEventListener("change", syncSettingsWorkspaceUi);
+  $("marketDataMoveExisting")?.addEventListener("change", syncSettingsWorkspaceUi);
+
+  syncSettingsWorkspaceUi();
 }
 
 function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
@@ -322,6 +519,760 @@ function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
   return { set: setActive, get: getActive, tabs: tabNames };
 }
 
+const WORKFLOW_TABS = ["data", "optimize", "validate", "analyze", "history", "settings"];
+const WORKFLOW_TAB_SET = new Set(WORKFLOW_TABS);
+const WORKFLOW_DEFAULTS = {
+  data: { controls: "data", results: "overview" },
+  optimize: { controls: "opt", results: "overview" },
+  validate: { controls: "opt", results: "validate" },
+  analyze: { controls: "opt", results: "drill" },
+  history: { controls: "data", results: "history" },
+  settings: { controls: "advanced", results: "meta" },
+};
+const WORKFLOW_ALLOWED = {
+  data: { controls: ["data"], results: ["overview"] },
+  optimize: { controls: ["opt", "strategy", "advanced"], results: ["overview", "top", "pareto", "heatmap"] },
+  validate: { controls: ["opt"], results: ["validate"] },
+  analyze: { controls: ["opt"], results: ["overview", "top", "pareto", "drill", "heatmap"] },
+  history: { controls: ["data"], results: ["history"] },
+  settings: { controls: ["advanced", "distributed"], results: ["meta", "debug"] },
+};
+const WORKFLOW_SUBTITLES = {
+  data: "Load a dataset (CSV or Polygon) and select the optimization timeframe.",
+  optimize: "Configure strategy + search space, then run an optimization.",
+  validate: "Run robustness checks on the current run’s candidates.",
+  analyze: "Inspect results via drilldown curves and heatmaps.",
+  history: "Review, compare, and rerun saved optimizations.",
+  settings: "Advanced tools (distributed runs, meta selection, debug).",
+};
+
+const WORKSPACE_TABS = ["workflow", "library", "aggregate", "pro", "settings"];
+const WORKSPACE_TAB_SET = new Set(WORKSPACE_TABS);
+const WORKFLOW_STEPS = ["data", "optimize", "validate", "analyze"];
+const WORKFLOW_STEP_SET = new Set(WORKFLOW_STEPS);
+const AGGREGATE_TABS = ["meta", "batch", "saved", "compare"];
+const AGGREGATE_TAB_SET = new Set(AGGREGATE_TABS);
+const WORKFLOW_STEP_SUBTITLES = {
+  data: "Data source: load CSV or Polygon candles, then confirm timeframe.",
+  optimize: "Strategy setup: configure ranges, backend, and run optimization.",
+  validate: "Validation: run robustness checks on the selected optimization.",
+  analyze: "Summary: inspect top results, Pareto, drilldown, and heatmap.",
+};
+const WORKSPACE_SUBTITLES = {
+  workflow: "Guided pipeline for data -> optimize -> validate -> summary.",
+  library: "Browse, compare, and rerun saved optimization artifacts.",
+  aggregate: "Aggregate many runs into robust shortlist recommendations.",
+  pro: "Distributed compute, advanced controls, and debug output.",
+  settings: "Application preferences and storage configuration.",
+};
+
+const TAB_LABELS = {
+  controls: {
+    data: "Data",
+    opt: "Optimize",
+    strategy: "Strategy",
+    advanced: "Advanced",
+    distributed: "Distributed",
+  },
+  results: {
+    overview: "Overview",
+    top: "Top",
+    pareto: "Pareto",
+    validate: "Validate",
+    drill: "Drilldown",
+    heatmap: "Heatmap",
+    history: "History",
+    meta: "Meta",
+    debug: "Debug",
+  },
+};
+
+function normalizeWorkflowTab(v) {
+  const x = String(v || "").trim().toLowerCase();
+  return WORKFLOW_TAB_SET.has(x) ? x : "";
+}
+
+function normalizeWorkspaceTab(v) {
+  const x = String(v || "").trim().toLowerCase();
+  return WORKSPACE_TAB_SET.has(x) ? x : "";
+}
+
+function normalizeWorkflowStep(v) {
+  const x = String(v || "").trim().toLowerCase();
+  return WORKFLOW_STEP_SET.has(x) ? x : "";
+}
+
+function normalizeAggregateTab(v) {
+  const x = String(v || "").trim().toLowerCase();
+  return AGGREGATE_TAB_SET.has(x) ? x : "";
+}
+
+function workflowStepFromWorkflow(workflow) {
+  const wf = normalizeWorkflowTab(workflow);
+  return normalizeWorkflowStep(wf) || "data";
+}
+
+function workspaceFromWorkflowState(workflow) {
+  const wf = normalizeWorkflowTab(workflow) || "data";
+  if (wf === "history") return "library";
+  if (wf === "settings") {
+    const c = String(CONTROLS_TABS?.get?.() || "").trim();
+    const r = String(RESULTS_TABS?.get?.() || "").trim();
+    if (c === "distributed" || r === "debug") return "pro";
+    return "aggregate";
+  }
+  if (WORKSPACE_OVERRIDE === "settings" && wf === "data") return "settings";
+  return "workflow";
+}
+
+function loadWorkflowState() {
+  try {
+    const raw = localStorage.getItem(WORKFLOW_STATE_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return {};
+
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const wf = normalizeWorkflowTab(k);
+      if (!wf || !v || typeof v !== "object") continue;
+      const controls = String(v.controls || "").trim();
+      const results = String(v.results || "").trim();
+      out[wf] = { controls, results };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function scheduleSaveWorkflowState() {
+  WORKFLOW_STATE_SAVE_SEQ = (WORKFLOW_STATE_SAVE_SEQ + 1) >>> 0;
+  const seq = WORKFLOW_STATE_SAVE_SEQ;
+  setTimeout(() => {
+    if (seq !== WORKFLOW_STATE_SAVE_SEQ) return;
+    try {
+      localStorage.setItem(WORKFLOW_STATE_KEY, JSON.stringify(WORKFLOW_STATE));
+    } catch {}
+  }, 80);
+}
+
+function recordWorkflowState(workflow) {
+  const wf = normalizeWorkflowTab(workflow);
+  if (!wf) return;
+  WORKFLOW_STATE[wf] = {
+    controls: CONTROLS_TABS?.get?.() || "",
+    results: RESULTS_TABS?.get?.() || "",
+  };
+  scheduleSaveWorkflowState();
+}
+
+function inferWorkflowFromTabs(controlsTab, resultsTab) {
+  const c = String(controlsTab || "").trim();
+  const r = String(resultsTab || "").trim();
+
+  if (r === "validate") return "validate";
+  if (r === "history") return "history";
+  if (r === "meta" || r === "debug") return "settings";
+  if (r === "drill") return "analyze";
+  if (c === "data" && (!r || r === "overview")) return "data";
+  return "optimize";
+}
+
+function updateWorkflowBarUi(workflow) {
+  const wf = normalizeWorkflowTab(workflow);
+  if (!wf || !WORKFLOW_UI) return;
+
+  const { tabs, btnBy } = WORKFLOW_UI;
+  for (const t of tabs) {
+    const btn = btnBy[t];
+    if (!btn) continue;
+    const isActive = t === wf;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    btn.tabIndex = isActive ? 0 : -1;
+  }
+}
+
+function updateWorkspaceBarUi(workspace) {
+  const ws = normalizeWorkspaceTab(workspace);
+  if (!ws || !WORKSPACE_NAV_UI) return;
+  const { tabs, btnBy } = WORKSPACE_NAV_UI;
+  for (const t of tabs) {
+    const btn = btnBy[t];
+    if (!btn) continue;
+    const isActive = t === ws;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    btn.tabIndex = isActive ? 0 : -1;
+  }
+}
+
+function updateWorkflowStepBarUi(step) {
+  const st = normalizeWorkflowStep(step) || "data";
+  if (!WORKFLOW_STEP_NAV_UI) return;
+  const { tabs, btnBy } = WORKFLOW_STEP_NAV_UI;
+  for (const t of tabs) {
+    const btn = btnBy[t];
+    if (!btn) continue;
+    const isActive = t === st;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    btn.tabIndex = isActive ? 0 : -1;
+  }
+}
+
+function updateWorkspaceContextStrip() {
+  const datasetEl = $("workspaceCtxDataset");
+  if (!datasetEl) return;
+
+  const timeframeEl = $("workspaceCtxTimeframe");
+  const strategyEl = $("workspaceCtxStrategy");
+  const backendEl = $("workspaceCtxBackend");
+  const statusEl = $("workspaceCtxStatus");
+
+  const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+  const meta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+  const csvPath = String($("csvPath")?.value || "").trim();
+
+  const dataset =
+    String(ctx.label || "").trim() ||
+    String(ctx.symbol || "").trim() ||
+    (csvPath ? (fileBasename(csvPath) || csvPath) : "");
+  datasetEl.textContent = dataset || "—";
+
+  const tf = String(ctx.timeframe || meta?.timeframe || "").trim();
+  if (timeframeEl) timeframeEl.textContent = tf || "—";
+
+  const kind = CURRENT_RUN?.req ? kindFromReq(CURRENT_RUN.req) : strategyKind();
+  const kindLabel = kind === "CompositeCpu" ? "Composite CPU" : (kind === "CompositeMo" ? "Composite MO" : "Double MA");
+  if (strategyEl) strategyEl.textContent = kindLabel || "—";
+
+  const backendFromRun = String(CURRENT_RUN?.res?.backend_used || "").trim();
+  const backendFromReq = String(CURRENT_RUN?.req?.backend?.backend || "").trim();
+  const backendFromUi = String($("backend")?.value || "").trim();
+  const backend = kind === "DoubleMa"
+    ? (backendFromRun || backendFromReq || backendFromUi || "CpuOnly")
+    : "CpuOnly";
+  if (backendEl) backendEl.textContent = backend || "—";
+
+  if (statusEl) {
+    const statusText = String($("status")?.textContent || "").trim();
+    statusEl.textContent = statusText || "Ready.";
+  }
+}
+
+function updateWorkflowAdvancedToggleUi() {
+  const btn = $("btnToggleWorkflowAdvanced");
+  if (!btn) return;
+  const enabled = String(document.documentElement.dataset.workflowAdvanced || "").trim() === "1";
+  btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+  btn.textContent = enabled ? "Hide advanced controls" : "Show advanced controls";
+}
+
+function setWorkflowAdvancedEnabled(enabled, opts) {
+  const on = !!enabled;
+  const persist = opts?.persist !== false;
+  document.documentElement.dataset.workflowAdvanced = on ? "1" : "";
+  if (persist) {
+    try {
+      if (on) localStorage.setItem(WORKFLOW_ADVANCED_KEY, "1");
+      else localStorage.removeItem(WORKFLOW_ADVANCED_KEY);
+    } catch {}
+  }
+  updateWorkflowAdvancedToggleUi();
+
+  if (!on && normalizeWorkspaceTab(CURRENT_WORKSPACE) === "workflow") {
+    const cur = String(CONTROLS_TABS?.get?.() || "").trim();
+    if (cur === "strategy" || cur === "advanced") CONTROLS_TABS?.set("opt", { save: true, focus: false });
+  }
+  syncSettingsWorkspaceUi();
+}
+
+function initWorkflowAdvancedToggle() {
+  let on = false;
+  try { on = String(localStorage.getItem(WORKFLOW_ADVANCED_KEY) || "").trim() === "1"; } catch {}
+  setWorkflowAdvancedEnabled(on, { persist: false });
+  $("btnToggleWorkflowAdvanced")?.addEventListener("click", () => {
+    const cur = String(document.documentElement.dataset.workflowAdvanced || "").trim() === "1";
+    setWorkflowAdvancedEnabled(!cur, { persist: true });
+  });
+}
+
+function setAggregateTab(tab, opts) {
+  const t = normalizeAggregateTab(tab) || "meta";
+  const persist = opts?.persist !== false;
+  const bar = $("aggregateTabBar");
+  const buttons = bar ? Array.from(bar.querySelectorAll("button[data-aggregate-tab]")) : [];
+
+  CURRENT_AGGREGATE_TAB = t;
+  document.documentElement.dataset.aggregateTab = t;
+
+  for (const btn of buttons) {
+    const bt = normalizeAggregateTab(btn.dataset.aggregateTab);
+    const active = bt === t;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.tabIndex = active ? 0 : -1;
+  }
+
+  const batchWrap = $("batchWrap");
+  const metaSection = $("aggregateMetaSection");
+  const savedWrap = $("metaSavedWrap");
+  const compareWrap = $("metaCompareWrap");
+
+  if (batchWrap) {
+    batchWrap.style.display = t === "batch" ? "" : "none";
+    if (t === "batch") batchWrap.open = true;
+  }
+
+  if (metaSection) {
+    if (t === "batch") {
+      metaSection.style.display = "none";
+    } else {
+      metaSection.style.display = "";
+      const children = Array.from(metaSection.children || []);
+      for (const child of children) {
+        if (child === savedWrap || child === compareWrap) continue;
+        child.style.display = t === "meta" ? "" : "none";
+      }
+    }
+  }
+
+  if (savedWrap) {
+    savedWrap.style.display = t === "saved" ? "" : "none";
+    if (t === "saved") savedWrap.open = true;
+  }
+  if (compareWrap) {
+    compareWrap.style.display = t === "compare" ? "" : "none";
+    if (t === "compare") compareWrap.open = true;
+  }
+
+  if (persist) {
+    try { localStorage.setItem(AGGREGATE_TAB_KEY, t); } catch {}
+  }
+}
+
+function initAggregateTabUi() {
+  const bar = $("aggregateTabBar");
+  if (!bar) return;
+  const buttons = Array.from(bar.querySelectorAll("button[data-aggregate-tab]"));
+  const tabs = [];
+  const btnBy = {};
+  for (const btn of buttons) {
+    const t = normalizeAggregateTab(btn.dataset.aggregateTab);
+    if (!t) continue;
+    tabs.push(t);
+    btnBy[t] = btn;
+  }
+  if (!tabs.length) return;
+
+  bar.setAttribute("role", "tablist");
+  for (const t of tabs) {
+    const btn = btnBy[t];
+    if (!btn) continue;
+    btn.setAttribute("role", "tab");
+    btn.addEventListener("click", () => setAggregateTab(t, { persist: true }));
+    btn.addEventListener("keydown", (e) => {
+      const key = e.key;
+      if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+      e.preventDefault();
+      const idx = tabs.indexOf(t);
+      if (idx < 0) return;
+      let next = idx;
+      if (key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+      else if (key === "ArrowRight") next = (idx + 1) % tabs.length;
+      else if (key === "Home") next = 0;
+      else if (key === "End") next = tabs.length - 1;
+      const nt = tabs[next];
+      setAggregateTab(nt, { persist: true });
+      try { btnBy[nt]?.focus(); } catch {}
+    });
+  }
+
+  let saved = "";
+  try { saved = normalizeAggregateTab(localStorage.getItem(AGGREGATE_TAB_KEY)); } catch {}
+  setAggregateTab(saved || "meta", { persist: false });
+}
+
+function syncWorkspaceFromWorkflow(opts) {
+  if (WORKSPACE_SYNC_SUPPRESS) return;
+
+  const save = opts?.save !== false;
+  const wf = normalizeWorkflowTab(CURRENT_WORKFLOW) || "data";
+  const step = workflowStepFromWorkflow(wf);
+  const ws = workspaceFromWorkflowState(wf);
+
+  CURRENT_WORKFLOW_STEP = step;
+  CURRENT_WORKSPACE = ws;
+  document.documentElement.dataset.workspace = ws;
+
+  updateWorkspaceBarUi(ws);
+  updateWorkflowStepBarUi(step);
+
+  if (save) {
+    try { localStorage.setItem(WORKSPACE_TAB_KEY, ws); } catch {}
+    if (ws === "workflow") {
+      try { localStorage.setItem(WORKFLOW_STEP_KEY, step); } catch {}
+    }
+  }
+
+  if (!(ws === "settings" && wf === "data")) WORKSPACE_OVERRIDE = "";
+  updateWorkflowSubtitle(wf);
+  updateWorkspaceContextStrip();
+  if (ws === "aggregate") setAggregateTab(CURRENT_AGGREGATE_TAB, { persist: false });
+  updateWorkflowAdvancedToggleUi();
+  syncSettingsWorkspaceUi();
+}
+
+function setWorkspace(workspace, opts) {
+  const ws = normalizeWorkspaceTab(workspace) || "workflow";
+  const save = opts?.save !== false;
+  const focus = !!opts?.focus;
+  let step = normalizeWorkflowStep(opts?.step);
+
+  if (!step) {
+    if (ws === "workflow") {
+      step = normalizeWorkflowStep(CURRENT_WORKFLOW_STEP) || workflowStepFromWorkflow(CURRENT_WORKFLOW);
+      if (!step) {
+        try { step = normalizeWorkflowStep(localStorage.getItem(WORKFLOW_STEP_KEY)); } catch {}
+      }
+    } else {
+      step = workflowStepFromWorkflow(CURRENT_WORKFLOW);
+    }
+  }
+  if (!step) step = "data";
+
+  WORKSPACE_SYNC_SUPPRESS = true;
+  try {
+    if (ws === "workflow") {
+      WORKSPACE_OVERRIDE = "";
+      applyWorkflow(step, { save, focus: false, setTabs: true });
+    } else if (ws === "library") {
+      WORKSPACE_OVERRIDE = "";
+      applyWorkflow("history", { save, focus: false, setTabs: true });
+    } else if (ws === "aggregate") {
+      WORKSPACE_OVERRIDE = "";
+      applyWorkflow("settings", { save, focus: false, setTabs: true });
+      CONTROLS_TABS?.set("advanced", { save, focus: false });
+      RESULTS_TABS?.set("meta", { save, focus: false });
+    } else if (ws === "pro") {
+      WORKSPACE_OVERRIDE = "";
+      applyWorkflow("settings", { save, focus: false, setTabs: true });
+      CONTROLS_TABS?.set("distributed", { save, focus: false });
+      RESULTS_TABS?.set("debug", { save, focus: false });
+    } else if (ws === "settings") {
+      WORKSPACE_OVERRIDE = "settings";
+      applyWorkflow("data", { save, focus: false, setTabs: true });
+      CONTROLS_TABS?.set("data", { save, focus: false });
+      RESULTS_TABS?.set("overview", { save, focus: false });
+      const details = $("dataStorageOptions");
+      if (details && typeof details.open === "boolean") details.open = true;
+    }
+  } finally {
+    WORKSPACE_SYNC_SUPPRESS = false;
+  }
+
+  CURRENT_WORKFLOW_STEP = step;
+  CURRENT_WORKSPACE = ws;
+  document.documentElement.dataset.workspace = ws;
+  updateWorkspaceBarUi(ws);
+  updateWorkflowStepBarUi(step);
+
+  if (save) {
+    try { localStorage.setItem(WORKSPACE_TAB_KEY, ws); } catch {}
+    if (ws === "workflow") {
+      try { localStorage.setItem(WORKFLOW_STEP_KEY, step); } catch {}
+    }
+  }
+
+  updateWorkflowSubtitle(CURRENT_WORKFLOW || "data");
+  updateWorkspaceContextStrip();
+  if (ws === "aggregate") setAggregateTab(CURRENT_AGGREGATE_TAB, { persist: false });
+  updateWorkflowAdvancedToggleUi();
+  syncSettingsWorkspaceUi();
+
+  if (focus && WORKSPACE_NAV_UI?.btnBy?.[ws]) {
+    try { WORKSPACE_NAV_UI.btnBy[ws].focus(); } catch {}
+  }
+}
+
+function updateWorkflowSubtitle(workflow) {
+  const el = $("workflowSubtitle");
+  if (!el) return;
+
+  const wf = normalizeWorkflowTab(workflow || CURRENT_WORKFLOW) || "data";
+  const ws = normalizeWorkspaceTab(CURRENT_WORKSPACE) || workspaceFromWorkflowState(wf);
+  const step = workflowStepFromWorkflow(wf);
+
+  let base = "";
+  if (ws === "workflow") base = String(WORKFLOW_STEP_SUBTITLES[step] || WORKFLOW_SUBTITLES[wf] || "").trim();
+  else base = String(WORKSPACE_SUBTITLES[ws] || "").trim();
+
+  const c = String(CONTROLS_TABS?.get?.() || "").trim();
+  const r = String(RESULTS_TABS?.get?.() || "").trim();
+
+  let view = "";
+  if (ws === "workflow" && wf === "optimize") {
+    const cLabel = TAB_LABELS.controls?.[c] || "";
+    if (cLabel && c !== "opt") view = cLabel;
+    const rLabel = TAB_LABELS.results?.[r] || "";
+    if (rLabel && r !== "overview") view = view ? `${view} • ${rLabel}` : rLabel;
+  } else if (ws === "workflow" && wf === "analyze") {
+    const rLabel = TAB_LABELS.results?.[r] || "";
+    if (rLabel) view = rLabel;
+  } else if (ws === "aggregate" || ws === "pro") {
+    const cLabel = TAB_LABELS.controls?.[c] || "";
+    const rLabel = TAB_LABELS.results?.[r] || "";
+    if (cLabel && ws === "pro") view = cLabel;
+    if (rLabel && (ws === "pro" || r !== "meta")) view = view ? `${view} • ${rLabel}` : rLabel;
+  } else if (ws === "settings") {
+    view = "Appearance + storage";
+  }
+
+  el.textContent = base ? (view ? `${base} (${view})` : base) : (view || "—");
+}
+
+function applyWorkflow(workflow, opts) {
+  const wf = normalizeWorkflowTab(workflow) || "data";
+  const save = opts?.save !== false;
+  const focus = !!opts?.focus;
+  const setTabs = opts?.setTabs !== false;
+
+  if (wf !== CURRENT_WORKFLOW && CURRENT_WORKFLOW) recordWorkflowState(CURRENT_WORKFLOW);
+
+  CURRENT_WORKFLOW = wf;
+  document.documentElement.dataset.workflow = wf;
+  updateWorkflowBarUi(wf);
+
+  if (save) {
+    try {
+      localStorage.setItem(WORKFLOW_TAB_KEY, wf);
+    } catch {}
+  }
+
+  if (setTabs) {
+    const st = WORKFLOW_STATE?.[wf] || {};
+    const d = WORKFLOW_DEFAULTS[wf] || {};
+    const allowed = WORKFLOW_ALLOWED[wf] || {};
+    const allowedControls = allowed.controls || [];
+    const allowedResults = allowed.results || [];
+
+    const desiredControls = String(st.controls || d.controls || "").trim();
+    const desiredResults = String(st.results || d.results || "").trim();
+
+    const canSetControls = !!CONTROLS_TABS && typeof CONTROLS_TABS.set === "function";
+    const canSetResults = !!RESULTS_TABS && typeof RESULTS_TABS.set === "function";
+
+    WORKFLOW_SYNC_SUPPRESS = true;
+    try {
+      if (canSetControls) {
+        const fallback = allowedControls.includes(d.controls) ? d.controls : allowedControls[0];
+        const t0 = allowedControls.includes(desiredControls) ? desiredControls : fallback;
+        const t = (CONTROLS_TABS.tabs || []).includes(t0) ? t0 : fallback;
+        if (t) CONTROLS_TABS.set(t, { save: true, focus: false });
+      }
+      if (canSetResults) {
+        const fallback = allowedResults.includes(d.results) ? d.results : allowedResults[0];
+        const t0 = allowedResults.includes(desiredResults) ? desiredResults : fallback;
+        const t = (RESULTS_TABS.tabs || []).includes(t0) ? t0 : fallback;
+        if (t) RESULTS_TABS.set(t, { save: true, focus: false });
+      }
+    } finally {
+      WORKFLOW_SYNC_SUPPRESS = false;
+    }
+
+    recordWorkflowState(wf);
+  }
+
+  if (!WORKSPACE_SYNC_SUPPRESS) syncWorkspaceFromWorkflow({ save });
+  else {
+    CURRENT_WORKFLOW_STEP = workflowStepFromWorkflow(wf);
+    updateWorkflowStepBarUi(CURRENT_WORKFLOW_STEP);
+    updateWorkflowSubtitle(wf);
+    updateWorkspaceContextStrip();
+  }
+
+  if (focus && WORKFLOW_UI?.btnBy?.[wf]) {
+    try {
+      WORKFLOW_UI.btnBy[wf].focus();
+    } catch {}
+  }
+}
+
+function syncWorkflowToActiveTabs() {
+  if (WORKFLOW_SYNC_SUPPRESS) return;
+  const c = CONTROLS_TABS?.get?.() || "";
+  const r = RESULTS_TABS?.get?.() || "";
+  let wf = CURRENT_WORKFLOW || "";
+  if (r === "validate") wf = "validate";
+  else if (r === "history") wf = "history";
+  else if (r === "meta" || r === "debug") wf = "settings";
+  else if (r === "drill") wf = "analyze";
+  else if (String(c).trim() === "data") wf = "data";
+  else if (CURRENT_WORKFLOW === "data") wf = "optimize";
+  else if (!wf) wf = inferWorkflowFromTabs(c, r);
+
+  if (wf && wf !== CURRENT_WORKFLOW) applyWorkflow(wf, { save: true, focus: false, setTabs: false });
+  syncWorkspaceFromWorkflow({ save: true });
+  recordWorkflowState(CURRENT_WORKFLOW);
+}
+
+function wrapTabSet(tabSystem) {
+  if (!tabSystem || typeof tabSystem.set !== "function") return;
+  if (tabSystem.__vtaWorkflowWrapped) return;
+  const orig = tabSystem.set;
+  tabSystem.set = (tab, opts) => {
+    orig(tab, opts);
+    syncWorkflowToActiveTabs();
+  };
+  tabSystem.__vtaWorkflowWrapped = true;
+}
+
+function initWorkflowNav() {
+  WORKFLOW_STATE = loadWorkflowState();
+
+  const bar = $("workflowTabBar");
+  if (!bar) return;
+  const buttons = Array.from(bar.querySelectorAll("button[data-workflow]"));
+
+  const tabs = [];
+  const btnBy = {};
+  for (const btn of buttons) {
+    const wf = normalizeWorkflowTab(btn.dataset.workflow);
+    if (!wf) continue;
+    tabs.push(wf);
+    btnBy[wf] = btn;
+  }
+
+  if (!tabs.length) return;
+  WORKFLOW_UI = { bar, tabs, btnBy };
+
+  bar.setAttribute("role", "tablist");
+  for (const wf of tabs) {
+    const btn = btnBy[wf];
+    if (!btn) continue;
+    btn.setAttribute("role", "tab");
+    btn.addEventListener("click", () => applyWorkflow(wf, { save: true, focus: false, setTabs: true }));
+    btn.addEventListener("keydown", (e) => {
+      const key = e.key;
+      if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+      e.preventDefault();
+      const idx = tabs.indexOf(wf);
+      if (idx < 0) return;
+
+      let next = idx;
+      if (key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+      else if (key === "ArrowRight") next = (idx + 1) % tabs.length;
+      else if (key === "Home") next = 0;
+      else if (key === "End") next = tabs.length - 1;
+
+      const nwf = tabs[next];
+      applyWorkflow(nwf, { save: true, focus: true, setTabs: true });
+    });
+  }
+
+  wrapTabSet(CONTROLS_TABS);
+  wrapTabSet(RESULTS_TABS);
+
+  let saved = "";
+  try {
+    saved = normalizeWorkflowTab(localStorage.getItem(WORKFLOW_TAB_KEY));
+  } catch {}
+  const preset = normalizeWorkflowTab(document.documentElement.dataset.workflow);
+  const inferred = normalizeWorkflowTab(inferWorkflowFromTabs(CONTROLS_TABS?.get?.() || "", RESULTS_TABS?.get?.() || ""));
+
+  if (saved) applyWorkflow(saved, { save: false, focus: false, setTabs: true });
+  else if (preset) applyWorkflow(preset, { save: false, focus: false, setTabs: false });
+  else if (inferred) applyWorkflow(inferred, { save: false, focus: false, setTabs: false });
+  else applyWorkflow("data", { save: false, focus: false, setTabs: false });
+}
+
+function initWorkspaceNav() {
+  const workspaceBar = $("workspaceBar");
+  const workspaceButtons = workspaceBar ? Array.from(workspaceBar.querySelectorAll("button[data-workspace]")) : [];
+  const wsTabs = [];
+  const wsBtnBy = {};
+  for (const btn of workspaceButtons) {
+    const ws = normalizeWorkspaceTab(btn.dataset.workspace);
+    if (!ws) continue;
+    wsTabs.push(ws);
+    wsBtnBy[ws] = btn;
+  }
+  if (workspaceBar && wsTabs.length) {
+    WORKSPACE_NAV_UI = { bar: workspaceBar, tabs: wsTabs, btnBy: wsBtnBy };
+    workspaceBar.setAttribute("role", "tablist");
+    for (const ws of wsTabs) {
+      const btn = wsBtnBy[ws];
+      if (!btn) continue;
+      btn.setAttribute("role", "tab");
+      btn.addEventListener("click", () => setWorkspace(ws, { save: true, focus: false }));
+      btn.addEventListener("keydown", (e) => {
+        const key = e.key;
+        if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+        e.preventDefault();
+        const idx = wsTabs.indexOf(ws);
+        if (idx < 0) return;
+        let next = idx;
+        if (key === "ArrowLeft") next = (idx - 1 + wsTabs.length) % wsTabs.length;
+        else if (key === "ArrowRight") next = (idx + 1) % wsTabs.length;
+        else if (key === "Home") next = 0;
+        else if (key === "End") next = wsTabs.length - 1;
+        const nws = wsTabs[next];
+        setWorkspace(nws, { save: true, focus: true });
+      });
+    }
+  }
+
+  const stepBar = $("workflowStepBar");
+  const stepButtons = stepBar ? Array.from(stepBar.querySelectorAll("button[data-workflow-step]")) : [];
+  const stepTabs = [];
+  const stepBtnBy = {};
+  for (const btn of stepButtons) {
+    const st = normalizeWorkflowStep(btn.dataset.workflowStep);
+    if (!st) continue;
+    stepTabs.push(st);
+    stepBtnBy[st] = btn;
+  }
+  if (stepBar && stepTabs.length) {
+    WORKFLOW_STEP_NAV_UI = { bar: stepBar, tabs: stepTabs, btnBy: stepBtnBy };
+    stepBar.setAttribute("role", "tablist");
+    for (const st of stepTabs) {
+      const btn = stepBtnBy[st];
+      if (!btn) continue;
+      btn.setAttribute("role", "tab");
+      btn.addEventListener("click", () => setWorkspace("workflow", { save: true, focus: false, step: st }));
+      btn.addEventListener("keydown", (e) => {
+        const key = e.key;
+        if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+        e.preventDefault();
+        const idx = stepTabs.indexOf(st);
+        if (idx < 0) return;
+        let next = idx;
+        if (key === "ArrowLeft") next = (idx - 1 + stepTabs.length) % stepTabs.length;
+        else if (key === "ArrowRight") next = (idx + 1) % stepTabs.length;
+        else if (key === "Home") next = 0;
+        else if (key === "End") next = stepTabs.length - 1;
+        const nst = stepTabs[next];
+        setWorkspace("workflow", { save: true, focus: true, step: nst });
+      });
+    }
+  }
+
+  let savedWs = "";
+  let savedStep = "";
+  try { savedWs = normalizeWorkspaceTab(localStorage.getItem(WORKSPACE_TAB_KEY)); } catch {}
+  try { savedStep = normalizeWorkflowStep(localStorage.getItem(WORKFLOW_STEP_KEY)); } catch {}
+
+  const wf = normalizeWorkflowTab(CURRENT_WORKFLOW) || "data";
+  const inferredWs = workspaceFromWorkflowState(wf);
+  const inferredStep = workflowStepFromWorkflow(wf);
+
+  const initialWs = savedWs || inferredWs || "workflow";
+  const initialStep = savedStep || inferredStep || "data";
+  setWorkspace(initialWs, { save: false, focus: false, step: initialStep });
+}
+
 function readControlsWidthPx() {
   const raw = String(getComputedStyle(document.documentElement).getPropertyValue("--controls-w") || "").trim();
   const m = raw.match(/([0-9.]+)/);
@@ -345,6 +1296,7 @@ function setControlsCollapsed(collapsed, opts) {
     } catch {}
   }
   updateControlsToggleUi();
+  syncSettingsWorkspaceUi();
 }
 
 function applyControlsWidth(px, opts) {
@@ -449,6 +1401,10 @@ let MA_LIST = [];
 let MA_BY_ID = {};
 let RUNNING = false;
 let RUNNING_COUNT = 0;
+let OPT_PROGRESS_TIMER_ID = 0;
+let OPT_PROGRESS_STARTED_AT_MS = 0;
+let OPT_PROGRESS_ESTIMATE_LABEL = "";
+let OPT_PROGRESS_LAST_EVENT_AT_MS = 0;
 let MA_PARAMS_STATE = { fast: {}, slow: {} };
 let MA_PARAM_SWEEPS_STATE = { fast: {}, slow: {} };
 let NEXT_RUN_TAGS = null;
@@ -473,17 +1429,31 @@ let CURRENT_VALIDATION = null; // { ts, req, res }
 let SAVED_RUNS = []; // disk-backed run artifacts
 let SAVED_META = []; // disk-backed meta artifacts
 let LAST_META_RUN = null; // last meta selection response (paths + result)
+let SAVED_RUN_DETAIL_CACHE = {};
+let SAVED_RUN_DETAIL_SEQ = 0;
+let CURRENT_SAVED_RUN_DETAIL_PATH = "";
 let TOP_ROWS = [];
 let TOP_ROWS_FILTERED = [];
 let TOP_SORT = { key: "rank", dir: "asc" };
 let HEATMAP_META_BASE = "";
+let HEATMAP_STATE = null; // { binsFast, binsSlow, fastBins, slowBins, topPoints, topByCell, keyToCell, hover, selected }
+let HEATMAP_HOVER = null; // { fBin, sBin, idx, v }
+let HEATMAP_SELECTED = null; // { fBin, sBin, idx, key }
 let DRILL_SEQ = 0;
 let DRILL_SELECTED_KEY = "";
+let DRILL_PRICE_BARS_CACHE = new Map(); // data_id -> [{time,open,high,low,close,volume,from_index,to_index}]
+let DRILL_TV_CHART = null;
+let DRILL_TV_SERIES = null;
+let DRILL_TV_MARKERS = null;
+let DRILL_TV_RESIZE_OBSERVER = null;
 let STABILITY_SEQ = 0;
 let STABILITY_CACHE = new Map();
 let PARETO_POINTS_RENDERED = [];
 let CURRENT_DATA_META = null;
 let CURRENT_DATASET_CTX = null;
+let CURRENT_BASE_DATA_ID = "";
+let CURRENT_BASE_DATA_META = null;
+let CURRENT_BASE_DATASET_CTX = null;
 var COMPARE_SEQ = 0;
 var COMPARE_BASELINE_CACHE = {};
 var META_COMPARE_SEQ = 0;
@@ -533,6 +1503,7 @@ function setStatus(msg, kind) {
   el.textContent = msg;
   el.className = "statusChip mono " + (kind || "");
   maybeToastFromStatus(msg, kind);
+  updateWorkspaceContextStrip();
 }
 
 function datasetSummaryLine() {
@@ -658,6 +1629,8 @@ function renderContextChips() {
     title: "Search mode (Grid / Coarse→Fine).",
     onClick: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
   }));
+
+  updateWorkspaceContextStrip();
 }
 
 function initOverviewEmptyUi() {
@@ -668,20 +1641,22 @@ function initOverviewEmptyUi() {
     if (!action) return;
     try {
       if (action === "browse_csv") {
-        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        setWorkspace("workflow", { save: true, focus: false, step: "data" });
         $("btnBrowseCsv")?.click();
         return;
       }
       if (action === "polygon") {
-        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        setWorkspace("workflow", { save: true, focus: false, step: "data" });
         $("btnPolygonOpen")?.click();
         return;
       }
       if (action === "go_opt") {
+        setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
         CONTROLS_TABS?.set("opt", { save: true, focus: true });
         return;
       }
       if (action === "run_opt") {
+        setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
         CONTROLS_TABS?.set("opt", { save: true, focus: false });
         $("btnRun")?.click();
         return;
@@ -737,8 +1712,9 @@ function updateOverviewEmptyUi() {
     content.style.display = "none";
     title.textContent = "Working…";
     const ds = datasetSummaryLine();
+    const progressText = String($("progressMeta")?.textContent || "").trim();
     const statusText = String($("status")?.textContent || "").trim();
-    const line = statusText && statusText !== "Ready." ? statusText : "Running…";
+    const line = progressText || (statusText && statusText !== "Ready." ? statusText : "Running…");
     body.textContent = ds ? `${line} · ${ds}` : line;
     hint.textContent = "Tip: You can cancel safely; some backends may take a moment to stop.";
     primary.textContent = "Cancel";
@@ -1017,11 +1993,12 @@ function updateQuickBarUi() {
 function initQuickBarUi() {
   $("btnQaBrowseCsv")?.addEventListener("click", () => {
     if (RUNNING) return;
-    CONTROLS_TABS?.set("data", { save: true, focus: false });
+    setWorkspace("workflow", { save: true, focus: false, step: "data" });
     $("btnBrowseCsv")?.click();
   });
   $("btnQaRun")?.addEventListener("click", () => {
     if (RUNNING) return;
+    setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
     CONTROLS_TABS?.set("opt", { save: true, focus: false });
     $("btnRun")?.click();
   });
@@ -1031,6 +2008,7 @@ function initQuickBarUi() {
   });
   $("btnQaValidate")?.addEventListener("click", () => {
     if (RUNNING) return;
+    setWorkspace("workflow", { save: true, focus: false, step: "validate" });
     $("btnValidate")?.click();
   });
   $("btnQaExportCsv")?.addEventListener("click", () => {
@@ -1107,7 +2085,7 @@ function buildCommandActions() {
       keys: keyCaps("Ctrl+O"),
       enabled: () => !RUNNING,
       run: () => {
-        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        setWorkspace("workflow", { save: true, focus: false, step: "data" });
         $("btnBrowseCsv")?.click();
       },
       keywords: ["data", "load", "csv"],
@@ -1119,7 +2097,7 @@ function buildCommandActions() {
       keys: keyCaps("Ctrl+Shift+O"),
       enabled: () => !RUNNING,
       run: () => {
-        CONTROLS_TABS?.set("data", { save: true, focus: false });
+        setWorkspace("workflow", { save: true, focus: false, step: "data" });
         $("btnPolygonOpen")?.click();
       },
       keywords: ["polygon", "download", "cache"],
@@ -1131,6 +2109,7 @@ function buildCommandActions() {
       keys: keyCaps("Ctrl+Enter"),
       enabled: () => !RUNNING && hasData,
       run: () => {
+        setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
         CONTROLS_TABS?.set("opt", { save: true, focus: false });
         $("btnRun")?.click();
       },
@@ -1151,7 +2130,10 @@ function buildCommandActions() {
       desc: "Run robustness checks for Top/Pareto candidates (composite only).",
       keys: keyCaps("Ctrl+Shift+V"),
       enabled: () => !RUNNING && isComp && hasRun,
-      run: () => $("btnValidate")?.click(),
+      run: () => {
+        setWorkspace("workflow", { save: true, focus: false, step: "validate" });
+        $("btnValidate")?.click();
+      },
       keywords: ["validate", "robust", "wf", "mc", "cscv"],
     },
     {
@@ -1191,12 +2173,132 @@ function buildCommandActions() {
       keywords: ["meta", "report", "xlsx"],
     },
     {
+      id: "go_workflow_data",
+      name: "Go to: Workflow / Data Source",
+      desc: "Workflow step 1: load candles and set timeframe.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("workflow", { save: true, focus: true, step: "data" }),
+      keywords: ["nav", "workflow", "data"],
+    },
+    {
+      id: "go_workflow_optimize",
+      name: "Go to: Workflow / Strategy Setup",
+      desc: "Workflow step 2: configure and run optimization.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("workflow", { save: true, focus: true, step: "optimize" }),
+      keywords: ["nav", "workflow", "optimize", "run"],
+    },
+    {
+      id: "go_workflow_validate",
+      name: "Go to: Workflow / Validation",
+      desc: "Workflow step 3: run robustness checks.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("workflow", { save: true, focus: true, step: "validate" }),
+      keywords: ["nav", "workflow", "validate", "robust"],
+    },
+    {
+      id: "go_workflow_analyze",
+      name: "Go to: Workflow / Summary",
+      desc: "Workflow step 4: overview, drilldown, and heatmap.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("workflow", { save: true, focus: true, step: "analyze" }),
+      keywords: ["nav", "workflow", "analyze", "drilldown", "heatmap"],
+    },
+    {
+      id: "go_workflow_history",
+      name: "Go to: Run Library",
+      desc: "Browse, compare, and rerun saved optimizations.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("library", { save: true, focus: true }),
+      keywords: ["nav", "library", "history", "runs"],
+    },
+    {
+      id: "go_workflow_settings",
+      name: "Go to: Aggregate Analysis",
+      desc: "Meta selection and run aggregation workflows.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("aggregate", { save: true, focus: true }),
+      keywords: ["nav", "aggregate", "meta", "batch"],
+    },
+    {
+      id: "go_workspace_pro",
+      name: "Go to: Pro Tools",
+      desc: "Distributed compute, advanced controls, and debug.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("pro", { save: true, focus: true }),
+      keywords: ["nav", "pro", "distributed", "debug"],
+    },
+    {
+      id: "go_workspace_settings",
+      name: "Go to: Settings",
+      desc: "Theme, effects, and storage options.",
+      keys: [],
+      enabled: () => true,
+      run: () => setWorkspace("settings", { save: true, focus: true }),
+      keywords: ["nav", "settings", "theme", "storage"],
+    },
+    {
+      id: "go_aggregate_meta",
+      name: "Aggregate: Meta Selection",
+      desc: "Open Aggregate Analysis and show Meta Selection.",
+      keys: [],
+      enabled: () => true,
+      run: () => {
+        setWorkspace("aggregate", { save: true, focus: true });
+        setAggregateTab("meta", { persist: true });
+      },
+      keywords: ["aggregate", "meta", "analysis"],
+    },
+    {
+      id: "go_aggregate_batch",
+      name: "Aggregate: Batch Generation",
+      desc: "Open Aggregate Analysis and show Batch Generation.",
+      keys: [],
+      enabled: () => true,
+      run: () => {
+        setWorkspace("aggregate", { save: true, focus: true });
+        setAggregateTab("batch", { persist: true });
+      },
+      keywords: ["aggregate", "batch", "datasets"],
+    },
+    {
+      id: "go_aggregate_saved",
+      name: "Aggregate: Saved Meta",
+      desc: "Open Aggregate Analysis and show Saved Meta runs.",
+      keys: [],
+      enabled: () => true,
+      run: () => {
+        setWorkspace("aggregate", { save: true, focus: true });
+        setAggregateTab("saved", { persist: true });
+      },
+      keywords: ["aggregate", "saved", "meta", "runs"],
+    },
+    {
+      id: "go_aggregate_compare",
+      name: "Aggregate: Compare Meta",
+      desc: "Open Aggregate Analysis and show Compare Meta.",
+      keys: [],
+      enabled: () => true,
+      run: () => {
+        setWorkspace("aggregate", { save: true, focus: true });
+        setAggregateTab("compare", { persist: true });
+      },
+      keywords: ["aggregate", "compare", "meta"],
+    },
+    {
       id: "go_data",
       name: "Go to: Data tab",
       desc: "Switch to the Data tab (controls).",
       keys: [],
       enabled: () => true,
-      run: () => CONTROLS_TABS?.set("data", { save: true, focus: true }),
+      run: () => setWorkspace("workflow", { save: true, focus: true, step: "data" }),
       keywords: ["nav", "tab", "controls"],
     },
     {
@@ -1205,7 +2307,7 @@ function buildCommandActions() {
       desc: "Switch to the Optimize tab (controls).",
       keys: [],
       enabled: () => true,
-      run: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
+      run: () => setWorkspace("workflow", { save: true, focus: true, step: "optimize" }),
       keywords: ["nav", "tab", "controls"],
     },
     {
@@ -1214,7 +2316,10 @@ function buildCommandActions() {
       desc: "Switch to the Overview tab (results).",
       keys: [],
       enabled: () => true,
-      run: () => RESULTS_TABS?.set("overview", { save: true, focus: true }),
+      run: () => {
+        setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
+        RESULTS_TABS?.set("overview", { save: true, focus: true });
+      },
       keywords: ["nav", "tab", "results"],
     },
     {
@@ -1223,7 +2328,10 @@ function buildCommandActions() {
       desc: "Switch to the Top tab (results).",
       keys: [],
       enabled: () => true,
-      run: () => RESULTS_TABS?.set("top", { save: true, focus: true }),
+      run: () => {
+        setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
+        RESULTS_TABS?.set("top", { save: true, focus: true });
+      },
       keywords: ["nav", "tab", "results"],
     },
   ];
@@ -1428,7 +2536,7 @@ function initGlobalShortcuts() {
     if (mod && lower === "o" && !e.shiftKey) {
       e.preventDefault();
       if (RUNNING) return;
-      CONTROLS_TABS?.set("data", { save: true, focus: false });
+      setWorkspace("workflow", { save: true, focus: false, step: "data" });
       $("btnBrowseCsv")?.click();
       return;
     }
@@ -1436,7 +2544,7 @@ function initGlobalShortcuts() {
     if (mod && lower === "o" && e.shiftKey) {
       e.preventDefault();
       if (RUNNING) return;
-      CONTROLS_TABS?.set("data", { save: true, focus: false });
+      setWorkspace("workflow", { save: true, focus: false, step: "data" });
       $("btnPolygonOpen")?.click();
       return;
     }
@@ -1452,6 +2560,7 @@ function initGlobalShortcuts() {
       e.preventDefault();
       if (RUNNING) return;
       if (!hasLoadedData()) return;
+      setWorkspace("workflow", { save: true, focus: false, step: "optimize" });
       CONTROLS_TABS?.set("opt", { save: true, focus: false });
       $("btnRun")?.click();
       return;
@@ -1460,6 +2569,7 @@ function initGlobalShortcuts() {
     if (mod && e.shiftKey && lower === "v") {
       e.preventDefault();
       if (RUNNING) return;
+      setWorkspace("workflow", { save: true, focus: false, step: "validate" });
       $("btnValidate")?.click();
       return;
     }
@@ -1518,6 +2628,38 @@ function formatCompositeParamsCompact(params) {
     parts.push(`OTT(p=${Number(ott.period || 0)},pct=${fmtFixed(ott.percent || 0, 2)}${ott.ma_type ? `,${String(ott.ma_type || "").toUpperCase()}` : ""})`);
   }
   return parts.join(" ");
+}
+
+function updateAggregateSummaryCards() {
+  const set = (id, text) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = String(text || "—");
+  };
+
+  set("aggregateSummarySavedRuns", String(SAVED_RUNS.length));
+  set("aggregateSummarySavedMeta", String(SAVED_META.length));
+
+  const result = LAST_META_RUN?.result && typeof LAST_META_RUN.result === "object" ? LAST_META_RUN.result : null;
+  if (!result) {
+    set("aggregateSummaryLatestGroups", "—");
+    set("aggregateSummaryLatestArtifacts", "—");
+    set("aggregateSummaryLatestHoldout", "—");
+    set("aggregateSummaryLatestRuntime", "—");
+    return;
+  }
+
+  const groups = Array.isArray(result.groups) ? result.groups.length : 0;
+  const used = Number(result.artifacts_used || 0);
+  const considered = Number(result.artifacts_considered || 0);
+  const holdoutDatasets = Number(result?.holdout?.datasets || 0);
+  const holdoutSkipped = Number(result?.holdout?.skipped || 0);
+  const runtimeMs = Number(result.runtime_ms || 0);
+
+  set("aggregateSummaryLatestGroups", String(groups));
+  set("aggregateSummaryLatestArtifacts", `${used}/${considered}`);
+  set("aggregateSummaryLatestHoldout", holdoutDatasets ? `${holdoutDatasets}${holdoutSkipped ? ` (skip ${holdoutSkipped})` : ""}` : "0");
+  set("aggregateSummaryLatestRuntime", runtimeMs >= 1000 ? `${fmtFixed(runtimeMs / 1000, 2)}s` : `${runtimeMs}ms`);
 }
 
 function renderMetaSelection(resp) {
@@ -1585,6 +2727,8 @@ function renderMetaSelection(resp) {
   const metaPath = String(resp?.meta_json_path || "").trim();
   if (reportBtn) reportBtn.disabled = RUNNING || !reportPath;
   if (revealBtn) revealBtn.disabled = RUNNING || (!reportPath && !metaPath);
+  LAST_META_RUN = resp || null;
+  updateAggregateSummaryCards();
 }
 
 let LAST_META_ML_STATUS = null;
@@ -2282,13 +3426,17 @@ function renderDataMeta(meta) {
   const fieldsEl = $("dataFields");
   const hintEl = $("dataFieldHint");
   renderContextChips();
-  if (!fieldsEl) return;
+  if (!fieldsEl) {
+    updateDataTimeframeUi();
+    return;
+  }
 
   fieldsEl.innerHTML = "";
   if (hintEl) hintEl.textContent = "";
 
   if (!meta || typeof meta !== "object") {
     fieldsEl.textContent = "—";
+    updateDataTimeframeUi();
     return;
   }
 
@@ -2312,6 +3460,105 @@ function renderDataMeta(meta) {
   if (!meta.has_high || !meta.has_low) msgs.push("No high/low → FRAMA + some sources disabled.");
   if (!meta.has_open) msgs.push("No open → open/ohlc4 disabled.");
   if (hintEl) hintEl.textContent = msgs.join(" · ");
+
+  updateDataTimeframeUi();
+}
+
+function updateDataTimeframeUi() {
+  const sel = $("dataTimeframe");
+  const btn = $("btnApplyTimeframe");
+  const hint = $("dataTimeframeHint");
+  if (!sel || !hint) return;
+
+  const baseId = String(CURRENT_BASE_DATA_ID || "").trim();
+  const hasBase = !!baseId && baseId !== "—" && baseId !== "-";
+
+  if (!hasBase) {
+    sel.value = "";
+    sel.disabled = true;
+    if (btn) btn.disabled = true;
+    hint.textContent = "Load a dataset to enable timeframe resampling.";
+    return;
+  }
+
+  sel.disabled = RUNNING;
+  if (btn) btn.disabled = RUNNING;
+
+  const baseMeta = CURRENT_BASE_DATA_META && typeof CURRENT_BASE_DATA_META === "object" ? CURRENT_BASE_DATA_META : null;
+  const baseCtx = CURRENT_BASE_DATASET_CTX && typeof CURRENT_BASE_DATASET_CTX === "object" ? CURRENT_BASE_DATASET_CTX : {};
+  const curMeta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+  const curCtx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
+
+  const baseTf = String(baseCtx.timeframe || baseMeta?.timeframe || "").trim();
+  const curTf = String(curCtx.timeframe || curMeta?.timeframe || "").trim();
+
+  const hasCurOpt = curTf && Array.from(sel.options || []).some((o) => String(o.value || "") === curTf);
+  if (hasCurOpt && baseTf && curTf && curTf !== baseTf) sel.value = curTf;
+  else sel.value = "";
+
+  const baseLabel = baseTf || "unknown";
+  const effLabel = curTf || baseTf || "unknown";
+  const derived = baseTf && curTf && curTf !== baseTf;
+  hint.textContent = derived
+    ? `Using ${effLabel} derived from base ${baseLabel} (no extra downloads). Periods are in candles.`
+    : `Base timeframe: ${baseLabel}. Choose a higher timeframe to derive candles (no extra downloads). Periods are in candles.`;
+}
+
+async function applySelectedDataTimeframe() {
+  if (RUNNING) return;
+
+  const baseId = String(CURRENT_BASE_DATA_ID || "").trim();
+  if (!baseId || baseId === "—" || baseId === "-") {
+    throw new Error("Load a dataset first (missing base data id).");
+  }
+
+  const sel = $("dataTimeframe");
+  if (!sel) return;
+  const target = String(sel.value || "").trim();
+
+  const baseMeta = CURRENT_BASE_DATA_META && typeof CURRENT_BASE_DATA_META === "object" ? CURRENT_BASE_DATA_META : null;
+  const baseCtx = CURRENT_BASE_DATASET_CTX && typeof CURRENT_BASE_DATASET_CTX === "object" ? CURRENT_BASE_DATASET_CTX : {};
+  const baseTf = String(baseCtx.timeframe || baseMeta?.timeframe || "").trim();
+
+  // Revert to the raw loaded dataset (no backend call needed).
+  if (!target || (baseTf && target === baseTf)) {
+    CURRENT_DATA_META = baseMeta;
+    CURRENT_DATASET_CTX = { ...baseCtx };
+    $("dataId").textContent = baseId;
+    renderDataMeta(baseMeta);
+    applyMaSourceConstraints();
+    applyBackendMaConstraints();
+    updateOverviewEmptyUi();
+    setStatus(baseTf ? `Using base timeframe (${baseTf}).` : "Using base timeframe.", "muted");
+    return;
+  }
+
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  }
+
+  setRunning(true);
+  try {
+    setStatus(`Resampling to ${target}...`, "muted");
+    const resp = await invoke("resample_price_data", { baseDataId: baseId, timeframe: target });
+    const id = String(resp?.id || "").trim();
+    const meta = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
+    const cacheHit = !!resp?.cache_hit;
+
+    CURRENT_DATA_META = meta;
+    CURRENT_DATASET_CTX = { ...baseCtx, timeframe: target };
+    $("dataId").textContent = id || "—";
+    renderDataMeta(meta);
+    applyMaSourceConstraints();
+    applyBackendMaConstraints();
+    updateOverviewEmptyUi();
+
+    setStatus(cacheHit ? `Using ${target} (cached).` : `Using ${target}.`, "ok");
+    $("output").textContent = pretty(resp);
+  } finally {
+    setRunning(false);
+  }
 }
 
 function applyMaSourceConstraints() {
@@ -2398,6 +3645,8 @@ function setRunning(running) {
     "csvPath",
     "btnBrowseCsv",
     "btnPolygonOpen",
+    "dataTimeframe",
+    "btnApplyTimeframe",
     "marketDataDir",
     "btnBrowseMarketDataDir",
     "btnSetMarketDataDir",
@@ -2491,6 +3740,48 @@ function setRunning(running) {
     "moPrescanObjectives",
     "moPrescanMode",
     "moPrescanMaPairs",
+    "moHtAmpLow",
+    "moHtAmpHigh",
+    "moHtAmpStep",
+    "moHtDevLow",
+    "moHtDevHigh",
+    "moHtDevStep",
+    "moHtAtrLow",
+    "moHtAtrHigh",
+    "moHtAtrStep",
+    "moMaczFastLow",
+    "moMaczFastHigh",
+    "moMaczFastStep",
+    "moMaczSlowLow",
+    "moMaczSlowHigh",
+    "moMaczSlowStep",
+    "moMaczSignalLow",
+    "moMaczSignalHigh",
+    "moMaczSignalStep",
+    "moMaczLengthZLow",
+    "moMaczLengthZHigh",
+    "moMaczLengthZStep",
+    "moMaczLengthStdevLow",
+    "moMaczLengthStdevHigh",
+    "moMaczLengthStdevStep",
+    "moMaczGammaLow",
+    "moMaczGammaHigh",
+    "moMaczGammaStep",
+    "moMaczALow",
+    "moMaczAHigh",
+    "moMaczAStep",
+    "moMaczBLow",
+    "moMaczBHigh",
+    "moMaczBStep",
+    "moMaczUseLagMode",
+    "moMaczUseVolumeMode",
+    "moOttPeriodLow",
+    "moOttPeriodHigh",
+    "moOttPeriodStep",
+    "moOttPercentLow",
+    "moOttPercentHigh",
+    "moOttPercentStep",
+    "moOttMaTypes",
     "moSearchSpace",
     "btnMoResetSearchSpace",
     "valCandidates",
@@ -2627,6 +3918,7 @@ function setRunning(running) {
   syncSavedRunSelectionUi();
   syncMetaSavedSelectionUi();
   syncBatchSummaryButtons();
+  syncSettingsWorkspaceUi();
 }
 
 function maSupportsKernel(id) {
@@ -2759,6 +4051,7 @@ function clearProgressUi() {
   const fill = $("progressFill");
   const meta = $("progressMeta");
   if (fill) fill.style.width = "0%";
+  if (fill) fill.classList.remove("indeterminate");
   if (meta) meta.textContent = "";
   if (wrap) wrap.style.display = "none";
 }
@@ -2800,6 +4093,172 @@ const PHASE_GROUP_LABELS = {
 
 var PROGRESS_ETA_BY_PHASE = {};
 var PROGRESS_EVENT_SEQ = 0;
+const OPT_PROGRESS_EVENT_STALE_MS = 2600;
+
+function extractSearchSpaceIntRange(searchSpace, name) {
+  const space = searchSpace && typeof searchSpace === "object" ? searchSpace : null;
+  const params = Array.isArray(space?.params) ? space.params : [];
+  const target = String(name || "").trim().toLowerCase();
+  if (!target) return null;
+  for (const p0 of params) {
+    const p = p0 && typeof p0 === "object" ? p0 : null;
+    if (!p) continue;
+    const n = String(p.name || "").trim().toLowerCase();
+    if (n !== target) continue;
+    const d = p.domain && typeof p.domain === "object" ? p.domain : null;
+    const r = d?.IntRange && typeof d.IntRange === "object" ? d.IntRange : null;
+    if (!r) return null;
+    const low = Number(r.low);
+    const high = Number(r.high);
+    const step = Number(r.step ?? 1);
+    if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(step)) return null;
+    return { low, high, step };
+  }
+  return null;
+}
+
+function countParamSweepVariants(sweeps) {
+  const sw = sweeps && typeof sweeps === "object" ? sweeps : null;
+  if (!sw) return 1;
+  let total = 1;
+  for (const v of Object.values(sw)) {
+    const arr = Array.isArray(v) ? v : null;
+    if (!arr || arr.length < 3) continue;
+    total *= countF64RangeValues(arr[0], arr[1], arr[2]);
+    if (total > 1_000_000) return 1_000_000;
+  }
+  return Math.max(1, Math.floor(total));
+}
+
+function estimateOptimizationWorkLabel(req) {
+  const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa").trim();
+  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+
+  if (kind === "CompositeMo") {
+    const sampler = req?.sampler && typeof req.sampler === "object" ? req.sampler : null;
+    const cfg = sampler?.config && typeof sampler.config === "object" ? sampler.config : null;
+    const samplerKind = String(sampler?.sampler || "Nsga2").trim() || "Nsga2";
+    let evals = 0;
+    if (samplerKind === "Nsga2") {
+      const pop = Math.max(0, Math.floor(Number(cfg?.population_size ?? cfg?.population ?? 0)));
+      const gens = Math.max(0, Math.floor(Number(cfg?.generations ?? 0)));
+      evals = pop > 0 ? (pop * (gens + 1)) : 0;
+    } else {
+      evals = Math.max(0, Math.floor(Number(cfg?.trials ?? 0)));
+    }
+
+    const parts = [];
+    if (evals > 0) parts.push(`${samplerKind} ~${formatCompactNumber(evals)} evals`);
+    else parts.push(`${samplerKind} sampler`);
+
+    const gp = req?.gpu_prescan && typeof req.gpu_prescan === "object" ? req.gpu_prescan : null;
+    if (gp) {
+      const fastR = extractSearchSpaceIntRange(req?.search_space, "fast_len");
+      const slowR = extractSearchSpaceIntRange(req?.search_space, "slow_len");
+      const fast = fastR ? expandRangeU16Like(fastR.low, fastR.high, fastR.step) : [];
+      const slow = slowR ? expandRangeU16Like(slowR.low, slowR.high, slowR.step) : [];
+      const pairs = countPairsFastLtSlow(fast, slow);
+      const maPairsN = Array.isArray(gp.ma_pairs) && gp.ma_pairs.length > 0 ? gp.ma_pairs.length : 1;
+      const prescanPairs = pairs > 0 ? (pairs * maPairsN) : 0;
+      if (prescanPairs > 0) parts.push(`pre-scan ~${formatCompactNumber(prescanPairs)} pairs`);
+      else parts.push("pre-scan enabled");
+    }
+
+    return parts.join(" · ");
+  }
+
+  const fastR = Array.isArray(req?.fast_range) ? req.fast_range : [];
+  const slowR = Array.isArray(req?.slow_range) ? req.slow_range : [];
+  if (fastR.length < 3 || slowR.length < 3) return "";
+
+  const fast = expandRangeU16Like(fastR[0], fastR[1], fastR[2]);
+  const slow = expandRangeU16Like(slowR[0], slowR[1], slowR[2]);
+  const pairs = countPairsFastLtSlow(fast, slow);
+  if (pairs <= 0) return "";
+
+  const fastTypeN = Array.isArray(req?.fast_ma_types) ? Math.max(1, req.fast_ma_types.length) : 1;
+  const slowTypeN = Array.isArray(req?.slow_ma_types) ? Math.max(1, req.slow_ma_types.length) : 1;
+  const fastSweepN = countParamSweepVariants(req?.fast_ma_param_sweeps);
+  const slowSweepN = countParamSweepVariants(req?.slow_ma_param_sweeps);
+  const variants = Math.max(1, fastTypeN * slowTypeN * fastSweepN * slowSweepN);
+  const combos = Math.max(0, Math.floor(pairs * variants));
+  if (combos > pairs) return `~${formatCompactNumber(combos)} combos (${formatCompactNumber(pairs)} MA pairs)`;
+  return `~${formatCompactNumber(pairs)} MA pairs`;
+}
+
+function optimizationProgressPhase(req) {
+  const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa").trim();
+  if (kindRaw === "CompositeCpu") return "composite_cpu";
+  if (kindRaw === "CompositeMo") {
+    const sampler = String(req?.sampler?.sampler || "Nsga2").trim();
+    if (sampler === "Random") return "composite_mo_random";
+    if (sampler === "Tpe") return "composite_mo_tpe";
+    if (sampler === "Qmc") return "composite_mo_qmc";
+    return "composite_mo_nsga2";
+  }
+
+  const backend = String(req?.backend?.backend || "CpuOnly").trim();
+  if (backend === "GpuKernel") return "gpu-kernel";
+  if (backend === "GpuOnly") return "gpu-sweep";
+  return "cpu";
+}
+
+function setProgressIndeterminateUi(phase, suffixText) {
+  const wrap = $("progressWrap");
+  const fill = $("progressFill");
+  const meta = $("progressMeta");
+  if (!wrap || !fill) return;
+
+  const ph = String(phase || "").trim();
+  const label = phaseLabel(ph);
+  const suffix = String(suffixText || "").trim();
+
+  wrap.style.display = "block";
+  fill.classList.add("indeterminate");
+
+  if (meta) {
+    meta.textContent = suffix ? `${label} · ${suffix}` : label;
+  }
+  if (RUNNING) updateOverviewEmptyUi();
+}
+
+function stopOptimizationProgressHeartbeat() {
+  if (OPT_PROGRESS_TIMER_ID) {
+    clearInterval(OPT_PROGRESS_TIMER_ID);
+    OPT_PROGRESS_TIMER_ID = 0;
+  }
+  OPT_PROGRESS_STARTED_AT_MS = 0;
+  OPT_PROGRESS_ESTIMATE_LABEL = "";
+  OPT_PROGRESS_LAST_EVENT_AT_MS = 0;
+}
+
+function startOptimizationProgressHeartbeat(req) {
+  stopOptimizationProgressHeartbeat();
+  OPT_PROGRESS_STARTED_AT_MS = performance.now();
+  OPT_PROGRESS_ESTIMATE_LABEL = estimateOptimizationWorkLabel(req);
+  OPT_PROGRESS_LAST_EVENT_AT_MS = 0;
+  const phase = optimizationProgressPhase(req);
+
+  const tick = () => {
+    if (!RUNNING) return;
+    const now = performance.now();
+    const isRecentEvent = OPT_PROGRESS_LAST_EVENT_AT_MS > 0 && (now - OPT_PROGRESS_LAST_EVENT_AT_MS) <= OPT_PROGRESS_EVENT_STALE_MS;
+    if (isRecentEvent) return;
+
+    const elapsed = formatDurationSeconds((now - OPT_PROGRESS_STARTED_AT_MS) / 1000);
+    const suffixParts = [];
+    if (OPT_PROGRESS_ESTIMATE_LABEL) suffixParts.push(OPT_PROGRESS_ESTIMATE_LABEL);
+    if (elapsed) suffixParts.push(`elapsed ${elapsed}`);
+    const suffix = suffixParts.join(" · ");
+    setProgressIndeterminateUi(phase, suffix);
+
+    const statusSuffix = suffix ? ` · ${suffix}` : "";
+    setStatus(`Optimization running${statusSuffix}`, "muted");
+  };
+
+  tick();
+  OPT_PROGRESS_TIMER_ID = window.setInterval(tick, 1000);
+}
 
 function phaseGroup(phase) {
   const ph = String(phase || "").trim();
@@ -2924,6 +4383,7 @@ function setProgressUi(processed, total, phase, suffixText) {
   const label = phaseLabel(ph);
 
   wrap.style.display = "block";
+  fill.classList.remove("indeterminate");
 
   let frac = tot > 0 ? proc / tot : 0;
   if (!Number.isFinite(frac)) frac = 0;
@@ -2937,6 +4397,7 @@ function setProgressUi(processed, total, phase, suffixText) {
     const suffix2 = suffix ? ` · ${suffix}` : "";
     meta.textContent = `${label} ${proc}/${tot}${pct}${suffix2}`.trim();
   }
+  if (RUNNING) updateOverviewEmptyUi();
 }
 
 async function initProgressListener() {
@@ -2946,6 +4407,7 @@ async function initProgressListener() {
     await listen("double_ma_progress", (event) => {
       if (!RUNNING) return;
       PROGRESS_EVENT_SEQ = (PROGRESS_EVENT_SEQ + 1) >>> 0;
+      OPT_PROGRESS_LAST_EVENT_AT_MS = performance.now();
       const p = event?.payload || {};
       const processed = Number(p.processed_pairs || 0);
       const total = Number(p.total_pairs || 0);
@@ -3039,6 +4501,8 @@ async function refreshMarketDataDirUi(opts) {
     }
   } catch (e) {
     if (hint) hint.textContent = `Market data folder: ${String(e)}`;
+  } finally {
+    syncSettingsWorkspaceUi();
   }
 }
 
@@ -3056,6 +4520,7 @@ async function initMarketDataDirUi() {
       const path = String(picked || "").trim();
       if (!path) return;
       if ($("marketDataDir")) $("marketDataDir").value = path;
+      syncSettingsWorkspaceUi();
     } catch (e) {
       setStatus(String(e), "danger");
     }
@@ -3328,7 +4793,7 @@ async function initPolygonUi() {
           if ($("polygonTo")) $("polygonTo").value = ymdLocal(new Date());
           try {
             setRunning(true);
-            setStatus(`Updating ${sym} (${tfLabel})...`, "muted");
+            setStatus(tfLabel === "1m" ? `Updating ${sym} (1m)...` : `Updating ${sym} (1m; deriving ${tfLabel})...`, "muted");
             const adjFlag = (market || "stocks") === "stocks" ? !!ds?.adjusted : false;
             const resp = await invoke("polygon_download_1m_and_load", { req: { market: market || "stocks", symbol: sym, from: maxTs !== "—" ? maxTs : ymdLocal(new Date()), to: ymdLocal(new Date()), adjusted: adjFlag, timeframe: tfLabel } });
 
@@ -3337,8 +4802,13 @@ async function initPolygonUi() {
 
             const id = String(resp?.id || "").trim();
             const meta2 = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
+            const baseId = String(resp?.base_load?.id || "").trim() || id;
+            const baseMeta = resp?.base_load?.meta && typeof resp.base_load.meta === "object" ? resp.base_load.meta : meta2;
+            CURRENT_BASE_DATA_ID = baseId;
+            CURRENT_BASE_DATA_META = baseMeta;
+            CURRENT_BASE_DATASET_CTX = { source: "polygon", label: sym, symbol: sym, market: market || "stocks", adjusted: adjFlag, timeframe: String(baseMeta?.timeframe || "1m").trim() || "1m" };
             CURRENT_DATA_META = meta2;
-            CURRENT_DATASET_CTX = { source: "polygon", label: sym, symbol: sym, market: market || "stocks", adjusted: adjFlag, timeframe: tfLabel };
+            CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX, timeframe: tfLabel };
             $("dataId").textContent = id || "—";
             renderDataMeta(meta2);
             applyMaSourceConstraints();
@@ -4398,8 +5868,16 @@ async function runGpuParityCheck() {
 }
 
 function strategyKind() {
-  const v = $("strategyKind")?.value || "DoubleMa";
-  return String(v || "DoubleMa").trim() || "DoubleMa";
+  const sel = $("strategyKind");
+  let v = String(sel?.value || "DoubleMa").trim() || "DoubleMa";
+
+  // Migrate legacy CompositeCpu selection to full-parameter CompositeMo mode.
+  if (v === "CompositeCpu") {
+    v = "CompositeMo";
+    if (sel) sel.value = "CompositeMo";
+  }
+
+  return v;
 }
 
 function isCompositeStrategy() {
@@ -4587,12 +6065,16 @@ function updateStrategyUi() {
   const isCompMo = kind === "CompositeMo";
   const isComp = isCompCpu || isCompMo;
 
+  if (isCompMo && String(document.documentElement.dataset.workflowAdvanced || "").trim() !== "1") {
+    setWorkflowAdvancedEnabled(true, { persist: true });
+  }
+
   const hint = $("strategyHint");
   if (hint) {
     hint.textContent = isCompCpu
-      ? "CPU-only. MA crossover gated by HalfTrend + MACZ histogram + OTT."
+      ? "Legacy fixed-parameter mode. This selection is auto-upgraded to full composite optimization."
       : isCompMo
-      ? "CPU multi-objective optimization (NSGA-II / Random) + optional GPU pre-scan for MA narrowing."
+      ? "Optimizes MA + HalfTrend + MACZ + OTT parameters. Use Advanced → Indicator parameter ranges to control optimization domains."
       : "Fast double moving-average crossover (CPU / GPU sweep / GPU kernel).";
   }
 
@@ -4642,8 +6124,7 @@ function updateStrategyUi() {
 
   const heatmapBins = $("heatmapBins");
   if (heatmapBins) {
-    heatmapBins.disabled = RUNNING || isCompMo;
-    if (isCompMo) heatmapBins.value = "0";
+    heatmapBins.disabled = RUNNING || !isDoubleMa;
   }
 
   const includeAllSel = $("includeAll");
@@ -4662,6 +6143,15 @@ function updateStrategyUi() {
   const exportBtn = $("btnBrowseExportAll");
   if (exportBtn) exportBtn.disabled = RUNNING || isComp;
   if (isComp && exportInput) exportInput.value = "";
+
+  const heatmapTabBtn = document.querySelector('#resultsTabBar button[data-tab="heatmap"]');
+  if (heatmapTabBtn) {
+    heatmapTabBtn.disabled = RUNNING || !isDoubleMa;
+    heatmapTabBtn.title = isDoubleMa ? "" : "Heatmap is available for Double MA only.";
+  }
+  if (!isDoubleMa && RESULTS_TABS?.get() === "heatmap") {
+    RESULTS_TABS.set("overview", { save: false, focus: false });
+  }
 
   updateMoSamplerUi();
   updateDeviceIdEnabled();
@@ -4880,6 +6370,51 @@ function updateMoSamplerUi() {
   setDis("moPrescanObjectives");
   setDis("moPrescanMode");
   setDis("moPrescanMaPairs");
+
+  updateMoRangeBuilderUi();
+}
+
+function updateMoRangeBuilderUi() {
+  if (strategyKind() !== "CompositeMo") return;
+  const useBuilder = !!$("moUseRangeBuilder")?.checked;
+  const hint = $("moRangeBuilderHint");
+  if (hint) {
+    hint.textContent = useBuilder
+      ? "Form ranges are converted into Composite MO search-space JSON at run time."
+      : "Raw JSON search-space mode is active.";
+  }
+
+  const jsonDetails = $("moSearchSpaceJsonDetails");
+  if (jsonDetails) jsonDetails.open = !useBuilder;
+
+  const json = $("moSearchSpace");
+  if (json) json.disabled = RUNNING || useBuilder;
+  const btnReset = $("btnMoResetSearchSpace");
+  if (btnReset) btnReset.disabled = RUNNING || useBuilder;
+
+  const builderIds = [
+    "moHtAmpLow", "moHtAmpHigh", "moHtAmpStep",
+    "moHtDevLow", "moHtDevHigh", "moHtDevStep",
+    "moHtAtrLow", "moHtAtrHigh", "moHtAtrStep",
+    "moMaczFastLow", "moMaczFastHigh", "moMaczFastStep",
+    "moMaczSlowLow", "moMaczSlowHigh", "moMaczSlowStep",
+    "moMaczSignalLow", "moMaczSignalHigh", "moMaczSignalStep",
+    "moMaczLengthZLow", "moMaczLengthZHigh", "moMaczLengthZStep",
+    "moMaczLengthStdevLow", "moMaczLengthStdevHigh", "moMaczLengthStdevStep",
+    "moMaczGammaLow", "moMaczGammaHigh", "moMaczGammaStep",
+    "moMaczALow", "moMaczAHigh", "moMaczAStep",
+    "moMaczBLow", "moMaczBHigh", "moMaczBStep",
+    "moMaczUseLagMode",
+    "moMaczUseVolumeMode",
+    "moOttPeriodLow", "moOttPeriodHigh", "moOttPeriodStep",
+    "moOttPercentLow", "moOttPercentHigh", "moOttPercentStep",
+    "moOttMaTypes",
+  ];
+  for (const id of builderIds) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = RUNNING || !useBuilder;
+  }
 }
 
 function readSettingsFromUi() {
@@ -4911,6 +6446,10 @@ function readSettingsFromUi() {
     "includeAll",
     "exportAllCsvPath",
     "heatmapBins",
+    "heatmapColor",
+    "heatmapRange",
+    "heatmapShowTop",
+    "heatmapShowCrosshair",
     "commission",
     "epsRel",
     "halfTrendAmplitude",
@@ -5003,6 +6542,7 @@ function readSettingsFromUi() {
     "polygonStocksAdjusted",
     "maczUseVolume",
     "maczUseLag",
+    "moUseRangeBuilder",
     "moPrescanEnable",
     "moPrescanRequireGpu",
     "valAutoRun",
@@ -5099,6 +6639,10 @@ function loadSettings() {
   setDef("topK", d.topK);
   setDef("includeAll", d.includeAll ? "true" : "false");
   setDef("heatmapBins", d.heatmapBins);
+  setDef("heatmapColor", "cividis");
+  setDef("heatmapRange", "q2_98");
+  setDef("heatmapShowTop", "true");
+  setDef("heatmapShowCrosshair", "true");
   setDef("valAutoRun", d.valAutoRun);
   setDef("valAutoExportXlsx", d.valAutoExportXlsx);
   setDef("valAutoRevealReport", d.valAutoRevealReport);
@@ -5605,11 +7149,15 @@ async function refreshSavedRuns(selectedPath) {
     const runs = await invoke("list_run_artifacts");
     SAVED_RUNS = Array.isArray(runs) ? runs : [];
     COMPARE_BASELINE_CACHE = {};
+    SAVED_RUN_DETAIL_CACHE = {};
+    CURRENT_SAVED_RUN_DETAIL_PATH = "";
     renderSavedRunsSelect(selectedPath);
     populateCompareSelect(getHistory(), $("compareSelect")?.value || "");
+    updateAggregateSummaryCards();
   } catch (e) {
     const meta = $("savedRunsMeta");
     if (meta) meta.textContent = `failed to list saved runs: ${String(e)}`;
+    updateAggregateSummaryCards();
   }
 }
 
@@ -5681,9 +7229,11 @@ async function refreshMetaSaved(selectedPath) {
     SAVED_META = Array.isArray(runs) ? runs : [];
     META_BASELINE_CACHE = {};
     renderMetaSavedSelect(selectedPath);
+    updateAggregateSummaryCards();
   } catch (e) {
     const meta = $("metaSavedMeta");
     if (meta) meta.textContent = `failed to list meta runs: ${String(e)}`;
+    updateAggregateSummaryCards();
   }
 }
 
@@ -5941,12 +7491,216 @@ function selectedSavedRunEntry() {
   return SAVED_RUNS.find((r) => String(r?.path || "") === path) || null;
 }
 
+function strategyKindLabel(kind) {
+  const k = String(kind || "").trim();
+  if (k === "CompositeCpu") return "Composite CPU";
+  if (k === "CompositeMo") return "Composite MO";
+  return "Double MA";
+}
+
+function formatRangeLabel(range) {
+  const r = range && typeof range === "object" ? range : null;
+  if (!r) return "-";
+  const start = Number(r.start);
+  const end = Number(r.end);
+  const step = Number(r.step);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "-";
+  const a = Math.floor(start);
+  const b = Math.floor(end);
+  if (Number.isFinite(step) && step > 0) return `${a}-${b} x${Math.floor(step)}`;
+  return `${a}-${b}`;
+}
+
+function buildSavedRunReqSnapshot(req) {
+  if (!req || typeof req !== "object") return "Request unavailable.";
+  const kind = kindFromReq(req);
+  const backend = String(req?.backend?.backend || "").trim() || "CpuOnly";
+  const objective = String(req?.objective || req?.objectives?.maximize || "").trim() || "-";
+  const fastTypes = Array.isArray(req?.fast_ma_types) ? req.fast_ma_types.map((x) => String(x || "")).filter((x) => !!x).join(", ") : "";
+  const slowTypes = Array.isArray(req?.slow_ma_types) ? req.slow_ma_types.map((x) => String(x || "")).filter((x) => !!x).join(", ") : "";
+  const maSource = String(req?.ma_source || "").trim() || "close";
+  const lines = [];
+
+  lines.push(`strategy: ${strategyKindLabel(kind)}`);
+  lines.push(`backend: ${backend}`);
+  lines.push(`objective: ${objective}`);
+  lines.push(`ma source: ${maSource}`);
+  lines.push(`fast range: ${formatRangeLabel(req?.fast_range)}`);
+  lines.push(`slow range: ${formatRangeLabel(req?.slow_range)}`);
+  lines.push(`fast ma: ${fastTypes || "-"}`);
+  lines.push(`slow ma: ${slowTypes || "-"}`);
+
+  const strategy = req?.strategy && typeof req.strategy === "object" ? req.strategy : null;
+  if (strategy) {
+    const flags = [];
+    if (strategy.long_only === true) flags.push("long-only");
+    if (strategy.allow_flip === true) flags.push("allow-flip");
+    if (strategy.trade_on_next_bar === true) flags.push("trade-next");
+    const commission = Number(strategy.commission || 0);
+    const eps = Number(strategy.eps_rel || 0);
+    lines.push(`strategy params: commission=${fmtFixed(commission, 4)}, eps_rel=${fmtFixed(eps, 4)}${flags.length ? ` (${flags.join(",")})` : ""}`);
+  }
+
+  if (kind !== "DoubleMa") {
+    const compact = formatCompositeParamsCompact({
+      halftrend: req?.halftrend || null,
+      macz: req?.macz || null,
+      ott: req?.ott || null,
+    });
+    if (compact) lines.push(`composite filters: ${compact}`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildSavedRunDetailFromArtifact(artifact) {
+  const req = artifact?.run?.req && typeof artifact.run.req === "object" ? artifact.run.req : null;
+  const datasetMeta = artifact?.dataset_meta && typeof artifact.dataset_meta === "object" ? artifact.dataset_meta : null;
+  const strategyKind = req ? kindFromReq(req) : String(artifact?.strategy_kind || "").trim();
+  const timeframe = String(datasetMeta?.timeframe || "").trim();
+  const csvPath = String(artifact?.data?.csv_path || "").trim();
+  const reportPath = String(artifact?.report_xlsx_path || "").trim();
+  const hasValidation = !!artifact?.validation?.res;
+  const tags = Array.isArray(artifact?.tags) ? artifact.tags.map((t) => String(t || "").trim()).filter((t) => !!t) : [];
+  const paramsText = buildSavedRunReqSnapshot(req);
+  return { strategyKind, timeframe, csvPath, reportPath, hasValidation, tags, paramsText };
+}
+
+function renderSavedRunDetailCard(entry, detail, opts) {
+  const set = (id, text) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = String(text || "—");
+  };
+
+  if (!entry) {
+    set("savedRunDetailTitle", "No saved run selected");
+    set("savedRunDetailMeta", "Select a run to inspect metadata and settings.");
+    set("savedRunDetailStrategy", "—");
+    set("savedRunDetailDataset", "—");
+    set("savedRunDetailTimeframe", "—");
+    set("savedRunDetailValidation", "—");
+    set("savedRunDetailReport", "—");
+    set("savedRunDetailSize", "—");
+    set("savedRunDetailTags", "—");
+    set("savedRunDetailParams", "Select a saved run to inspect parameters.");
+    return;
+  }
+
+  const ts = String(entry?.ts || "").trim() || "Selected run";
+  const path = String(entry?.path || "").trim();
+  const pathBase = path ? (fileBasename(path) || path) : "unknown";
+  const strategyKind = String(detail?.strategyKind || entry?.strategy_kind || "").trim();
+  const csvPath = String(detail?.csvPath || entry?.csv_path || "").trim();
+  const dataset = csvPath ? (fileBasename(csvPath) || csvPath) : "—";
+  const tf = String(detail?.timeframe || entry?.dataset_meta?.timeframe || "").trim();
+  const hasValidation = (detail?.hasValidation != null) ? !!detail.hasValidation : !!entry?.has_validation;
+  const reportPath = String(detail?.reportPath || entry?.report_xlsx_path || "").trim();
+  const tags = Array.isArray(detail?.tags) ? detail.tags : (Array.isArray(entry?.tags) ? entry.tags : []);
+  const sizeBytes = Number(entry?.bytes || 0);
+  const size = formatBytesCompact(sizeBytes) || (sizeBytes > 0 ? `${sizeBytes} B` : "—");
+
+  set("savedRunDetailTitle", ts);
+  set("savedRunDetailMeta", `artifact: ${pathBase}`);
+  set("savedRunDetailStrategy", strategyKind ? strategyKindLabel(strategyKind) : "—");
+  set("savedRunDetailDataset", dataset);
+  set("savedRunDetailTimeframe", tf || "—");
+  set("savedRunDetailValidation", hasValidation ? "Available" : "Not saved");
+  set("savedRunDetailReport", reportPath ? "XLSX available" : "Not exported");
+  set("savedRunDetailSize", size);
+  set("savedRunDetailTags", tags.length ? tags.join(", ") : "—");
+
+  if (opts?.loading) {
+    set("savedRunDetailParams", "Loading parameter snapshot...");
+  } else {
+    const paramsText = String(detail?.paramsText || "").trim();
+    set("savedRunDetailParams", paramsText || "Request unavailable.");
+  }
+}
+
+async function refreshSavedRunDetailCard(entry) {
+  const seq = ++SAVED_RUN_DETAIL_SEQ;
+  if (!entry) {
+    renderSavedRunDetailCard(null, null, { loading: false });
+    return;
+  }
+
+  const path = String(entry?.path || "").trim();
+  if (!path) {
+    renderSavedRunDetailCard(entry, null, { loading: false });
+    return;
+  }
+
+  renderSavedRunDetailCard(entry, null, { loading: true });
+  const cached = SAVED_RUN_DETAIL_CACHE[path];
+  if (cached) {
+    if (seq !== SAVED_RUN_DETAIL_SEQ) return;
+    renderSavedRunDetailCard(entry, cached, { loading: false });
+    return;
+  }
+
+  try {
+    const artifact = await loadRunArtifactJson(path);
+    const detail = buildSavedRunDetailFromArtifact(artifact);
+    SAVED_RUN_DETAIL_CACHE[path] = detail;
+    if (seq !== SAVED_RUN_DETAIL_SEQ) return;
+    const current = selectedSavedRunEntry();
+    if (!current || String(current?.path || "") !== path) return;
+    renderSavedRunDetailCard(current, detail, { loading: false });
+  } catch (e) {
+    if (seq !== SAVED_RUN_DETAIL_SEQ) return;
+    renderSavedRunDetailCard(entry, {
+      paramsText: `Failed to load artifact:\n${String(e)}`,
+    }, { loading: false });
+  }
+}
+
 function syncSavedRunSelectionUi() {
   updateSavedRunsMeta();
   const tagsEl = $("savedRunsTags");
-  if (!tagsEl) return;
   const entry = selectedSavedRunEntry();
-  tagsEl.value = entry && Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
+  const has = !!entry;
+  const hasReport = !!String(entry?.report_xlsx_path || "").trim();
+  if (tagsEl) {
+    tagsEl.value = has && Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
+    tagsEl.disabled = RUNNING || !has;
+  }
+
+  const btnSaveTags = $("btnSaveSavedRunTags");
+  const btnRefresh = $("btnRefreshSavedRuns");
+  const btnLoad = $("btnLoadSavedRun");
+  const btnApply = $("btnApplySavedRun");
+  const btnRerun = $("btnRerunSavedRun");
+  const btnOpenReport = $("btnOpenSavedRunReport");
+  const btnReveal = $("btnRevealSavedRun");
+  const btnDelete = $("btnDeleteSavedRun");
+  const btnOpenDir = $("btnOpenRunsDir");
+
+  if (btnSaveTags) btnSaveTags.disabled = RUNNING || !has;
+  if (btnRefresh) btnRefresh.disabled = RUNNING;
+  if (btnLoad) btnLoad.disabled = RUNNING || !has;
+  if (btnApply) btnApply.disabled = RUNNING || !has;
+  if (btnRerun) btnRerun.disabled = RUNNING || !has;
+  if (btnOpenReport) btnOpenReport.disabled = RUNNING || !hasReport;
+  if (btnReveal) btnReveal.disabled = RUNNING || !has;
+  if (btnDelete) btnDelete.disabled = RUNNING || !has;
+  if (btnOpenDir) btnOpenDir.disabled = RUNNING;
+
+  const path = String(entry?.path || "").trim();
+  if (!path) {
+    CURRENT_SAVED_RUN_DETAIL_PATH = "";
+    renderSavedRunDetailCard(null, null, { loading: false });
+    return;
+  }
+
+  const cached = SAVED_RUN_DETAIL_CACHE[path];
+  if (cached) renderSavedRunDetailCard(entry, cached, { loading: false });
+  else renderSavedRunDetailCard(entry, null, { loading: true });
+
+  if (!cached || path !== CURRENT_SAVED_RUN_DETAIL_PATH) {
+    CURRENT_SAVED_RUN_DETAIL_PATH = path;
+    refreshSavedRunDetailCard(entry);
+  }
 }
 
 function updateSavedRunsMeta() {
@@ -6087,6 +7841,11 @@ async function rerunSavedRun(path) {
 
   if ($("csvPath")) $("csvPath").value = csvPath;
   await loadCsv();
+  const tf = String(artifact?.dataset_meta?.timeframe || "").trim();
+  if (tf && $("dataTimeframe")) {
+    $("dataTimeframe").value = tf;
+    await applySelectedDataTimeframe();
+  }
   applyRequestToUi(runReq);
   await runWorkflow();
 }
@@ -6438,6 +8197,7 @@ function renderPareto(rows) {
     }
     if (best && bestD2 <= 12 * 12) {
       DRILL_SELECTED_KEY = best.key;
+      syncHeatmapSelectionToDrillKey();
       requestDrilldown(best.row.params);
       renderTopTable(CURRENT_RUN?.res, CURRENT_RUN?.req);
       RESULTS_TABS?.set("drill", { save: false, focus: true });
@@ -6697,6 +8457,7 @@ function renderTopTable(res, req) {
       for (const el of tbody.querySelectorAll("tr.selected")) el.classList.remove("selected");
       tr.classList.add("selected");
       DRILL_SELECTED_KEY = key;
+      syncHeatmapSelectionToDrillKey();
       requestDrilldown(p);
       RESULTS_TABS?.set("drill", { save: false, focus: true });
     });
@@ -7063,7 +8824,10 @@ function setDrillVisible(visible) {
       : "Run an optimization, then click a row in the Top tab to compute drilldown curves.";
   }
   setHintVisible("drillEmptyHint", !visible);
-  if (!visible) clearStabilityUi();
+  if (!visible) {
+    clearStabilityUi();
+    clearDrillTvChart();
+  }
 }
 
 function setDrillStatus(msg, kind) {
@@ -7071,6 +8835,235 @@ function setDrillStatus(msg, kind) {
   if (!el) return;
   el.textContent = msg;
   el.className = "muted " + (kind || "");
+}
+
+function drillChartCssVar(name, fallback) {
+  const v = String(getComputedStyle(document.documentElement).getPropertyValue(name) || "").trim();
+  return v || fallback;
+}
+
+function drillChartThemeOptions() {
+  const dark = String(document.documentElement.dataset.theme || "light").trim() === "dark";
+  const text = drillChartCssVar("--text", dark ? "#e5e7eb" : "#0f172a");
+  const border = drillChartCssVar("--border", dark ? "#334155" : "#e2e8f0");
+  const panel = drillChartCssVar("--surface2", dark ? "#16213a" : "#f1f5f9");
+  return {
+    layout: {
+      background: { color: panel },
+      textColor: text,
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
+      fontSize: 11,
+    },
+    grid: {
+      vertLines: { color: border, visible: true },
+      horzLines: { color: border, visible: true },
+    },
+    rightPriceScale: { borderColor: border },
+    timeScale: { borderColor: border, rightOffset: 8, barSpacing: 7 },
+    crosshair: { mode: 1 },
+  };
+}
+
+function ensureDrillTvChart() {
+  const host = $("drillTvChart");
+  if (!host) return null;
+  if (DRILL_TV_CHART && DRILL_TV_SERIES) return { chart: DRILL_TV_CHART, series: DRILL_TV_SERIES, host };
+
+  const width = Math.max(240, Math.floor(host.clientWidth || 820));
+  const height = Math.max(220, Math.floor(host.clientHeight || 360));
+  DRILL_TV_CHART = createChart(host, { ...drillChartThemeOptions(), width, height });
+  DRILL_TV_SERIES = DRILL_TV_CHART.addSeries(CandlestickSeries, {
+    upColor: "rgba(22, 163, 74, 0.9)",
+    downColor: "rgba(225, 29, 72, 0.9)",
+    wickUpColor: "rgba(22, 163, 74, 0.9)",
+    wickDownColor: "rgba(225, 29, 72, 0.9)",
+    borderVisible: false,
+  });
+  DRILL_TV_MARKERS = createSeriesMarkers(DRILL_TV_SERIES, []);
+
+  if (typeof ResizeObserver !== "undefined") {
+    DRILL_TV_RESIZE_OBSERVER = new ResizeObserver(() => {
+      if (!DRILL_TV_CHART) return;
+      const rect = host.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      DRILL_TV_CHART.applyOptions({
+        width: Math.max(240, Math.floor(rect.width)),
+        height: Math.max(220, Math.floor(rect.height)),
+      });
+    });
+    DRILL_TV_RESIZE_OBSERVER.observe(host);
+  }
+
+  return { chart: DRILL_TV_CHART, series: DRILL_TV_SERIES, host };
+}
+
+function refreshDrillTvChartTheme() {
+  if (!DRILL_TV_CHART) return;
+  DRILL_TV_CHART.applyOptions(drillChartThemeOptions());
+}
+
+function clearDrillTvChart() {
+  const meta = $("drillTvChartMeta");
+  if (meta) meta.textContent = "Select a Top row to render candles and trade markers.";
+  if (DRILL_TV_SERIES) DRILL_TV_SERIES.setData([]);
+  if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
+    DRILL_TV_MARKERS.setMarkers([]);
+  }
+}
+
+function normalizeChartTimeSec(ts) {
+  const t = Number(ts);
+  if (!Number.isFinite(t)) return NaN;
+  if (Math.abs(t) >= 1e12) return Math.floor(t / 1000);
+  if (Math.abs(t) >= 1e11) return Math.floor(t / 1000);
+  return Math.floor(t);
+}
+
+function normalizePriceBarsForChart(rows) {
+  const input = Array.isArray(rows) ? rows : [];
+  const out = [];
+  let prevT = -Infinity;
+  for (const r of input) {
+    const t = normalizeChartTimeSec(r?.time);
+    const open = Number(r?.open);
+    const high = Number(r?.high);
+    const low = Number(r?.low);
+    const close = Number(r?.close);
+    if (!Number.isFinite(t) || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
+    if (t <= prevT) continue;
+    const fromIndex = Math.max(0, Math.floor(Number(r?.from_index ?? 0)));
+    const toIndex = Math.max(fromIndex, Math.floor(Number(r?.to_index ?? fromIndex)));
+    out.push({ time: t, open, high, low, close, fromIndex, toIndex, volume: Number(r?.volume || 0) });
+    prevT = t;
+  }
+  return out;
+}
+
+async function fetchDrillPriceBars(dataId) {
+  const id = String(dataId || "").trim();
+  if (!id) return [];
+  if (DRILL_PRICE_BARS_CACHE.has(id)) return DRILL_PRICE_BARS_CACHE.get(id);
+  const invoke = tauriInvoke();
+  if (!invoke) return [];
+  const raw = await invoke("get_price_bars", { data_id: id, max_points: 8000 });
+  const bars = normalizePriceBarsForChart(raw);
+  DRILL_PRICE_BARS_CACHE.set(id, bars);
+  return bars;
+}
+
+function mapTradeIndexToChartTime(idx, bars) {
+  const x = Math.max(0, Math.floor(Number(idx || 0)));
+  if (!Array.isArray(bars) || !bars.length) return null;
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const b = bars[mid];
+    if (x < b.fromIndex) hi = mid - 1;
+    else if (x > b.toIndex) lo = mid + 1;
+    else return b.time;
+  }
+  if (hi < 0) return bars[0].time;
+  if (lo >= bars.length) return bars[bars.length - 1].time;
+  const left = bars[hi];
+  const right = bars[lo];
+  return Math.abs(x - left.toIndex) <= Math.abs(right.fromIndex - x) ? left.time : right.time;
+}
+
+function buildDrillTradeMarkers(curves, bars) {
+  const trades = Array.isArray(curves?.trades) ? curves.trades : [];
+  if (!trades.length || !bars.length) return [];
+  const maxTrades = 200;
+  const shown = trades.slice(Math.max(0, trades.length - maxTrades));
+  const markers = [];
+  for (const tr of shown) {
+    const dir = Number(tr?.direction || 0);
+    const pnl = Number(tr?.pnl || 0);
+    const entryTime = mapTradeIndexToChartTime(tr?.entry_t, bars);
+    const exitTime = mapTradeIndexToChartTime(tr?.exit_t, bars);
+    if (entryTime != null) {
+      markers.push({
+        time: entryTime,
+        position: dir >= 0 ? "belowBar" : "aboveBar",
+        shape: dir >= 0 ? "arrowUp" : "arrowDown",
+        color: "rgba(14, 165, 233, 0.95)",
+        text: "Entry",
+      });
+    }
+    if (exitTime != null) {
+      const openTrade = !!tr?.open;
+      const color = openTrade
+        ? "rgba(148, 163, 184, 0.95)"
+        : (pnl >= 0 ? "rgba(22, 163, 74, 0.95)" : "rgba(225, 29, 72, 0.95)");
+      markers.push({
+        time: exitTime,
+        position: dir >= 0 ? "aboveBar" : "belowBar",
+        shape: openTrade ? "circle" : (dir >= 0 ? "arrowDown" : "arrowUp"),
+        color,
+        text: openTrade ? "Open" : "Exit",
+      });
+    }
+  }
+  if (markers.length > 600) return markers.slice(markers.length - 600);
+  return markers;
+}
+
+async function renderDrillTvChart(curves, runReq, seq) {
+  const meta = $("drillTvChartMeta");
+  const req = runReq && typeof runReq === "object" ? runReq : null;
+  const dataId = String(req?.data_id || "").trim();
+  if (!dataId) {
+    clearDrillTvChart();
+    return;
+  }
+
+  if (meta) meta.textContent = "Loading candles...";
+  try {
+    const bars = await fetchDrillPriceBars(dataId);
+    if (seq !== DRILL_SEQ) return;
+    if (!bars.length) {
+      if (meta) meta.textContent = "No bars available for chart rendering.";
+      clearDrillTvChart();
+      return;
+    }
+
+    const ctx = ensureDrillTvChart();
+    if (!ctx) return;
+    const candleData = bars.map((b) => ({
+      time: b.time,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+    }));
+    ctx.series.setData(candleData);
+
+    const markers = buildDrillTradeMarkers(curves, bars);
+    if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
+      DRILL_TV_MARKERS.setMarkers(markers);
+    } else {
+      DRILL_TV_MARKERS = createSeriesMarkers(ctx.series, markers);
+    }
+
+    requestAnimationFrame(() => {
+      if (!DRILL_TV_CHART) return;
+      const rect = ctx.host.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        DRILL_TV_CHART.applyOptions({ width: Math.floor(rect.width), height: Math.floor(rect.height) });
+      }
+      DRILL_TV_CHART.timeScale().fitContent();
+    });
+
+    if (meta) {
+      const first = bars[0];
+      const last = bars[bars.length - 1];
+      const tradesN = Array.isArray(curves?.trades) ? curves.trades.length : 0;
+      meta.textContent = `bars=${bars.length} idx=${first.fromIndex}..${last.toIndex} markers=${Math.min(600, tradesN * 2)} data=${dataId}`;
+    }
+  } catch (e) {
+    if (seq !== DRILL_SEQ) return;
+    if (meta) meta.textContent = `Chart load failed: ${String(e)}`;
+  }
 }
 
 function drawMinMaxChart(canvas, minmax, opts) {
@@ -7352,11 +9345,13 @@ async function requestDrilldown(params, runReqOverride) {
     if (seq !== DRILL_SEQ) return;
     setDrillStatus("Done.", "ok");
     renderDrilldown(curves, params);
+    void renderDrillTvChart(curves, runReq, seq);
     requestLocalStability(params, runReq);
   } catch (e) {
     if (seq !== DRILL_SEQ) return;
     setDrillStatus(String(e), "danger");
     clearStabilityUi();
+    clearDrillTvChart();
   }
 }
 
@@ -7609,42 +9604,272 @@ async function requestLocalStability(params, runReqOverride) {
   }
 }
 
-function hslToRgb(h, s, l) {
-  const hh = ((h % 360) + 360) % 360;
-  const ss = Math.max(0, Math.min(1, s));
-  const ll = Math.max(0, Math.min(1, l));
-  const c = (1 - Math.abs(2 * ll - 1)) * ss;
-  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
-  const m = ll - c / 2;
-  let r = 0, g = 0, b = 0;
-  if (hh < 60) [r, g, b] = [c, x, 0];
-  else if (hh < 120) [r, g, b] = [x, c, 0];
-  else if (hh < 180) [r, g, b] = [0, c, x];
-  else if (hh < 240) [r, g, b] = [0, x, c];
-  else if (hh < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  return [
-    Math.round((r + m) * 255),
-    Math.round((g + m) * 255),
-    Math.round((b + m) * 255),
-  ];
+function clamp01(x) {
+  return Math.max(0, Math.min(1, x));
 }
 
-function colorFor(t) {
-  const x = Math.max(0, Math.min(1, t));
-  const h = 220 * (1 - x);
-  return hslToRgb(h, 0.85, 0.52);
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function hexToRgb(hex) {
+  const h = String(hex || "").trim().replace("#", "");
+  const raw = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const i = Number.parseInt(raw || "0", 16);
+  return { r: (i >> 16) & 255, g: (i >> 8) & 255, b: i & 255 };
+}
+
+function makeHeatmapInterpolator(stops) {
+  const S = (Array.isArray(stops) ? stops : [])
+    .map((s) => ({ t: clamp01(Number(s?.t ?? 0)), rgb: hexToRgb(s?.color || "#000000") }))
+    .sort((a, b) => a.t - b.t);
+  return (t) => {
+    const x = clamp01(Number(t ?? 0));
+    for (let i = 0; i < S.length - 1; i++) {
+      const a = S[i];
+      const b = S[i + 1];
+      if (x >= a.t && x <= b.t) {
+        const u = (x - a.t) / Math.max(1e-12, (b.t - a.t));
+        return {
+          r: Math.round(lerp(a.rgb.r, b.rgb.r, u)),
+          g: Math.round(lerp(a.rgb.g, b.rgb.g, u)),
+          b: Math.round(lerp(a.rgb.b, b.rgb.b, u)),
+        };
+      }
+    }
+    const first = S[0]?.rgb || { r: 0, g: 0, b: 0 };
+    const last = S[S.length - 1]?.rgb || first;
+    return x < (S[0]?.t ?? 0) ? first : last;
+  };
+}
+
+const HEATMAP_COLORMAPS = {
+  cividis: makeHeatmapInterpolator([
+    { t: 0.0, color: "#00224e" },
+    { t: 0.25, color: "#2b3f66" },
+    { t: 0.5, color: "#665c66" },
+    { t: 0.75, color: "#a38f49" },
+    { t: 1.0, color: "#ffd43b" },
+  ]),
+  viridis: makeHeatmapInterpolator([
+    { t: 0.0, color: "#440154" },
+    { t: 0.25, color: "#3b528b" },
+    { t: 0.5, color: "#21918c" },
+    { t: 0.75, color: "#5ec962" },
+    { t: 1.0, color: "#fde725" },
+  ]),
+  blueOrange: makeHeatmapInterpolator([
+    { t: 0.0, color: "#2b8cbe" },
+    { t: 0.5, color: "#ffffff" },
+    { t: 1.0, color: "#e34a33" },
+  ]),
+  redGreen: makeHeatmapInterpolator([
+    { t: 0.0, color: "#b2182b" },
+    { t: 0.5, color: "#f7f7f7" },
+    { t: 1.0, color: "#1a9850" },
+  ]),
+};
+
+const HEATMAP_LUT_CACHE = new Map();
+function heatmapGetLut(name, size) {
+  const n = String(name || "cividis");
+  const s = Math.max(2, Math.floor(Number(size || 512)));
+  const key = `${n}:${s}`;
+  const cached = HEATMAP_LUT_CACHE.get(key);
+  if (cached) return cached;
+
+  const interp = HEATMAP_COLORMAPS[n] || HEATMAP_COLORMAPS.cividis;
+  const lut = new Uint8Array(s * 4);
+  for (let i = 0; i < s; i++) {
+    const t = i / (s - 1);
+    const { r, g, b } = interp(t);
+    lut[i * 4 + 0] = r;
+    lut[i * 4 + 1] = g;
+    lut[i * 4 + 2] = b;
+    lut[i * 4 + 3] = 255;
+  }
+  HEATMAP_LUT_CACHE.set(key, lut);
+  return lut;
+}
+
+function quantileSorted(sorted, q) {
+  const a = Array.isArray(sorted) ? sorted : [];
+  if (!a.length) return NaN;
+  const qq = clamp01(Number(q ?? 0));
+  const idx = (a.length - 1) * qq;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return a[lo];
+  return a[lo] + (a[hi] - a[lo]) * (idx - lo);
+}
+
+function heatmapBinPeriod(v, vMin, vMax, bins) {
+  const b = Math.max(1, Math.floor(Number(bins || 0)));
+  if (b <= 1) return 0;
+  const minV = Math.floor(Number(vMin || 0));
+  const maxV = Math.floor(Number(vMax || 0));
+  const denom = Math.max(0, maxV - minV);
+  if (denom === 0) return 0;
+  const x = Math.max(0, Math.floor(Number(v || 0)) - minV);
+  return Math.min(b - 1, Math.floor((x * (b - 1)) / denom));
+}
+
+function heatmapBinRange(bin, vMin, vMax, bins) {
+  const b = Math.max(1, Math.floor(Number(bins || 0)));
+  const minV = Math.floor(Number(vMin || 0));
+  const maxV = Math.floor(Number(vMax || 0));
+  const denom = Math.max(0, maxV - minV);
+  if (b <= 1 || denom === 0) {
+    const v = denom === 0 ? minV : maxV;
+    return { lo: v, hi: v, center: v };
+  }
+
+  const bb = Math.max(0, Math.min(b - 1, Math.floor(Number(bin || 0))));
+  const loX = Math.ceil((bb * denom) / (b - 1));
+  const hiX = Math.ceil(((bb + 1) * denom) / (b - 1)) - 1;
+  const lo = minV + Math.max(0, Math.min(denom, loX));
+  const hi = minV + Math.max(0, Math.min(denom, Math.max(loX, hiX)));
+  const center = Math.round((lo + hi) / 2);
+  return { lo, hi, center };
+}
+
+function heatmapPrefsFromUi() {
+  const color = String($("heatmapColor")?.value || "cividis").trim() || "cividis";
+  const range = String($("heatmapRange")?.value || "q2_98").trim() || "q2_98";
+  const showTop = String($("heatmapShowTop")?.value || "true").trim() !== "false";
+  const showCrosshair = String($("heatmapShowCrosshair")?.value || "true").trim() !== "false";
+  return { color, range, showTop, showCrosshair };
+}
+
+function formatBinRange(r) {
+  if (!r || !Number.isFinite(Number(r.lo)) || !Number.isFinite(Number(r.hi))) return "?";
+  if (r.lo === r.hi) return String(r.lo);
+  return `${r.lo}..${r.hi}`;
+}
+
+function renderHeatmapOverlay() {
+  const st = HEATMAP_STATE;
+  if (!st || !st.overlay) return;
+  const canvas = st.overlay;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (st.showTop && Array.isArray(st.topPoints)) {
+    const maxMarkers = 200;
+    let n = 0;
+    for (const p of st.topPoints) {
+      const isBest = p.rank === 1;
+      ctx.strokeStyle = isBest ? "rgba(250, 204, 21, 0.95)" : "rgba(255, 255, 255, 0.85)";
+      ctx.lineWidth = isBest ? 2.5 : 1.5;
+      ctx.beginPath();
+      ctx.arc(p.sBin + 0.5, p.fBin + 0.5, isBest ? 2.8 : 2.2, 0, Math.PI * 2);
+      ctx.stroke();
+      n++;
+      if (n >= maxMarkers) break;
+    }
+  }
+
+  if (HEATMAP_SELECTED && HEATMAP_SELECTED.idx != null) {
+    ctx.strokeStyle = "rgba(52, 211, 153, 0.95)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(HEATMAP_SELECTED.sBin, HEATMAP_SELECTED.fBin, 1, 1);
+  }
+
+  if (st.showCrosshair && HEATMAP_HOVER && HEATMAP_HOVER.idx != null) {
+    const x = HEATMAP_HOVER.sBin;
+    const y = HEATMAP_HOVER.fBin;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(w, y + 0.5);
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, 1, 1);
+    ctx.restore();
+  }
+}
+
+function syncHeatmapSelectionToDrillKey() {
+  const st = HEATMAP_STATE;
+  if (!st || !st.keyToCell) return;
+  const idx = st.keyToCell.get(DRILL_SELECTED_KEY);
+  if (typeof idx === "number") {
+    const fBin = Math.floor(idx / st.binsSlow);
+    const sBin = idx - fBin * st.binsSlow;
+    HEATMAP_SELECTED = { fBin, sBin, idx, key: DRILL_SELECTED_KEY };
+  } else {
+    HEATMAP_SELECTED = null;
+  }
+  renderHeatmapOverlay();
+}
+
+function exportHeatmapPng() {
+  const base = $("heatmapCanvas");
+  const overlay = $("heatmapOverlay");
+  if (!base || !overlay) return;
+
+  const w = base.width;
+  const h = base.height;
+  if (!w || !h) return;
+  const tmp = document.createElement("canvas");
+  tmp.width = w;
+  tmp.height = h;
+  const ctx = tmp.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(base, 0, 0);
+  ctx.drawImage(overlay, 0, 0);
+
+  const url = tmp.toDataURL("image/png");
+  const obj = String(CURRENT_RUN?.req?.objective || "heatmap").toLowerCase();
+  const ts = CURRENT_RUN?.ts ? String(CURRENT_RUN.ts).replace(/[^\w-]+/g, "-") : "";
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `heatmap_${obj}${ts ? "_" + ts : ""}.png`;
+  a.click();
 }
 
 function renderHeatmap(res, req) {
   const wrap = $("heatmapWrap");
   const canvas = $("heatmapCanvas");
+  const overlay = $("heatmapOverlay");
   const meta = $("heatmapMeta");
-  if (!wrap || !canvas || !meta) return;
+  const stack = $("heatmapCanvasStack");
+  const tooltip = $("heatmapTooltip");
+  const legend = $("heatmapLegend");
+  const legMin = $("heatmapLegendMin");
+  const legMid = $("heatmapLegendMid");
+  const legMax = $("heatmapLegendMax");
+  if (!wrap || !canvas || !overlay || !meta || !stack) return;
   const hint = $("heatmapEmptyHint");
+  const kind = kindFromReq(req);
+  if (kind !== "DoubleMa") {
+    HEATMAP_STATE = null;
+    HEATMAP_HOVER = null;
+    HEATMAP_SELECTED = null;
+    wrap.style.display = "none";
+    if (hint) {
+      hint.textContent = "Heatmap is available for Double MA only.";
+    }
+    setHintVisible("heatmapEmptyHint", true);
+    return;
+  }
 
   const hm = res?.heatmap;
   if (!hm || !Array.isArray(hm.values) || !hm.bins_fast || !hm.bins_slow) {
+    HEATMAP_STATE = null;
+    HEATMAP_HOVER = null;
+    HEATMAP_SELECTED = null;
     wrap.style.display = "none";
     if (hint) {
       hint.textContent = CURRENT_RUN?.res
@@ -7657,8 +9882,11 @@ function renderHeatmap(res, req) {
 
   const binsFast = Number(hm.bins_fast);
   const binsSlow = Number(hm.bins_slow);
-  const values = hm.values;
-  if (!binsFast || !binsSlow || values.length !== binsFast * binsSlow) {
+  const rawValues = hm.values;
+  if (!binsFast || !binsSlow || rawValues.length !== binsFast * binsSlow) {
+    HEATMAP_STATE = null;
+    HEATMAP_HOVER = null;
+    HEATMAP_SELECTED = null;
     wrap.style.display = "none";
     if (hint) {
       hint.textContent = "Heatmap data is missing or malformed for this run.";
@@ -7667,14 +9895,28 @@ function renderHeatmap(res, req) {
     return;
   }
 
+  const prefs = heatmapPrefsFromUi();
+  const len = binsFast * binsSlow;
+  const values = new Float64Array(len);
+  const finite = [];
+
   let min = Infinity;
   let max = -Infinity;
-  for (const v of values) {
-    if (typeof v !== "number" || !Number.isFinite(v)) continue;
-    if (v < min) min = v;
-    if (v > max) max = v;
+  for (let i = 0; i < len; i++) {
+    const v = rawValues[i];
+    const n = typeof v === "number" && Number.isFinite(v) ? v : NaN;
+    values[i] = n;
+    if (Number.isFinite(n)) {
+      finite.push(n);
+      if (n < min) min = n;
+      if (n > max) max = n;
+    }
   }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !finite.length) {
+    HEATMAP_STATE = null;
+    HEATMAP_HOVER = null;
+    HEATMAP_SELECTED = null;
     wrap.style.display = "none";
     if (hint) {
       hint.textContent = "Heatmap values are not finite for this run.";
@@ -7682,57 +9924,236 @@ function renderHeatmap(res, req) {
     setHintVisible("heatmapEmptyHint", true);
     return;
   }
-  if (min === max) {
-    min -= 1;
-    max += 1;
+
+  let lo = min;
+  let hi = max;
+  if (prefs.range === "q2_98" && finite.length >= 8) {
+    const sorted = [...finite].sort((a, b) => a - b);
+    const qlo = quantileSorted(sorted, 0.02);
+    const qhi = quantileSorted(sorted, 0.98);
+    if (Number.isFinite(qlo) && Number.isFinite(qhi) && qlo < qhi) {
+      lo = qlo;
+      hi = qhi;
+    }
+  }
+  if (lo === hi) {
+    const eps = Math.max(1, Math.abs(hi)) * 1e-6;
+    lo -= eps;
+    hi += eps;
   }
 
   wrap.style.display = "block";
   setHintVisible("heatmapEmptyHint", false);
-  HEATMAP_META_BASE = `Objective heatmap (${req?.objective || "Sharpe"}) | fast=${hm.fast_min}..${hm.fast_max} slow=${hm.slow_min}..${hm.slow_max} | score=${fmt(min, 4)}..${fmt(max, 4)}`;
+  const obj = String(req?.objective || req?.objectives?.maximize || "Sharpe");
+  const clipNote = prefs.range === "q2_98" ? " (clip 2–98%)" : "";
+  HEATMAP_META_BASE = `Objective heatmap (${obj}) | fast=${hm.fast_min}..${hm.fast_max} slow=${hm.slow_min}..${hm.slow_max} | score=${fmt(lo, 4)}..${fmt(hi, 4)}${clipNote}`;
   meta.textContent = HEATMAP_META_BASE;
 
   canvas.width = binsSlow;
   canvas.height = binsFast;
+  overlay.width = binsSlow;
+  overlay.height = binsFast;
   const ctx = canvas.getContext("2d");
   const img = ctx.createImageData(binsSlow, binsFast);
-  for (let f = 0; f < binsFast; f++) {
-    for (let s = 0; s < binsSlow; s++) {
-      const idx = f * binsSlow + s;
-      const v = values[idx];
-      const px = (f * binsSlow + s) * 4;
-      if (typeof v !== "number" || !Number.isFinite(v)) {
-        img.data[px + 0] = 11;
-        img.data[px + 1] = 18;
-        img.data[px + 2] = 32;
-        img.data[px + 3] = 255;
-        continue;
-      }
-      const t = (v - min) / (max - min);
-      const [r, g, b] = colorFor(t);
-      img.data[px + 0] = r;
-      img.data[px + 1] = g;
-      img.data[px + 2] = b;
-      img.data[px + 3] = 255;
+  const lut = heatmapGetLut(prefs.color, 512);
+  const lutSize = Math.max(1, (lut.length / 4) | 0);
+  for (let idx = 0; idx < len; idx++) {
+    const v = values[idx];
+    const px = idx * 4;
+    if (!Number.isFinite(v)) {
+      img.data[px + 3] = 0; // transparent; show canvas background
+      continue;
     }
+    const t = clamp01((v - lo) / Math.max(1e-12, (hi - lo)));
+    const i = Math.min(lutSize - 1, Math.max(0, Math.round(t * (lutSize - 1))));
+    img.data[px + 0] = lut[i * 4 + 0];
+    img.data[px + 1] = lut[i * 4 + 1];
+    img.data[px + 2] = lut[i * 4 + 2];
+    img.data[px + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
 
-  canvas.onmousemove = (ev) => {
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.floor(((ev.clientX - rect.left) / rect.width) * binsSlow);
-    const y = Math.floor(((ev.clientY - rect.top) / rect.height) * binsFast);
-    if (x < 0 || y < 0 || x >= binsSlow || y >= binsFast) {
+  const fastBins = new Array(binsFast);
+  const slowBins = new Array(binsSlow);
+  for (let f = 0; f < binsFast; f++) fastBins[f] = heatmapBinRange(f, hm.fast_min, hm.fast_max, binsFast);
+  for (let s = 0; s < binsSlow; s++) slowBins[s] = heatmapBinRange(s, hm.slow_min, hm.slow_max, binsSlow);
+
+  const topRows = Array.isArray(TOP_ROWS) && TOP_ROWS.length ? TOP_ROWS : collectTopRows(res);
+  const maxTopRows = 2000;
+  const rowsForHeatmap = topRows.length > maxTopRows ? topRows.slice(0, maxTopRows) : topRows;
+  const topPoints = [];
+  const topByCell = new Map();
+  const keyToCell = new Map();
+  for (const row of rowsForHeatmap) {
+    const p = row?.params && typeof row.params === "object" ? row.params : {};
+    const key = paramsKey(p);
+    const fLen = Number(p.fast_len || 0);
+    const sLen = Number(p.slow_len || 0);
+    if (!Number.isFinite(fLen) || !Number.isFinite(sLen) || fLen <= 0 || sLen <= 0) continue;
+    const fBin = heatmapBinPeriod(fLen, hm.fast_min, hm.fast_max, binsFast);
+    const sBin = heatmapBinPeriod(sLen, hm.slow_min, hm.slow_max, binsSlow);
+    const idx = fBin * binsSlow + sBin;
+    const pt = { fBin, sBin, idx, key, rank: Number(row.rank || 0), row };
+    topPoints.push(pt);
+    keyToCell.set(key, idx);
+    const existing = topByCell.get(idx);
+    if (!existing || (pt.rank > 0 && pt.rank < existing.rank)) topByCell.set(idx, pt);
+  }
+
+  HEATMAP_STATE = {
+    hm,
+    obj,
+    binsFast,
+    binsSlow,
+    values,
+    lo,
+    hi,
+    fastBins,
+    slowBins,
+    topPoints,
+    topByCell,
+    keyToCell,
+    overlay,
+    stack,
+    tooltip,
+    meta,
+    showTop: prefs.showTop,
+    showCrosshair: prefs.showCrosshair,
+  };
+
+  // Legend
+  if (legend) {
+    const lctx = legend.getContext("2d");
+    if (lctx) {
+      const lw = legend.width || 1;
+      const lh = legend.height || 1;
+      const lImg = lctx.createImageData(lw, lh);
+      for (let x = 0; x < lw; x++) {
+        const t = lw <= 1 ? 0 : x / (lw - 1);
+        const i = Math.min(lutSize - 1, Math.max(0, Math.round(t * (lutSize - 1))));
+        const r = lut[i * 4 + 0];
+        const g = lut[i * 4 + 1];
+        const b = lut[i * 4 + 2];
+        for (let y = 0; y < lh; y++) {
+          const px = (y * lw + x) * 4;
+          lImg.data[px + 0] = r;
+          lImg.data[px + 1] = g;
+          lImg.data[px + 2] = b;
+          lImg.data[px + 3] = 255;
+        }
+      }
+      lctx.putImageData(lImg, 0, 0);
+    }
+  }
+  if (legMin) legMin.textContent = fmt(lo, 6);
+  if (legMid) legMid.textContent = fmt((lo + hi) / 2, 6);
+  if (legMax) legMax.textContent = fmt(hi, 6);
+
+  const hideTooltip = () => {
+    if (tooltip) tooltip.style.display = "none";
+  };
+  const showTooltip = (xCss, yCss, html) => {
+    if (!tooltip) return;
+    tooltip.innerHTML = html;
+    tooltip.style.display = "block";
+    const pad = 10;
+    const tw = tooltip.offsetWidth || 0;
+    const th = tooltip.offsetHeight || 0;
+    const maxX = Math.max(pad, (stack.clientWidth || 0) - tw - pad);
+    const maxY = Math.max(pad, (stack.clientHeight || 0) - th - pad);
+    tooltip.style.left = `${Math.max(pad, Math.min(maxX, xCss + 14))}px`;
+    tooltip.style.top = `${Math.max(pad, Math.min(maxY, yCss + 14))}px`;
+  };
+
+  overlay.onmousemove = (ev) => {
+    const rect = overlay.getBoundingClientRect();
+    const xCss = ev.clientX - rect.left;
+    const yCss = ev.clientY - rect.top;
+    const sBin = Math.floor((xCss / rect.width) * binsSlow);
+    const fBin = Math.floor((yCss / rect.height) * binsFast);
+    if (sBin < 0 || fBin < 0 || sBin >= binsSlow || fBin >= binsFast) {
+      HEATMAP_HOVER = null;
       meta.textContent = HEATMAP_META_BASE;
+      hideTooltip();
+      renderHeatmapOverlay();
       return;
     }
-    const v = values[y * binsSlow + x];
-    const val = typeof v === "number" && Number.isFinite(v) ? fmt(v, 6) : "-";
-    meta.textContent = `${HEATMAP_META_BASE} | hover: f_bin=${y} s_bin=${x} score=${val}`;
+
+    const idx = fBin * binsSlow + sBin;
+    const v = values[idx];
+    if (!Number.isFinite(v)) {
+      HEATMAP_HOVER = null;
+      meta.textContent = HEATMAP_META_BASE;
+      hideTooltip();
+      renderHeatmapOverlay();
+      return;
+    }
+
+    const fr = fastBins[fBin];
+    const sr = slowBins[sBin];
+    const top = topByCell.get(idx) || null;
+    const topLine = top
+      ? `<div class="muted">Top in bin: #${top.rank} ${Number(top.row?.params?.fast_len || 0)}/${Number(top.row?.params?.slow_len || 0)}</div>`
+      : `<div class="muted">Top in bin: none (increase Top K to explore)</div>`;
+
+    HEATMAP_HOVER = { fBin, sBin, idx, v };
+    meta.textContent = `${HEATMAP_META_BASE} | hover: fast=${formatBinRange(fr)} slow=${formatBinRange(sr)} score=${fmt(v, 6)}`;
+    showTooltip(
+      xCss,
+      yCss,
+      `<div class="mono">fast ${formatBinRange(fr)} · slow ${formatBinRange(sr)}</div>` +
+      `<div class="mono">score ${fmt(v, 6)}</div>` +
+      topLine +
+      `<div class="muted">Click to drill down</div>`
+    );
+    renderHeatmapOverlay();
   };
-  canvas.onmouseleave = () => {
+
+  overlay.onmouseleave = () => {
+    HEATMAP_HOVER = null;
     meta.textContent = HEATMAP_META_BASE;
+    hideTooltip();
+    renderHeatmapOverlay();
   };
+
+  overlay.onclick = (ev) => {
+    const rect = overlay.getBoundingClientRect();
+    const xCss = ev.clientX - rect.left;
+    const yCss = ev.clientY - rect.top;
+    const sBin = Math.floor((xCss / rect.width) * binsSlow);
+    const fBin = Math.floor((yCss / rect.height) * binsFast);
+    if (sBin < 0 || fBin < 0 || sBin >= binsSlow || fBin >= binsFast) return;
+
+    const idx = fBin * binsSlow + sBin;
+    const exact = topByCell.get(idx) || null;
+    let best = exact;
+    let bestD2 = 1e18;
+    if (!best && Array.isArray(topPoints) && topPoints.length) {
+      for (const p of topPoints) {
+        const dx = p.sBin - sBin;
+        const dy = p.fBin - fBin;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          best = p;
+        }
+      }
+      if (best && bestD2 > 9) best = null;
+    }
+    if (!best) {
+      setStatus("No Top row near this cell. Try increasing Top K.", "muted");
+      return;
+    }
+
+    DRILL_SELECTED_KEY = best.key;
+    HEATMAP_SELECTED = { fBin: best.fBin, sBin: best.sBin, idx: best.idx, key: best.key };
+    requestDrilldown(best.row.params);
+    renderTopTable(CURRENT_RUN?.res, CURRENT_RUN?.req);
+    renderHeatmapOverlay();
+    RESULTS_TABS?.set("drill", { save: false, focus: true });
+  };
+
+  syncHeatmapSelectionToDrillKey();
 }
 
 function renderBest(res, req) {
@@ -8063,6 +10484,105 @@ function defaultCompositeMoSearchSpace() {
         name: "ott_ma_type",
         domain: { Categorical: { choices: ["VAR", "EMA", "SMA", "WMA", "TMA", "WWMA", "ZLEMA", "TSF"] } },
       },
+
+      { name: "strategy_commission", domain: { FloatRange: { low: 0.0, high: 0.001, log: false } } },
+      { name: "strategy_eps_rel", domain: { FloatRange: { low: 0.0, high: 0.005, log: false } } },
+      { name: "strategy_long_only", domain: "Bool" },
+      { name: "strategy_allow_flip", domain: "Bool" },
+      { name: "strategy_trade_on_next_bar", domain: "Bool" },
+    ],
+  };
+}
+
+function parseMoRangeInt(lowId, highId, stepId, label) {
+  const low = Math.floor(num($(lowId)?.value, NaN));
+  const high = Math.floor(num($(highId)?.value, NaN));
+  const step = Math.floor(num($(stepId)?.value, NaN));
+  if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(step)) {
+    throw new Error(`${label}: low/high/step must be finite integers.`);
+  }
+  if (step < 1) throw new Error(`${label}: step must be >= 1.`);
+  if (low > high) throw new Error(`${label}: low must be <= high.`);
+  return { IntRange: { low, high, step, log: false } };
+}
+
+function parseMoRangeFloat(lowId, highId, stepId, label) {
+  const low = num($(lowId)?.value, NaN);
+  const high = num($(highId)?.value, NaN);
+  const step = num($(stepId)?.value, NaN);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(step)) {
+    throw new Error(`${label}: low/high/step must be finite numbers.`);
+  }
+  if (step <= 0) throw new Error(`${label}: step must be > 0.`);
+  if (low > high) throw new Error(`${label}: low must be <= high.`);
+
+  if (low === high) return { Categorical: { choices: [low] } };
+
+  const count = Math.floor((high - low) / step) + 1;
+  if (Number.isFinite(count) && count >= 2 && count <= 400) {
+    const choices = [];
+    for (let i = 0; i < count; i++) {
+      const v = low + i * step;
+      if (v > high + step * 1e-9) break;
+      choices.push(Number(v.toFixed(10)));
+    }
+    const last = choices.length ? choices[choices.length - 1] : NaN;
+    if (choices.length >= 2 && Number.isFinite(last) && Math.abs(last - high) > step * 0.55) {
+      choices.push(Number(high.toFixed(10)));
+    }
+    if (choices.length >= 2) return { Categorical: { choices } };
+  }
+
+  return { FloatRange: { low, high, log: false } };
+}
+
+function parseMoBoolDomain(modeId) {
+  const mode = String($(modeId)?.value || "both").trim().toLowerCase();
+  if (mode === "true") return { Categorical: { choices: [true] } };
+  if (mode === "false") return { Categorical: { choices: [false] } };
+  return "Bool";
+}
+
+function parseMoOttMaTypeDomain() {
+  const raw = String($("moOttMaTypes")?.value || "");
+  const choices = raw
+    .split(/[,\s]+/g)
+    .map((v) => String(v || "").trim().toUpperCase())
+    .filter((v) => !!v);
+  const dedup = [];
+  const seen = new Set();
+  for (const c of choices) {
+    if (seen.has(c)) continue;
+    seen.add(c);
+    dedup.push(c);
+  }
+  if (!dedup.length) {
+    throw new Error("OTT MA types: enter at least one value (comma-separated).");
+  }
+  return { Categorical: { choices: dedup } };
+}
+
+function buildCompositeMoSearchSpaceFromUi() {
+  return {
+    params: [
+      { name: "halftrend_amplitude", domain: parseMoRangeInt("moHtAmpLow", "moHtAmpHigh", "moHtAmpStep", "HalfTrend amplitude") },
+      { name: "halftrend_channel_deviation", domain: parseMoRangeFloat("moHtDevLow", "moHtDevHigh", "moHtDevStep", "HalfTrend channel deviation") },
+      { name: "halftrend_atr_period", domain: parseMoRangeInt("moHtAtrLow", "moHtAtrHigh", "moHtAtrStep", "HalfTrend ATR period") },
+
+      { name: "macz_fast_length", domain: parseMoRangeInt("moMaczFastLow", "moMaczFastHigh", "moMaczFastStep", "MACZ fast length") },
+      { name: "macz_slow_length", domain: parseMoRangeInt("moMaczSlowLow", "moMaczSlowHigh", "moMaczSlowStep", "MACZ slow length") },
+      { name: "macz_signal_length", domain: parseMoRangeInt("moMaczSignalLow", "moMaczSignalHigh", "moMaczSignalStep", "MACZ signal length") },
+      { name: "macz_lengthz", domain: parseMoRangeInt("moMaczLengthZLow", "moMaczLengthZHigh", "moMaczLengthZStep", "MACZ lengthz") },
+      { name: "macz_length_stdev", domain: parseMoRangeInt("moMaczLengthStdevLow", "moMaczLengthStdevHigh", "moMaczLengthStdevStep", "MACZ length stdev") },
+      { name: "macz_gamma", domain: parseMoRangeFloat("moMaczGammaLow", "moMaczGammaHigh", "moMaczGammaStep", "MACZ gamma") },
+      { name: "macz_a", domain: parseMoRangeFloat("moMaczALow", "moMaczAHigh", "moMaczAStep", "MACZ a") },
+      { name: "macz_b", domain: parseMoRangeFloat("moMaczBLow", "moMaczBHigh", "moMaczBStep", "MACZ b") },
+      { name: "macz_use_lag", domain: parseMoBoolDomain("moMaczUseLagMode") },
+      { name: "macz_use_volume", domain: parseMoBoolDomain("moMaczUseVolumeMode") },
+
+      { name: "ott_period", domain: parseMoRangeInt("moOttPeriodLow", "moOttPeriodHigh", "moOttPeriodStep", "OTT period") },
+      { name: "ott_percent", domain: parseMoRangeFloat("moOttPercentLow", "moOttPercentHigh", "moOttPercentStep", "OTT percent") },
+      { name: "ott_ma_type", domain: parseMoOttMaTypeDomain() },
 
       { name: "strategy_commission", domain: { FloatRange: { low: 0.0, high: 0.001, log: false } } },
       { name: "strategy_eps_rel", domain: { FloatRange: { low: 0.0, high: 0.005, log: false } } },
@@ -8718,7 +11238,11 @@ function getCompositeMoRequest() {
     };
   }
 
-  const space = parseCompositeMoSearchSpace();
+  const useRangeBuilder = !!$("moUseRangeBuilder")?.checked;
+  const space = useRangeBuilder ? buildCompositeMoSearchSpaceFromUi() : parseCompositeMoSearchSpace();
+  if (useRangeBuilder && $("moSearchSpace")) {
+    $("moSearchSpace").value = JSON.stringify(space, null, 2);
+  }
   const rawFastStep = Math.floor(num($("fastStep")?.value, 1));
   const rawSlowStep = Math.floor(num($("slowStep")?.value, 1));
   const fastStep = Math.max(1, rawFastStep);
@@ -8848,8 +11372,7 @@ function getCompositeRequest() {
     throw new Error(`includeAll=true would return ${pairs} rows; disable it or reduce ranges.`);
   }
 
-  const heatmapBins = Math.max(0, Math.floor(num($("heatmapBins")?.value, 0)));
-  if (heatmapBins > 512) throw new Error("heatmapBins must be <= 512.");
+  const heatmapBins = 0;
 
   const commission = num($("commission")?.value, 0);
   const epsRel = num($("epsRel")?.value, 0);
@@ -9431,8 +11954,11 @@ async function loadCsv() {
   const meta = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
   const cacheHit = !!resp?.cache_hit;
   const cachePath = String(resp?.cache_path || "").trim();
+  CURRENT_BASE_DATA_ID = id;
+  CURRENT_BASE_DATA_META = meta;
+  CURRENT_BASE_DATASET_CTX = { source: "csv", label: fileBasename(path), timeframe: String(meta?.timeframe || "").trim() || null };
   CURRENT_DATA_META = meta;
-  CURRENT_DATASET_CTX = { source: "csv", label: fileBasename(path), timeframe: String(meta?.timeframe || "").trim() || null };
+  CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX };
   $("dataId").textContent = id;
   renderDataMeta(meta);
   applyMaSourceConstraints();
@@ -9451,6 +11977,7 @@ async function runOptimization(opts) {
   setRunning(true);
   try {
     setStatus("Running optimization...", "muted");
+    startOptimizationProgressHeartbeat(req);
     const t0 = performance.now();
     const kindRaw = String(req.strategy_kind || req.strategyKind || "DoubleMa");
     const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
@@ -9470,6 +11997,7 @@ async function runOptimization(opts) {
     }
     return res;
   } finally {
+    stopOptimizationProgressHeartbeat();
     setRunning(false);
   }
 }
@@ -9833,7 +12361,8 @@ function getCompositeMoRequestForFingerprint() {
     gpu_prescan = { top_k, window, device_id, require_gpu: !!$("moPrescanRequireGpu")?.checked, objectives, ma_pairs, mode };
   }
 
-  const space = parseCompositeMoSearchSpace();
+  const useRangeBuilder = !!$("moUseRangeBuilder")?.checked;
+  const space = useRangeBuilder ? buildCompositeMoSearchSpaceFromUi() : parseCompositeMoSearchSpace();
   const rawFastStep = Math.floor(num($("fastStep")?.value, 1));
   const rawSlowStep = Math.floor(num($("slowStep")?.value, 1));
   const fastStep = Math.max(1, rawFastStep);
@@ -10232,6 +12761,14 @@ $("btnLoad").addEventListener("click", async () => {
   }
 });
 
+$("btnApplyTimeframe")?.addEventListener("click", async () => {
+  try {
+    await applySelectedDataTimeframe();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
 $("btnBrowseCsv")?.addEventListener("click", async () => {
   const invoke = tauriInvoke();
   if (!invoke) {
@@ -10325,7 +12862,8 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
 
   setRunning(true);
   try {
-    setStatus(`Downloading ${timeframe || "1m"} bars from Polygon...`, "muted");
+    const tfLabel = timeframe || "1m";
+    setStatus(tfLabel === "1m" ? "Downloading 1m bars from Polygon..." : `Downloading 1m bars from Polygon (deriving ${tfLabel})...`, "muted");
     const resp = await invoke("polygon_download_1m_and_load", { req: { market, symbol, timeframe, from, to, adjusted } });
 
     const path = String(resp?.csv_path || "").trim();
@@ -10333,8 +12871,13 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
 
     const id = String(resp?.id || "").trim();
     const meta = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
+    const baseId = String(resp?.base_load?.id || "").trim() || id;
+    const baseMeta = resp?.base_load?.meta && typeof resp.base_load.meta === "object" ? resp.base_load.meta : meta;
+    CURRENT_BASE_DATA_ID = baseId;
+    CURRENT_BASE_DATA_META = baseMeta;
+    CURRENT_BASE_DATASET_CTX = { source: "polygon", label: symbol, symbol, market, adjusted, timeframe: String(baseMeta?.timeframe || "1m").trim() || "1m" };
     CURRENT_DATA_META = meta;
-    CURRENT_DATASET_CTX = { source: "polygon", label: symbol, symbol, market, adjusted, timeframe: timeframe || "1m" };
+    CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX, timeframe: tfLabel };
     $("dataId").textContent = id || "—";
     renderDataMeta(meta);
     applyMaSourceConstraints();
@@ -10425,6 +12968,9 @@ $("btnClear").addEventListener("click", () => {
   $("dataId").textContent = "—";
   CURRENT_DATA_META = null;
   CURRENT_DATASET_CTX = null;
+  CURRENT_BASE_DATA_ID = "";
+  CURRENT_BASE_DATA_META = null;
+  CURRENT_BASE_DATASET_CTX = null;
   renderDataMeta(null);
   applyMaSourceConstraints();
   applyBackendMaConstraints();
@@ -10447,6 +12993,7 @@ $("btnClear").addEventListener("click", () => {
   setHintVisible("paretoEmptyHint", true);
   DRILL_SELECTED_KEY = "";
   DRILL_SEQ++;
+  DRILL_PRICE_BARS_CACHE.clear();
   setDrillVisible(false);
   $("heatmapWrap").style.display = "none";
   setHintVisible("heatmapEmptyHint", true);
@@ -10578,6 +13125,10 @@ $("btnCrossSelectMatch")?.addEventListener("click", () => {
 });
 
 $("strategyKind")?.addEventListener("change", () => {
+  if (strategyKind() === "CompositeMo") {
+    setWorkflowAdvancedEnabled(true, { persist: true });
+    CONTROLS_TABS?.set("advanced", { save: true, focus: false });
+  }
   updateStrategyUi();
   applyBackendMaConstraints();
   refreshMaParamsUi();
@@ -10620,6 +13171,11 @@ $("moPrescanEnable")?.addEventListener("change", () => {
   updateMoSamplerUi();
   updateDeviceIdEnabled();
   updateRunPlanUi();
+  saveSettingsSoon();
+});
+
+$("moUseRangeBuilder")?.addEventListener("change", () => {
+  updateMoRangeBuilderUi();
   saveSettingsSoon();
 });
 
@@ -10723,6 +13279,49 @@ for (const id of [
   "moPrescanObjectives",
   "moPrescanMode",
   "moPrescanMaPairs",
+  "moHtAmpLow",
+  "moHtAmpHigh",
+  "moHtAmpStep",
+  "moHtDevLow",
+  "moHtDevHigh",
+  "moHtDevStep",
+  "moHtAtrLow",
+  "moHtAtrHigh",
+  "moHtAtrStep",
+  "moMaczFastLow",
+  "moMaczFastHigh",
+  "moMaczFastStep",
+  "moMaczSlowLow",
+  "moMaczSlowHigh",
+  "moMaczSlowStep",
+  "moMaczSignalLow",
+  "moMaczSignalHigh",
+  "moMaczSignalStep",
+  "moMaczLengthZLow",
+  "moMaczLengthZHigh",
+  "moMaczLengthZStep",
+  "moMaczLengthStdevLow",
+  "moMaczLengthStdevHigh",
+  "moMaczLengthStdevStep",
+  "moMaczGammaLow",
+  "moMaczGammaHigh",
+  "moMaczGammaStep",
+  "moMaczALow",
+  "moMaczAHigh",
+  "moMaczAStep",
+  "moMaczBLow",
+  "moMaczBHigh",
+  "moMaczBStep",
+  "moMaczUseLagMode",
+  "moMaczUseVolumeMode",
+  "moOttPeriodLow",
+  "moOttPeriodHigh",
+  "moOttPeriodStep",
+  "moOttPercentLow",
+  "moOttPercentHigh",
+  "moOttPercentStep",
+  "moOttMaTypes",
+  "moUseRangeBuilder",
   "moSearchSpace",
   "valCandidates",
   "valSeed",
@@ -10866,6 +13465,21 @@ $("btnExportCsv")?.addEventListener("click", () => {
   }
   downloadText(`vectorbt_top_${CURRENT_RUN.ts}.csv`, lines.join("\n"), "text/csv");
 });
+
+$("btnHeatmapExportPng")?.addEventListener("click", () => {
+  try {
+    exportHeatmapPng();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+for (const id of ["heatmapColor", "heatmapRange", "heatmapShowTop", "heatmapShowCrosshair"]) {
+  $(id)?.addEventListener("change", () => {
+    saveSettingsSoon();
+    if (CURRENT_RUN) renderHeatmap(CURRENT_RUN.res, CURRENT_RUN.req);
+  });
+}
 
 $("btnExportValidationCsv")?.addEventListener("click", () => {
   exportValidationShortlistCsv();
@@ -11415,6 +14029,7 @@ $("btnClearBaseline")?.addEventListener("click", () => {
 
 initThemeUi();
 initWindowEffectUi();
+initSettingsWorkspaceUi();
 
 CONTROLS_TABS = initTabSystem({
   barId: "controlsTabBar",
@@ -11428,6 +14043,11 @@ RESULTS_TABS = initTabSystem({
   storageKey: RESULTS_TAB_KEY,
   defaultTab: "overview",
 });
+
+initWorkflowNav();
+initWorkflowAdvancedToggle();
+initAggregateTabUi();
+initWorkspaceNav();
 
 initControlsSplitter();
 
@@ -11452,6 +14072,7 @@ applyMaSourceConstraints();
 const hist0 = getHistory();
 populateHistorySelect(hist0, "");
 populateCompareSelect(hist0, $("compareSelect")?.value || "");
+updateAggregateSummaryCards();
 refreshSavedRuns();
 refreshMetaSaved();
 updateDeviceIdEnabled();

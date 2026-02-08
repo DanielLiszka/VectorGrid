@@ -2,12 +2,14 @@ pub mod composite_cpu;
 pub mod composite_validate;
 pub mod composite_mo;
 pub mod cscv_pbo;
+pub mod csv_compat;
 pub mod double_ma;
 pub mod double_ma_validate;
 pub mod indicator_factory;
 pub mod matrix_index;
 pub mod meta_select;
 pub mod ml_confidence;
+pub mod timeframe;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod gpu_backtest_kernel;
 pub mod progress;
@@ -16,6 +18,9 @@ pub(crate) mod vram_ma;
 
 pub use ta_strategies::double_ma::DoubleMaCurves;
 pub use ta_strategies::records::{TradeRecord, TradeRecords};
+
+pub use csv_compat::read_candles_from_csv_compat;
+pub use timeframe::{parse_timeframe_label, resample_candles, TimeframeSpec};
 
 pub use double_ma::{
     compute_double_ma_drilldown_blocking_with_candles,

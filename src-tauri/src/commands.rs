@@ -5,6 +5,7 @@ use crate::ma_registry::MaInfo;
 use crate::polygon;
 use crate::settings;
 use crate::state::AppState;
+use crate::state::BackgroundTaskState;
 use crate::state::LoadPriceDataResponse;
 use serde::Serialize;
 use serde_json::Value;
@@ -141,6 +142,15 @@ pub fn load_price_data(
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
     state.load_price_data(&path, &cache_dir)
+}
+
+#[tauri::command]
+pub fn resample_price_data(
+    base_data_id: String,
+    timeframe: String,
+    state: tauri::State<AppState>,
+) -> Result<LoadPriceDataResponse, String> {
+    state.resample_loaded_data(&base_data_id, &timeframe)
 }
 
 #[tauri::command]
@@ -330,6 +340,7 @@ pub struct PolygonDownloadAndLoadResponse {
     pub csv_path: String,
     pub downloaded_bars: usize,
     pub used_cache_only: bool,
+    pub base_load: LoadPriceDataResponse,
     #[serde(flatten)]
     pub load: LoadPriceDataResponse,
 }
@@ -345,7 +356,18 @@ pub async fn polygon_download_1m_and_load(
     let dir = polygon::polygon_cache_dir(&root);
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
     let app_identifier = app.config().identifier.clone();
-    let req2 = req.clone();
+
+    // Always fetch/cache 1m candles; derive larger timeframes from that in-memory.
+    let requested_tf = req
+        .timeframe
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("1m")
+        .to_string();
+
+    let mut req2 = req.clone();
+    req2.timeframe = Some("1m".to_string());
 
     let dl = tauri::async_runtime::spawn_blocking(move || {
         polygon::download_1m_to_cache(&app_identifier, &dir, &req2)
@@ -354,11 +376,17 @@ pub async fn polygon_download_1m_and_load(
     .map_err(|e| e.to_string())??;
 
     let csv_path = dl.csv_path.to_string_lossy().to_string();
-    let load = state.load_price_data(&csv_path, &cache_dir)?;
+    let base_load = state.load_price_data(&csv_path, &cache_dir)?;
+    let load = if requested_tf.eq_ignore_ascii_case("1m") {
+        base_load.clone()
+    } else {
+        state.resample_loaded_data(&base_load.id, &requested_tf)?
+    };
     Ok(PolygonDownloadAndLoadResponse {
         csv_path,
         downloaded_bars: dl.downloaded_bars,
         used_cache_only: dl.used_cache_only,
+        base_load,
         load,
     })
 }
@@ -508,6 +536,12 @@ pub fn pick_folder() -> Result<Option<String>, String> {
     {
         Err("Native folder dialogs are only implemented on Windows in this demo.".to_string())
     }
+}
+
+#[tauri::command]
+pub fn cancel_background_task(bg: tauri::State<'_, BackgroundTaskState>) -> Result<(), String> {
+    bg.request_cancel();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1213,6 +1247,136 @@ fn apply_cross_ticker_validation_double_ma(
         datasets: datasets_meta,
     });
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PriceBar {
+    pub time: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+    pub from_index: u32,
+    pub to_index: u32,
+}
+
+fn build_price_bars(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    max_points: usize,
+) -> Result<Vec<PriceBar>, String> {
+    let n = candles.timestamp.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if candles.open.len() != n
+        || candles.high.len() != n
+        || candles.low.len() != n
+        || candles.close.len() != n
+        || candles.volume.len() != n
+    {
+        return Err("candles vectors have inconsistent lengths".to_string());
+    }
+
+    let cap = max_points.clamp(300, 20_000);
+    let step = if n <= cap { 1usize } else { (n + cap - 1) / cap };
+    let mut out: Vec<PriceBar> = Vec::with_capacity((n + step - 1) / step);
+    let mut prev_time: Option<i64> = None;
+
+    let mut from = 0usize;
+    while from < n {
+        let to_exclusive = n.min(from.saturating_add(step));
+        let to = to_exclusive.saturating_sub(1);
+
+        let mut open = f64::NAN;
+        for i in from..to_exclusive {
+            let o = candles.open[i];
+            if o.is_finite() {
+                open = o;
+                break;
+            }
+            let c = candles.close[i];
+            if c.is_finite() {
+                open = c;
+                break;
+            }
+        }
+
+        let mut close = f64::NAN;
+        for i in (from..to_exclusive).rev() {
+            let c = candles.close[i];
+            if c.is_finite() {
+                close = c;
+                break;
+            }
+            let o = candles.open[i];
+            if o.is_finite() {
+                close = o;
+                break;
+            }
+        }
+
+        let mut high = f64::NEG_INFINITY;
+        let mut low = f64::INFINITY;
+        let mut volume = 0.0f64;
+        for i in from..to_exclusive {
+            for v in [
+                candles.high[i],
+                candles.open[i],
+                candles.close[i],
+                candles.low[i],
+            ] {
+                if v.is_finite() {
+                    if v > high {
+                        high = v;
+                    }
+                    if v < low {
+                        low = v;
+                    }
+                }
+            }
+            let vv = candles.volume[i];
+            if vv.is_finite() {
+                volume += vv;
+            }
+        }
+
+        if open.is_finite() && close.is_finite() && high.is_finite() && low.is_finite() {
+            let time = candles.timestamp[from];
+            if prev_time.map_or(true, |p| time > p) {
+                out.push(PriceBar {
+                    time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    from_index: u32::try_from(from)
+                        .map_err(|_| "dataset too large for chart index".to_string())?,
+                    to_index: u32::try_from(to)
+                        .map_err(|_| "dataset too large for chart index".to_string())?,
+                });
+                prev_time = Some(time);
+            }
+        }
+
+        from = to_exclusive;
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn get_price_bars(
+    data_id: String,
+    max_points: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<PriceBar>, String> {
+    let candles = state.get_candles(&data_id)?;
+    let cap = max_points.unwrap_or(6000) as usize;
+    tauri::async_runtime::spawn_blocking(move || build_price_bars(&candles, cap))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -3466,7 +3630,7 @@ fn suggest_report_path(report: &Value, app: &tauri::AppHandle) -> Result<std::pa
         .unwrap_or("unknown");
     let safe_ts = sanitize_filename_component(ts);
 
-    let base_name = format!("vectorbt_report_{safe_ts}");
+    let base_name = format!("vectorta_report_{safe_ts}");
     let mut path = dir.join(format!("{base_name}.xlsx"));
     if !path.exists() {
         return Ok(path);

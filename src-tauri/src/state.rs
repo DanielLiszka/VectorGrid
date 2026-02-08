@@ -97,6 +97,71 @@ impl AppState {
         })
     }
 
+    pub fn resample_loaded_data(
+        &self,
+        base_data_id: &str,
+        timeframe: &str,
+    ) -> Result<LoadPriceDataResponse, String> {
+        let tf = ta_app_core::parse_timeframe_label(timeframe)?;
+        let out_id = format!("{base_data_id}@{}", tf.label);
+
+        // Fast path: reuse an existing derived dataset if present.
+        {
+            let map = self
+                .candles
+                .lock()
+                .map_err(|_| "failed to lock candles map".to_string())?;
+            if let Some(c) = map.get(&out_id) {
+                let (min_ts, max_ts) = min_max_ts(&c.timestamp);
+                let meta = PriceDataMeta {
+                    len: c.close.len(),
+                    has_open: c.fields.open,
+                    has_high: c.fields.high,
+                    has_low: c.fields.low,
+                    has_close: c.fields.close,
+                    has_volume: c.fields.volume,
+                    min_ts,
+                    max_ts,
+                    timeframe: Some(tf.label),
+                };
+                return Ok(LoadPriceDataResponse {
+                    id: out_id,
+                    meta,
+                    cache_hit: true,
+                    cache_path: String::new(),
+                });
+            }
+        }
+
+        let base = self.get_candles(base_data_id)?;
+        let derived = ta_app_core::resample_candles(&base, tf.interval_ms)?;
+        let (min_ts, max_ts) = min_max_ts(&derived.timestamp);
+        let meta = PriceDataMeta {
+            len: derived.close.len(),
+            has_open: derived.fields.open,
+            has_high: derived.fields.high,
+            has_low: derived.fields.low,
+            has_close: derived.fields.close,
+            has_volume: derived.fields.volume,
+            min_ts,
+            max_ts,
+            timeframe: Some(tf.label),
+        };
+
+        let mut map = self
+            .candles
+            .lock()
+            .map_err(|_| "failed to lock candles map".to_string())?;
+        map.insert(out_id.clone(), derived);
+
+        Ok(LoadPriceDataResponse {
+            id: out_id,
+            meta,
+            cache_hit: false,
+            cache_path: String::new(),
+        })
+    }
+
     pub fn get_candles(&self, id: &str) -> Result<Candles, String> {
         let map = self
             .candles
@@ -113,6 +178,50 @@ impl AppState {
         }
         self.cancel.store(false, Ordering::SeqCst);
         Ok(RunGuard {
+            running: self.running.clone(),
+        })
+    }
+
+    pub fn cancel_token(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
+
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+pub struct BackgroundTaskState {
+    running: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+pub struct BackgroundTaskGuard {
+    running: Arc<AtomicBool>,
+}
+
+impl Drop for BackgroundTaskGuard {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Default for BackgroundTaskState {
+    fn default() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl BackgroundTaskState {
+    pub fn try_begin(&self) -> Result<BackgroundTaskGuard, String> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return Err("a background task is already in progress".to_string());
+        }
+        self.cancel.store(false, Ordering::SeqCst);
+        Ok(BackgroundTaskGuard {
             running: self.running.clone(),
         })
     }

@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 
-use ta_app_core::{Backend, DoubleMaRequest};
+use ta_app_core::{read_candles_from_csv_compat, Backend, DoubleMaRequest};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
-use vector_ta::utilities::data_loader::{read_candles_from_csv, Candles};
+use vector_ta::utilities::data_loader::Candles;
 
 #[derive(Clone, Copy, Debug)]
 struct U32Range {
@@ -157,11 +157,10 @@ fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
     let candles = if let Some(path) = cli.csv.as_ref() {
-        read_candles_from_csv(
+        read_candles_from_csv_compat(
             path.to_str()
                 .ok_or_else(|| "invalid csv path".to_string())?,
-        )
-        .map_err(|e| e.to_string())?
+        )?
     } else {
         make_synth_candles(cli.synth_len)
     };

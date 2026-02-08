@@ -10,11 +10,13 @@ use commands::*;
 use distributed::*;
 use distributed::DistributedState;
 use state::AppState;
+use state::BackgroundTaskState;
 
 pub fn run_tauri() {
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(DistributedState::default())
+        .manage(BackgroundTaskState::default())
         .setup(|app| {
             let window_cfg = app.config().app.windows.get(0).cloned().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "missing window config")
@@ -32,6 +34,7 @@ pub fn run_tauri() {
         })
         .invoke_handler(tauri::generate_handler![
             load_price_data,
+            resample_price_data,
             list_sample_csvs,
             get_market_data_dir_info,
             set_market_data_dir,
@@ -45,6 +48,7 @@ pub fn run_tauri() {
             pick_csv_file,
             pick_save_csv,
             pick_folder,
+            cancel_background_task,
             run_double_ma_optimization,
             run_composite_cpu_optimization,
             run_composite_mo_optimization,
@@ -75,6 +79,7 @@ pub fn run_tauri() {
             update_artifact_tags,
             load_run_artifact,
             delete_run_artifact,
+            get_price_bars,
             compute_double_ma_drilldown,
             compute_composite_cpu_drilldown,
             compute_double_ma_local_stability,

@@ -15,6 +15,10 @@
 *.vta
 *.vta.tmp
 
+# Local market data snapshots
+data/**/*.csv
+data/*.csv
+
 # Logs
 *.log
 

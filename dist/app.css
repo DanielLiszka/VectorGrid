@@ -5,11 +5,17 @@
   --controls-w: 420px;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 :root,
 html[data-theme="light"] {
   color-scheme: light;
   --bg: #f8fafc;
-  --panel: rgba(255, 255, 255, 0.82);
+  --panel: rgba(255, 255, 255, 0.94);
   --panel-footer: rgba(255, 255, 255, 0.92);
   --surface: #ffffff;
   --surface2: #f1f5f9;
@@ -31,7 +37,7 @@ html[data-theme="light"] {
   --shadow-lg: 0 20px 55px rgba(2, 6, 23, 0.18);
   --shadow-md: 0 12px 30px rgba(2, 6, 23, 0.12);
   --app-bg: radial-gradient(1200px 600px at 15% 10%, rgba(14, 165, 233, 0.18), var(--bg));
-  --header-bg: rgba(255, 255, 255, 0.72);
+  --header-bg: rgba(255, 255, 255, 0.96);
   --backdrop: rgba(15, 23, 42, 0.35);
   --focus-ring: 0 0 0 3px rgba(2, 132, 199, 0.22);
   --focus-border: rgba(2, 132, 199, 0.65);
@@ -44,7 +50,7 @@ html[data-theme="dark"] {
   color-scheme: dark;
   /* Softer dark (avoid pitch-black): slate/navy surfaces with gentle contrast. */
   --bg: #111827;
-  --panel: rgba(31, 41, 55, 0.78);
+  --panel: rgba(31, 41, 55, 0.9);
   --panel-footer: rgba(31, 41, 55, 0.92);
   --surface: #0f172a;
   --surface2: #16213a;
@@ -66,7 +72,7 @@ html[data-theme="dark"] {
   --shadow-lg: 0 20px 55px rgba(0, 0, 0, 0.32);
   --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.22);
   --app-bg: radial-gradient(1200px 720px at 18% 10%, rgba(14, 165, 233, 0.22), var(--bg));
-  --header-bg: rgba(17, 24, 39, 0.72);
+  --header-bg: rgba(17, 24, 39, 0.96);
   --backdrop: rgba(2, 6, 23, 0.55);
   --focus-ring: 0 0 0 3px rgba(56, 189, 248, 0.22);
   --focus-border: rgba(56, 189, 248, 0.55);
@@ -87,7 +93,9 @@ body {
     "Segoe UI Emoji";
   background: var(--app-bg);
   color: var(--text);
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -96,9 +104,11 @@ header {
   padding: 1.25rem 1.75rem;
   border-bottom: 1px solid var(--border);
   background: var(--header-bg);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(6px);
   position: sticky;
   top: 0;
+  z-index: 50;
+  isolation: isolate;
 }
 
 h1 {
@@ -131,6 +141,188 @@ h1 {
   min-width: 168px;
 }
 
+.workspaceRow {
+  margin-top: 0.75rem;
+}
+
+.workspaceBar {
+  margin: 0;
+  border-radius: 14px;
+}
+
+.workspaceBar .tabBtn {
+  padding: 0.42rem 0.72rem;
+  font-size: 0.82rem;
+  font-weight: 560;
+}
+
+.workflowStepRow {
+  margin-top: 0.55rem;
+  display: none;
+}
+
+html[data-workspace="workflow"] .workflowStepRow {
+  display: block;
+}
+
+.workflowStepBar {
+  margin: 0;
+  border-radius: 12px;
+  background: var(--panel-footer);
+}
+
+.workflowStepBar .tabBtn {
+  padding: 0.36rem 0.62rem;
+  font-size: 0.77rem;
+  letter-spacing: 0.01em;
+}
+
+.workspaceContextStrip {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.workspaceCtxItem {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+  padding: 0.32rem 0.5rem;
+}
+
+.workspaceCtxK {
+  display: block;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.workspaceCtxV {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.78rem;
+  line-height: 1.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1320px) {
+  .workspaceContextStrip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .workspaceContextStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .workspaceContextStrip {
+    grid-template-columns: 1fr;
+  }
+}
+
+.workflowRow {
+  margin-top: 0.75rem;
+}
+
+.workflowBar {
+  margin: 0;
+  border-radius: 14px;
+}
+
+.legacyWorkflowRow {
+  display: none;
+}
+
+.workflowSubtitle {
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.workflowSubtitleRow {
+  margin-top: 0.45rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.workflowSubtitleRow .workflowSubtitle {
+  margin-top: 0;
+}
+
+.subtleBtn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.subtleBtn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface2);
+}
+
+html:not([data-workspace="workflow"]) #btnToggleWorkflowAdvanced {
+  display: none;
+}
+
+html[data-workspace="workflow"]:not([data-workflow-advanced="1"]) #controlsTabBar button[data-tab="strategy"],
+html[data-workspace="workflow"]:not([data-workflow-advanced="1"]) #controlsTabBar button[data-tab="advanced"] {
+  display: none;
+}
+
+.detailsCard {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface2);
+  padding: 0.55rem 0.75rem;
+}
+
+.detailsCard[open] {
+  background: var(--panel-footer);
+}
+
+.detailsCard summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+}
+
+.detailsCard summary::-webkit-details-marker {
+  display: none;
+}
+
+.detailsCard summary::after {
+  content: "▾";
+  margin-left: auto;
+  color: var(--muted);
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+
+.detailsCard[open] summary::after {
+  transform: rotate(0deg);
+}
+
+.detailsBody {
+  margin-top: 0.75rem;
+}
+
 main {
   padding: 1.75rem;
   display: grid;
@@ -138,8 +330,9 @@ main {
   gap: 1.25rem;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   position: relative;
+  align-items: start;
 }
 
 .splitter {
@@ -186,6 +379,51 @@ html[data-controls-collapsed="1"] #mainSplitter {
   display: none;
 }
 
+html[data-workspace="settings"] main {
+  grid-template-columns: 1fr;
+}
+
+html[data-workspace="settings"] #controlsCard,
+html[data-workspace="settings"] #resultsCard,
+html[data-workspace="settings"] #mainSplitter {
+  display: none;
+}
+
+#settingsWorkspaceCard {
+  display: none;
+}
+
+html[data-workspace="settings"] #settingsWorkspaceCard {
+  display: flex;
+}
+
+html[data-workspace="aggregate"] main {
+  grid-template-columns: 1fr;
+}
+
+html[data-workspace="aggregate"] #controlsCard,
+html[data-workspace="aggregate"] #mainSplitter {
+  display: none;
+}
+
+html[data-workflow="validate"] main,
+html[data-workflow="analyze"] main,
+html[data-workflow="history"] main {
+  grid-template-columns: 1fr;
+}
+
+html[data-workflow="validate"] #controlsCard,
+html[data-workflow="analyze"] #controlsCard,
+html[data-workflow="history"] #controlsCard {
+  display: none;
+}
+
+html[data-workflow="validate"] #mainSplitter,
+html[data-workflow="analyze"] #mainSplitter,
+html[data-workflow="history"] #mainSplitter {
+  display: none;
+}
+
 @media (max-width: 1020px) {
   main {
     grid-template-columns: 1fr;
@@ -209,7 +447,7 @@ html[data-controls-collapsed="1"] #mainSplitter {
 .cardLayout {
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: auto;
 }
 
 .cardHeader {
@@ -217,9 +455,9 @@ html[data-controls-collapsed="1"] #mainSplitter {
 }
 
 .cardBody {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
 }
 
 .cardFooter {
@@ -230,10 +468,57 @@ html[data-controls-collapsed="1"] #mainSplitter {
   background: var(--panel-footer);
 }
 
-@media (max-width: 1020px) {
-  .cardBody {
-    overflow: visible;
-  }
+html[data-workflow]:not([data-workflow="optimize"]) #controlsCard .cardFooter {
+  display: none;
+}
+
+html[data-workflow="data"] #controlsTabBar,
+html[data-workflow="validate"] #controlsTabBar,
+html[data-workflow="analyze"] #controlsTabBar,
+html[data-workflow="history"] #controlsTabBar {
+  display: none;
+}
+
+html[data-workflow="optimize"] #controlsTabBar button[data-tab="data"],
+html[data-workflow="optimize"] #controlsTabBar button[data-tab="distributed"] {
+  display: none;
+}
+
+html[data-workflow="settings"] #controlsTabBar button[data-tab="data"],
+html[data-workflow="settings"] #controlsTabBar button[data-tab="opt"],
+html[data-workflow="settings"] #controlsTabBar button[data-tab="strategy"] {
+  display: none;
+}
+
+html[data-workflow="data"] #resultsTabBar,
+html[data-workflow="validate"] #resultsTabBar,
+html[data-workflow="history"] #resultsTabBar {
+  display: none;
+}
+
+html[data-workflow="optimize"] #resultsTabBar button[data-tab="validate"],
+html[data-workflow="optimize"] #resultsTabBar button[data-tab="drill"],
+html[data-workflow="optimize"] #resultsTabBar button[data-tab="history"],
+html[data-workflow="optimize"] #resultsTabBar button[data-tab="meta"],
+html[data-workflow="optimize"] #resultsTabBar button[data-tab="debug"] {
+  display: none;
+}
+
+html[data-workflow="analyze"] #resultsTabBar button[data-tab="validate"],
+html[data-workflow="analyze"] #resultsTabBar button[data-tab="history"],
+html[data-workflow="analyze"] #resultsTabBar button[data-tab="meta"],
+html[data-workflow="analyze"] #resultsTabBar button[data-tab="debug"] {
+  display: none;
+}
+
+html[data-workflow="settings"] #resultsTabBar button[data-tab="overview"],
+html[data-workflow="settings"] #resultsTabBar button[data-tab="top"],
+html[data-workflow="settings"] #resultsTabBar button[data-tab="pareto"],
+html[data-workflow="settings"] #resultsTabBar button[data-tab="validate"],
+html[data-workflow="settings"] #resultsTabBar button[data-tab="drill"],
+html[data-workflow="settings"] #resultsTabBar button[data-tab="heatmap"],
+html[data-workflow="settings"] #resultsTabBar button[data-tab="history"] {
+  display: none;
 }
 
 .card h2 {
@@ -242,16 +527,179 @@ html[data-controls-collapsed="1"] #mainSplitter {
   font-weight: 600;
 }
 
+.libraryGrid {
+  margin-top: 0.45rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.libraryPane {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-footer);
+  padding: 0.8rem 0.85rem;
+  min-width: 0;
+}
+
+.libraryDetailCard {
+  margin-top: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 0.7rem 0.75rem;
+}
+
+.libraryDetailTitle {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.libraryDetailMeta {
+  margin-top: 0.2rem;
+  font-size: 0.8rem;
+}
+
+.libraryDetailGrid {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem 0.75rem;
+}
+
+.libraryDetailGrid .k {
+  display: block;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.libraryDetailGrid .v {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.78rem;
+  line-height: 1.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settingsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.settingsPane {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-footer);
+  padding: 0.8rem 0.85rem;
+  min-width: 0;
+}
+
+.settingsShortcutGrid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.aggregateSummaryGrid {
+  margin-bottom: 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.aggregateSummaryCard {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+  padding: 0.5rem 0.6rem;
+  min-width: 0;
+}
+
+.aggregateSummaryCard .k {
+  display: block;
+  font-size: 0.67rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.aggregateSummaryCard .v {
+  display: block;
+  margin-top: 0.12rem;
+  margin-bottom: 0.22rem;
+  font-size: 0.88rem;
+}
+
+.aggregateSummaryCard .muted {
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+}
+
+@media (max-width: 1120px) {
+  .libraryGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .aggregateSummaryGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
 }
 
+.row > * {
+  min-width: 0;
+}
+
 .row3 {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 0.75rem;
+}
+
+.row3 > * {
+  min-width: 0;
+}
+
+.row4 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.row4 > * {
+  min-width: 0;
+}
+
+@media (max-width: 1020px) {
+  .row4 {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .settingsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .libraryDetailGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .aggregateSummaryGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 label {
@@ -405,6 +853,11 @@ button:disabled {
 
 .muted {
   color: var(--muted);
+}
+
+#controlsCard .muted,
+#controlsCard .mono {
+  overflow-wrap: anywhere;
 }
 
 .goodText {
@@ -845,6 +1298,71 @@ canvas.chart {
   image-rendering: auto;
 }
 
+.tvChartFrame {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface2);
+  padding: 0.35rem;
+}
+
+.tvChartHost {
+  width: 100%;
+  height: 360px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .tvChartHost {
+    height: 280px;
+  }
+}
+
+.heatmapCanvasStack {
+  position: relative;
+}
+
+#heatmapCanvas {
+  pointer-events: none;
+}
+
+#heatmapOverlay {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: transparent;
+  border-radius: 12px;
+}
+
+.heatmapTooltip {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  padding: 0.45rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-footer);
+  color: var(--text);
+  font-size: 0.8rem;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
+  max-width: 280px;
+}
+
+canvas.heatmapLegendCanvas {
+  height: 18px;
+  image-rendering: auto;
+}
+
+.heatmapLegendLabels {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 details summary {
   cursor: pointer;
 }
@@ -854,6 +1372,10 @@ details summary {
   grid-template-columns: 1fr auto;
   gap: 0.65rem;
   align-items: end;
+}
+
+.rowAuto > * {
+  min-width: 0;
 }
 
 .progress {
@@ -872,6 +1394,25 @@ details summary {
   transition: width 120ms linear;
 }
 
+.progressFill.indeterminate {
+  width: 42% !important;
+  background: linear-gradient(90deg, var(--accent-soft-2), var(--accent), var(--ok));
+  animation: progressIndeterminateSlide 1100ms ease-in-out infinite;
+  transition: none;
+}
+
+@keyframes progressIndeterminateSlide {
+  0% {
+    transform: translateX(-110%);
+  }
+  50% {
+    transform: translateX(30%);
+  }
+  100% {
+    transform: translateX(190%);
+  }
+}
+
 .tabBar {
   display: flex;
   gap: 0.35rem;
@@ -882,6 +1423,11 @@ details summary {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface2);
+}
+
+.aggregateTabBar {
+  background: var(--panel-footer);
+  border-radius: 12px;
 }
 
 .tabBtn {

@@ -210,9 +210,7 @@ pub fn load_or_build(csv_path: &Path, app_cache_dir: &Path) -> Result<LoadOutcom
     }
 
     // Cache miss: parse CSV, then write cache for future runs.
-    let candles =
-        vector_ta::utilities::data_loader::read_candles_from_csv(&csv_path.to_string_lossy())
-            .map_err(|e| e.to_string())?;
+    let candles = ta_app_core::read_candles_from_csv_compat(csv_path.to_string_lossy().as_ref())?;
 
     let mut wrote_path = None;
     if let Ok(()) = write_cache(&sidecar, &candles, src_id) {
