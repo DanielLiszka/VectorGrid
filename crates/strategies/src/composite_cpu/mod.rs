@@ -79,6 +79,10 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
+            sortino: 0.0,
+            calmar: 0.0,
+            omega: 0.0,
+            volatility: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -90,6 +94,10 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
+            sortino: 0.0,
+            calmar: 0.0,
+            omega: 0.0,
+            volatility: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -101,6 +109,10 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
+            sortino: 0.0,
+            calmar: 0.0,
+            omega: 0.0,
+            volatility: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -130,6 +142,9 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     let mut count: u64 = 0;
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
+    let mut sum_neg_sq = 0.0_f64;
+    let mut sum_pos_r = 0.0_f64;
+    let mut sum_neg_abs_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
@@ -224,26 +239,53 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             mean += delta / count as f64;
             let delta2 = step_r - mean;
             m2 += delta * delta2;
+
+            if step_r < 0.0 {
+                sum_neg_sq += step_r * step_r;
+                sum_neg_abs_r += -step_r;
+            } else {
+                sum_pos_r += step_r;
+            }
         }
 
         sum_abs_pos += (pos as i64).abs();
         sum_pos += pos as i64;
     }
 
-    let sharpe = if COMPUTE_SHARPE {
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
         let variance = if count > 1 {
             m2 / (count as f64 - 1.0)
         } else {
             0.0
         };
         let std = variance.sqrt();
-        if std > 0.0 {
-            mean / std
+        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+        let volatility = std;
+
+        // Sortino: downside deviation uses 0 as the threshold and averages over all observations.
+        let denom = (count as f64).max(1.0);
+        let downside_dev = (sum_neg_sq / denom).sqrt();
+        let sortino_raw = if downside_dev > 0.0 {
+            mean / downside_dev
+        } else if mean > 0.0 {
+            CLAMP_MAX
+        } else if mean < 0.0 {
+            -CLAMP_MAX
         } else {
             0.0
-        }
+        };
+        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+
+        // Omega: ratio of positive-return mass to negative-return mass at 0-threshold.
+        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
+        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
+
+        (sharpe, volatility, sortino, omega)
     } else {
-        0.0
+        (0.0, 0.0, 0.0, 0.0)
     };
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
@@ -262,9 +304,25 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         0.0
     };
 
+    let pnl = log_eq.exp() - 1.0;
+    let calmar_raw = if max_dd > EPS_DENOM {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+
     Metrics {
-        pnl: log_eq.exp() - 1.0,
+        pnl,
         sharpe,
+        sortino,
+        calmar,
+        omega,
+        volatility,
         max_dd,
         trades,
         exposure,
@@ -309,6 +367,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
             },
             trades: Vec::new(),
             trade_stats: None,
+            indicator_bars: Vec::new(),
         };
     }
 
@@ -341,6 +400,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
             },
             trades: Vec::new(),
             trade_stats: None,
+            indicator_bars: Vec::new(),
         };
     }
 
@@ -633,5 +693,6 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
         },
         trades,
         trade_stats,
+        indicator_bars: Vec::new(),
     }
 }

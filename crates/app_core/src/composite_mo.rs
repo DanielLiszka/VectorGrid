@@ -375,8 +375,35 @@ fn metric_value(m: &Metrics, k: ObjectiveKind) -> f64 {
     match k {
         ObjectiveKind::Pnl => m.pnl,
         ObjectiveKind::Sharpe => m.sharpe,
+        ObjectiveKind::Sortino => m.sortino,
+        ObjectiveKind::Calmar => m.calmar,
+        ObjectiveKind::Omega => m.omega,
+        ObjectiveKind::Volatility => m.volatility,
         ObjectiveKind::MaxDrawdown => m.max_dd,
     }
+}
+
+fn objective_needs_return_stats(k: ObjectiveKind) -> bool {
+    matches!(
+        k,
+        ObjectiveKind::Sharpe | ObjectiveKind::Sortino | ObjectiveKind::Omega | ObjectiveKind::Volatility
+    )
+}
+
+fn validate_objectives(objs: &CompositeMoObjectives) -> Result<(), String> {
+    if objs.maximize == objs.minimize {
+        return Err("maximize and minimize objectives must be different".to_string());
+    }
+    if matches!(
+        objs.maximize,
+        ObjectiveKind::MaxDrawdown | ObjectiveKind::Volatility
+    ) {
+        return Err(format!(
+            "maximize objective {:?} is a risk metric; choose Sharpe/Sortino/Calmar/Omega/Pnl",
+            objs.maximize
+        ));
+    }
+    Ok(())
 }
 
 fn decode_len(
@@ -523,6 +550,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let _ = req.mode;
 
     validate_strategy_cfg(&req.base_strategy)?;
+    validate_objectives(&req.objectives)?;
 
     let base_fast_ma = req.fast_ma_type.trim().to_ascii_lowercase();
     let base_slow_ma = req.slow_ma_type.trim().to_ascii_lowercase();
@@ -796,9 +824,9 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let lr = compute_log_returns_f64(close);
     emit_progress(progress, 0, 1, "composite_mo_prep");
 
-    // We only need Sharpe if any objective uses it.
-    let need_sharpe = req.objectives.maximize == ObjectiveKind::Sharpe
-        || req.objectives.minimize == ObjectiveKind::Sharpe;
+    // We only need per-bar return stats if any objective uses them.
+    let need_sharpe = objective_needs_return_stats(req.objectives.maximize)
+        || objective_needs_return_stats(req.objectives.minimize);
 
     // Precompute MA matrices for the allowed period sets.
     let build_ma_bank = |ma_type: &str,
@@ -1003,14 +1031,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 (fast_len as f64) - (slow_len as f64) + 1.0
             };
             constraints.push(viol);
-            let metrics = Metrics {
-                pnl: 0.0,
-                sharpe: 0.0,
-                max_dd: 0.0,
-                trades: 0,
-                exposure: 0.0,
-                net_exposure: 0.0,
-            };
+            let metrics = Metrics::default();
             let params = CompositeMoParams {
                 fast_ma_type: base_fast_ma.clone(),
                 slow_ma_type: base_slow_ma.clone(),
@@ -1033,14 +1054,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 Ok(v) => v,
                 Err(_) => {
                     constraints.push(1.0);
-                    let metrics = Metrics {
-                        pnl: 0.0,
-                        sharpe: 0.0,
-                        max_dd: 0.0,
-                        trades: 0,
-                        exposure: 0.0,
-                        net_exposure: 0.0,
-                    };
+                    let metrics = Metrics::default();
                     let params = CompositeMoParams {
                         fast_ma_type: base_fast_ma.clone(),
                         slow_ma_type: base_slow_ma.clone(),
@@ -1063,14 +1077,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 Ok(v) => v,
                 Err(_) => {
                     constraints.push(1.0);
-                    let metrics = Metrics {
-                        pnl: 0.0,
-                        sharpe: 0.0,
-                        max_dd: 0.0,
-                        trades: 0,
-                        exposure: 0.0,
-                        net_exposure: 0.0,
-                    };
+                    let metrics = Metrics::default();
                     let params = CompositeMoParams {
                         fast_ma_type: base_fast_ma.clone(),
                         slow_ma_type: base_slow_ma.clone(),
@@ -1093,14 +1100,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             Some(v) => v,
             None => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: base_fast_ma.clone(),
                     slow_ma_type: base_slow_ma.clone(),
@@ -1122,14 +1122,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             Some(v) => v,
             None => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: base_fast_ma.clone(),
                     slow_ma_type: base_slow_ma.clone(),
@@ -1155,14 +1148,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
             None => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: base_fast_ma.clone(),
                     slow_ma_type: base_slow_ma.clone(),
@@ -1188,14 +1174,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
             None => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: base_fast_ma.clone(),
                     slow_ma_type: base_slow_ma.clone(),
@@ -1370,14 +1349,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
         // If structural constraints already violated, avoid expensive indicator work.
         if constraints.iter().any(|&v| v > 0.0) {
-            let metrics = Metrics {
-                pnl: 0.0,
-                sharpe: 0.0,
-                max_dd: 0.0,
-                trades: 0,
-                exposure: 0.0,
-                net_exposure: 0.0,
-            };
+            let metrics = Metrics::default();
             let params = CompositeMoParams {
                 fast_ma_type: fast_ma_type.clone(),
                 slow_ma_type: slow_ma_type.clone(),
@@ -1399,14 +1371,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             Ok(v) => v,
             Err(_) => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: fast_ma_type.clone(),
                     slow_ma_type: slow_ma_type.clone(),
@@ -1430,14 +1395,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             Ok(v) => v,
             Err(_) => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: fast_ma_type.clone(),
                     slow_ma_type: slow_ma_type.clone(),
@@ -1461,14 +1419,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             Ok(v) => v,
             Err(_) => {
                 constraints.push(1.0);
-                let metrics = Metrics {
-                    pnl: 0.0,
-                    sharpe: 0.0,
-                    max_dd: 0.0,
-                    trades: 0,
-                    exposure: 0.0,
-                    net_exposure: 0.0,
-                };
+                let metrics = Metrics::default();
                 let params = CompositeMoParams {
                     fast_ma_type: fast_ma_type.clone(),
                     slow_ma_type: slow_ma_type.clone(),

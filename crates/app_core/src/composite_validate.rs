@@ -448,14 +448,7 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
     let n = series.n;
     let end_t = end_t.min(n);
     if end_t < 2 || start_t >= end_t {
-        return Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-        };
+        return Metrics::default();
     }
     let lr = &series.lr[..end_t];
     let ott_prices = &series.ott_prices[..end_t];
@@ -831,6 +824,16 @@ fn robust_score_from_stats(in_sample: &Metrics, wf: Option<&WalkForwardStats>) -
     }
 }
 
+fn fold_cscv_into_robust_score(base: f64, cscv: Option<&CscvCandidatePboStats>) -> f64 {
+    let Some(st) = cscv else {
+        return base;
+    };
+    let Some(oos) = st.oos_metric_p50 else {
+        return base;
+    };
+    if oos.is_finite() { base.min(oos) } else { base }
+}
+
 pub fn run_composite_validation_blocking_with_candles(
     mut req: CompositeValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -1100,8 +1103,6 @@ pub fn run_composite_validation_blocking_with_candles(
         out[i].robust_pareto = !dominated;
     }
 
-    out.sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
-
     let mut cscv_pbo: Option<CscvPboResult> = None;
     if let Some(cfg) = cscv_cfg.as_ref() {
         let slices = sanitize_cscv_slices(cfg.slices);
@@ -1167,6 +1168,12 @@ pub fn run_composite_validation_blocking_with_candles(
             });
         }
     }
+
+    for cand in out.iter_mut() {
+        cand.robust_score = fold_cscv_into_robust_score(cand.robust_score, cand.cscv_pbo.as_ref());
+    }
+
+    out.sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
 
     let runtime_ms = start.elapsed().as_millis() as u64;
     Ok(CompositeValidationResult {
@@ -1256,6 +1263,31 @@ mod tests {
         assert_eq!(c.perturb.as_ref().unwrap().iterations, 3);
         assert_eq!(c.trade_bootstrap.as_ref().unwrap().simulations, 50);
         assert!(c.robust_score.is_finite());
+    }
+
+    #[test]
+    fn fold_cscv_into_robust_score_uses_oos_median_sharpe_as_lower_bound() {
+        let st_low = CscvCandidatePboStats {
+            is_selected_frac: 0.5,
+            oos_rank_frac_p50: Some(0.8),
+            oos_metric_p50: Some(0.25),
+        };
+        assert!((fold_cscv_into_robust_score(1.0, Some(&st_low)) - 0.25).abs() < 1e-12);
+
+        let st_high = CscvCandidatePboStats {
+            is_selected_frac: 0.5,
+            oos_rank_frac_p50: Some(0.8),
+            oos_metric_p50: Some(2.0),
+        };
+        assert!((fold_cscv_into_robust_score(1.0, Some(&st_high)) - 1.0).abs() < 1e-12);
+
+        let st_none = CscvCandidatePboStats {
+            is_selected_frac: 0.0,
+            oos_rank_frac_p50: None,
+            oos_metric_p50: None,
+        };
+        assert!((fold_cscv_into_robust_score(1.0, Some(&st_none)) - 1.0).abs() < 1e-12);
+        assert!((fold_cscv_into_robust_score(1.0, None) - 1.0).abs() < 1e-12);
     }
 
     #[test]

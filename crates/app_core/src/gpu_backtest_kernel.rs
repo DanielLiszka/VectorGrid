@@ -31,6 +31,22 @@ const STRAT_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 const METRICS_COUNT: usize = 7;
 const TOPK_BLOCK_ITEMS: usize = 512;
 
+fn calmar_ratio(pnl: f64, max_dd: f64) -> f64 {
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let raw = if max_dd > EPS_DENOM {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    raw.clamp(-CLAMP_MAX, CLAMP_MAX)
+}
+
 #[derive(Default)]
 struct KernelScratch {
     d_lr: Option<DeviceBuffer<f32>>,
@@ -968,17 +984,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         pair_to_combo[fi * s_total + si] = Some(ci);
     }
 
-    let mut out_metrics = vec![
-        Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-        };
-        combos.len()
-    ];
+    let mut out_metrics = vec![Metrics::default(); combos.len()];
 
     let close_f32: Vec<f32> = close.iter().map(|&x| x as f32).collect();
     let d_close = DeviceBuffer::from_slice(&close_f32).map_err(|e| e.to_string())?;
@@ -1389,6 +1395,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         out_metrics[combo_idx] = Metrics {
                             pnl,
                             sharpe,
+                            sortino: 0.0,
+                            calmar: calmar_ratio(pnl, max_dd),
+                            omega: 0.0,
+                            volatility: std,
                             max_dd,
                             trades: if trades.is_finite() && trades >= 0.0 {
                                 trades as u32
@@ -1647,7 +1657,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut processed = 0usize;
     emit_progress(progress, processed, total_pairs, "gpu-kernel");
 
-    let fast_pass = objective != ObjectiveKind::Sharpe && !include_all && !export_enabled;
+    let fast_pass = matches!(
+        objective,
+        ObjectiveKind::Pnl | ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar
+    ) && !include_all
+        && !export_enabled;
     let mut metrics_count: usize = if fast_pass { 3 } else { METRICS_COUNT };
     if !include_all && !export_enabled {
         if let Ok(v) = std::env::var("VECTORBT_KERNEL_METRICS_COUNT") {
@@ -1667,21 +1681,26 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
     match objective {
         ObjectiveKind::Pnl => {}
-        ObjectiveKind::MaxDrawdown => {
+        ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => {
             if metrics_count < 3 {
                 return Err(format!(
-                    "VECTORBT_KERNEL_METRICS_COUNT={} too small for objective MaxDrawdown (need >= 3)",
+                    "VECTORBT_KERNEL_METRICS_COUNT={} too small for objective {objective:?} (need >= 3)",
                     metrics_count
                 ));
             }
         }
-        ObjectiveKind::Sharpe => {
+        ObjectiveKind::Sharpe | ObjectiveKind::Volatility => {
             if metrics_count < 5 {
                 return Err(format!(
-                    "VECTORBT_KERNEL_METRICS_COUNT={} too small for objective Sharpe (need >= 5)",
+                    "VECTORBT_KERNEL_METRICS_COUNT={} too small for objective {objective:?} (need >= 5)",
                     metrics_count
                 ));
             }
+        }
+        ObjectiveKind::Sortino | ObjectiveKind::Omega => {
+            return Err(format!(
+                "GPU kernel backend does not support objective {objective:?}"
+            ));
         }
     }
     let topk_select: usize = if top_k == 0 { 1 } else { top_k };
@@ -1694,6 +1713,13 @@ fn optimize_double_ma_gpu_kernel_impl(
         ObjectiveKind::Pnl => 0,
         ObjectiveKind::Sharpe => 1,
         ObjectiveKind::MaxDrawdown => 2,
+        ObjectiveKind::Calmar => 3,
+        ObjectiveKind::Volatility => 4,
+        ObjectiveKind::Sortino | ObjectiveKind::Omega => {
+            return Err(format!(
+                "GPU kernel backend does not support objective {objective:?}"
+            ));
+        }
     };
     let cfg_recompute = KernelConfig {
         device_id: cfg.device_id,
@@ -2253,6 +2279,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                             Metrics {
                                 pnl,
                                 sharpe,
+                                sortino: 0.0,
+                                calmar: calmar_ratio(pnl, max_dd),
+                                omega: 0.0,
+                                volatility: std,
                                 max_dd,
                                 trades: if trades.is_finite() && trades >= 0.0 {
                                     trades as u32
@@ -2494,6 +2524,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 ObjectiveKind::Pnl => pnl,
                                 ObjectiveKind::Sharpe => sharpe,
                                 ObjectiveKind::MaxDrawdown => -max_dd,
+                                ObjectiveKind::Calmar => calmar_ratio(pnl, max_dd),
+                                ObjectiveKind::Volatility => -std,
+                                ObjectiveKind::Sortino | ObjectiveKind::Omega => f64::NEG_INFINITY,
                             };
 
                             writeln!(
@@ -2600,6 +2633,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                         Metrics {
                             pnl,
                             sharpe,
+                            sortino: 0.0,
+                            calmar: calmar_ratio(pnl, max_dd),
+                            omega: 0.0,
+                            volatility: std,
                             max_dd,
                             trades: if trades.is_finite() && trades >= 0.0 {
                                 trades as u32

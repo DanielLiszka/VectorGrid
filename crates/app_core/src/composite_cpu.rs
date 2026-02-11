@@ -8,8 +8,9 @@ use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, Strategy
 
 use crate::composite_mo::CompositeGpuPrescanConfig;
 use crate::double_ma::{
-    compute_halftrend_trend, compute_log_returns_f64, cpu_tile_sizes, estimate_pairs_fast_lt_slow,
-    expand_u16_range, first_finite_idx, lookup_ma_info, ma_matrix_cpu_f64,
+    build_indicator_bars_for_chart, compute_halftrend_trend, compute_log_returns_f64,
+    cpu_tile_sizes, estimate_pairs_fast_lt_slow, expand_u16_range, first_finite_idx, lookup_ma_info,
+    ma_matrix_cpu_f64,
     resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles, validate_ma_kind,
     validate_strategy_cfg, Backend, DoubleMaRequest,
     BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, HalfTrendRegimeFilter,
@@ -189,9 +190,20 @@ pub struct CompositeCpuLocalStabilityRequest {
 fn objective_score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     match objective {
         ObjectiveKind::Sharpe => metrics.sharpe,
+        ObjectiveKind::Sortino => metrics.sortino,
+        ObjectiveKind::Calmar => metrics.calmar,
+        ObjectiveKind::Omega => metrics.omega,
+        ObjectiveKind::Volatility => -metrics.volatility,
         ObjectiveKind::Pnl => metrics.pnl,
         ObjectiveKind::MaxDrawdown => -metrics.max_dd,
     }
+}
+
+fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
+    matches!(
+        objective,
+        ObjectiveKind::Sharpe | ObjectiveKind::Sortino | ObjectiveKind::Omega | ObjectiveKind::Volatility
+    )
 }
 
 pub fn run_composite_cpu_optimization_blocking_with_candles(
@@ -611,20 +623,20 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
 
     let lr = compute_log_returns_f64(close);
     let bins = req.bins.unwrap_or(1024);
-    Ok(
-        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64(
-            &lr,
-            ma_prices,
-            &fast_mat,
-            &slow_mat,
-            &halftrend_trend,
-            &macz_hist,
-            &ott_line,
-            start_t,
-            &req.strategy,
-            bins,
-        ),
-    )
+    let mut curves = ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64(
+        &lr,
+        ma_prices,
+        &fast_mat,
+        &slow_mat,
+        &halftrend_trend,
+        &macz_hist,
+        &ott_line,
+        start_t,
+        &req.strategy,
+        bins,
+    );
+    curves.indicator_bars = build_indicator_bars_for_chart(candles, &fast_mat, &slow_mat, 8_000)?;
+    Ok(curves)
 }
 
 pub fn compute_composite_cpu_local_stability_blocking_with_candles(
@@ -1102,7 +1114,7 @@ fn optimize_composite_cpu_tiled(
                     }
                 }
             } else {
-                let compute_sharpe = objective == ObjectiveKind::Sharpe;
+                let compute_sharpe = objective_needs_return_stats(objective);
                 let pf = f_chunk.len();
                 let ps = s_chunk.len();
                 let tile_pairs = pf
@@ -1197,7 +1209,7 @@ fn optimize_composite_cpu_tiled(
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
-    if objective != ObjectiveKind::Sharpe && !include_all {
+    if !objective_needs_return_stats(objective) && !include_all {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }

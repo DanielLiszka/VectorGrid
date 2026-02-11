@@ -532,6 +532,9 @@
                 <label for="objective">Objective</label>
                 <select id="objective">
                   <option value="Sharpe">Sharpe</option>
+                  <option value="Sortino">Sortino</option>
+                  <option value="Calmar">Calmar</option>
+                  <option value="Omega">Omega</option>
                   <option value="Pnl">PnL</option>
                   <option value="MaxDrawdown">Min drawdown</option>
                 </select>
@@ -554,6 +557,7 @@
                   <label for="moObjectiveMin">Objective (minimize)</label>
                   <select id="moObjectiveMin">
                     <option value="MaxDrawdown" selected>Max drawdown</option>
+                    <option value="Volatility">Volatility</option>
                     <option value="Sharpe">Sharpe</option>
                     <option value="Pnl">PnL</option>
                   </select>
@@ -1264,7 +1268,7 @@
                 <div class="row3" style="margin-bottom: 0.75rem;">
                   <div style="display: flex; flex-direction: column; gap: 0.35rem;">
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
-                      <input id="valAutoExportXlsx" type="checkbox" checked />
+                      <input id="valAutoExportXlsx" type="checkbox" />
                       <label for="valAutoExportXlsx" style="margin: 0;">Auto-export report (XLSX)</label>
                     </div>
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -1459,7 +1463,7 @@
                 <div class="tvChartFrame">
                   <div id="drillTvChart" class="tvChartHost" role="img" aria-label="Backtest price chart"></div>
                 </div>
-                <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="drillTvChartMeta">Select a Top row to render candles and trade markers.</div>
+                <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="drillTvChartMeta">Hover for OHLC/MA values; click a marker to focus a trade.</div>
               </div>
               <div>
                 <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Equity (min/max per bin)</div>
@@ -1504,7 +1508,9 @@
                         <th class="left">#</th>
                         <th class="left">Dir</th>
                         <th class="left">Entry</th>
+                        <th class="left">EntryTime</th>
                         <th class="left">Exit</th>
+                        <th class="left">ExitTime</th>
                         <th>Bars</th>
                         <th>PnL</th>
                         <th class="left">State</th>
@@ -1513,7 +1519,7 @@
                     <tbody id="tradeTableBody"></tbody>
                   </table>
                 </div>
-                <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Showing last 200 trades (if available).</div>
+                <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Showing up to 200 trades (click a marker to focus).</div>
               </div>
             </div>
           </div>
@@ -1708,7 +1714,7 @@
             <details id="batchWrap" style="margin-bottom: 0.85rem;">
               <summary class="muted">Batch runs (generate run artifacts)</summary>
               <div class="muted" style="font-size: 0.85rem; margin: 0.55rem 0 0.75rem;">
-                Runs optimize → validate → export XLSX across many cached Polygon datasets to build a robust pool for meta analysis.
+                Runs optimize → validate → export XLSX across many datasets (Polygon cache or repo data folder) to build a robust pool for meta analysis.
               </div>
 
               <div class="row3" style="margin-bottom: 0.75rem;">
@@ -1755,7 +1761,7 @@
               </div>
 
               <div class="muted" style="margin-top: -0.25rem; margin-bottom: 0.55rem; font-size: 0.8rem;">
-                Tip: Cache datasets via Polygon first. Batch runs are saved to <span class="mono">runs/</span> and can be filtered by tags.
+                Tip: Put CSVs in the repo-level <span class="mono">data/</span> folder, or cache datasets via Polygon. Batch runs are saved to <span class="mono">runs/</span> and can be filtered by tags.
               </div>
 
               <input id="batchSelected" type="hidden" value="[]" />

@@ -73,6 +73,7 @@ fn bench_meta_select(c: &mut Criterion) {
         top_k: 25,
         min_samples: 30,
         strict_shortlist: true,
+        allow_shortlist_fallback: true,
         weights: MetaScoreWeights::default(),
         grouping_mode: MetaGroupingMode::Exact,
         cluster_config: MetaClusterConfig::default(),

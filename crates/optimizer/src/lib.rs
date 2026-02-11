@@ -10,6 +10,10 @@ use vector_ta::utilities::data_loader::Candles;
 pub enum ObjectiveKind {
     Pnl,
     Sharpe,
+    Sortino,
+    Calmar,
+    Omega,
+    Volatility,
     MaxDrawdown,
 }
 

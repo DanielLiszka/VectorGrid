@@ -60,6 +60,10 @@ fn default_strict_shortlist() -> bool {
     true
 }
 
+fn default_allow_shortlist_fallback() -> bool {
+    true
+}
+
 fn default_eval_holdout() -> bool {
     true
 }
@@ -171,6 +175,10 @@ pub struct MetaSelectionRequest {
     pub min_samples: usize,
     #[serde(default = "default_strict_shortlist")]
     pub strict_shortlist: bool,
+    /// When true, empty shortlist stages fall back to the broader candidate set.
+    /// Disable this for a hard validation gate prior to meta aggregation.
+    #[serde(default = "default_allow_shortlist_fallback")]
+    pub allow_shortlist_fallback: bool,
     #[serde(default)]
     pub weights: MetaScoreWeights,
     #[serde(default)]
@@ -271,6 +279,7 @@ pub fn meta_select_from_artifacts(
     let mut artifacts_considered = 0usize;
     let mut artifacts_used = 0usize;
     let mut candidates_considered = 0usize;
+    let mut artifacts_rejected_by_shortlist = 0usize;
 
     for (i, art) in artifacts.iter().enumerate() {
         artifacts_considered += 1;
@@ -305,8 +314,10 @@ pub fn meta_select_from_artifacts(
             candidates,
             req.strict_shortlist,
             if cscv_combos > 0 { Some(cscv_threshold) } else { None },
+            req.allow_shortlist_fallback,
         );
         if selected.is_empty() {
+            artifacts_rejected_by_shortlist = artifacts_rejected_by_shortlist.saturating_add(1);
             continue;
         }
 
@@ -425,6 +436,11 @@ pub fn meta_select_from_artifacts(
 
     if artifacts_used == 0 {
         warnings.push("No matching run artifacts with validation results were found.".to_string());
+    } else if artifacts_rejected_by_shortlist > 0 && !req.allow_shortlist_fallback {
+        warnings.push(format!(
+            "Hard shortlist rejected {} artifact(s): no candidates passed strict/CSCV gates.",
+            artifacts_rejected_by_shortlist
+        ));
     } else if aggregates.is_empty() {
         warnings.push(format!(
             "No candidates met min_samples={} (matched artifacts={}). Try lowering min_samples.",
@@ -670,6 +686,7 @@ fn shortlist_candidates<'a>(
     candidates: &'a [Value],
     strict: bool,
     cscv_threshold: Option<f64>,
+    allow_fallback: bool,
 ) -> Vec<&'a Value> {
     const CSCV_RANK_FRAC_MIN: f64 = 0.55;
 
@@ -702,7 +719,11 @@ fn shortlist_candidates<'a>(
                 metric >= threshold
             })
             .collect();
-        return if filtered.is_empty() { base } else { filtered };
+        return if filtered.is_empty() {
+            if allow_fallback { base } else { Vec::new() }
+        } else {
+            filtered
+        };
     }
 
     let has_cross = candidates
@@ -729,10 +750,17 @@ fn shortlist_candidates<'a>(
         .collect();
 
     let base: Vec<&Value> = if shortlist.is_empty() {
-        candidates.iter().collect()
+        if allow_fallback {
+            candidates.iter().collect()
+        } else {
+            Vec::new()
+        }
     } else {
         shortlist
     };
+    if base.is_empty() {
+        return base;
+    }
 
     let Some(threshold) = cscv_threshold else {
         return base;
@@ -763,7 +791,7 @@ fn shortlist_candidates<'a>(
         .collect();
 
     if filtered.is_empty() {
-        base
+        if allow_fallback { base } else { Vec::new() }
     } else {
         filtered
     }
@@ -942,6 +970,7 @@ mod tests {
             top_k: 10,
             min_samples: 2,
             strict_shortlist: true,
+            allow_shortlist_fallback: true,
             weights: MetaScoreWeights::default(),
             grouping_mode: MetaGroupingMode::Exact,
             cluster_config: MetaClusterConfig::default(),
@@ -988,6 +1017,7 @@ mod tests {
             top_k: 10,
             min_samples: 1,
             strict_shortlist: true,
+            allow_shortlist_fallback: true,
             weights: MetaScoreWeights::default(),
             grouping_mode: MetaGroupingMode::Exact,
             cluster_config: MetaClusterConfig::default(),
@@ -1000,6 +1030,50 @@ mod tests {
         // to avoid producing an empty meta run.
         assert_eq!(res.groups.len(), 1);
         assert_eq!(res.groups[0].samples, 1);
+    }
+
+    #[test]
+    fn strict_shortlist_hard_mode_excludes_when_cross_pareto_missing() {
+        let params = json!({"fast_ma_type":"sma","slow_ma_type":"sma","fast_len":5,"slow_len":20,"halftrend":{"amplitude":2,"atr_period":100,"channel_deviation":2.0},"macz":{},"ott":{},"strategy":{}});
+        let art = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-01-26T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+            "tags": [],
+            "validation": { "res": { "candidates": [
+                { "params": params, "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 }, "robust_score": 1.1, "robust_pareto": true, "cross_ticker": { "score": 0.5 }, "cross_ticker_pareto": false }
+            ]}}
+        });
+
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: false,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &[art], None);
+        assert_eq!(res.groups.len(), 0);
+        assert!(res
+            .warnings
+            .iter()
+            .any(|w| w.contains("Hard shortlist rejected")));
     }
 
     #[test]
@@ -1062,6 +1136,7 @@ mod tests {
             top_k: 10,
             min_samples: 1,
             strict_shortlist: true,
+            allow_shortlist_fallback: true,
             weights: MetaScoreWeights::default(),
             grouping_mode: MetaGroupingMode::Exact,
             cluster_config: MetaClusterConfig::default(),

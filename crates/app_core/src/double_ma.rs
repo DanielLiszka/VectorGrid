@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
-use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig};
+use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig};
 
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
@@ -74,6 +74,8 @@ pub struct DoubleMaRequest {
 fn default_ma_source() -> String {
     "close".to_string()
 }
+
+const DRILL_INDICATOR_MAX_POINTS: usize = 8_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum OptimizationModeResolved {
@@ -181,9 +183,20 @@ pub struct BackendOptimizationResult {
 fn objective_score(metrics: &ta_strategies::double_ma::Metrics, objective: ObjectiveKind) -> f64 {
     match objective {
         ObjectiveKind::Sharpe => metrics.sharpe,
+        ObjectiveKind::Sortino => metrics.sortino,
+        ObjectiveKind::Calmar => metrics.calmar,
+        ObjectiveKind::Omega => metrics.omega,
+        ObjectiveKind::Volatility => -metrics.volatility,
         ObjectiveKind::Pnl => metrics.pnl,
         ObjectiveKind::MaxDrawdown => -metrics.max_dd,
     }
+}
+
+fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
+    matches!(
+        objective,
+        ObjectiveKind::Sharpe | ObjectiveKind::Sortino | ObjectiveKind::Omega | ObjectiveKind::Volatility
+    )
 }
 
 pub fn compute_double_ma_drilldown_blocking_with_candles(
@@ -284,8 +297,8 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
 
     let lr = compute_log_returns_f64(close);
     let bins = req.bins.unwrap_or(1024);
-    if let Some(trend) = halftrend_trend.as_ref() {
-        Ok(ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
+    let mut curves = if let Some(trend) = halftrend_trend.as_ref() {
+        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
             &lr,
             &fast_mat,
             &slow_mat,
@@ -293,19 +306,20 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
             start_t,
             &req.strategy,
             bins,
-        ))
-    } else {
-        Ok(
-            ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64(
-                &lr,
-                &fast_mat,
-                &slow_mat,
-                start_t,
-                &req.strategy,
-                bins,
-            ),
         )
-    }
+    } else {
+        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64(
+            &lr,
+            &fast_mat,
+            &slow_mat,
+            start_t,
+            &req.strategy,
+            bins,
+        )
+    };
+    curves.indicator_bars =
+        build_indicator_bars_for_chart(candles, &fast_mat, &slow_mat, DRILL_INDICATOR_MAX_POINTS)?;
+    Ok(curves)
 }
 
 pub fn compute_double_ma_local_stability_blocking_with_candles(
@@ -1429,6 +1443,10 @@ fn grid_search_double_ma_gpu_kernel(
         match objective {
             ObjectiveKind::Pnl => metrics.pnl,
             ObjectiveKind::Sharpe => metrics.sharpe,
+            ObjectiveKind::Sortino => metrics.sortino,
+            ObjectiveKind::Calmar => metrics.calmar,
+            ObjectiveKind::Omega => metrics.omega,
+            ObjectiveKind::Volatility => -metrics.volatility,
             ObjectiveKind::MaxDrawdown => -metrics.max_dd,
         }
     }
@@ -1748,14 +1766,7 @@ fn eval_double_ma_metrics(
 ) -> ta_strategies::double_ma::Metrics {
     let n = prices.len();
     if n < 2 || fast.len() != n || slow.len() != n {
-        return ta_strategies::double_ma::Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-        };
+        return ta_strategies::double_ma::Metrics::default();
     }
 
     let cfg = StrategyConfig::default();
@@ -2111,14 +2122,7 @@ fn sweep_tile_sizes(total_fast: usize, total_slow: usize, series_len: usize) -> 
 fn eval_double_ma_metrics_f64(prices: &[f64], fast: &[f64], slow: &[f64]) -> Metrics {
     let n = prices.len();
     if n < 2 || fast.len() != n || slow.len() != n {
-        return Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-        };
+        return Metrics::default();
     }
 
     let cfg = StrategyConfig::default();
@@ -2171,6 +2175,76 @@ pub(crate) fn compute_log_returns_f64(prices: &[f64]) -> Vec<f64> {
         };
     }
     out
+}
+
+pub(crate) fn build_indicator_bars_for_chart(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast: &[f64],
+    slow: &[f64],
+    max_points: usize,
+) -> Result<Vec<IndicatorBar>, String> {
+    let n = candles.timestamp.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if fast.len() != n || slow.len() != n {
+        return Err("indicator series length mismatch".to_string());
+    }
+
+    let cap = max_points.clamp(300, 20_000);
+    let step = if n <= cap {
+        1usize
+    } else {
+        (n + cap - 1) / cap
+    };
+    let mut out: Vec<IndicatorBar> = Vec::with_capacity((n + step - 1) / step);
+    let mut prev_time: Option<i64> = None;
+
+    let mut from = 0usize;
+    while from < n {
+        let to_exclusive = n.min(from.saturating_add(step));
+        let to = to_exclusive.saturating_sub(1);
+        let time = candles.timestamp[from];
+        if prev_time.is_some_and(|p| time <= p) {
+            from = to_exclusive;
+            continue;
+        }
+
+        let fast_v = (from..to_exclusive).rev().find_map(|i| {
+            let v = fast[i];
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+        let slow_v = (from..to_exclusive).rev().find_map(|i| {
+            let v = slow[i];
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+        if fast_v.is_none() && slow_v.is_none() {
+            from = to_exclusive;
+            continue;
+        }
+
+        out.push(IndicatorBar {
+            time,
+            from_index: u32::try_from(from)
+                .map_err(|_| "dataset too large for indicator index".to_string())?,
+            to_index: u32::try_from(to)
+                .map_err(|_| "dataset too large for indicator index".to_string())?,
+            fast: fast_v,
+            slow: slow_v,
+        });
+        prev_time = Some(time);
+        from = to_exclusive;
+    }
+
+    Ok(out)
 }
 
 pub(crate) fn ma_matrix_cpu_f64(
@@ -2460,7 +2534,7 @@ fn optimize_double_ma_cpu_tiled(
                     }
                 }
             } else {
-                let compute_sharpe = objective == ObjectiveKind::Sharpe;
+                let compute_sharpe = objective_needs_return_stats(objective);
                 let pf = f_chunk.len();
                 let ps = s_chunk.len();
                 let tile_pairs = pf
@@ -2567,7 +2641,7 @@ fn optimize_double_ma_cpu_tiled(
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
-    if objective != ObjectiveKind::Sharpe && !include_all {
+    if !objective_needs_return_stats(objective) && !include_all {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
@@ -2981,7 +3055,7 @@ fn optimize_double_ma_gpu_sweep_tiled(
                     }
                 }
             } else {
-                let compute_sharpe = objective == ObjectiveKind::Sharpe;
+                let compute_sharpe = objective_needs_return_stats(objective);
                 let pf = f_chunk.len();
                 let ps = s_chunk.len();
                 let tile_pairs = pf
@@ -3088,7 +3162,7 @@ fn optimize_double_ma_gpu_sweep_tiled(
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
-    if objective != ObjectiveKind::Sharpe && !include_all {
+    if !objective_needs_return_stats(objective) && !include_all {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }

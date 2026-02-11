@@ -1299,6 +1299,7 @@ canvas.chart {
 }
 
 .tvChartFrame {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface2);
@@ -1310,6 +1311,34 @@ canvas.chart {
   height: 360px;
   border-radius: 10px;
   overflow: hidden;
+}
+
+/* Lightweight Charts creates multiple internal canvases. Reset the global
+   canvas skin here so overlay layers stay transparent and candles remain visible. */
+.tvChartHost canvas {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  image-rendering: auto;
+}
+
+.tvLegend {
+  position: absolute;
+  z-index: 10;
+  left: 0.75rem;
+  top: 0.75rem;
+  pointer-events: none;
+  padding: 0.45rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-footer);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.25;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
+  white-space: pre;
+  max-width: min(560px, calc(100% - 1.5rem));
 }
 
 @media (max-width: 900px) {

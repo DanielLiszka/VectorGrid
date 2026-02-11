@@ -6,6 +6,10 @@ fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     match objective {
         ObjectiveKind::Pnl => metrics.pnl,
         ObjectiveKind::Sharpe => metrics.sharpe,
+        ObjectiveKind::Sortino => metrics.sortino,
+        ObjectiveKind::Calmar => metrics.calmar,
+        ObjectiveKind::Omega => metrics.omega,
+        ObjectiveKind::Volatility => -metrics.volatility,
         ObjectiveKind::MaxDrawdown => -metrics.max_dd,
     }
 }

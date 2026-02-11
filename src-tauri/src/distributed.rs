@@ -947,6 +947,10 @@ pub async fn distributed_run_double_ma_tiled(
                         let m = res.result.best_metrics.clone();
                         let score = match objective {
                             ObjectiveKind::Sharpe => m.sharpe,
+                            ObjectiveKind::Sortino => m.sortino,
+                            ObjectiveKind::Calmar => m.calmar,
+                            ObjectiveKind::Omega => m.omega,
+                            ObjectiveKind::Volatility => -m.volatility,
                             ObjectiveKind::Pnl => m.pnl,
                             ObjectiveKind::MaxDrawdown => -m.max_dd,
                         };
@@ -960,6 +964,10 @@ pub async fn distributed_run_double_ma_tiled(
                             for (p, mm) in res.result.top {
                                 let sc = match objective {
                                     ObjectiveKind::Sharpe => mm.sharpe,
+                                    ObjectiveKind::Sortino => mm.sortino,
+                                    ObjectiveKind::Calmar => mm.calmar,
+                                    ObjectiveKind::Omega => mm.omega,
+                                    ObjectiveKind::Volatility => -mm.volatility,
                                     ObjectiveKind::Pnl => mm.pnl,
                                     ObjectiveKind::MaxDrawdown => -mm.max_dd,
                                 };

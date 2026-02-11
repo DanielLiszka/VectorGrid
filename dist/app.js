@@ -1,4 +1,4 @@
-import { CandlestickSeries, createChart, createSeriesMarkers } from "./vendor/lightweight-charts.standalone.production.mjs";
+import { CandlestickSeries, LineSeries, createChart, createSeriesMarkers } from "./vendor/lightweight-charts.standalone.production.mjs";
 
 const $ = (id) => document.getElementById(id);
 
@@ -1442,10 +1442,27 @@ let HEATMAP_SELECTED = null; // { fBin, sBin, idx, key }
 let DRILL_SEQ = 0;
 let DRILL_SELECTED_KEY = "";
 let DRILL_PRICE_BARS_CACHE = new Map(); // data_id -> [{time,open,high,low,close,volume,from_index,to_index}]
+let DRILL_CURVES_CACHE = new Map(); // key -> curves
+let DRILL_CURVES_INFLIGHT = new Map(); // key -> Promise<curves>
+let DRILL_PREFETCH_SEQ = 0;
+let DRILL_INDICATOR_BARS_CACHE = new Map(); // request_key -> [{time,fast,slow,from_index,to_index}]
 let DRILL_TV_CHART = null;
 let DRILL_TV_SERIES = null;
+let DRILL_TV_FAST_SERIES = null;
+let DRILL_TV_SLOW_SERIES = null;
 let DRILL_TV_MARKERS = null;
 let DRILL_TV_RESIZE_OBSERVER = null;
+let DRILL_TV_LEGEND_EL = null;
+let DRILL_TV_LEGEND_LAST_TEXT = "";
+let DRILL_TV_LEGEND_PINNED_TEXT = "";
+let DRILL_TV_LEGEND_SUBSCRIBED = false;
+let DRILL_TV_CLICK_SUBSCRIBED = false;
+let DRILL_TV_TRADE_EVENTS_BY_TIME = null; // time(sec) -> {entries:[], exits:[]}
+let DRILL_SELECTED_TRADE_IDX = -1;
+let DRILL_TRADES_RANGE_START = 0;
+let DRILL_LAST_CURVES = null;
+let DRILL_LAST_BARS = null;
+let DRILL_LAST_BARS_DATA_ID = "";
 let STABILITY_SEQ = 0;
 let STABILITY_CACHE = new Map();
 let PARETO_POINTS_RENDERED = [];
@@ -1458,6 +1475,30 @@ var COMPARE_SEQ = 0;
 var COMPARE_BASELINE_CACHE = {};
 var META_COMPARE_SEQ = 0;
 var META_BASELINE_CACHE = {};
+
+const DRILL_CURVES_CACHE_MAX = 96;
+const DRILL_PREFETCH_TOP_N = 6;
+const DRILL_TRADES_TABLE_MAX_ROWS = 200;
+
+function clearDrillCaches(opts) {
+  const clearBars = opts?.clearBars !== false;
+  DRILL_SEQ++;
+  DRILL_PREFETCH_SEQ++;
+  DRILL_SELECTED_KEY = "";
+  DRILL_SELECTED_TRADE_IDX = -1;
+  DRILL_TV_LEGEND_PINNED_TEXT = "";
+  DRILL_TRADES_RANGE_START = 0;
+  DRILL_LAST_CURVES = null;
+  DRILL_CURVES_CACHE.clear();
+  DRILL_CURVES_INFLIGHT.clear();
+  DRILL_INDICATOR_BARS_CACHE.clear();
+  if (clearBars) {
+    DRILL_PRICE_BARS_CACHE.clear();
+    DRILL_LAST_BARS = null;
+    DRILL_LAST_BARS_DATA_ID = "";
+  }
+  DRILL_TV_TRADE_EVENTS_BY_TIME = null;
+}
 
 function fileBasename(path) {
   const s = String(path || "");
@@ -2522,6 +2563,16 @@ function initGlobalShortcuts() {
         $("btnCancel")?.click();
         return;
       }
+      // If a trade is selected in the drilldown chart, Esc clears the selection.
+      const polygonOpen = !!$("polygonModal")?.classList?.contains("open");
+      if (!polygonOpen && DRILL_SELECTED_TRADE_IDX >= 0) {
+        const wrap = $("drillWrap");
+        const visible = !!wrap && wrap.style.display !== "none";
+        if (visible) {
+          clearTradeSelection();
+          applyTradeRowSelection();
+        }
+      }
       return;
     }
 
@@ -2593,6 +2644,30 @@ function initGlobalShortcuts() {
       if (RUNNING) return;
       $("btnOpenLatestReport")?.click();
       return;
+    }
+
+    // Drilldown trade navigation: J/K or ArrowDown/ArrowUp.
+    // Avoid hijacking keystrokes while typing in inputs.
+    if (!mod && !isTypingTarget(e.target)) {
+      const curves = DRILL_LAST_CURVES && typeof DRILL_LAST_CURVES === "object" ? DRILL_LAST_CURVES : null;
+      const trades = Array.isArray(curves?.trades) ? curves.trades : [];
+      if (trades.length) {
+        const wrap = $("drillWrap");
+        const visible = !!wrap && wrap.style.display !== "none";
+        if (visible) {
+          const isPrev = lower === "k" || key === "ArrowUp";
+          const isNext = lower === "j" || key === "ArrowDown";
+          if (isPrev || isNext) {
+            e.preventDefault();
+            const total = trades.length;
+            let idx = DRILL_SELECTED_TRADE_IDX;
+            if (!Number.isFinite(Number(idx)) || idx < 0) idx = total - 1;
+            const nextIdx = isNext ? Math.min(total - 1, idx + 1) : Math.max(0, idx - 1);
+            selectDrillTradeByIndex(nextIdx, { scroll: true });
+            return;
+          }
+        }
+      }
     }
   }, true);
 }
@@ -3010,6 +3085,7 @@ async function runMetaSelection(opts) {
     min_samples,
     top_k,
     strict_shortlist: true,
+    allow_shortlist_fallback: false,
   };
 
   const wasRunning = RUNNING;
@@ -3504,8 +3580,8 @@ function updateDataTimeframeUi() {
     : `Base timeframe: ${baseLabel}. Choose a higher timeframe to derive candles (no extra downloads). Periods are in candles.`;
 }
 
-async function applySelectedDataTimeframe() {
-  if (RUNNING) return;
+async function applySelectedDataTimeframe(opts) {
+  if (RUNNING && !opts?.allowWhileRunning) return;
 
   const baseId = String(CURRENT_BASE_DATA_ID || "").trim();
   if (!baseId || baseId === "—" || baseId === "-") {
@@ -3524,6 +3600,7 @@ async function applySelectedDataTimeframe() {
   if (!target || (baseTf && target === baseTf)) {
     CURRENT_DATA_META = baseMeta;
     CURRENT_DATASET_CTX = { ...baseCtx };
+    clearDrillCaches({ clearBars: true });
     $("dataId").textContent = baseId;
     renderDataMeta(baseMeta);
     applyMaSourceConstraints();
@@ -3548,6 +3625,7 @@ async function applySelectedDataTimeframe() {
 
     CURRENT_DATA_META = meta;
     CURRENT_DATASET_CTX = { ...baseCtx, timeframe: target };
+    clearDrillCaches({ clearBars: true });
     $("dataId").textContent = id || "—";
     renderDataMeta(meta);
     applyMaSourceConstraints();
@@ -4809,6 +4887,7 @@ async function initPolygonUi() {
             CURRENT_BASE_DATASET_CTX = { source: "polygon", label: sym, symbol: sym, market: market || "stocks", adjusted: adjFlag, timeframe: String(baseMeta?.timeframe || "1m").trim() || "1m" };
             CURRENT_DATA_META = meta2;
             CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX, timeframe: tfLabel };
+            clearDrillCaches({ clearBars: true });
             $("dataId").textContent = id || "—";
             renderDataMeta(meta2);
             applyMaSourceConstraints();
@@ -5227,7 +5306,7 @@ function renderBatchDatasetList() {
     const empty = document.createElement("div");
     empty.className = "muted";
     empty.style.fontSize = "0.8rem";
-    empty.textContent = "No cached datasets yet. Use Polygon to download and cache a few symbols.";
+    empty.textContent = "No datasets yet. Put CSVs in a repo-level 'data' folder, or use Polygon to download and cache symbols.";
     list.appendChild(empty);
     updateBatchMeta("");
     return;
@@ -5254,11 +5333,22 @@ function renderBatchDatasetList() {
 
   const selected = new Set(getBatchSelectedPaths());
 
-  for (const ds of items) {
+  const MAX_RENDER = items.length > 1000 ? 500 : items.length;
+  const renderItems = items.slice(0, MAX_RENDER);
+  if (renderItems.length < items.length) {
+    const note = document.createElement("div");
+    note.className = "muted";
+    note.style.fontSize = "0.8rem";
+    note.style.marginBottom = "0.55rem";
+    note.textContent = `Showing first ${renderItems.length} of ${items.length} results. Refine search to narrow. (Selection still applies to all filtered items.)`;
+    list.appendChild(note);
+  }
+
+  for (const ds of renderItems) {
     const path = String(ds?.csv_path || "").trim();
     const title = String(ds?.display_symbol || ds?.polygon_ticker || "").trim();
     const market = String(ds?.market || "").trim();
-    const tfLabel = String(ds?.timeframe || "").trim() || "1m";
+    const tfLabel = String(ds?.timeframe || "").trim() || "?";
     const minTs = fmtYmdUtc(ds?.min_ts);
     const maxTs = fmtYmdUtc(ds?.max_ts);
     const updated = fmtYmdUtc(ds?.last_updated_utc_ms);
@@ -5341,19 +5431,57 @@ async function initBatchDatasetList() {
     return;
   }
 
+  let poly = [];
+  let polyErr = "";
   try {
     const info = await invoke("polygon_get_cache_info");
-    BATCH_DATASETS_CACHE = Array.isArray(info?.datasets) ? info.datasets : [];
-    renderBatchDatasetList();
+    poly = Array.isArray(info?.datasets) ? info.datasets : [];
   } catch (e) {
-    list.innerHTML = "";
-    const msg = document.createElement("div");
-    msg.className = "muted";
-    msg.style.fontSize = "0.8rem";
-    msg.textContent = `Polygon: ${String(e)}`;
-    list.appendChild(msg);
-    updateBatchMeta("");
+    polyErr = String(e);
+    poly = [];
   }
+
+  let localPaths = [];
+  let localDir = "";
+  let localTruncated = false;
+  let localErr = "";
+  try {
+    const resp = await invoke("list_repo_data_csvs", { maxFiles: 20000, recursive: true });
+    localPaths = Array.isArray(resp?.csv_paths) ? resp.csv_paths : [];
+    localDir = String(resp?.dir || "").trim();
+    localTruncated = !!resp?.truncated;
+  } catch (e) {
+    localErr = String(e);
+    localPaths = [];
+  }
+
+  const byPath = new Map();
+  for (const ds of poly) {
+    const p = String(ds?.csv_path || "").trim();
+    if (!p) continue;
+    byPath.set(p, ds);
+  }
+  for (const p0 of localPaths) {
+    const p = String(p0 || "").trim();
+    if (!p || byPath.has(p)) continue;
+    byPath.set(p, {
+      source: "repo_data",
+      market: "local",
+      display_symbol: fileBasename(p) || p,
+      csv_path: p,
+      timeframe: "",
+    });
+  }
+
+  BATCH_DATASETS_CACHE = [...byPath.values()];
+  renderBatchDatasetList();
+
+  const extras = [];
+  if (localDir) extras.push(`local=${fileBasename(localDir) || "data"}`);
+  if (localTruncated) extras.push("local truncated");
+  if (polyErr && !poly.length) extras.push("polygon error");
+  if (localErr && !localPaths.length) extras.push("local data error");
+  updateBatchMeta(extras.join(" • "));
 }
 
 async function initCrossTickerList() {
@@ -6215,7 +6343,7 @@ const PRESET_PROFILES = {
     includeAll: false,
     heatmapBins: 0,
     valAutoRun: true,
-    valAutoExportXlsx: true,
+    valAutoExportXlsx: false,
     valAutoRevealReport: false,
     valAutoExportTopN: 20,
     valCandidates: 16,
@@ -6239,7 +6367,7 @@ const PRESET_PROFILES = {
     includeAll: false,
     heatmapBins: 128,
     valAutoRun: true,
-    valAutoExportXlsx: true,
+    valAutoExportXlsx: false,
     valAutoRevealReport: false,
     valAutoExportTopN: 20,
     valCandidates: 32,
@@ -6263,7 +6391,7 @@ const PRESET_PROFILES = {
     includeAll: false,
     heatmapBins: 256,
     valAutoRun: true,
-    valAutoExportXlsx: true,
+    valAutoExportXlsx: false,
     valAutoRevealReport: false,
     valAutoExportTopN: 50,
     valCandidates: 64,
@@ -7922,6 +8050,11 @@ function scoreOf(metrics, objective) {
   const m = metrics || {};
   const obj = String(objective || "Sharpe");
   if (obj === "Pnl") return Number(m.pnl || 0);
+  if (obj === "Sharpe") return Number(m.sharpe || 0);
+  if (obj === "Sortino") return Number(m.sortino || 0);
+  if (obj === "Calmar") return Number(m.calmar || 0);
+  if (obj === "Omega") return Number(m.omega || 0);
+  if (obj === "Volatility") return -Number(m.volatility || 0);
   if (obj === "MaxDrawdown") return -Number(m.max_dd || 0);
   return Number(m.sharpe || 0);
 }
@@ -8198,7 +8331,11 @@ function renderPareto(rows) {
     if (best && bestD2 <= 12 * 12) {
       DRILL_SELECTED_KEY = best.key;
       syncHeatmapSelectionToDrillKey();
-      requestDrilldown(best.row.params);
+      requestDrilldown(best.row.params, undefined, {
+        source: "pareto",
+        row: best.row,
+        metrics: best.row?.metrics || null,
+      });
       renderTopTable(CURRENT_RUN?.res, CURRENT_RUN?.req);
       RESULTS_TABS?.set("drill", { save: false, focus: true });
     }
@@ -8223,6 +8360,7 @@ function updateTopTableHeader(isMo, req) {
       <th data-key="max_dd">MaxDD</th>
       <th data-key="trades">Trades</th>
       <th data-key="exposure">Expo</th>
+      <th data-key="score">Score</th>
     `;
     return;
   }
@@ -8265,7 +8403,7 @@ function renderTopTablePlaceholder(text) {
   updateTopTableHeader(isMo, topTablePreviewReq());
   updateTopSortUi();
 
-  const cols = isMo ? 11 : 8;
+  const cols = isMo ? 11 : 9;
   const tr = document.createElement("tr");
   const td = document.createElement("td");
   td.colSpan = cols;
@@ -8285,7 +8423,7 @@ function renderTopTableSkeleton(opts) {
   updateTopTableHeader(isMo, topTablePreviewReq());
   updateTopSortUi();
 
-  const cols = isMo ? 11 : 8;
+  const cols = isMo ? 11 : 9;
   const rows = Math.max(4, Math.min(14, Math.floor(Number(opts?.rows ?? 8))));
 
   for (let r = 0; r < rows; r++) {
@@ -8363,7 +8501,7 @@ function renderTopTable(res, req) {
   if (!TOP_ROWS_FILTERED.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = isMo ? 11 : 8;
+    td.colSpan = isMo ? 11 : 9;
     td.className = "left muted";
     td.textContent = sorted.length ? "No rows match the current filters." : "No rows.";
     tr.appendChild(td);
@@ -8425,6 +8563,12 @@ function renderTopTable(res, req) {
     tdExpo.textContent = fmt(m.exposure, 4);
     tdExpo.className = "mono";
 
+    const tdScore = document.createElement("td");
+    if (!isMo) {
+      tdScore.textContent = fmt(scoreOf(m, obj), 6);
+      tdScore.className = "mono";
+    }
+
     tr.appendChild(tdRank);
     tr.appendChild(tdFast);
     tr.appendChild(tdSlow);
@@ -8433,6 +8577,7 @@ function renderTopTable(res, req) {
     tr.appendChild(tdDd);
     tr.appendChild(tdTrades);
     tr.appendChild(tdExpo);
+    if (!isMo) tr.appendChild(tdScore);
 
     if (isMo) {
       const tdMax = document.createElement("td");
@@ -8458,7 +8603,11 @@ function renderTopTable(res, req) {
       tr.classList.add("selected");
       DRILL_SELECTED_KEY = key;
       syncHeatmapSelectionToDrillKey();
-      requestDrilldown(p);
+      requestDrilldown(p, undefined, {
+        source: "top",
+        row,
+        metrics: m,
+      });
       RESULTS_TABS?.set("drill", { save: false, focus: true });
     });
     tbody.appendChild(tr);
@@ -8864,6 +9013,438 @@ function drillChartThemeOptions() {
   };
 }
 
+function chartTimeToUnixSec(t) {
+  if (t == null) return null;
+  if (typeof t === "number") return Number.isFinite(t) ? Math.floor(t) : null;
+  if (typeof t === "string") {
+    const n = Number(t);
+    return Number.isFinite(n) ? Math.floor(n) : null;
+  }
+  if (typeof t === "object") {
+    const anyT = t;
+    const ts = Number(anyT?.timestamp);
+    if (Number.isFinite(ts)) return Math.floor(ts);
+    const y = Number(anyT?.year);
+    const m = Number(anyT?.month);
+    const d = Number(anyT?.day);
+    if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d)) {
+      return Math.floor(Date.UTC(y, m - 1, d) / 1000);
+    }
+  }
+  return null;
+}
+
+function fmtPrice(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "-";
+  const abs = Math.abs(n);
+  const d = abs >= 100 ? 2 : (abs >= 1 ? 4 : 6);
+  return n.toFixed(d);
+}
+
+function formatUtcTimeFromSec(sec) {
+  const t = Number(sec);
+  if (!Number.isFinite(t)) return "-";
+  const d = new Date(t * 1000);
+  const pad = (n) => String(Math.max(0, Math.floor(Number(n || 0)))).padStart(2, "0");
+  const y = d.getUTCFullYear();
+  const m = pad(d.getUTCMonth() + 1);
+  const day = pad(d.getUTCDate());
+  const h = pad(d.getUTCHours());
+  const min = pad(d.getUTCMinutes());
+  const s = pad(d.getUTCSeconds());
+  return `${y}-${m}-${day} ${h}:${min}:${s} UTC`;
+}
+
+function formatUtcTimeShortFromSec(sec) {
+  const t = Number(sec);
+  if (!Number.isFinite(t)) return "-";
+  const d = new Date(t * 1000);
+  const pad = (n) => String(Math.max(0, Math.floor(Number(n || 0)))).padStart(2, "0");
+  const y = d.getUTCFullYear();
+  const m = pad(d.getUTCMonth() + 1);
+  const day = pad(d.getUTCDate());
+  const h = pad(d.getUTCHours());
+  const min = pad(d.getUTCMinutes());
+  return `${y}-${m}-${day} ${h}:${min}`;
+}
+
+function ensureDrillTvLegendEl(host) {
+  if (!host) return null;
+  let el = $("drillTvLegend");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "drillTvLegend";
+    el.className = "tvLegend mono";
+    el.textContent = "Hover chart to inspect OHLC and indicators.";
+    const parent = host.parentElement || host;
+    parent.appendChild(el);
+  }
+  return el;
+}
+
+function formatDrillTradeEventSummary(ev) {
+  const obj = ev && typeof ev === "object" ? ev : {};
+  const entries = Array.isArray(obj.entries) ? obj.entries : [];
+  const exits = Array.isArray(obj.exits) ? obj.exits : [];
+  if (!entries.length && !exits.length) return "";
+
+  const parts = [];
+
+  if (entries.length) {
+    let longs = 0;
+    let shorts = 0;
+    for (const e of entries) {
+      const dir = Number(e?.dir || 0);
+      if (dir >= 0) longs++;
+      else shorts++;
+    }
+    if (entries.length === 1) parts.push(longs ? "Entry: Long" : "Entry: Short");
+    else parts.push(`Entry: ${entries.length} (L${longs}/S${shorts})`);
+  }
+
+  if (exits.length) {
+    if (exits.length === 1) {
+      const e = exits[0] || {};
+      const open = !!e.open;
+      const pnl = Number(e.pnl || 0);
+      const pnlText = Number.isFinite(pnl) ? `${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(2)}%` : "";
+      parts.push(open ? "Exit: Open" : (pnlText ? `Exit: ${pnlText}` : "Exit"));
+    } else {
+      let openN = 0;
+      let sum = 0;
+      let sumN = 0;
+      for (const e of exits) {
+        if (e?.open) openN++;
+        const pnl = Number(e?.pnl);
+        if (Number.isFinite(pnl)) {
+          sum += pnl;
+          sumN++;
+        }
+      }
+      const avg = sumN ? `${(sum / sumN * 100).toFixed(2)}%` : "-";
+      parts.push(`Exit: ${exits.length} (open=${openN}, avg=${avg})`);
+    }
+  }
+
+  return parts.join(" | ");
+}
+
+function composeDrillTvLegendText(crosshairText, pinnedText) {
+  const c = String(crosshairText || "").trim();
+  const p = String(pinnedText || "").trim();
+  if (c && p) return `${c}\n\n${p}`;
+  if (p) return p;
+  if (c) return c;
+  return "Hover chart to inspect OHLC and indicators.";
+}
+
+function applyDrillTvLegendDisplay(opts) {
+  const el = DRILL_TV_LEGEND_EL;
+  if (!el) return;
+  const text = composeDrillTvLegendText(DRILL_TV_LEGEND_LAST_TEXT, DRILL_TV_LEGEND_PINNED_TEXT);
+  if (opts && opts.opacity != null) el.style.opacity = String(opts.opacity);
+  el.textContent = text;
+}
+
+function setDrillTvLegendPinnedText(text) {
+  DRILL_TV_LEGEND_PINNED_TEXT = String(text || "").trim();
+  const opacity = DRILL_TV_LEGEND_PINNED_TEXT ? "1" : (DRILL_TV_LEGEND_LAST_TEXT ? "0.85" : "0.72");
+  applyDrillTvLegendDisplay({ opacity });
+}
+
+function formatDurationSec(sec) {
+  const s = Math.max(0, Math.floor(Number(sec || 0)));
+  if (!Number.isFinite(s) || s <= 0) return "-";
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours || days) parts.push(`${hours}h`);
+  parts.push(`${mins}m`);
+  return parts.join(" ");
+}
+
+function buildPinnedDrillTradeText(tr, tradeIdx, total, bars) {
+  const t = tr && typeof tr === "object" ? tr : {};
+  const dirVal = Number(t.direction || 0);
+  const dir = dirVal > 0 ? "Long" : dirVal < 0 ? "Short" : "Flat";
+  const pnl = Number(t.pnl);
+  const pnlStr = Number.isFinite(pnl) ? `${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(2)}%` : "-";
+  const barsN = Number(t.bars);
+  const barsStr = Number.isFinite(barsN) ? String(barsN) : "-";
+  const open = !!t.open;
+  const state = open ? "open" : "closed";
+
+  const head = `Selected trade #${tradeIdx + 1}/${Math.max(1, Math.floor(Number(total || 0)))}: ${dir}  pnl=${pnlStr}  bars=${barsStr}  ${state}`;
+
+  const entryIdx = Number(t.entry_t);
+  const exitIdx = Number(t.exit_t);
+  const lines = [head];
+
+  if (!Array.isArray(bars) || !bars.length) {
+    const entryPart = Number.isFinite(entryIdx) ? `Entry idx=${Math.floor(entryIdx)}` : "Entry idx=-";
+    const exitPart = open ? "Exit=open" : (Number.isFinite(exitIdx) ? `Exit idx=${Math.floor(exitIdx)}` : "Exit idx=-");
+    lines.push(`${entryPart}  ${exitPart}`);
+    return lines.join("\n");
+  }
+
+  const entryBarIdx = mapTradeIndexToBarIndex(entryIdx, bars);
+  const exitBarIdx = open ? (bars.length - 1) : mapTradeIndexToBarIndex(exitIdx, bars);
+  const entryBar = entryBarIdx == null ? null : bars[entryBarIdx];
+  const exitBar = exitBarIdx == null ? null : bars[exitBarIdx];
+
+  const entryTime = entryBar ? Number(entryBar.time) : NaN;
+  const exitTime = exitBar ? Number(exitBar.time) : NaN;
+  const entryPx = entryBar ? Number(entryBar.close) : NaN;
+  const exitPx = exitBar ? Number(exitBar.close) : NaN;
+
+  const entryTimeStr = Number.isFinite(entryTime) ? `${formatUtcTimeShortFromSec(entryTime)} UTC` : "-";
+  const exitTimeStr = Number.isFinite(exitTime) ? `${formatUtcTimeShortFromSec(exitTime)} UTC` : "-";
+
+  const entryLine = `Entry idx=${Number.isFinite(entryIdx) ? Math.floor(entryIdx) : "-"}  ${entryTimeStr}  px~${Number.isFinite(entryPx) ? fmtPrice(entryPx) : "-"}`;
+  let exitLine;
+  if (open) {
+    const dur = Number.isFinite(entryTime) && Number.isFinite(exitTime) ? formatDurationSec(exitTime - entryTime) : "-";
+    exitLine = `Exit open (as of ${exitTimeStr})  px~${Number.isFinite(exitPx) ? fmtPrice(exitPx) : "-"}  dur=${dur}`;
+  } else {
+    const dur = Number.isFinite(entryTime) && Number.isFinite(exitTime) ? formatDurationSec(exitTime - entryTime) : "-";
+    exitLine = `Exit  idx=${Number.isFinite(exitIdx) ? Math.floor(exitIdx) : "-"}  ${exitTimeStr}  px~${Number.isFinite(exitPx) ? fmtPrice(exitPx) : "-"}  dur=${dur}`;
+  }
+  lines.push(entryLine);
+  lines.push(exitLine);
+
+  if (Number.isFinite(entryPx) && entryPx > 0 && entryBarIdx != null && exitBarIdx != null) {
+    const lo = Math.max(0, Math.min(entryBarIdx, exitBarIdx));
+    const hi = Math.min(bars.length - 1, Math.max(entryBarIdx, exitBarIdx));
+    let maxHigh = -Infinity;
+    let minLow = Infinity;
+    for (let i = lo; i <= hi; i++) {
+      const b = bars[i] || {};
+      const h = Number(b.high);
+      const l = Number(b.low);
+      if (Number.isFinite(h)) maxHigh = Math.max(maxHigh, h);
+      if (Number.isFinite(l)) minLow = Math.min(minLow, l);
+    }
+    if (Number.isFinite(maxHigh) && Number.isFinite(minLow)) {
+      const mfe = dirVal >= 0 ? (maxHigh - entryPx) / entryPx : (entryPx - minLow) / entryPx;
+      const mae = dirVal >= 0 ? (minLow - entryPx) / entryPx : (entryPx - maxHigh) / entryPx;
+      const mfeStr = Number.isFinite(mfe) ? `${mfe >= 0 ? "+" : ""}${(mfe * 100).toFixed(2)}%` : "-";
+      const maeStr = Number.isFinite(mae) ? `${mae >= 0 ? "+" : ""}${(mae * 100).toFixed(2)}%` : "-";
+      lines.push(`MFE~${mfeStr}  MAE~${maeStr}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function updateDrillTvLegendFromCrosshair(param) {
+  const el = DRILL_TV_LEGEND_EL;
+  if (!el) return;
+
+  const time = chartTimeToUnixSec(param?.time);
+  const sd = param?.seriesData;
+  const hasData = time != null && sd && typeof sd.get === "function";
+
+  if (!hasData) {
+    const opacity = DRILL_TV_LEGEND_PINNED_TEXT ? "1" : "0.72";
+    applyDrillTvLegendDisplay({ opacity });
+    return;
+  }
+
+  const candle = DRILL_TV_SERIES ? sd.get(DRILL_TV_SERIES) : null;
+  const fast = DRILL_TV_FAST_SERIES ? sd.get(DRILL_TV_FAST_SERIES) : null;
+  const slow = DRILL_TV_SLOW_SERIES ? sd.get(DRILL_TV_SLOW_SERIES) : null;
+
+  const lines = [formatUtcTimeFromSec(time)];
+
+  const o = Number(candle?.open);
+  const h = Number(candle?.high);
+  const l = Number(candle?.low);
+  const c = Number(candle?.close);
+  if (Number.isFinite(o) && Number.isFinite(h) && Number.isFinite(l) && Number.isFinite(c)) {
+    lines.push(`O ${fmtPrice(o)}  H ${fmtPrice(h)}  L ${fmtPrice(l)}  C ${fmtPrice(c)}`);
+  }
+
+  const fv = Number(fast?.value);
+  const sv = Number(slow?.value);
+  if (Number.isFinite(fv) || Number.isFinite(sv)) {
+    const fStr = Number.isFinite(fv) ? fmtPrice(fv) : "-";
+    const sStr = Number.isFinite(sv) ? fmtPrice(sv) : "-";
+    lines.push(`fast ${fStr}  slow ${sStr}`);
+  }
+
+  const ev = DRILL_TV_TRADE_EVENTS_BY_TIME && typeof DRILL_TV_TRADE_EVENTS_BY_TIME.get === "function"
+    ? DRILL_TV_TRADE_EVENTS_BY_TIME.get(time)
+    : null;
+  const evText = formatDrillTradeEventSummary(ev);
+  if (evText) lines.push(evText);
+
+  const crosshairText = lines.join("\n");
+  DRILL_TV_LEGEND_LAST_TEXT = crosshairText;
+  el.style.opacity = "1";
+  el.textContent = composeDrillTvLegendText(crosshairText, DRILL_TV_LEGEND_PINNED_TEXT);
+}
+
+function bestEffortCurrentDrillBars() {
+  const dataId = String(CURRENT_RUN?.req?.data_id || CURRENT_RUN?.req?.dataId || "").trim();
+  if (dataId && dataId === DRILL_LAST_BARS_DATA_ID && Array.isArray(DRILL_LAST_BARS)) {
+    return DRILL_LAST_BARS;
+  }
+  if (dataId && DRILL_PRICE_BARS_CACHE.has(dataId)) return DRILL_PRICE_BARS_CACHE.get(dataId);
+  return null;
+}
+
+function computeTradeTableStart(total, selectedIdx) {
+  const n = Math.max(1, Math.floor(Number(DRILL_TRADES_TABLE_MAX_ROWS || 200)));
+  if (!Number.isFinite(total) || total <= n) return 0;
+  const maxStart = Math.max(0, total - n);
+  const sel = Math.floor(Number(selectedIdx));
+  if (Number.isFinite(sel) && sel >= 0 && sel < total) {
+    const half = Math.floor(n / 2);
+    return Math.max(0, Math.min(maxStart, sel - half));
+  }
+  return maxStart;
+}
+
+function clearTradeSelection() {
+  DRILL_SELECTED_TRADE_IDX = -1;
+  setDrillTvLegendPinnedText("");
+}
+
+function applyTradeRowSelection() {
+  const body = $("tradeTableBody");
+  if (!body) return;
+  for (const el of body.querySelectorAll("tr.selected")) el.classList.remove("selected");
+  if (DRILL_SELECTED_TRADE_IDX < 0) return;
+  const row = body.querySelector(`tr[data-trade-idx=\"${DRILL_SELECTED_TRADE_IDX}\"]`);
+  if (row) row.classList.add("selected");
+}
+
+function scrollTradeRowIntoView() {
+  const body = $("tradeTableBody");
+  if (!body) return;
+  if (DRILL_SELECTED_TRADE_IDX < 0) return;
+  const row = body.querySelector(`tr[data-trade-idx=\"${DRILL_SELECTED_TRADE_IDX}\"]`);
+  if (row && typeof row.scrollIntoView === "function") {
+    row.scrollIntoView({ block: "center" });
+  }
+}
+
+function focusDrillTvChartOnTradeRange(entryTimeSec, exitTimeSec) {
+  const chart = DRILL_TV_CHART;
+  const bars = bestEffortCurrentDrillBars();
+  if (!chart || !bars || !bars.length) return;
+  const ts = chart.timeScale && chart.timeScale();
+  if (!ts || typeof ts.setVisibleRange !== "function") return;
+
+  const start = Number(entryTimeSec);
+  const end = exitTimeSec == null ? NaN : Number(exitTimeSec);
+  if (!Number.isFinite(start)) return;
+  const baseEnd = Number.isFinite(end) ? end : start;
+
+  // Derive padding from the candle step (roughly 20 bars).
+  const dt = bars.length > 2 ? Math.max(1, Math.round((bars[2].time - bars[0].time) / 2)) : 3600;
+  const pad = Math.max(1, dt * 20);
+
+  const minT = Number(bars[0].time);
+  const maxT = Number(bars[bars.length - 1].time);
+  const from = Math.max(minT, start - pad);
+  const to = Math.min(maxT, baseEnd + pad);
+
+  try {
+    ts.setVisibleRange({ from, to });
+  } catch {
+    // ignore chart API mismatch
+  }
+}
+
+function selectDrillTradeByIndex(idx, opts) {
+  const curves = DRILL_LAST_CURVES && typeof DRILL_LAST_CURVES === "object" ? DRILL_LAST_CURVES : null;
+  const trades = Array.isArray(curves?.trades) ? curves.trades : [];
+  const total = trades.length;
+  const i = Math.floor(Number(idx));
+  if (!Number.isFinite(i) || i < 0 || i >= total) return;
+
+  DRILL_SELECTED_TRADE_IDX = i;
+  DRILL_TRADES_RANGE_START = computeTradeTableStart(total, i);
+
+  const bars = bestEffortCurrentDrillBars();
+  const tr = trades[i] || {};
+  setDrillTvLegendPinnedText(buildPinnedDrillTradeText(tr, i, total, bars));
+  renderTrades(curves, { bars, fromSelection: true });
+  applyTradeRowSelection();
+  if (opts?.scroll !== false) scrollTradeRowIntoView();
+
+  if (bars) {
+    const entryTime = mapTradeIndexToChartTime(tr?.entry_t, bars);
+    const exitTime = tr?.open ? null : mapTradeIndexToChartTime(tr?.exit_t, bars);
+    focusDrillTvChartOnTradeRange(entryTime, exitTime);
+  }
+}
+
+function findNearestTradeEventTime(targetSec) {
+  const map = DRILL_TV_TRADE_EVENTS_BY_TIME;
+  if (!map || typeof map.get !== "function" || map.size === 0) return null;
+  const t0 = Number(targetSec);
+  if (!Number.isFinite(t0)) return null;
+  if (map.has(t0)) return t0;
+  let bestT = null;
+  let bestD = Infinity;
+  for (const [t] of map.entries()) {
+    const tt = Number(t);
+    if (!Number.isFinite(tt)) continue;
+    const d = Math.abs(tt - t0);
+    if (d < bestD) {
+      bestD = d;
+      bestT = tt;
+    }
+  }
+  return bestT;
+}
+
+function pickTradeIndexFromEvent(ev) {
+  const obj = ev && typeof ev === "object" ? ev : {};
+  const exits = Array.isArray(obj.exits) ? obj.exits : [];
+  const entries = Array.isArray(obj.entries) ? obj.entries : [];
+  if (exits.length) {
+    let best = exits[0];
+    let bestAbs = Math.abs(Number(best?.pnl || 0));
+    for (const e of exits) {
+      const abs = Math.abs(Number(e?.pnl || 0));
+      if (abs > bestAbs) {
+        bestAbs = abs;
+        best = e;
+      }
+    }
+    const idx = Number(best?.idx);
+    return Number.isFinite(idx) ? idx : null;
+  }
+  if (entries.length) {
+    const idx = Number(entries[0]?.idx);
+    return Number.isFinite(idx) ? idx : null;
+  }
+  return null;
+}
+
+function onDrillTvChartClick(param) {
+  const time = chartTimeToUnixSec(param?.time);
+  if (time == null) return;
+  const hitT = findNearestTradeEventTime(time);
+  if (hitT == null) return;
+  const bars = bestEffortCurrentDrillBars();
+  const dt = bars && bars.length > 2 ? Math.max(1, Math.round((bars[2].time - bars[0].time) / 2)) : 3600;
+  const maxDist = dt * 3;
+  if (Math.abs(hitT - time) > maxDist) return;
+  const ev = DRILL_TV_TRADE_EVENTS_BY_TIME && typeof DRILL_TV_TRADE_EVENTS_BY_TIME.get === "function"
+    ? DRILL_TV_TRADE_EVENTS_BY_TIME.get(hitT)
+    : null;
+  const idx = pickTradeIndexFromEvent(ev);
+  if (idx == null) return;
+  selectDrillTradeByIndex(idx, { scroll: true });
+}
+
 function ensureDrillTvChart() {
   const host = $("drillTvChart");
   if (!host) return null;
@@ -8872,13 +9453,53 @@ function ensureDrillTvChart() {
   const width = Math.max(240, Math.floor(host.clientWidth || 820));
   const height = Math.max(220, Math.floor(host.clientHeight || 360));
   DRILL_TV_CHART = createChart(host, { ...drillChartThemeOptions(), width, height });
-  DRILL_TV_SERIES = DRILL_TV_CHART.addSeries(CandlestickSeries, {
+  const candleOpts = {
     upColor: "rgba(22, 163, 74, 0.9)",
     downColor: "rgba(225, 29, 72, 0.9)",
     wickUpColor: "rgba(22, 163, 74, 0.9)",
     wickDownColor: "rgba(225, 29, 72, 0.9)",
-    borderVisible: false,
-  });
+    borderVisible: true,
+    borderUpColor: "rgba(22, 163, 74, 1)",
+    borderDownColor: "rgba(225, 29, 72, 1)",
+  };
+  if (typeof DRILL_TV_CHART.addSeries === "function" && CandlestickSeries) {
+    try {
+      DRILL_TV_SERIES = DRILL_TV_CHART.addSeries(CandlestickSeries, candleOpts);
+    } catch {
+      DRILL_TV_SERIES = null;
+    }
+  }
+  if (!DRILL_TV_SERIES && typeof DRILL_TV_CHART.addCandlestickSeries === "function") {
+    DRILL_TV_SERIES = DRILL_TV_CHART.addCandlestickSeries(candleOpts);
+  }
+  if (!DRILL_TV_SERIES) throw new Error("Lightweight Charts candlestick API unavailable.");
+  const fastOpts = {
+    color: "rgba(14, 165, 233, 0.95)",
+    lineWidth: 2,
+    crosshairMarkerVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  };
+  const slowOpts = {
+    color: "rgba(245, 158, 11, 0.95)",
+    lineWidth: 2,
+    crosshairMarkerVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  };
+  if (typeof DRILL_TV_CHART.addSeries === "function" && LineSeries) {
+    try {
+      DRILL_TV_FAST_SERIES = DRILL_TV_CHART.addSeries(LineSeries, fastOpts);
+      DRILL_TV_SLOW_SERIES = DRILL_TV_CHART.addSeries(LineSeries, slowOpts);
+    } catch {
+      DRILL_TV_FAST_SERIES = null;
+      DRILL_TV_SLOW_SERIES = null;
+    }
+  }
+  if ((!DRILL_TV_FAST_SERIES || !DRILL_TV_SLOW_SERIES) && typeof DRILL_TV_CHART.addLineSeries === "function") {
+    DRILL_TV_FAST_SERIES = DRILL_TV_FAST_SERIES || DRILL_TV_CHART.addLineSeries(fastOpts);
+    DRILL_TV_SLOW_SERIES = DRILL_TV_SLOW_SERIES || DRILL_TV_CHART.addLineSeries(slowOpts);
+  }
   DRILL_TV_MARKERS = createSeriesMarkers(DRILL_TV_SERIES, []);
 
   if (typeof ResizeObserver !== "undefined") {
@@ -8894,6 +9515,17 @@ function ensureDrillTvChart() {
     DRILL_TV_RESIZE_OBSERVER.observe(host);
   }
 
+  DRILL_TV_LEGEND_EL = ensureDrillTvLegendEl(host);
+  applyDrillTvLegendDisplay();
+  if (!DRILL_TV_LEGEND_SUBSCRIBED && typeof DRILL_TV_CHART.subscribeCrosshairMove === "function") {
+    DRILL_TV_CHART.subscribeCrosshairMove((p) => updateDrillTvLegendFromCrosshair(p));
+    DRILL_TV_LEGEND_SUBSCRIBED = true;
+  }
+  if (!DRILL_TV_CLICK_SUBSCRIBED && typeof DRILL_TV_CHART.subscribeClick === "function") {
+    DRILL_TV_CHART.subscribeClick((p) => onDrillTvChartClick(p));
+    DRILL_TV_CLICK_SUBSCRIBED = true;
+  }
+
   return { chart: DRILL_TV_CHART, series: DRILL_TV_SERIES, host };
 }
 
@@ -8902,41 +9534,99 @@ function refreshDrillTvChartTheme() {
   DRILL_TV_CHART.applyOptions(drillChartThemeOptions());
 }
 
-function clearDrillTvChart() {
+function clearDrillTvChart(msg = "Hover for OHLC/MA values; click a marker to focus a trade.") {
   const meta = $("drillTvChartMeta");
-  if (meta) meta.textContent = "Select a Top row to render candles and trade markers.";
+  if (meta && msg != null) meta.textContent = String(msg);
   if (DRILL_TV_SERIES) DRILL_TV_SERIES.setData([]);
+  if (DRILL_TV_FAST_SERIES) DRILL_TV_FAST_SERIES.setData([]);
+  if (DRILL_TV_SLOW_SERIES) DRILL_TV_SLOW_SERIES.setData([]);
   if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
     DRILL_TV_MARKERS.setMarkers([]);
   }
+  DRILL_TV_TRADE_EVENTS_BY_TIME = null;
+  DRILL_TV_LEGEND_LAST_TEXT = "";
+  DRILL_TV_LEGEND_PINNED_TEXT = "";
+  applyDrillTvLegendDisplay({ opacity: "0.72" });
 }
 
 function normalizeChartTimeSec(ts) {
   const t = Number(ts);
   if (!Number.isFinite(t)) return NaN;
-  if (Math.abs(t) >= 1e12) return Math.floor(t / 1000);
-  if (Math.abs(t) >= 1e11) return Math.floor(t / 1000);
+  const abs = Math.abs(t);
+  if (abs >= 1e17) return Math.floor(t / 1e9); // nanoseconds -> seconds
+  if (abs >= 1e14) return Math.floor(t / 1e6); // microseconds -> seconds
+  if (abs >= 1e11) return Math.floor(t / 1e3); // milliseconds -> seconds
   return Math.floor(t);
 }
 
 function normalizePriceBarsForChart(rows) {
+  let input = [];
+  if (Array.isArray(rows)) input = rows;
+  else if (rows && typeof rows === "object") {
+    const anyRows = rows;
+    if (Array.isArray(anyRows.bars)) input = anyRows.bars;
+    else if (Array.isArray(anyRows.items)) input = anyRows.items;
+    else if (Array.isArray(anyRows.data)) input = anyRows.data;
+    else if (Array.isArray(anyRows.result)) input = anyRows.result;
+    else if (anyRows.result && typeof anyRows.result === "object" && Array.isArray(anyRows.result.bars)) input = anyRows.result.bars;
+  }
+
+  const out = [];
+  for (const r of input) {
+    const t = normalizeChartTimeSec(r?.time ?? r?.timestamp ?? r?.ts ?? r?.t);
+    const open = Number(r?.open ?? r?.o);
+    const highRaw = Number(r?.high ?? r?.h);
+    const lowRaw = Number(r?.low ?? r?.l);
+    const close = Number(r?.close ?? r?.c);
+    const high = Math.max(highRaw, open, close);
+    const low = Math.min(lowRaw, open, close);
+    if (!Number.isFinite(t) || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
+    const fromIndex = Math.max(0, Math.floor(Number(r?.from_index ?? r?.fromIndex ?? r?.from ?? 0)));
+    const toIndex = Math.max(fromIndex, Math.floor(Number(r?.to_index ?? r?.toIndex ?? r?.to ?? fromIndex)));
+    out.push({ time: t, open, high, low, close, fromIndex, toIndex, volume: Number(r?.volume ?? r?.v ?? 0) });
+  }
+  if (out.length <= 1) return out;
+  out.sort((a, b) => a.time - b.time);
+  const deduped = [];
+  for (const row of out) {
+    const last = deduped[deduped.length - 1];
+    if (last && row.time === last.time) deduped[deduped.length - 1] = row;
+    else deduped.push(row);
+  }
+  return deduped;
+}
+
+function normalizeIndicatorBarsForChart(rows) {
   const input = Array.isArray(rows) ? rows : [];
   const out = [];
-  let prevT = -Infinity;
   for (const r of input) {
-    const t = normalizeChartTimeSec(r?.time);
-    const open = Number(r?.open);
-    const high = Number(r?.high);
-    const low = Number(r?.low);
-    const close = Number(r?.close);
-    if (!Number.isFinite(t) || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
-    if (t <= prevT) continue;
-    const fromIndex = Math.max(0, Math.floor(Number(r?.from_index ?? 0)));
-    const toIndex = Math.max(fromIndex, Math.floor(Number(r?.to_index ?? fromIndex)));
-    out.push({ time: t, open, high, low, close, fromIndex, toIndex, volume: Number(r?.volume || 0) });
-    prevT = t;
+    const time = normalizeChartTimeSec(r?.time ?? r?.timestamp ?? r?.ts ?? r?.t);
+    const fromIndex = Math.max(0, Math.floor(Number(r?.from_index ?? r?.fromIndex ?? r?.from ?? 0)));
+    const toIndex = Math.max(fromIndex, Math.floor(Number(r?.to_index ?? r?.toIndex ?? r?.to ?? fromIndex)));
+    const fastRaw = Number(r?.fast);
+    const slowRaw = Number(r?.slow);
+    const fast = Number.isFinite(fastRaw) ? fastRaw : null;
+    const slow = Number.isFinite(slowRaw) ? slowRaw : null;
+    if (!Number.isFinite(time)) continue;
+    if (fast == null && slow == null) continue;
+    out.push({ time, fromIndex, toIndex, fast, slow });
   }
-  return out;
+  if (out.length <= 1) return out;
+  out.sort((a, b) => a.time - b.time);
+  const deduped = [];
+  for (const row of out) {
+    const last = deduped[deduped.length - 1];
+    if (last && row.time === last.time) {
+      deduped[deduped.length - 1] = {
+        ...row,
+        fast: row.fast != null ? row.fast : last.fast,
+        slow: row.slow != null ? row.slow : last.slow,
+      };
+    } else {
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }
 
 async function fetchDrillPriceBars(dataId) {
@@ -8945,7 +9635,16 @@ async function fetchDrillPriceBars(dataId) {
   if (DRILL_PRICE_BARS_CACHE.has(id)) return DRILL_PRICE_BARS_CACHE.get(id);
   const invoke = tauriInvoke();
   if (!invoke) return [];
-  const raw = await invoke("get_price_bars", { data_id: id, max_points: 8000 });
+  let raw;
+  try {
+    raw = await invoke("get_price_bars", { dataId: id, maxPoints: 8000 });
+  } catch (firstErr) {
+    try {
+      raw = await invoke("get_price_bars", { data_id: id, max_points: 8000 });
+    } catch {
+      throw firstErr;
+    }
+  }
   const bars = normalizePriceBarsForChart(raw);
   DRILL_PRICE_BARS_CACHE.set(id, bars);
   return bars;
@@ -8954,6 +9653,28 @@ async function fetchDrillPriceBars(dataId) {
 function mapTradeIndexToChartTime(idx, bars) {
   const x = Math.max(0, Math.floor(Number(idx || 0)));
   if (!Array.isArray(bars) || !bars.length) return null;
+  let monotonicRanges = true;
+  let prevFrom = -Infinity;
+  for (const b of bars) {
+    if (!Number.isFinite(b?.fromIndex) || !Number.isFinite(b?.toIndex) || b.fromIndex < prevFrom || b.toIndex < b.fromIndex) {
+      monotonicRanges = false;
+      break;
+    }
+    prevFrom = b.fromIndex;
+  }
+  if (!monotonicRanges) {
+    let bestTime = bars[0].time;
+    let bestDist = Infinity;
+    for (const b of bars) {
+      if (x >= b.fromIndex && x <= b.toIndex) return b.time;
+      const d = x < b.fromIndex ? (b.fromIndex - x) : (x - b.toIndex);
+      if (d < bestDist) {
+        bestDist = d;
+        bestTime = b.time;
+      }
+    }
+    return bestTime;
+  }
   let lo = 0;
   let hi = bars.length - 1;
   while (lo <= hi) {
@@ -8970,48 +9691,332 @@ function mapTradeIndexToChartTime(idx, bars) {
   return Math.abs(x - left.toIndex) <= Math.abs(right.fromIndex - x) ? left.time : right.time;
 }
 
+function mapTradeIndexToBarIndex(idx, bars) {
+  const x = Math.max(0, Math.floor(Number(idx || 0)));
+  if (!Array.isArray(bars) || !bars.length) return null;
+  let monotonicRanges = true;
+  let prevFrom = -Infinity;
+  for (const b of bars) {
+    if (!Number.isFinite(b?.fromIndex) || !Number.isFinite(b?.toIndex) || b.fromIndex < prevFrom || b.toIndex < b.fromIndex) {
+      monotonicRanges = false;
+      break;
+    }
+    prevFrom = b.fromIndex;
+  }
+  if (!monotonicRanges) {
+    let bestI = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < bars.length; i++) {
+      const b = bars[i];
+      if (x >= b.fromIndex && x <= b.toIndex) return i;
+      const d = x < b.fromIndex ? (b.fromIndex - x) : (x - b.toIndex);
+      if (d < bestDist) {
+        bestDist = d;
+        bestI = i;
+      }
+    }
+    return bestI;
+  }
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const b = bars[mid];
+    if (x < b.fromIndex) hi = mid - 1;
+    else if (x > b.toIndex) lo = mid + 1;
+    else return mid;
+  }
+  if (hi < 0) return 0;
+  if (lo >= bars.length) return bars.length - 1;
+  const left = bars[hi];
+  const right = bars[lo];
+  return Math.abs(x - left.toIndex) <= Math.abs(right.fromIndex - x) ? hi : lo;
+}
+
 function buildDrillTradeMarkers(curves, bars) {
   const trades = Array.isArray(curves?.trades) ? curves.trades : [];
   if (!trades.length || !bars.length) return [];
-  const maxTrades = 200;
-  const shown = trades.slice(Math.max(0, trades.length - maxTrades));
-  const markers = [];
+  const compact = trades.length > 1200;
+  const adaptiveMaxTrades = compact
+    ? Math.max(900, Math.min(3200, Math.floor(bars.length * 0.5)))
+    : Math.max(700, Math.min(6000, Math.floor(bars.length * 1.3)));
+  const shown = trades.length > adaptiveMaxTrades
+    ? trades.slice(trades.length - adaptiveMaxTrades)
+    : trades;
+  const perTradeMarkers = [];
   for (const tr of shown) {
     const dir = Number(tr?.direction || 0);
     const pnl = Number(tr?.pnl || 0);
     const entryTime = mapTradeIndexToChartTime(tr?.entry_t, bars);
     const exitTime = mapTradeIndexToChartTime(tr?.exit_t, bars);
-    if (entryTime != null) {
-      markers.push({
+    const entryMarker = entryTime != null
+      ? {
         time: entryTime,
         position: dir >= 0 ? "belowBar" : "aboveBar",
         shape: dir >= 0 ? "arrowUp" : "arrowDown",
-        color: "rgba(14, 165, 233, 0.95)",
-        text: "Entry",
-      });
-    }
+        color: dir >= 0 ? "rgba(14, 165, 233, 0.98)" : "rgba(168, 85, 247, 0.98)",
+        text: compact ? "" : (dir >= 0 ? "Long in" : "Short in"),
+      }
+      : null;
+    let exitMarker = null;
     if (exitTime != null) {
       const openTrade = !!tr?.open;
+      const pnlText = Number.isFinite(pnl) ? `${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}%` : "";
       const color = openTrade
         ? "rgba(148, 163, 184, 0.95)"
         : (pnl >= 0 ? "rgba(22, 163, 74, 0.95)" : "rgba(225, 29, 72, 0.95)");
-      markers.push({
+      exitMarker = {
         time: exitTime,
         position: dir >= 0 ? "aboveBar" : "belowBar",
-        shape: openTrade ? "circle" : (dir >= 0 ? "arrowDown" : "arrowUp"),
+        shape: "circle",
         color,
-        text: openTrade ? "Open" : "Exit",
-      });
+        text: compact ? "" : (openTrade ? "Open" : (pnlText ? `Exit ${pnlText}` : "Exit")),
+      };
     }
+    if (entryMarker || exitMarker) perTradeMarkers.push({ entryMarker, exitMarker });
   }
-  if (markers.length > 600) return markers.slice(markers.length - 600);
+  if (!perTradeMarkers.length) return [];
+
+  if (compact) {
+    const targetTrades = Math.max(600, Math.min(1800, Math.floor(adaptiveMaxTrades * 0.6)));
+    let sampled = perTradeMarkers;
+    if (perTradeMarkers.length > targetTrades) {
+      const stride = Math.ceil(perTradeMarkers.length / targetTrades);
+      const out = [];
+      for (let i = 0; i < perTradeMarkers.length; i += stride) out.push(perTradeMarkers[i]);
+      const last = perTradeMarkers[perTradeMarkers.length - 1];
+      if (out.length && out[out.length - 1] !== last) out.push(last);
+      sampled = out.length > targetTrades ? out.slice(out.length - targetTrades) : out;
+    }
+    const merged = [];
+    for (const pair of sampled) {
+      if (pair.entryMarker) merged.push({ ...pair.entryMarker, text: "" });
+      if (pair.exitMarker) merged.push({ ...pair.exitMarker, text: "" });
+    }
+    const uniq = new Map();
+    for (const m of merged) {
+      const key = `${m.time}|${m.position}|${m.shape}|${m.color}`;
+      if (!uniq.has(key)) uniq.set(key, m);
+    }
+    const deduped = [...uniq.values()];
+    deduped.sort((a, b) => Number(a.time) - Number(b.time));
+    if (deduped.length > 3200) return deduped.slice(deduped.length - 3200);
+    return deduped;
+  }
+
+  const markers = [];
+  for (const pair of perTradeMarkers) {
+    if (pair.entryMarker) markers.push(pair.entryMarker);
+    if (pair.exitMarker) markers.push(pair.exitMarker);
+  }
+  markers.sort((a, b) => Number(a.time) - Number(b.time));
+  if (markers.length > 8000) return markers.slice(markers.length - 8000);
   return markers;
 }
 
-async function renderDrillTvChart(curves, runReq, seq) {
+function buildDrillTradeEventIndex(curves, bars) {
+  const trades = Array.isArray(curves?.trades) ? curves.trades : [];
+  if (!trades.length || !bars.length) return null;
+
+  const compact = trades.length > 1200;
+  const adaptiveMaxTrades = compact
+    ? Math.max(900, Math.min(3200, Math.floor(bars.length * 0.5)))
+    : Math.max(700, Math.min(6000, Math.floor(bars.length * 1.3)));
+  const shown = trades.length > adaptiveMaxTrades
+    ? trades.slice(trades.length - adaptiveMaxTrades)
+    : trades;
+  const shownStartIdx = Math.max(0, trades.length - shown.length);
+
+  const out = new Map();
+
+  for (let local = 0; local < shown.length; local++) {
+    const tr = shown[local];
+    const idx = shownStartIdx + local;
+    const dir = Number(tr?.direction || 0);
+    const pnl = Number(tr?.pnl || 0);
+    const openTrade = !!tr?.open;
+
+    const entryTime = mapTradeIndexToChartTime(tr?.entry_t, bars);
+    const exitTime = mapTradeIndexToChartTime(tr?.exit_t, bars);
+
+    if (entryTime != null) {
+      const key = Number(entryTime);
+      const cur = out.get(key) || { entries: [], exits: [] };
+      cur.entries.push({ idx, dir });
+      out.set(key, cur);
+    }
+    if (exitTime != null) {
+      const key = Number(exitTime);
+      const cur = out.get(key) || { entries: [], exits: [] };
+      cur.exits.push({ idx, dir, pnl, open: openTrade });
+      out.set(key, cur);
+    }
+  }
+
+  return out;
+}
+
+function drillCurvesCacheKey(cmd, req) {
+  const payload = { cmd: String(cmd || ""), req: canonicalizeJsonValue(req) };
+  return `${payload.cmd}:${hashFNV1a64Hex(canonicalJsonString(payload))}`;
+}
+
+function drillCurvesCacheGet(key) {
+  if (!DRILL_CURVES_CACHE.has(key)) return null;
+  const hit = DRILL_CURVES_CACHE.get(key);
+  // LRU: move to newest position.
+  DRILL_CURVES_CACHE.delete(key);
+  DRILL_CURVES_CACHE.set(key, hit);
+  return hit;
+}
+
+function drillCurvesCacheSet(key, curves) {
+  if (DRILL_CURVES_CACHE.has(key)) DRILL_CURVES_CACHE.delete(key);
+  DRILL_CURVES_CACHE.set(key, curves);
+  while (DRILL_CURVES_CACHE.size > DRILL_CURVES_CACHE_MAX) {
+    const oldest = DRILL_CURVES_CACHE.keys().next();
+    if (oldest.done) break;
+    DRILL_CURVES_CACHE.delete(oldest.value);
+  }
+}
+
+async function invokeDrilldownCached(cmd, req) {
+  const key = drillCurvesCacheKey(cmd, req);
+  const cached = drillCurvesCacheGet(key);
+  if (cached) return { key, curves: cached, cacheHit: true, inflightHit: false };
+
+  if (DRILL_CURVES_INFLIGHT.has(key)) {
+    const curves = await DRILL_CURVES_INFLIGHT.get(key);
+    return { key, curves, cacheHit: true, inflightHit: true };
+  }
+
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const promise = invoke(cmd, { req })
+    .then((curves) => {
+      drillCurvesCacheSet(key, curves);
+      return curves;
+    })
+    .finally(() => {
+      DRILL_CURVES_INFLIGHT.delete(key);
+    });
+  DRILL_CURVES_INFLIGHT.set(key, promise);
+  const curves = await promise;
+  return { key, curves, cacheHit: false, inflightHit: false };
+}
+
+function findTopRowByParamsKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return null;
+  const rowsFiltered = Array.isArray(TOP_ROWS_FILTERED) ? TOP_ROWS_FILTERED : [];
+  for (const row of rowsFiltered) {
+    if (paramsKey(row?.params) === k) return row;
+  }
+  const rowsAll = Array.isArray(TOP_ROWS) ? TOP_ROWS : [];
+  for (const row of rowsAll) {
+    if (paramsKey(row?.params) === k) return row;
+  }
+  return null;
+}
+
+function resolveDrillContext(params, opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const key = paramsKey(params);
+  const row = (o.row && typeof o.row === "object") ? o.row : findTopRowByParamsKey(key);
+
+  let metrics = o.metrics && typeof o.metrics === "object" ? o.metrics : null;
+  if (!metrics && row?.metrics && typeof row.metrics === "object") metrics = row.metrics;
+  if (!metrics && CURRENT_RUN?.res?.best_params && paramsKey(CURRENT_RUN.res.best_params) === key) {
+    metrics = CURRENT_RUN.res.best_metrics && typeof CURRENT_RUN.res.best_metrics === "object"
+      ? CURRENT_RUN.res.best_metrics
+      : null;
+  }
+
+  const source = String(o.source || "").trim() || "manual";
+  return {
+    key,
+    row,
+    metrics,
+    source,
+    prefetch: !!o.prefetch,
+    skipStability: !!o.skipStability,
+  };
+}
+
+function formatDrillMetricsSummary(metrics) {
+  const m = metrics && typeof metrics === "object" ? metrics : null;
+  if (!m) return "";
+  return `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
+}
+
+function formatDrillMoSummary(row) {
+  const mo = row?.mo && typeof row.mo === "object" ? row.mo : null;
+  if (!mo) return "";
+  return `max=${fmt(mo.maximize_value, 6)} min=${fmt(mo.minimize_value, 6)} viol=${fmt(mo.violation, 6)}`;
+}
+
+function buildDrilldownInvocation(params, runReqOverride) {
+  const runReq = runReqOverride || CURRENT_RUN?.req;
+  const runDataId = String(runReq?.data_id || runReq?.dataId || "").trim();
+  if (!runReq || !runDataId) return null;
+  if (!params || !params.fast_ma_type || !params.slow_ma_type) return null;
+
+  const bins = desiredDrillBins();
+  const fastId = String(params.fast_ma_type || "").trim().toLowerCase();
+  const slowId = String(params.slow_ma_type || "").trim().toLowerCase();
+  const fastParams = (params.fast_ma_params && typeof params.fast_ma_params === "object")
+    ? params.fast_ma_params
+    : resolveRunMaParams(runReq, "fast", fastId);
+  const slowParams = (params.slow_ma_params && typeof params.slow_ma_params === "object")
+    ? params.slow_ma_params
+    : resolveRunMaParams(runReq, "slow", slowId);
+  const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
+  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+
+  const base = {
+    data_id: runDataId,
+    params: {
+      fast_len: Number(params.fast_len || 0),
+      slow_len: Number(params.slow_len || 0),
+      fast_ma_type: String(params.fast_ma_type || ""),
+      slow_ma_type: String(params.slow_ma_type || ""),
+    },
+    ma_source: String(runReq.ma_source || "close"),
+    fast_ma_params: fastParams,
+    slow_ma_params: slowParams,
+    strategy: runReq.strategy || runReq.base_strategy || {},
+    bins,
+  };
+
+  const cmd = kind === "DoubleMa" ? "compute_double_ma_drilldown" : "compute_composite_cpu_drilldown";
+  const req = kind === "CompositeCpu"
+    ? {
+      ...base,
+      halftrend: runReq.halftrend,
+      macz: runReq.macz || {},
+      ott: runReq.ott || {},
+    }
+    : (kind === "CompositeMo"
+      ? {
+        ...base,
+        halftrend: params.halftrend,
+        macz: params.macz || {},
+        ott: params.ott || {},
+        strategy: params.strategy || base.strategy,
+      }
+      : {
+        ...base,
+        halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null,
+      });
+
+  return { runReq, kind, cmd, req };
+}
+
+async function renderDrillTvChart(curves, runReq, seq, context) {
   const meta = $("drillTvChartMeta");
   const req = runReq && typeof runReq === "object" ? runReq : null;
-  const dataId = String(req?.data_id || "").trim();
+  const ctxMeta = context && typeof context === "object" ? context : {};
+  const dataId = String(req?.data_id || req?.dataId || "").trim();
   if (!dataId) {
     clearDrillTvChart();
     return;
@@ -9022,10 +10027,12 @@ async function renderDrillTvChart(curves, runReq, seq) {
     const bars = await fetchDrillPriceBars(dataId);
     if (seq !== DRILL_SEQ) return;
     if (!bars.length) {
-      if (meta) meta.textContent = "No bars available for chart rendering.";
-      clearDrillTvChart();
+      clearDrillTvChart("No valid OHLC bars available for chart rendering.");
       return;
     }
+
+    DRILL_LAST_BARS = bars;
+    DRILL_LAST_BARS_DATA_ID = dataId;
 
     const ctx = ensureDrillTvChart();
     if (!ctx) return;
@@ -9036,13 +10043,60 @@ async function renderDrillTvChart(curves, runReq, seq) {
       low: b.low,
       close: b.close,
     }));
+    if (!candleData.length) {
+      clearDrillTvChart("No candle points generated from loaded bars.");
+      return;
+    }
     ctx.series.setData(candleData);
+    const indicatorBars = normalizeIndicatorBarsForChart(curves?.indicator_bars);
+    const fastData = [];
+    const slowData = [];
+    for (const b of indicatorBars) {
+      if (Number.isFinite(b.fast)) fastData.push({ time: b.time, value: b.fast });
+      if (Number.isFinite(b.slow)) slowData.push({ time: b.time, value: b.slow });
+    }
+    if (DRILL_TV_FAST_SERIES) DRILL_TV_FAST_SERIES.setData(fastData);
+    if (DRILL_TV_SLOW_SERIES) DRILL_TV_SLOW_SERIES.setData(slowData);
 
     const markers = buildDrillTradeMarkers(curves, bars);
+    DRILL_TV_TRADE_EVENTS_BY_TIME = buildDrillTradeEventIndex(curves, bars);
+    renderTrades(curves, { bars });
     if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
       DRILL_TV_MARKERS.setMarkers(markers);
     } else {
       DRILL_TV_MARKERS = createSeriesMarkers(ctx.series, markers);
+    }
+
+    // Seed the legend with the most recent candle so it isn't empty until you hover.
+    if (DRILL_TV_LEGEND_EL && candleData.length) {
+      const last = candleData[candleData.length - 1] || {};
+      const time = chartTimeToUnixSec(last.time);
+      if (time != null) {
+        const lines = [formatUtcTimeFromSec(time)];
+        const o = Number(last.open);
+        const h = Number(last.high);
+        const l = Number(last.low);
+        const c = Number(last.close);
+        if (Number.isFinite(o) && Number.isFinite(h) && Number.isFinite(l) && Number.isFinite(c)) {
+          lines.push(`O ${fmtPrice(o)}  H ${fmtPrice(h)}  L ${fmtPrice(l)}  C ${fmtPrice(c)}`);
+        }
+        const fv = fastData.length ? Number(fastData[fastData.length - 1]?.value) : NaN;
+        const sv = slowData.length ? Number(slowData[slowData.length - 1]?.value) : NaN;
+        if (Number.isFinite(fv) || Number.isFinite(sv)) {
+          const fStr = Number.isFinite(fv) ? fmtPrice(fv) : "-";
+          const sStr = Number.isFinite(sv) ? fmtPrice(sv) : "-";
+          lines.push(`fast ${fStr}  slow ${sStr}`);
+        }
+        const ev = DRILL_TV_TRADE_EVENTS_BY_TIME && typeof DRILL_TV_TRADE_EVENTS_BY_TIME.get === "function"
+          ? DRILL_TV_TRADE_EVENTS_BY_TIME.get(time)
+          : null;
+        const evText = formatDrillTradeEventSummary(ev);
+        if (evText) lines.push(evText);
+        const crosshairText = lines.join("\n");
+        DRILL_TV_LEGEND_LAST_TEXT = crosshairText;
+        DRILL_TV_LEGEND_EL.style.opacity = "0.85";
+        DRILL_TV_LEGEND_EL.textContent = composeDrillTvLegendText(crosshairText, DRILL_TV_LEGEND_PINNED_TEXT);
+      }
     }
 
     requestAnimationFrame(() => {
@@ -9058,7 +10112,24 @@ async function renderDrillTvChart(curves, runReq, seq) {
       const first = bars[0];
       const last = bars[bars.length - 1];
       const tradesN = Array.isArray(curves?.trades) ? curves.trades.length : 0;
-      meta.textContent = `bars=${bars.length} idx=${first.fromIndex}..${last.toIndex} markers=${Math.min(600, tradesN * 2)} data=${dataId}`;
+      const indBarsN = indicatorBars.length;
+      const stats = curves?.trade_stats && typeof curves.trade_stats === "object" ? curves.trade_stats : null;
+      const wr = Number(stats?.win_rate ?? NaN);
+      const pf = Number(stats?.profit_factor ?? NaN);
+      const tradeStatsPart = stats
+        ? `closed=${Number(stats.closed_trades || 0)} wr=${Number.isFinite(wr) ? `${(wr * 100).toFixed(1)}%` : "-"} pf=${Number.isFinite(pf) ? (pf === Infinity ? "inf" : pf.toFixed(3)) : "-"}`
+        : "";
+      const metricPart = formatDrillMetricsSummary(ctxMeta.metrics);
+      const moPart = formatDrillMoSummary(ctxMeta.row);
+      const srcPart = ctxMeta.source ? `src=${ctxMeta.source}` : "";
+      const cachePart = ctxMeta.cacheHit ? "cached" : "fresh";
+      meta.textContent =
+        `bars=${bars.length} idx=${first.fromIndex}..${last.toIndex} markers=${markers.length} trades=${tradesN} ind=${indBarsN} fast=${fastData.length} slow=${slowData.length}` +
+        (tradeStatsPart ? ` | ${tradeStatsPart}` : "") +
+        (metricPart ? ` | ${metricPart}` : "") +
+        (moPart ? ` | ${moPart}` : "") +
+        (srcPart ? ` | ${srcPart}` : "") +
+        ` | ${cachePart}`;
     }
   } catch (e) {
     if (seq !== DRILL_SEQ) return;
@@ -9121,10 +10192,11 @@ function drawMinMaxChart(canvas, minmax, opts) {
   }
 }
 
-function renderDrilldown(curves, params) {
+function renderDrilldown(curves, params, context) {
   const c = curves || {};
   const eq = c.equity || {};
   const dd = c.drawdown || {};
+  const ctxMeta = context && typeof context === "object" ? context : {};
 
   const bins = Number(eq.bins || 0);
   if (!bins) {
@@ -9136,8 +10208,14 @@ function renderDrilldown(curves, params) {
   const p = params || {};
   const meta = $("drillMeta");
   if (meta) {
+    const metricPart = formatDrillMetricsSummary(ctxMeta.metrics);
+    const moPart = formatDrillMoSummary(ctxMeta.row);
+    const srcPart = ctxMeta.source ? `src=${ctxMeta.source}` : "";
     meta.textContent =
       `${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
+      (metricPart ? `${metricPart} | ` : "") +
+      (moPart ? `${moPart} | ` : "") +
+      (srcPart ? `${srcPart} | ` : "") +
       `bins=${bins} start_t=${Number(eq.start_t || 0)} end_t=${Number(eq.end_t || 0)} (min/max per bin)`;
   }
 
@@ -9152,17 +10230,20 @@ function renderDrilldown(curves, params) {
     height: 160,
   });
 
-  renderTrades(c);
+  DRILL_LAST_CURVES = c;
+  renderTrades(c, { bars: bestEffortCurrentDrillBars() });
 }
 
-function renderTrades(curves) {
+function renderTrades(curves, opts) {
   const wrap = $("tradeStatsWrap");
   const statsEl = $("tradeStats");
   const body = $("tradeTableBody");
   if (!wrap || !statsEl || !body) return;
 
-  const trades = Array.isArray(curves?.trades) ? curves.trades : [];
-  const stats = curves?.trade_stats && typeof curves.trade_stats === "object" ? curves.trade_stats : null;
+  const c = curves && typeof curves === "object" ? curves : {};
+  const trades = Array.isArray(c?.trades) ? c.trades : [];
+  const stats = c?.trade_stats && typeof c.trade_stats === "object" ? c.trade_stats : null;
+  DRILL_LAST_CURVES = c;
 
   if (!trades.length && !stats) {
     wrap.style.display = "none";
@@ -9172,6 +10253,28 @@ function renderTrades(curves) {
   }
 
   wrap.style.display = "block";
+
+  const priceBars = Array.isArray(opts?.bars) ? opts.bars : bestEffortCurrentDrillBars();
+  const total = trades.length;
+  const maxRows = Math.max(20, Math.floor(Number(DRILL_TRADES_TABLE_MAX_ROWS || 200)));
+
+  // Maintain a sliding window so chart-clicked trades are visible.
+  let start = Math.max(0, Math.floor(Number(DRILL_TRADES_RANGE_START || 0)));
+  if (total <= maxRows) {
+    start = 0;
+  } else {
+    const maxStart = Math.max(0, total - maxRows);
+    start = Math.max(0, Math.min(maxStart, start));
+    if (DRILL_SELECTED_TRADE_IDX >= 0 && DRILL_SELECTED_TRADE_IDX < total) {
+      const endExcl = start + maxRows;
+      if (DRILL_SELECTED_TRADE_IDX < start || DRILL_SELECTED_TRADE_IDX >= endExcl) {
+        start = computeTradeTableStart(total, DRILL_SELECTED_TRADE_IDX);
+      }
+    } else if (start === 0) {
+      start = maxStart;
+    }
+  }
+  DRILL_TRADES_RANGE_START = start;
 
   if (stats) {
     const closed = Number(stats.closed_trades || 0);
@@ -9198,26 +10301,30 @@ function renderTrades(curves) {
     statsEl.textContent = `trades=${trades.length}`;
   }
 
-  const maxRows = 200;
-  const start = Math.max(0, trades.length - maxRows);
-  const shown = trades.slice(start);
+  const shown = total ? trades.slice(start, Math.min(total, start + maxRows)) : [];
+  const viewPart = total ? ` | view=${start + 1}..${start + shown.length}/${total}` : "";
+  if (viewPart) statsEl.textContent = `${statsEl.textContent}${viewPart}`;
 
   body.innerHTML = "";
   for (let i = 0; i < shown.length; i++) {
     const t = shown[i] || {};
-    const idx = start + i + 1;
+    const tradeIdx = start + i; // 0-based index into curves.trades
+    const idx = tradeIdx + 1; // 1-based label
     const dirVal = Number(t.direction || 0);
     const dir = dirVal > 0 ? "Long" : dirVal < 0 ? "Short" : "Flat";
     const entry = Number(t.entry_t || 0);
-    const exit = Number(t.exit_t || 0);
-    const bars = Number(t.bars || 0);
+    const barsN = Number(t.bars || 0);
     const pnl = Number(t.pnl || 0);
     const open = !!t.open;
+    const exitRaw = Number(t.exit_t);
+    const exit = open && (!Number.isFinite(exitRaw) || exitRaw <= 0) ? NaN : exitRaw;
     const state = open ? "open" : "closed";
 
     const pnlStr = Number.isFinite(pnl) ? `${(pnl * 100).toFixed(2)}%` : "-";
 
     const tr = document.createElement("tr");
+    tr.dataset.tradeIdx = String(tradeIdx);
+    if (tradeIdx === DRILL_SELECTED_TRADE_IDX) tr.classList.add("selected");
 
     const tdN = document.createElement("td");
     tdN.className = "left mono";
@@ -9230,14 +10337,36 @@ function renderTrades(curves) {
     const tdEntry = document.createElement("td");
     tdEntry.className = "left mono";
     tdEntry.textContent = String(entry);
+    const tdEntryTime = document.createElement("td");
+    tdEntryTime.className = "left mono";
+    tdEntryTime.textContent = "-";
+    if (priceBars && priceBars.length) {
+      const tt = mapTradeIndexToChartTime(entry, priceBars);
+      if (tt != null) {
+        tdEntry.title = formatUtcTimeFromSec(tt);
+        tdEntryTime.textContent = formatUtcTimeShortFromSec(tt);
+        tdEntryTime.title = formatUtcTimeFromSec(tt);
+      }
+    }
 
     const tdExit = document.createElement("td");
     tdExit.className = "left mono";
-    tdExit.textContent = String(exit);
+    tdExit.textContent = Number.isFinite(exit) ? String(exit) : "-";
+    const tdExitTime = document.createElement("td");
+    tdExitTime.className = "left mono";
+    tdExitTime.textContent = "-";
+    if (Number.isFinite(exit) && priceBars && priceBars.length) {
+      const tt = mapTradeIndexToChartTime(exit, priceBars);
+      if (tt != null) {
+        tdExit.title = formatUtcTimeFromSec(tt);
+        tdExitTime.textContent = formatUtcTimeShortFromSec(tt);
+        tdExitTime.title = formatUtcTimeFromSec(tt);
+      }
+    }
 
     const tdBars = document.createElement("td");
     tdBars.className = "mono";
-    tdBars.textContent = String(bars);
+    tdBars.textContent = String(barsN);
 
     const tdPnl = document.createElement("td");
     tdPnl.className = "mono";
@@ -9254,10 +10383,16 @@ function renderTrades(curves) {
     tr.appendChild(tdN);
     tr.appendChild(tdDir);
     tr.appendChild(tdEntry);
+    tr.appendChild(tdEntryTime);
     tr.appendChild(tdExit);
+    tr.appendChild(tdExitTime);
     tr.appendChild(tdBars);
     tr.appendChild(tdPnl);
     tr.appendChild(tdState);
+
+    tr.addEventListener("click", () => {
+      selectDrillTradeByIndex(tradeIdx, { scroll: false });
+    });
 
     body.appendChild(tr);
   }
@@ -9279,74 +10414,85 @@ function resolveRunMaParams(runReq, side, maId) {
   return hasLegacy ? legacyAlma : null;
 }
 
-async function requestDrilldown(params, runReqOverride) {
-  const invoke = tauriInvoke();
-  if (!invoke) return;
+async function prefetchDrillRows(runReq, selectedKey, prefetchSeq) {
+  const req = runReq && typeof runReq === "object" ? runReq : null;
+  if (!req) return;
+  const rowsBase = (Array.isArray(TOP_ROWS_FILTERED) && TOP_ROWS_FILTERED.length)
+    ? TOP_ROWS_FILTERED
+    : (Array.isArray(TOP_ROWS) ? TOP_ROWS : []);
+  if (!rowsBase.length) return;
 
-  const runReq = runReqOverride || CURRENT_RUN?.req;
-  if (!runReq || !runReq.data_id) return;
-  if (!params || !params.fast_ma_type || !params.slow_ma_type) return;
+  const selected = String(selectedKey || "").trim();
+  const unique = [];
+  const seen = new Set();
+  for (const row of rowsBase) {
+    const key = paramsKey(row?.params);
+    if (!key || seen.has(key) || key === selected) continue;
+    seen.add(key);
+    unique.push(row);
+    if (unique.length >= DRILL_PREFETCH_TOP_N) break;
+  }
+
+  for (const row of unique) {
+    if (prefetchSeq !== DRILL_PREFETCH_SEQ) return;
+    try {
+      await requestDrilldown(row?.params, req, {
+        prefetch: true,
+        source: "prefetch",
+        row,
+        metrics: row?.metrics || null,
+        skipStability: true,
+      });
+    } catch {
+      // ignore prefetch failures; foreground drilldown still works
+    }
+  }
+}
+
+function scheduleDrillPrefetch(runReq, selectedKey) {
+  const req = runReq && typeof runReq === "object" ? runReq : null;
+  if (!req) return;
+  const prefetchSeq = ++DRILL_PREFETCH_SEQ;
+  setTimeout(() => {
+    if (prefetchSeq !== DRILL_PREFETCH_SEQ) return;
+    void prefetchDrillRows(req, selectedKey, prefetchSeq);
+  }, 0);
+}
+
+async function requestDrilldown(params, runReqOverride, opts) {
+  const invocation = buildDrilldownInvocation(params, runReqOverride);
+  if (!invocation) return;
+
+  const { runReq, cmd, req } = invocation;
+  const context = resolveDrillContext(params, opts);
+
+  if (context.prefetch) {
+    try {
+      await invokeDrilldownCached(cmd, req);
+    } catch {
+      // ignore background prefetch failures
+    }
+    return;
+  }
 
   const seq = ++DRILL_SEQ;
   setDrillVisible(true);
   clearStabilityUi();
-  setDrillStatus("Computing drilldown…", "muted");
-
-  const bins = desiredDrillBins();
-  const fastId = String(params.fast_ma_type || "").trim().toLowerCase();
-  const slowId = String(params.slow_ma_type || "").trim().toLowerCase();
-  const fastParams = (params.fast_ma_params && typeof params.fast_ma_params === "object")
-    ? params.fast_ma_params
-    : resolveRunMaParams(runReq, "fast", fastId);
-  const slowParams = (params.slow_ma_params && typeof params.slow_ma_params === "object")
-    ? params.slow_ma_params
-    : resolveRunMaParams(runReq, "slow", slowId);
-  const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
-
-  const base = {
-    data_id: runReq.data_id,
-    params: {
-      fast_len: Number(params.fast_len || 0),
-      slow_len: Number(params.slow_len || 0),
-      fast_ma_type: String(params.fast_ma_type || ""),
-      slow_ma_type: String(params.slow_ma_type || ""),
-    },
-    ma_source: String(runReq.ma_source || "close"),
-    fast_ma_params: fastParams,
-    slow_ma_params: slowParams,
-    strategy: runReq.strategy || runReq.base_strategy || {},
-    bins,
-  };
-
-  const cmd = kind === "DoubleMa" ? "compute_double_ma_drilldown" : "compute_composite_cpu_drilldown";
-  const req = kind === "CompositeCpu"
-    ? {
-      ...base,
-      halftrend: runReq.halftrend,
-      macz: runReq.macz || {},
-      ott: runReq.ott || {},
-    }
-    : (kind === "CompositeMo"
-      ? {
-        ...base,
-        halftrend: params.halftrend,
-        macz: params.macz || {},
-        ott: params.ott || {},
-        strategy: params.strategy || base.strategy,
-      }
-      : {
-        ...base,
-        halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null,
-      });
+  clearTradeSelection();
+  DRILL_TRADES_RANGE_START = 0;
+  DRILL_LAST_CURVES = null;
+  DRILL_TV_TRADE_EVENTS_BY_TIME = null;
+  const sourceTag = context.source && context.source !== "manual" ? ` (${context.source})` : "";
+  setDrillStatus(`Computing drilldown…${sourceTag}`, "muted");
 
   try {
-    const curves = await invoke(cmd, { req });
+    const out = await invokeDrilldownCached(cmd, req);
     if (seq !== DRILL_SEQ) return;
-    setDrillStatus("Done.", "ok");
-    renderDrilldown(curves, params);
-    void renderDrillTvChart(curves, runReq, seq);
-    requestLocalStability(params, runReq);
+    const renderContext = { ...context, cacheHit: out.cacheHit, requestKey: out.key };
+    setDrillStatus(out.cacheHit ? "Done (cached)." : "Done.", out.cacheHit ? "muted" : "ok");
+    renderDrilldown(out.curves, params, renderContext);
+    void renderDrillTvChart(out.curves, runReq, seq, renderContext);
+    if (!context.skipStability) requestLocalStability(params, runReq);
   } catch (e) {
     if (seq !== DRILL_SEQ) return;
     setDrillStatus(String(e), "danger");
@@ -9755,17 +10901,23 @@ function renderHeatmapOverlay() {
   if (!ctx) return;
   const w = canvas.width;
   const h = canvas.height;
+  const cell = Math.max(1, Number(st.cellPx || 1));
+  const half = cell * 0.5;
   ctx.clearRect(0, 0, w, h);
 
   if (st.showTop && Array.isArray(st.topPoints)) {
     const maxMarkers = 200;
     let n = 0;
     for (const p of st.topPoints) {
+      const x = p.sBin * cell + half;
+      const y = p.fBin * cell + half;
       const isBest = p.rank === 1;
       ctx.strokeStyle = isBest ? "rgba(250, 204, 21, 0.95)" : "rgba(255, 255, 255, 0.85)";
-      ctx.lineWidth = isBest ? 2.5 : 1.5;
+      ctx.lineWidth = isBest
+        ? Math.max(1.5, Math.min(3, cell * 0.35))
+        : Math.max(1, Math.min(2, cell * 0.22));
       ctx.beginPath();
-      ctx.arc(p.sBin + 0.5, p.fBin + 0.5, isBest ? 2.8 : 2.2, 0, Math.PI * 2);
+      ctx.arc(x, y, isBest ? Math.max(2, cell * 0.32) : Math.max(1.5, cell * 0.24), 0, Math.PI * 2);
       ctx.stroke();
       n++;
       if (n >= maxMarkers) break;
@@ -9773,29 +10925,31 @@ function renderHeatmapOverlay() {
   }
 
   if (HEATMAP_SELECTED && HEATMAP_SELECTED.idx != null) {
+    const x = HEATMAP_SELECTED.sBin * cell;
+    const y = HEATMAP_SELECTED.fBin * cell;
     ctx.strokeStyle = "rgba(52, 211, 153, 0.95)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(HEATMAP_SELECTED.sBin, HEATMAP_SELECTED.fBin, 1, 1);
+    ctx.lineWidth = Math.max(1, Math.min(2.5, cell * 0.22));
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, cell - 1), Math.max(1, cell - 1));
   }
 
   if (st.showCrosshair && HEATMAP_HOVER && HEATMAP_HOVER.idx != null) {
-    const x = HEATMAP_HOVER.sBin;
-    const y = HEATMAP_HOVER.fBin;
+    const x = HEATMAP_HOVER.sBin * cell;
+    const y = HEATMAP_HOVER.fBin * cell;
     ctx.save();
     ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
     ctx.lineWidth = 1;
-    ctx.setLineDash([2, 2]);
+    ctx.setLineDash([Math.max(4, cell * 0.8), Math.max(3, cell * 0.6)]);
     ctx.beginPath();
-    ctx.moveTo(0, y + 0.5);
-    ctx.lineTo(w, y + 0.5);
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, h);
+    ctx.moveTo(0, y + half);
+    ctx.lineTo(w, y + half);
+    ctx.moveTo(x + half, 0);
+    ctx.lineTo(x + half, h);
     ctx.stroke();
     ctx.setLineDash([]);
 
     ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x, y, 1, 1);
+    ctx.lineWidth = Math.max(1, Math.min(2, cell * 0.2));
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, cell - 1), Math.max(1, cell - 1));
     ctx.restore();
   }
 }
@@ -9880,10 +11034,10 @@ function renderHeatmap(res, req) {
     return;
   }
 
-  const binsFast = Number(hm.bins_fast);
-  const binsSlow = Number(hm.bins_slow);
+  const rawBinsFast = Number(hm.bins_fast);
+  const rawBinsSlow = Number(hm.bins_slow);
   const rawValues = hm.values;
-  if (!binsFast || !binsSlow || rawValues.length !== binsFast * binsSlow) {
+  if (!rawBinsFast || !rawBinsSlow || rawValues.length !== rawBinsFast * rawBinsSlow) {
     HEATMAP_STATE = null;
     HEATMAP_HOVER = null;
     HEATMAP_SELECTED = null;
@@ -9896,7 +11050,7 @@ function renderHeatmap(res, req) {
   }
 
   const prefs = heatmapPrefsFromUi();
-  const len = binsFast * binsSlow;
+  const len = rawBinsFast * rawBinsSlow;
   const values = new Float64Array(len);
   const finite = [];
 
@@ -9942,23 +11096,92 @@ function renderHeatmap(res, req) {
     hi += eps;
   }
 
+  const rowHasData = new Array(rawBinsFast).fill(false);
+  const colHasData = new Array(rawBinsSlow).fill(false);
+  for (let idx = 0; idx < len; idx++) {
+    const v = values[idx];
+    if (!Number.isFinite(v)) continue;
+    const fRaw = Math.floor(idx / rawBinsSlow);
+    const sRaw = idx - fRaw * rawBinsSlow;
+    rowHasData[fRaw] = true;
+    colHasData[sRaw] = true;
+  }
+
+  const displayFastToRaw = [];
+  const displaySlowToRaw = [];
+  const rawFastToDisplay = new Int32Array(rawBinsFast);
+  const rawSlowToDisplay = new Int32Array(rawBinsSlow);
+  rawFastToDisplay.fill(-1);
+  rawSlowToDisplay.fill(-1);
+
+  for (let fRaw = 0; fRaw < rawBinsFast; fRaw++) {
+    if (!rowHasData[fRaw]) continue;
+    rawFastToDisplay[fRaw] = displayFastToRaw.length;
+    displayFastToRaw.push(fRaw);
+  }
+  for (let sRaw = 0; sRaw < rawBinsSlow; sRaw++) {
+    if (!colHasData[sRaw]) continue;
+    rawSlowToDisplay[sRaw] = displaySlowToRaw.length;
+    displaySlowToRaw.push(sRaw);
+  }
+
+  if (!displayFastToRaw.length || !displaySlowToRaw.length) {
+    HEATMAP_STATE = null;
+    HEATMAP_HOVER = null;
+    HEATMAP_SELECTED = null;
+    wrap.style.display = "none";
+    if (hint) {
+      hint.textContent = "Heatmap bins are empty for this run.";
+    }
+    setHintVisible("heatmapEmptyHint", true);
+    return;
+  }
+
+  const binsFast = displayFastToRaw.length;
+  const binsSlow = displaySlowToRaw.length;
+  const compacted = binsFast !== rawBinsFast || binsSlow !== rawBinsSlow;
+  const displayLen = binsFast * binsSlow;
+  const displayValues = new Float64Array(displayLen);
+  for (let i = 0; i < displayLen; i++) displayValues[i] = NaN;
+  for (let f = 0; f < binsFast; f++) {
+    const fRaw = displayFastToRaw[f];
+    const srcOff = fRaw * rawBinsSlow;
+    const dstOff = f * binsSlow;
+    for (let s = 0; s < binsSlow; s++) {
+      displayValues[dstOff + s] = values[srcOff + displaySlowToRaw[s]];
+    }
+  }
+
   wrap.style.display = "block";
   setHintVisible("heatmapEmptyHint", false);
   const obj = String(req?.objective || req?.objectives?.maximize || "Sharpe");
   const clipNote = prefs.range === "q2_98" ? " (clip 2–98%)" : "";
-  HEATMAP_META_BASE = `Objective heatmap (${obj}) | fast=${hm.fast_min}..${hm.fast_max} slow=${hm.slow_min}..${hm.slow_max} | score=${fmt(lo, 4)}..${fmt(hi, 4)}${clipNote}`;
+  const compactNote = compacted ? ` | compact=${binsFast}x${binsSlow} (raw ${rawBinsFast}x${rawBinsSlow})` : "";
+  HEATMAP_META_BASE = `Objective heatmap (${obj}) | fast=${hm.fast_min}..${hm.fast_max} slow=${hm.slow_min}..${hm.slow_max} | score=${fmt(lo, 4)}..${fmt(hi, 4)}${clipNote}${compactNote}`;
   meta.textContent = HEATMAP_META_BASE;
 
-  canvas.width = binsSlow;
-  canvas.height = binsFast;
-  overlay.width = binsSlow;
-  overlay.height = binsFast;
+  const maxBins = Math.max(1, binsFast, binsSlow);
+  let cellPx = Math.floor(1200 / maxBins);
+  if (!Number.isFinite(cellPx) || cellPx < 1) cellPx = 1;
+  if (cellPx > 8) cellPx = 8;
+  const capByDim = Math.max(1, Math.floor(3072 / maxBins));
+  cellPx = Math.max(1, Math.min(cellPx, capByDim));
+
+  canvas.width = binsSlow * cellPx;
+  canvas.height = binsFast * cellPx;
+  overlay.width = binsSlow * cellPx;
+  overlay.height = binsFast * cellPx;
   const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(binsSlow, binsFast);
+  const heatSrc = document.createElement("canvas");
+  heatSrc.width = binsSlow;
+  heatSrc.height = binsFast;
+  const srcCtx = heatSrc.getContext("2d");
+  if (!ctx || !srcCtx) return;
+  const img = srcCtx.createImageData(binsSlow, binsFast);
   const lut = heatmapGetLut(prefs.color, 512);
   const lutSize = Math.max(1, (lut.length / 4) | 0);
-  for (let idx = 0; idx < len; idx++) {
-    const v = values[idx];
+  for (let idx = 0; idx < displayLen; idx++) {
+    const v = displayValues[idx];
     const px = idx * 4;
     if (!Number.isFinite(v)) {
       img.data[px + 3] = 0; // transparent; show canvas background
@@ -9971,12 +11194,15 @@ function renderHeatmap(res, req) {
     img.data[px + 2] = lut[i * 4 + 2];
     img.data[px + 3] = 255;
   }
-  ctx.putImageData(img, 0, 0);
+  srcCtx.putImageData(img, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(heatSrc, 0, 0, binsSlow, binsFast, 0, 0, canvas.width, canvas.height);
 
   const fastBins = new Array(binsFast);
   const slowBins = new Array(binsSlow);
-  for (let f = 0; f < binsFast; f++) fastBins[f] = heatmapBinRange(f, hm.fast_min, hm.fast_max, binsFast);
-  for (let s = 0; s < binsSlow; s++) slowBins[s] = heatmapBinRange(s, hm.slow_min, hm.slow_max, binsSlow);
+  for (let f = 0; f < binsFast; f++) fastBins[f] = heatmapBinRange(displayFastToRaw[f], hm.fast_min, hm.fast_max, rawBinsFast);
+  for (let s = 0; s < binsSlow; s++) slowBins[s] = heatmapBinRange(displaySlowToRaw[s], hm.slow_min, hm.slow_max, rawBinsSlow);
 
   const topRows = Array.isArray(TOP_ROWS) && TOP_ROWS.length ? TOP_ROWS : collectTopRows(res);
   const maxTopRows = 2000;
@@ -9990,8 +11216,11 @@ function renderHeatmap(res, req) {
     const fLen = Number(p.fast_len || 0);
     const sLen = Number(p.slow_len || 0);
     if (!Number.isFinite(fLen) || !Number.isFinite(sLen) || fLen <= 0 || sLen <= 0) continue;
-    const fBin = heatmapBinPeriod(fLen, hm.fast_min, hm.fast_max, binsFast);
-    const sBin = heatmapBinPeriod(sLen, hm.slow_min, hm.slow_max, binsSlow);
+    const fRawBin = heatmapBinPeriod(fLen, hm.fast_min, hm.fast_max, rawBinsFast);
+    const sRawBin = heatmapBinPeriod(sLen, hm.slow_min, hm.slow_max, rawBinsSlow);
+    const fBin = rawFastToDisplay[fRawBin];
+    const sBin = rawSlowToDisplay[sRawBin];
+    if (fBin < 0 || sBin < 0) continue;
     const idx = fBin * binsSlow + sBin;
     const pt = { fBin, sBin, idx, key, rank: Number(row.rank || 0), row };
     topPoints.push(pt);
@@ -10005,7 +11234,7 @@ function renderHeatmap(res, req) {
     obj,
     binsFast,
     binsSlow,
-    values,
+    values: displayValues,
     lo,
     hi,
     fastBins,
@@ -10019,6 +11248,7 @@ function renderHeatmap(res, req) {
     meta,
     showTop: prefs.showTop,
     showCrosshair: prefs.showCrosshair,
+    cellPx,
   };
 
   // Legend
@@ -10080,7 +11310,7 @@ function renderHeatmap(res, req) {
     }
 
     const idx = fBin * binsSlow + sBin;
-    const v = values[idx];
+    const v = displayValues[idx];
     if (!Number.isFinite(v)) {
       HEATMAP_HOVER = null;
       meta.textContent = HEATMAP_META_BASE;
@@ -10147,7 +11377,11 @@ function renderHeatmap(res, req) {
 
     DRILL_SELECTED_KEY = best.key;
     HEATMAP_SELECTED = { fBin: best.fBin, sBin: best.sBin, idx: best.idx, key: best.key };
-    requestDrilldown(best.row.params);
+    requestDrilldown(best.row.params, undefined, {
+      source: "heatmap",
+      row: best.row,
+      metrics: best.row?.metrics || null,
+    });
     renderTopTable(CURRENT_RUN?.res, CURRENT_RUN?.req);
     renderHeatmapOverlay();
     RESULTS_TABS?.set("drill", { save: false, focus: true });
@@ -10294,6 +11528,8 @@ function renderBest(res, req) {
 function renderRun(res, req) {
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
   let best = res?.best_params;
+  let bestMetrics = res?.best_metrics || null;
+  let bestMo = null;
   if (!best && kindRaw === "CompositeMo" && Array.isArray(res?.pareto) && res.pareto.length) {
     const pts = res.pareto;
     const bestPt = [...pts].sort((a, b) => {
@@ -10311,6 +11547,12 @@ function renderRun(res, req) {
       return 0;
     })[0];
     best = bestPt?.params || null;
+    bestMetrics = bestPt?.metrics || null;
+    bestMo = bestPt ? {
+      maximize_value: Number(bestPt.maximize_value ?? NaN),
+      minimize_value: Number(bestPt.minimize_value ?? NaN),
+      violation: Number(bestPt.violation ?? NaN),
+    } : null;
   }
   DRILL_SELECTED_KEY = best ? paramsKey(best) : "";
   renderBest(res, req);
@@ -10318,7 +11560,12 @@ function renderRun(res, req) {
   renderHeatmap(res, req);
   renderCompare();
   if (best) {
-    requestDrilldown(best, req);
+    requestDrilldown(best, req, {
+      source: "best",
+      metrics: bestMetrics,
+      row: bestMo ? { params: best, metrics: bestMetrics, mo: bestMo } : null,
+    });
+    scheduleDrillPrefetch(req, DRILL_SELECTED_KEY);
   } else {
     setDrillVisible(false);
   }
@@ -11840,6 +13087,10 @@ function exportReportJson() {
     version: 1,
     kind: "vectorbt_report",
     ts,
+    data: {
+      meta: (CURRENT_DATA_META && typeof CURRENT_DATA_META === "object") ? CURRENT_DATA_META : null,
+      ctx: (CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object") ? CURRENT_DATASET_CTX : null,
+    },
     run: { req: CURRENT_RUN.req || null, res: CURRENT_RUN.res || null },
     validation: CURRENT_VALIDATION ? { req: CURRENT_VALIDATION.req || null, res: CURRENT_VALIDATION.res || null } : null,
   };
@@ -11860,6 +13111,10 @@ async function exportReportXlsx() {
     version: 1,
     kind: "vectorbt_report",
     ts,
+    data: {
+      meta: (CURRENT_DATA_META && typeof CURRENT_DATA_META === "object") ? CURRENT_DATA_META : null,
+      ctx: (CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object") ? CURRENT_DATASET_CTX : null,
+    },
     run: { req: CURRENT_RUN?.req || null, res: CURRENT_RUN?.res || null },
     validation: CURRENT_VALIDATION ? { req: CURRENT_VALIDATION.req || null, res: CURRENT_VALIDATION.res || null } : null,
   };
@@ -11926,6 +13181,8 @@ async function runValidation(opts) {
     renderValidationTable(res);
     if (CURRENT_RUN?.res && CURRENT_RUN?.req) renderBest(CURRENT_RUN.res, CURRENT_RUN.req);
     updateValidationExportButtons();
+    // Persist validation into the run artifact so Meta selection can aggregate without requiring XLSX export.
+    await persistCurrentRunArtifact();
     if (!!$("valAutoExportXlsx")?.checked) {
       try {
         await exportReportXlsx();
@@ -11959,6 +13216,7 @@ async function loadCsv() {
   CURRENT_BASE_DATASET_CTX = { source: "csv", label: fileBasename(path), timeframe: String(meta?.timeframe || "").trim() || null };
   CURRENT_DATA_META = meta;
   CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX };
+  clearDrillCaches({ clearBars: true });
   $("dataId").textContent = id;
   renderDataMeta(meta);
   applyMaSourceConstraints();
@@ -12520,10 +13778,10 @@ async function runBatchWorkflow() {
   if ($("btnBatchStop")) $("btnBatchStop").disabled = false;
   try {
     setBatchSummaryUi(null, "");
-    // Hands-off defaults for batch: validate + export, but don't pop open files for every dataset.
+    // Hands-off defaults for batch: validate, but don't pop open files for every dataset. XLSX export respects the toggle.
     if ($("valAutoRun")) $("valAutoRun").checked = true;
-    if ($("valAutoExportXlsx")) $("valAutoExportXlsx").checked = true;
     if ($("valAutoRevealReport")) $("valAutoRevealReport").checked = false;
+    const requireXlsx = !!$("valAutoExportXlsx")?.checked;
 
     let baseTags = parseTagsInput($("batchTags")?.value || "");
     if (!baseTags.length) {
@@ -12535,10 +13793,31 @@ async function runBatchWorkflow() {
     saveSettingsSoon();
 
     if (!Array.isArray(BATCH_DATASETS_CACHE) || !BATCH_DATASETS_CACHE.length) {
+      const merged = new Map();
       try {
         const info = await invoke("polygon_get_cache_info");
-        BATCH_DATASETS_CACHE = Array.isArray(info?.datasets) ? info.datasets : [];
+        for (const ds of Array.isArray(info?.datasets) ? info.datasets : []) {
+          const p = String(ds?.csv_path || "").trim();
+          if (!p) continue;
+          merged.set(p, ds);
+        }
       } catch {}
+      try {
+        const resp = await invoke("list_repo_data_csvs", { maxFiles: 20000, recursive: true });
+        const localPaths = Array.isArray(resp?.csv_paths) ? resp.csv_paths : [];
+        for (const p0 of localPaths) {
+          const p = String(p0 || "").trim();
+          if (!p || merged.has(p)) continue;
+          merged.set(p, {
+            source: "repo_data",
+            market: "local",
+            display_symbol: fileBasename(p) || p,
+            csv_path: p,
+            timeframe: "",
+          });
+        }
+      } catch {}
+      BATCH_DATASETS_CACHE = [...merged.values()];
     }
 
     const byPath = new Map();
@@ -12548,25 +13827,25 @@ async function runBatchWorkflow() {
       byPath.set(p, ds);
     }
 
+    const tfOverride = String($("dataTimeframe")?.value || "").trim();
+    const hasTfOverride = !!tfOverride;
     const selectedTimeframes = new Set();
-    const missingTimeframe = [];
     for (const p0 of selectedPaths) {
       const p = String(p0 || "").trim();
       if (!p) continue;
       const ds = byPath.get(p) || null;
       const tf = String(ds?.timeframe || "").trim();
       if (tf) selectedTimeframes.add(tf);
-      else missingTimeframe.push(fileBasename(p) || p);
     }
-    if (missingTimeframe.length) {
-      setStatus(`Batch requires timeframe metadata for all selected datasets (missing: ${missingTimeframe.length}). Refresh the dataset list and re-select.`, "danger");
-      return;
-    }
-    if (selectedTimeframes.size > 1) {
+    if (!hasTfOverride && selectedTimeframes.size > 1) {
       const tfs = [...selectedTimeframes].sort().join(", ");
-      setStatus(`Batch requires a single timeframe across selected datasets (found: ${tfs}). Filter by 'tf=1m' (or similar) and select again.`, "danger");
+      setStatus(`Batch requires a single timeframe across selected datasets (found: ${tfs}). Filter by 'tf=1m' (or similar), or set Data → Timeframe to force resampling.`, "danger");
       return;
     }
+
+    let expectedTimeframe = hasTfOverride
+      ? tfOverride
+      : (selectedTimeframes.size === 1 ? [...selectedTimeframes][0] : "");
 
     const batchTs = new Date().toISOString();
     const batchStart = performance.now();
@@ -12577,7 +13856,7 @@ async function runBatchWorkflow() {
     const expectedKind = strategyKind() === "CompositeCpu" ? "CompositeCpu" : "CompositeMo";
     const expectedFingerprint = computeConfigFingerprint(getRequestForFingerprint(), getValidationReqForFingerprintFromUi());
     const batchTimeframes = new Set();
-    for (const tf of selectedTimeframes) batchTimeframes.add(tf);
+    if (expectedTimeframe) batchTimeframes.add(expectedTimeframe);
     let doneSet = new Set();
     if (skip_done && primary_tag) {
       try {
@@ -12593,7 +13872,7 @@ async function runBatchWorkflow() {
           if (!csv) continue;
           const hasVal = !!r?.has_validation;
           const hasXlsx = !!String(r?.report_xlsx_path || "").trim();
-          if (!hasVal || !hasXlsx) continue;
+          if (!hasVal || (requireXlsx && !hasXlsx)) continue;
           doneSet.add(csv);
         }
       } catch {}
@@ -12635,21 +13914,48 @@ async function runBatchWorkflow() {
         continue;
       }
 
-      if (ds) {
+      const dsSource = String(ds?.source || "").trim();
+      const isRepoData = dsSource === "repo_data";
+      if (ds && !isRepoData) {
         const market = String(ds?.market || "").trim() || null;
         const adjFlag = market === "stocks" ? (!!ds?.adjusted) : null;
         const sym = String(ds?.display_symbol || ds?.polygon_ticker || label).trim();
-        const tf = String(ds?.timeframe || CURRENT_DATA_META?.timeframe || "").trim() || null;
-        if (tf) batchTimeframes.add(tf);
-        CURRENT_DATASET_CTX = {
+        const baseTf = String(CURRENT_BASE_DATA_META?.timeframe || ds?.timeframe || "").trim() || null;
+        CURRENT_BASE_DATASET_CTX = {
           source: "polygon",
           label: sym || label || fileBasename(path) || path,
           symbol: sym || null,
           market,
           adjusted: adjFlag,
-          timeframe: tf,
+          timeframe: baseTf,
         };
+        CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX };
       }
+
+      if (hasTfOverride) {
+        try {
+          await applySelectedDataTimeframe({ allowWhileRunning: true });
+        } catch (e) {
+          failures.push({ label, error: `resample: ${String(e)}` });
+          failedRows.push({ csv_path: path, label, is_holdout: isHoldout, error: `resample: ${String(e)}` });
+          setStatus(`Batch: failed to resample ${label}: ${String(e)}`, "danger");
+          continue;
+        }
+      }
+
+      const effTf = String(CURRENT_DATASET_CTX?.timeframe || CURRENT_DATA_META?.timeframe || "").trim();
+      if (!expectedTimeframe && effTf) {
+        expectedTimeframe = effTf;
+        batchTimeframes.add(effTf);
+      }
+      if (expectedTimeframe && effTf && effTf !== expectedTimeframe) {
+        failures.push({ label, error: `timeframe mismatch: got ${effTf}, expected ${expectedTimeframe}` });
+        failedRows.push({ csv_path: path, label, is_holdout: isHoldout, error: `timeframe mismatch: got ${effTf}, expected ${expectedTimeframe}` });
+        const hint = hasTfOverride ? "" : " Set Data → Timeframe to force resampling.";
+        setStatus(`Batch: timeframe mismatch on ${label}: got ${effTf}, expected ${expectedTimeframe}.${hint}`, "danger");
+        continue;
+      }
+      if (effTf) batchTimeframes.add(effTf);
 
       const extraTags = isHoldout && holdout_pct > 0 ? [holdout_tag] : [];
       const perRunTags = dedupTags([...baseTags, label, ...extraTags].filter((t) => !!String(t || "").trim()));
@@ -12878,6 +14184,7 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
     CURRENT_BASE_DATASET_CTX = { source: "polygon", label: symbol, symbol, market, adjusted, timeframe: String(baseMeta?.timeframe || "1m").trim() || "1m" };
     CURRENT_DATA_META = meta;
     CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX, timeframe: tfLabel };
+    clearDrillCaches({ clearBars: true });
     $("dataId").textContent = id || "—";
     renderDataMeta(meta);
     applyMaSourceConstraints();
@@ -12991,9 +14298,7 @@ $("btnClear").addEventListener("click", () => {
   const pareto = $("paretoWrap");
   if (pareto) pareto.style.display = "none";
   setHintVisible("paretoEmptyHint", true);
-  DRILL_SELECTED_KEY = "";
-  DRILL_SEQ++;
-  DRILL_PRICE_BARS_CACHE.clear();
+  clearDrillCaches({ clearBars: true });
   setDrillVisible(false);
   $("heatmapWrap").style.display = "none";
   setHintVisible("heatmapEmptyHint", true);
@@ -13507,8 +14812,7 @@ $("btnClearHistory")?.addEventListener("click", () => {
   populateCompareSelect([], "");
   CURRENT_RUN = null;
   clearValidationUi();
-  DRILL_SELECTED_KEY = "";
-  DRILL_SEQ++;
+  clearDrillCaches({ clearBars: false });
   setDrillVisible(false);
   renderCompare();
   setStatus("History cleared.", "muted");

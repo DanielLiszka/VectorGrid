@@ -229,7 +229,7 @@ void double_cross_backtest_tm_flex_f32(
 
 
 static __device__ __forceinline__ float objective_score_f32(const float* __restrict__ metrics, size_t base, int M, int objective) {
-    // objective: 0 = pnl, 1 = sharpe, 2 = -max_dd
+    // objective: 0 = pnl, 1 = sharpe, 2 = -max_dd, 3 = calmar, 4 = -volatility
     if (objective == 0) {
         return (M > 0) ? metrics[base + 0] : NEG_INF_F;
     }
@@ -241,6 +241,29 @@ static __device__ __forceinline__ float objective_score_f32(const float* __restr
     }
     if (objective == 2) {
         return (M > 2) ? -metrics[base + 2] : NEG_INF_F;
+    }
+    if (objective == 3) {
+        if (M <= 2) return NEG_INF_F;
+        const float pnl = metrics[base + 0];
+        const float max_dd = metrics[base + 2];
+        const float eps = 1e-12f;
+        const float clamp_max = 1.0e6f;
+        float raw = 0.0f;
+        if (max_dd > eps) {
+            raw = pnl / max_dd;
+        } else if (pnl > 0.0f) {
+            raw = clamp_max;
+        } else if (pnl < 0.0f) {
+            raw = -clamp_max;
+        }
+        if (raw > clamp_max) raw = clamp_max;
+        if (raw < -clamp_max) raw = -clamp_max;
+        return raw;
+    }
+    if (objective == 4) {
+        if (M <= 4) return NEG_INF_F;
+        const float std = metrics[base + 4];
+        return -std;
     }
     return NEG_INF_F;
 }

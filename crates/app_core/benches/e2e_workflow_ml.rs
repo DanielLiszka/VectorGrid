@@ -359,6 +359,7 @@ fn run_full_workflow_once(
         top_k: 25,
         min_samples: 1,
         strict_shortlist: false,
+        allow_shortlist_fallback: true,
         weights: MetaScoreWeights::default(),
         grouping_mode: MetaGroupingMode::Exact,
         cluster_config: MetaClusterConfig::default(),
