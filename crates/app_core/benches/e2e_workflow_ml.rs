@@ -124,22 +124,35 @@ fn evaluate_holdout_light(
             cscv_pbo: None,
             seed: 1,
             max_candidates: groups.len(),
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
         };
 
-        let val_res = match run_composite_validation_blocking_with_candles(val_req, candles, cancel, None) {
-            Ok(v) => v,
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
+        let val_res =
+            match run_composite_validation_blocking_with_candles(val_req, candles, cancel, None) {
+                Ok(v) => v,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
 
         // Accumulate per-group results for this dataset.
         let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); groups.len()]; // (score, sharpe, max_dd, pnl)
         for cand in val_res.candidates {
             let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
-            let key = meta_group_key_for_request(req, &params_v, &ma_source, &fast_ma_params, &slow_ma_params);
-            let Some(&gi) = idx_by_key.get(&key) else { continue };
+            let key = meta_group_key_for_request(
+                req,
+                &params_v,
+                &ma_source,
+                &fast_ma_params,
+                &slow_ma_params,
+            );
+            let Some(&gi) = idx_by_key.get(&key) else {
+                continue;
+            };
 
             let sharpe = cand.in_sample.sharpe;
             let max_dd = cand.in_sample.max_dd;
@@ -186,7 +199,10 @@ fn evaluate_holdout_light(
 
     let datasets = holdout.len().saturating_sub(skipped);
     if datasets == 0 {
-        return Ok(HoldoutSummary { datasets: 0, skipped });
+        return Ok(HoldoutSummary {
+            datasets: 0,
+            skipped,
+        });
     }
 
     for (i, g) in groups.iter_mut().enumerate() {
@@ -234,6 +250,10 @@ fn run_full_workflow_once(
         long_only: false, // allow shorts to avoid degenerate all-negative holdout labels on downtrends
         allow_flip: true,
         trade_on_next_bar: true,
+        cost_preset: None,
+        fee_bps: 0.0,
+        spread_bps: 0.0,
+        slippage_bps: 0.0,
         commission: 0.0,
         eps_rel: 0.0,
     };
@@ -263,7 +283,10 @@ fn run_full_workflow_once(
             _ => 0.0015,
         };
         let phase = i as f64 * 0.31;
-        universe.push((label, make_synth_candles(candles_len, drift, noise_amp, phase)));
+        universe.push((
+            label,
+            make_synth_candles(candles_len, drift, noise_amp, phase),
+        ));
     }
 
     let train = &universe[..train_assets.min(universe.len())];
@@ -297,7 +320,8 @@ fn run_full_workflow_once(
             heatmap_bins: Some(0),
         };
 
-        let opt_res = run_composite_cpu_optimization_blocking_with_candles(opt_req, candles, cancel, None)?;
+        let opt_res =
+            run_composite_cpu_optimization_blocking_with_candles(opt_req, candles, cancel, None)?;
 
         let mut candidates: Vec<CompositeParams> = Vec::new();
         candidates.reserve(opt_res.top.len().min(64).max(1));
@@ -330,8 +354,13 @@ fn run_full_workflow_once(
             cscv_pbo: None,
             seed: 1,
             max_candidates: 64,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
         };
-        let val_res = run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
+        let val_res =
+            run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
 
         artifacts.push(json!({
             "kind": "vectorbt_run_artifact",
@@ -369,8 +398,10 @@ fn run_full_workflow_once(
     let mut meta_res = meta_select_from_artifacts(&meta_req, &artifacts, None);
 
     // 3) Optional: holdout evaluation (light) to create labels.
-    let holdout_pairs: Vec<(&str, &Candles)> = holdout.iter().map(|(l, c)| (l.as_str(), c)).collect();
-    let holdout_summary = evaluate_holdout_light(&meta_req, &mut meta_res.groups, &holdout_pairs, cancel)?;
+    let holdout_pairs: Vec<(&str, &Candles)> =
+        holdout.iter().map(|(l, c)| (l.as_str(), c)).collect();
+    let holdout_summary =
+        evaluate_holdout_light(&meta_req, &mut meta_res.groups, &holdout_pairs, cancel)?;
     meta_res.holdout = Some(holdout_summary);
 
     // 4) Optional: ML training + apply (confidence ranking).
@@ -394,12 +425,7 @@ fn run_full_workflow_once(
 
     // The benchmark uses synthetic candles. To avoid single-class label failures, we try a small
     // set of increasingly permissive label thresholds until training succeeds.
-    let attempts: &[(f64, f64)] = &[
-        (0.75, 0.00),
-        (0.60, -0.10),
-        (0.50, -0.25),
-        (0.50, -1.00),
-    ];
+    let attempts: &[(f64, f64)] = &[(0.75, 0.00), (0.60, -0.10), (0.50, -0.25), (0.50, -1.00)];
 
     let mut last_err: Option<String> = None;
     let mut model_opt = None;
@@ -407,7 +433,11 @@ fn run_full_workflow_once(
         let mut cfg = base_cfg.clone();
         cfg.label.min_holdout_pass_rate = min_pass;
         cfg.label.min_holdout_score_p10 = min_p10;
-        match train_ml_confidence_model_from_meta_artifacts(scope.clone(), &[meta_artifact.clone()], cfg) {
+        match train_ml_confidence_model_from_meta_artifacts(
+            scope.clone(),
+            &[meta_artifact.clone()],
+            cfg,
+        ) {
             Ok((m, _metrics)) => {
                 model_opt = Some(m);
                 break;

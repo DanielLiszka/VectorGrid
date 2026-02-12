@@ -105,7 +105,10 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
     // Validate monotonic timestamps (required for stable resampling).
     for i in 1..n {
         if candles.timestamp[i] < candles.timestamp[i - 1] {
-            return Err("timestamps must be sorted ascending to resample (try repairing the dataset)".to_string());
+            return Err(
+                "timestamps must be sorted ascending to resample (try repairing the dataset)"
+                    .to_string(),
+            );
         }
     }
 

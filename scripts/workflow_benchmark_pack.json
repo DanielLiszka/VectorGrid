@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "regpack-v1",
+  "description": "Deterministic synthetic workflow pack for optimize->validate->meta->holdout regression gates.",
+  "workflow_bin": "ta_workflow_regression",
+  "seed": 1,
+  "candles_len": 10000,
+  "train_assets": 10,
+  "holdout_assets": 6
+}

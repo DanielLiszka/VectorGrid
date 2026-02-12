@@ -82,7 +82,8 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
         if ty.is_dir() {
             copy_dir_all(&from, &to)?;
         } else if ty.is_file() {
-            fs::copy(&from, &to).map_err(|e| format!("copy {} -> {}: {e}", from.display(), to.display()))?;
+            fs::copy(&from, &to)
+                .map_err(|e| format!("copy {} -> {}: {e}", from.display(), to.display()))?;
         }
     }
     Ok(())

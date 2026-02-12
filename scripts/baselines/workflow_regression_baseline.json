@@ -1,0 +1,14 @@
+{
+  "candles_len": 10000,
+  "train_assets": 10,
+  "holdout_assets": 6,
+  "artifacts_used": 10,
+  "groups": 25,
+  "top_meta_score": 0.10563343170421738,
+  "robust_score_p10": 0.0,
+  "max_dd_p90": 0.0,
+  "holdout_score_p10": 0.0,
+  "holdout_max_dd_p90": 0.0,
+  "holdout_pass_rate": 0.5,
+  "runtime_ms": 345
+}

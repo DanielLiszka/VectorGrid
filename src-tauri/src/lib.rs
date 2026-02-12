@@ -7,8 +7,8 @@ pub mod settings;
 pub mod state;
 
 use commands::*;
-use distributed::*;
 use distributed::DistributedState;
+use distributed::*;
 use state::AppState;
 use state::BackgroundTaskState;
 
@@ -84,10 +84,10 @@ pub fn run_tauri() {
             compute_double_ma_drilldown,
             compute_composite_cpu_drilldown,
             compute_double_ma_local_stability,
-             compute_composite_cpu_local_stability,
-             cancel_current_run,
-             cancel_double_ma_optimization,
-             list_moving_averages,
+            compute_composite_cpu_local_stability,
+            cancel_current_run,
+            cancel_double_ma_optimization,
+            list_moving_averages,
             get_gpu_status,
             list_cuda_devices
         ])

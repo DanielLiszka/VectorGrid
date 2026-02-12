@@ -16,10 +16,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Clippy (workspace, no-deps)
+        run: cargo clippy --workspace --all-targets --no-deps
+      - name: Guard Orchestration File Growth
+        shell: bash
+        run: |
+          max_lines=6600
+          lines=$(wc -l < src-tauri/src/commands.rs)
+          echo "src-tauri/src/commands.rs lines=$lines (max=$max_lines)"
+          if [ "$lines" -gt "$max_lines" ]; then
+            echo "::error::src-tauri/src/commands.rs exceeded ${max_lines} lines (${lines}). Extract new logic into focused modules."
+            exit 1
+          fi
       - name: Test (ta_app_core)
         run: cargo test -p ta_app_core
 
@@ -32,3 +44,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check (ta_desktop_demo_app)
         run: cargo check -p ta_desktop_demo_app
+      - name: Workflow Regression Gate
+        run: |
+          cargo run -p ta_desktop_demo_app --bin ta_workflow_regression -- --out target/workflow_regression_ci.json --baseline scripts/baselines/workflow_regression_baseline.json

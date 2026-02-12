@@ -1,0 +1,1520 @@
+
+#[tauri::command]
+pub async fn open_runs_dir(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::open_runs_dir_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MlConfidenceModelStatus {
+    pub exists: bool,
+    pub model_path: String,
+    pub bytes: usize,
+    pub available_meta_artifacts: usize,
+    pub available_labeled_rows: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_meta_ts_available: Option<String>,
+    pub stale: bool,
+    pub retrain_recommended: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retrain_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<MlConfidenceModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrainMlConfidenceResponse {
+    pub model_path: String,
+    pub model_bytes: usize,
+    pub model: MlConfidenceModel,
+    pub metrics: MlConfidenceTrainMetrics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplyMlConfidenceResponse {
+    pub model_path: String,
+    pub confidences: Vec<Option<f64>>,
+    pub warnings: Vec<String>,
+}
+
+fn normalize_ml_scope(mut scope: MlConfidenceScope) -> Result<MlConfidenceScope, String> {
+    scope.strategy_kind = scope.strategy_kind.trim().to_string();
+    scope.timeframe = normalize_timeframe_label(&scope.timeframe);
+    if scope.strategy_kind.is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+    if scope.timeframe.is_empty() {
+        return Err("timeframe is required (e.g. '1m')".to_string());
+    }
+    Ok(scope)
+}
+
+fn ml_confidence_models_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let dir = base.join("models").join("confidence");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn ml_confidence_model_path(
+    scope: &MlConfidenceScope,
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, String> {
+    let dir = ml_confidence_models_dir(app)?;
+    let sk = sanitize_filename_component(&scope.strategy_kind);
+    let tf = sanitize_filename_component(&scope.timeframe);
+    Ok(dir.join(format!("ml_confidence_{sk}_{tf}.json")))
+}
+
+fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let dir = run_artifacts::runs_dir(app)?;
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("vectorbt_meta_") {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    let mut out: Vec<Value> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let raw = match std::fs::read_to_string(&p) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        out.push(v);
+    }
+    Ok(out)
+}
+
+fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
+    let strat = meta
+        .pointer("/req/strategy_kind")
+        .and_then(|v| v.as_str())
+        .or_else(|| meta.pointer("/res/strategy_kind").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let tf_raw = meta
+        .pointer("/req/timeframe")
+        .and_then(|v| v.as_str())
+        .or_else(|| meta.pointer("/res/timeframe").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let tf = normalize_timeframe_label(&tf_raw);
+    if strat.is_empty() || tf.is_empty() {
+        return None;
+    }
+    Some((strat, tf))
+}
+
+fn valid_holdout_row(row: &Value) -> bool {
+    let dataset_ok = row
+        .get("dataset")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !dataset_ok {
+        return false;
+    }
+    let score = row.get("score_median").and_then(|v| v.as_f64());
+    if score.is_none() || !score.unwrap().is_finite() {
+        return false;
+    }
+    let dd = row
+        .get("max_dd_worst")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    dd.is_finite()
+}
+
+fn group_has_required_ml_features(g: &Value) -> bool {
+    g.get("samples").and_then(|v| v.as_u64()).is_some()
+        && g.get("pass_rate").and_then(|v| v.as_f64()).is_some()
+        && g.get("robust_score_p10").and_then(|v| v.as_f64()).is_some()
+        && g.get("robust_score_median")
+            .and_then(|v| v.as_f64())
+            .is_some()
+        && g.get("max_dd_p90").and_then(|v| v.as_f64()).is_some()
+        && g.get("meta_score").and_then(|v| v.as_f64()).is_some()
+}
+
+fn scope_has_holdout_rows_for_ml(
+    metas: &[Value],
+    scope: &MlConfidenceScope,
+    cfg: &MlConfidenceLabelConfig,
+) -> bool {
+    let scope_tf = normalize_timeframe_label(&scope.timeframe);
+    let scope_sk = scope.strategy_kind.trim();
+
+    for meta in metas {
+        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "vectorbt_meta_selection" {
+            continue;
+        }
+        let Some((sk, tf)) = extract_meta_scope(meta) else {
+            continue;
+        };
+        if sk != scope_sk || tf != scope_tf {
+            continue;
+        }
+        let groups = meta
+            .pointer("/res/groups")
+            .and_then(|v| v.as_array())
+            .map(|xs| xs.as_slice())
+            .unwrap_or(&[]);
+        for g in groups {
+            if !group_has_required_ml_features(g) {
+                continue;
+            }
+            let Some(rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            if rows.len() < cfg.min_holdout_datasets {
+                continue;
+            }
+            if rows.iter().any(valid_holdout_row) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn count_labeled_rows_in_meta(
+    meta: &Value,
+    cfg: &MlConfidenceLabelConfig,
+    use_holdout_rows: bool,
+) -> usize {
+    let groups = meta
+        .pointer("/res/groups")
+        .and_then(|v| v.as_array())
+        .map(|xs| xs.as_slice())
+        .unwrap_or(&[]);
+
+    let mut rows = 0usize;
+    for g in groups {
+        if !group_has_required_ml_features(g) {
+            continue;
+        }
+
+        if use_holdout_rows {
+            let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            if holdout_rows.len() < cfg.min_holdout_datasets {
+                continue;
+            }
+            for r in holdout_rows {
+                if valid_holdout_row(r) {
+                    rows = rows.saturating_add(1);
+                }
+            }
+        } else {
+            let Some(h) = g.get("holdout") else {
+                continue;
+            };
+            let datasets = h.get("datasets").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            if datasets < cfg.min_holdout_datasets {
+                continue;
+            }
+            let pass_rate = h.get("pass_rate").and_then(|v| v.as_f64());
+            let score_p10 = h.get("score_p10").and_then(|v| v.as_f64());
+            if pass_rate.is_none() || score_p10.is_none() {
+                continue;
+            }
+            let max_dd_p90 = h.get("max_dd_p90").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            let mut ok = pass_rate.unwrap() >= cfg.min_holdout_pass_rate
+                && score_p10.unwrap() >= cfg.min_holdout_score_p10;
+            if let Some(dd_max) = cfg.max_holdout_max_dd_p90 {
+                ok = ok && max_dd_p90 <= dd_max;
+            }
+            let _ = ok; // label value isn't needed for counting; just gate for validity.
+
+            rows = rows.saturating_add(1);
+        }
+    }
+    rows
+}
+
+fn summarize_meta_artifacts_for_scope(
+    metas: &[Value],
+    scope: &MlConfidenceScope,
+    cfg: &MlConfidenceLabelConfig,
+) -> (usize, Option<String>, usize) {
+    let mut count = 0usize;
+    let mut newest: Option<String> = None;
+    let mut labeled_rows = 0usize;
+
+    let scope_tf = normalize_timeframe_label(&scope.timeframe);
+    let scope_sk = scope.strategy_kind.trim();
+    let use_holdout_rows = scope_has_holdout_rows_for_ml(metas, scope, cfg);
+
+    for meta in metas {
+        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "vectorbt_meta_selection" {
+            continue;
+        }
+        let Some((sk, tf)) = extract_meta_scope(meta) else {
+            continue;
+        };
+        if sk != scope_sk || tf != scope_tf {
+            continue;
+        }
+        count = count.saturating_add(1);
+        if let Some(ts) = meta
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+        {
+            let is_newest = newest
+                .as_ref()
+                .map(|cur| ts.as_str() > cur.as_str())
+                .unwrap_or(true);
+            if is_newest {
+                newest = Some(ts);
+            }
+        }
+        labeled_rows =
+            labeled_rows.saturating_add(count_labeled_rows_in_meta(meta, cfg, use_holdout_rows));
+    }
+
+    (count, newest, labeled_rows)
+}
+
+#[tauri::command]
+pub async fn ml_confidence_model_status(
+    scope: MlConfidenceScope,
+    app: tauri::AppHandle,
+) -> Result<MlConfidenceModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let path = ml_confidence_model_path(&scope, &app)?;
+        let model_path = path.to_string_lossy().to_string();
+        let exists = path.exists();
+
+        let mut bytes = 0usize;
+        let mut model: Option<MlConfidenceModel> = None;
+        let mut error: Option<String> = None;
+        let mut label_cfg = MlConfidenceLabelConfig::default();
+
+        if exists {
+            bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
+            let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            match serde_json::from_str::<MlConfidenceModel>(&raw) {
+                Ok(m) => {
+                    label_cfg = m.label.clone();
+                    model = Some(m);
+                }
+                Err(e) => {
+                    error = Some(e.to_string());
+                }
+            }
+        }
+
+        let metas = load_meta_artifacts_blocking(&app).unwrap_or_default();
+        let (available_meta_artifacts, newest_meta_ts_available, available_labeled_rows) =
+            summarize_meta_artifacts_for_scope(&metas, &scope, &label_cfg);
+
+        // Staleness/retrain policy: conservative defaults to avoid surprise compute.
+        let mut stale = false;
+        let mut retrain_recommended = false;
+        let mut retrain_reason: Option<String> = None;
+
+        if model.is_none() {
+            if !exists {
+                retrain_recommended = true;
+                retrain_reason = Some("No model saved for this scope.".to_string());
+            } else if error.is_some() {
+                retrain_recommended = true;
+                retrain_reason =
+                    Some("Model exists but failed to load; retrain recommended.".to_string());
+            }
+        } else if let Some(m) = model.as_ref() {
+            let meta = m.meta.as_ref();
+            if meta.is_none() {
+                stale = available_meta_artifacts > 0;
+                if stale && available_labeled_rows >= 25 {
+                    retrain_recommended = true;
+                    retrain_reason = Some(
+                        "Legacy model (missing training metadata); retrain recommended."
+                            .to_string(),
+                    );
+                } else if stale {
+                    retrain_reason = Some(
+                        "Legacy model (missing training metadata); retrain when more labels exist."
+                            .to_string(),
+                    );
+                }
+            } else if let Some(mm) = meta {
+                if let (Some(used), Some(avail)) = (
+                    mm.newest_meta_ts_used.as_ref(),
+                    newest_meta_ts_available.as_ref(),
+                ) {
+                    if avail.as_str() > used.as_str() {
+                        stale = true;
+                    }
+                } else if newest_meta_ts_available.is_some() {
+                    stale = true;
+                }
+                if let Some(used_count) = mm.meta_artifacts_used {
+                    if available_meta_artifacts > used_count {
+                        stale = true;
+                    }
+                } else if available_meta_artifacts > 0 {
+                    stale = true;
+                }
+
+                let trained_rows = mm.trained_rows;
+                let new_rows = available_labeled_rows.saturating_sub(trained_rows);
+                let threshold = std::cmp::max(25, trained_rows / 10);
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
+                let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000; // 60s cooldown
+
+                if stale && new_rows >= threshold && cooldown_ok {
+                    retrain_recommended = true;
+                    retrain_reason = Some(format!(
+                        "Model stale: new labeled rows {new_rows} (threshold {threshold})."
+                    ));
+                } else if stale && new_rows > 0 {
+                    retrain_reason = Some(format!(
+                        "Model stale: new labeled rows {new_rows} (<{threshold})."
+                    ));
+                } else if stale && !cooldown_ok {
+                    retrain_reason =
+                        Some("Model stale but recently trained (cooldown).".to_string());
+                }
+            }
+        }
+
+        Ok(MlConfidenceModelStatus {
+            exists,
+            model_path,
+            bytes,
+            available_meta_artifacts,
+            available_labeled_rows,
+            newest_meta_ts_available,
+            stale,
+            retrain_recommended,
+            retrain_reason,
+            model,
+            error,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn train_ml_confidence_model(
+    scope: MlConfidenceScope,
+    cfg: Option<MlConfidenceTrainConfig>,
+    app: tauri::AppHandle,
+) -> Result<TrainMlConfidenceResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let cfg = cfg.unwrap_or_default();
+        let metas = load_meta_artifacts_blocking(&app)?;
+        let (model, metrics) =
+            ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope, &metas, cfg)?;
+
+        let path = ml_confidence_model_path(&model.scope, &app)?;
+        let bytes = serde_json::to_vec_pretty(&model).map_err(|e| e.to_string())?;
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+
+        Ok(TrainMlConfidenceResponse {
+            model_path: path.to_string_lossy().to_string(),
+            model_bytes: bytes.len(),
+            model,
+            metrics,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn apply_ml_confidence_model(
+    scope: MlConfidenceScope,
+    groups: Vec<Value>,
+    app: tauri::AppHandle,
+) -> Result<ApplyMlConfidenceResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let path = ml_confidence_model_path(&scope, &app)?;
+        if !path.exists() {
+            return Err("ML confidence model not found. Train it first.".to_string());
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let model: MlConfidenceModel = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+        let mut warnings: Vec<String> = Vec::new();
+        if normalize_timeframe_label(&model.scope.timeframe) != scope.timeframe
+            || model.scope.strategy_kind != scope.strategy_kind
+        {
+            warnings.push("Model scope does not match request scope. Results may be unreliable.".to_string());
+        }
+        if let Some(meta) = model.meta.as_ref() {
+            if !meta.healthy {
+                warnings.push("Model health is poor (AUC/Brier gates failed). Treat ML confidence as untrustworthy.".to_string());
+            }
+        }
+
+        let confidences: Vec<Option<f64>> = groups
+            .iter()
+            .map(|g| ta_app_core::predict_ml_confidence_for_group(&model, g))
+            .collect();
+
+        Ok(ApplyMlConfidenceResponse {
+            model_path: path.to_string_lossy().to_string(),
+            confidences,
+            warnings,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn delete_ml_confidence_model(
+    scope: MlConfidenceScope,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = normalize_ml_scope(scope)?;
+        let path = ml_confidence_model_path(&scope, &app)?;
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunMetaSelectionResponse {
+    pub ts: String,
+    pub report_xlsx_path: String,
+    pub report_xlsx_bytes: usize,
+    pub meta_json_path: String,
+    pub meta_json_bytes: usize,
+    pub result: MetaSelectionResult,
+}
+
+#[tauri::command]
+pub async fn run_meta_selection(
+    req: MetaSelectionRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<RunMetaSelectionResponse, String> {
+    let _run_guard = state.try_begin_run()?;
+    let cancel = state.cancel_token();
+
+    let cancel2 = cancel.clone();
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || run_meta_selection_blocking(req, app2, cancel2))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn reports_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let dir = base.join("reports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn suggest_meta_report_path(
+    ts: &str,
+    app: &tauri::AppHandle,
+    ext: &'static str,
+) -> Result<std::path::PathBuf, String> {
+    let dir = reports_dir(app)?;
+    let safe_ts = sanitize_filename_component(ts);
+
+    let base_name = format!("vectorbt_meta_{safe_ts}");
+    let mut path = dir.join(format!("{base_name}.{ext}"));
+    if !path.exists() {
+        return Ok(path);
+    }
+    for i in 2..=999u32 {
+        let p = dir.join(format!("{base_name}_{i}.{ext}"));
+        if !p.exists() {
+            path = p;
+            break;
+        }
+    }
+    Ok(path)
+}
+
+fn run_meta_selection_blocking(
+    mut req: MetaSelectionRequest,
+    app: tauri::AppHandle,
+    cancel: Arc<AtomicBool>,
+) -> Result<RunMetaSelectionResponse, String> {
+    let dir = run_artifacts::runs_dir(&app)?;
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.starts_with("vectorbt_meta_") {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    let sink = TauriProgressSink { app: app.clone() };
+
+    let mut artifacts: Vec<Value> = Vec::with_capacity(paths.len());
+    for (i, p) in paths.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        let raw = match std::fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        artifacts.push(v);
+        ta_app_core::progress::emit_double_ma_progress(
+            Some(&sink),
+            i + 1,
+            paths.len(),
+            "meta_read",
+        );
+    }
+
+    let supports_holdout = req.strategy_kind == "CompositeCpu"
+        || req.strategy_kind == "CompositeMo"
+        || req.strategy_kind == "DoubleMa";
+    let holdout_tag = if req.eval_holdout && supports_holdout {
+        req.holdout_tag
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let (train_artifacts, holdout_artifacts) = if let Some(tag) = holdout_tag.as_deref() {
+        let mut train: Vec<Value> = Vec::with_capacity(artifacts.len());
+        let mut holdout: Vec<Value> = Vec::new();
+        for a in artifacts {
+            if artifact_has_tag(&a, tag) {
+                holdout.push(a);
+            } else {
+                train.push(a);
+            }
+        }
+        (train, holdout)
+    } else {
+        (artifacts, Vec::new())
+    };
+
+    // Parity guard: if timeframe filter isn't set, infer it from the candidate pool.
+    // This prevents mixing artifacts across multiple timeframes in meta-selection.
+    let mut auto_tf_warning: Option<String> = None;
+    let tf_set = req
+        .timeframe
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .is_some();
+    if !tf_set {
+        let mut uniq: HashSet<String> = HashSet::new();
+        let mut tfs: Vec<String> = Vec::new();
+        let mut missing = 0usize;
+
+        for a in &train_artifacts {
+            if !artifact_matches_meta_req(a, &req) {
+                continue;
+            }
+            let raw = a
+                .pointer("/dataset_meta/timeframe")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tf = normalize_timeframe_label(raw);
+            if tf.is_empty() {
+                missing += 1;
+                continue;
+            }
+            if uniq.insert(tf.clone()) {
+                tfs.push(tf);
+            }
+        }
+
+        if tfs.len() == 1 {
+            let tf = tfs[0].clone();
+            req.timeframe = Some(tf.clone());
+            if missing > 0 {
+                auto_tf_warning = Some(format!(
+                    "Detected timeframe='{tf}'. Excluded {missing} artifact(s) missing dataset_meta.timeframe."
+                ));
+            }
+        } else if tfs.len() > 1 {
+            tfs.sort();
+            let list = tfs.join(", ");
+            let miss = if missing > 0 {
+                format!(" + {missing} missing timeframe")
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "Meta selection requires a timeframe filter (found multiple timeframes: {list}{miss})."
+            ));
+        } else if missing > 0 {
+            return Err(format!(
+                "Meta selection requires a timeframe filter ({missing} candidate artifact(s) are missing dataset_meta.timeframe)."
+            ));
+        }
+    }
+
+    let mut result = ta_app_core::meta_select_from_artifacts(&req, &train_artifacts, Some(&sink));
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+    if let Some(w) = auto_tf_warning {
+        result.warnings.push(w);
+    }
+
+    if req.eval_holdout && !supports_holdout {
+        result.warnings.push(format!(
+            "Holdout evaluation is not supported for strategy_kind='{}'. Skipping.",
+            req.strategy_kind
+        ));
+    }
+
+    if let Some(tag) = holdout_tag.as_deref() {
+        // Optional: evaluate only a subset of groups to reduce expensive holdout compute.
+        // Default remains evaluating all groups.
+        let mut selected_groups: Option<Vec<usize>> = None;
+        let top_n = req.holdout_eval_top_n.unwrap_or(0);
+        let explore_n = req.holdout_eval_explore_n;
+        if (top_n > 0 || explore_n > 0) && !result.groups.is_empty() {
+            let total = result.groups.len();
+            let mut rank_by = req
+                .holdout_eval_rank_by
+                .as_deref()
+                .unwrap_or("auto")
+                .trim()
+                .to_ascii_lowercase();
+            if rank_by.is_empty() {
+                rank_by = "auto".to_string();
+            }
+
+            // Try ML ranking if requested/auto and a healthy model exists.
+            let mut ml_model: Option<MlConfidenceModel> = None;
+            if rank_by != "meta" {
+                if let Some(tf) = req
+                    .timeframe
+                    .as_deref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    let scope = MlConfidenceScope {
+                        strategy_kind: req.strategy_kind.clone(),
+                        timeframe: normalize_timeframe_label(tf),
+                    };
+                    if let Ok(path) = ml_confidence_model_path(&scope, &app) {
+                        if path.exists() {
+                            if let Ok(raw) = std::fs::read_to_string(&path) {
+                                if let Ok(model) = serde_json::from_str::<MlConfidenceModel>(&raw) {
+                                    let healthy =
+                                        model.meta.as_ref().map(|m| m.healthy).unwrap_or(false);
+                                    if healthy {
+                                        ml_model = Some(model);
+                                    } else {
+                                        result.warnings.push(
+                                            "Holdout selection: ML model exists but is unhealthy/missing health metadata; falling back to meta score.".to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if rank_by != "ml" && rank_by != "meta" && rank_by != "auto" {
+                result.warnings.push(format!(
+                    "Holdout selection: unknown holdout_eval_rank_by='{rank_by}', using auto."
+                ));
+                rank_by = "auto".to_string();
+            }
+
+            let using_ml = ml_model.is_some() && (rank_by == "ml" || rank_by == "auto");
+            if rank_by == "ml" && !using_ml {
+                result.warnings.push(
+                    "Holdout selection: requested ML ranking but no healthy model is available; falling back to meta score.".to_string(),
+                );
+            }
+
+            let mut selected: Vec<usize> = Vec::new();
+            if using_ml {
+                let model = ml_model.as_ref().unwrap();
+                let mut scored: Vec<(usize, f64)> = Vec::with_capacity(total);
+                for (i, g) in result.groups.iter().enumerate() {
+                    let v = serde_json::json!({
+                        "samples": g.samples,
+                        "pass_rate": g.pass_rate,
+                        "robust_score_p10": g.robust_score_p10,
+                        "robust_score_median": g.robust_score_median,
+                        "max_dd_p90": g.max_dd_p90,
+                        "cross_score_median": g.cross_score_median,
+                        "meta_score": g.meta_score,
+                    });
+                    let p = ta_app_core::predict_ml_confidence_for_group(model, &v).unwrap_or(-1.0);
+                    scored.push((i, p));
+                }
+                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+                let exploit_n = top_n.min(total);
+                for (i, _p) in scored.iter().take(exploit_n) {
+                    selected.push(*i);
+                }
+
+                if explore_n > 0 {
+                    let mut rem: Vec<(usize, f64)> = scored
+                        .iter()
+                        .filter(|(i, _)| !selected.contains(i))
+                        .map(|(i, p)| (*i, (p - 0.5).abs()))
+                        .collect();
+                    rem.sort_by(|a, b| a.1.total_cmp(&b.1));
+                    for (i, _) in rem
+                        .into_iter()
+                        .take(explore_n.min(total.saturating_sub(selected.len())))
+                    {
+                        selected.push(i);
+                    }
+                }
+            } else {
+                if explore_n > 0 {
+                    result.warnings.push(
+                        "Holdout selection: explore_n is ignored unless ML ranking is available."
+                            .to_string(),
+                    );
+                }
+                let mut scored: Vec<(usize, f64)> = result
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| (i, g.meta_score))
+                    .collect();
+                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let exploit_n = top_n.min(total);
+                for (i, _s) in scored.iter().take(exploit_n) {
+                    selected.push(*i);
+                }
+            }
+
+            selected.sort();
+            selected.dedup();
+            if !selected.is_empty() && selected.len() < total {
+                result.warnings.push(format!(
+                    "Holdout evaluation: evaluating {}/{} groups (top_n={}, explore_n={}, rank_by={}).",
+                    selected.len(),
+                    total,
+                    top_n,
+                    explore_n,
+                    req.holdout_eval_rank_by.as_deref().unwrap_or("auto")
+                ));
+                selected_groups = Some(selected);
+            }
+        }
+
+        apply_holdout_evaluation(
+            &mut result,
+            &req,
+            &holdout_artifacts,
+            &app,
+            cancel.as_ref(),
+            &sink,
+            tag,
+            selected_groups.as_deref(),
+        )?;
+    }
+
+    let ts = chrono::Utc::now().to_rfc3339();
+
+    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_export");
+    let xlsx_bytes = build_meta_report_xlsx_bytes(&ts, &result)?;
+    let report_path = suggest_meta_report_path(&ts, &app, "xlsx")?;
+    std::fs::write(&report_path, &xlsx_bytes).map_err(|e| e.to_string())?;
+    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_export");
+
+    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_save");
+    let meta_obj = serde_json::json!({
+        "version": 1,
+        "kind": "vectorbt_meta_selection",
+        "ts": ts,
+        "report_xlsx_path": report_path.to_string_lossy().to_string(),
+        "tags": [],
+        "req": req,
+        "res": result,
+    });
+    let meta_bytes = serde_json::to_vec_pretty(&meta_obj).map_err(|e| e.to_string())?;
+    let meta_path = run_artifacts::suggest_meta_artifact_path(&ts, &app)?;
+    std::fs::write(&meta_path, &meta_bytes).map_err(|e| e.to_string())?;
+    // Retention policy: keep newest N untagged meta runs; tags preserve older runs.
+    run_artifacts::prune_old_meta_artifacts_blocking(&app, 100);
+    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_save");
+
+    Ok(RunMetaSelectionResponse {
+        ts,
+        report_xlsx_path: report_path.to_string_lossy().to_string(),
+        report_xlsx_bytes: xlsx_bytes.len(),
+        meta_json_path: meta_path.to_string_lossy().to_string(),
+        meta_json_bytes: meta_bytes.len(),
+        result,
+    })
+}
+
+fn artifact_has_tag(artifact: &Value, tag: &str) -> bool {
+    let tag = tag.trim();
+    if tag.is_empty() {
+        return false;
+    }
+    let tags = artifact
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map_or(&[][..], |xs| xs.as_slice());
+    tags.iter()
+        .filter_map(|v| v.as_str())
+        .any(|t| t.trim() == tag)
+}
+
+fn normalize_timeframe_label(raw: &str) -> String {
+    let s0 = raw.trim().to_ascii_lowercase();
+    if s0.is_empty() {
+        return String::new();
+    }
+    // Back-compat: older artifacts may store inferred timeframes like "120s".
+    if let Some(sec_str) = s0.strip_suffix('s') {
+        if let Ok(sec) = sec_str.parse::<i64>() {
+            let mapped = match sec {
+                60 => Some("1m"),
+                120 => Some("2m"),
+                180 => Some("3m"),
+                300 => Some("5m"),
+                900 => Some("15m"),
+                1800 => Some("30m"),
+                3600 => Some("1h"),
+                7200 => Some("2h"),
+                14_400 => Some("4h"),
+                86_400 => Some("1d"),
+                _ => None,
+            };
+            if let Some(lbl) = mapped {
+                return lbl.to_string();
+            }
+        }
+    }
+    s0
+}
+
+fn artifact_matches_meta_req(artifact: &Value, req: &MetaSelectionRequest) -> bool {
+    let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if kind != "vectorbt_run_artifact" {
+        return false;
+    }
+
+    let strat = artifact
+        .pointer("/run/req/strategy_kind")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            artifact
+                .pointer("/run/req/strategyKind")
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("");
+    if strat != req.strategy_kind {
+        return false;
+    }
+
+    if let Some(tf) = req
+        .timeframe
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        let tf2 = artifact
+            .pointer("/dataset_meta/timeframe")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if normalize_timeframe_label(tf2) != normalize_timeframe_label(tf) {
+            return false;
+        }
+    }
+
+    if let Some(tag) = req
+        .required_tag
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        if !artifact_has_tag(artifact, tag) {
+            return false;
+        }
+    }
+
+    artifact.pointer("/validation/res/candidates").is_some()
+}
+
+fn artifact_csv_path(artifact: &Value) -> Option<String> {
+    let p = artifact
+        .pointer("/data/csv_path")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            artifact
+                .pointer("/dataset_meta/csv_path")
+                .and_then(|v| v.as_str())
+        })?;
+    let s = p.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+fn artifact_dataset_label(artifact: &Value, csv_path: &str) -> String {
+    let lbl = artifact
+        .pointer("/dataset_meta/label")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(l) = lbl {
+        return l;
+    }
+    Path::new(csv_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("holdout")
+        .to_string()
+}
+
+#[derive(Default, Clone)]
+struct HoldoutAcc {
+    scores: Vec<f64>,
+    sharpes: Vec<f64>,
+    max_dds: Vec<f64>,
+    pnls: Vec<f64>,
+    passes: usize,
+}
+
+fn apply_holdout_evaluation(
+    result: &mut MetaSelectionResult,
+    req: &MetaSelectionRequest,
+    holdout_artifacts: &[Value],
+    app: &tauri::AppHandle,
+    cancel: &AtomicBool,
+    sink: &TauriProgressSink,
+    holdout_tag: &str,
+    selected_groups: Option<&[usize]>,
+) -> Result<(), String> {
+    if result.groups.is_empty() {
+        return Ok(());
+    }
+
+    let selected_mask: Option<Vec<bool>> = selected_groups.map(|idxs| {
+        let mut m = vec![false; result.groups.len()];
+        for &i in idxs {
+            if i < m.len() {
+                m[i] = true;
+            }
+        }
+        m
+    });
+    let is_selected = |i: usize, m: Option<&Vec<bool>>| m.map(|mm| mm[i]).unwrap_or(true);
+
+    let heavy = matches!(req.holdout_mode, ta_app_core::MetaHoldoutMode::Heavy);
+    let (hv_seed, hv_wf, hv_perturb, hv_mc, hv_engine, hv_iterative) = if heavy {
+        if let Some(cfg) = req.holdout_validation.clone() {
+            (
+                cfg.seed,
+                cfg.walk_forward,
+                cfg.perturb,
+                cfg.trade_bootstrap,
+                cfg.validation_engine,
+                cfg.iterative,
+            )
+        } else {
+            (
+                1u64,
+                None,
+                None,
+                None,
+                ta_app_core::ValidationEngine::Vectorized,
+                ta_app_core::IterativeSimConfig::default(),
+            )
+        }
+    } else {
+        (
+            1u64,
+            None,
+            None,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+    };
+
+    // Filter to holdout artifacts that match the request and actually have validation results.
+    let holdout: Vec<&Value> = holdout_artifacts
+        .iter()
+        .filter(|a| artifact_matches_meta_req(a, req))
+        .collect();
+    if holdout.is_empty() {
+        return Ok(());
+    }
+
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let cache_dir = crate::data_cache::app_data_cache_dir(&base);
+
+    let mut uniq_paths: Vec<(String, String)> = Vec::new(); // (csv_path, label)
+    let mut seen: HashSet<String> = HashSet::new();
+    for art in &holdout {
+        let Some(csv_path) = artifact_csv_path(art) else {
+            continue;
+        };
+        if !seen.insert(csv_path.clone()) {
+            continue;
+        }
+        uniq_paths.push((csv_path.clone(), artifact_dataset_label(art, &csv_path)));
+    }
+    if uniq_paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut idx_by_key: HashMap<String, usize> = HashMap::with_capacity(result.groups.len());
+    for (i, g) in result.groups.iter().enumerate() {
+        idx_by_key.insert(g.key.clone(), i);
+    }
+
+    // Group the shortlist by MA config so we can evaluate a batch at once.
+    let mut groups_by_cfg: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, g) in result.groups.iter().enumerate() {
+        if !is_selected(i, selected_mask.as_ref()) {
+            continue;
+        }
+        let cfg_key = serde_json::to_string(&serde_json::json!({
+            "ma_source": &g.ma_source,
+            "fast_ma_params": &g.fast_ma_params,
+            "slow_ma_params": &g.slow_ma_params,
+        }))
+        .unwrap_or_else(|_| "cfg".to_string());
+        groups_by_cfg.entry(cfg_key).or_default().push(i);
+    }
+    if groups_by_cfg.is_empty() {
+        return Ok(());
+    }
+
+    let mut accs: Vec<HoldoutAcc> = vec![HoldoutAcc::default(); result.groups.len()];
+    let mut holdout_rows: Vec<Vec<ta_app_core::HoldoutDatasetRow>> = if req.save_holdout_rows {
+        vec![Vec::new(); result.groups.len()]
+    } else {
+        Vec::new()
+    };
+    let mut skipped = 0usize;
+
+    let total = uniq_paths.len();
+    for (i, (csv_path, label)) in uniq_paths.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+
+        let candles = match crate::data_cache::load_or_build(Path::new(&csv_path), &cache_dir) {
+            Ok(outcome) => outcome.candles,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); result.groups.len()]; // (score, sharpe, max_dd, pnl)
+        let mut ok = true;
+
+        for idxs in groups_by_cfg.values() {
+            let Some(first) = idxs.first() else { continue };
+            let g0 = &result.groups[*first];
+
+            if req.strategy_kind == "DoubleMa" {
+                let mut candidates: Vec<ta_app_core::DoubleMaValidationParams> = Vec::new();
+                candidates.reserve(idxs.len().saturating_mul(3));
+                for &gi in idxs {
+                    let g = &result.groups[gi];
+                    let reps = if !g.representatives.is_empty() {
+                        g.representatives.as_slice()
+                    } else {
+                        std::slice::from_ref(&g.params)
+                    };
+                    for rv in reps {
+                        let p = match serde_json::from_value::<ta_app_core::DoubleMaValidationParams>(
+                            rv.clone(),
+                        ) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                let o = rv.as_object().ok_or_else(|| {
+                                    "double-ma representative is not an object".to_string()
+                                })?;
+                                let as_u16 = |k: &str, d: u16| -> u16 {
+                                    o.get(k)
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v.min(u16::MAX as u64) as u16)
+                                        .unwrap_or(d)
+                                };
+                                ta_app_core::DoubleMaValidationParams {
+                                    fast_ma_type: o
+                                        .get("fast_ma_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("sma")
+                                        .to_string(),
+                                    slow_ma_type: o
+                                        .get("slow_ma_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("sma")
+                                        .to_string(),
+                                    fast_len: as_u16("fast_len", 10),
+                                    slow_len: as_u16("slow_len", 30),
+                                    fast_ma_params: o
+                                        .get("fast_ma_params")
+                                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                                    slow_ma_params: o
+                                        .get("slow_ma_params")
+                                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                                    strategy: o
+                                        .get("strategy")
+                                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                        .unwrap_or_default(),
+                                    halftrend_filter: o
+                                        .get("halftrend_filter")
+                                        .or_else(|| o.get("halftrend"))
+                                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                                }
+                            }
+                        };
+                        candidates.push(p);
+                    }
+                }
+
+                let max_candidates = candidates.len();
+                let val_req = ta_app_core::DoubleMaValidationRequest {
+                    data_id: label.clone(),
+                    ma_source: g0.ma_source.clone(),
+                    fast_ma_params: g0.fast_ma_params.clone(),
+                    slow_ma_params: g0.slow_ma_params.clone(),
+                    candidates,
+                    walk_forward: hv_wf.clone(),
+                    perturb: hv_perturb.clone(),
+                    trade_bootstrap: hv_mc.clone(),
+                    cross_ticker: None,
+                    cscv_pbo: None,
+                    seed: hv_seed,
+                    max_candidates,
+                    validation_engine: hv_engine,
+                    iterative: hv_iterative.clone(),
+                };
+
+                let val_res = match ta_app_core::run_double_ma_validation_blocking_with_candles(
+                    val_req, &candles, cancel, None,
+                ) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                };
+
+                for cand in val_res.candidates {
+                    let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
+                    let key = ta_app_core::meta_group_key_for_request(
+                        req,
+                        &params_v,
+                        &g0.ma_source,
+                        &g0.fast_ma_params,
+                        &g0.slow_ma_params,
+                    );
+                    let Some(&gi) = idx_by_key.get(&key) else {
+                        continue;
+                    };
+
+                    let base_metrics = cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
+                    let (score, sharpe, max_dd, pnl) = if heavy {
+                        if hv_engine == ta_app_core::ValidationEngine::Iterative {
+                            let sharpe = base_metrics.sharpe;
+                            let max_dd = base_metrics.max_dd;
+                            let pnl = base_metrics.pnl;
+                            (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
+                        } else {
+                            let score = cand.robust_score;
+                            if let Some(w) = cand.walk_forward.as_ref() {
+                                (score, w.sharpe_median, w.max_dd_worst, w.pnl_median)
+                            } else {
+                                (
+                                    score,
+                                    base_metrics.sharpe,
+                                    base_metrics.max_dd,
+                                    base_metrics.pnl,
+                                )
+                            }
+                        }
+                    } else {
+                        let sharpe = base_metrics.sharpe;
+                        let max_dd = base_metrics.max_dd;
+                        let pnl = base_metrics.pnl;
+                        (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
+                    };
+
+                    local[gi].push((score, sharpe, max_dd, pnl));
+                }
+            } else {
+                let mut candidates: Vec<ta_app_core::CompositeParams> = Vec::new();
+                candidates.reserve(idxs.len().saturating_mul(3));
+                for &gi in idxs {
+                    let g = &result.groups[gi];
+                    let reps = if !g.representatives.is_empty() {
+                        g.representatives.as_slice()
+                    } else {
+                        std::slice::from_ref(&g.params)
+                    };
+                    for rv in reps {
+                        let p: ta_app_core::CompositeParams =
+                            serde_json::from_value(rv.clone()).map_err(|e| e.to_string())?;
+                        candidates.push(p);
+                    }
+                }
+
+                let max_candidates = candidates.len();
+                let val_req = ta_app_core::CompositeValidationRequest {
+                    data_id: label.clone(),
+                    ma_source: g0.ma_source.clone(),
+                    fast_ma_params: g0.fast_ma_params.clone(),
+                    slow_ma_params: g0.slow_ma_params.clone(),
+                    candidates,
+                    walk_forward: hv_wf.clone(),
+                    perturb: hv_perturb.clone(),
+                    trade_bootstrap: hv_mc.clone(),
+                    cross_ticker: None,
+                    cscv_pbo: None,
+                    seed: hv_seed,
+                    max_candidates,
+                    validation_engine: hv_engine,
+                    iterative: hv_iterative.clone(),
+                };
+
+                let val_res = match ta_app_core::run_composite_validation_blocking_with_candles(
+                    val_req, &candles, cancel, None,
+                ) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                };
+
+                for cand in val_res.candidates {
+                    let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
+                    let key = ta_app_core::meta_group_key_for_request(
+                        req,
+                        &params_v,
+                        &g0.ma_source,
+                        &g0.fast_ma_params,
+                        &g0.slow_ma_params,
+                    );
+                    let Some(&gi) = idx_by_key.get(&key) else {
+                        continue;
+                    };
+
+                    let base_metrics = cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
+                    let (score, sharpe, max_dd, pnl) = if heavy {
+                        if hv_engine == ta_app_core::ValidationEngine::Iterative {
+                            let sharpe = base_metrics.sharpe;
+                            let max_dd = base_metrics.max_dd;
+                            let pnl = base_metrics.pnl;
+                            (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
+                        } else {
+                            let score = cand.robust_score;
+                            if let Some(w) = cand.walk_forward.as_ref() {
+                                (score, w.sharpe_median, w.max_dd_worst, w.pnl_median)
+                            } else {
+                                (
+                                    score,
+                                    base_metrics.sharpe,
+                                    base_metrics.max_dd,
+                                    base_metrics.pnl,
+                                )
+                            }
+                        }
+                    } else {
+                        let sharpe = base_metrics.sharpe;
+                        let max_dd = base_metrics.max_dd;
+                        let pnl = base_metrics.pnl;
+                        (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
+                    };
+
+                    local[gi].push((score, sharpe, max_dd, pnl));
+                }
+            }
+        }
+
+        if !ok {
+            skipped += 1;
+            continue;
+        }
+
+        for (gi, rows) in local.into_iter().enumerate() {
+            if rows.is_empty() {
+                continue;
+            }
+
+            let mut scores: Vec<f64> = Vec::with_capacity(rows.len());
+            let mut sharpes: Vec<f64> = Vec::with_capacity(rows.len());
+            let mut max_dds: Vec<f64> = Vec::with_capacity(rows.len());
+            let mut pnls: Vec<f64> = Vec::with_capacity(rows.len());
+            for (score, sharpe, max_dd, pnl) in rows {
+                scores.push(score);
+                sharpes.push(sharpe);
+                max_dds.push(max_dd);
+                pnls.push(pnl);
+            }
+            scores.sort_by(|a, b| a.total_cmp(b));
+            sharpes.sort_by(|a, b| a.total_cmp(b));
+            max_dds.sort_by(|a, b| a.total_cmp(b));
+            pnls.sort_by(|a, b| a.total_cmp(b));
+
+            let score = quantile(&scores, 0.5);
+            let score_p10 = quantile(&scores, 0.10);
+            let sharpe = quantile(&sharpes, 0.5);
+            // Conservative: for risk, take worst-of reps.
+            let max_dd = max_dds.last().copied().unwrap_or(0.0);
+            let pnl = quantile(&pnls, 0.5);
+            let pass = score > 0.0;
+
+            accs[gi].scores.push(score);
+            accs[gi].sharpes.push(sharpe);
+            accs[gi].max_dds.push(max_dd);
+            accs[gi].pnls.push(pnl);
+            if pass {
+                accs[gi].passes = accs[gi].passes.saturating_add(1);
+            }
+
+            if req.save_holdout_rows && !holdout_rows.is_empty() {
+                holdout_rows[gi].push(ta_app_core::HoldoutDatasetRow {
+                    dataset: label.clone(),
+                    score_median: score,
+                    score_p10,
+                    sharpe_median: sharpe,
+                    max_dd_worst: max_dd,
+                    pnl_median: pnl,
+                    pass,
+                });
+            }
+        }
+
+        ta_app_core::progress::emit_double_ma_progress(Some(sink), i + 1, total, "meta_holdout");
+    }
+
+    ta_app_core::progress::emit_double_ma_progress(Some(sink), total, total, "meta_holdout");
+
+    let datasets = total.saturating_sub(skipped);
+    if datasets == 0 {
+        return Ok(());
+    }
+
+    result.holdout = Some(ta_app_core::HoldoutSummary { datasets, skipped });
+
+    for (i, g) in result.groups.iter_mut().enumerate() {
+        let mut acc = accs[i].clone();
+        if acc.scores.is_empty() {
+            continue;
+        }
+        acc.scores.sort_by(|a, b| a.total_cmp(b));
+        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
+        acc.max_dds.sort_by(|a, b| a.total_cmp(b));
+        acc.pnls.sort_by(|a, b| a.total_cmp(b));
+
+        let pass_rate = (acc.passes as f64) / (datasets as f64);
+        let score_median = quantile(&acc.scores, 0.5);
+        let score_p10 = quantile(&acc.scores, 0.10);
+        let sharpe_median = quantile(&acc.sharpes, 0.5);
+        let max_dd_p90 = quantile(&acc.max_dds, 0.90);
+        let pnl_median = quantile(&acc.pnls, 0.5);
+
+        g.holdout = Some(ta_app_core::HoldoutAggregate {
+            datasets,
+            pass_rate,
+            score_median,
+            score_p10,
+            sharpe_median,
+            max_dd_p90,
+            pnl_median,
+        });
+
+        if req.save_holdout_rows && !holdout_rows.is_empty() {
+            g.holdout_rows = std::mem::take(&mut holdout_rows[i]);
+        }
+    }
+
+    if skipped > 0 {
+        result.warnings.push(format!(
+            "Holdout evaluation: skipped {skipped} dataset(s) (missing/invalid CSV path or parse error) for tag='{holdout_tag}'."
+        ));
+    }
+
+    Ok(())
+}
+
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let qq = q.clamp(0.0, 1.0);
+    let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn reveal_path_blocking(path: String) -> Result<(), String> {
+    use std::path::PathBuf;

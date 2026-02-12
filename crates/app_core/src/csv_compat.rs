@@ -173,10 +173,7 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
         }
     };
 
-    let headers: Vec<String> = header_line
-        .split(',')
-        .map(normalize_header)
-        .collect();
+    let headers: Vec<String> = header_line.split(',').map(normalize_header).collect();
 
     let (idx, fields_hdr) = infer_column_mapping(&headers)?;
     let wanted_max = idx.max_idx();
@@ -250,9 +247,15 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
             }
         }
 
-        let ts_raw = ts_s.ok_or_else(|| format!("missing timestamp column at line {}", line_idx + 2))?;
-        let ts = parse_i64_flexible(ts_raw)
-            .map_err(|e| format!("invalid timestamp '{}' at line {} ({e})", ts_raw.trim(), line_idx + 2))?;
+        let ts_raw =
+            ts_s.ok_or_else(|| format!("missing timestamp column at line {}", line_idx + 2))?;
+        let ts = parse_i64_flexible(ts_raw).map_err(|e| {
+            format!(
+                "invalid timestamp '{}' at line {} ({e})",
+                ts_raw.trim(),
+                line_idx + 2
+            )
+        })?;
 
         let c_raw = c_s.ok_or_else(|| format!("missing close column at line {}", line_idx + 2))?;
         let c = c_raw
@@ -340,4 +343,3 @@ mod tests {
         assert!(candles.fields.low);
     }
 }
-

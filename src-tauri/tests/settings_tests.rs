@@ -63,4 +63,3 @@ fn move_dir_all_moves_contents() {
     assert!(!src.exists());
     assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"hello");
 }
-

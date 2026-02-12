@@ -10,9 +10,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use tauri::Emitter;
 use tauri::Manager;
-use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -98,7 +98,10 @@ fn header_bearer_token(headers: &HeaderMap) -> Option<&str> {
     Some(rest.trim())
 }
 
-fn ensure_auth(expected: &str, headers: &HeaderMap) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+fn ensure_auth(
+    expected: &str,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let want = expected.trim();
     if want.is_empty() {
         return Err((
@@ -174,11 +177,14 @@ async fn worker_run_double_ma(
         .map_err(|e| (StatusCode::CONFLICT, Json(ErrorResponse { error: e })))?;
 
     let cancel = state.cancel_token();
-    let base = st
-        .app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?;
+    let base = st.app.path().app_local_data_dir().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
 
     let csv_path = payload.csv_path.trim().to_string();
@@ -207,7 +213,14 @@ async fn worker_run_double_ma(
         Ok::<_, String>((res, outcome.cache_hit, outcome.cache_path))
     })
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?
     .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
 
     Ok(Json(WorkerDoubleMaRunResponse {
@@ -220,7 +233,9 @@ async fn worker_run_double_ma(
     }))
 }
 
-fn status_from_lock(lock: &Mutex<Option<WorkerServerHandle>>) -> Result<WorkerServerStatus, String> {
+fn status_from_lock(
+    lock: &Mutex<Option<WorkerServerHandle>>,
+) -> Result<WorkerServerStatus, String> {
     let guard = lock
         .lock()
         .map_err(|_| "failed to lock distributed state".to_string())?;
@@ -445,7 +460,11 @@ fn expand_u16_range((start, end, step): (u32, u32, u32)) -> Result<Vec<u16>, Str
     }
 
     let step = step.max(1);
-    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
 
     let mut out = Vec::new();
     let mut v = lo;
@@ -515,7 +534,10 @@ pub async fn distributed_run_double_ma_assets(
                 .send()
                 .map_err(|e| format!("worker {w} health check failed: {e}"))?;
             if !resp.status().is_success() {
-                return Err(format!("worker {w} health check failed: HTTP {}", resp.status()));
+                return Err(format!(
+                    "worker {w} health check failed: HTTP {}",
+                    resp.status()
+                ));
             }
         }
 
@@ -536,79 +558,77 @@ pub async fn distributed_run_double_ma_assets(
             let authz2 = authz.clone();
             let req2 = base_req.clone();
 
-            threads.push(std::thread::spawn(move || {
-                loop {
-                    if cancel2.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let next = {
-                        let mut q = match queue2.lock() {
-                            Ok(g) => g,
-                            Err(_) => break,
-                        };
-                        q.pop_front()
+            threads.push(std::thread::spawn(move || loop {
+                if cancel2.load(Ordering::Relaxed) {
+                    break;
+                }
+                let next = {
+                    let mut q = match queue2.lock() {
+                        Ok(g) => g,
+                        Err(_) => break,
                     };
-                    let Some(csv_path) = next else {
-                        break;
-                    };
+                    q.pop_front()
+                };
+                let Some(csv_path) = next else {
+                    break;
+                };
 
-                    let payload = WorkerDoubleMaRunRequest {
-                        csv_path: csv_path.clone(),
-                        req: req2.clone(),
-                    };
+                let payload = WorkerDoubleMaRunRequest {
+                    csv_path: csv_path.clone(),
+                    req: req2.clone(),
+                };
 
-                    let url = format!("{worker_url}{WORKER_RUN_DOUBLE_MA_PATH}");
-                    let outcome = match client2
-                        .post(&url)
-                        .header(reqwest::header::AUTHORIZATION, authz2.clone())
-                        .json(&payload)
-                        .send()
-                    {
-                        Ok(resp) => {
-                            let status = resp.status();
-                            let text = resp.text().unwrap_or_default();
-                            if !status.is_success() {
-                                DistributedAssetOutcome {
+                let url = format!("{worker_url}{WORKER_RUN_DOUBLE_MA_PATH}");
+                let outcome = match client2
+                    .post(&url)
+                    .header(reqwest::header::AUTHORIZATION, authz2.clone())
+                    .json(&payload)
+                    .send()
+                {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let text = resp.text().unwrap_or_default();
+                        if !status.is_success() {
+                            DistributedAssetOutcome {
+                                csv_path,
+                                worker_url: worker_url.clone(),
+                                cache_hit: None,
+                                cache_path: None,
+                                result: None,
+                                error: Some(format!("HTTP {status}: {text}")),
+                            }
+                        } else {
+                            match serde_json::from_str::<WorkerDoubleMaRunResponse>(&text) {
+                                Ok(parsed) => DistributedAssetOutcome {
+                                    csv_path: parsed.csv_path,
+                                    worker_url: worker_url.clone(),
+                                    cache_hit: Some(parsed.cache_hit),
+                                    cache_path: Some(parsed.cache_path),
+                                    result: Some(parsed.result),
+                                    error: None,
+                                },
+                                Err(e) => DistributedAssetOutcome {
                                     csv_path,
                                     worker_url: worker_url.clone(),
                                     cache_hit: None,
                                     cache_path: None,
                                     result: None,
-                                    error: Some(format!("HTTP {status}: {text}")),
-                                }
-                            } else {
-                                match serde_json::from_str::<WorkerDoubleMaRunResponse>(&text) {
-                                    Ok(parsed) => DistributedAssetOutcome {
-                                        csv_path: parsed.csv_path,
-                                        worker_url: worker_url.clone(),
-                                        cache_hit: Some(parsed.cache_hit),
-                                        cache_path: Some(parsed.cache_path),
-                                        result: Some(parsed.result),
-                                        error: None,
-                                    },
-                                    Err(e) => DistributedAssetOutcome {
-                                        csv_path,
-                                        worker_url: worker_url.clone(),
-                                        cache_hit: None,
-                                        cache_path: None,
-                                        result: None,
-                                        error: Some(format!("failed to parse JSON: {e}")),
-                                    },
-                                }
+                                    error: Some(format!("failed to parse JSON: {e}")),
+                                },
                             }
                         }
-                        Err(e) => DistributedAssetOutcome {
-                            csv_path,
-                            worker_url: worker_url.clone(),
-                            cache_hit: None,
-                            cache_path: None,
-                            result: None,
-                            error: Some(e.to_string()),
-                        },
-                    };
+                    }
+                    Err(e) => DistributedAssetOutcome {
+                        csv_path,
+                        worker_url: worker_url.clone(),
+                        cache_hit: None,
+                        cache_path: None,
+                        result: None,
+                        error: Some(e.to_string()),
+                    },
+                };
 
-                    let _ = tx2.send(outcome);
-                }
+                let _ = tx2.send(outcome);
             }));
         }
         drop(tx);
@@ -817,7 +837,10 @@ pub async fn distributed_run_double_ma_tiled(
                 .send()
                 .map_err(|e| format!("worker {w} health check failed: {e}"))?;
             if !resp.status().is_success() {
-                return Err(format!("worker {w} health check failed: HTTP {}", resp.status()));
+                return Err(format!(
+                    "worker {w} health check failed: HTTP {}",
+                    resp.status()
+                ));
             }
         }
 
@@ -835,54 +858,52 @@ pub async fn distributed_run_double_ma_tiled(
             let csv_path2 = csv_path.clone();
             let req2 = base_req.clone();
 
-            threads.push(std::thread::spawn(move || {
-                loop {
-                    if cancel2.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let next = {
-                        let mut q = match queue2.lock() {
-                            Ok(g) => g,
-                            Err(_) => break,
-                        };
-                        q.pop_front()
-                    };
-                    let Some(tile) = next else {
-                        break;
-                    };
-
-                    let mut req_tile = req2.clone();
-                    req_tile.fast_range = tile.fast_range;
-                    req_tile.slow_range = tile.slow_range;
-
-                    let payload = WorkerDoubleMaRunRequest {
-                        csv_path: csv_path2.clone(),
-                        req: req_tile,
-                    };
-
-                    let url = format!("{worker_url}{WORKER_RUN_DOUBLE_MA_PATH}");
-                    let res = client2
-                        .post(&url)
-                        .header(reqwest::header::AUTHORIZATION, authz2.clone())
-                        .json(&payload)
-                        .send();
-
-                    let out = match res {
-                        Ok(resp) => {
-                            let status = resp.status();
-                            let text = resp.text().unwrap_or_default();
-                            if !status.is_success() {
-                                Err(format!("worker {worker_url} HTTP {status}: {text}"))
-                            } else {
-                                serde_json::from_str::<WorkerDoubleMaRunResponse>(&text)
-                                    .map_err(|e| format!("failed to parse JSON: {e}"))
-                            }
-                        }
-                        Err(e) => Err(format!("worker {worker_url} request failed: {e}")),
-                    };
-
-                    let _ = tx2.send(out);
+            threads.push(std::thread::spawn(move || loop {
+                if cancel2.load(Ordering::Relaxed) {
+                    break;
                 }
+                let next = {
+                    let mut q = match queue2.lock() {
+                        Ok(g) => g,
+                        Err(_) => break,
+                    };
+                    q.pop_front()
+                };
+                let Some(tile) = next else {
+                    break;
+                };
+
+                let mut req_tile = req2.clone();
+                req_tile.fast_range = tile.fast_range;
+                req_tile.slow_range = tile.slow_range;
+
+                let payload = WorkerDoubleMaRunRequest {
+                    csv_path: csv_path2.clone(),
+                    req: req_tile,
+                };
+
+                let url = format!("{worker_url}{WORKER_RUN_DOUBLE_MA_PATH}");
+                let res = client2
+                    .post(&url)
+                    .header(reqwest::header::AUTHORIZATION, authz2.clone())
+                    .json(&payload)
+                    .send();
+
+                let out = match res {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let text = resp.text().unwrap_or_default();
+                        if !status.is_success() {
+                            Err(format!("worker {worker_url} HTTP {status}: {text}"))
+                        } else {
+                            serde_json::from_str::<WorkerDoubleMaRunResponse>(&text)
+                                .map_err(|e| format!("failed to parse JSON: {e}"))
+                        }
+                    }
+                    Err(e) => Err(format!("worker {worker_url} request failed: {e}")),
+                };
+
+                let _ = tx2.send(out);
             }));
         }
         drop(tx);
@@ -897,8 +918,11 @@ pub async fn distributed_run_double_ma_tiled(
         let mut best_metrics: Option<ta_strategies::double_ma::Metrics> = None;
         let mut best_score: f64 = f64::NEG_INFINITY;
 
-        let mut top_rows: Vec<(ta_app_core::DoubleMaParamsResolved, ta_strategies::double_ma::Metrics, f64)> =
-            Vec::new();
+        let mut top_rows: Vec<(
+            ta_app_core::DoubleMaParamsResolved,
+            ta_strategies::double_ma::Metrics,
+            f64,
+        )> = Vec::new();
 
         let mut total_combos: usize = 0;
         let mut num_candles: usize = 0;
@@ -1042,7 +1066,10 @@ pub async fn distributed_run_double_ma_tiled(
         let best_params = best_params.ok_or_else(|| "no best result".to_string())?;
         let best_metrics = best_metrics.ok_or_else(|| "no best result".to_string())?;
 
-        let top: Vec<(ta_app_core::DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)> = if top_k == 0 {
+        let top: Vec<(
+            ta_app_core::DoubleMaParamsResolved,
+            ta_strategies::double_ma::Metrics,
+        )> = if top_k == 0 {
             Vec::new()
         } else {
             top_rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -1053,31 +1080,32 @@ pub async fn distributed_run_double_ma_tiled(
                 .collect()
         };
 
-        let (matrix_index, best_col, top_cols) = match ta_app_core::matrix_index::DoubleMaFastLtSlowIndex::new(
-            fast_periods,
-            slow_periods,
-        ) {
-            Ok(idx) => {
-                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
-                let mut cols: Vec<u32> = Vec::with_capacity(top.len());
-                for (p, _) in &top {
-                    match idx.col_id(p.fast_len, p.slow_len) {
-                        Some(c) => cols.push(c),
-                        None => {
-                            cols.clear();
-                            break;
+        let (matrix_index, best_col, top_cols) =
+            match ta_app_core::matrix_index::DoubleMaFastLtSlowIndex::new(
+                fast_periods,
+                slow_periods,
+            ) {
+                Ok(idx) => {
+                    let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                    let mut cols: Vec<u32> = Vec::with_capacity(top.len());
+                    for (p, _) in &top {
+                        match idx.col_id(p.fast_len, p.slow_len) {
+                            Some(c) => cols.push(c),
+                            None => {
+                                cols.clear();
+                                break;
+                            }
                         }
                     }
+                    let top_cols = if cols.is_empty() && !top.is_empty() {
+                        None
+                    } else {
+                        Some(cols)
+                    };
+                    (Some(idx), best_col, top_cols)
                 }
-                let top_cols = if cols.is_empty() && !top.is_empty() {
-                    None
-                } else {
-                    Some(cols)
-                };
-                (Some(idx), best_col, top_cols)
-            }
-            Err(_) => (None, None, None),
-        };
+                Err(_) => (None, None, None),
+            };
 
         let result = ta_app_core::BackendOptimizationResult {
             best_params,

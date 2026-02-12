@@ -178,7 +178,11 @@ impl SearchSpace {
 
     /// Expand each parameter domain into a discrete list and expose the full Cartesian product as
     /// a stable, indexable grid.
-    pub fn grid(&self, max_axis_values: usize, max_combos: usize) -> Result<SearchSpaceGrid, String> {
+    pub fn grid(
+        &self,
+        max_axis_values: usize,
+        max_combos: usize,
+    ) -> Result<SearchSpaceGrid, String> {
         self.validate()?;
 
         let mut axes: Vec<Vec<ParamValue>> = Vec::with_capacity(self.params.len());
@@ -208,7 +212,11 @@ fn domain_grid_values(
             if step <= 0 {
                 return Err(format!("param '{name}': step must be > 0"));
             }
-            let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
+            let (lo, hi) = if low <= high {
+                (*low, *high)
+            } else {
+                (*high, *low)
+            };
             let span = hi
                 .checked_sub(lo)
                 .ok_or_else(|| format!("param '{name}': range overflow"))?;
@@ -681,7 +689,13 @@ fn pareto_front_constrained_indices<T>(pop: &[MoPoint<T>]) -> Vec<usize> {
         return pop
             .iter()
             .enumerate()
-            .filter_map(|(i, p)| if (p.violation - min_v).abs() <= eps { Some(i) } else { None })
+            .filter_map(|(i, p)| {
+                if (p.violation - min_v).abs() <= eps {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
             .collect();
     }
 
@@ -1091,7 +1105,11 @@ fn radical_inverse(mut index: u64, base: u32) -> f64 {
 }
 
 fn qmc_sample_one(domain: &ParamDomain, u: f64) -> ParamValue {
-    let uu = if u.is_finite() { u.clamp(0.0, 0.999_999_999_999) } else { 0.5 };
+    let uu = if u.is_finite() {
+        u.clamp(0.0, 0.999_999_999_999)
+    } else {
+        0.5
+    };
     match domain {
         ParamDomain::IntRange {
             low,
@@ -1099,7 +1117,11 @@ fn qmc_sample_one(domain: &ParamDomain, u: f64) -> ParamValue {
             step,
             log,
         } => {
-            let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
+            let (lo, hi) = if low <= high {
+                (*low, *high)
+            } else {
+                (*high, *low)
+            };
             if lo == hi {
                 return ParamValue::Int(lo);
             }
@@ -1128,7 +1150,11 @@ fn qmc_sample_one(domain: &ParamDomain, u: f64) -> ParamValue {
             }
         }
         ParamDomain::FloatRange { low, high, log } => {
-            let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
+            let (lo, hi) = if low <= high {
+                (*low, *high)
+            } else {
+                (*high, *low)
+            };
             if lo == hi {
                 return ParamValue::Float(lo);
             }
@@ -1190,9 +1216,7 @@ where
             let mut seq = Sobol::<f64>::new(dim, &params);
 
             let mut shift_rng = StdRng::seed_from_u64(cfg.seed);
-            let shift: Vec<f64> = (0..dim)
-                .map(|_| shift_rng.gen_range(0.0..1.0))
-                .collect();
+            let shift: Vec<f64> = (0..dim).map(|_| shift_rng.gen_range(0.0..1.0)).collect();
 
             for _ in 0..cfg.trials {
                 let point = seq
@@ -1367,10 +1391,7 @@ impl ParzenEstimator {
             let sigma = sigma0.max(1e-12);
             let z = (x - mu) / sigma;
             let lw = w.max(1e-12).ln();
-            let lp = lw
-                - 0.5 * (2.0 * std::f64::consts::PI).ln()
-                - sigma.ln()
-                - 0.5 * (z * z);
+            let lp = lw - 0.5 * (2.0 * std::f64::consts::PI).ln() - sigma.ln() - 0.5 * (z * z);
             parts.push(lp);
         }
         log_sum_exp(&parts)
@@ -1424,12 +1445,24 @@ impl TpeParamModel {
                 good,
                 ..
             } => {
-                let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
+                let (lo, hi) = if low <= high {
+                    (*low, *high)
+                } else {
+                    (*high, *low)
+                };
                 if lo == hi {
                     return ParamValue::Int(lo);
                 }
-                let lo_t = if *log && lo > 0 { (lo as f64).ln() } else { lo as f64 };
-                let hi_t = if *log && hi > 0 { (hi as f64).ln() } else { hi as f64 };
+                let lo_t = if *log && lo > 0 {
+                    (lo as f64).ln()
+                } else {
+                    lo as f64
+                };
+                let hi_t = if *log && hi > 0 {
+                    (hi as f64).ln()
+                } else {
+                    hi as f64
+                };
                 let x_t = good.sample(rng).clamp(lo_t.min(hi_t), lo_t.max(hi_t));
                 let x = if *log { x_t.exp() } else { x_t };
                 let mut xi = x.round() as i64;
@@ -1440,8 +1473,18 @@ impl TpeParamModel {
                 }
                 ParamValue::Int(xi.clamp(lo, hi))
             }
-            TpeParamModel::Float { low, high, log, good, .. } => {
-                let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
+            TpeParamModel::Float {
+                low,
+                high,
+                log,
+                good,
+                ..
+            } => {
+                let (lo, hi) = if low <= high {
+                    (*low, *high)
+                } else {
+                    (*high, *low)
+                };
                 if lo == hi {
                     return ParamValue::Float(lo);
                 }
@@ -1464,14 +1507,23 @@ impl TpeParamModel {
                 }
                 ParamValue::Cat(good_p.len().saturating_sub(1))
             }
-            TpeParamModel::Bool { good_p, .. } => ParamValue::Bool(rng.gen_bool(good_p[1].clamp(0.0, 1.0))),
+            TpeParamModel::Bool { good_p, .. } => {
+                ParamValue::Bool(rng.gen_bool(good_p[1].clamp(0.0, 1.0)))
+            }
         }
     }
 
     fn log_ratio(&self, v: &ParamValue) -> f64 {
         match (self, v) {
             (
-                TpeParamModel::Int { low, high, log, good, bad, .. },
+                TpeParamModel::Int {
+                    low,
+                    high,
+                    log,
+                    good,
+                    bad,
+                    ..
+                },
                 ParamValue::Int(x),
             ) => {
                 let lo = (*low).min(*high) as f64;
@@ -1481,7 +1533,14 @@ impl TpeParamModel {
                 good.log_pdf(xt) - bad.log_pdf(xt)
             }
             (
-                TpeParamModel::Float { low, high, log, good, bad, .. },
+                TpeParamModel::Float {
+                    low,
+                    high,
+                    log,
+                    good,
+                    bad,
+                    ..
+                },
                 ParamValue::Float(x),
             ) => {
                 let lo = (*low).min(*high);
@@ -1511,7 +1570,10 @@ impl TpeParamModel {
     }
 }
 
-fn hypervolume_weights_for_good<T: Clone>(evaluated: &[MoPoint<T>], good_idx: &[usize]) -> Vec<f64> {
+fn hypervolume_weights_for_good<T: Clone>(
+    evaluated: &[MoPoint<T>],
+    good_idx: &[usize],
+) -> Vec<f64> {
     if good_idx.is_empty() {
         return Vec::new();
     }
@@ -1556,7 +1618,10 @@ fn hypervolume_weights_for_good<T: Clone>(evaluated: &[MoPoint<T>], good_idx: &[
         .into_iter()
         .map(|i| {
             let pos = pos_map.get(i).copied().unwrap_or(0);
-            let o = feas_points.get(i).map(|p| p.objectives).unwrap_or([0.0, 0.0]);
+            let o = feas_points
+                .get(i)
+                .map(|p| p.objectives)
+                .unwrap_or([0.0, 0.0]);
             (pos, o[0], o[1])
         })
         .collect();
@@ -1637,10 +1702,22 @@ fn build_tpe_models<T: Clone>(
 
     let mut idxs: Vec<usize> = (0..n).collect();
     if n > max_points {
-        let mut feas: Vec<usize> = idxs.iter().copied().filter(|&i| evaluated[i].violation <= 0.0).collect();
-        let mut infeas: Vec<usize> = idxs.iter().copied().filter(|&i| evaluated[i].violation > 0.0).collect();
+        let mut feas: Vec<usize> = idxs
+            .iter()
+            .copied()
+            .filter(|&i| evaluated[i].violation <= 0.0)
+            .collect();
+        let mut infeas: Vec<usize> = idxs
+            .iter()
+            .copied()
+            .filter(|&i| evaluated[i].violation > 0.0)
+            .collect();
         let score = |p: &MoPoint<T>| -> f64 { p.objectives[0] + p.objectives[1] };
-        feas.sort_by(|&a, &b| score(&evaluated[b]).partial_cmp(&score(&evaluated[a])).unwrap_or(Ordering::Equal));
+        feas.sort_by(|&a, &b| {
+            score(&evaluated[b])
+                .partial_cmp(&score(&evaluated[a]))
+                .unwrap_or(Ordering::Equal)
+        });
         infeas.sort_by(|&a, &b| {
             let va = evaluated[a].violation;
             let vb = evaluated[b].violation;
@@ -1648,7 +1725,9 @@ fn build_tpe_models<T: Clone>(
             if o != Ordering::Equal {
                 return o;
             }
-            score(&evaluated[b]).partial_cmp(&score(&evaluated[a])).unwrap_or(Ordering::Equal)
+            score(&evaluated[b])
+                .partial_cmp(&score(&evaluated[a]))
+                .unwrap_or(Ordering::Equal)
         });
 
         idxs.clear();
@@ -1753,10 +1832,27 @@ fn build_tpe_models<T: Clone>(
                 let bad_p = [bc[0] / bs, bc[1] / bs];
                 models.push(TpeParamModel::Bool { good_p, bad_p });
             }
-            ParamDomain::IntRange { low, high, step, log } => {
-                let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
-                let lo_t = if *log && lo > 0 { (lo as f64).ln() } else { lo as f64 };
-                let hi_t = if *log && hi > 0 { (hi as f64).ln() } else { hi as f64 };
+            ParamDomain::IntRange {
+                low,
+                high,
+                step,
+                log,
+            } => {
+                let (lo, hi) = if low <= high {
+                    (*low, *high)
+                } else {
+                    (*high, *low)
+                };
+                let lo_t = if *log && lo > 0 {
+                    (lo as f64).ln()
+                } else {
+                    lo as f64
+                };
+                let hi_t = if *log && hi > 0 {
+                    (hi as f64).ln()
+                } else {
+                    hi as f64
+                };
                 let low_t = lo_t.min(hi_t);
                 let high_t = lo_t.max(hi_t);
                 let mut good_mus: Vec<(f64, f64)> = Vec::new();
@@ -1787,7 +1883,11 @@ fn build_tpe_models<T: Clone>(
                 });
             }
             ParamDomain::FloatRange { low, high, log } => {
-                let (lo, hi) = if low <= high { (*low, *high) } else { (*high, *low) };
+                let (lo, hi) = if low <= high {
+                    (*low, *high)
+                } else {
+                    (*high, *low)
+                };
                 let lo_t = if *log && lo > 0.0 { lo.ln() } else { lo };
                 let hi_t = if *log && hi > 0.0 { hi.ln() } else { hi };
                 let low_t = lo_t.min(hi_t);
@@ -2233,9 +2333,30 @@ mod tests {
         assert_eq!(pts.len(), 3 * 2 * 2);
 
         // Odometer ordering: last axis fastest.
-        assert_eq!(pts[0], vec![ParamValue::Int(1), ParamValue::Cat(0), ParamValue::Bool(false)]);
-        assert_eq!(pts[1], vec![ParamValue::Int(1), ParamValue::Cat(0), ParamValue::Bool(true)]);
-        assert_eq!(pts[2], vec![ParamValue::Int(1), ParamValue::Cat(1), ParamValue::Bool(false)]);
+        assert_eq!(
+            pts[0],
+            vec![
+                ParamValue::Int(1),
+                ParamValue::Cat(0),
+                ParamValue::Bool(false)
+            ]
+        );
+        assert_eq!(
+            pts[1],
+            vec![
+                ParamValue::Int(1),
+                ParamValue::Cat(0),
+                ParamValue::Bool(true)
+            ]
+        );
+        assert_eq!(
+            pts[2],
+            vec![
+                ParamValue::Int(1),
+                ParamValue::Cat(1),
+                ParamValue::Bool(false)
+            ]
+        );
     }
 
     #[test]
@@ -2314,7 +2435,10 @@ mod tests {
         assert_eq!(grid.len(), pts_iter.len());
 
         assert_eq!(grid.get(0).unwrap(), pts_iter[0]);
-        assert_eq!(grid.get(grid.len() - 1).unwrap(), pts_iter[pts_iter.len() - 1]);
+        assert_eq!(
+            grid.get(grid.len() - 1).unwrap(),
+            pts_iter[pts_iter.len() - 1]
+        );
         assert!(grid.get(grid.len()).is_none());
 
         let pts_grid: Vec<Vec<ParamValue>> = grid.iter().collect();

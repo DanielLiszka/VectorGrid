@@ -1165,7 +1165,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     if strategy.trade_on_next_bar {
         flags |= STRAT_TRADE_ON_NEXT_BAR;
     }
-    let commission = strategy.commission as f32;
+    let commission = strategy.effective_commission() as f32;
     let eps_rel = strategy.eps_rel as f32;
 
     let mut f_start = 0usize;
@@ -1967,7 +1967,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     if strategy.trade_on_next_bar {
         flags |= STRAT_TRADE_ON_NEXT_BAR;
     }
-    let commission = strategy.commission as f32;
+    let commission = strategy.effective_commission() as f32;
     let eps_rel = strategy.eps_rel as f32;
 
     let mut f_start = 0usize;

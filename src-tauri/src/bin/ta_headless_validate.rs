@@ -427,6 +427,10 @@ fn main() -> Result<(), String> {
         cscv_pbo,
         seed: cli.seed,
         max_candidates: cli.validate_max_candidates,
+        validation_engine: ta_app_core::ValidationEngine::Vectorized,
+        iterative: ta_app_core::IterativeSimConfig::default(),
+        min_psr: None,
+        min_dsr: None,
     };
 
     println!("Running validation...");

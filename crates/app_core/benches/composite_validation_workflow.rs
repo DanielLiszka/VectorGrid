@@ -3,8 +3,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use ta_app_core::{
-    CompositeParams, CompositeValidationRequest, CscvPboConfig, PerturbConfig, TradeBootstrapConfig,
-    WalkForwardConfigOptional,
+    CompositeParams, CompositeValidationRequest, CscvPboConfig, PerturbConfig,
+    TradeBootstrapConfig, WalkForwardConfigOptional,
 };
 use ta_strategies::double_ma::StrategyConfig;
 
@@ -94,6 +94,10 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
         cscv_pbo: None,
         seed: 123,
         max_candidates: candidates.len(),
+        validation_engine: ta_app_core::ValidationEngine::Vectorized,
+        iterative: ta_app_core::IterativeSimConfig::default(),
+        min_psr: None,
+        min_dsr: None,
     };
 
     group.bench_function("wf_only", |b| {

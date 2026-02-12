@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
-use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig};
+use ta_strategies::double_ma::{
+    DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig,
+};
 
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
@@ -195,7 +197,10 @@ fn objective_score(metrics: &ta_strategies::double_ma::Metrics, objective: Objec
 fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
     matches!(
         objective,
-        ObjectiveKind::Sharpe | ObjectiveKind::Sortino | ObjectiveKind::Omega | ObjectiveKind::Volatility
+        ObjectiveKind::Sharpe
+            | ObjectiveKind::Sortino
+            | ObjectiveKind::Omega
+            | ObjectiveKind::Volatility
     )
 }
 
@@ -406,7 +411,11 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
     slow_periods.sort_unstable();
 
     // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
-    let trade_offset = if req.strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if req.strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
     let max_p = (fast_periods[fast_periods.len() - 1] as usize)
         .max(slow_periods[slow_periods.len() - 1] as usize)
         .max(1);
@@ -794,11 +803,12 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     impl ProgressSink for OffsetProgress<'_> {
         fn emit_double_ma_progress(&self, payload: crate::progress::DoubleMaProgressPayload) {
-            self.inner.emit_double_ma_progress(crate::progress::DoubleMaProgressPayload {
-                processed_pairs: self.base_offset.saturating_add(payload.processed_pairs),
-                total_pairs: self.total_pairs,
-                phase: payload.phase,
-            });
+            self.inner
+                .emit_double_ma_progress(crate::progress::DoubleMaProgressPayload {
+                    processed_pairs: self.base_offset.saturating_add(payload.processed_pairs),
+                    total_pairs: self.total_pairs,
+                    phase: payload.phase,
+                });
         }
     }
 
@@ -1063,8 +1073,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         slow_alma_sigma,
                         progress,
                     )?;
-                    fine_res.num_combos =
-                        coarse_res.num_combos.saturating_add(fine_res.num_combos);
+                    fine_res.num_combos = coarse_res.num_combos.saturating_add(fine_res.num_combos);
 
                     let backend_used = if matches!(coarse_backend, BackendUsed::Cpu)
                         && matches!(fine_backend, BackendUsed::Cpu)
@@ -1230,8 +1239,16 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         rows.sort_by(|a, b| {
             let sa = objective_score(&a.1, objective);
             let sb = objective_score(&b.1, objective);
-            let sa = if sa.is_finite() { sa } else { f64::NEG_INFINITY };
-            let sb = if sb.is_finite() { sb } else { f64::NEG_INFINITY };
+            let sa = if sa.is_finite() {
+                sa
+            } else {
+                f64::NEG_INFINITY
+            };
+            let sb = if sb.is_finite() {
+                sb
+            } else {
+                f64::NEG_INFINITY
+            };
             sb.total_cmp(&sa)
         });
         rows.truncate(top_k);
@@ -1823,8 +1840,22 @@ pub(crate) fn validate_ma_kind(ma_type: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> {
-    if !cfg.commission.is_finite() || cfg.commission < 0.0 || cfg.commission >= 1.0 {
-        return Err("commission must be finite and in [0, 1)".to_string());
+    let cost_fields = [cfg.fee_bps, cfg.spread_bps, cfg.slippage_bps];
+    for (k, v) in ["fee_bps", "spread_bps", "slippage_bps"]
+        .iter()
+        .zip(cost_fields.iter())
+    {
+        if !v.is_finite() || *v < 0.0 {
+            return Err(format!("{k} must be finite and >= 0"));
+        }
+    }
+
+    let effective_commission = cfg.effective_commission();
+    if !effective_commission.is_finite()
+        || effective_commission < 0.0
+        || effective_commission >= 1.0
+    {
+        return Err("effective commission must be finite and in [0, 1)".to_string());
     }
     if !cfg.eps_rel.is_finite() || cfg.eps_rel < 0.0 {
         return Err("eps_rel must be finite and >= 0".to_string());
@@ -1962,7 +1993,10 @@ const MAX_MA_PARAM_SWEEP_VALUES: usize = 64;
 const MAX_MA_PARAM_VARIANTS_PER_SIDE: usize = 512;
 const MAX_MA_PARAM_VARIANT_PAIRS: usize = 4096;
 
-fn expand_f64_range_inclusive((start, end, step): (f64, f64, f64), label: &str) -> Result<Vec<f64>, String> {
+fn expand_f64_range_inclusive(
+    (start, end, step): (f64, f64, f64),
+    label: &str,
+) -> Result<Vec<f64>, String> {
     if !start.is_finite() || !end.is_finite() || !step.is_finite() {
         return Err(format!(
             "MA param sweep '{label}' requires finite start/end/step"
@@ -1978,7 +2012,11 @@ fn expand_f64_range_inclusive((start, end, step): (f64, f64, f64), label: &str) 
         return Err(format!("MA param sweep '{label}' requires step != 0"));
     }
 
-    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     let span = hi - lo;
     if !span.is_finite() || span < 0.0 {
         return Err(format!(
@@ -3412,6 +3450,32 @@ mod tests {
     }
 
     #[test]
+    fn validate_strategy_cfg_accepts_bps_derived_costs() {
+        let cfg = StrategyConfig {
+            long_only: true,
+            allow_flip: true,
+            trade_on_next_bar: true,
+            cost_preset: None,
+            fee_bps: 2.0,
+            spread_bps: 4.0,
+            slippage_bps: 1.0,
+            commission: 0.0,
+            eps_rel: 0.0,
+        };
+        assert!(validate_strategy_cfg(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_negative_bps() {
+        let cfg = StrategyConfig {
+            fee_bps: -0.1,
+            ..StrategyConfig::default()
+        };
+        let err = validate_strategy_cfg(&cfg).expect_err("negative fee_bps must fail");
+        assert!(err.contains("fee_bps"));
+    }
+
+    #[test]
     fn cpu_ma_param_sweep_increases_combo_count_and_reports_params() {
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -3450,11 +3514,22 @@ mod tests {
 
         // Base grid has 3*2=6 fast<slow pairs; sweep adds 2 variants => 12 combos.
         assert_eq!(res.num_combos, 12);
-        let fast_p = res.best_params.fast_ma_params.as_ref().expect("fast params");
+        let fast_p = res
+            .best_params
+            .fast_ma_params
+            .as_ref()
+            .expect("fast params");
         let sigma = fast_p.get("sigma").copied().unwrap_or(f64::NAN);
         assert!(sigma.to_bits() == 4.0_f64.to_bits() || sigma.to_bits() == 5.0_f64.to_bits());
-        let slow_p = res.best_params.slow_ma_params.as_ref().expect("slow params");
-        assert_eq!(slow_p.get("sigma").copied().unwrap_or(f64::NAN).to_bits(), 6.0_f64.to_bits());
+        let slow_p = res
+            .best_params
+            .slow_ma_params
+            .as_ref()
+            .expect("slow params");
+        assert_eq!(
+            slow_p.get("sigma").copied().unwrap_or(f64::NAN).to_bits(),
+            6.0_f64.to_bits()
+        );
     }
 
     #[test]
@@ -3626,15 +3701,18 @@ mod tests {
             step: Some(1),
         };
 
-        let res =
-            compute_double_ma_local_stability_blocking_with_candles(req, &candles).expect("local stability");
+        let res = compute_double_ma_local_stability_blocking_with_candles(req, &candles)
+            .expect("local stability");
 
         assert_eq!(res.base.fast_len, 9);
         assert_eq!(res.base.slow_len, 21);
         assert_eq!(res.radius, 1);
         assert_eq!(res.step, 1);
         assert!(!res.points.is_empty());
-        assert!(res.points.iter().any(|p| p.fast_len == 9 && p.slow_len == 21));
+        assert!(res
+            .points
+            .iter()
+            .any(|p| p.fast_len == 9 && p.slow_len == 21));
         assert!(res.summary.min <= res.summary.median);
         assert!(res.summary.median <= res.summary.max);
         assert!(res.summary.base.is_finite());

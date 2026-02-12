@@ -12,8 +12,23 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+#[path = "commands_meta.rs"]
+mod commands_meta;
+#[path = "run_artifacts.rs"]
+mod run_artifacts;
+#[path = "validation_common.rs"]
+mod validation_common;
+
+pub use commands_meta::{
+    apply_ml_confidence_model, delete_ml_confidence_model, ml_confidence_model_status,
+    run_meta_selection, train_ml_confidence_model, ApplyMlConfidenceResponse,
+    MlConfidenceModelStatus, RunMetaSelectionResponse, TrainMlConfidenceResponse,
+};
+pub use run_artifacts::{
+    MetaArtifactSummary, RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse,
+};
 
 pub use ta_app_core::{
     Backend, BackendOptimizationResult, BackendUsed, CompositeCpuDrilldownRequest,
@@ -193,10 +208,21 @@ pub fn list_sample_csvs() -> Vec<SampleCsv> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RepoDataCsvEntry {
+    pub csv_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_mtime_utc_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RepoDataCsvList {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     pub csv_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub csv_entries: Vec<RepoDataCsvEntry>,
     pub truncated: bool,
 }
 
@@ -243,7 +269,11 @@ fn is_csv_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn list_csvs_in_dir(root: &Path, recursive: bool, max_files: usize) -> Result<(Vec<PathBuf>, bool), String> {
+fn list_csvs_in_dir(
+    root: &Path,
+    recursive: bool,
+    max_files: usize,
+) -> Result<(Vec<PathBuf>, bool), String> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -275,26 +305,49 @@ fn list_csvs_in_dir(root: &Path, recursive: bool, max_files: usize) -> Result<(V
 pub async fn list_repo_data_csvs(
     max_files: Option<usize>,
     recursive: Option<bool>,
+    include_identity: Option<bool>,
 ) -> Result<RepoDataCsvList, String> {
     let max_files = max_files.unwrap_or(20_000).clamp(1, 200_000);
     let recursive = recursive.unwrap_or(false);
+    let include_identity = include_identity.unwrap_or(false);
 
     tauri::async_runtime::spawn_blocking(move || {
         let Some(dir) = find_repo_data_dir() else {
             return Ok(RepoDataCsvList {
                 dir: None,
                 csv_paths: Vec::new(),
+                csv_entries: Vec::new(),
                 truncated: false,
             });
         };
 
         let (paths, truncated) = list_csvs_in_dir(&dir, recursive, max_files)?;
+        let mut csv_paths: Vec<String> = Vec::with_capacity(paths.len());
+        let mut csv_entries: Vec<RepoDataCsvEntry> = if include_identity {
+            Vec::with_capacity(paths.len())
+        } else {
+            Vec::new()
+        };
+
+        for p in paths {
+            let s = p.to_string_lossy().to_string();
+            csv_paths.push(s.clone());
+            if include_identity {
+                let (size, mtime) = match crate::data_cache::identity_for_source(&p) {
+                    Ok(id) => (Some(id.size), Some(id.mtime_utc_ms)),
+                    Err(_) => (None, None),
+                };
+                csv_entries.push(RepoDataCsvEntry {
+                    csv_path: s,
+                    source_size_bytes: size,
+                    source_mtime_utc_ms: mtime,
+                });
+            }
+        }
         Ok(RepoDataCsvList {
             dir: Some(dir.to_string_lossy().to_string()),
-            csv_paths: paths
-                .into_iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect(),
+            csv_paths,
+            csv_entries,
             truncated,
         })
     })
@@ -839,12 +892,7 @@ fn apply_cross_ticker_validation(
     cancel: &std::sync::atomic::AtomicBool,
     app_for_progress: Option<tauri::AppHandle>,
 ) -> Result<(), String> {
-    // Sanitize dataset list (dedup + cap).
-    cross_cfg.datasets.retain(|d| !d.csv_path.trim().is_empty());
-    let mut seen: HashSet<String> = HashSet::with_capacity(cross_cfg.datasets.len() * 2);
-    cross_cfg
-        .datasets
-        .retain(|d| seen.insert(d.csv_path.trim().to_string()));
+    validation_common::sanitize_cross_ticker_config(&mut cross_cfg);
     if cross_cfg.max_datasets == 0 {
         return Ok(());
     }
@@ -855,38 +903,18 @@ fn apply_cross_ticker_validation(
         return Ok(());
     }
 
-    #[derive(Clone, Default)]
-    struct Acc {
-        sharpes: Vec<f64>,
-        dds: Vec<f64>,
-        pnls: Vec<f64>,
-        trades: Vec<u32>,
-        pnl_pos: usize,
-    }
-
     let mut key_to_idx: HashMap<String, usize> = HashMap::with_capacity(res.candidates.len() * 2);
     for (i, c) in res.candidates.iter().enumerate() {
-        let key = serde_json::to_string(&c.params).map_err(|e| e.to_string())?;
+        let key = validation_common::candidate_key_canonical(&c.params)?;
         key_to_idx.insert(key, i);
     }
 
     let total_candidates = res.candidates.len();
     let cross_total = total_candidates.saturating_mul(cross_cfg.datasets.len());
-    let mut accs: Vec<Acc> = vec![Acc::default(); total_candidates];
+    let mut accs: Vec<validation_common::CrossTickerAcc> =
+        vec![validation_common::CrossTickerAcc::default(); total_candidates];
     let mut datasets_meta: Vec<ta_app_core::CrossTickerDatasetMeta> =
         Vec::with_capacity(cross_cfg.datasets.len());
-
-    let mk_label = |csv_path: &str, label: &str| -> String {
-        let l = label.trim();
-        if !l.is_empty() {
-            return l.to_string();
-        }
-        Path::new(csv_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("dataset")
-            .to_string()
-    };
 
     for (di, ds) in cross_cfg.datasets.iter().enumerate() {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -900,7 +928,7 @@ fn apply_cross_ticker_validation(
         let outcome = crate::data_cache::load_or_build(Path::new(csv_path), app_cache_dir)?;
         let candles2 = outcome.candles;
         datasets_meta.push(ta_app_core::CrossTickerDatasetMeta {
-            label: mk_label(csv_path, &ds.label),
+            label: validation_common::dataset_label(csv_path, &ds.label),
             csv_path: csv_path.to_string(),
             bars: candles2.close.len(),
         });
@@ -918,6 +946,10 @@ fn apply_cross_ticker_validation(
             cscv_pbo: None,
             seed,
             max_candidates: total_candidates,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
         };
         let offset = di.saturating_mul(total_candidates);
 
@@ -941,140 +973,15 @@ fn apply_cross_ticker_validation(
         };
 
         for c in &res2.candidates {
-            let key = serde_json::to_string(&c.params).map_err(|e| e.to_string())?;
+            let key = validation_common::candidate_key_canonical(&c.params)?;
             let Some(&idx) = key_to_idx.get(&key) else {
                 continue;
             };
-            accs[idx].sharpes.push(c.in_sample.sharpe);
-            accs[idx].dds.push(c.in_sample.max_dd);
-            accs[idx].pnls.push(c.in_sample.pnl);
-            accs[idx].trades.push(c.in_sample.trades);
-            if c.in_sample.pnl > 0.0 {
-                accs[idx].pnl_pos = accs[idx].pnl_pos.saturating_add(1);
-            }
+            validation_common::push_metrics(&mut accs[idx], &c.in_sample);
         }
     }
 
-    // Aggregate stats.
-    let quantile = |sorted: &[f64], q: f64| -> f64 {
-        if sorted.is_empty() {
-            return 0.0;
-        }
-        if sorted.len() == 1 {
-            return if sorted[0].is_finite() {
-                sorted[0]
-            } else {
-                0.0
-            };
-        }
-        let qq = q.clamp(0.0, 1.0);
-        let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
-        let v = sorted[idx.min(sorted.len() - 1)];
-        if v.is_finite() {
-            v
-        } else {
-            0.0
-        }
-    };
-    let median = |sorted: &[f64]| -> f64 { quantile(sorted, 0.5) };
-    let worst_min = |xs: &[f64]| -> f64 {
-        xs.iter()
-            .copied()
-            .fold(f64::INFINITY, |a, b| if b < a { b } else { a })
-            .if_finite_or(0.0)
-    };
-    let worst_max = |xs: &[f64]| -> f64 {
-        xs.iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, |a, b| if b > a { b } else { a })
-            .if_finite_or(0.0)
-    };
-    trait FiniteOr {
-        fn if_finite_or(self, fallback: f64) -> f64;
-    }
-    impl FiniteOr for f64 {
-        fn if_finite_or(self, fallback: f64) -> f64 {
-            if self.is_finite() {
-                self
-            } else {
-                fallback
-            }
-        }
-    }
-
-    let median_u32 = |xs: &[u32]| -> u32 {
-        if xs.is_empty() {
-            return 0;
-        }
-        let mut ys = xs.to_vec();
-        ys.sort_unstable();
-        ys[ys.len() / 2]
-    };
-    let worst_min_u32 = |xs: &[u32]| -> u32 { xs.iter().copied().min().unwrap_or(0) };
-
-    for (i, cand) in res.candidates.iter_mut().enumerate() {
-        let acc = &mut accs[i];
-        let ds_n = acc.sharpes.len();
-        if ds_n == 0 {
-            continue;
-        }
-
-        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
-        acc.dds.sort_by(|a, b| a.total_cmp(b));
-        acc.pnls.sort_by(|a, b| a.total_cmp(b));
-
-        let sharpe_median = median(&acc.sharpes);
-        let max_dd_worst = worst_max(&acc.dds);
-        let score = sharpe_median - 2.0 * max_dd_worst;
-        cand.cross_ticker = Some(ta_app_core::CrossTickerStats {
-            datasets: ds_n,
-            sharpe_median,
-            sharpe_worst: worst_min(&acc.sharpes),
-            max_dd_median: median(&acc.dds),
-            max_dd_worst,
-            pnl_median: median(&acc.pnls),
-            pnl_worst: worst_min(&acc.pnls),
-            trades_median: median_u32(&acc.trades),
-            trades_worst: worst_min_u32(&acc.trades),
-            pnl_positive_frac: acc.pnl_pos as f64 / ds_n as f64,
-            score,
-        });
-        if score.is_finite() {
-            cand.robust_score = if cand.robust_score.is_finite() {
-                cand.robust_score.min(score)
-            } else {
-                score
-            };
-        }
-    }
-
-    // Mark cross-ticker Pareto front using (Sharpe median, MaxDD worst).
-    for i in 0..res.candidates.len() {
-        let Some(si) = res.candidates[i].cross_ticker.as_ref() else {
-            continue;
-        };
-        let xi = si.sharpe_median;
-        let yi = si.max_dd_worst;
-        let mut dominated = false;
-        for j in 0..res.candidates.len() {
-            if i == j {
-                continue;
-            }
-            let Some(sj) = res.candidates[j].cross_ticker.as_ref() else {
-                continue;
-            };
-            let xj = sj.sharpe_median;
-            let yj = sj.max_dd_worst;
-            if xj >= xi && yj <= yi && (xj > xi || yj < yi) {
-                dominated = true;
-                break;
-            }
-        }
-        res.candidates[i].cross_ticker_pareto = Some(!dominated);
-    }
-
-    res.candidates
-        .sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
+    validation_common::finalize_cross_ticker_candidates(&mut res.candidates, accs);
 
     res.cross_ticker = Some(ta_app_core::CrossTickerValidationSummary {
         datasets: datasets_meta,
@@ -1144,12 +1051,7 @@ fn apply_cross_ticker_validation_double_ma(
     cancel: &std::sync::atomic::AtomicBool,
     app_for_progress: Option<tauri::AppHandle>,
 ) -> Result<(), String> {
-    // Sanitize dataset list (dedup + cap).
-    cross_cfg.datasets.retain(|d| !d.csv_path.trim().is_empty());
-    let mut seen: HashSet<String> = HashSet::with_capacity(cross_cfg.datasets.len() * 2);
-    cross_cfg
-        .datasets
-        .retain(|d| seen.insert(d.csv_path.trim().to_string()));
+    validation_common::sanitize_cross_ticker_config(&mut cross_cfg);
     if cross_cfg.max_datasets == 0 {
         return Ok(());
     }
@@ -1160,57 +1062,18 @@ fn apply_cross_ticker_validation_double_ma(
         return Ok(());
     }
 
-    #[derive(Clone, Default)]
-    struct Acc {
-        sharpes: Vec<f64>,
-        dds: Vec<f64>,
-        pnls: Vec<f64>,
-        trades: Vec<u32>,
-        pnl_pos: usize,
-    }
-
-    fn canonicalize_json_value(v: &Value) -> Value {
-        match v {
-            Value::Array(xs) => Value::Array(xs.iter().map(canonicalize_json_value).collect()),
-            Value::Object(map) => {
-                let mut keys: Vec<&String> = map.keys().collect();
-                keys.sort();
-                let mut out = serde_json::Map::new();
-                for k in keys {
-                    if let Some(v2) = map.get(k) {
-                        out.insert(k.clone(), canonicalize_json_value(v2));
-                    }
-                }
-                Value::Object(out)
-            }
-            _ => v.clone(),
-        }
-    }
-
     let mut key_to_idx: HashMap<String, usize> = HashMap::with_capacity(res.candidates.len() * 2);
     for (i, c) in res.candidates.iter().enumerate() {
-        let v = serde_json::to_value(&c.params).map_err(|e| e.to_string())?;
-        let key = serde_json::to_string(&canonicalize_json_value(&v)).map_err(|e| e.to_string())?;
+        let key = validation_common::candidate_key_canonical(&c.params)?;
         key_to_idx.insert(key, i);
     }
 
     let total_candidates = res.candidates.len();
     let cross_total = total_candidates.saturating_mul(cross_cfg.datasets.len());
-    let mut accs: Vec<Acc> = vec![Acc::default(); total_candidates];
+    let mut accs: Vec<validation_common::CrossTickerAcc> =
+        vec![validation_common::CrossTickerAcc::default(); total_candidates];
     let mut datasets_meta: Vec<ta_app_core::CrossTickerDatasetMeta> =
         Vec::with_capacity(cross_cfg.datasets.len());
-
-    let mk_label = |csv_path: &str, label: &str| -> String {
-        let l = label.trim();
-        if !l.is_empty() {
-            return l.to_string();
-        }
-        Path::new(csv_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("dataset")
-            .to_string()
-    };
 
     for (di, ds) in cross_cfg.datasets.iter().enumerate() {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1224,7 +1087,7 @@ fn apply_cross_ticker_validation_double_ma(
         let outcome = crate::data_cache::load_or_build(Path::new(csv_path), app_cache_dir)?;
         let candles2 = outcome.candles;
         datasets_meta.push(ta_app_core::CrossTickerDatasetMeta {
-            label: mk_label(csv_path, &ds.label),
+            label: validation_common::dataset_label(csv_path, &ds.label),
             csv_path: csv_path.to_string(),
             bars: candles2.close.len(),
         });
@@ -1242,6 +1105,10 @@ fn apply_cross_ticker_validation_double_ma(
             cscv_pbo: None,
             seed,
             max_candidates: total_candidates,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
         };
         let offset = di.saturating_mul(total_candidates);
 
@@ -1265,142 +1132,15 @@ fn apply_cross_ticker_validation_double_ma(
         };
 
         for c in &res2.candidates {
-            let v = serde_json::to_value(&c.params).map_err(|e| e.to_string())?;
-            let key =
-                serde_json::to_string(&canonicalize_json_value(&v)).map_err(|e| e.to_string())?;
+            let key = validation_common::candidate_key_canonical(&c.params)?;
             let Some(&idx) = key_to_idx.get(&key) else {
                 continue;
             };
-            accs[idx].sharpes.push(c.in_sample.sharpe);
-            accs[idx].dds.push(c.in_sample.max_dd);
-            accs[idx].pnls.push(c.in_sample.pnl);
-            accs[idx].trades.push(c.in_sample.trades);
-            if c.in_sample.pnl > 0.0 {
-                accs[idx].pnl_pos = accs[idx].pnl_pos.saturating_add(1);
-            }
+            validation_common::push_metrics(&mut accs[idx], &c.in_sample);
         }
     }
 
-    // Aggregate stats.
-    let quantile = |sorted: &[f64], q: f64| -> f64 {
-        if sorted.is_empty() {
-            return 0.0;
-        }
-        if sorted.len() == 1 {
-            return if sorted[0].is_finite() {
-                sorted[0]
-            } else {
-                0.0
-            };
-        }
-        let qq = q.clamp(0.0, 1.0);
-        let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
-        let v = sorted[idx.min(sorted.len() - 1)];
-        if v.is_finite() {
-            v
-        } else {
-            0.0
-        }
-    };
-    let median = |sorted: &[f64]| -> f64 { quantile(sorted, 0.5) };
-    let worst_min = |xs: &[f64]| -> f64 {
-        xs.iter()
-            .copied()
-            .fold(f64::INFINITY, |a, b| if b < a { b } else { a })
-            .if_finite_or(0.0)
-    };
-    let worst_max = |xs: &[f64]| -> f64 {
-        xs.iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, |a, b| if b > a { b } else { a })
-            .if_finite_or(0.0)
-    };
-    trait FiniteOr {
-        fn if_finite_or(self, fallback: f64) -> f64;
-    }
-    impl FiniteOr for f64 {
-        fn if_finite_or(self, fallback: f64) -> f64 {
-            if self.is_finite() {
-                self
-            } else {
-                fallback
-            }
-        }
-    }
-
-    let median_u32 = |xs: &[u32]| -> u32 {
-        if xs.is_empty() {
-            return 0;
-        }
-        let mut ys = xs.to_vec();
-        ys.sort_unstable();
-        ys[ys.len() / 2]
-    };
-    let worst_min_u32 = |xs: &[u32]| -> u32 { xs.iter().copied().min().unwrap_or(0) };
-
-    for (i, cand) in res.candidates.iter_mut().enumerate() {
-        let acc = &mut accs[i];
-        let ds_n = acc.sharpes.len();
-        if ds_n == 0 {
-            continue;
-        }
-
-        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
-        acc.dds.sort_by(|a, b| a.total_cmp(b));
-        acc.pnls.sort_by(|a, b| a.total_cmp(b));
-
-        let sharpe_median = median(&acc.sharpes);
-        let max_dd_worst = worst_max(&acc.dds);
-        let score = sharpe_median - 2.0 * max_dd_worst;
-        cand.cross_ticker = Some(ta_app_core::CrossTickerStats {
-            datasets: ds_n,
-            sharpe_median,
-            sharpe_worst: worst_min(&acc.sharpes),
-            max_dd_median: median(&acc.dds),
-            max_dd_worst,
-            pnl_median: median(&acc.pnls),
-            pnl_worst: worst_min(&acc.pnls),
-            trades_median: median_u32(&acc.trades),
-            trades_worst: worst_min_u32(&acc.trades),
-            pnl_positive_frac: acc.pnl_pos as f64 / ds_n as f64,
-            score,
-        });
-        if score.is_finite() {
-            cand.robust_score = if cand.robust_score.is_finite() {
-                cand.robust_score.min(score)
-            } else {
-                score
-            };
-        }
-    }
-
-    // Mark cross-ticker Pareto front using (Sharpe median, MaxDD worst).
-    for i in 0..res.candidates.len() {
-        let Some(si) = res.candidates[i].cross_ticker.as_ref() else {
-            continue;
-        };
-        let xi = si.sharpe_median;
-        let yi = si.max_dd_worst;
-        let mut dominated = false;
-        for j in 0..res.candidates.len() {
-            if i == j {
-                continue;
-            }
-            let Some(sj) = res.candidates[j].cross_ticker.as_ref() else {
-                continue;
-            };
-            let xj = sj.sharpe_median;
-            let yj = sj.max_dd_worst;
-            if xj >= xi && yj <= yi && (xj > xi || yj < yi) {
-                dominated = true;
-                break;
-            }
-        }
-        res.candidates[i].cross_ticker_pareto = Some(!dominated);
-    }
-
-    res.candidates
-        .sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
+    validation_common::finalize_cross_ticker_candidates(&mut res.candidates, accs);
 
     res.cross_ticker = Some(ta_app_core::CrossTickerValidationSummary {
         datasets: datasets_meta,
@@ -1747,55 +1487,16 @@ pub fn set_window_effect(
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SaveRunArtifactResponse {
-    pub path: String,
-    pub bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SaveBatchSummaryResponse {
-    pub path: String,
-    pub bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunArtifactSummary {
-    pub ts: String,
-    pub path: String,
-    pub bytes: u64,
-    pub kind: String,
-    pub strategy_kind: String,
-    pub config_fingerprint: String,
-    pub has_validation: bool,
-    pub report_xlsx_path: String,
-    pub csv_path: String,
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MetaArtifactSummary {
-    pub ts: String,
-    pub path: String,
-    pub bytes: u64,
-    pub strategy_kind: String,
-    pub timeframe: String,
-    pub required_tag: String,
-    pub groups: usize,
-    pub artifacts_used: usize,
-    pub holdout_datasets: usize,
-    pub report_xlsx_path: String,
-    pub tags: Vec<String>,
-}
-
 #[tauri::command]
 pub async fn save_run_artifact(
     artifact: Value,
     app: tauri::AppHandle,
 ) -> Result<SaveRunArtifactResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || save_run_artifact_blocking(artifact, app))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::save_run_artifact_blocking(artifact, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1803,14 +1504,16 @@ pub async fn save_batch_summary(
     summary: Value,
     app: tauri::AppHandle,
 ) -> Result<SaveBatchSummaryResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || save_batch_summary_blocking(summary, app))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::save_batch_summary_blocking(summary, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn list_run_artifacts(app: tauri::AppHandle) -> Result<Vec<RunArtifactSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_run_artifacts_blocking(app))
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::list_run_artifacts_blocking(app))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1819,7 +1522,7 @@ pub async fn list_run_artifacts(app: tauri::AppHandle) -> Result<Vec<RunArtifact
 pub async fn list_meta_artifacts(
     app: tauri::AppHandle,
 ) -> Result<Vec<MetaArtifactSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_meta_artifacts_blocking(app))
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::list_meta_artifacts_blocking(app))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1830,1416 +1533,36 @@ pub async fn update_artifact_tags(
     tags: Vec<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || update_artifact_tags_blocking(path, tags, app))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::update_artifact_tags_blocking(path, tags, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn load_run_artifact(path: String, app: tauri::AppHandle) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || load_run_artifact_blocking(path, app))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_run_artifact_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn delete_run_artifact(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || delete_run_artifact_blocking(path, app))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::delete_run_artifact_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn open_runs_dir(app: tauri::AppHandle) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || open_runs_dir_blocking(app))
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::open_runs_dir_blocking(app))
         .await
         .map_err(|e| e.to_string())?
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MlConfidenceModelStatus {
-    pub exists: bool,
-    pub model_path: String,
-    pub bytes: usize,
-    pub available_meta_artifacts: usize,
-    pub available_labeled_rows: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub newest_meta_ts_available: Option<String>,
-    pub stale: bool,
-    pub retrain_recommended: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retrain_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<MlConfidenceModel>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TrainMlConfidenceResponse {
-    pub model_path: String,
-    pub model_bytes: usize,
-    pub model: MlConfidenceModel,
-    pub metrics: MlConfidenceTrainMetrics,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ApplyMlConfidenceResponse {
-    pub model_path: String,
-    pub confidences: Vec<Option<f64>>,
-    pub warnings: Vec<String>,
-}
-
-fn normalize_ml_scope(mut scope: MlConfidenceScope) -> Result<MlConfidenceScope, String> {
-    scope.strategy_kind = scope.strategy_kind.trim().to_string();
-    scope.timeframe = normalize_timeframe_label(&scope.timeframe);
-    if scope.strategy_kind.is_empty() {
-        return Err("strategy_kind is required".to_string());
-    }
-    if scope.timeframe.is_empty() {
-        return Err("timeframe is required (e.g. '1m')".to_string());
-    }
-    Ok(scope)
-}
-
-fn ml_confidence_models_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let dir = base.join("models").join("confidence");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
-
-fn ml_confidence_model_path(
-    scope: &MlConfidenceScope,
-    app: &tauri::AppHandle,
-) -> Result<std::path::PathBuf, String> {
-    let dir = ml_confidence_models_dir(app)?;
-    let sk = sanitize_filename_component(&scope.strategy_kind);
-    let tf = sanitize_filename_component(&scope.timeframe);
-    Ok(dir.join(format!("ml_confidence_{sk}_{tf}.json")))
-}
-
-fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
-    let dir = runs_dir(app)?;
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("vectorbt_meta_") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-
-    let mut out: Vec<Value> = Vec::with_capacity(paths.len());
-    for p in paths {
-        let raw = match std::fs::read_to_string(&p) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        out.push(v);
-    }
-    Ok(out)
-}
-
-fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
-    let strat = meta
-        .pointer("/req/strategy_kind")
-        .and_then(|v| v.as_str())
-        .or_else(|| meta.pointer("/res/strategy_kind").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let tf_raw = meta
-        .pointer("/req/timeframe")
-        .and_then(|v| v.as_str())
-        .or_else(|| meta.pointer("/res/timeframe").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let tf = normalize_timeframe_label(&tf_raw);
-    if strat.is_empty() || tf.is_empty() {
-        return None;
-    }
-    Some((strat, tf))
-}
-
-fn valid_holdout_row(row: &Value) -> bool {
-    let dataset_ok = row
-        .get("dataset")
-        .and_then(|v| v.as_str())
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if !dataset_ok {
-        return false;
-    }
-    let score = row.get("score_median").and_then(|v| v.as_f64());
-    if score.is_none() || !score.unwrap().is_finite() {
-        return false;
-    }
-    let dd = row
-        .get("max_dd_worst")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    dd.is_finite()
-}
-
-fn group_has_required_ml_features(g: &Value) -> bool {
-    g.get("samples").and_then(|v| v.as_u64()).is_some()
-        && g.get("pass_rate").and_then(|v| v.as_f64()).is_some()
-        && g.get("robust_score_p10").and_then(|v| v.as_f64()).is_some()
-        && g.get("robust_score_median")
-            .and_then(|v| v.as_f64())
-            .is_some()
-        && g.get("max_dd_p90").and_then(|v| v.as_f64()).is_some()
-        && g.get("meta_score").and_then(|v| v.as_f64()).is_some()
-}
-
-fn scope_has_holdout_rows_for_ml(
-    metas: &[Value],
-    scope: &MlConfidenceScope,
-    cfg: &MlConfidenceLabelConfig,
-) -> bool {
-    let scope_tf = normalize_timeframe_label(&scope.timeframe);
-    let scope_sk = scope.strategy_kind.trim();
-
-    for meta in metas {
-        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
-            continue;
-        }
-        let Some((sk, tf)) = extract_meta_scope(meta) else {
-            continue;
-        };
-        if sk != scope_sk || tf != scope_tf {
-            continue;
-        }
-        let groups = meta
-            .pointer("/res/groups")
-            .and_then(|v| v.as_array())
-            .map(|xs| xs.as_slice())
-            .unwrap_or(&[]);
-        for g in groups {
-            if !group_has_required_ml_features(g) {
-                continue;
-            }
-            let Some(rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            if rows.len() < cfg.min_holdout_datasets {
-                continue;
-            }
-            if rows.iter().any(valid_holdout_row) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn count_labeled_rows_in_meta(
-    meta: &Value,
-    cfg: &MlConfidenceLabelConfig,
-    use_holdout_rows: bool,
-) -> usize {
-    let groups = meta
-        .pointer("/res/groups")
-        .and_then(|v| v.as_array())
-        .map(|xs| xs.as_slice())
-        .unwrap_or(&[]);
-
-    let mut rows = 0usize;
-    for g in groups {
-        if !group_has_required_ml_features(g) {
-            continue;
-        }
-
-        if use_holdout_rows {
-            let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            if holdout_rows.len() < cfg.min_holdout_datasets {
-                continue;
-            }
-            for r in holdout_rows {
-                if valid_holdout_row(r) {
-                    rows = rows.saturating_add(1);
-                }
-            }
-        } else {
-            let Some(h) = g.get("holdout") else {
-                continue;
-            };
-            let datasets = h.get("datasets").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            if datasets < cfg.min_holdout_datasets {
-                continue;
-            }
-            let pass_rate = h.get("pass_rate").and_then(|v| v.as_f64());
-            let score_p10 = h.get("score_p10").and_then(|v| v.as_f64());
-            if pass_rate.is_none() || score_p10.is_none() {
-                continue;
-            }
-            let max_dd_p90 = h.get("max_dd_p90").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-            let mut ok = pass_rate.unwrap() >= cfg.min_holdout_pass_rate
-                && score_p10.unwrap() >= cfg.min_holdout_score_p10;
-            if let Some(dd_max) = cfg.max_holdout_max_dd_p90 {
-                ok = ok && max_dd_p90 <= dd_max;
-            }
-            let _ = ok; // label value isn't needed for counting; just gate for validity.
-
-            rows = rows.saturating_add(1);
-        }
-    }
-    rows
-}
-
-fn summarize_meta_artifacts_for_scope(
-    metas: &[Value],
-    scope: &MlConfidenceScope,
-    cfg: &MlConfidenceLabelConfig,
-) -> (usize, Option<String>, usize) {
-    let mut count = 0usize;
-    let mut newest: Option<String> = None;
-    let mut labeled_rows = 0usize;
-
-    let scope_tf = normalize_timeframe_label(&scope.timeframe);
-    let scope_sk = scope.strategy_kind.trim();
-    let use_holdout_rows = scope_has_holdout_rows_for_ml(metas, scope, cfg);
-
-    for meta in metas {
-        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
-            continue;
-        }
-        let Some((sk, tf)) = extract_meta_scope(meta) else {
-            continue;
-        };
-        if sk != scope_sk || tf != scope_tf {
-            continue;
-        }
-        count = count.saturating_add(1);
-        if let Some(ts) = meta
-            .get("ts")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-        {
-            let is_newest = newest
-                .as_ref()
-                .map(|cur| ts.as_str() > cur.as_str())
-                .unwrap_or(true);
-            if is_newest {
-                newest = Some(ts);
-            }
-        }
-        labeled_rows =
-            labeled_rows.saturating_add(count_labeled_rows_in_meta(meta, cfg, use_holdout_rows));
-    }
-
-    (count, newest, labeled_rows)
-}
-
-#[tauri::command]
-pub async fn ml_confidence_model_status(
-    scope: MlConfidenceScope,
-    app: tauri::AppHandle,
-) -> Result<MlConfidenceModelStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let scope = normalize_ml_scope(scope)?;
-        let path = ml_confidence_model_path(&scope, &app)?;
-        let model_path = path.to_string_lossy().to_string();
-        let exists = path.exists();
-
-        let mut bytes = 0usize;
-        let mut model: Option<MlConfidenceModel> = None;
-        let mut error: Option<String> = None;
-        let mut label_cfg = MlConfidenceLabelConfig::default();
-
-        if exists {
-            bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
-            let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            match serde_json::from_str::<MlConfidenceModel>(&raw) {
-                Ok(m) => {
-                    label_cfg = m.label.clone();
-                    model = Some(m);
-                }
-                Err(e) => {
-                    error = Some(e.to_string());
-                }
-            }
-        }
-
-        let metas = load_meta_artifacts_blocking(&app).unwrap_or_default();
-        let (available_meta_artifacts, newest_meta_ts_available, available_labeled_rows) =
-            summarize_meta_artifacts_for_scope(&metas, &scope, &label_cfg);
-
-        // Staleness/retrain policy: conservative defaults to avoid surprise compute.
-        let mut stale = false;
-        let mut retrain_recommended = false;
-        let mut retrain_reason: Option<String> = None;
-
-        if model.is_none() {
-            if !exists {
-                retrain_recommended = true;
-                retrain_reason = Some("No model saved for this scope.".to_string());
-            } else if error.is_some() {
-                retrain_recommended = true;
-                retrain_reason =
-                    Some("Model exists but failed to load; retrain recommended.".to_string());
-            }
-        } else if let Some(m) = model.as_ref() {
-            let meta = m.meta.as_ref();
-            if meta.is_none() {
-                stale = available_meta_artifacts > 0;
-                if stale && available_labeled_rows >= 25 {
-                    retrain_recommended = true;
-                    retrain_reason = Some(
-                        "Legacy model (missing training metadata); retrain recommended."
-                            .to_string(),
-                    );
-                } else if stale {
-                    retrain_reason = Some(
-                        "Legacy model (missing training metadata); retrain when more labels exist."
-                            .to_string(),
-                    );
-                }
-            } else if let Some(mm) = meta {
-                if let (Some(used), Some(avail)) = (
-                    mm.newest_meta_ts_used.as_ref(),
-                    newest_meta_ts_available.as_ref(),
-                ) {
-                    if avail.as_str() > used.as_str() {
-                        stale = true;
-                    }
-                } else if newest_meta_ts_available.is_some() {
-                    stale = true;
-                }
-                if let Some(used_count) = mm.meta_artifacts_used {
-                    if available_meta_artifacts > used_count {
-                        stale = true;
-                    }
-                } else if available_meta_artifacts > 0 {
-                    stale = true;
-                }
-
-                let trained_rows = mm.trained_rows;
-                let new_rows = available_labeled_rows.saturating_sub(trained_rows);
-                let threshold = std::cmp::max(25, trained_rows / 10);
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-                    .min(u128::from(u64::MAX)) as u64;
-                let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000; // 60s cooldown
-
-                if stale && new_rows >= threshold && cooldown_ok {
-                    retrain_recommended = true;
-                    retrain_reason = Some(format!(
-                        "Model stale: new labeled rows {new_rows} (threshold {threshold})."
-                    ));
-                } else if stale && new_rows > 0 {
-                    retrain_reason = Some(format!(
-                        "Model stale: new labeled rows {new_rows} (<{threshold})."
-                    ));
-                } else if stale && !cooldown_ok {
-                    retrain_reason =
-                        Some("Model stale but recently trained (cooldown).".to_string());
-                }
-            }
-        }
-
-        Ok(MlConfidenceModelStatus {
-            exists,
-            model_path,
-            bytes,
-            available_meta_artifacts,
-            available_labeled_rows,
-            newest_meta_ts_available,
-            stale,
-            retrain_recommended,
-            retrain_reason,
-            model,
-            error,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn train_ml_confidence_model(
-    scope: MlConfidenceScope,
-    cfg: Option<MlConfidenceTrainConfig>,
-    app: tauri::AppHandle,
-) -> Result<TrainMlConfidenceResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let scope = normalize_ml_scope(scope)?;
-        let cfg = cfg.unwrap_or_default();
-        let metas = load_meta_artifacts_blocking(&app)?;
-        let (model, metrics) =
-            ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope, &metas, cfg)?;
-
-        let path = ml_confidence_model_path(&model.scope, &app)?;
-        let bytes = serde_json::to_vec_pretty(&model).map_err(|e| e.to_string())?;
-        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-
-        Ok(TrainMlConfidenceResponse {
-            model_path: path.to_string_lossy().to_string(),
-            model_bytes: bytes.len(),
-            model,
-            metrics,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn apply_ml_confidence_model(
-    scope: MlConfidenceScope,
-    groups: Vec<Value>,
-    app: tauri::AppHandle,
-) -> Result<ApplyMlConfidenceResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let scope = normalize_ml_scope(scope)?;
-        let path = ml_confidence_model_path(&scope, &app)?;
-        if !path.exists() {
-            return Err("ML confidence model not found. Train it first.".to_string());
-        }
-        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let model: MlConfidenceModel = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-
-        let mut warnings: Vec<String> = Vec::new();
-        if normalize_timeframe_label(&model.scope.timeframe) != scope.timeframe
-            || model.scope.strategy_kind != scope.strategy_kind
-        {
-            warnings.push("Model scope does not match request scope. Results may be unreliable.".to_string());
-        }
-        if let Some(meta) = model.meta.as_ref() {
-            if !meta.healthy {
-                warnings.push("Model health is poor (AUC/Brier gates failed). Treat ML confidence as untrustworthy.".to_string());
-            }
-        }
-
-        let confidences: Vec<Option<f64>> = groups
-            .iter()
-            .map(|g| ta_app_core::predict_ml_confidence_for_group(&model, g))
-            .collect();
-
-        Ok(ApplyMlConfidenceResponse {
-            model_path: path.to_string_lossy().to_string(),
-            confidences,
-            warnings,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn delete_ml_confidence_model(
-    scope: MlConfidenceScope,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let scope = normalize_ml_scope(scope)?;
-        let path = ml_confidence_model_path(&scope, &app)?;
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunMetaSelectionResponse {
-    pub ts: String,
-    pub report_xlsx_path: String,
-    pub report_xlsx_bytes: usize,
-    pub meta_json_path: String,
-    pub meta_json_bytes: usize,
-    pub result: MetaSelectionResult,
-}
-
-#[tauri::command]
-pub async fn run_meta_selection(
-    req: MetaSelectionRequest,
-    state: tauri::State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<RunMetaSelectionResponse, String> {
-    let _run_guard = state.try_begin_run()?;
-    let cancel = state.cancel_token();
-
-    let cancel2 = cancel.clone();
-    let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run_meta_selection_blocking(req, app2, cancel2))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn runs_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let dir = base.join("runs");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
-
-fn reports_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let dir = base.join("reports");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
-
-fn suggest_meta_artifact_path(
-    ts: &str,
-    app: &tauri::AppHandle,
-) -> Result<std::path::PathBuf, String> {
-    let dir = runs_dir(app)?;
-    let safe_ts = sanitize_filename_component(ts);
-
-    let base_name = format!("vectorbt_meta_{safe_ts}");
-    let mut path = dir.join(format!("{base_name}.json"));
-    if !path.exists() {
-        return Ok(path);
-    }
-    for i in 2..=999u32 {
-        let p = dir.join(format!("{base_name}_{i}.json"));
-        if !p.exists() {
-            path = p;
-            break;
-        }
-    }
-    Ok(path)
-}
-
-fn suggest_batch_summary_path(
-    ts: &str,
-    app: &tauri::AppHandle,
-) -> Result<std::path::PathBuf, String> {
-    let dir = runs_dir(app)?;
-    let safe_ts = sanitize_filename_component(ts);
-
-    let base_name = format!("vectorbt_batch_{safe_ts}");
-    let mut path = dir.join(format!("{base_name}.json"));
-    if !path.exists() {
-        return Ok(path);
-    }
-    for i in 2..=999u32 {
-        let p = dir.join(format!("{base_name}_{i}.json"));
-        if !p.exists() {
-            path = p;
-            break;
-        }
-    }
-    Ok(path)
-}
-
-fn suggest_meta_report_path(
-    ts: &str,
-    app: &tauri::AppHandle,
-    ext: &'static str,
-) -> Result<std::path::PathBuf, String> {
-    let dir = reports_dir(app)?;
-    let safe_ts = sanitize_filename_component(ts);
-
-    let base_name = format!("vectorbt_meta_{safe_ts}");
-    let mut path = dir.join(format!("{base_name}.{ext}"));
-    if !path.exists() {
-        return Ok(path);
-    }
-    for i in 2..=999u32 {
-        let p = dir.join(format!("{base_name}_{i}.{ext}"));
-        if !p.exists() {
-            path = p;
-            break;
-        }
-    }
-    Ok(path)
-}
-
-fn run_meta_selection_blocking(
-    mut req: MetaSelectionRequest,
-    app: tauri::AppHandle,
-    cancel: Arc<AtomicBool>,
-) -> Result<RunMetaSelectionResponse, String> {
-    let dir = runs_dir(&app)?;
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if name.starts_with("vectorbt_meta_") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-
-    let sink = TauriProgressSink { app: app.clone() };
-
-    let mut artifacts: Vec<Value> = Vec::with_capacity(paths.len());
-    for (i, p) in paths.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-        let raw = match std::fs::read_to_string(p) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        artifacts.push(v);
-        ta_app_core::progress::emit_double_ma_progress(
-            Some(&sink),
-            i + 1,
-            paths.len(),
-            "meta_read",
-        );
-    }
-
-    let supports_holdout =
-        req.strategy_kind == "CompositeCpu" || req.strategy_kind == "CompositeMo";
-    let holdout_tag = if req.eval_holdout && supports_holdout {
-        req.holdout_tag
-            .as_deref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-    } else {
-        None
-    };
-
-    let (train_artifacts, holdout_artifacts) = if let Some(tag) = holdout_tag.as_deref() {
-        let mut train: Vec<Value> = Vec::with_capacity(artifacts.len());
-        let mut holdout: Vec<Value> = Vec::new();
-        for a in artifacts {
-            if artifact_has_tag(&a, tag) {
-                holdout.push(a);
-            } else {
-                train.push(a);
-            }
-        }
-        (train, holdout)
-    } else {
-        (artifacts, Vec::new())
-    };
-
-    // Parity guard: if timeframe filter isn't set, infer it from the candidate pool.
-    // This prevents mixing artifacts across multiple timeframes in meta-selection.
-    let mut auto_tf_warning: Option<String> = None;
-    let tf_set = req
-        .timeframe
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .is_some();
-    if !tf_set {
-        let mut uniq: HashSet<String> = HashSet::new();
-        let mut tfs: Vec<String> = Vec::new();
-        let mut missing = 0usize;
-
-        for a in &train_artifacts {
-            if !artifact_matches_meta_req(a, &req) {
-                continue;
-            }
-            let raw = a
-                .pointer("/dataset_meta/timeframe")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let tf = normalize_timeframe_label(raw);
-            if tf.is_empty() {
-                missing += 1;
-                continue;
-            }
-            if uniq.insert(tf.clone()) {
-                tfs.push(tf);
-            }
-        }
-
-        if tfs.len() == 1 {
-            let tf = tfs[0].clone();
-            req.timeframe = Some(tf.clone());
-            if missing > 0 {
-                auto_tf_warning = Some(format!(
-                    "Detected timeframe='{tf}'. Excluded {missing} artifact(s) missing dataset_meta.timeframe."
-                ));
-            }
-        } else if tfs.len() > 1 {
-            tfs.sort();
-            let list = tfs.join(", ");
-            let miss = if missing > 0 {
-                format!(" + {missing} missing timeframe")
-            } else {
-                String::new()
-            };
-            return Err(format!(
-                "Meta selection requires a timeframe filter (found multiple timeframes: {list}{miss})."
-            ));
-        } else if missing > 0 {
-            return Err(format!(
-                "Meta selection requires a timeframe filter ({missing} candidate artifact(s) are missing dataset_meta.timeframe)."
-            ));
-        }
-    }
-
-    let mut result = ta_app_core::meta_select_from_artifacts(&req, &train_artifacts, Some(&sink));
-    if cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".to_string());
-    }
-    if let Some(w) = auto_tf_warning {
-        result.warnings.push(w);
-    }
-
-    if req.eval_holdout && !supports_holdout {
-        result.warnings.push(format!(
-            "Holdout evaluation is not supported for strategy_kind='{}'. Skipping.",
-            req.strategy_kind
-        ));
-    }
-
-    if let Some(tag) = holdout_tag.as_deref() {
-        // Optional: evaluate only a subset of groups to reduce expensive holdout compute.
-        // Default remains evaluating all groups.
-        let mut selected_groups: Option<Vec<usize>> = None;
-        let top_n = req.holdout_eval_top_n.unwrap_or(0);
-        let explore_n = req.holdout_eval_explore_n;
-        if (top_n > 0 || explore_n > 0) && !result.groups.is_empty() {
-            let total = result.groups.len();
-            let mut rank_by = req
-                .holdout_eval_rank_by
-                .as_deref()
-                .unwrap_or("auto")
-                .trim()
-                .to_ascii_lowercase();
-            if rank_by.is_empty() {
-                rank_by = "auto".to_string();
-            }
-
-            // Try ML ranking if requested/auto and a healthy model exists.
-            let mut ml_model: Option<MlConfidenceModel> = None;
-            if rank_by != "meta" {
-                if let Some(tf) = req
-                    .timeframe
-                    .as_deref()
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                {
-                    let scope = MlConfidenceScope {
-                        strategy_kind: req.strategy_kind.clone(),
-                        timeframe: normalize_timeframe_label(tf),
-                    };
-                    if let Ok(path) = ml_confidence_model_path(&scope, &app) {
-                        if path.exists() {
-                            if let Ok(raw) = std::fs::read_to_string(&path) {
-                                if let Ok(model) = serde_json::from_str::<MlConfidenceModel>(&raw) {
-                                    let healthy =
-                                        model.meta.as_ref().map(|m| m.healthy).unwrap_or(false);
-                                    if healthy {
-                                        ml_model = Some(model);
-                                    } else {
-                                        result.warnings.push(
-                                            "Holdout selection: ML model exists but is unhealthy/missing health metadata; falling back to meta score.".to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if rank_by != "ml" && rank_by != "meta" && rank_by != "auto" {
-                result.warnings.push(format!(
-                    "Holdout selection: unknown holdout_eval_rank_by='{rank_by}', using auto."
-                ));
-                rank_by = "auto".to_string();
-            }
-
-            let using_ml = ml_model.is_some() && (rank_by == "ml" || rank_by == "auto");
-            if rank_by == "ml" && !using_ml {
-                result.warnings.push(
-                    "Holdout selection: requested ML ranking but no healthy model is available; falling back to meta score.".to_string(),
-                );
-            }
-
-            let mut selected: Vec<usize> = Vec::new();
-            if using_ml {
-                let model = ml_model.as_ref().unwrap();
-                let mut scored: Vec<(usize, f64)> = Vec::with_capacity(total);
-                for (i, g) in result.groups.iter().enumerate() {
-                    let v = serde_json::json!({
-                        "samples": g.samples,
-                        "pass_rate": g.pass_rate,
-                        "robust_score_p10": g.robust_score_p10,
-                        "robust_score_median": g.robust_score_median,
-                        "max_dd_p90": g.max_dd_p90,
-                        "cross_score_median": g.cross_score_median,
-                        "meta_score": g.meta_score,
-                    });
-                    let p = ta_app_core::predict_ml_confidence_for_group(model, &v).unwrap_or(-1.0);
-                    scored.push((i, p));
-                }
-                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-
-                let exploit_n = top_n.min(total);
-                for (i, _p) in scored.iter().take(exploit_n) {
-                    selected.push(*i);
-                }
-
-                if explore_n > 0 {
-                    let mut rem: Vec<(usize, f64)> = scored
-                        .iter()
-                        .filter(|(i, _)| !selected.contains(i))
-                        .map(|(i, p)| (*i, (p - 0.5).abs()))
-                        .collect();
-                    rem.sort_by(|a, b| a.1.total_cmp(&b.1));
-                    for (i, _) in rem
-                        .into_iter()
-                        .take(explore_n.min(total.saturating_sub(selected.len())))
-                    {
-                        selected.push(i);
-                    }
-                }
-            } else {
-                if explore_n > 0 {
-                    result.warnings.push(
-                        "Holdout selection: explore_n is ignored unless ML ranking is available."
-                            .to_string(),
-                    );
-                }
-                let mut scored: Vec<(usize, f64)> = result
-                    .groups
-                    .iter()
-                    .enumerate()
-                    .map(|(i, g)| (i, g.meta_score))
-                    .collect();
-                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-                let exploit_n = top_n.min(total);
-                for (i, _s) in scored.iter().take(exploit_n) {
-                    selected.push(*i);
-                }
-            }
-
-            selected.sort();
-            selected.dedup();
-            if !selected.is_empty() && selected.len() < total {
-                result.warnings.push(format!(
-                    "Holdout evaluation: evaluating {}/{} groups (top_n={}, explore_n={}, rank_by={}).",
-                    selected.len(),
-                    total,
-                    top_n,
-                    explore_n,
-                    req.holdout_eval_rank_by.as_deref().unwrap_or("auto")
-                ));
-                selected_groups = Some(selected);
-            }
-        }
-
-        apply_holdout_evaluation(
-            &mut result,
-            &req,
-            &holdout_artifacts,
-            &app,
-            cancel.as_ref(),
-            &sink,
-            tag,
-            selected_groups.as_deref(),
-        )?;
-    }
-
-    let ts = chrono::Utc::now().to_rfc3339();
-
-    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_export");
-    let xlsx_bytes = build_meta_report_xlsx_bytes(&ts, &result)?;
-    let report_path = suggest_meta_report_path(&ts, &app, "xlsx")?;
-    std::fs::write(&report_path, &xlsx_bytes).map_err(|e| e.to_string())?;
-    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_export");
-
-    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_save");
-    let meta_obj = serde_json::json!({
-        "version": 1,
-        "kind": "vectorbt_meta_selection",
-        "ts": ts,
-        "report_xlsx_path": report_path.to_string_lossy().to_string(),
-        "tags": [],
-        "req": req,
-        "res": result,
-    });
-    let meta_bytes = serde_json::to_vec_pretty(&meta_obj).map_err(|e| e.to_string())?;
-    let meta_path = suggest_meta_artifact_path(&ts, &app)?;
-    std::fs::write(&meta_path, &meta_bytes).map_err(|e| e.to_string())?;
-    // Retention policy: keep newest N untagged meta runs; tags preserve older runs.
-    prune_old_meta_artifacts_blocking(&app, 100);
-    ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_save");
-
-    Ok(RunMetaSelectionResponse {
-        ts,
-        report_xlsx_path: report_path.to_string_lossy().to_string(),
-        report_xlsx_bytes: xlsx_bytes.len(),
-        meta_json_path: meta_path.to_string_lossy().to_string(),
-        meta_json_bytes: meta_bytes.len(),
-        result,
-    })
-}
-
-fn artifact_has_tag(artifact: &Value, tag: &str) -> bool {
-    let tag = tag.trim();
-    if tag.is_empty() {
-        return false;
-    }
-    let tags = artifact
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .map_or(&[][..], |xs| xs.as_slice());
-    tags.iter()
-        .filter_map(|v| v.as_str())
-        .any(|t| t.trim() == tag)
-}
-
-fn normalize_timeframe_label(raw: &str) -> String {
-    let s0 = raw.trim().to_ascii_lowercase();
-    if s0.is_empty() {
-        return String::new();
-    }
-    // Back-compat: older artifacts may store inferred timeframes like "120s".
-    if let Some(sec_str) = s0.strip_suffix('s') {
-        if let Ok(sec) = sec_str.parse::<i64>() {
-            let mapped = match sec {
-                60 => Some("1m"),
-                120 => Some("2m"),
-                180 => Some("3m"),
-                300 => Some("5m"),
-                900 => Some("15m"),
-                1800 => Some("30m"),
-                3600 => Some("1h"),
-                7200 => Some("2h"),
-                14_400 => Some("4h"),
-                86_400 => Some("1d"),
-                _ => None,
-            };
-            if let Some(lbl) = mapped {
-                return lbl.to_string();
-            }
-        }
-    }
-    s0
-}
-
-fn artifact_matches_meta_req(artifact: &Value, req: &MetaSelectionRequest) -> bool {
-    let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    if kind != "vectorbt_run_artifact" {
-        return false;
-    }
-
-    let strat = artifact
-        .pointer("/run/req/strategy_kind")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            artifact
-                .pointer("/run/req/strategyKind")
-                .and_then(|v| v.as_str())
-        })
-        .unwrap_or("");
-    if strat != req.strategy_kind {
-        return false;
-    }
-
-    if let Some(tf) = req
-        .timeframe
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        let tf2 = artifact
-            .pointer("/dataset_meta/timeframe")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if normalize_timeframe_label(tf2) != normalize_timeframe_label(tf) {
-            return false;
-        }
-    }
-
-    if let Some(tag) = req
-        .required_tag
-        .as_deref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        if !artifact_has_tag(artifact, tag) {
-            return false;
-        }
-    }
-
-    artifact.pointer("/validation/res/candidates").is_some()
-}
-
-fn artifact_csv_path(artifact: &Value) -> Option<String> {
-    let p = artifact
-        .pointer("/data/csv_path")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            artifact
-                .pointer("/dataset_meta/csv_path")
-                .and_then(|v| v.as_str())
-        })?;
-    let s = p.trim();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.to_string())
-    }
-}
-
-fn artifact_dataset_label(artifact: &Value, csv_path: &str) -> String {
-    let lbl = artifact
-        .pointer("/dataset_meta/label")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    if let Some(l) = lbl {
-        return l;
-    }
-    Path::new(csv_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("holdout")
-        .to_string()
-}
-
-#[derive(Default, Clone)]
-struct HoldoutAcc {
-    scores: Vec<f64>,
-    sharpes: Vec<f64>,
-    max_dds: Vec<f64>,
-    pnls: Vec<f64>,
-    passes: usize,
-}
-
-fn apply_holdout_evaluation(
-    result: &mut MetaSelectionResult,
-    req: &MetaSelectionRequest,
-    holdout_artifacts: &[Value],
-    app: &tauri::AppHandle,
-    cancel: &AtomicBool,
-    sink: &TauriProgressSink,
-    holdout_tag: &str,
-    selected_groups: Option<&[usize]>,
-) -> Result<(), String> {
-    if result.groups.is_empty() {
-        return Ok(());
-    }
-
-    let selected_mask: Option<Vec<bool>> = selected_groups.map(|idxs| {
-        let mut m = vec![false; result.groups.len()];
-        for &i in idxs {
-            if i < m.len() {
-                m[i] = true;
-            }
-        }
-        m
-    });
-    let is_selected = |i: usize, m: Option<&Vec<bool>>| m.map(|mm| mm[i]).unwrap_or(true);
-
-    let heavy = matches!(req.holdout_mode, ta_app_core::MetaHoldoutMode::Heavy);
-    let (hv_seed, hv_wf, hv_perturb, hv_mc) = if heavy {
-        if let Some(cfg) = req.holdout_validation.clone() {
-            (cfg.seed, cfg.walk_forward, cfg.perturb, cfg.trade_bootstrap)
-        } else {
-            (1u64, None, None, None)
-        }
-    } else {
-        (1u64, None, None, None)
-    };
-
-    // Filter to holdout artifacts that match the request and actually have validation results.
-    let holdout: Vec<&Value> = holdout_artifacts
-        .iter()
-        .filter(|a| artifact_matches_meta_req(a, req))
-        .collect();
-    if holdout.is_empty() {
-        return Ok(());
-    }
-
-    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let cache_dir = crate::data_cache::app_data_cache_dir(&base);
-
-    let mut uniq_paths: Vec<(String, String)> = Vec::new(); // (csv_path, label)
-    let mut seen: HashSet<String> = HashSet::new();
-    for art in &holdout {
-        let Some(csv_path) = artifact_csv_path(art) else {
-            continue;
-        };
-        if !seen.insert(csv_path.clone()) {
-            continue;
-        }
-        uniq_paths.push((csv_path.clone(), artifact_dataset_label(art, &csv_path)));
-    }
-    if uniq_paths.is_empty() {
-        return Ok(());
-    }
-
-    let mut idx_by_key: HashMap<String, usize> = HashMap::with_capacity(result.groups.len());
-    for (i, g) in result.groups.iter().enumerate() {
-        idx_by_key.insert(g.key.clone(), i);
-    }
-
-    // Group the shortlist by MA config so we can evaluate a batch at once.
-    let mut groups_by_cfg: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, g) in result.groups.iter().enumerate() {
-        if !is_selected(i, selected_mask.as_ref()) {
-            continue;
-        }
-        let cfg_key = serde_json::to_string(&serde_json::json!({
-            "ma_source": &g.ma_source,
-            "fast_ma_params": &g.fast_ma_params,
-            "slow_ma_params": &g.slow_ma_params,
-        }))
-        .unwrap_or_else(|_| "cfg".to_string());
-        groups_by_cfg.entry(cfg_key).or_default().push(i);
-    }
-    if groups_by_cfg.is_empty() {
-        return Ok(());
-    }
-
-    let mut accs: Vec<HoldoutAcc> = vec![HoldoutAcc::default(); result.groups.len()];
-    let mut holdout_rows: Vec<Vec<ta_app_core::HoldoutDatasetRow>> = if req.save_holdout_rows {
-        vec![Vec::new(); result.groups.len()]
-    } else {
-        Vec::new()
-    };
-    let mut skipped = 0usize;
-
-    let total = uniq_paths.len();
-    for (i, (csv_path, label)) in uniq_paths.into_iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-
-        let candles = match crate::data_cache::load_or_build(Path::new(&csv_path), &cache_dir) {
-            Ok(outcome) => outcome.candles,
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
-
-        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); result.groups.len()]; // (score, sharpe, max_dd, pnl)
-        let mut ok = true;
-
-        for idxs in groups_by_cfg.values() {
-            let Some(first) = idxs.first() else { continue };
-            let g0 = &result.groups[*first];
-
-            let mut candidates: Vec<ta_app_core::CompositeParams> = Vec::new();
-            candidates.reserve(idxs.len().saturating_mul(3));
-            for &gi in idxs {
-                let g = &result.groups[gi];
-                let reps = if !g.representatives.is_empty() {
-                    g.representatives.as_slice()
-                } else {
-                    std::slice::from_ref(&g.params)
-                };
-                for rv in reps {
-                    let p: ta_app_core::CompositeParams =
-                        serde_json::from_value(rv.clone()).map_err(|e| e.to_string())?;
-                    candidates.push(p);
-                }
-            }
-
-            let max_candidates = candidates.len();
-            let val_req = ta_app_core::CompositeValidationRequest {
-                data_id: label.clone(),
-                ma_source: g0.ma_source.clone(),
-                fast_ma_params: g0.fast_ma_params.clone(),
-                slow_ma_params: g0.slow_ma_params.clone(),
-                candidates,
-                walk_forward: hv_wf.clone(),
-                perturb: hv_perturb.clone(),
-                trade_bootstrap: hv_mc.clone(),
-                cross_ticker: None,
-                cscv_pbo: None,
-                seed: hv_seed,
-                max_candidates,
-            };
-
-            let val_res = match ta_app_core::run_composite_validation_blocking_with_candles(
-                val_req, &candles, cancel, None,
-            ) {
-                Ok(r) => r,
-                Err(_) => {
-                    ok = false;
-                    break;
-                }
-            };
-
-            for cand in val_res.candidates {
-                let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
-                let key = ta_app_core::meta_group_key_for_request(
-                    req,
-                    &params_v,
-                    &g0.ma_source,
-                    &g0.fast_ma_params,
-                    &g0.slow_ma_params,
-                );
-                let Some(&gi) = idx_by_key.get(&key) else {
-                    continue;
-                };
-
-                let (score, sharpe, max_dd, pnl) = if heavy {
-                    let score = cand.robust_score;
-                    if let Some(w) = cand.walk_forward.as_ref() {
-                        (score, w.sharpe_median, w.max_dd_worst, w.pnl_median)
-                    } else {
-                        (
-                            score,
-                            cand.in_sample.sharpe,
-                            cand.in_sample.max_dd,
-                            cand.in_sample.pnl,
-                        )
-                    }
-                } else {
-                    let sharpe = cand.in_sample.sharpe;
-                    let max_dd = cand.in_sample.max_dd;
-                    let pnl = cand.in_sample.pnl;
-                    (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
-                };
-
-                local[gi].push((score, sharpe, max_dd, pnl));
-            }
-        }
-
-        if !ok {
-            skipped += 1;
-            continue;
-        }
-
-        for (gi, rows) in local.into_iter().enumerate() {
-            if rows.is_empty() {
-                continue;
-            }
-
-            let mut scores: Vec<f64> = Vec::with_capacity(rows.len());
-            let mut sharpes: Vec<f64> = Vec::with_capacity(rows.len());
-            let mut max_dds: Vec<f64> = Vec::with_capacity(rows.len());
-            let mut pnls: Vec<f64> = Vec::with_capacity(rows.len());
-            for (score, sharpe, max_dd, pnl) in rows {
-                scores.push(score);
-                sharpes.push(sharpe);
-                max_dds.push(max_dd);
-                pnls.push(pnl);
-            }
-            scores.sort_by(|a, b| a.total_cmp(b));
-            sharpes.sort_by(|a, b| a.total_cmp(b));
-            max_dds.sort_by(|a, b| a.total_cmp(b));
-            pnls.sort_by(|a, b| a.total_cmp(b));
-
-            let score = quantile(&scores, 0.5);
-            let score_p10 = quantile(&scores, 0.10);
-            let sharpe = quantile(&sharpes, 0.5);
-            // Conservative: for risk, take worst-of reps.
-            let max_dd = max_dds.last().copied().unwrap_or(0.0);
-            let pnl = quantile(&pnls, 0.5);
-            let pass = score > 0.0;
-
-            accs[gi].scores.push(score);
-            accs[gi].sharpes.push(sharpe);
-            accs[gi].max_dds.push(max_dd);
-            accs[gi].pnls.push(pnl);
-            if pass {
-                accs[gi].passes = accs[gi].passes.saturating_add(1);
-            }
-
-            if req.save_holdout_rows && !holdout_rows.is_empty() {
-                holdout_rows[gi].push(ta_app_core::HoldoutDatasetRow {
-                    dataset: label.clone(),
-                    score_median: score,
-                    score_p10,
-                    sharpe_median: sharpe,
-                    max_dd_worst: max_dd,
-                    pnl_median: pnl,
-                    pass,
-                });
-            }
-        }
-
-        ta_app_core::progress::emit_double_ma_progress(Some(sink), i + 1, total, "meta_holdout");
-    }
-
-    ta_app_core::progress::emit_double_ma_progress(Some(sink), total, total, "meta_holdout");
-
-    let datasets = total.saturating_sub(skipped);
-    if datasets == 0 {
-        return Ok(());
-    }
-
-    result.holdout = Some(ta_app_core::HoldoutSummary { datasets, skipped });
-
-    for (i, g) in result.groups.iter_mut().enumerate() {
-        let mut acc = accs[i].clone();
-        if acc.scores.is_empty() {
-            continue;
-        }
-        acc.scores.sort_by(|a, b| a.total_cmp(b));
-        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
-        acc.max_dds.sort_by(|a, b| a.total_cmp(b));
-        acc.pnls.sort_by(|a, b| a.total_cmp(b));
-
-        let pass_rate = (acc.passes as f64) / (datasets as f64);
-        let score_median = quantile(&acc.scores, 0.5);
-        let score_p10 = quantile(&acc.scores, 0.10);
-        let sharpe_median = quantile(&acc.sharpes, 0.5);
-        let max_dd_p90 = quantile(&acc.max_dds, 0.90);
-        let pnl_median = quantile(&acc.pnls, 0.5);
-
-        g.holdout = Some(ta_app_core::HoldoutAggregate {
-            datasets,
-            pass_rate,
-            score_median,
-            score_p10,
-            sharpe_median,
-            max_dd_p90,
-            pnl_median,
-        });
-
-        if req.save_holdout_rows && !holdout_rows.is_empty() {
-            g.holdout_rows = std::mem::take(&mut holdout_rows[i]);
-        }
-    }
-
-    if skipped > 0 {
-        result.warnings.push(format!(
-            "Holdout evaluation: skipped {skipped} dataset(s) (missing/invalid CSV path or parse error) for tag='{holdout_tag}'."
-        ));
-    }
-
-    Ok(())
 }
 
 fn quantile(sorted: &[f64], q: f64) -> f64 {
@@ -3252,549 +1575,6 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     let qq = q.clamp(0.0, 1.0);
     let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
-}
-
-fn run_artifact_path(
-    artifact: &Value,
-    app: &tauri::AppHandle,
-) -> Result<std::path::PathBuf, String> {
-    let dir = runs_dir(app)?;
-
-    let ts = artifact
-        .get("ts")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let safe_ts = sanitize_filename_component(ts);
-    Ok(dir.join(format!("vectorbt_run_{safe_ts}.json")))
-}
-
-fn ensure_path_is_within_dir(path: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
-    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
-    let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-    if !path.starts_with(&dir) {
-        return Err("path is outside app runs dir".to_string());
-    }
-    Ok(())
-}
-
-fn save_run_artifact_blocking(
-    artifact: Value,
-    app: tauri::AppHandle,
-) -> Result<SaveRunArtifactResponse, String> {
-    let path = run_artifact_path(&artifact, &app)?;
-    let bytes = serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-
-    // Retention policy: keep newest N untagged runs, but never delete tagged runs.
-    prune_old_run_artifacts_blocking(&app, 200);
-    Ok(SaveRunArtifactResponse {
-        path: path.to_string_lossy().to_string(),
-        bytes: bytes.len(),
-    })
-}
-
-fn save_batch_summary_blocking(
-    summary: Value,
-    app: tauri::AppHandle,
-) -> Result<SaveBatchSummaryResponse, String> {
-    let ts = summary
-        .get("ts")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let path = suggest_batch_summary_path(ts, &app)?;
-    let bytes = serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    Ok(SaveBatchSummaryResponse {
-        path: path.to_string_lossy().to_string(),
-        bytes: bytes.len(),
-    })
-}
-
-fn prune_old_run_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
-    let Ok(dir) = runs_dir(app) else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("vectorbt_run_") {
-            continue;
-        }
-        paths.push(path);
-    }
-
-    // Newest first (ISO timestamps sort lexicographically).
-    paths.sort_by(|a, b| {
-        let aa = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let bb = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        bb.cmp(aa)
-    });
-
-    if paths.len() <= keep_newest {
-        return;
-    }
-
-    for path in paths.into_iter().skip(keep_newest) {
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let tags = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map_or(&[][..], |xs| xs.as_slice());
-        let tagged = tags
-            .iter()
-            .any(|t| t.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false));
-        if tagged {
-            continue;
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-}
-
-fn prune_old_meta_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
-    let Ok(dir) = runs_dir(app) else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("vectorbt_meta_") {
-            continue;
-        }
-        paths.push(path);
-    }
-
-    // Newest first (ISO timestamps sort lexicographically).
-    paths.sort_by(|a, b| {
-        let aa = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let bb = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        bb.cmp(aa)
-    });
-
-    if paths.len() <= keep_newest {
-        return;
-    }
-
-    for path in paths.into_iter().skip(keep_newest) {
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let tags = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map_or(&[][..], |xs| xs.as_slice());
-        let tagged = tags
-            .iter()
-            .any(|t| t.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false));
-        if tagged {
-            continue;
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-}
-
-fn open_runs_dir_blocking(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = runs_dir(&app)?;
-    reveal_path_blocking(dir.to_string_lossy().to_string())?;
-    Ok(dir.to_string_lossy().to_string())
-}
-
-fn canonical_json(v: &Value) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => {
-            if *b {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        }
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()),
-        Value::Array(xs) => {
-            let mut out = String::from("[");
-            for (i, x) in xs.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&canonical_json(x));
-            }
-            out.push(']');
-            out
-        }
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-
-            let mut out = String::from("{");
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
-                out.push(':');
-                let v = map.get(*k).unwrap_or(&Value::Null);
-                out.push_str(&canonical_json(v));
-            }
-            out.push('}');
-            out
-        }
-    }
-}
-
-fn fnv1a64_hex_utf16(s: &str) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    let prime: u64 = 0x100000001b3;
-    for u in s.encode_utf16() {
-        h ^= u as u64;
-        h = h.wrapping_mul(prime);
-    }
-    format!("{h:016x}")
-}
-
-fn compute_config_fingerprint_from_artifact(artifact: &Value) -> String {
-    let mut run_req = artifact.pointer("/run/req").cloned().unwrap_or(Value::Null);
-    if let Value::Object(map) = &mut run_req {
-        map.remove("data_id");
-        map.remove("dataId");
-    }
-
-    let mut val_req = artifact
-        .pointer("/validation/req")
-        .cloned()
-        .unwrap_or(Value::Null);
-    if let Value::Object(map) = &mut val_req {
-        map.remove("data_id");
-        map.remove("dataId");
-        map.remove("candidates");
-
-        if let Some(cross) = map.get_mut("cross_ticker").and_then(|v| v.as_object_mut()) {
-            if let Some(ds) = cross.get_mut("datasets").and_then(|v| v.as_array_mut()) {
-                let mut out: Vec<Value> = Vec::with_capacity(ds.len());
-                for d in ds.iter() {
-                    let p = d
-                        .get("csv_path")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .trim();
-                    if p.is_empty() {
-                        continue;
-                    }
-                    out.push(serde_json::json!({ "csv_path": p }));
-                }
-                out.sort_by(|a, b| {
-                    let aa = a.get("csv_path").and_then(|x| x.as_str()).unwrap_or("");
-                    let bb = b.get("csv_path").and_then(|x| x.as_str()).unwrap_or("");
-                    aa.cmp(bb)
-                });
-                *ds = out;
-            }
-        }
-    }
-
-    let payload = serde_json::json!({
-        "version": 1,
-        "run_req": run_req,
-        "validation_req": val_req,
-    });
-    let canon = canonical_json(&payload);
-    let hex = fnv1a64_hex_utf16(&canon);
-    format!("cfg1-fnv1a64-{hex}")
-}
-
-fn list_run_artifacts_blocking(app: tauri::AppHandle) -> Result<Vec<RunArtifactSummary>, String> {
-    let dir = runs_dir(&app)?;
-    let mut out: Vec<RunArtifactSummary> = Vec::new();
-
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if name.starts_with("vectorbt_meta_") {
-            continue;
-        }
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let bytes = meta.len();
-
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let ts = v
-            .get("ts")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let kind = v
-            .get("kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if kind != "vectorbt_run_artifact" {
-            continue;
-        }
-        let strategy_kind = v
-            .pointer("/run/req/strategy_kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let config_fingerprint = v
-            .get("config_fingerprint")
-            .and_then(|x| x.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| compute_config_fingerprint_from_artifact(&v));
-        let has_validation = v.pointer("/validation/res").is_some();
-        let report_xlsx_path = v
-            .get("report_xlsx_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let csv_path = v
-            .pointer("/data/csv_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let tags: Vec<String> = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        out.push(RunArtifactSummary {
-            ts,
-            path: path.to_string_lossy().to_string(),
-            bytes,
-            kind,
-            strategy_kind,
-            config_fingerprint,
-            has_validation,
-            report_xlsx_path,
-            csv_path,
-            tags,
-        });
-    }
-
-    out.sort_by(|a, b| b.ts.cmp(&a.ts));
-    Ok(out)
-}
-
-fn list_meta_artifacts_blocking(app: tauri::AppHandle) -> Result<Vec<MetaArtifactSummary>, String> {
-    let dir = runs_dir(&app)?;
-    let mut out: Vec<MetaArtifactSummary> = Vec::new();
-
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("vectorbt_meta_") {
-            continue;
-        }
-
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let bytes = meta.len();
-
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let kind = v
-            .get("kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if kind != "vectorbt_meta_selection" {
-            continue;
-        }
-
-        let ts = v
-            .get("ts")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let strategy_kind = v
-            .pointer("/req/strategy_kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let timeframe = v
-            .pointer("/req/timeframe")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let required_tag = v
-            .pointer("/req/required_tag")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let groups = v
-            .pointer("/res/groups")
-            .and_then(|x| x.as_array())
-            .map(|xs| xs.len())
-            .unwrap_or(0);
-        let artifacts_used = v
-            .pointer("/res/artifacts_used")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
-        let holdout_datasets = v
-            .pointer("/res/holdout/datasets")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
-        let report_xlsx_path = v
-            .get("report_xlsx_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let tags: Vec<String> = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        out.push(MetaArtifactSummary {
-            ts,
-            path: path.to_string_lossy().to_string(),
-            bytes,
-            strategy_kind,
-            timeframe,
-            required_tag,
-            groups,
-            artifacts_used,
-            holdout_datasets,
-            report_xlsx_path,
-            tags,
-        });
-    }
-
-    out.sort_by(|a, b| b.ts.cmp(&a.ts));
-    Ok(out)
-}
-
-fn load_run_artifact_blocking(path: String, app: tauri::AppHandle) -> Result<Value, String> {
-    let dir = runs_dir(&app)?;
-    let path = std::path::PathBuf::from(path);
-    ensure_path_is_within_dir(&path, &dir)?;
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
-}
-
-fn delete_run_artifact_blocking(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let dir = runs_dir(&app)?;
-    let path = std::path::PathBuf::from(path);
-    ensure_path_is_within_dir(&path, &dir)?;
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
-}
-
-fn update_artifact_tags_blocking(
-    path: String,
-    tags: Vec<String>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let dir = runs_dir(&app)?;
-    let path = std::path::PathBuf::from(path);
-    ensure_path_is_within_dir(&path, &dir)?;
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-
-    let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-    if kind != "vectorbt_run_artifact" && kind != "vectorbt_meta_selection" {
-        return Err(format!("unsupported artifact kind: {kind}"));
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for t in tags {
-        let tt = t.trim();
-        if tt.is_empty() {
-            continue;
-        }
-        let key = tt.to_lowercase();
-        if !seen.insert(key) {
-            continue;
-        }
-        out.push(tt.to_string());
-    }
-
-    let tags_v = serde_json::to_value(out).map_err(|e| e.to_string())?;
-    if let Value::Object(obj) = &mut v {
-        obj.insert("tags".to_string(), tags_v);
-    }
-
-    let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())
 }
 
 fn reveal_path_blocking(path: String) -> Result<(), String> {
@@ -4065,7 +1845,7 @@ fn build_validation_shortlist_csv_text(validation_res: &Value) -> Result<String,
     }
 
     let mut lines: Vec<String> = Vec::with_capacity(rows.len().saturating_add(1));
-    lines.push("rank,fast_ma,fast_len,slow_ma,slow_len,robust_score,robust_pareto,cross_score,cross_pareto,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_sharpe_p50,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,params_json".to_string());
+    lines.push("rank,fast_ma,fast_len,slow_ma,slow_len,robust_score,robust_pareto,cross_score,cross_pareto,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_sharpe_p50,psr,dsr,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,params_json".to_string());
 
     rows.sort_by(|a, b| {
         let ra = a
@@ -4140,6 +1920,8 @@ fn build_validation_shortlist_csv_text(validation_res: &Value) -> Result<String,
         let cscv_sel = cscv.and_then(|c| c.get("is_selected_frac").and_then(|v| v.as_f64()));
         let cscv_rank = cscv.and_then(|c| c.get("oos_rank_frac_p50").and_then(|v| v.as_f64()));
         let cscv_sharpe = cscv.and_then(|c| c.get("oos_metric_p50").and_then(|v| v.as_f64()));
+        let psr = cand.get("psr").and_then(|v| v.as_f64());
+        let dsr = cand.get("dsr").and_then(|v| v.as_f64());
 
         let pnl = in_sample
             .and_then(|m| m.get("pnl").and_then(|v| v.as_f64()))
@@ -4159,7 +1941,7 @@ fn build_validation_shortlist_csv_text(validation_res: &Value) -> Result<String,
             serde_json::to_string(&params_json).unwrap_or_else(|_| "{}".to_string());
 
         lines.push(format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             i.saturating_add(1),
             csv_escape(fast_ma),
             fast_len,
@@ -4180,6 +1962,8 @@ fn build_validation_shortlist_csv_text(validation_res: &Value) -> Result<String,
             cscv_sharpe
                 .map(|x| x.to_string())
                 .unwrap_or_else(|| "".to_string()),
+            psr.map(|x| x.to_string()).unwrap_or_else(|| "".to_string()),
+            dsr.map(|x| x.to_string()).unwrap_or_else(|| "".to_string()),
             pnl,
             sharpe,
             max_dd,
@@ -4212,8 +1996,8 @@ fn build_report_xlsx_analysis_v2(
     max_rows: Option<usize>,
 ) -> Result<Vec<u8>, String> {
     use rust_xlsxwriter::{
-        Chart, ChartLegendPosition, ChartMarker, ChartMarkerType, ChartType, Color,
-        Format, FormatAlign, FormatBorder, Image, Workbook, XlsxError,
+        Chart, ChartLegendPosition, ChartMarker, ChartMarkerType, ChartType, Color, Format,
+        FormatAlign, FormatBorder, Image, Workbook, XlsxError,
     };
 
     const CSCV_RANK_FRAC_MIN: f64 = 0.55;
@@ -4652,7 +2436,9 @@ fn build_report_xlsx_analysis_v2(
                 0.0
             };
 
-            let longs_count = (trades * (0.45 + 0.1 * exposure)).round().clamp(0.0, trades);
+            let longs_count = (trades * (0.45 + 0.1 * exposure))
+                .round()
+                .clamp(0.0, trades);
             let shorts_count = (trades - longs_count).max(0.0);
             let longs_percentage = if trades > 0.0 {
                 longs_count / trades * 100.0
@@ -4666,7 +2452,11 @@ fn build_report_xlsx_analysis_v2(
             };
 
             let fee = 0.04 + (i % 3) as f64 * 0.005;
-            let expectancy = if trades > 0.0 { net_profit / trades } else { 0.0 };
+            let expectancy = if trades > 0.0 {
+                net_profit / trades
+            } else {
+                0.0
+            };
             let expectancy_percentage = if starting_balance.abs() > f64::EPSILON {
                 expectancy / starting_balance * 100.0
             } else {
@@ -4701,9 +2491,8 @@ fn build_report_xlsx_analysis_v2(
             } else {
                 -losing_streak
             };
-            let kelly_criterion = ((win_rate / 100.0)
-                - ((1.0 - win_rate / 100.0) / profit_factor.max(0.01)))
-                * 100.0;
+            let kelly_criterion =
+                ((win_rate / 100.0) - ((1.0 - win_rate / 100.0) / profit_factor.max(0.01))) * 100.0;
 
             IntervalStats {
                 total: trades,
@@ -4855,10 +2644,22 @@ fn build_report_xlsx_analysis_v2(
         ("average_loss", PaletteKind::LossRed, false),
         ("expectancy", PaletteKind::Profit, false),
         ("expectancy_percentage", PaletteKind::Profit, false),
-        ("expected_net_profit_every_100_trades", PaletteKind::Profit, false),
+        (
+            "expected_net_profit_every_100_trades",
+            PaletteKind::Profit,
+            false,
+        ),
         ("average_holding_period", PaletteKind::DurationBlue, false),
-        ("average_winning_holding_period", PaletteKind::DurationBlue, false),
-        ("average_losing_holding_period", PaletteKind::DurationBlue, false),
+        (
+            "average_winning_holding_period",
+            PaletteKind::DurationBlue,
+            false,
+        ),
+        (
+            "average_losing_holding_period",
+            PaletteKind::DurationBlue,
+            false,
+        ),
         ("gross_profit", PaletteKind::Profit, false),
         ("gross_loss", PaletteKind::LossRed, false),
         ("max_drawdown", PaletteKind::LossRed, false),
@@ -4955,12 +2756,9 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    let best_param = rows.first().map(|r| {
-        format!(
-            "{{'Slow SMA': {}, 'Fast SMA': {}}}",
-            r.slow_len, r.fast_len
-        )
-    });
+    let best_param = rows
+        .first()
+        .map(|r| format!("{{'Slow SMA': {}, 'Fast SMA': {}}}", r.slow_len, r.fast_len));
     if let Some(p) = best_param.as_deref() {
         worksheet
             .write_string(row_start_date + 2, 1, p)
@@ -4973,7 +2771,12 @@ fn build_report_xlsx_analysis_v2(
         .unwrap_or(&data_id)
         .to_uppercase();
     worksheet
-        .write_string_with_format(row_start_date + 3, 1, base_symbol.as_str(), &table_top_border_fmt)
+        .write_string_with_format(
+            row_start_date + 3,
+            1,
+            base_symbol.as_str(),
+            &table_top_border_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     for c in 2..=23u16 {
         worksheet
@@ -5102,15 +2905,13 @@ fn build_report_xlsx_analysis_v2(
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string())
                         .or_else(|| {
-                            d.get("csv_path")
-                                .and_then(|v| v.as_str())
-                                .map(|p| {
-                                    Path::new(p)
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("dataset")
-                                        .to_string()
-                                })
+                            d.get("csv_path").and_then(|v| v.as_str()).map(|p| {
+                                Path::new(p)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("dataset")
+                                    .to_string()
+                            })
                         })
                 })
                 .collect::<Vec<String>>()
@@ -5444,7 +3245,12 @@ fn build_report_xlsx_analysis_v2(
     // Place chart-data where the reference workbook keeps it (~row 101).
     let chart_data_title_row = 98u32; // Excel row 99
     worksheet
-        .write_string_with_format(chart_data_title_row, 5, "Reformatted Chart Data", &header_fmt)
+        .write_string_with_format(
+            chart_data_title_row,
+            5,
+            "Reformatted Chart Data",
+            &header_fmt,
+        )
         .map_err(|e: XlsxError| e.to_string())?;
     let chart_hdr = 100u32; // Excel row 101
     worksheet
@@ -5573,9 +3379,7 @@ fn build_report_xlsx_analysis_v2(
         ))
         .set_marker(&diamond);
     chart1.set_style(3);
-    chart1
-        .legend()
-        .set_position(ChartLegendPosition::Right);
+    chart1.legend().set_position(ChartLegendPosition::Right);
     chart1
         .title()
         .set_name("Net Profit % over Backtested Intervals");
@@ -5603,9 +3407,7 @@ fn build_report_xlsx_analysis_v2(
             6,
         ));
     chart2.set_style(15);
-    chart2
-        .legend()
-        .set_position(ChartLegendPosition::Right);
+    chart2.legend().set_position(ChartLegendPosition::Right);
     chart2
         .title()
         .set_name("Net Profit % over Backtested Timeframes");
@@ -5633,9 +3435,7 @@ fn build_report_xlsx_analysis_v2(
             9,
         ));
     chart3.set_style(13);
-    chart3
-        .legend()
-        .set_position(ChartLegendPosition::Right);
+    chart3.legend().set_position(ChartLegendPosition::Right);
     chart3
         .title()
         .set_name("Net Profit % with Random Parameter Deviations");
@@ -5663,9 +3463,7 @@ fn build_report_xlsx_analysis_v2(
             12,
         ));
     chart4.set_style(10);
-    chart4
-        .legend()
-        .set_position(ChartLegendPosition::Right);
+    chart4.legend().set_position(ChartLegendPosition::Right);
     chart4.title().set_name("Net Profit % with Random Symbols");
     chart4.x_axis().set_name("Net Profit Percent");
     chart4.y_axis().set_name("Symbol");
@@ -5895,7 +3693,7 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
 
     // Title + meta.
     worksheet
-        .merge_range(0, 0, 0, 45, "VectorTA Report", &title_fmt)
+        .merge_range(0, 0, 0, 47, "VectorTA Report", &title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
 
     worksheet
@@ -5913,6 +3711,23 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
     worksheet
         .write_url_with_text(1, 3, "internal:Dashboard!A1", "Dashboard")
         .map_err(|e: XlsxError| e.to_string())?;
+
+    let search_space = report
+        .pointer("/optimization/res/num_combos")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(candidates.len() as u64);
+    if search_space >= 500 || candidates.len() >= 128 {
+        let msg = format!(
+            "Selection-bias risk: large search space (num_combos={search_space}, candidates={}). Prefer validated shortlist + holdout/meta confirmation.",
+            candidates.len()
+        );
+        worksheet
+            .write_string_with_format(3, 0, "selection_bias_warning", &header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        worksheet
+            .merge_range(3, 1, 3, 12, &msg, &title_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
 
     // Table headers.
     let header_row: u32 = 4;
@@ -5963,6 +3778,8 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
         "CSCV sel_frac",
         "CSCV oos_rank_p50",
         "CSCV oos_sharpe_p50",
+        "PSR",
+        "DSR",
     ];
     for (col, name) in headers.iter().enumerate() {
         worksheet
@@ -6017,6 +3834,8 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
     let _ = worksheet.set_column_width(43, 14);
     let _ = worksheet.set_column_width(44, 16);
     let _ = worksheet.set_column_width(45, 18);
+    let _ = worksheet.set_column_width(46, 9);
+    let _ = worksheet.set_column_width(47, 9);
 
     let start_row = header_row + 1;
     worksheet
@@ -6121,10 +3940,30 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
         let ott_ma = ott.get("ma_type").and_then(|v| v.as_str()).unwrap_or("");
 
         let strategy = params.get("strategy").unwrap_or(&Value::Null);
-        let commission = strategy
+        let commission_raw = strategy
             .get("commission")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
+        let fee_bps = strategy
+            .get("fee_bps")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let spread_bps = strategy
+            .get("spread_bps")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let slippage_bps = strategy
+            .get("slippage_bps")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let commission_from_bps =
+            ((fee_bps.max(0.0) + slippage_bps.max(0.0) + 0.5 * spread_bps.max(0.0)) / 10_000.0)
+                .clamp(0.0, 0.999_999);
+        let commission = if commission_raw.is_finite() && commission_raw > 0.0 {
+            commission_raw.clamp(0.0, 0.999_999)
+        } else {
+            commission_from_bps
+        };
         let eps_rel = strategy
             .get("eps_rel")
             .and_then(|v| v.as_f64())
@@ -6189,6 +4028,8 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .get("oos_metric_p50")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
+        let psr = cand.get("psr").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+        let dsr = cand.get("dsr").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
 
         worksheet
             .write_number_with_format(r, 0, (i + 1) as f64, &int_fmt)
@@ -6364,6 +4205,16 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
                 .map_err(|e: XlsxError| e.to_string())?;
             worksheet
                 .write_number_with_format(r, 45, cscv_sharpe, &num6_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
+        if psr.is_finite() {
+            worksheet
+                .write_number_with_format(r, 46, psr, &num6_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
+        if dsr.is_finite() {
+            worksheet
+                .write_number_with_format(r, 47, dsr, &num6_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
     }
@@ -7049,7 +4900,7 @@ fn build_meta_report_xlsx_bytes(ts: &str, meta: &MetaSelectionResult) -> Result<
     let int_fmt = Format::new().set_num_format("0");
 
     worksheet
-        .merge_range(0, 0, 0, 22, "VectorTA Meta Report", &title_fmt)
+        .merge_range(0, 0, 0, 24, "VectorTA Meta Report", &title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
 
     worksheet
@@ -7109,8 +4960,21 @@ fn build_meta_report_xlsx_bytes(ts: &str, meta: &MetaSelectionResult) -> Result<
         .write_number_with_format(3, 4, meta.runtime_ms as f64, &int_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
 
+    if meta.candidates_considered >= 1_000 || meta.artifacts_used >= 100 {
+        worksheet
+            .write_string(1, 6, "selection_bias_warning")
+            .map_err(|e: XlsxError| e.to_string())?;
+        worksheet
+            .write_string(
+                1,
+                7,
+                "Large search space. Interpret winners with holdout context and lower-tail robustness metrics.",
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
     let header_row: u32 = 5;
-    let headers: [&str; 23] = [
+    let headers: [&str; 25] = [
         "Rank",
         "Samples",
         "Pass rate",
@@ -7119,6 +4983,8 @@ fn build_meta_report_xlsx_bytes(ts: &str, meta: &MetaSelectionResult) -> Result<
         "Robust med",
         "MaxDD p90",
         "Cross med",
+        "PSR med",
+        "DSR med",
         "H pass",
         "H score p10",
         "H score med",
@@ -7209,70 +5075,76 @@ fn build_meta_report_xlsx_bytes(ts: &str, meta: &MetaSelectionResult) -> Result<
         worksheet
             .write_number_with_format(r, 7, row.cross_score_median, &num6_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
+        worksheet
+            .write_number_with_format(r, 8, row.psr_median, &num6_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        worksheet
+            .write_number_with_format(r, 9, row.dsr_median, &num6_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
 
         if let Some(h) = row.holdout.as_ref() {
             worksheet
-                .write_number_with_format(r, 8, h.pass_rate, &pct_fmt)
+                .write_number_with_format(r, 10, h.pass_rate, &pct_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
             worksheet
-                .write_number_with_format(r, 9, h.score_p10, &num6_fmt)
+                .write_number_with_format(r, 11, h.score_p10, &num6_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
             worksheet
-                .write_number_with_format(r, 10, h.score_median, &num6_fmt)
+                .write_number_with_format(r, 12, h.score_median, &num6_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
             worksheet
-                .write_number_with_format(r, 11, h.max_dd_p90, &num6_fmt)
+                .write_number_with_format(r, 13, h.max_dd_p90, &num6_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
         } else {
-            worksheet
-                .write_string(r, 8, "-")
-                .map_err(|e: XlsxError| e.to_string())?;
-            worksheet
-                .write_string(r, 9, "-")
-                .map_err(|e: XlsxError| e.to_string())?;
             worksheet
                 .write_string(r, 10, "-")
                 .map_err(|e: XlsxError| e.to_string())?;
             worksheet
                 .write_string(r, 11, "-")
                 .map_err(|e: XlsxError| e.to_string())?;
+            worksheet
+                .write_string(r, 12, "-")
+                .map_err(|e: XlsxError| e.to_string())?;
+            worksheet
+                .write_string(r, 13, "-")
+                .map_err(|e: XlsxError| e.to_string())?;
         }
 
         worksheet
-            .write_string(r, 12, fast_ma)
+            .write_string(r, 14, fast_ma)
             .map_err(|e: XlsxError| e.to_string())?;
         worksheet
-            .write_number_with_format(r, 13, fast_len as f64, &int_fmt)
+            .write_number_with_format(r, 15, fast_len as f64, &int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         worksheet
-            .write_string(r, 14, slow_ma)
+            .write_string(r, 16, slow_ma)
             .map_err(|e: XlsxError| e.to_string())?;
         worksheet
-            .write_number_with_format(r, 15, slow_len as f64, &int_fmt)
-            .map_err(|e: XlsxError| e.to_string())?;
-
-        worksheet
-            .write_number_with_format(r, 16, ht_amp as f64, &int_fmt)
-            .map_err(|e: XlsxError| e.to_string())?;
-        worksheet
-            .write_number_with_format(r, 17, ht_atr as f64, &int_fmt)
-            .map_err(|e: XlsxError| e.to_string())?;
-        worksheet
-            .write_number_with_format(r, 18, ht_dev, &num6_fmt)
+            .write_number_with_format(r, 17, slow_len as f64, &int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
 
         worksheet
-            .write_number_with_format(r, 19, macz_fast as f64, &int_fmt)
+            .write_number_with_format(r, 18, ht_amp as f64, &int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         worksheet
-            .write_number_with_format(r, 20, macz_slow as f64, &int_fmt)
+            .write_number_with_format(r, 19, ht_atr as f64, &int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        worksheet
+            .write_number_with_format(r, 20, ht_dev, &num6_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
 
         worksheet
-            .write_number_with_format(r, 21, ott_period as f64, &int_fmt)
+            .write_number_with_format(r, 21, macz_fast as f64, &int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         worksheet
-            .write_number_with_format(r, 22, ott_pct, &num3_fmt)
+            .write_number_with_format(r, 22, macz_slow as f64, &int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+
+        worksheet
+            .write_number_with_format(r, 23, ott_period as f64, &int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        worksheet
+            .write_number_with_format(r, 24, ott_pct, &num3_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -7357,9 +5229,9 @@ mod tests {
         let csv = build_validation_shortlist_csv_text(&validation_res).expect("csv");
         let mut it = csv.lines();
         let header = it.next().unwrap_or_default();
-        assert_eq!(header.split(',').count(), 17);
+        assert_eq!(header.split(',').count(), 19);
         let row = it.next().unwrap_or_default();
-        assert_eq!(row.split(',').count(), 17);
+        assert_eq!(row.split(',').count(), 19);
         assert!(csv.contains("rank,fast_ma,fast_len"));
         assert!(csv.contains("params_json"));
     }
@@ -7484,6 +5356,10 @@ mod tests {
             cscv_pbo: None,
             seed: 1,
             max_candidates: 32,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
         };
 
         let mut res = ta_app_core::run_composite_validation_blocking_with_candles(

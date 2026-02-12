@@ -392,16 +392,40 @@
           <div class="tabPanel" data-tab-panel="strategy">
             <div class="row3">
               <div>
-                <label for="commission">Commission (fraction)</label>
-                <input id="commission" type="number" min="0" step="0.0001" value="0" />
+                <label for="costPreset">Execution cost preset</label>
+                <select id="costPreset">
+                  <option value="custom" selected>Custom</option>
+                  <option value="none">None (0 bps)</option>
+                  <option value="stocks_liquid">Stocks (liquid, conservative)</option>
+                  <option value="fx_majors">FX (majors, conservative)</option>
+                  <option value="crypto_spot_maker">Crypto spot (maker-ish)</option>
+                  <option value="crypto_spot_taker">Crypto spot (taker, conservative)</option>
+                </select>
+              </div>
+              <div>
+                <label for="feeBps" title="Broker/exchange fee per trade side in basis points (1 bps = 0.01%).">Fee (bps/side)</label>
+                <input id="feeBps" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div>
+                <label for="spreadBps" title="Full bid/ask spread in basis points. Applied as half-spread per side.">Spread (bps full)</label>
+                <input id="spreadBps" type="number" min="0" step="0.01" value="0" />
+              </div>
+            </div>
+
+            <div class="row3" style="margin-top: 0.55rem;">
+              <div>
+                <label for="slippageBps" title="Additional slippage per trade side in basis points (market impact / worse fills).">Slippage (bps/side)</label>
+                <input id="slippageBps" type="number" min="0" step="0.01" value="0" />
+                <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;" id="costHint">Total: —</div>
+              </div>
+              <div>
+                <label for="commission" title="Derived total per-side cost used in backtests (fee + slippage + half-spread).">Total cost (fraction/side)</label>
+                <input id="commission" type="number" min="0" step="0.0001" value="0" disabled />
               </div>
               <div>
                 <label for="epsRel" title="Relative epsilon band around crossover (0 disables). Helps avoid churn around near-equal MAs.">Epsilon band (eps_rel)</label>
                 <input id="epsRel" type="number" min="0" step="0.0001" value="0" />
-              </div>
-              <div>
-                <label>&nbsp;</label>
-                <div class="muted" style="font-size: 0.8rem;">Example: 0.001 = 0.1%</div>
+                <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">Example: 0.001 = 0.1%</div>
               </div>
             </div>
 
@@ -1181,6 +1205,7 @@
               </div>
             </div>
             <div class="muted" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="topFilterMeta">-</div>
+            <div class="muted badText" style="margin: -0.2rem 0 0.65rem; font-size: 0.82rem; display: none;" id="topSelectionGuardrail">—</div>
             <div class="table-wrap">
               <table id="topTable">
                 <thead>
@@ -1366,6 +1391,20 @@
                   </div>
                   <div></div>
                 </div>
+                <div class="row3" style="margin-bottom: 0.75rem;">
+                  <div>
+                    <label for="valMinPsr">Min PSR (optional)</label>
+                    <input id="valMinPsr" type="number" min="0" max="1" step="0.01" placeholder="e.g. 0.80" />
+                  </div>
+                  <div>
+                    <label for="valMinDsr">Min DSR (optional)</label>
+                    <input id="valMinDsr" type="number" min="0" max="1" step="0.01" placeholder="e.g. 0.65" />
+                  </div>
+                  <div>
+                    <label>&nbsp;</label>
+                    <div class="muted" style="font-size: 0.8rem;">Hard probability gates on validation candidates (blank = disabled).</div>
+                  </div>
+                </div>
 
                 <div class="row" style="margin-bottom: 0.55rem;">
                   <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -1432,6 +1471,8 @@
                     <th class="left">Fast</th>
                     <th class="left">Slow</th>
                     <th>Robust</th>
+                    <th>PSR</th>
+                    <th>DSR</th>
                     <th>CSCV</th>
                     <th class="left">Pareto</th>
                     <th>Cross</th>
@@ -2025,6 +2066,8 @@
                     <th>Robust p10</th>
                     <th>Robust med</th>
                     <th>DD p90</th>
+                    <th>PSR</th>
+                    <th>DSR</th>
                     <th>H pass</th>
                     <th>H p10</th>
                     <th>H med</th>

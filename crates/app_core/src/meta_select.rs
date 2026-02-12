@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::composite_validate::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
+use crate::iterative_sim::{IterativeSimConfig, ValidationEngine};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetaScoreWeights {
@@ -18,6 +19,10 @@ pub struct MetaScoreWeights {
     pub w_pass_rate: f64,
     #[serde(default = "default_w_dd_p90")]
     pub w_dd_p90: f64,
+    #[serde(default = "default_w_psr")]
+    pub w_psr: f64,
+    #[serde(default = "default_w_dsr")]
+    pub w_dsr: f64,
 }
 
 fn default_w_p10() -> f64 {
@@ -35,6 +40,12 @@ fn default_w_pass_rate() -> f64 {
 fn default_w_dd_p90() -> f64 {
     0.75
 }
+fn default_w_psr() -> f64 {
+    0.0
+}
+fn default_w_dsr() -> f64 {
+    0.0
+}
 
 impl Default for MetaScoreWeights {
     fn default() -> Self {
@@ -44,6 +55,8 @@ impl Default for MetaScoreWeights {
             w_cross: default_w_cross(),
             w_pass_rate: default_w_pass_rate(),
             w_dd_p90: default_w_dd_p90(),
+            w_psr: default_w_psr(),
+            w_dsr: default_w_dsr(),
         }
     }
 }
@@ -112,6 +125,10 @@ pub struct MetaHoldoutValidationConfig {
     pub trade_bootstrap: Option<TradeBootstrapConfig>,
     #[serde(default = "default_holdout_seed")]
     pub seed: u64,
+    #[serde(default)]
+    pub validation_engine: ValidationEngine,
+    #[serde(default)]
+    pub iterative: IterativeSimConfig,
 }
 
 fn default_int_bucket() -> i64 {
@@ -223,6 +240,8 @@ pub struct MetaCandidateAggregate {
     pub robust_score_p10: f64,
     pub max_dd_p90: f64,
     pub cross_score_median: f64,
+    pub psr_median: f64,
+    pub dsr_median: f64,
     pub meta_score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
@@ -265,6 +284,8 @@ struct GroupAcc {
     robust_params: Vec<(f64, Value)>,
     max_dds: Vec<f64>,
     cross_scores: Vec<f64>,
+    psrs: Vec<f64>,
+    dsrs: Vec<f64>,
 }
 
 pub fn meta_select_from_artifacts(
@@ -288,7 +309,10 @@ pub fn meta_select_from_artifacts(
             continue;
         }
 
-        let candidates = match art.pointer("/validation/res/candidates").and_then(|v| v.as_array()) {
+        let candidates = match art
+            .pointer("/validation/res/candidates")
+            .and_then(|v| v.as_array())
+        {
             Some(xs) => xs,
             None => continue,
         };
@@ -313,7 +337,11 @@ pub fn meta_select_from_artifacts(
         let selected = shortlist_candidates(
             candidates,
             req.strict_shortlist,
-            if cscv_combos > 0 { Some(cscv_threshold) } else { None },
+            if cscv_combos > 0 {
+                Some(cscv_threshold)
+            } else {
+                None
+            },
             req.allow_shortlist_fallback,
         );
         if selected.is_empty() {
@@ -328,8 +356,13 @@ pub fn meta_select_from_artifacts(
         let mut seen_keys: HashSet<String> = HashSet::new();
         for cand in selected {
             let params = cand.get("params").unwrap_or(&Value::Null);
-            let key =
-                meta_group_key_for_request(req, params, &ma_source, &fast_ma_params, &slow_ma_params);
+            let key = meta_group_key_for_request(
+                req,
+                params,
+                &ma_source,
+                &fast_ma_params,
+                &slow_ma_params,
+            );
             if !seen_keys.insert(key.clone()) {
                 continue;
             }
@@ -346,6 +379,8 @@ pub fn meta_select_from_artifacts(
                 .pointer("/cross_ticker/score")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
+            let psr = cand.get("psr").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let dsr = cand.get("dsr").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
             candidates_considered += 1;
 
@@ -360,6 +395,8 @@ pub fn meta_select_from_artifacts(
             entry.robust_params.push((robust_score, params.clone()));
             entry.max_dds.push(max_dd);
             entry.cross_scores.push(cross_score);
+            entry.psrs.push(psr);
+            entry.dsrs.push(dsr);
         }
     }
 
@@ -383,20 +420,21 @@ pub fn meta_select_from_artifacts(
         let representatives = if req.grouping_mode == MetaGroupingMode::Exact {
             vec![acc.params.clone()]
         } else {
-            pick_representatives(
-                &acc.robust_params,
-                req.cluster_representatives.clamp(1, 3),
-            )
+            pick_representatives(&acc.robust_params, req.cluster_representatives.clamp(1, 3))
         };
 
         acc.robust_scores.sort_by(|a, b| a.total_cmp(b));
         acc.max_dds.sort_by(|a, b| a.total_cmp(b));
         acc.cross_scores.sort_by(|a, b| a.total_cmp(b));
+        acc.psrs.sort_by(|a, b| a.total_cmp(b));
+        acc.dsrs.sort_by(|a, b| a.total_cmp(b));
 
         let robust_score_median = median(&acc.robust_scores);
         let robust_score_p10 = quantile(&acc.robust_scores, 0.10);
         let max_dd_p90 = quantile(&acc.max_dds, 0.90);
         let cross_score_median = median(&acc.cross_scores);
+        let psr_median = median(&acc.psrs);
+        let dsr_median = median(&acc.dsrs);
 
         let pass_rate = if artifacts_used > 0 {
             (samples as f64) / (artifacts_used as f64)
@@ -408,7 +446,9 @@ pub fn meta_select_from_artifacts(
             + req.weights.w_median * robust_score_median
             + req.weights.w_cross * cross_score_median
             + req.weights.w_pass_rate * pass_rate
-            - req.weights.w_dd_p90 * max_dd_p90;
+            - req.weights.w_dd_p90 * max_dd_p90
+            + req.weights.w_psr * psr_median
+            + req.weights.w_dsr * dsr_median;
 
         aggregates.push(MetaCandidateAggregate {
             params: acc.params,
@@ -423,6 +463,8 @@ pub fn meta_select_from_artifacts(
             robust_score_p10,
             max_dd_p90,
             cross_score_median,
+            psr_median,
+            dsr_median,
             meta_score,
             holdout: None,
             holdout_rows: Vec::new(),
@@ -461,7 +503,12 @@ pub fn meta_select_from_artifacts(
     }
 }
 
-fn emit_progress(progress: Option<&dyn ProgressSink>, processed: usize, total: usize, phase: &'static str) {
+fn emit_progress(
+    progress: Option<&dyn ProgressSink>,
+    processed: usize,
+    total: usize,
+    phase: &'static str,
+) {
     if let Some(p) = progress {
         crate::progress::emit_double_ma_progress(Some(p), processed, total, phase);
     }
@@ -505,13 +552,21 @@ fn artifact_matches_request(art: &Value, req: &MetaSelectionRequest) -> bool {
     let strat = art
         .pointer("/run/req/strategy_kind")
         .and_then(|v| v.as_str())
-        .or_else(|| art.pointer("/run/req/strategyKind").and_then(|v| v.as_str()))
+        .or_else(|| {
+            art.pointer("/run/req/strategyKind")
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("");
     if strat != req.strategy_kind {
         return false;
     }
 
-    if let Some(tf) = req.timeframe.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(tf) = req
+        .timeframe
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         let tf2 = art
             .pointer("/dataset_meta/timeframe")
             .and_then(|v| v.as_str())
@@ -652,7 +707,9 @@ fn quantize_value(v: &Value, cfg: &MetaClusterConfig) -> Value {
 
 fn quantize_number(n: &serde_json::Number, cfg: &MetaClusterConfig) -> Value {
     if n.is_f64() {
-        let Some(x) = n.as_f64() else { return Value::Number(n.clone()) };
+        let Some(x) = n.as_f64() else {
+            return Value::Number(n.clone());
+        };
         let b = cfg.float_bucket;
         if !b.is_finite() || b <= 0.0 {
             return Value::Number(n.clone());
@@ -720,7 +777,11 @@ fn shortlist_candidates<'a>(
             })
             .collect();
         return if filtered.is_empty() {
-            if allow_fallback { base } else { Vec::new() }
+            if allow_fallback {
+                base
+            } else {
+                Vec::new()
+            }
         } else {
             filtered
         };
@@ -791,7 +852,11 @@ fn shortlist_candidates<'a>(
         .collect();
 
     if filtered.is_empty() {
-        if allow_fallback { base } else { Vec::new() }
+        if allow_fallback {
+            base
+        } else {
+            Vec::new()
+        }
     } else {
         filtered
     }
@@ -847,7 +912,9 @@ fn pick_representatives(sorted: &[(f64, Value)], max: usize) -> Vec<Value> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<Value> = Vec::new();
     for idx in indices {
-        let Some((_, p)) = sorted.get(idx) else { continue };
+        let Some((_, p)) = sorted.get(idx) else {
+            continue;
+        };
         let sig = canonical_json(p);
         if !seen.insert(sig) {
             continue;

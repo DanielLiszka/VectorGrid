@@ -1,18 +1,23 @@
 pub mod composite_cpu;
-pub mod composite_validate;
 pub mod composite_mo;
+pub mod composite_validate;
 pub mod cscv_pbo;
 pub mod csv_compat;
 pub mod double_ma;
 pub mod double_ma_validate;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod gpu_backtest_kernel;
 pub mod indicator_factory;
+pub mod iterative_sim;
 pub mod matrix_index;
 pub mod meta_select;
 pub mod ml_confidence;
-pub mod timeframe;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-pub mod gpu_backtest_kernel;
 pub mod progress;
+pub mod sharpe_stats;
+pub mod stats_common;
+pub mod timeframe;
+pub mod validation_stats;
+pub mod validation_pipeline;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) mod vram_ma;
 
@@ -26,9 +31,8 @@ pub use double_ma::{
     compute_double_ma_drilldown_blocking_with_candles,
     compute_double_ma_local_stability_blocking_with_candles,
     run_double_ma_optimization_blocking_with_candles, Backend, BackendOptimizationResult,
-    BackendUsed, DoubleMaDrilldownRequest, DoubleMaParamsResolved, DoubleMaRequest,
-    DoubleMaLocalStabilityRequest, LocalStabilityResult,
-    OptimizationModeResolved,
+    BackendUsed, DoubleMaDrilldownRequest, DoubleMaLocalStabilityRequest, DoubleMaParamsResolved,
+    DoubleMaRequest, LocalStabilityResult, OptimizationModeResolved,
 };
 
 pub use composite_cpu::{
@@ -57,12 +61,16 @@ pub use double_ma_validate::{
     DoubleMaValidationRequest, DoubleMaValidationResult,
 };
 
+pub use iterative_sim::{
+    IntrabarRule, IterativeMetricsDelta, IterativeSimConfig, ValidationEngine,
+};
+
 pub use cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult};
 
 pub use meta_select::{
     meta_group_key, meta_group_key_for_request, meta_select_from_artifacts, HoldoutAggregate,
     HoldoutDatasetRow, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode,
-    MetaScoreWeights, MetaHoldoutMode, MetaHoldoutValidationConfig, MetaSelectionRequest,
+    MetaHoldoutMode, MetaHoldoutValidationConfig, MetaScoreWeights, MetaSelectionRequest,
     MetaSelectionResult,
 };
 
@@ -70,4 +78,8 @@ pub use ml_confidence::{
     predict_ml_confidence_for_group, train_ml_confidence_model_from_meta_artifacts,
     MlConfidenceCalibrationBin, MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceScope,
     MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
+};
+
+pub use sharpe_stats::{
+    deflated_sharpe_ratio, expected_max_sharpe, mean_std, probabilistic_sharpe_ratio, SharpeStats,
 };

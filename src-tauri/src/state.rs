@@ -22,6 +22,10 @@ pub struct PriceDataMeta {
     pub max_ts: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeframe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_mtime_utc_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +83,8 @@ impl AppState {
             min_ts,
             max_ts,
             timeframe,
+            source_size_bytes: Some(outcome.source_identity.size),
+            source_mtime_utc_ms: Some(outcome.source_identity.mtime_utc_ms),
         };
         let mut map = self
             .candles
@@ -123,6 +129,8 @@ impl AppState {
                     min_ts,
                     max_ts,
                     timeframe: Some(tf.label),
+                    source_size_bytes: None,
+                    source_mtime_utc_ms: None,
                 };
                 return Ok(LoadPriceDataResponse {
                     id: out_id,
@@ -146,6 +154,8 @@ impl AppState {
             min_ts,
             max_ts,
             timeframe: Some(tf.label),
+            source_size_bytes: None,
+            source_mtime_utc_ms: None,
         };
 
         let mut map = self

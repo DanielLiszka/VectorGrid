@@ -151,4 +151,3 @@ criterion_group!(
     bench_composite_cpu_prescan_gpu_kernel
 );
 criterion_main!(benches);
-

@@ -2,6 +2,8 @@
 
 Last updated: 2026-02-11
 
+Execution checklist: `APP_OBJECTIVE_ADDITIONS_CHECKLIST.md`
+
 This is a research + planning document to clarify the end-to-end premise of the app and propose high-ROI
 direction changes (beyond UI/UX) to make it both:
 

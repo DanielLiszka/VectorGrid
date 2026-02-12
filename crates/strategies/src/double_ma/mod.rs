@@ -102,6 +102,15 @@ pub struct StrategyConfig {
     pub long_only: bool,
     pub allow_flip: bool,
     pub trade_on_next_bar: bool,
+    #[serde(default)]
+    pub cost_preset: Option<String>,
+    #[serde(default)]
+    pub fee_bps: f64,
+    #[serde(default)]
+    pub spread_bps: f64,
+    #[serde(default)]
+    pub slippage_bps: f64,
+    /// Compatibility fallback. When positive, this takes precedence over bps fields.
     pub commission: f64,
     pub eps_rel: f64,
 }
@@ -112,8 +121,46 @@ impl Default for StrategyConfig {
             long_only: true,
             allow_flip: true,
             trade_on_next_bar: true,
+            cost_preset: None,
+            fee_bps: 0.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
             commission: 0.0,
             eps_rel: 0.0,
+        }
+    }
+}
+
+impl StrategyConfig {
+    #[inline]
+    fn clean_bps(v: f64) -> f64 {
+        if v.is_finite() && v >= 0.0 {
+            v
+        } else {
+            0.0
+        }
+    }
+
+    #[inline]
+    pub fn per_side_cost_bps(&self) -> f64 {
+        let fee = Self::clean_bps(self.fee_bps);
+        let spread = Self::clean_bps(self.spread_bps);
+        let slippage = Self::clean_bps(self.slippage_bps);
+        fee + slippage + (spread * 0.5)
+    }
+
+    #[inline]
+    pub fn commission_from_bps(&self) -> f64 {
+        self.per_side_cost_bps() / 10_000.0
+    }
+
+    #[inline]
+    pub fn effective_commission(&self) -> f64 {
+        let commission = self.commission;
+        if commission.is_finite() && commission > 0.0 {
+            commission
+        } else {
+            self.commission_from_bps()
         }
     }
 }
@@ -191,8 +238,8 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
     } else {
         0usize
     };
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -250,11 +297,11 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 if pos != 0 && cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -270,15 +317,19 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
                 } else if pos == 0 && sign != 0 {
                     cur_entry_t = t;
                     cur_dir = sign;
-                    cur_log_ret = if cfg.commission > 0.0 { log_comm } else { 0.0 };
+                    cur_log_ret = if cfg.effective_commission() > 0.0 {
+                        log_comm
+                    } else {
+                        0.0
+                    };
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -294,11 +345,11 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
                 }
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -312,7 +363,11 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64(
                 }
                 cur_entry_t = t;
                 cur_dir = sign;
-                cur_log_ret = if cfg.commission > 0.0 { log_comm } else { 0.0 };
+                cur_log_ret = if cfg.effective_commission() > 0.0 {
+                    log_comm
+                } else {
+                    0.0
+                };
                 pos = sign;
             }
         }
@@ -520,8 +575,8 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
     } else {
         0usize
     };
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -588,11 +643,11 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 if pos != 0 && cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -608,15 +663,19 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
                 } else if pos == 0 && sign != 0 {
                     cur_entry_t = t;
                     cur_dir = sign;
-                    cur_log_ret = if cfg.commission > 0.0 { log_comm } else { 0.0 };
+                    cur_log_ret = if cfg.effective_commission() > 0.0 {
+                        log_comm
+                    } else {
+                        0.0
+                    };
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -632,11 +691,11 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
                 }
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -650,7 +709,11 @@ pub fn eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
                 }
                 cur_entry_t = t;
                 cur_dir = sign;
-                cur_log_ret = if cfg.commission > 0.0 { log_comm } else { 0.0 };
+                cur_log_ret = if cfg.effective_commission() > 0.0 {
+                    log_comm
+                } else {
+                    0.0
+                };
                 pos = sign;
             }
         }
@@ -1333,7 +1396,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
         };
     }
 
-    if !(0.0..1.0).contains(&cfg.commission) && cfg.commission != 0.0 {
+    if !(0.0..1.0).contains(&cfg.effective_commission()) && cfg.effective_commission() != 0.0 {
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
@@ -1350,8 +1413,8 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
 
     let obs: u64 = (n_total - start_t) as u64;
 
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -1394,19 +1457,19 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 trades = trades.saturating_add(2);
@@ -1571,7 +1634,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         };
     }
 
-    if !(0.0..1.0).contains(&cfg.commission) && cfg.commission != 0.0 {
+    if !(0.0..1.0).contains(&cfg.effective_commission()) && cfg.effective_commission() != 0.0 {
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
@@ -1588,8 +1651,8 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
 
     let obs: u64 = (n_total - start_t) as u64;
 
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -1641,19 +1704,19 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 trades = trades.saturating_add(2);
@@ -1865,7 +1928,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
         };
     }
 
-    if !(0.0..1.0).contains(&cfg.commission) && cfg.commission != 0.0 {
+    if !(0.0..1.0).contains(&cfg.effective_commission()) && cfg.effective_commission() != 0.0 {
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
@@ -1882,8 +1945,8 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
 
     let obs: u64 = (n_total - start_t) as u64;
 
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -1926,19 +1989,19 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 trades = trades.saturating_add(2);
@@ -2103,7 +2166,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         };
     }
 
-    if !(0.0..1.0).contains(&cfg.commission) && cfg.commission != 0.0 {
+    if !(0.0..1.0).contains(&cfg.effective_commission()) && cfg.effective_commission() != 0.0 {
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
@@ -2120,8 +2183,8 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
 
     let obs: u64 = (n_total - start_t) as u64;
 
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -2173,19 +2236,19 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 trades = trades.saturating_add(2);
@@ -2499,5 +2562,56 @@ mod tests {
 
         let m = &metrics[0];
         assert!(m.max_dd >= 0.0);
+    }
+
+    #[test]
+    fn effective_commission_uses_bps_when_commission_is_zero() {
+        let cfg = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 2.0,
+            spread_bps: 4.0,
+            slippage_bps: 1.0,
+            ..StrategyConfig::default()
+        };
+        let expected = (2.0 + 1.0 + 2.0) / 10_000.0;
+        assert!((cfg.effective_commission() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn higher_costs_do_not_improve_pnl_in_same_setup() {
+        let n = 256usize;
+        let prices: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 0.25).collect();
+        let lr = compute_log_returns(&prices);
+        let fast: Vec<f64> = vec![2.0; n];
+        let slow: Vec<f64> = vec![1.0; n];
+
+        let zero = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 0.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            ..StrategyConfig::default()
+        };
+        let medium = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 0.5,
+            spread_bps: 1.0,
+            slippage_bps: 0.5,
+            ..StrategyConfig::default()
+        };
+        let high = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 2.0,
+            spread_bps: 4.0,
+            slippage_bps: 2.0,
+            ..StrategyConfig::default()
+        };
+
+        let m0 = eval_double_ma_from_log_returns_and_mas_f64(&lr, &fast, &slow, 1, &zero);
+        let m1 = eval_double_ma_from_log_returns_and_mas_f64(&lr, &fast, &slow, 1, &medium);
+        let m2 = eval_double_ma_from_log_returns_and_mas_f64(&lr, &fast, &slow, 1, &high);
+
+        assert!(m1.pnl <= m0.pnl + 1e-12);
+        assert!(m2.pnl <= m1.pnl + 1e-12);
     }
 }

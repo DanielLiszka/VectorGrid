@@ -9,12 +9,11 @@ use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, Strategy
 use crate::composite_mo::CompositeGpuPrescanConfig;
 use crate::double_ma::{
     build_indicator_bars_for_chart, compute_halftrend_trend, compute_log_returns_f64,
-    cpu_tile_sizes, estimate_pairs_fast_lt_slow, expand_u16_range, first_finite_idx, lookup_ma_info,
-    ma_matrix_cpu_f64,
-    resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles, validate_ma_kind,
-    validate_strategy_cfg, Backend, DoubleMaRequest,
-    BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, HalfTrendRegimeFilter,
-    LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary,
+    cpu_tile_sizes, estimate_pairs_fast_lt_slow, expand_u16_range, first_finite_idx,
+    lookup_ma_info, ma_matrix_cpu_f64, resolve_alma_params_for_side,
+    run_double_ma_optimization_blocking_with_candles, validate_ma_kind, validate_strategy_cfg,
+    Backend, BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, DoubleMaRequest,
+    HalfTrendRegimeFilter, LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary,
     OptimizationModeResolved,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
@@ -202,7 +201,10 @@ fn objective_score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
 fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
     matches!(
         objective,
-        ObjectiveKind::Sharpe | ObjectiveKind::Sortino | ObjectiveKind::Omega | ObjectiveKind::Volatility
+        ObjectiveKind::Sharpe
+            | ObjectiveKind::Sortino
+            | ObjectiveKind::Omega
+            | ObjectiveKind::Volatility
     )
 }
 
@@ -308,9 +310,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         };
 
         let dm_res = run_double_ma_optimization_blocking_with_candles(
-            dm_req,
-            candles,
-            cancel,
+            dm_req, candles, cancel,
             // Forward progress so the UI shows the prescan phase too.
             progress,
         )?;
@@ -490,7 +490,11 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
                         }
                     }
                 }
-                let top_cols = if top_cols.is_empty() { None } else { Some(top_cols) };
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
                 (Some(idx), best_col, top_cols)
             }
             Err(_) => (None, None, None),
@@ -623,18 +627,19 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
 
     let lr = compute_log_returns_f64(close);
     let bins = req.bins.unwrap_or(1024);
-    let mut curves = ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64(
-        &lr,
-        ma_prices,
-        &fast_mat,
-        &slow_mat,
-        &halftrend_trend,
-        &macz_hist,
-        &ott_line,
-        start_t,
-        &req.strategy,
-        bins,
-    );
+    let mut curves =
+        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64(
+            &lr,
+            ma_prices,
+            &fast_mat,
+            &slow_mat,
+            &halftrend_trend,
+            &macz_hist,
+            &ott_line,
+            start_t,
+            &req.strategy,
+            bins,
+        );
     curves.indicator_bars = build_indicator_bars_for_chart(candles, &fast_mat, &slow_mat, 8_000)?;
     Ok(curves)
 }
@@ -738,7 +743,11 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
     slow_periods.sort_unstable();
 
     // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
-    let trade_offset = if req.strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if req.strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
     let max_p = (fast_periods[fast_periods.len() - 1] as usize)
         .max(slow_periods[slow_periods.len() - 1] as usize)
         .max(1);
@@ -797,17 +806,18 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
                 .get(slow_off..slow_off + n)
                 .ok_or_else(|| "slow MA matrix indexing error".to_string())?;
 
-            let metrics = ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
-                &lr,
-                ma_prices,
-                fast,
-                slow,
-                &halftrend_trend,
-                &macz_hist,
-                &ott_line,
-                start_t,
-                &req.strategy,
-            );
+            let metrics =
+                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+                    &lr,
+                    ma_prices,
+                    fast,
+                    slow,
+                    &halftrend_trend,
+                    &macz_hist,
+                    &ott_line,
+                    start_t,
+                    &req.strategy,
+                );
             let score = objective_score(&metrics, objective);
             points.push(LocalStabilityPoint {
                 fast_len,
@@ -1510,7 +1520,10 @@ mod tests {
         assert_eq!(res.radius, 1);
         assert_eq!(res.step, 1);
         assert!(!res.points.is_empty());
-        assert!(res.points.iter().any(|p| p.fast_len == 9 && p.slow_len == 21));
+        assert!(res
+            .points
+            .iter()
+            .any(|p| p.fast_len == 9 && p.slow_len == 21));
         assert!(res.summary.min <= res.summary.median);
         assert!(res.summary.median <= res.summary.max);
         assert!(res.summary.base.is_finite());

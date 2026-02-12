@@ -281,7 +281,10 @@ fn extract_features_from_meta_group(g: &Value) -> Option<Vec<f64>> {
     let robust_p10 = g.get("robust_score_p10").and_then(|v| v.as_f64())?;
     let robust_median = g.get("robust_score_median").and_then(|v| v.as_f64())?;
     let max_dd_p90 = g.get("max_dd_p90").and_then(|v| v.as_f64())?;
-    let cross_median = g.get("cross_score_median").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let cross_median = g
+        .get("cross_score_median")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let meta_score = g.get("meta_score").and_then(|v| v.as_f64())?;
 
     let x = vec![
@@ -378,7 +381,10 @@ fn scope_has_holdout_rows(
             if rows.len() < cfg.min_holdout_datasets {
                 continue;
             }
-            if rows.iter().any(|r| label_from_holdout_row(r, cfg).is_some()) {
+            if rows
+                .iter()
+                .any(|r| label_from_holdout_row(r, cfg).is_some())
+            {
                 return true;
             }
         }
@@ -421,7 +427,11 @@ fn build_dataset_from_meta_artifacts(
             skipped_scope += 1;
             continue;
         }
-        let group_id = meta.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let group_id = meta
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let groups = meta
             .pointer("/res/groups")
             .and_then(|v| v.as_array())
@@ -432,7 +442,11 @@ fn build_dataset_from_meta_artifacts(
         }
 
         used_meta += 1;
-        if let Some(ts) = meta.get("ts").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+        if let Some(ts) = meta
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+        {
             let is_newest = newest_meta_ts
                 .as_ref()
                 .map(|cur| ts.as_str() > cur.as_str())
@@ -463,7 +477,8 @@ fn build_dataset_from_meta_artifacts(
                     });
                 }
                 MlConfidenceTargetResolved::HoldoutDatasetPass => {
-                    let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                    let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array())
+                    else {
                         skipped_no_holdout += 1;
                         continue;
                     };
@@ -505,7 +520,9 @@ fn build_dataset_from_meta_artifacts(
         warnings.push(format!("Skipped {skipped_kind} non-meta JSON file(s)."));
     }
     if skipped_scope > 0 {
-        warnings.push(format!("Skipped {skipped_scope} meta artifact(s) outside scope."));
+        warnings.push(format!(
+            "Skipped {skipped_scope} meta artifact(s) outside scope."
+        ));
     }
     if skipped_missing > 0 {
         warnings.push(format!(
@@ -922,8 +939,13 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
                 scaler.transform_row_in_place(x);
             }
 
-            let (w, b, _) =
-                fit_logistic_regression(&train_xs, &train_y, cfg.l2, cfg.learning_rate, cfg.max_iter);
+            let (w, b, _) = fit_logistic_regression(
+                &train_xs,
+                &train_y,
+                cfg.l2,
+                cfg.learning_rate,
+                cfg.max_iter,
+            );
             let ps = predict_probs_raw(&w, b, &test_xs);
 
             cv_ps.extend(ps);
@@ -957,7 +979,8 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
                     Some(cal)
                 } else {
                     cv_brier_cal = None;
-                    warnings.push("Calibration skipped (did not improve CV Brier score).".to_string());
+                    warnings
+                        .push("Calibration skipped (did not improve CV Brier score).".to_string());
                     None
                 }
             } else {
@@ -985,23 +1008,33 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
 
     let train_auc = auc_roc(&train_ps, &ys).unwrap_or(0.0);
     let train_brier = brier_score(&train_ps, &ys);
-    let train_brier_cal = calibration
-        .as_ref()
-        .map(|cal| {
-            let ps_cal: Vec<f64> = train_ps.iter().copied().map(|p| apply_calibration(p, cal)).collect();
-            brier_score(&ps_cal, &ys)
-        });
+    let train_brier_cal = calibration.as_ref().map(|cal| {
+        let ps_cal: Vec<f64> = train_ps
+            .iter()
+            .copied()
+            .map(|p| apply_calibration(p, cal))
+            .collect();
+        brier_score(&ps_cal, &ys)
+    });
 
     let calib_bins = if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
         if let Some(cal) = calibration.as_ref() {
-            let ps_cal: Vec<f64> = cv_ps.iter().copied().map(|p| apply_calibration(p, cal)).collect();
+            let ps_cal: Vec<f64> = cv_ps
+                .iter()
+                .copied()
+                .map(|p| apply_calibration(p, cal))
+                .collect();
             calibration_bins(&ps_cal, &cv_ys, 10)
         } else {
             calibration_bins(&cv_ps, &cv_ys, 10)
         }
     } else {
         if let Some(cal) = calibration.as_ref() {
-            let ps_cal: Vec<f64> = train_ps.iter().copied().map(|p| apply_calibration(p, cal)).collect();
+            let ps_cal: Vec<f64> = train_ps
+                .iter()
+                .copied()
+                .map(|p| apply_calibration(p, cal))
+                .collect();
             calibration_bins(&ps_cal, &ys, 10)
         } else {
             calibration_bins(&train_ps, &ys, 10)
@@ -1013,11 +1046,15 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
     let mut healthy = true;
     if eval_auc < 0.55 {
         healthy = false;
-        warnings.push("Model health: AUC is low; treat ML confidence as untrustworthy.".to_string());
+        warnings
+            .push("Model health: AUC is low; treat ML confidence as untrustworthy.".to_string());
     }
     if eval_brier > base_brier {
         healthy = false;
-        warnings.push("Model health: Brier score worse than baseline; treat ML confidence as untrustworthy.".to_string());
+        warnings.push(
+            "Model health: Brier score worse than baseline; treat ML confidence as untrustworthy."
+                .to_string(),
+        );
     }
 
     let model = MlConfidenceModel {

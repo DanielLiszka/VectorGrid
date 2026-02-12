@@ -386,7 +386,10 @@ fn metric_value(m: &Metrics, k: ObjectiveKind) -> f64 {
 fn objective_needs_return_stats(k: ObjectiveKind) -> bool {
     matches!(
         k,
-        ObjectiveKind::Sharpe | ObjectiveKind::Sortino | ObjectiveKind::Omega | ObjectiveKind::Volatility
+        ObjectiveKind::Sharpe
+            | ObjectiveKind::Sortino
+            | ObjectiveKind::Omega
+            | ObjectiveKind::Volatility
     )
 }
 
@@ -1632,7 +1635,9 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let eval_with_progress =
         |values: &[ParamValue]| -> EvalOutcome<(Metrics, CompositeMoParams, f64, f64)> {
             let out = eval_one(values);
-            let done = done_counter.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+            let done = done_counter
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
             maybe_emit_progress_throttled(
                 progress,
                 done,
@@ -1646,8 +1651,12 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
     let (pareto_points, total_evals) = match req.sampler.clone() {
         CompositeMoSampler::Nsga2 { config } => {
-            let res =
-                ta_optimizer::mo::nsga2_optimize(&req.search_space, config, repair, eval_with_progress)?;
+            let res = ta_optimizer::mo::nsga2_optimize(
+                &req.search_space,
+                config,
+                repair,
+                eval_with_progress,
+            )?;
             (res.pareto, res.total_evaluations)
         }
         CompositeMoSampler::Random { config } => {
@@ -1660,13 +1669,21 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             (pareto, config.trials)
         }
         CompositeMoSampler::Tpe { config } => {
-            let pareto =
-                ta_optimizer::mo::tpe_mo_search(&req.search_space, config.clone(), repair, eval_with_progress)?;
+            let pareto = ta_optimizer::mo::tpe_mo_search(
+                &req.search_space,
+                config.clone(),
+                repair,
+                eval_with_progress,
+            )?;
             (pareto, config.trials)
         }
         CompositeMoSampler::Qmc { config } => {
-            let pareto =
-                ta_optimizer::mo::qmc_mo_search(&req.search_space, config.clone(), repair, eval_with_progress)?;
+            let pareto = ta_optimizer::mo::qmc_mo_search(
+                &req.search_space,
+                config.clone(),
+                repair,
+                eval_with_progress,
+            )?;
             (pareto, config.trials)
         }
     };

@@ -105,7 +105,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         };
     }
 
-    if !(0.0..1.0).contains(&cfg.commission) && cfg.commission != 0.0 {
+    if !(0.0..1.0).contains(&cfg.effective_commission()) && cfg.effective_commission() != 0.0 {
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
@@ -122,8 +122,8 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
 
     let obs: u64 = (n_total - start_t) as u64;
 
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -198,19 +198,19 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 trades = trades.saturating_add(2);
@@ -376,8 +376,8 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
     } else {
         0usize
     };
-    let log_comm = if cfg.commission > 0.0 {
-        (1.0 - cfg.commission).ln()
+    let log_comm = if cfg.effective_commission() > 0.0 {
+        (1.0 - cfg.effective_commission()).ln()
     } else {
         0.0
     };
@@ -467,11 +467,11 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 if pos != 0 && cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -487,15 +487,19 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
                 } else if pos == 0 && sign != 0 {
                     cur_entry_t = t;
                     cur_dir = sign;
-                    cur_log_ret = if cfg.commission > 0.0 { log_comm } else { 0.0 };
+                    cur_log_ret = if cfg.effective_commission() > 0.0 {
+                        log_comm
+                    } else {
+                        0.0
+                    };
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -511,11 +515,11 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
                 }
                 pos = 0;
             } else {
-                if cfg.commission > 0.0 {
+                if cfg.effective_commission() > 0.0 {
                     log_eq += 2.0 * log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.commission > 0.0 {
+                    if cfg.effective_commission() > 0.0 {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -529,7 +533,11 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
                 }
                 cur_entry_t = t;
                 cur_dir = sign;
-                cur_log_ret = if cfg.commission > 0.0 { log_comm } else { 0.0 };
+                cur_log_ret = if cfg.effective_commission() > 0.0 {
+                    log_comm
+                } else {
+                    0.0
+                };
                 pos = sign;
             }
         }

@@ -147,4 +147,3 @@ mod tests {
         assert!(err.contains("fast_periods") && err.contains("increasing"));
     }
 }
-

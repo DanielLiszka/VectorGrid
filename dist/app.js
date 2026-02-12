@@ -1507,15 +1507,29 @@ function fileBasename(path) {
   return parts.length ? parts[parts.length - 1] : s;
 }
 
+const DATASET_META_SCHEMA_VERSION = 2;
+const RESAMPLE_RULE_SESSION_RELATIVE_OHLCV = "session_relative_ohlcv";
+const RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP = "day_first_timestamp";
+
 function buildDatasetMetaForArtifact(csvPath) {
   const path = String(csvPath || "").trim();
   if (!path) return null;
 
   const meta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+  const baseMeta = CURRENT_BASE_DATA_META && typeof CURRENT_BASE_DATA_META === "object" ? CURRENT_BASE_DATA_META : null;
+  const baseCtx = CURRENT_BASE_DATASET_CTX && typeof CURRENT_BASE_DATASET_CTX === "object" ? CURRENT_BASE_DATASET_CTX : {};
   const ctx = CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object" ? CURRENT_DATASET_CTX : {};
 
   const label = String(ctx.label || "").trim() || fileBasename(path) || path;
-  const timeframe = String(ctx.timeframe || meta?.timeframe || "").trim() || null;
+  const tfCurrent = String(ctx.timeframe || meta?.timeframe || "").trim() || null;
+  const base_timeframe = String(
+    ctx.base_timeframe || baseCtx.base_timeframe || baseCtx.timeframe || baseMeta?.timeframe || tfCurrent || ""
+  ).trim() || null;
+  const derived_timeframe = String(ctx.derived_timeframe || tfCurrent || "").trim() || null;
+  const timeframe = derived_timeframe || tfCurrent || null;
+  const resample_applied = !!(base_timeframe && derived_timeframe && base_timeframe !== derived_timeframe);
+  const resample_rule = String(ctx.resample_rule || "").trim() || (derived_timeframe ? RESAMPLE_RULE_SESSION_RELATIVE_OHLCV : null);
+  const resample_anchor = String(ctx.resample_anchor || "").trim() || (derived_timeframe ? RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP : null);
   const source = String(ctx.source || "").trim() || null;
   const market = String(ctx.market || "").trim() || null;
   const symbol = String(ctx.symbol || "").trim() || null;
@@ -1525,10 +1539,23 @@ function buildDatasetMetaForArtifact(csvPath) {
   const min_ts = Number(meta?.min_ts || 0) || null;
   const max_ts = Number(meta?.max_ts || 0) || null;
 
+  const sizeRaw = meta?.source_size_bytes ?? baseMeta?.source_size_bytes;
+  const mtimeRaw = meta?.source_mtime_utc_ms ?? baseMeta?.source_mtime_utc_ms;
+  const fpRaw = meta?.source_content_fingerprint ?? baseMeta?.source_content_fingerprint;
+  const source_size_bytes = Number.isFinite(Number(sizeRaw)) ? Number(sizeRaw) : null;
+  const source_mtime_utc_ms = Number.isFinite(Number(mtimeRaw)) ? Number(mtimeRaw) : null;
+  const source_content_fingerprint = String(fpRaw || "").trim() || null;
+
   return {
+    schema_version: DATASET_META_SCHEMA_VERSION,
     label,
     csv_path: path,
     timeframe,
+    base_timeframe,
+    derived_timeframe,
+    resample_applied,
+    resample_rule,
+    resample_anchor,
     source,
     market,
     symbol,
@@ -1536,6 +1563,9 @@ function buildDatasetMetaForArtifact(csvPath) {
     len,
     min_ts,
     max_ts,
+    source_size_bytes,
+    source_mtime_utc_ms,
+    source_content_fingerprint,
   };
 }
 
@@ -2778,6 +2808,8 @@ function renderMetaSelection(resp) {
         fmtFixed(g.robust_score_p10 || 0, 6),
         fmtFixed(g.robust_score_median || 0, 6),
         fmtFixed(g.max_dd_p90 || 0, 6),
+        fmtFixed(g.psr_median || 0, 4),
+        fmtFixed(g.dsr_median || 0, 4),
         h ? (fmtFixed(Number(h.pass_rate || 0) * 100, 1) + "%") : "-",
         h ? fmtFixed(h.score_p10 || 0, 6) : "-",
         h ? fmtFixed(h.score_median || 0, 6) : "-",
@@ -2789,7 +2821,7 @@ function renderMetaSelection(resp) {
       for (let c = 0; c < cells.length; c++) {
         const td = document.createElement("td");
         td.textContent = cells[c];
-        if (c === 12 || c === 13 || c === 14) td.className = "left";
+        if (c === 14 || c === 15 || c === 16) td.className = "left";
         tr.appendChild(td);
       }
       body.appendChild(tr);
@@ -3025,13 +3057,13 @@ async function runMetaSelection(opts) {
   if (RUNNING && !opts?.allowWhileRunning) return;
 
   const strategy_kind = String($("metaStrategyKind")?.value || "CompositeMo").trim() || "CompositeMo";
-  const isComposite = strategy_kind === "CompositeCpu" || strategy_kind === "CompositeMo";
+  const supportsHoldout = strategy_kind === "CompositeCpu" || strategy_kind === "CompositeMo" || strategy_kind === "DoubleMa";
   const timeframeRaw = String($("metaTimeframe")?.value || "").trim();
   const requiredTagRaw = String($("metaRequiredTag")?.value || "").trim();
   const min_samples = Math.max(1, Math.floor(Number($("metaMinSamples")?.value || 30)));
   const top_k = Math.max(1, Math.floor(Number($("metaTopK")?.value || 25)));
   const holdoutTagRaw = String($("metaHoldoutTag")?.value || "").trim();
-  const eval_holdout = isComposite && !!$("metaEvalHoldout")?.checked;
+  const eval_holdout = supportsHoldout && !!$("metaEvalHoldout")?.checked;
   const holdoutModeRaw = String($("metaHoldoutMode")?.value || "light").trim() || "light";
   const holdout_mode = eval_holdout ? holdoutModeRaw : "light";
   const holdoutEvalTopN = Math.max(0, Math.floor(Number($("metaHoldoutEvalTopN")?.value || 0)));
@@ -3046,7 +3078,7 @@ async function runMetaSelection(opts) {
 
   const holdout_validation = (eval_holdout && holdout_mode === "heavy")
     ? (() => {
-      // Heavy holdout: always run walk-forward; perturb/MC follow Validation toggles.
+      // Heavy holdout: run iterative re-score plus walk-forward; perturb/MC follow Validation toggles.
       const seed = Math.max(0, Math.floor(num($("valSeed")?.value, 1)));
       const walk_forward = {
         window_bars: Math.max(64, Math.floor(num($("valWfWindow")?.value, 20000))),
@@ -3063,7 +3095,14 @@ async function runMetaSelection(opts) {
       const trade_bootstrap = $("valMcEnable")?.checked
         ? { simulations: Math.max(0, Math.floor(num($("valMcSims")?.value, 500))) }
         : null;
-      return { seed, walk_forward, perturb, trade_bootstrap };
+      const validation_engine = "iterative";
+      const iterative = {
+        stop_loss_pct: null,
+        take_profit_pct: null,
+        intrabar_rule: "pessimistic",
+        slippage_vol_mult: 0.15,
+      };
+      return { seed, walk_forward, perturb, trade_bootstrap, validation_engine, iterative };
     })()
     : null;
 
@@ -3599,7 +3638,15 @@ async function applySelectedDataTimeframe(opts) {
   // Revert to the raw loaded dataset (no backend call needed).
   if (!target || (baseTf && target === baseTf)) {
     CURRENT_DATA_META = baseMeta;
-    CURRENT_DATASET_CTX = { ...baseCtx };
+    CURRENT_DATASET_CTX = {
+      ...baseCtx,
+      timeframe: baseTf || null,
+      base_timeframe: baseTf || null,
+      derived_timeframe: baseTf || null,
+      resample_applied: false,
+      resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+      resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+    };
     clearDrillCaches({ clearBars: true });
     $("dataId").textContent = baseId;
     renderDataMeta(baseMeta);
@@ -3622,9 +3669,18 @@ async function applySelectedDataTimeframe(opts) {
     const id = String(resp?.id || "").trim();
     const meta = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
     const cacheHit = !!resp?.cache_hit;
+    const effectiveTf = String(meta?.timeframe || target).trim() || target;
 
     CURRENT_DATA_META = meta;
-    CURRENT_DATASET_CTX = { ...baseCtx, timeframe: target };
+    CURRENT_DATASET_CTX = {
+      ...baseCtx,
+      timeframe: effectiveTf,
+      base_timeframe: baseTf || null,
+      derived_timeframe: effectiveTf || null,
+      resample_applied: !!(baseTf && effectiveTf && baseTf !== effectiveTf),
+      resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+      resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+    };
     clearDrillCaches({ clearBars: true });
     $("dataId").textContent = id || "—";
     renderDataMeta(meta);
@@ -4882,11 +4938,33 @@ async function initPolygonUi() {
             const meta2 = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
             const baseId = String(resp?.base_load?.id || "").trim() || id;
             const baseMeta = resp?.base_load?.meta && typeof resp.base_load.meta === "object" ? resp.base_load.meta : meta2;
+            const baseTf = String(baseMeta?.timeframe || "1m").trim() || "1m";
+            const curTf = String(tfLabel || baseTf).trim() || baseTf;
             CURRENT_BASE_DATA_ID = baseId;
             CURRENT_BASE_DATA_META = baseMeta;
-            CURRENT_BASE_DATASET_CTX = { source: "polygon", label: sym, symbol: sym, market: market || "stocks", adjusted: adjFlag, timeframe: String(baseMeta?.timeframe || "1m").trim() || "1m" };
+            CURRENT_BASE_DATASET_CTX = {
+              source: "polygon",
+              label: sym,
+              symbol: sym,
+              market: market || "stocks",
+              adjusted: adjFlag,
+              timeframe: baseTf,
+              base_timeframe: baseTf,
+              derived_timeframe: baseTf,
+              resample_applied: false,
+              resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+              resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+            };
             CURRENT_DATA_META = meta2;
-            CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX, timeframe: tfLabel };
+            CURRENT_DATASET_CTX = {
+              ...CURRENT_BASE_DATASET_CTX,
+              timeframe: curTf,
+              base_timeframe: baseTf,
+              derived_timeframe: curTf,
+              resample_applied: !!(baseTf && curTf && baseTf !== curTf),
+              resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+              resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+            };
             clearDrillCaches({ clearBars: true });
             $("dataId").textContent = id || "—";
             renderDataMeta(meta2);
@@ -5442,17 +5520,20 @@ async function initBatchDatasetList() {
   }
 
   let localPaths = [];
+  let localEntries = [];
   let localDir = "";
   let localTruncated = false;
   let localErr = "";
   try {
-    const resp = await invoke("list_repo_data_csvs", { maxFiles: 20000, recursive: true });
+    const resp = await invoke("list_repo_data_csvs", { maxFiles: 20000, recursive: true, includeIdentity: true });
     localPaths = Array.isArray(resp?.csv_paths) ? resp.csv_paths : [];
+    localEntries = Array.isArray(resp?.csv_entries) ? resp.csv_entries : [];
     localDir = String(resp?.dir || "").trim();
     localTruncated = !!resp?.truncated;
   } catch (e) {
     localErr = String(e);
     localPaths = [];
+    localEntries = [];
   }
 
   const byPath = new Map();
@@ -5461,15 +5542,25 @@ async function initBatchDatasetList() {
     if (!p) continue;
     byPath.set(p, ds);
   }
-  for (const p0 of localPaths) {
-    const p = String(p0 || "").trim();
+  const locals = localEntries.length ? localEntries : localPaths.map((p) => ({ csv_path: p }));
+  for (const e of locals) {
+    const p = String(e?.csv_path || "").trim();
     if (!p || byPath.has(p)) continue;
+    const size = Number(e?.source_size_bytes ?? NaN);
+    const mtime = Number(e?.source_mtime_utc_ms ?? NaN);
+    const fp = String(e?.source_content_fingerprint || "").trim();
+    const source_size_bytes = Number.isFinite(size) && size >= 0 ? size : undefined;
+    const source_mtime_utc_ms = Number.isFinite(mtime) && mtime > 0 ? mtime : undefined;
+    const source_content_fingerprint = fp || undefined;
     byPath.set(p, {
       source: "repo_data",
       market: "local",
       display_symbol: fileBasename(p) || p,
       csv_path: p,
       timeframe: "",
+      source_size_bytes,
+      source_mtime_utc_ms,
+      source_content_fingerprint,
     });
   }
 
@@ -5863,18 +5954,7 @@ function buildTinyDoubleMaRequestForParity(backendObj) {
 
   const objective = String($("objective")?.value || "Sharpe");
 
-  const commission = num($("commission")?.value, 0);
-  const epsRel = num($("epsRel")?.value, 0);
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
-
-  const strategy = {
-    long_only: !!$("longOnly")?.checked,
-    allow_flip: !!$("allowFlip")?.checked,
-    trade_on_next_bar: !!$("tradeOnNext")?.checked,
-    commission,
-    eps_rel: epsRel,
-  };
+  const strategy = readStrategyCfgFromUi();
 
   const req = {
     strategy_kind: "DoubleMa",
@@ -6306,7 +6386,7 @@ function updateMetaGroupingUi() {
 
 function updateMetaHoldoutUi() {
   const kind = String($("metaStrategyKind")?.value || "CompositeMo");
-  const isComposite = kind === "CompositeCpu" || kind === "CompositeMo";
+  const supportsHoldout = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa";
 
   const holdoutTag = $("metaHoldoutTag");
   const evalEl = $("metaEvalHoldout");
@@ -6315,14 +6395,14 @@ function updateMetaHoldoutUi() {
   const note = $("metaHoldoutNote");
 
   if (evalEl) {
-    evalEl.disabled = RUNNING || !isComposite;
-    if (!isComposite && evalEl.checked) {
+    evalEl.disabled = RUNNING || !supportsHoldout;
+    if (!supportsHoldout && evalEl.checked) {
       evalEl.checked = false;
       saveSettingsSoon();
     }
   }
 
-  const evalOn = isComposite && !!evalEl?.checked;
+  const evalOn = supportsHoldout && !!evalEl?.checked;
   if (holdoutTag) holdoutTag.disabled = RUNNING || !evalOn;
   if (modeEl) modeEl.disabled = RUNNING || !evalOn;
   const groupingMode = String($("metaGroupingMode")?.value || "clustered");
@@ -6330,9 +6410,9 @@ function updateMetaHoldoutUi() {
   if (repsEl) repsEl.disabled = RUNNING || !evalOn || !clustered;
 
   if (note) {
-    note.innerHTML = isComposite
-      ? 'Holdout runs (tagged <span class="mono">holdout</span>) are excluded only when holdout evaluation is enabled. Heavy mode uses walk-forward and (optionally) the Validation perturb/MC toggles.'
-      : "Holdout evaluation is currently supported for Composite strategies only.";
+    note.innerHTML = supportsHoldout
+      ? 'Holdout runs (tagged <span class="mono">holdout</span>) are excluded only when holdout evaluation is enabled. Heavy mode uses iterative re-scoring, walk-forward, and (optionally) the Validation perturb/MC toggles.'
+      : "Holdout evaluation is currently unavailable for this strategy.";
   }
 }
 
@@ -6410,6 +6490,83 @@ const PRESET_PROFILES = {
     valCrossMax: 8,
   },
 };
+
+const COST_PRESETS = {
+  custom: { fee_bps: null, spread_bps: null, slippage_bps: null },
+  none: { fee_bps: 0.0, spread_bps: 0.0, slippage_bps: 0.0 },
+  stocks_liquid: { fee_bps: 0.10, spread_bps: 1.00, slippage_bps: 0.50 },
+  fx_majors: { fee_bps: 0.00, spread_bps: 1.00, slippage_bps: 0.50 },
+  crypto_spot_maker: { fee_bps: 2.00, spread_bps: 5.00, slippage_bps: 1.50 },
+  crypto_spot_taker: { fee_bps: 7.50, spread_bps: 5.00, slippage_bps: 2.50 },
+};
+
+function readCostBpsFromUi() {
+  const fee_bps = Math.max(0, num($("feeBps")?.value, 0));
+  const spread_bps = Math.max(0, num($("spreadBps")?.value, 0));
+  const slippage_bps = Math.max(0, num($("slippageBps")?.value, 0));
+  return { fee_bps, spread_bps, slippage_bps };
+}
+
+function perSideBpsFromCostBps(cost) {
+  const fee = Number(cost?.fee_bps || 0);
+  const spread = Number(cost?.spread_bps || 0);
+  const slip = Number(cost?.slippage_bps || 0);
+  return fee + slip + (spread / 2);
+}
+
+function commissionFractionFromCostBps(cost) {
+  const perSideBps = perSideBpsFromCostBps(cost);
+  return perSideBps / 10_000;
+}
+
+function syncCostUi(opts) {
+  const { fee_bps, spread_bps, slippage_bps } = readCostBpsFromUi();
+  const perSideBps = perSideBpsFromCostBps({ fee_bps, spread_bps, slippage_bps });
+  const comm = commissionFractionFromCostBps({ fee_bps, spread_bps, slippage_bps });
+
+  const commEl = $("commission");
+  if (commEl) commEl.value = String(Math.max(0, Math.min(0.999999, comm)));
+
+  const hint = $("costHint");
+  if (hint) {
+    const rt = perSideBps * 2;
+    hint.textContent = `Total: ${fmtFixed(perSideBps, 2)} bps/side (${fmtFixed(rt, 2)} bps round-trip)`;
+  }
+
+  if (opts?.save) saveSettingsSoon();
+}
+
+function applyCostPreset(presetId, opts) {
+  const silent = !!opts?.silent;
+  const id = String(presetId || "custom").trim() || "custom";
+  const preset = COST_PRESETS[id] || COST_PRESETS.custom;
+
+  if (preset.fee_bps != null && $("feeBps")) $("feeBps").value = String(preset.fee_bps);
+  if (preset.spread_bps != null && $("spreadBps")) $("spreadBps").value = String(preset.spread_bps);
+  if (preset.slippage_bps != null && $("slippageBps")) $("slippageBps").value = String(preset.slippage_bps);
+
+  syncCostUi({ save: !silent });
+}
+
+function readStrategyCfgFromUi() {
+  const { fee_bps, spread_bps, slippage_bps } = readCostBpsFromUi();
+  const cost_preset = String($("costPreset")?.value || "custom").trim() || "custom";
+  const commission = commissionFractionFromCostBps({ fee_bps, spread_bps, slippage_bps });
+  const eps_rel = num($("epsRel")?.value, 0);
+  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("total cost must be in [0, 1).");
+  if (!Number.isFinite(eps_rel) || eps_rel < 0) throw new Error("eps_rel must be >= 0.");
+  return {
+    long_only: !!$("longOnly")?.checked,
+    allow_flip: !!$("allowFlip")?.checked,
+    trade_on_next_bar: !!$("tradeOnNext")?.checked,
+    cost_preset,
+    fee_bps,
+    spread_bps,
+    slippage_bps,
+    commission,
+    eps_rel,
+  };
+}
 
 function applyPresetProfile(profileId, opts) {
   const silent = !!opts?.silent;
@@ -6579,6 +6736,10 @@ function readSettingsFromUi() {
     "heatmapShowTop",
     "heatmapShowCrosshair",
     "commission",
+    "costPreset",
+    "feeBps",
+    "spreadBps",
+    "slippageBps",
     "epsRel",
     "halfTrendAmplitude",
     "halfTrendAtrPeriod",
@@ -6790,6 +6951,17 @@ function loadSettings() {
   setDef("valCrossEnable", d.valCrossEnable);
   setDef("valCrossMax", d.valCrossMax);
   setDef("metaHoldoutMode", "light");
+
+  // Cost model migration: older settings used `commission` directly.
+  setDef("costPreset", "custom");
+  if (!has("feeBps") && $("feeBps")) {
+    const comm = num(settings.commission, NaN);
+    $("feeBps").value = String(Number.isFinite(comm) ? (Math.max(0, comm) * 10_000) : 0);
+    patched = true;
+  }
+  setDef("spreadBps", 0);
+  setDef("slippageBps", 0);
+  syncCostUi({ save: false });
   if (patched) saveSettingsSoon();
   updateDeviceIdEnabled();
   updatePolygonAdjustedUi();
@@ -6822,6 +6994,7 @@ function applySettingsObject(settings) {
     else el.value = String(value);
   }
 
+  syncCostUi({ save: false });
   updateStrategyUi();
   applyBackendSelectionConstraints();
   updateDeviceIdEnabled();
@@ -6919,7 +7092,24 @@ function applyRequestToUi(req) {
   if ($("exportAllCsvPath")) $("exportAllCsvPath").value = String(req.export_all_csv_path || "");
 
   const st = kind === "CompositeMo" ? (req.base_strategy || {}) : (req.strategy || {});
-  if ($("commission")) $("commission").value = String(num(st.commission, 0));
+  const presetRaw = String(st.cost_preset || "").trim();
+  const preset = COST_PRESETS[presetRaw] ? presetRaw : "custom";
+  if ($("costPreset")) $("costPreset").value = preset;
+
+  const comm = num(st.commission, 0);
+  const feeBps = Number(st.fee_bps);
+  const spreadBps = Number(st.spread_bps);
+  const slipBps = Number(st.slippage_bps);
+
+  const hasBps =
+    Number.isFinite(feeBps) && feeBps >= 0
+    && Number.isFinite(spreadBps) && spreadBps >= 0
+    && Number.isFinite(slipBps) && slipBps >= 0;
+
+  if ($("feeBps")) $("feeBps").value = String(hasBps ? feeBps : Math.max(0, comm) * 10_000);
+  if ($("spreadBps")) $("spreadBps").value = String(hasBps ? spreadBps : 0);
+  if ($("slippageBps")) $("slippageBps").value = String(hasBps ? slipBps : 0);
+  syncCostUi({ save: false });
   if ($("epsRel")) $("epsRel").value = String(num(st.eps_rel, 0));
   if ($("longOnly")) $("longOnly").checked = !!st.long_only;
   if ($("allowFlip")) $("allowFlip").checked = !!st.allow_flip;
@@ -7665,8 +7855,18 @@ function buildSavedRunReqSnapshot(req) {
     if (strategy.allow_flip === true) flags.push("allow-flip");
     if (strategy.trade_on_next_bar === true) flags.push("trade-next");
     const commission = Number(strategy.commission || 0);
+    const feeBps = Number(strategy.fee_bps);
+    const spreadBps = Number(strategy.spread_bps);
+    const slipBps = Number(strategy.slippage_bps);
     const eps = Number(strategy.eps_rel || 0);
-    lines.push(`strategy params: commission=${fmtFixed(commission, 4)}, eps_rel=${fmtFixed(eps, 4)}${flags.length ? ` (${flags.join(",")})` : ""}`);
+    const hasBps =
+      Number.isFinite(feeBps) && feeBps >= 0
+      && Number.isFinite(spreadBps) && spreadBps >= 0
+      && Number.isFinite(slipBps) && slipBps >= 0;
+    const costText = hasBps
+      ? `fee_bps=${fmtFixed(feeBps, 2)}, spread_bps=${fmtFixed(spreadBps, 2)}, slippage_bps=${fmtFixed(slipBps, 2)}`
+      : `commission=${fmtFixed(commission, 4)}`;
+    lines.push(`strategy params: ${costText}, eps_rel=${fmtFixed(eps, 4)}${flags.length ? ` (${flags.join(",")})` : ""}`);
   }
 
   if (kind !== "DoubleMa") {
@@ -8444,9 +8644,58 @@ function renderTopTableSkeleton(opts) {
 }
 
 function updateTopTableNoRunUi() {
+  const guard = $("topSelectionGuardrail");
+  if (guard) {
+    guard.style.display = "none";
+    guard.textContent = "";
+    guard.className = "muted badText";
+  }
   if (CURRENT_RUN?.res) return;
   if (RUNNING) renderTopTableSkeleton({ rows: 9 });
   else renderTopTablePlaceholder("Run an optimization to populate Top results.");
+}
+
+function setTopSelectionGuardrail(msg, kind) {
+  const el = $("topSelectionGuardrail");
+  if (!el) return;
+  const text = String(msg || "").trim();
+  if (!text) {
+    el.style.display = "none";
+    el.textContent = "";
+    el.className = "muted badText";
+    return;
+  }
+  el.style.display = "block";
+  el.textContent = text;
+  const k = String(kind || "").trim();
+  el.className = k === "ok" ? "muted" : "muted badText";
+}
+
+function updateTopSelectionGuardrail(req) {
+  if (!CURRENT_RUN?.res) {
+    setTopSelectionGuardrail("", "");
+    return;
+  }
+  const hasRows = Array.isArray(TOP_ROWS_FILTERED) && TOP_ROWS_FILTERED.length > 0;
+  if (!hasRows) {
+    setTopSelectionGuardrail("", "");
+    return;
+  }
+
+  const valRes = CURRENT_VALIDATION?.res || null;
+  if (!valRes) {
+    setTopSelectionGuardrail(
+      "Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust.",
+      "danger",
+    );
+    return;
+  }
+
+  const runKind = String(req?.strategy_kind || req?.strategyKind || "").trim() || "DoubleMa";
+  setTopSelectionGuardrail(
+    `Validation context loaded for ${runKind}. Final selection should still include holdout/meta confirmation.`,
+    "ok",
+  );
 }
 
 function updateTopSortUi() {
@@ -8488,6 +8737,7 @@ function renderTopTable(res, req) {
   const sorted = sortRows(TOP_ROWS, TOP_SORT.key, TOP_SORT.dir, obj);
   const filters = readTopFiltersFromUi();
   TOP_ROWS_FILTERED = applyTopFilters(sorted, filters);
+  updateTopSelectionGuardrail(req);
 
   const meta = $("topFilterMeta");
   if (meta) {
@@ -11394,9 +11644,39 @@ function renderBest(res, req) {
   const el = $("bestSummary");
   if (!el) return;
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
-  const isComp = kindRaw === "CompositeCpu" || kindRaw === "CompositeMo";
 
-  if (isComp && CURRENT_VALIDATION?.res && CURRENT_VALIDATION.ts === CURRENT_RUN?.ts) {
+  const metaRes = LAST_META_RUN?.result && typeof LAST_META_RUN.result === "object" ? LAST_META_RUN.result : null;
+  const metaKind = String(metaRes?.strategy_kind || "").trim();
+  const metaTop = Array.isArray(metaRes?.groups) && metaRes.groups.length ? metaRes.groups[0] : null;
+  const metaHold = metaTop?.holdout && typeof metaTop.holdout === "object" ? metaTop.holdout : null;
+  if (metaTop && metaHold && (!metaKind || metaKind === kindRaw)) {
+    const p = metaTop.params && typeof metaTop.params === "object" ? metaTop.params : {};
+    const title =
+      `${String(p.fast_ma_type || "?").toUpperCase()}(${p.fast_len || "?"}) vs ` +
+      `${String(p.slow_ma_type || "?").toUpperCase()}(${p.slow_len || "?"})`;
+    const groups = Number(Array.isArray(metaRes?.groups) ? metaRes.groups.length : 0);
+    const datasets = Number(metaHold.datasets || 0);
+    el.textContent =
+      `final selection: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
+      `meta=${fmt(metaTop.meta_score, 6)} robust_p10=${fmt(metaTop.robust_score_p10, 6)} dd_p90=${fmt(metaTop.max_dd_p90, 6)} | ` +
+      `holdout pass=${fmtFixed(Number(metaHold.pass_rate || 0) * 100, 1)}% p10=${fmt(metaHold.score_p10, 6)} dd_p90=${fmt(metaHold.max_dd_p90, 6)} datasets=${datasets} groups=${groups}`;
+    renderBestCard({
+      kicker: "Final selection",
+      title,
+      meta: `meta+holdout · groups=${groups} · datasets=${datasets}`,
+      stats: [
+        { label: "Meta", value: fmt(metaTop.meta_score, 6) },
+        { label: "Robust p10", value: fmt(metaTop.robust_score_p10, 6) },
+        { label: "DD p90", value: fmt(metaTop.max_dd_p90, 6) },
+        { label: "H pass", value: `${fmtFixed(Number(metaHold.pass_rate || 0) * 100, 1)}%` },
+        { label: "H p10", value: fmt(metaHold.score_p10, 6) },
+        { label: "H DD p90", value: fmt(metaHold.max_dd_p90, 6) },
+      ],
+    });
+    return;
+  }
+
+  if (CURRENT_VALIDATION?.res && CURRENT_VALIDATION.ts === CURRENT_RUN?.ts) {
     const { rows, hasCross, usedFallback } = computeValidationShortlist(CURRENT_VALIDATION.res);
     const c = Array.isArray(rows) && rows.length ? rows[0] : null;
     if (c) {
@@ -11419,7 +11699,7 @@ function renderBest(res, req) {
       renderBestCard({
         kicker: usedFallback ? "Recommended (fallback)" : "Recommended",
         title,
-        meta: `validation shortlist · candidates=${Array.isArray(rows) ? rows.length : 0}${hasCross ? " · cross-ticker" : ""}`,
+        meta: `validation shortlist · candidates=${Array.isArray(rows) ? rows.length : 0}${hasCross ? " · cross-ticker" : ""} · holdout via Meta`,
         stats: [
           { label: "Robust", value: robustV },
           ...(crossV ? [{ label: "Cross", value: crossV }] : []),
@@ -11666,18 +11946,7 @@ function getDoubleMaRequest() {
     if (exportAllCsvPath) throw new Error("Coarse→Fine mode cannot be used with exportAllCsvPath.");
   }
 
-  const commission = num($("commission")?.value, 0);
-  const epsRel = num($("epsRel")?.value, 0);
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
-
-  const strategy = {
-    long_only: !!$("longOnly")?.checked,
-    allow_flip: !!$("allowFlip")?.checked,
-    trade_on_next_bar: !!$("tradeOnNext")?.checked,
-    commission,
-    eps_rel: epsRel,
-  };
+  const strategy = readStrategyCfgFromUi();
 
   const backendObj =
     backend === "GpuOnly" || backend === "GpuKernel" || backend === "Auto"
@@ -12374,17 +12643,7 @@ function getCompositeMoRequest() {
   const maSource = $("maSource").value;
   validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource);
 
-  const commission = num($("commission")?.value, 0);
-  const epsRel = num($("epsRel")?.value, 0);
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
-  const baseStrategy = {
-    long_only: !!$("longOnly")?.checked,
-    allow_flip: !!$("allowFlip")?.checked,
-    trade_on_next_bar: !!$("tradeOnNext")?.checked,
-    commission,
-    eps_rel: epsRel,
-  };
+  const baseStrategy = readStrategyCfgFromUi();
 
   const maximize = $("objective").value;
   const minimize = $("moObjectiveMin")?.value || "MaxDrawdown";
@@ -12621,18 +12880,7 @@ function getCompositeRequest() {
 
   const heatmapBins = 0;
 
-  const commission = num($("commission")?.value, 0);
-  const epsRel = num($("epsRel")?.value, 0);
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
-
-  const strategy = {
-    long_only: !!$("longOnly")?.checked,
-    allow_flip: !!$("allowFlip")?.checked,
-    trade_on_next_bar: !!$("tradeOnNext")?.checked,
-    commission,
-    eps_rel: epsRel,
-  };
+  const strategy = readStrategyCfgFromUi();
 
   return {
     strategy_kind: "CompositeCpu",
@@ -12667,6 +12915,14 @@ function kindFromReq(req) {
   return kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
 }
 
+function parseValidationProbabilityGate(inputId) {
+  const raw = String($(inputId)?.value ?? "").trim();
+  if (!raw) return null;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return null;
+  return Math.max(0, Math.min(1, v));
+}
+
 function getValidationRequest(opts) {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
@@ -12679,6 +12935,8 @@ function getValidationRequest(opts) {
 
   const maxCandidates = Math.max(1, Math.floor(num($("valCandidates")?.value, 32)));
   const seed = Math.max(0, Math.floor(num($("valSeed")?.value, 1)));
+  const min_psr = parseValidationProbabilityGate("valMinPsr");
+  const min_dsr = parseValidationProbabilityGate("valMinDsr");
 
   const useFiltered = opts?.useFiltered !== false;
   const rowsFiltered = Array.isArray(TOP_ROWS_FILTERED) ? TOP_ROWS_FILTERED : [];
@@ -12791,6 +13049,8 @@ function getValidationRequest(opts) {
     cscv_pbo,
     seed,
     max_candidates: maxCandidates,
+    min_psr,
+    min_dsr,
   };
 }
 
@@ -12817,6 +13077,17 @@ function validationCandidates(res) {
 function computeValidationShortlist(res) {
   const CSCV_RANK_FRAC_MIN = 0.55;
   const candidates = validationCandidates(res);
+  const minPsr = parseValidationProbabilityGate("valMinPsr");
+  const minDsr = parseValidationProbabilityGate("valMinDsr");
+  const hasProbGate = minPsr != null || minDsr != null;
+  const passProbabilityGates = (c) => {
+    if (!hasProbGate) return true;
+    const psr = Number(c?.psr);
+    const dsr = Number(c?.dsr);
+    if (minPsr != null && (!Number.isFinite(psr) || psr < minPsr)) return false;
+    if (minDsr != null && (!Number.isFinite(dsr) || dsr < minDsr)) return false;
+    return true;
+  };
   const hasCross = candidates.some((c) => c.cross_ticker && typeof c.cross_ticker === "object");
   const strict = candidates.filter((c) => {
     if (!c.robust_pareto) return false;
@@ -12844,9 +13115,10 @@ function computeValidationShortlist(res) {
     return true;
   };
 
-  const cscvFiltered = hasCscv ? baseRows.filter(passCscv) : baseRows;
+  const probFiltered = hasProbGate ? baseRows.filter(passProbabilityGates) : baseRows;
+  const cscvFiltered = hasCscv ? probFiltered.filter(passCscv) : probFiltered;
   const usedCscvFallback = hasCscv && baseRows.length && !cscvFiltered.length;
-  const pickedRows = usedCscvFallback ? baseRows : cscvFiltered;
+  const pickedRows = hasProbGate ? cscvFiltered : (usedCscvFallback ? baseRows : cscvFiltered);
 
   const sortByFinal = (a, b) => {
     const ar = Number(a?.robust_score || 0);
@@ -12882,6 +13154,10 @@ function computeValidationShortlist(res) {
     cscvThreshold,
     cscvRankMin: CSCV_RANK_FRAC_MIN,
     usedCscvFallback,
+    minPsr,
+    minDsr,
+    hasProbGate,
+    probPassN: probFiltered.length,
   };
 }
 
@@ -12891,7 +13167,22 @@ function renderValidationTable(res) {
   const meta = $("validationShortlistMeta");
   if (!wrap || !tbody) return;
 
-  const { candidates, rows, strictBase, hasCross, usedFallback, hasCscv, cscvCombos, cscvThreshold, cscvRankMin, usedCscvFallback } = computeValidationShortlist(res);
+  const {
+    candidates,
+    rows,
+    strictBase,
+    hasCross,
+    usedFallback,
+    hasCscv,
+    cscvCombos,
+    cscvThreshold,
+    cscvRankMin,
+    usedCscvFallback,
+    minPsr,
+    minDsr,
+    hasProbGate,
+    probPassN,
+  } = computeValidationShortlist(res);
 
   tbody.innerHTML = "";
   if (!rows.length) {
@@ -12905,17 +13196,21 @@ function renderValidationTable(res) {
   const robustParetoN = candidates.filter((c) => !!c.robust_pareto).length;
   const crossParetoN = hasCross ? candidates.filter((c) => !!c.cross_ticker_pareto).length : 0;
   const baseRule = hasCross ? "robust_pareto && cross_ticker_pareto" : "robust_pareto";
+  const probRule = hasProbGate
+    ? `prob(${minPsr != null ? `psr>=${fmtFixed(minPsr, 2)}` : ""}${minPsr != null && minDsr != null ? "," : ""}${minDsr != null ? `dsr>=${fmtFixed(minDsr, 2)}` : ""})`
+    : "";
   const cscvRule = hasCscv ? `cscv(oos_rank_p50>=${cscvRankMin}, oos_sharpe_p50>=${cscvThreshold})` : "";
-  const rule = [baseRule, cscvRule].filter((s) => !!s).join(" && ");
+  const rule = [baseRule, probRule, cscvRule].filter((s) => !!s).join(" && ");
   const baseFallbackNote = usedFallback ? " • (fallback: top robust score)" : "";
-  const cscvFallbackNote = usedCscvFallback ? " • (cscv fallback)" : "";
+  const cscvFallbackNote = usedCscvFallback && !hasProbGate ? " • (cscv fallback)" : "";
   if (meta) {
     const crossNote = hasCross ? ` • cross_pareto=${crossParetoN}/${candidates.length}` : "";
+    const probNote = hasProbGate ? ` • prob_pass=${probPassN}/${strictBase.length ? strictBase.length : candidates.length}` : "";
     const cscvNote = hasCscv ? ` • cscv=${cscvCombos} combos` : "";
     const baseN = strictBase.length ? strictBase.length : candidates.length;
     const cscvPassN = rows.length;
     const cscvPassNote = hasCscv ? ` • cscv_pass=${cscvPassN}/${baseN}` : "";
-    meta.textContent = `shortlist=${rows.length}/${candidates.length} • robust_pareto=${robustParetoN}/${candidates.length}${crossNote}${cscvNote}${cscvPassNote} • rule=${rule}${baseFallbackNote}${cscvFallbackNote}`;
+    meta.textContent = `shortlist=${rows.length}/${candidates.length} • robust_pareto=${robustParetoN}/${candidates.length}${crossNote}${probNote}${cscvNote}${cscvPassNote} • rule=${rule}${baseFallbackNote}${cscvFallbackNote}`;
   }
 
   for (let i = 0; i < rows.length; i++) {
@@ -12941,6 +13236,14 @@ function renderValidationTable(res) {
     const tdRobust = document.createElement("td");
     tdRobust.textContent = fmt(c.robust_score, 6);
     tdRobust.className = "mono";
+
+    const tdPsr = document.createElement("td");
+    tdPsr.textContent = c.psr != null ? fmt(c.psr, 4) : "-";
+    tdPsr.className = "mono";
+
+    const tdDsr = document.createElement("td");
+    tdDsr.textContent = c.dsr != null ? fmt(c.dsr, 4) : "-";
+    tdDsr.className = "mono";
 
     const tdCscv = document.createElement("td");
     const cscv = c.cscv_pbo && typeof c.cscv_pbo === "object" ? c.cscv_pbo : null;
@@ -12987,6 +13290,8 @@ function renderValidationTable(res) {
     tr.appendChild(tdFast);
     tr.appendChild(tdSlow);
     tr.appendChild(tdRobust);
+    tr.appendChild(tdPsr);
+    tr.appendChild(tdDsr);
     tr.appendChild(tdCscv);
     tr.appendChild(tdRobustPareto);
     tr.appendChild(tdCross);
@@ -13032,7 +13337,7 @@ function exportValidationShortlistCsv() {
   }
 
   const lines = [
-    "rank,fast_ma,fast_len,slow_ma,slow_len,robust_score,robust_pareto,cross_score,cross_pareto,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_sharpe_p50,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,params_json",
+    "rank,fast_ma,fast_len,slow_ma,slow_len,robust_score,robust_pareto,cross_score,cross_pareto,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_sharpe_p50,psr,dsr,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,params_json",
   ];
   for (let i = 0; i < rows.length; i++) {
     const c = rows[i] || {};
@@ -13056,6 +13361,8 @@ function exportValidationShortlistCsv() {
       cscv ? Number(cscv.is_selected_frac || 0) : "",
       cscv ? Number(cscv.oos_rank_frac_p50 || 0) : "",
       cscv ? Number(cscv.oos_metric_p50 || 0) : "",
+      c.psr != null ? Number(c.psr) : "",
+      c.dsr != null ? Number(c.dsr) : "",
       Number(m.pnl || 0),
       Number(m.sharpe || 0),
       Number(m.max_dd || 0),
@@ -13213,7 +13520,17 @@ async function loadCsv() {
   const cachePath = String(resp?.cache_path || "").trim();
   CURRENT_BASE_DATA_ID = id;
   CURRENT_BASE_DATA_META = meta;
-  CURRENT_BASE_DATASET_CTX = { source: "csv", label: fileBasename(path), timeframe: String(meta?.timeframe || "").trim() || null };
+  const baseTf = String(meta?.timeframe || "").trim() || null;
+  CURRENT_BASE_DATASET_CTX = {
+    source: "csv",
+    label: fileBasename(path),
+    timeframe: baseTf,
+    base_timeframe: baseTf,
+    derived_timeframe: baseTf,
+    resample_applied: false,
+    resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+    resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+  };
   CURRENT_DATA_META = meta;
   CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX };
   clearDrillCaches({ clearBars: true });
@@ -13477,18 +13794,7 @@ function getCompositeRequestForFingerprint() {
   const heatmapBins = Math.max(0, Math.floor(num($("heatmapBins")?.value, 0)));
   if (heatmapBins > 512) throw new Error("heatmapBins must be <= 512.");
 
-  const commission = num($("commission")?.value, 0);
-  const epsRel = num($("epsRel")?.value, 0);
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
-
-  const strategy = {
-    long_only: !!$("longOnly")?.checked,
-    allow_flip: !!$("allowFlip")?.checked,
-    trade_on_next_bar: !!$("tradeOnNext")?.checked,
-    commission,
-    eps_rel: epsRel,
-  };
+  const strategy = readStrategyCfgFromUi();
 
   return {
     strategy_kind: "CompositeCpu",
@@ -13541,17 +13847,7 @@ function getCompositeMoRequestForFingerprint() {
 
   const maSource = String($("maSource")?.value || "close");
 
-  const commission = num($("commission")?.value, 0);
-  const epsRel = num($("epsRel")?.value, 0);
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("commission must be in [0, 1).");
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error("eps_rel must be >= 0.");
-  const baseStrategy = {
-    long_only: !!$("longOnly")?.checked,
-    allow_flip: !!$("allowFlip")?.checked,
-    trade_on_next_bar: !!$("tradeOnNext")?.checked,
-    commission,
-    eps_rel: epsRel,
-  };
+  const baseStrategy = readStrategyCfgFromUi();
 
   const maximize = String($("objective")?.value || "Sharpe");
   const minimize = String($("moObjectiveMin")?.value || "MaxDrawdown");
@@ -13803,17 +14099,28 @@ async function runBatchWorkflow() {
         }
       } catch {}
       try {
-        const resp = await invoke("list_repo_data_csvs", { maxFiles: 20000, recursive: true });
+        const resp = await invoke("list_repo_data_csvs", { maxFiles: 20000, recursive: true, includeIdentity: true });
         const localPaths = Array.isArray(resp?.csv_paths) ? resp.csv_paths : [];
-        for (const p0 of localPaths) {
-          const p = String(p0 || "").trim();
+        const localEntries = Array.isArray(resp?.csv_entries) ? resp.csv_entries : [];
+        const locals = localEntries.length ? localEntries : localPaths.map((p) => ({ csv_path: p }));
+        for (const e of locals) {
+          const p = String(e?.csv_path || "").trim();
           if (!p || merged.has(p)) continue;
+          const size = Number(e?.source_size_bytes ?? NaN);
+          const mtime = Number(e?.source_mtime_utc_ms ?? NaN);
+          const fp = String(e?.source_content_fingerprint || "").trim();
+          const source_size_bytes = Number.isFinite(size) && size >= 0 ? size : undefined;
+          const source_mtime_utc_ms = Number.isFinite(mtime) && mtime > 0 ? mtime : undefined;
+          const source_content_fingerprint = fp || undefined;
           merged.set(p, {
             source: "repo_data",
             market: "local",
             display_symbol: fileBasename(p) || p,
             csv_path: p,
             timeframe: "",
+            source_size_bytes,
+            source_mtime_utc_ms,
+            source_content_fingerprint,
           });
         }
       } catch {}
@@ -13857,7 +14164,11 @@ async function runBatchWorkflow() {
     const expectedFingerprint = computeConfigFingerprint(getRequestForFingerprint(), getValidationReqForFingerprintFromUi());
     const batchTimeframes = new Set();
     if (expectedTimeframe) batchTimeframes.add(expectedTimeframe);
-    let doneSet = new Set();
+    const doneLoose = new Set(); // csv_path + timeframe
+    const doneStrict = new Set(); // csv_path + timeframe + source identity (fp preferred, else size/mtime)
+    const doneKeyLoose = (csv_path, tf) => `${csv_path}@@tf=${tf || ""}`;
+    const doneKeyStrictFp = (csv_path, tf, fp) => `${csv_path}@@tf=${tf || ""}@@fp=${fp}`;
+    const doneKeyStrictMeta = (csv_path, tf, size, mtime) => `${csv_path}@@tf=${tf || ""}@@id=${size}@${mtime}`;
     if (skip_done && primary_tag) {
       try {
         const runs = await invoke("list_run_artifacts");
@@ -13870,10 +14181,27 @@ async function runBatchWorkflow() {
           if (!tags.includes(primary_tag.toLowerCase())) continue;
           const csv = String(r?.csv_path || "").trim();
           if (!csv) continue;
+          const rTf = String(r?.timeframe || "").trim();
+          if (expectedTimeframe) {
+            if (!rTf) continue;
+            if (rTf !== expectedTimeframe) continue;
+          }
           const hasVal = !!r?.has_validation;
           const hasXlsx = !!String(r?.report_xlsx_path || "").trim();
           if (!hasVal || (requireXlsx && !hasXlsx)) continue;
-          doneSet.add(csv);
+
+          const tfKey = expectedTimeframe || rTf || "";
+          doneLoose.add(doneKeyLoose(csv, tfKey));
+
+          const runFp = String(r?.source_content_fingerprint || "").trim();
+          if (runFp) {
+            doneStrict.add(doneKeyStrictFp(csv, tfKey, runFp));
+            continue;
+          }
+          const size = Number(r?.source_size_bytes ?? NaN);
+          const mtime = Number(r?.source_mtime_utc_ms ?? NaN);
+          const hasId = Number.isFinite(size) && size >= 0 && Number.isFinite(mtime) && mtime > 0;
+          if (hasId) doneStrict.add(doneKeyStrictMeta(csv, tfKey, size, mtime));
         }
       } catch {}
     }
@@ -13897,7 +14225,19 @@ async function runBatchWorkflow() {
       const hoHint = holdoutSet.size ? ` • holdout=${holdoutSet.size}/${n}` : "";
       updateBatchMeta(`running ${i + 1}/${n}: ${label || "dataset"}${isHoldout ? " [holdout]" : ""}${hoHint}`);
 
-      if (doneSet.has(path)) {
+      const tfKey = expectedTimeframe || "";
+      const looseKey = doneKeyLoose(path, tfKey);
+      const curFp = String(ds?.source_content_fingerprint || "").trim();
+      const hasCurFp = !!curFp;
+      const curSize = Number(ds?.source_size_bytes ?? NaN);
+      const curMtime = Number(ds?.source_mtime_utc_ms ?? NaN);
+      const hasCurId = Number.isFinite(curSize) && curSize >= 0 && Number.isFinite(curMtime) && curMtime > 0;
+      const strictKey = hasCurFp
+        ? doneKeyStrictFp(path, tfKey, curFp)
+        : (hasCurId ? doneKeyStrictMeta(path, tfKey, curSize, curMtime) : "");
+      const isDone = strictKey ? doneStrict.has(strictKey) : doneLoose.has(looseKey);
+
+      if (isDone) {
         skipped += 1;
         updateBatchMeta(`skipping ${label || "dataset"} (already completed for ${primary_tag})`);
         skippedRows.push({ csv_path: path, label, is_holdout: isHoldout });
@@ -13928,6 +14268,11 @@ async function runBatchWorkflow() {
           market,
           adjusted: adjFlag,
           timeframe: baseTf,
+          base_timeframe: baseTf,
+          derived_timeframe: baseTf,
+          resample_applied: false,
+          resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+          resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
         };
         CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX };
       }
@@ -14179,11 +14524,33 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
     const meta = resp?.meta && typeof resp.meta === "object" ? resp.meta : null;
     const baseId = String(resp?.base_load?.id || "").trim() || id;
     const baseMeta = resp?.base_load?.meta && typeof resp.base_load.meta === "object" ? resp.base_load.meta : meta;
+    const baseTf = String(baseMeta?.timeframe || "1m").trim() || "1m";
+    const curTf = String(tfLabel || baseTf).trim() || baseTf;
     CURRENT_BASE_DATA_ID = baseId;
     CURRENT_BASE_DATA_META = baseMeta;
-    CURRENT_BASE_DATASET_CTX = { source: "polygon", label: symbol, symbol, market, adjusted, timeframe: String(baseMeta?.timeframe || "1m").trim() || "1m" };
+    CURRENT_BASE_DATASET_CTX = {
+      source: "polygon",
+      label: symbol,
+      symbol,
+      market,
+      adjusted,
+      timeframe: baseTf,
+      base_timeframe: baseTf,
+      derived_timeframe: baseTf,
+      resample_applied: false,
+      resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+      resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+    };
     CURRENT_DATA_META = meta;
-    CURRENT_DATASET_CTX = { ...CURRENT_BASE_DATASET_CTX, timeframe: tfLabel };
+    CURRENT_DATASET_CTX = {
+      ...CURRENT_BASE_DATASET_CTX,
+      timeframe: curTf,
+      base_timeframe: baseTf,
+      derived_timeframe: curTf,
+      resample_applied: !!(baseTf && curTf && baseTf !== curTf),
+      resample_rule: RESAMPLE_RULE_SESSION_RELATIVE_OHLCV,
+      resample_anchor: RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP,
+    };
     clearDrillCaches({ clearBars: true });
     $("dataId").textContent = id || "—";
     renderDataMeta(meta);
@@ -14527,6 +14894,10 @@ for (const id of [
   "exportAllCsvPath",
   "heatmapBins",
   "commission",
+  "costPreset",
+  "feeBps",
+  "spreadBps",
+  "slippageBps",
   "epsRel",
   "longOnly",
   "allowFlip",
@@ -14665,6 +15036,24 @@ for (const id of [
   if (!el) continue;
   el.addEventListener("change", saveSettingsSoon);
   el.addEventListener("input", saveSettingsSoon);
+}
+
+// Execution costs UI: keep derived commission and hint in sync.
+$("costPreset")?.addEventListener("change", () => {
+  const id = String($("costPreset")?.value || "custom").trim() || "custom";
+  if (id !== "custom") applyCostPreset(id, { silent: false });
+  else syncCostUi({ save: false });
+});
+for (const id of ["feeBps", "spreadBps", "slippageBps"]) {
+  const el = $(id);
+  if (!el) continue;
+  const onChange = () => {
+    const presetEl = $("costPreset");
+    if (presetEl && presetEl.value !== "custom") presetEl.value = "custom";
+    syncCostUi({ save: false });
+  };
+  el.addEventListener("change", onChange);
+  el.addEventListener("input", onChange);
 }
 
 for (const id of ["fastStart", "fastEnd", "fastStep", "slowStart", "slowEnd", "slowStep", "includeAll"]) {
@@ -15366,6 +15755,7 @@ const SETTINGS_LOADED = loadSettings();
 if (!SETTINGS_LOADED) {
   applyPresetProfile($("presetProfile")?.value || "Balanced", { silent: true });
 }
+syncCostUi({ save: false });
 updatePolygonAdjustedUi();
 if ($("moSearchSpace") && !String($("moSearchSpace").value || "").trim()) {
   $("moSearchSpace").value = JSON.stringify(defaultCompositeMoSearchSpace(), null, 2);

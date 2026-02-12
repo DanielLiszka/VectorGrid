@@ -707,7 +707,10 @@ fn collect_same_day_gap_dates(sorted: &[AggBar], threshold_ms: i64) -> Vec<Naive
     days.into_iter().collect()
 }
 
-pub fn validate_cached_dataset(cache_dir: &Path, csv_path: &str) -> Result<PolygonDatasetMeta, String> {
+pub fn validate_cached_dataset(
+    cache_dir: &Path,
+    csv_path: &str,
+) -> Result<PolygonDatasetMeta, String> {
     let p = Path::new(csv_path);
     if !p.exists() {
         return Err(format!("dataset file does not exist: {csv_path}"));
@@ -945,10 +948,10 @@ pub fn download_1m_to_cache(
     let mut row_count = cached_meta.as_ref().map(|m| m.row_count).unwrap_or(0);
 
     // Cache coverage decisions are made at the date granularity (Polygon aggs API uses dates).
-    let cached_min_date = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(min_ts)
-        .map(|dt| dt.date_naive());
-    let cached_max_date = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(max_ts)
-        .map(|dt| dt.date_naive());
+    let cached_min_date =
+        chrono::DateTime::<chrono::Utc>::from_timestamp_millis(min_ts).map(|dt| dt.date_naive());
+    let cached_max_date =
+        chrono::DateTime::<chrono::Utc>::from_timestamp_millis(max_ts).map(|dt| dt.date_naive());
 
     let have_full_range = match (cached_min_date, cached_max_date) {
         (Some(min_d), Some(max_d)) => csv_path.exists() && from_date >= min_d && to_date <= max_d,
@@ -985,8 +988,15 @@ pub fn download_1m_to_cache(
                     std::cmp::min(chunk_from + Duration::days(CHUNK_DAYS - 1), chunk_end);
                 let from_s = chunk_from.format("%Y-%m-%d").to_string();
                 let to_s = chunk_to.format("%Y-%m-%d").to_string();
-                let bars =
-                    fetch_chunk(&client, &api_key, &polygon_ticker, &from_s, &to_s, adjusted, &tf)?;
+                let bars = fetch_chunk(
+                    &client,
+                    &api_key,
+                    &polygon_ticker,
+                    &from_s,
+                    &to_s,
+                    adjusted,
+                    &tf,
+                )?;
                 let wrote = append_bars(&csv_path, &bars, &mut min_ts, &mut max_ts)?;
                 downloaded += wrote;
                 if row_count > 0 {
@@ -1002,8 +1012,15 @@ pub fn download_1m_to_cache(
                 let chunk_to = std::cmp::min(chunk_from + Duration::days(CHUNK_DAYS - 1), to_date);
                 let from_s = chunk_from.format("%Y-%m-%d").to_string();
                 let to_s = chunk_to.format("%Y-%m-%d").to_string();
-                let mut bars =
-                    fetch_chunk(&client, &api_key, &polygon_ticker, &from_s, &to_s, adjusted, &tf)?;
+                let mut bars = fetch_chunk(
+                    &client,
+                    &api_key,
+                    &polygon_ticker,
+                    &from_s,
+                    &to_s,
+                    adjusted,
+                    &tf,
+                )?;
                 all.append(&mut bars);
                 chunk_from = chunk_to + Duration::days(1);
             }
@@ -1055,11 +1072,7 @@ mod tests {
 
     fn make_temp_dir(prefix: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        let name = format!(
-            "{prefix}_{}_{}",
-            std::process::id(),
-            now_utc_ms().max(1)
-        );
+        let name = format!("{prefix}_{}_{}", std::process::id(), now_utc_ms().max(1));
         p.push(name);
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).expect("create temp dir");
@@ -1081,11 +1094,36 @@ mod tests {
 {},{},{},{},{},{}\n\
 {},{},{},{},{},{}\n\
 badline\n",
-            base_ts, 1.0, 1.0, 1.0, 1.0, 10.0,
-            base_ts + 60_000, 1.0, 1.0, 1.0, 1.0, 10.0,
-            base_ts + 60_000, 1.0, 1.0, 1.0, 1.0, 10.0,
-            base_ts + 30_000, 1.0, 1.0, 1.0, 1.0, 10.0,
-            base_ts + 240_000, 1.0, 1.0, 1.0, 1.0, 10.0,
+            base_ts,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            10.0,
+            base_ts + 60_000,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            10.0,
+            base_ts + 60_000,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            10.0,
+            base_ts + 30_000,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            10.0,
+            base_ts + 240_000,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            10.0,
         );
         fs::write(&csv_path, csv).expect("write csv");
 
@@ -1115,7 +1153,8 @@ badline\n",
         assert_eq!(integ.out_of_order, 1);
         assert_eq!(integ.same_day_gaps_gt_2min, 1);
 
-        let repaired = repair_cached_dataset("vectorta_test", &cache_dir, &csv_path_s).expect("repair");
+        let repaired =
+            repair_cached_dataset("vectorta_test", &cache_dir, &csv_path_s).expect("repair");
         let integ2 = repaired.integrity.expect("integrity after repair");
         assert_eq!(integ2.parse_errors, 1);
         assert_eq!(integ2.duplicates, 0);
@@ -1125,7 +1164,8 @@ badline\n",
         assert!(repaired.min_ts > 0);
         assert!(repaired.max_ts > repaired.min_ts);
 
-        let meta2 = validate_cached_dataset(&cache_dir, &csv_path_s).expect("validate after repair");
+        let meta2 =
+            validate_cached_dataset(&cache_dir, &csv_path_s).expect("validate after repair");
         let integ3 = meta2.integrity.expect("integrity after re-validate");
         assert_eq!(integ3.duplicates, 0);
         assert_eq!(integ3.out_of_order, 0);

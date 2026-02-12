@@ -65,7 +65,11 @@ pub struct CscvPboResult {
 
 fn sanitize_slices(slices: usize) -> usize {
     let s = slices.clamp(4, 32);
-    if (s & 1) == 0 { s } else { s.saturating_sub(1).max(4) }
+    if (s & 1) == 0 {
+        s
+    } else {
+        s.saturating_sub(1).max(4)
+    }
 }
 
 fn n_choose_k(n: usize, k: usize) -> u128 {
@@ -208,7 +212,11 @@ fn regression_slope_intercept_r2(x: &[f64], y: &[f64]) -> (f64, f64, f64) {
     } else {
         0.0
     };
-    (slope.if_finite_or(0.0), intercept.if_finite_or(0.0), r2.if_finite_or(0.0))
+    (
+        slope.if_finite_or(0.0),
+        intercept.if_finite_or(0.0),
+        r2.if_finite_or(0.0),
+    )
 }
 
 trait FiniteOr {
@@ -401,7 +409,12 @@ pub fn compute_cscv_pbo_from_slices(
 
         let done = ci.saturating_add(1);
         if (done & 0x3F) == 0 || done == combos {
-            crate::progress::emit_double_ma_progress(progress, done, combos, "composite_validate_cscv");
+            crate::progress::emit_double_ma_progress(
+                progress,
+                done,
+                combos,
+                "composite_validate_cscv",
+            );
         }
     }
 
@@ -482,7 +495,10 @@ mod tests {
             sum: -10.0,
             sumsq: 20.0,
         };
-        let zer = SliceReturnStats { sum: 0.0, sumsq: 0.0 };
+        let zer = SliceReturnStats {
+            sum: 0.0,
+            sumsq: 0.0,
+        };
 
         let c0 = vec![pos, neg, pos, neg];
         let c1 = vec![neg, pos, neg, pos];
