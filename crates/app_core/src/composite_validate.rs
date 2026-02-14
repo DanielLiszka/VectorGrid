@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -36,6 +37,8 @@ pub struct CompositeParams {
     pub macz: MaczGateParams,
     #[serde(default)]
     pub ott: OttGateParams,
+    #[serde(default)]
+    pub signal_mode: CompositeSignalMode,
     #[serde(default)]
     pub strategy: StrategyConfig,
 }
@@ -125,11 +128,67 @@ fn default_cross_max_datasets() -> usize {
     8
 }
 
+fn default_cross_gate_enabled() -> bool {
+    true
+}
+
+fn default_cross_gate_require_pareto() -> bool {
+    true
+}
+
+fn default_cross_gate_min_score() -> f64 {
+    0.0
+}
+
+fn default_cross_gate_min_pnl_positive_frac() -> f64 {
+    0.5
+}
+
+fn default_cross_gate_min_sharpe_median() -> f64 {
+    0.0
+}
+
+fn default_cross_gate_min_datasets() -> usize {
+    1
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct CrossTickerDataset {
     pub csv_path: String,
     #[serde(default)]
     pub label: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CrossTickerGateConfig {
+    #[serde(default = "default_cross_gate_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_cross_gate_require_pareto")]
+    pub require_pareto: bool,
+    #[serde(default = "default_cross_gate_min_score")]
+    pub min_score: f64,
+    #[serde(default = "default_cross_gate_min_pnl_positive_frac")]
+    pub min_pnl_positive_frac: f64,
+    #[serde(default = "default_cross_gate_min_sharpe_median")]
+    pub min_sharpe_median: f64,
+    #[serde(default)]
+    pub max_dd_worst: Option<f64>,
+    #[serde(default = "default_cross_gate_min_datasets")]
+    pub min_datasets: usize,
+}
+
+impl Default for CrossTickerGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cross_gate_enabled(),
+            require_pareto: default_cross_gate_require_pareto(),
+            min_score: default_cross_gate_min_score(),
+            min_pnl_positive_frac: default_cross_gate_min_pnl_positive_frac(),
+            min_sharpe_median: default_cross_gate_min_sharpe_median(),
+            max_dd_worst: None,
+            min_datasets: default_cross_gate_min_datasets(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -138,6 +197,8 @@ pub struct CrossTickerConfig {
     pub datasets: Vec<CrossTickerDataset>,
     #[serde(default = "default_cross_max_datasets")]
     pub max_datasets: usize,
+    #[serde(default)]
+    pub gate: CrossTickerGateConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -319,6 +380,7 @@ struct CandidateSeries<'a> {
     macz_hist: Vec<f64>,
     ott_line: Vec<f64>,
     start_t: usize,
+    signal_mode: CompositeSignalMode,
     cfg: StrategyConfig,
 }
 
@@ -452,6 +514,7 @@ fn build_candidate_series<'a>(
         macz_hist,
         ott_line,
         start_t,
+        signal_mode: params.signal_mode,
         cfg: params.strategy.clone(),
     })
 }
@@ -470,7 +533,7 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
     let macz = &series.macz_hist[..end_t];
     let ott_line = &series.ott_line[..end_t];
 
-    ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+    ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
         lr,
         ott_prices,
         fast,
@@ -480,22 +543,25 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
         ott_line,
         start_t,
         &series.cfg,
+        series.signal_mode,
     )
 }
 
 fn trades_for_series(series: &CandidateSeries<'_>) -> Vec<Trade> {
-    let curves = ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64(
-        series.lr,
-        series.ott_prices,
-        &series.fast,
-        &series.slow,
-        &series.halftrend_trend,
-        &series.macz_hist,
-        &series.ott_line,
-        series.start_t,
-        &series.cfg,
-        1,
-    );
+    let curves =
+        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+            series.lr,
+            series.ott_prices,
+            &series.fast,
+            &series.slow,
+            &series.halftrend_trend,
+            &series.macz_hist,
+            &series.ott_line,
+            series.start_t,
+            &series.cfg,
+            1,
+            series.signal_mode,
+        );
     curves.trades
 }
 
@@ -516,55 +582,31 @@ fn desired_positions_for_series(
     } else {
         0usize
     };
+    let mut pos: i32 = 0;
 
     for t in start_t..end_t {
         let t_sig = t.saturating_sub(trade_offset);
-        let f = series.fast[t_sig];
-        let s = series.slow[t_sig];
-        let eps = if series.cfg.eps_rel > 0.0 {
-            series.cfg.eps_rel * 1.0_f64.max(s.abs())
-        } else {
-            0.0
-        };
-
-        let mut sign: i32 = (f > s + eps) as i32 - (f < s - eps) as i32;
-        if series.cfg.long_only && sign < 0 {
-            sign = 0;
-        }
-
-        let ht = series.halftrend_trend[t_sig];
-        if !ht.is_finite() {
-            sign = 0;
-        } else if ht < 0.5 {
-            sign = sign.max(0);
-        } else {
-            sign = sign.min(0);
-        }
-
-        let mh = series.macz_hist[t_sig];
-        if !mh.is_finite() {
-            sign = 0;
-        } else if mh > 0.0 {
-            sign = sign.max(0);
-        } else if mh < 0.0 {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
-
-        let px = series.ott_prices[t_sig];
-        let ott = series.ott_line[t_sig];
-        if !px.is_finite() || !ott.is_finite() {
-            sign = 0;
-        } else if px > ott {
-            sign = sign.max(0);
-        } else if px < ott {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
-
+        let sign = ta_strategies::composite_cpu::composite_desired_position(
+            series.fast[t_sig],
+            series.slow[t_sig],
+            series.halftrend_trend[t_sig],
+            series.macz_hist[t_sig],
+            series.ott_prices[t_sig],
+            series.ott_line[t_sig],
+            pos,
+            &series.cfg,
+            series.signal_mode,
+        );
         out[t] = sign;
+        if sign != pos {
+            if pos == 0 || sign == 0 {
+                pos = sign;
+            } else if !series.cfg.allow_flip {
+                pos = 0;
+            } else {
+                pos = sign;
+            }
+        }
     }
     out
 }
@@ -609,53 +651,17 @@ fn slice_return_stats_for_series(
             break;
         }
         let t_sig = t.saturating_sub(trade_offset);
-        let f = series.fast[t_sig];
-        let s = series.slow[t_sig];
-
-        let mut sign: i32 = 0;
-        if f.is_finite() && s.is_finite() {
-            let eps = if series.cfg.eps_rel > 0.0 {
-                series.cfg.eps_rel * 1.0_f64.max(s.abs())
-            } else {
-                0.0
-            };
-            sign = (f > s + eps) as i32 - (f < s - eps) as i32;
-            if series.cfg.long_only && sign < 0 {
-                sign = 0;
-            }
-        }
-
-        let ht = series.halftrend_trend[t_sig];
-        if !ht.is_finite() {
-            sign = 0;
-        } else if ht < 0.5 {
-            sign = sign.max(0);
-        } else {
-            sign = sign.min(0);
-        }
-
-        let mh = series.macz_hist[t_sig];
-        if !mh.is_finite() {
-            sign = 0;
-        } else if mh > 0.0 {
-            sign = sign.max(0);
-        } else if mh < 0.0 {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
-
-        let px = series.ott_prices[t_sig];
-        let ott = series.ott_line[t_sig];
-        if !px.is_finite() || !ott.is_finite() {
-            sign = 0;
-        } else if px > ott {
-            sign = sign.max(0);
-        } else if px < ott {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
+        let sign = ta_strategies::composite_cpu::composite_desired_position(
+            series.fast[t_sig],
+            series.slow[t_sig],
+            series.halftrend_trend[t_sig],
+            series.macz_hist[t_sig],
+            series.ott_prices[t_sig],
+            series.ott_line[t_sig],
+            pos,
+            &series.cfg,
+            series.signal_mode,
+        );
 
         if sign != pos {
             if pos == 0 || sign == 0 {
@@ -1161,7 +1167,9 @@ pub fn run_composite_validation_blocking_with_candles(
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
             let robust_score = crate::validation_pipeline::robust_score_from_metrics(
                 robust_base,
-                walk_forward.as_ref().map(|w| (w.sharpe_median, w.max_dd_worst)),
+                walk_forward
+                    .as_ref()
+                    .map(|w| (w.sharpe_median, w.max_dd_worst)),
             );
 
             let done = processed.fetch_add(1, Ordering::Relaxed).saturating_add(1);
@@ -1326,6 +1334,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 
@@ -1434,6 +1443,7 @@ mod tests {
                 percent: -10.0,
                 ma_type: "".to_string(),
             },
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig {
                 long_only: true,
                 allow_flip: true,
@@ -1442,6 +1452,8 @@ mod tests {
                 fee_bps: f64::NAN,
                 spread_bps: f64::NAN,
                 slippage_bps: f64::NAN,
+                stop_loss_pct: None,
+                take_profit_pct: None,
                 commission: f64::NAN,
                 eps_rel: -1.0,
             },
@@ -1459,6 +1471,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 
@@ -1531,6 +1544,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 
@@ -1582,6 +1596,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 
@@ -1644,6 +1659,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 
@@ -1696,6 +1712,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 
@@ -1762,6 +1779,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         };
 

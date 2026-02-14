@@ -75,6 +75,8 @@ void compute_log_returns_f32(const float* __restrict__ prices,
 #define STRAT_TRADE_ON_NEXT_BAR      (1u<<2)
 #define STRAT_ENFORCE_FAST_LT_SLOW   (1u<<3)
 #define STRAT_SIGNED_EXPOSURE        (1u<<4)
+#define STRAT_STOP_LOSS              (1u<<5)
+#define STRAT_TAKE_PROFIT            (1u<<6)
 
 
 
@@ -97,6 +99,8 @@ void double_cross_backtest_tm_flex_f32(
 
     float commission,
     float eps_rel,
+    float stop_log,
+    float take_log,
     unsigned int flags,
     int M,
     float* __restrict__ metrics_out
@@ -107,6 +111,9 @@ void double_cross_backtest_tm_flex_f32(
     const int need_stats  = (M > 3);
     const int need_std    = (M > 4);
     const int need_expo   = (M > 5);
+    const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
+    const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
+    const int use_risk    = use_stop || use_take;
 
     const int total_pairs = Pf_tile * Ps_tile;
     for (int pair_local = blockIdx.x * blockDim.x + threadIdx.x;
@@ -160,53 +167,134 @@ void double_cross_backtest_tm_flex_f32(
         float mean = 0.0f, m2 = 0.0f;
         long long n = 0;
 
-        for (int t = start_t; t < T; ++t) {
-            const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
+        if (!use_risk) {
+            for (int t = start_t; t < T; ++t) {
+                const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
 
-            const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
-            const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
-            const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
+                const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
+                const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
+                const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
 
-            int sign = sgn_eps(f, s, eps);
-            if (flags & STRAT_LONG_ONLY) sign = max(sign, 0);
+                int sign = sgn_eps(f, s, eps);
+                if (flags & STRAT_LONG_ONLY) sign = max(sign, 0);
 
-            if (sign != pos) {
-                if (pos == 0 || sign == 0) {
-                    if (commission > 0.0f) log_eq += log_comm;
-                    if (need_trades) trades += 1;
-                    pos = (sign == 0) ? 0 : sign;
-                } else {
-                    if (flags & STRAT_NO_FLIP) {
+                if (sign != pos) {
+                    if (pos == 0 || sign == 0) {
                         if (commission > 0.0f) log_eq += log_comm;
                         if (need_trades) trades += 1;
-                        pos = 0;
+                        pos = (sign == 0) ? 0 : sign;
                     } else {
-                        if (commission > 0.0f) log_eq += 2.0f * log_comm;
-                        if (need_trades) trades += 2;
-                        pos = sign;
+                        if (flags & STRAT_NO_FLIP) {
+                            if (commission > 0.0f) log_eq += log_comm;
+                            if (need_trades) trades += 1;
+                            pos = 0;
+                        } else {
+                            if (commission > 0.0f) log_eq += 2.0f * log_comm;
+                            if (need_trades) trades += 2;
+                            pos = sign;
+                        }
+                    }
+                }
+
+                const float lr_t = lr[t];
+                log_eq += (float)pos * lr_t;
+
+                if (need_max_dd) {
+                    if (log_eq > log_peak) log_peak = log_eq;
+                    const float dd_log = log_peak - log_eq;
+                    if (dd_log > max_log_dd) max_log_dd = dd_log;
+                }
+
+                if (need_stats) {
+                    const float step_r = (pos == 0) ? 0.0f : (float)pos * expm1f(lr_t);
+                    n += 1;
+                    const float delta = step_r - mean;
+                    mean += delta / (float)n;
+                    m2   += delta * (step_r - mean);
+
+                    if (need_expo) {
+                        sum_abs_pos += llabs((long long)pos);
+                        sum_pos     += (long long)pos;
                     }
                 }
             }
+        } else {
+            float trade_log_ret = 0.0f;
 
-            const float lr_t = lr[t];
-            log_eq += (float)pos * lr_t;
+            for (int t = start_t; t < T; ++t) {
+                const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
 
-            if (need_max_dd) {
-                if (log_eq > log_peak) log_peak = log_eq;
-                const float dd_log = log_peak - log_eq;
-                if (dd_log > max_log_dd) max_log_dd = dd_log;
-            }
+                const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
+                const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
+                const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
 
-            if (need_stats) {
-                const float step_r = (pos == 0) ? 0.0f : (float)pos * expm1f(lr_t);
-                n += 1;
-                const float delta = step_r - mean;
-                mean += delta / (float)n;
-                m2   += delta * (step_r - mean);
+                int sign = sgn_eps(f, s, eps);
+                if (flags & STRAT_LONG_ONLY) sign = max(sign, 0);
 
-                if (need_expo) {
-                    sum_abs_pos += llabs((long long)pos);
-                    sum_pos     += (long long)pos;
+                if (sign != pos) {
+                    if (pos == 0 || sign == 0) {
+                        if (commission > 0.0f) {
+                            log_eq += log_comm;
+                            if (pos != 0) trade_log_ret += log_comm;
+                        }
+                        if (need_trades) trades += 1;
+                        pos = (sign == 0) ? 0 : sign;
+                        trade_log_ret = (pos != 0 && commission > 0.0f) ? log_comm : 0.0f;
+                    } else {
+                        if (flags & STRAT_NO_FLIP) {
+                            if (commission > 0.0f) {
+                                log_eq += log_comm;
+                                trade_log_ret += log_comm;
+                            }
+                            if (need_trades) trades += 1;
+                            pos = 0;
+                            trade_log_ret = 0.0f;
+                        } else {
+                            if (commission > 0.0f) {
+                                log_eq += 2.0f * log_comm;
+                                trade_log_ret += log_comm;
+                            }
+                            if (need_trades) trades += 2;
+                            pos = sign;
+                            trade_log_ret = (commission > 0.0f) ? log_comm : 0.0f;
+                        }
+                    }
+                }
+
+                const int pos_bar = pos;
+                const float lr_t = lr[t];
+                const float step_log = (float)pos_bar * lr_t;
+                log_eq += step_log;
+
+                if (pos_bar != 0) {
+                    trade_log_ret += step_log;
+                    const bool hit_stop = use_stop && (trade_log_ret <= stop_log);
+                    const bool hit_take = use_take && (trade_log_ret >= take_log);
+                    if (hit_stop || hit_take) {
+                        if (commission > 0.0f) log_eq += log_comm;
+                        if (need_trades) trades += 1;
+                        pos = 0;
+                        trade_log_ret = 0.0f;
+                    }
+                }
+
+                if (need_max_dd) {
+                    if (log_eq > log_peak) log_peak = log_eq;
+                    const float dd_log = log_peak - log_eq;
+                    if (dd_log > max_log_dd) max_log_dd = dd_log;
+                }
+
+                if (need_stats) {
+                    const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * expm1f(lr_t);
+                    n += 1;
+                    const float delta = step_r - mean;
+                    mean += delta / (float)n;
+                    m2 += delta * (step_r - mean);
+
+                    if (need_expo) {
+                        sum_abs_pos += llabs((long long)pos_bar);
+                        sum_pos += (long long)pos_bar;
+                    }
                 }
             }
         }

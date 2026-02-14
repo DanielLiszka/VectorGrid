@@ -1,4 +1,5 @@
 use crate::double_ma::{DoubleMaCurves, Metrics, MinMaxBins, StrategyConfig, Trade, TradeStats};
+use serde::{Deserialize, Serialize};
 
 fn clamp_bins(requested: usize, n_steps: usize) -> usize {
     if n_steps == 0 {
@@ -6,6 +7,98 @@ fn clamp_bins(requested: usize, n_steps: usize) -> usize {
     }
     let req = requested.clamp(1, 8192);
     req.min(n_steps)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositeSignalMode {
+    #[default]
+    HardGate,
+    EntryCoreExitOverlay,
+}
+
+#[inline(always)]
+pub fn composite_desired_position(
+    fast: f64,
+    slow: f64,
+    halftrend: f64,
+    macz_hist: f64,
+    ott_price: f64,
+    ott_line: f64,
+    current_pos: i32,
+    cfg: &StrategyConfig,
+    signal_mode: CompositeSignalMode,
+) -> i32 {
+    let eps = if cfg.eps_rel > 0.0 {
+        cfg.eps_rel * 1.0_f64.max(slow.abs())
+    } else {
+        0.0
+    };
+    let mut core_sign: i32 = (fast > slow + eps) as i32 - (fast < slow - eps) as i32;
+    if cfg.long_only && core_sign < 0 {
+        core_sign = 0;
+    }
+
+    if !halftrend.is_finite() {
+        core_sign = 0;
+    } else if halftrend < 0.5 {
+        core_sign = core_sign.max(0);
+    } else {
+        core_sign = core_sign.min(0);
+    }
+
+    match signal_mode {
+        CompositeSignalMode::HardGate => {
+            let mut sign = core_sign;
+            if !macz_hist.is_finite() {
+                sign = 0;
+            } else if macz_hist > 0.0 {
+                sign = sign.max(0);
+            } else if macz_hist < 0.0 {
+                sign = sign.min(0);
+            } else {
+                sign = 0;
+            }
+
+            if !ott_price.is_finite() || !ott_line.is_finite() {
+                sign = 0;
+            } else if ott_price > ott_line {
+                sign = sign.max(0);
+            } else if ott_price < ott_line {
+                sign = sign.min(0);
+            } else {
+                sign = 0;
+            }
+            sign
+        }
+        CompositeSignalMode::EntryCoreExitOverlay => {
+            if core_sign == 0 {
+                return 0;
+            }
+            let pos = current_pos.clamp(-1, 1);
+
+            // Entry is driven by the MA + HalfTrend core. MACZ/OTT are used as protective exits.
+            if pos > 0 && core_sign > 0 {
+                if !macz_hist.is_finite() || !ott_price.is_finite() || !ott_line.is_finite() {
+                    0
+                } else if macz_hist < 0.0 || ott_price < ott_line {
+                    0
+                } else {
+                    1
+                }
+            } else if pos < 0 && core_sign < 0 {
+                if !macz_hist.is_finite() || !ott_price.is_finite() || !ott_line.is_finite() {
+                    0
+                } else if macz_hist > 0.0 || ott_price > ott_line {
+                    0
+                } else {
+                    -1
+                }
+            } else {
+                core_sign
+            }
+        }
+    }
 }
 
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
@@ -19,6 +112,32 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
+    eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+        lr,
+        ott_prices,
+        fast,
+        slow,
+        halftrend_trend,
+        macz_hist,
+        ott_line,
+        start_t,
+        cfg,
+        CompositeSignalMode::HardGate,
+    )
+}
+
+pub fn eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+    lr: &[f64],
+    ott_prices: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend_trend: &[f64],
+    macz_hist: &[f64],
+    ott_line: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    signal_mode: CompositeSignalMode,
+) -> Metrics {
     eval_composite_metrics_from_log_returns_and_mas_f64_impl::<true>(
         lr,
         ott_prices,
@@ -29,6 +148,7 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
         ott_line,
         start_t,
         cfg,
+        signal_mode,
     )
 }
 
@@ -43,6 +163,32 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
+    eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
+        lr,
+        ott_prices,
+        fast,
+        slow,
+        halftrend_trend,
+        macz_hist,
+        ott_line,
+        start_t,
+        cfg,
+        CompositeSignalMode::HardGate,
+    )
+}
+
+pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
+    lr: &[f64],
+    ott_prices: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend_trend: &[f64],
+    macz_hist: &[f64],
+    ott_line: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    signal_mode: CompositeSignalMode,
+) -> Metrics {
     eval_composite_metrics_from_log_returns_and_mas_f64_impl::<false>(
         lr,
         ott_prices,
@@ -53,6 +199,7 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64_fast(
         ott_line,
         start_t,
         cfg,
+        signal_mode,
     )
 }
 
@@ -66,6 +213,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     ott_line: &[f64],
     start_t: usize,
     cfg: &StrategyConfig,
+    signal_mode: CompositeSignalMode,
 ) -> Metrics {
     let n_total = lr.len();
     if n_total < 2
@@ -105,7 +253,8 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         };
     }
 
-    if !(0.0..1.0).contains(&cfg.effective_commission()) && cfg.effective_commission() != 0.0 {
+    let commission = cfg.effective_commission();
+    if !(0.0..1.0).contains(&commission) && commission != 0.0 {
         return Metrics {
             pnl: 0.0,
             sharpe: 0.0,
@@ -122,11 +271,15 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
 
     let obs: u64 = (n_total - start_t) as u64;
 
-    let log_comm = if cfg.effective_commission() > 0.0 {
-        (1.0 - cfg.effective_commission()).ln()
+    let log_comm = if commission > 0.0 {
+        (1.0 - commission).ln()
     } else {
         0.0
     };
+    let has_commission = commission > 0.0;
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
@@ -148,78 +301,85 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
+    let mut trade_log_ret = 0.0_f64;
 
     for t in start_t..n_total {
         let t_sig = t.saturating_sub(trade_offset);
-        let f = fast[t_sig];
-        let s = slow[t_sig];
-        let eps = if cfg.eps_rel > 0.0 {
-            cfg.eps_rel * 1.0_f64.max(s.abs())
-        } else {
-            0.0
-        };
-
-        let mut sign: i32 = (f > s + eps) as i32 - (f < s - eps) as i32;
-        if cfg.long_only && sign < 0 {
-            sign = 0;
-        }
-
-        let ht = halftrend_trend[t_sig];
-        if !ht.is_finite() {
-            sign = 0;
-        } else if ht < 0.5 {
-            sign = sign.max(0);
-        } else {
-            sign = sign.min(0);
-        }
-
-        let mh = macz_hist[t_sig];
-        if !mh.is_finite() {
-            sign = 0;
-        } else if mh > 0.0 {
-            sign = sign.max(0);
-        } else if mh < 0.0 {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
-
-        let px = ott_prices[t_sig];
-        let ott = ott_line[t_sig];
-        if !px.is_finite() || !ott.is_finite() {
-            sign = 0;
-        } else if px > ott {
-            sign = sign.max(0);
-        } else if px < ott {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
+        let sign = composite_desired_position(
+            fast[t_sig],
+            slow[t_sig],
+            halftrend_trend[t_sig],
+            macz_hist[t_sig],
+            ott_prices[t_sig],
+            ott_line[t_sig],
+            pos,
+            cfg,
+            signal_mode,
+        );
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.effective_commission() > 0.0 {
+                if has_commission {
                     log_eq += log_comm;
+                    if risk_enabled && pos != 0 {
+                        trade_log_ret += log_comm;
+                    }
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
+                if risk_enabled {
+                    trade_log_ret = if pos != 0 && has_commission {
+                        log_comm
+                    } else {
+                        0.0
+                    };
+                }
             } else if !cfg.allow_flip {
-                if cfg.effective_commission() > 0.0 {
+                if has_commission {
+                    log_eq += log_comm;
+                    if risk_enabled {
+                        trade_log_ret += log_comm;
+                    }
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                if risk_enabled {
+                    trade_log_ret = 0.0;
+                }
+            } else {
+                if has_commission {
+                    log_eq += 2.0 * log_comm;
+                    if risk_enabled {
+                        trade_log_ret += log_comm;
+                    }
+                }
+                trades = trades.saturating_add(2);
+                pos = sign;
+                if risk_enabled {
+                    trade_log_ret = if has_commission { log_comm } else { 0.0 };
+                }
+            }
+        }
+
+        let pos_bar = pos;
+        let lr_t = lr[t];
+        let step_log_ret = (pos_bar as f64) * lr_t;
+        log_eq += step_log_ret;
+
+        if risk_enabled && pos_bar != 0 {
+            trade_log_ret += step_log_ret;
+            let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
+            if hit_stop || hit_take {
+                if has_commission {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
-            } else {
-                if cfg.effective_commission() > 0.0 {
-                    log_eq += 2.0 * log_comm;
-                }
-                trades = trades.saturating_add(2);
-                pos = sign;
+                trade_log_ret = 0.0;
             }
         }
 
-        let lr_t = lr[t];
-        log_eq += (pos as f64) * lr_t;
         if log_eq > log_peak {
             log_peak = log_eq;
         }
@@ -229,10 +389,10 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         }
 
         if COMPUTE_SHARPE {
-            let step_r = if pos == 0 {
+            let step_r = if pos_bar == 0 {
                 0.0
             } else {
-                (pos as f64) * lr_t.exp_m1()
+                (pos_bar as f64) * lr_t.exp_m1()
             };
             count += 1;
             let delta = step_r - mean;
@@ -248,8 +408,8 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             }
         }
 
-        sum_abs_pos += (pos as i64).abs();
-        sum_pos += pos as i64;
+        sum_abs_pos += (pos_bar as i64).abs();
+        sum_pos += pos_bar as i64;
     }
 
     const EPS_DENOM: f64 = 1e-12;
@@ -342,6 +502,34 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
     cfg: &StrategyConfig,
     bins: usize,
 ) -> DoubleMaCurves {
+    eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+        lr,
+        ott_prices,
+        fast,
+        slow,
+        halftrend_trend,
+        macz_hist,
+        ott_line,
+        start_t,
+        cfg,
+        bins,
+        CompositeSignalMode::HardGate,
+    )
+}
+
+pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+    lr: &[f64],
+    ott_prices: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend_trend: &[f64],
+    macz_hist: &[f64],
+    ott_line: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    bins: usize,
+    signal_mode: CompositeSignalMode,
+) -> DoubleMaCurves {
     let n_total = lr.len();
     if n_total < 2
         || fast.len() != n_total
@@ -371,16 +559,21 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
         };
     }
 
+    let commission = cfg.effective_commission();
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
         0usize
     };
-    let log_comm = if cfg.effective_commission() > 0.0 {
-        (1.0 - cfg.effective_commission()).ln()
+    let log_comm = if commission > 0.0 {
+        (1.0 - commission).ln()
     } else {
         0.0
     };
+    let has_commission = commission > 0.0;
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
 
     let n_steps = n_total.saturating_sub(start_t);
     let bins = clamp_bins(bins, n_steps);
@@ -420,58 +613,25 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
 
     for t in start_t..n_total {
         let t_sig = t.saturating_sub(trade_offset);
-        let f = fast[t_sig];
-        let s = slow[t_sig];
-        let eps = if cfg.eps_rel > 0.0 {
-            cfg.eps_rel * 1.0_f64.max(s.abs())
-        } else {
-            0.0
-        };
-
-        let mut sign: i32 = (f > s + eps) as i32 - (f < s - eps) as i32;
-        if cfg.long_only && sign < 0 {
-            sign = 0;
-        }
-
-        let ht = halftrend_trend[t_sig];
-        if !ht.is_finite() {
-            sign = 0;
-        } else if ht < 0.5 {
-            sign = sign.max(0);
-        } else {
-            sign = sign.min(0);
-        }
-
-        let mh = macz_hist[t_sig];
-        if !mh.is_finite() {
-            sign = 0;
-        } else if mh > 0.0 {
-            sign = sign.max(0);
-        } else if mh < 0.0 {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
-
-        let px = ott_prices[t_sig];
-        let ott = ott_line[t_sig];
-        if !px.is_finite() || !ott.is_finite() {
-            sign = 0;
-        } else if px > ott {
-            sign = sign.max(0);
-        } else if px < ott {
-            sign = sign.min(0);
-        } else {
-            sign = 0;
-        }
+        let sign = composite_desired_position(
+            fast[t_sig],
+            slow[t_sig],
+            halftrend_trend[t_sig],
+            macz_hist[t_sig],
+            ott_prices[t_sig],
+            ott_line[t_sig],
+            pos,
+            cfg,
+            signal_mode,
+        );
 
         if sign != pos {
             if pos == 0 || sign == 0 {
-                if cfg.effective_commission() > 0.0 {
+                if has_commission {
                     log_eq += log_comm;
                 }
                 if pos != 0 && cur_dir != 0 {
-                    if cfg.effective_commission() > 0.0 {
+                    if has_commission {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -487,19 +647,15 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
                 } else if pos == 0 && sign != 0 {
                     cur_entry_t = t;
                     cur_dir = sign;
-                    cur_log_ret = if cfg.effective_commission() > 0.0 {
-                        log_comm
-                    } else {
-                        0.0
-                    };
+                    cur_log_ret = if has_commission { log_comm } else { 0.0 };
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
-                if cfg.effective_commission() > 0.0 {
+                if has_commission {
                     log_eq += log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.effective_commission() > 0.0 {
+                    if has_commission {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -515,11 +671,11 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
                 }
                 pos = 0;
             } else {
-                if cfg.effective_commission() > 0.0 {
+                if has_commission {
                     log_eq += 2.0 * log_comm;
                 }
                 if cur_dir != 0 {
-                    if cfg.effective_commission() > 0.0 {
+                    if has_commission {
                         cur_log_ret += log_comm;
                     }
                     trades.push(Trade {
@@ -533,11 +689,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
                 }
                 cur_entry_t = t;
                 cur_dir = sign;
-                cur_log_ret = if cfg.effective_commission() > 0.0 {
-                    log_comm
-                } else {
-                    0.0
-                };
+                cur_log_ret = if has_commission { log_comm } else { 0.0 };
                 pos = sign;
             }
         }
@@ -545,6 +697,27 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
         log_eq += (pos as f64) * lr[t];
         if cur_dir != 0 {
             cur_log_ret += (pos as f64) * lr[t];
+        }
+        if risk_enabled && cur_dir != 0 {
+            let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
+            if hit_stop || hit_take {
+                if has_commission {
+                    log_eq += log_comm;
+                    cur_log_ret += log_comm;
+                }
+                trades.push(Trade {
+                    entry_t: cur_entry_t,
+                    exit_t: t,
+                    direction: cur_dir,
+                    pnl: cur_log_ret.exp() - 1.0,
+                    bars: t.saturating_sub(cur_entry_t) as u32,
+                    open: false,
+                });
+                cur_dir = 0;
+                cur_log_ret = 0.0;
+                pos = 0;
+            }
         }
         if log_eq > log_peak {
             log_peak = log_eq;
@@ -702,5 +875,220 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
         trades,
         trade_stats,
         indicator_bars: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compute_log_returns(prices: &[f64]) -> Vec<f64> {
+        let mut lr = Vec::with_capacity(prices.len());
+        if prices.is_empty() {
+            return lr;
+        }
+        lr.push(0.0);
+        for w in prices.windows(2) {
+            lr.push((w[1] / w[0]).ln());
+        }
+        lr
+    }
+
+    #[test]
+    fn entry_core_exit_overlay_enters_on_core_when_flat() {
+        let cfg = StrategyConfig::default();
+        let sign = composite_desired_position(
+            11.0,
+            10.0,
+            0.0,  // HalfTrend bullish branch
+            -1.0, // MACZ bearish (should not block fresh entry)
+            99.0, // OTT bearish (should not block fresh entry)
+            100.0,
+            0,
+            &cfg,
+            CompositeSignalMode::EntryCoreExitOverlay,
+        );
+        assert_eq!(sign, 1);
+    }
+
+    #[test]
+    fn entry_core_exit_overlay_exits_long_on_overlay_bearish() {
+        let cfg = StrategyConfig::default();
+        let sign = composite_desired_position(
+            11.0,
+            10.0,
+            0.0, // HalfTrend bullish
+            -1.0,
+            99.0,
+            100.0,
+            1, // currently long
+            &cfg,
+            CompositeSignalMode::EntryCoreExitOverlay,
+        );
+        assert_eq!(sign, 0);
+    }
+
+    #[test]
+    fn hard_gate_mode_keeps_existing_behavior() {
+        let cfg = StrategyConfig::default();
+        let sign = composite_desired_position(
+            11.0,
+            10.0,
+            0.0,  // HalfTrend bullish
+            -1.0, // MACZ bearish veto
+            99.0, // OTT bearish veto
+            100.0,
+            0,
+            &cfg,
+            CompositeSignalMode::HardGate,
+        );
+        assert_eq!(sign, 0);
+    }
+
+    #[test]
+    fn metrics_wrapper_matches_hard_gate_mode() {
+        let lr = vec![0.0, 0.01, -0.01, 0.02, -0.005, 0.01];
+        let fast = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let slow = vec![2.0, 2.0, 2.0, 3.0, 4.0, 5.0];
+        let ht = vec![0.0; lr.len()];
+        let macz = vec![1.0; lr.len()];
+        let ott_line = vec![1.0; lr.len()];
+        let ott_prices = vec![2.0; lr.len()];
+        let cfg = StrategyConfig {
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+
+        let a = eval_composite_metrics_from_log_returns_and_mas_f64(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &cfg,
+        );
+        let b = eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &cfg,
+            CompositeSignalMode::HardGate,
+        );
+
+        assert!((a.pnl - b.pnl).abs() < 1e-12);
+        assert!((a.sharpe - b.sharpe).abs() < 1e-12);
+        assert!((a.sortino - b.sortino).abs() < 1e-12);
+        assert!((a.calmar - b.calmar).abs() < 1e-12);
+        assert!((a.omega - b.omega).abs() < 1e-12);
+        assert!((a.volatility - b.volatility).abs() < 1e-12);
+        assert!((a.max_dd - b.max_dd).abs() < 1e-12);
+        assert_eq!(a.trades, b.trades);
+        assert!((a.exposure - b.exposure).abs() < 1e-12);
+        assert!((a.net_exposure - b.net_exposure).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tp_sl_increases_trade_count_when_signals_stay_long() {
+        let n = 256usize;
+        let prices: Vec<f64> = (0..n)
+            .map(|i| {
+                if i < 128 {
+                    100.0 + i as f64 * 0.20
+                } else {
+                    125.6 - (i - 128) as f64 * 0.30
+                }
+            })
+            .collect();
+        let lr = compute_log_returns(&prices);
+        let fast: Vec<f64> = vec![2.0; n];
+        let slow: Vec<f64> = vec![1.0; n];
+        let ht: Vec<f64> = vec![0.0; n];
+        let macz: Vec<f64> = vec![1.0; n];
+        let ott_line: Vec<f64> = vec![1.0; n];
+        let ott_prices: Vec<f64> = vec![2.0; n];
+
+        let base = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 1.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            ..StrategyConfig::default()
+        };
+        let risk = StrategyConfig {
+            stop_loss_pct: Some(0.02),
+            take_profit_pct: Some(0.02),
+            ..base.clone()
+        };
+
+        let m0 = eval_composite_metrics_from_log_returns_and_mas_f64(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &base,
+        );
+        let m1 = eval_composite_metrics_from_log_returns_and_mas_f64(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &risk,
+        );
+
+        assert!(m1.trades > m0.trades);
+    }
+
+    #[test]
+    fn curves_emit_closed_trades_when_tp_sl_hits() {
+        let n = 128usize;
+        let prices: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 0.30).collect();
+        let lr = compute_log_returns(&prices);
+        let fast: Vec<f64> = vec![2.0; n];
+        let slow: Vec<f64> = vec![1.0; n];
+        let ht: Vec<f64> = vec![0.0; n];
+        let macz: Vec<f64> = vec![1.0; n];
+        let ott_line: Vec<f64> = vec![1.0; n];
+        let ott_prices: Vec<f64> = vec![2.0; n];
+
+        let cfg = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 1.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            stop_loss_pct: None,
+            take_profit_pct: Some(0.015),
+            ..StrategyConfig::default()
+        };
+
+        let curves = eval_composite_curves_from_log_returns_and_mas_f64(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &cfg,
+            64,
+        );
+        let closed = curves.trades.iter().filter(|t| !t.open).count();
+        assert!(closed > 0);
     }
 }

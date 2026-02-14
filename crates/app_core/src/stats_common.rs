@@ -19,7 +19,11 @@ pub fn worst_min(xs: &[f64]) -> f64 {
         .iter()
         .copied()
         .fold(f64::INFINITY, |a, b| if b < a { b } else { a });
-    if v.is_finite() { v } else { 0.0 }
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 pub fn worst_max(xs: &[f64]) -> f64 {
@@ -27,7 +31,11 @@ pub fn worst_max(xs: &[f64]) -> f64 {
         .iter()
         .copied()
         .fold(f64::NEG_INFINITY, |a, b| if b > a { b } else { a });
-    if v.is_finite() { v } else { 0.0 }
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 pub fn median_u32(xs: &[u32]) -> u32 {

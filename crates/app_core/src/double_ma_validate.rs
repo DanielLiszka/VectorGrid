@@ -943,7 +943,9 @@ pub fn run_double_ma_validation_blocking_with_candles(
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
             let robust_score = crate::validation_pipeline::robust_score_from_metrics(
                 robust_base,
-                walk_forward.as_ref().map(|w| (w.sharpe_median, w.max_dd_worst)),
+                walk_forward
+                    .as_ref()
+                    .map(|w| (w.sharpe_median, w.max_dd_worst)),
             );
 
             let done = processed.fetch_add(1, Ordering::Relaxed).saturating_add(1);
@@ -1068,6 +1070,10 @@ pub fn run_double_ma_validation_blocking_with_candles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::double_ma::{
+        run_double_ma_optimization_blocking_with_candles, Backend, DoubleMaRequest,
+    };
+    use ta_optimizer::{ObjectiveKind, OptimizationMode};
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
@@ -1290,6 +1296,127 @@ mod tests {
     }
 
     #[test]
+    fn double_ma_validation_iterative_engine_matches_optimizer_top_candidates() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let strategy = StrategyConfig::default();
+        let opt_req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "opt".to_string(),
+            fast_range: (5, 10, 1),
+            slow_range: (20, 25, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: strategy.clone(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let opt =
+            run_double_ma_optimization_blocking_with_candles(opt_req, &candles, &cancel, None)
+                .expect("optimization run");
+        assert!(!opt.top.is_empty());
+
+        let candidates: Vec<DoubleMaValidationParams> = opt
+            .top
+            .iter()
+            .take(4)
+            .map(|(p, _)| DoubleMaValidationParams {
+                fast_ma_type: p.fast_ma_type.clone(),
+                slow_ma_type: p.slow_ma_type.clone(),
+                fast_len: p.fast_len,
+                slow_len: p.slow_len,
+                fast_ma_params: p.fast_ma_params.clone(),
+                slow_ma_params: p.slow_ma_params.clone(),
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            })
+            .collect();
+
+        let mk_req = |validation_engine: ValidationEngine| DoubleMaValidationRequest {
+            data_id: "opt-vs-iter".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: candidates.clone(),
+            walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 17,
+            max_candidates: 32,
+            validation_engine,
+            iterative: IterativeSimConfig {
+                slippage_vol_mult: 0.0,
+                ..IterativeSimConfig::default()
+            },
+            min_psr: None,
+            min_dsr: None,
+        };
+
+        let vec_res = run_double_ma_validation_blocking_with_candles(
+            mk_req(ValidationEngine::Vectorized),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("vectorized validation run");
+        let iter_res = run_double_ma_validation_blocking_with_candles(
+            mk_req(ValidationEngine::Iterative),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("iterative validation run");
+
+        assert_eq!(vec_res.candidates.len(), iter_res.candidates.len());
+
+        for vec_cand in &vec_res.candidates {
+            let iter_cand = iter_res
+                .candidates
+                .iter()
+                .find(|c| {
+                    c.params.fast_ma_type == vec_cand.params.fast_ma_type
+                        && c.params.slow_ma_type == vec_cand.params.slow_ma_type
+                        && c.params.fast_len == vec_cand.params.fast_len
+                        && c.params.slow_len == vec_cand.params.slow_len
+                        && c.params.fast_ma_params == vec_cand.params.fast_ma_params
+                        && c.params.slow_ma_params == vec_cand.params.slow_ma_params
+                })
+                .expect("matching iterative candidate");
+
+            assert!((iter_cand.in_sample.pnl - vec_cand.in_sample.pnl).abs() < 1e-12);
+            assert!((iter_cand.in_sample.sharpe - vec_cand.in_sample.sharpe).abs() < 1e-12);
+            assert!((iter_cand.in_sample.max_dd - vec_cand.in_sample.max_dd).abs() < 1e-12);
+
+            let iter_m = iter_cand
+                .iterative_in_sample
+                .as_ref()
+                .expect("iterative metrics");
+            let delta = iter_cand.iterative_delta.as_ref().expect("iterative delta");
+
+            assert!(iter_m.pnl.is_finite());
+            assert!(iter_m.sharpe.is_finite());
+            assert!(iter_m.max_dd.is_finite());
+            assert!((iter_m.pnl - iter_cand.in_sample.pnl - delta.pnl).abs() < 1e-9);
+            assert!((iter_m.sharpe - iter_cand.in_sample.sharpe - delta.sharpe).abs() < 1e-9);
+            assert!((iter_m.max_dd - iter_cand.in_sample.max_dd - delta.max_dd).abs() < 1e-9);
+        }
+    }
+
+    #[test]
     fn double_ma_validation_rerun_equivalence_same_seed() {
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -1386,9 +1513,13 @@ mod tests {
             min_dsr: None,
         };
 
-        let baseline =
-            run_double_ma_validation_blocking_with_candles(base_req.clone(), &candles, &cancel, None)
-                .expect("baseline run");
+        let baseline = run_double_ma_validation_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("baseline run");
 
         let mut gated_req = base_req;
         gated_req.min_psr = Some(0.80);

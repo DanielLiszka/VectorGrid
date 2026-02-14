@@ -187,6 +187,9 @@ pub fn simulate_iterative_from_signals(
         return Metrics::default();
     }
 
+    let stop_loss_pct = sim.stop_loss_pct.or(cfg.stop_loss_pct());
+    let take_profit_pct = sim.take_profit_pct.or(cfg.take_profit_pct());
+
     let mut pos: i32 = 0;
     let mut entry_px: f64 = 0.0;
     let mut log_eq = 0.0_f64;
@@ -265,8 +268,8 @@ pub fn simulate_iterative_from_signals(
                 entry_px,
                 ohlc.high[t],
                 ohlc.low[t],
-                sim.stop_loss_pct,
-                sim.take_profit_pct,
+                stop_loss_pct,
+                take_profit_pct,
                 sim.intrabar_rule,
             ) {
                 let prev_px = if t > 0 {
@@ -435,5 +438,35 @@ mod tests {
         let m0 = simulate_iterative_from_signals(&lr, make_flat_ohlc(n), &sig, 2, &cfg, &base);
         let m1 = simulate_iterative_from_signals(&lr, make_flat_ohlc(n), &sig, 2, &cfg, &slip);
         assert!(m1.pnl <= m0.pnl + 1e-12);
+    }
+
+    #[test]
+    fn iterative_uses_strategy_level_stop_loss_when_sim_cfg_is_none() {
+        let n = 6usize;
+        let lr = vec![0.0; n];
+        let mut sig = vec![0i32; n];
+        for x in sig.iter_mut().skip(1) {
+            *x = 1;
+        }
+
+        let open = Box::leak(vec![100.0; n].into_boxed_slice());
+        let high = Box::leak(vec![101.0; n].into_boxed_slice());
+        let low = Box::leak(vec![99.5, 98.0, 98.0, 98.0, 98.0, 98.0].into_boxed_slice());
+        let close = Box::leak(vec![100.0; n].into_boxed_slice());
+        let make_ohlc = || OhlcSlice {
+            open,
+            high,
+            low,
+            close,
+        };
+
+        let sim = IterativeSimConfig::default();
+        let cfg_base = StrategyConfig::default();
+        let mut cfg_stop = StrategyConfig::default();
+        cfg_stop.stop_loss_pct = Some(0.01);
+
+        let m_base = simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg_base, &sim);
+        let m_stop = simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg_stop, &sim);
+        assert!(m_stop.trades > m_base.trades);
     }
 }

@@ -1440,7 +1440,7 @@ fn apply_holdout_evaluation(
             // Conservative: for risk, take worst-of reps.
             let max_dd = max_dds.last().copied().unwrap_or(0.0);
             let pnl = quantile(&pnls, 0.5);
-            let pass = score > 0.0;
+            let pass = score_p10 > 0.0 && sharpe > 0.0;
 
             accs[gi].scores.push(score);
             accs[gi].sharpes.push(sharpe);

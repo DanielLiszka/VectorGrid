@@ -74,24 +74,20 @@ pub fn compute_probability_metrics_and_gate<C: ValidationPostCandidate>(
 
 pub fn mark_robust_pareto<C: ValidationPostCandidate>(out: &mut [C]) {
     for i in 0..out.len() {
-        let (xi, yi) = out[i]
-            .walk_forward_sharpe_maxdd()
-            .unwrap_or_else(|| {
-                let m = out[i].in_sample_metrics();
-                (m.sharpe, m.max_dd)
-            });
+        let (xi, yi) = out[i].walk_forward_sharpe_maxdd().unwrap_or_else(|| {
+            let m = out[i].in_sample_metrics();
+            (m.sharpe, m.max_dd)
+        });
 
         let mut dominated = false;
         for j in 0..out.len() {
             if i == j {
                 continue;
             }
-            let (xj, yj) = out[j]
-                .walk_forward_sharpe_maxdd()
-                .unwrap_or_else(|| {
-                    let m = out[j].in_sample_metrics();
-                    (m.sharpe, m.max_dd)
-                });
+            let (xj, yj) = out[j].walk_forward_sharpe_maxdd().unwrap_or_else(|| {
+                let m = out[j].in_sample_metrics();
+                (m.sharpe, m.max_dd)
+            });
             if xj >= xi && yj <= yi && (xj > xi || yj < yi) {
                 dominated = true;
                 break;

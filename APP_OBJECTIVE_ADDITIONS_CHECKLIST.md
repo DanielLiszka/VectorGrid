@@ -100,6 +100,18 @@ Progress note (2026-02-12):
 - Added trait-based shared cross-ticker validation module `src-tauri/src/validation_common.rs` and switched both Composite/DoubleMA cross-ticker paths to it.
 - Added shared statistical primitives in `crates/app_core/src/stats_common.rs` and reused them across validation modules.
 - Added trait-based validation post-processing module `crates/app_core/src/validation_pipeline.rs` and switched both validators to shared PSR/DSR + gate + pareto + CSCV-fold/sort flow.
+- Extracted report/export orchestration from `src-tauri/src/commands.rs` into `src-tauri/src/commands_reports.rs` (XLSX/CSV generation, path reveal/open helpers, and report-focused tests), preserving existing command APIs.
+- Extracted data/polygon/file-picker command surface into `src-tauri/src/commands_data.rs`.
+- Extracted validation/cross-ticker/price-bar orchestration into `src-tauri/src/commands_validation.rs`.
+- Extracted cancel/progress/optimization commands into `src-tauri/src/commands_optimize.rs`.
+- Extracted drilldown/local-stability wrappers into `src-tauri/src/commands_analysis.rs`.
+- Extracted GPU/window command surface into `src-tauri/src/commands_system.rs`.
+- Extracted report Tauri command wrappers into `src-tauri/src/commands_reports_api.rs`.
+- Extracted run/meta artifact Tauri command wrappers into `src-tauri/src/commands_artifacts.rs`.
+- Split report internals into focused modules:
+  - `src-tauri/src/commands_reports_shared.rs` (path/open/sanitize/quantile helpers),
+  - `src-tauri/src/commands_reports_csv.rs` (validation shortlist CSV logic),
+  - `src-tauri/src/commands_reports_meta_xlsx.rs` (meta report workbook builder).
 
 ---
 
@@ -114,6 +126,8 @@ Progress note (2026-02-12):
   - Primary files: validation/optimization paths in `crates/app_core/src/`.
 - [x] Add tests for monotonic cost impact (higher costs cannot improve net returns in identical setup).
   - Primary files: `crates/strategies/src/` tests, `crates/app_core/src/*validate.rs` tests.
+- [x] Enable optional TP/SL directly in Double MA optimization scoring (CPU + GPU-kernel), while keeping fast-path behavior when TP/SL is unset.
+  - Primary files: `crates/strategies/src/double_ma/mod.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `crates/app_core/src/kernels/double_crossover.cu`, `crates/app_core/src/kernels/double_crossover.prebuilt.ptx`.
 
 Done when:
 - Zero-cost parity with old behavior is confirmed.
@@ -131,6 +145,18 @@ Progress note (2026-02-11):
 - Added strategy-level tests in `crates/strategies/src/double_ma/mod.rs`:
   - `effective_commission_uses_bps_when_commission_is_zero`,
   - `higher_costs_do_not_improve_pnl_in_same_setup`.
+Progress note (2026-02-14):
+- Double MA optimization now applies optional `stop_loss_pct` / `take_profit_pct` in both:
+  - CPU/vectorized scoring path (`ta_strategies` evaluator functions),
+  - CUDA GPU-kernel path (`double_cross_backtest_tm_flex_f32` + launch args/flags).
+- GPU kernel keeps a dedicated no-risk branch so TP/SL-disabled runs preserve the existing fast path.
+- Added TP/SL-specific tests at both layers:
+  - strategy-level evaluator/curves tests in `crates/strategies/src/double_ma/mod.rs`,
+  - app-core optimization integration test in `crates/app_core/src/double_ma.rs`.
+Progress note (2026-02-13):
+- Improved Composite 2-stage pipeline narrowing to preserve a prescan-derived `(fast_len, slow_len)` pair mask instead of recombining independent fast/slow candidate sets.
+- Applied pair-mask filtering in both `CompositeCpu` tiled evaluation and `CompositeMo` trial evaluation to cut non-local recombination work after prescan.
+- Added bounded in-memory indicator-series memoization for `CompositeMo` trials (HalfTrend/MACZ/OTT), reducing repeated per-trial indicator recomputation when parameter tuples repeat.
 
 ---
 
@@ -219,6 +245,11 @@ Progress note (2026-02-12):
 - Validation shortlist CSV and meta report XLSX now include PSR/DSR fields.
 - Added explicit user-configurable validation gates (`min_psr`, `min_dsr`) wired through UI and backend filtering.
 - Added PSR/DSR columns to validation UI table and validation XLSX report export.
+Progress note (2026-02-13):
+- Added cross-ticker hard-gate config (`CrossTickerGateConfig`) and applied it directly in validation output filtering, so non-robust cross-asset candidates are dropped earlier in the pipeline.
+- Added gate sanitization and unit tests for cross-ticker threshold behavior.
+- Tightened meta strict-shortlist rules to require positive cross-asset score and minimum cross-asset pnl-positive fraction when cross-ticker stats are present.
+- Switched meta strict shortlist fallback default to hard mode (`allow_shortlist_fallback=false`) to avoid silently re-admitting weak candidates.
 
 ---
 
@@ -232,6 +263,9 @@ Progress note (2026-02-12):
 
 Done when:
 - Meta holdout path can evaluate Double MA artifacts with parity to Composite flow.
+
+Progress note (2026-02-13):
+- Strengthened holdout pass logic in meta evaluation from median-score pass checks to lower-tail checks (`score_p10 > 0` with positive median Sharpe), improving robustness against brittle parameter groups.
 
 ---
 
@@ -254,6 +288,9 @@ Progress note (2026-02-11):
 - Best-card recommendation now uses validation shortlist for all strategy kinds (including Double MA), not only Composite.
 - Final selection panel now prefers meta+holdout top-group metrics when available.
 - Added selection-bias warning annotations to report generation paths for large search spaces.
+Progress note (2026-02-13):
+- Composite drilldown payload now includes downsampled composite indicator bars (HalfTrend/MACZ/OTT) for chart overlays.
+- TradingView Lightweight drill chart now renders auxiliary panes for HalfTrend (line pane) and MACZ (histogram pane) with crosshair legend values.
 
 ---
 
@@ -270,3 +307,31 @@ Progress note (2026-02-11):
 
 Rationale:
 - This order maximizes measurable value early while minimizing risk to current fast/demo paths.
+
+---
+
+## 11) Optional Live Execution Bridge (Paper/Live)
+
+- [x] Add backend command for fixed-parameter strategy signal execution with Alpaca paper/live modes.
+  - Primary files: `src-tauri/src/commands_execution.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/commands.rs`.
+- [x] Keep execution logic strategy-native by reusing existing drilldown/signal computation paths.
+  - Primary files: `src-tauri/src/commands_execution.rs`.
+- [x] Support basic bracket risk on live entry when both TP/SL are set.
+  - Primary files: `src-tauri/src/commands_execution.rs`.
+- [x] Add frontend Paper/Live execution wiring (mode/symbol/qty/row-source/risk overrides, run-once invoke, API key handling).
+  - Primary files: `dist/index.html`, `dist/app.js`.
+- [x] Allow run-independent manual execution parameters (no prior optimization required).
+  - Primary files: `dist/index.html`, `dist/app.js`.
+- [x] Add explicit Alpaca account connectivity test command and UI action.
+  - Primary files: `src-tauri/src/commands_execution.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `dist/app.js`.
+
+Progress note (2026-02-13):
+- Added `execute_strategy_signal_once` Tauri command for one-shot strategy-driven execution against Alpaca (`paper` or `live`), including position reconciliation (target qty minus current broker qty).
+- Added strategy-level TP/SL fields to `StrategyConfig` (`stop_loss_pct`, `take_profit_pct`) with validation and iterative-engine integration fallback.
+- Added optional UI strategy serialization support for TP/SL fields when controls are present (`stopLossPct`, `takeProfitPct`).
+
+Progress note (2026-02-14):
+- Settings now exposes a full Paper/Live execution panel with: mode, symbol, quantity, selected-vs-best Top-row parameter source, optional TP/SL risk overrides, dry-run toggle, API-key memory toggle, account test, and execute-once action.
+- Frontend execution request builder reuses existing drilldown payload logic so signal generation remains strategy-native for `DoubleMa`, `CompositeCpu`, and `CompositeMo` rows (MO rows are executed through the composite CPU drilldown spec).
+- Added backend `test_alpaca_connection` command (`GET /v2/account`) and wired it to the frontend "Test account" action.
+- Added `Manual (Strategy tab)` parameter source so one-shot execution can run without any optimization artifact; fixed lengths can be set directly in execution controls (or fall back to strategy range starts).

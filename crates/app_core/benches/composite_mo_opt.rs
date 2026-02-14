@@ -2,7 +2,9 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ta_app_core::{CompositeMoObjectives, CompositeMoRequest, CompositeMoSampler};
+use ta_app_core::{
+    CompositeMoObjectives, CompositeMoRequest, CompositeMoSampler, CompositeSignalMode,
+};
 use ta_optimizer::mo::{ParamDef, ParamDomain, RandomMoConfig, SearchSpace};
 use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::StrategyConfig;
@@ -50,6 +52,7 @@ fn bench_composite_mo_random(c: &mut Criterion) {
         fast_ma_params: None,
         slow_ma_params: None,
         base_strategy: StrategyConfig::default(),
+        signal_mode: CompositeSignalMode::HardGate,
         search_space: SearchSpace {
             params: vec![
                 ParamDef {

@@ -12,14 +12,16 @@ pub mod iterative_sim;
 pub mod matrix_index;
 pub mod meta_select;
 pub mod ml_confidence;
+pub(crate) mod prescan_predictive;
 pub mod progress;
 pub mod sharpe_stats;
 pub mod stats_common;
 pub mod timeframe;
-pub mod validation_stats;
 pub mod validation_pipeline;
+pub mod validation_stats;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) mod vram_ma;
+pub use ta_strategies::composite_cpu::CompositeSignalMode;
 
 pub use ta_strategies::double_ma::DoubleMaCurves;
 pub use ta_strategies::records::{TradeRecord, TradeRecords};
@@ -39,7 +41,7 @@ pub use composite_cpu::{
     compute_composite_cpu_drilldown_blocking_with_candles,
     compute_composite_cpu_local_stability_blocking_with_candles,
     run_composite_cpu_optimization_blocking_with_candles, CompositeCpuDrilldownRequest,
-    CompositeCpuLocalStabilityRequest, CompositeCpuRequest,
+    CompositeCpuDrilldownResult, CompositeCpuLocalStabilityRequest, CompositeCpuRequest,
 };
 
 pub use composite_mo::{
@@ -52,8 +54,8 @@ pub use composite_mo::{
 pub use composite_validate::{
     run_composite_validation_blocking_with_candles, CompositeParams, CompositeValidationRequest,
     CompositeValidationResult, CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta,
-    CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, TradeBootstrapConfig,
-    WalkForwardConfigOptional,
+    CrossTickerGateConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig,
+    TradeBootstrapConfig, WalkForwardConfigOptional,
 };
 
 pub use double_ma_validate::{

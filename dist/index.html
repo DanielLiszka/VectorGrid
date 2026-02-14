@@ -429,6 +429,23 @@
               </div>
             </div>
 
+            <div class="row3" style="margin-top: 0.55rem;">
+              <div>
+                <label for="stopLossPct" title="Optional stop-loss as fraction or percent. Examples: 0.02 or 2.">Stop-loss (optional)</label>
+                <input id="stopLossPct" type="number" min="0" step="0.0001" placeholder="0.02 or 2" />
+              </div>
+              <div>
+                <label for="takeProfitPct" title="Optional take-profit as fraction or percent. Examples: 0.04 or 4.">Take-profit (optional)</label>
+                <input id="takeProfitPct" type="number" min="0" step="0.0001" placeholder="0.04 or 4" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="margin-top: 0.25rem; font-size: 0.8rem;">
+                  Used in optimization/backtest when provided.
+                </div>
+              </div>
+            </div>
+
             <div class="checks" style="margin-top: 0.55rem;">
               <label title="Only take long positions. If enabled, shorts are disabled and 'Allow flip' has no effect."><input id="longOnly" type="checkbox" checked /> Long-only</label>
               <label title="Allow switching long↔short on opposite signals (when Long-only is off)."><input id="allowFlip" type="checkbox" checked /> Allow flip</label>
@@ -748,6 +765,20 @@
                   </div>
                 </div>
 
+                <div class="row3" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="moPrescanPredictiveTopK">Predictive rescue Top K</label>
+                    <input id="moPrescanPredictiveTopK" type="number" min="0" step="1" value="12" />
+                  </div>
+                  <div>
+                    <label for="moPrescanPredictiveStride">Predictive stride</label>
+                    <input id="moPrescanPredictiveStride" type="number" min="1" step="1" value="8" />
+                  </div>
+                  <div class="muted" style="align-self: end; margin-bottom: 0.2rem; font-size: 0.78rem;">
+                    Set Top K to 0 to disable predictive rescue.
+                  </div>
+                </div>
+
                 <div class="row" style="margin-top: 0.55rem;">
                   <div>
                     <label for="moPrescanMode">Pre-scan mode</label>
@@ -1054,6 +1085,8 @@
             <button class="danger-btn" id="btnCancel" disabled>Cancel</button>
           </div>
           <div class="muted" style="margin-top: 0.55rem; font-size: 0.8rem;" id="runPlanMeta">Plan: —</div>
+          <div id="runReadiness" class="badges" style="margin-top: 0.45rem;" aria-live="polite" aria-label="Run readiness"></div>
+          <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="runReadinessHint">Readiness: —</div>
           <div class="muted" style="margin-top: 0.6rem; font-size: 0.8rem;">Tip: GPU (kernel) stays VRAM-resident and is best for large grids.</div>
         </div>
       </section>
@@ -1067,6 +1100,7 @@
               <div class="progressFill" id="progressFill"></div>
             </div>
             <div class="muted" id="progressMeta" style="margin-top: 0.35rem; font-size: 0.8rem;"></div>
+            <div class="muted" id="progressDetail" style="margin-top: 0.25rem; font-size: 0.78rem;"></div>
           </div>
           <div id="contextChips" class="chipRow" aria-label="Context"></div>
 
@@ -2164,6 +2198,134 @@
                 <button id="btnSettingsGotoLibrary">Go to Run Library</button>
                 <button id="btnSettingsGotoAggregate">Go to Aggregate Analysis</button>
               </div>
+            </section>
+
+            <section class="settingsPane">
+              <h3 style="margin: 0 0 0.55rem 0;">Paper/Live Execution</h3>
+
+              <div class="row3">
+                <div>
+                  <label for="execMode">Mode</label>
+                  <select id="execMode">
+                    <option value="paper" selected>Paper</option>
+                    <option value="live">Live</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="execSymbol">Symbol</label>
+                  <input id="execSymbol" type="text" placeholder="AAPL" />
+                </div>
+                <div>
+                  <label for="execQty">Quantity</label>
+                  <input id="execQty" type="number" min="0.0001" step="0.0001" value="1" />
+                </div>
+              </div>
+
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="execParamSource">Parameter source</label>
+                  <select id="execParamSource">
+                    <option value="selected" selected>Selected Top row</option>
+                    <option value="best">Best row</option>
+                    <option value="manual">Manual (Strategy tab)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="execRiskStopLossPct">Risk override SL (optional)</label>
+                  <input id="execRiskStopLossPct" type="number" min="0" step="0.0001" placeholder="0.02 or 2" />
+                </div>
+                <div>
+                  <label for="execRiskTakeProfitPct">Risk override TP (optional)</label>
+                  <input id="execRiskTakeProfitPct" type="number" min="0" step="0.0001" placeholder="0.04 or 4" />
+                </div>
+              </div>
+
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="execManualFastLen">Manual fast length (optional)</label>
+                  <input id="execManualFastLen" type="number" min="1" step="1" placeholder="Falls back to Fast start" />
+                </div>
+                <div>
+                  <label for="execManualSlowLen">Manual slow length (optional)</label>
+                  <input id="execManualSlowLen" type="number" min="1" step="1" placeholder="Falls back to Slow start" />
+                </div>
+                <div class="muted" style="align-self: end; margin-bottom: 0.2rem; font-size: 0.78rem;">
+                  Used only when source is Manual.
+                </div>
+              </div>
+
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="execApiKey">Alpaca API key</label>
+                  <input id="execApiKey" type="password" placeholder="Required when dry-run is off" />
+                </div>
+                <div>
+                  <label for="execApiSecret">Alpaca API secret</label>
+                  <input id="execApiSecret" type="password" placeholder="Required when dry-run is off" />
+                </div>
+                <div>
+                  <label>&nbsp;</label>
+                  <div class="actions" style="margin-top: 0;">
+                    <button id="btnExecTestConnection">Test account</button>
+                    <button id="btnExecClearKeys">Clear keys</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="checks" style="margin-top: 0.55rem;">
+                <label><input id="execDryRun" type="checkbox" checked /> Dry-run (signal only; no order sent)</label>
+                <label title="Stores API key/secret in browser localStorage (plain text)."><input id="execRememberKeys" type="checkbox" /> Remember API keys locally</label>
+              </div>
+
+              <div class="actions" style="margin-top: 0.6rem;">
+                <button id="btnExecRunOnce" class="primary">Execute once</button>
+                <button id="btnExecRefresh">Refresh orders</button>
+                <button id="btnExecLiveStart">Start live candles</button>
+                <button id="btnExecLiveStop">Stop live candles</button>
+              </div>
+              <div class="checks" style="margin-top: 0.4rem;">
+                <label title="Uses Polygon websocket aggregates. Delayed feed is often available on lower-tier plans.">
+                  <input id="execLiveUseDelayed" type="checkbox" checked /> Use delayed Polygon candle feed
+                </label>
+              </div>
+              <div class="muted" id="execLiveStatusHint" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                Live candles: off
+              </div>
+              <div class="muted" id="execStatusHint" style="margin-top: 0.4rem; font-size: 0.8rem;">
+                Requires a loaded dataset. Optimization run is optional when using Manual parameter source.
+              </div>
+              <div class="muted" id="execPositionMeta" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                Position: -
+              </div>
+              <div style="margin-top: 0.55rem;">
+                <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Execution chart (loaded dataset + broker orders)</div>
+                <div class="tvChartFrame">
+                  <div id="execTvChart" class="tvChartHost" role="img" aria-label="Execution chart"></div>
+                </div>
+                <div class="muted" id="execTvChartMeta" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                  Load a dataset and refresh orders to overlay broker events.
+                </div>
+              </div>
+              <div class="table-wrap" style="margin-top: 0.55rem; max-height: 220px;">
+                <table id="execOrdersTable">
+                  <thead>
+                    <tr>
+                      <th class="left">Time (UTC)</th>
+                      <th class="left">Side</th>
+                      <th class="left">Status</th>
+                      <th>Qty</th>
+                      <th>Filled</th>
+                      <th>Avg Px</th>
+                      <th class="left">Order ID</th>
+                    </tr>
+                  </thead>
+                  <tbody id="execOrdersTableBody"></tbody>
+                </table>
+              </div>
+              <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                Displays recent broker orders for the selected symbol.
+              </div>
+              <pre class="mono" id="execOutput" style="white-space: pre-wrap; max-height: 220px; overflow: auto; border: 1px solid var(--border); padding: 0.75rem; border-radius: 10px; margin-top: 0.55rem;">-</pre>
             </section>
 
             <section class="settingsPane">

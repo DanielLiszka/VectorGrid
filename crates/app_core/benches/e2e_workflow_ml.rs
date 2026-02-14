@@ -312,6 +312,7 @@ fn run_full_workflow_once(
             halftrend: halftrend.clone(),
             macz: macz.clone(),
             ott: ott.clone(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
@@ -334,6 +335,7 @@ fn run_full_workflow_once(
                 halftrend: halftrend.clone(),
                 macz: macz.clone(),
                 ott: ott.clone(),
+                signal_mode: ta_app_core::CompositeSignalMode::HardGate,
                 strategy: strategy.clone(),
             });
         }

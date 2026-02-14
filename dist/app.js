@@ -1,4 +1,4 @@
-import { CandlestickSeries, LineSeries, createChart, createSeriesMarkers } from "./vendor/lightweight-charts.standalone.production.mjs";
+import { CandlestickSeries, HistogramSeries, LineSeries, createChart, createSeriesMarkers } from "./vendor/lightweight-charts.standalone.production.mjs";
 
 const $ = (id) => document.getElementById(id);
 
@@ -100,6 +100,7 @@ function applyThemePref(pref, opts) {
         if (String(root2.dataset.themePref || "").trim() !== "system") return;
         root2.dataset.theme = resolvedThemeFromPref("system");
         refreshDrillTvChartTheme();
+        refreshExecTvChartTheme();
       };
       try {
         if (THEME_MQL.addEventListener) THEME_MQL.addEventListener("change", THEME_MQL_HANDLER);
@@ -109,6 +110,7 @@ function applyThemePref(pref, opts) {
   }
 
   refreshDrillTvChartTheme();
+  refreshExecTvChartTheme();
   scheduleApplyWindowEffect();
   syncSettingsWorkspaceUi();
 }
@@ -1417,12 +1419,15 @@ let LAST_GPU_STATUS_AT_MS = 0;
 let LAST_CUDA_DEVICES = null;
 let LAST_CUDA_DEVICES_AT_MS = 0;
 let CUDA_DEVICES_INFLIGHT = null;
+let EXEC_BUSY = false;
+let LAST_RUN_READINESS = null;
 
 const SETTINGS_KEY = "vectorbt_settings_v1";
 const HISTORY_KEY = "vectorbt_history_v1";
 const RECENT_CSV_KEY = "vectorbt_recent_csv_v1";
 const RECENT_CSV_MAX = 12;
 const LAST_BATCH_SUMMARY_KEY = "vectorbt_last_batch_summary_path_v1";
+const EXEC_KEYS_STORAGE_KEY = "vectorbt_exec_keys_v1";
 
 let CURRENT_RUN = null; // { ts, req, res }
 let CURRENT_VALIDATION = null; // { ts, req, res }
@@ -1450,6 +1455,8 @@ let DRILL_TV_CHART = null;
 let DRILL_TV_SERIES = null;
 let DRILL_TV_FAST_SERIES = null;
 let DRILL_TV_SLOW_SERIES = null;
+let DRILL_TV_HALF_SERIES = null;
+let DRILL_TV_MACZ_SERIES = null;
 let DRILL_TV_MARKERS = null;
 let DRILL_TV_RESIZE_OBSERVER = null;
 let DRILL_TV_LEGEND_EL = null;
@@ -1475,6 +1482,17 @@ var COMPARE_SEQ = 0;
 var COMPARE_BASELINE_CACHE = {};
 var META_COMPARE_SEQ = 0;
 var META_BASELINE_CACHE = {};
+let EXEC_TV_CHART = null;
+let EXEC_TV_SERIES = null;
+let EXEC_TV_MARKERS = null;
+let EXEC_TV_RESIZE_OBSERVER = null;
+let EXEC_LAST_SNAPSHOT = null;
+let EXEC_TV_BASE_BARS = [];
+let EXEC_TV_LIVE_BARS = new Map(); // time(sec) -> candle
+let EXEC_LIVE_STREAM_ACTIVE = false;
+let EXEC_LIVE_STREAM_CFG = null;
+let EXEC_LIVE_LISTENERS_READY = false;
+let ACTIVE_PROGRESS_CONTEXT = null;
 
 const DRILL_CURVES_CACHE_MAX = 96;
 const DRILL_PREFETCH_TOP_N = 6;
@@ -2042,9 +2060,12 @@ function updateQuickBarUi() {
   const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
   const kind = strategyKind();
   const isComp = kind === "CompositeCpu" || kind === "CompositeMo";
+  const hasReadiness = !!(LAST_RUN_READINESS && typeof LAST_RUN_READINESS === "object");
+  const blockers = hasReadiness && Array.isArray(LAST_RUN_READINESS.blockers) ? LAST_RUN_READINESS.blockers : [];
+  const canRun = hasReadiness ? !!LAST_RUN_READINESS.can_run : (!RUNNING && hasData);
 
   if (browse) browse.disabled = RUNNING;
-  if (run) run.disabled = RUNNING || !hasData;
+  if (run) run.disabled = !canRun;
   if (cancel) cancel.disabled = !RUNNING;
   if (validate) {
     validate.disabled = RUNNING || !isComp || !hasRun;
@@ -2056,6 +2077,7 @@ function updateQuickBarUi() {
   if (hint) {
     const parts = [];
     if (!hasData) parts.push("Load data first");
+    if (!RUNNING && blockers.length) parts.push(`blocked: ${blockers[0]}`);
     if (RUNNING) parts.push("running");
     hint.textContent = parts.length ? `Tip: ${parts.join(" • ")} • Ctrl+K = commands` : "Tip: Use the command palette for everything (Ctrl+K).";
   }
@@ -3130,6 +3152,7 @@ async function runMetaSelection(opts) {
   const wasRunning = RUNNING;
   setRunning(true);
   clearProgressUi();
+  setActiveProgressContext(buildMetaProgressContext(req));
   setProgressUi(0, 1, "meta_read", "");
   setStatus("Running meta analysis...", "muted");
   try {
@@ -3144,6 +3167,7 @@ async function runMetaSelection(opts) {
       RESULTS_TABS?.set("meta", { save: true, focus: false });
     }
   } finally {
+    setActiveProgressContext(null);
     if (!wasRunning) clearProgressUi();
     setRunning(false);
   }
@@ -3387,6 +3411,16 @@ function num(v, fallback) {
   return Number.isFinite(x) ? x : fallback;
 }
 
+function parseRiskPctInput(id) {
+  const el = $(id);
+  if (!el) return null;
+  const raw = num(el.value, NaN);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const frac = raw > 1 ? raw / 100.0 : raw;
+  if (!Number.isFinite(frac) || frac <= 0 || frac >= 1) return null;
+  return frac;
+}
+
 function fmt(x, digits) {
   const n = Number(x);
   if (!Number.isFinite(n)) return "-";
@@ -3541,6 +3575,7 @@ function renderDataMeta(meta) {
   const fieldsEl = $("dataFields");
   const hintEl = $("dataFieldHint");
   renderContextChips();
+  updateRunPlanUi();
   if (!fieldsEl) {
     updateDataTimeframeUi();
     return;
@@ -3825,6 +3860,27 @@ function setRunning(running) {
     "heatmapBins",
     "commission",
     "epsRel",
+    "stopLossPct",
+    "takeProfitPct",
+    "execMode",
+    "execSymbol",
+    "execQty",
+    "execParamSource",
+    "execManualFastLen",
+    "execManualSlowLen",
+    "execRiskStopLossPct",
+    "execRiskTakeProfitPct",
+    "execApiKey",
+    "execApiSecret",
+    "execDryRun",
+    "execRememberKeys",
+    "execLiveUseDelayed",
+    "btnExecTestConnection",
+    "btnExecClearKeys",
+    "btnExecRunOnce",
+    "btnExecRefresh",
+    "btnExecLiveStart",
+    "btnExecLiveStop",
     "longOnly",
     "allowFlip",
     "tradeOnNext",
@@ -3871,6 +3927,8 @@ function setRunning(running) {
     "moPrescanRequireGpu",
     "moPrescanTopK",
     "moPrescanWindow",
+    "moPrescanPredictiveTopK",
+    "moPrescanPredictiveStride",
     "moPrescanObjectives",
     "moPrescanMode",
     "moPrescanMaPairs",
@@ -4053,6 +4111,7 @@ function setRunning(running) {
   syncMetaSavedSelectionUi();
   syncBatchSummaryButtons();
   syncSettingsWorkspaceUi();
+  setExecBusy(EXEC_BUSY);
 }
 
 function maSupportsKernel(id) {
@@ -4184,10 +4243,13 @@ function clearProgressUi() {
   const wrap = $("progressWrap");
   const fill = $("progressFill");
   const meta = $("progressMeta");
+  const detail = $("progressDetail");
   if (fill) fill.style.width = "0%";
   if (fill) fill.classList.remove("indeterminate");
   if (meta) meta.textContent = "";
+  if (detail) detail.textContent = "";
   if (wrap) wrap.style.display = "none";
+  ACTIVE_PROGRESS_CONTEXT = null;
 }
 
 const PHASE_LABELS = {
@@ -4198,6 +4260,12 @@ const PHASE_LABELS = {
   "parity_gpu_sweep": "Parity (GPU sweep)",
   "parity_gpu_kernel": "Parity (GPU kernel)",
   "composite_cpu": "Composite (CPU)",
+  "distributed_assets": "Distributed (assets)",
+  "distributed_tiles": "Distributed (tiles)",
+  "double_ma_validate": "Validation",
+  "double_ma_validate_cross": "Validation (cross-ticker)",
+  "double_ma_validate_cscv_prep": "Validation (CSCV prep)",
+  "double_ma_validate_cscv": "Validation (CSCV/PBO)",
   "composite_validate": "Validation",
   "composite_validate_cross": "Validation (cross-ticker)",
   "composite_validate_cscv_prep": "Validation (CSCV prep)",
@@ -4215,6 +4283,36 @@ const PHASE_LABELS = {
   "meta_save": "Meta (save JSON)",
   "export_xlsx": "XLSX report",
   "reveal_report": "Reveal report",
+};
+
+const PHASE_HINTS = {
+  "cpu": "Evaluating MA parameter pairs on CPU.",
+  "gpu-sweep": "Evaluating MA pairs with GPU indicator sweeps.",
+  "gpu-kernel": "Evaluating MA pairs in VRAM kernel backtester.",
+  "composite_cpu": "Evaluating composite strategy parameter grid.",
+  "composite_mo_prep": "Preparing search space and optional prescan ranges.",
+  "composite_mo_nsga2": "Evolving multi-objective population (NSGA-II).",
+  "composite_mo_random": "Random-searching multi-objective candidates.",
+  "composite_mo_tpe": "Model-guided search (TPE) is sampling trials.",
+  "composite_mo_qmc": "Low-discrepancy (QMC) sampling is in progress.",
+  "double_ma_validate": "Validating shortlisted candidates on current dataset.",
+  "composite_validate": "Validating shortlisted candidates on current dataset.",
+  "double_ma_validate_cross": "Running cross-ticker validation on selected datasets.",
+  "composite_validate_cross": "Running cross-ticker validation on selected datasets.",
+  "double_ma_validate_cscv_prep": "Preparing slice returns for CSCV/PBO.",
+  "composite_validate_cscv_prep": "Preparing slice returns for CSCV/PBO.",
+  "double_ma_validate_cscv": "Computing CSCV/PBO combinations.",
+  "composite_validate_cscv": "Computing CSCV/PBO combinations.",
+  "distributed_assets": "Dispatching and collecting asset-level distributed runs.",
+  "distributed_tiles": "Dispatching and collecting tiled distributed runs.",
+  "meta_read": "Reading saved run artifacts from disk.",
+  "meta_scan": "Scanning artifacts and clustering parameter groups.",
+  "meta_aggregate": "Aggregating robust statistics across artifacts.",
+  "meta_holdout": "Scoring groups on holdout datasets.",
+  "meta_export": "Generating meta XLSX report.",
+  "meta_save": "Saving meta JSON artifact.",
+  "export_xlsx": "Writing XLSX report to disk.",
+  "reveal_report": "Opening report location in file explorer.",
 };
 
 const PHASE_GROUP_LABELS = {
@@ -4296,6 +4394,11 @@ function estimateOptimizationWorkLabel(req) {
       const prescanPairs = pairs > 0 ? (pairs * maPairsN) : 0;
       if (prescanPairs > 0) parts.push(`pre-scan ~${formatCompactNumber(prescanPairs)} pairs`);
       else parts.push("pre-scan enabled");
+      const predictiveTopK = Math.max(0, Math.floor(Number(gp.predictive_top_k ?? 0)));
+      if (predictiveTopK > 0) {
+        const predictiveStride = Math.max(1, Math.floor(Number(gp.predictive_stride ?? 8)));
+        parts.push(`predictive rescue K=${predictiveTopK} stride=${predictiveStride}`);
+      }
     }
 
     return parts.join(" · ");
@@ -4318,6 +4421,244 @@ function estimateOptimizationWorkLabel(req) {
   const combos = Math.max(0, Math.floor(pairs * variants));
   if (combos > pairs) return `~${formatCompactNumber(combos)} combos (${formatCompactNumber(pairs)} MA pairs)`;
   return `~${formatCompactNumber(pairs)} MA pairs`;
+}
+
+function compactProgressText(text, maxChars) {
+  const s = String(text || "").trim();
+  const max = Math.max(64, Math.floor(Number(maxChars || 360)));
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
+}
+
+function backendProgressLabel(backendRaw) {
+  const b = String(backendRaw || "CpuOnly").trim() || "CpuOnly";
+  if (b === "GpuKernel") return "GPU kernel";
+  if (b === "GpuOnly") return "GPU sweep";
+  if (b === "Auto") return "Auto backend";
+  return "CPU";
+}
+
+function samplerProgressLabel(samplerRaw) {
+  const s = String(samplerRaw || "Nsga2").trim() || "Nsga2";
+  if (s === "Nsga2") return "NSGA-II";
+  if (s === "Tpe") return "TPE";
+  if (s === "Qmc") return "QMC";
+  if (s === "Random") return "Random";
+  return s;
+}
+
+function formatRiskProgressSummary(strategy) {
+  const st = strategy && typeof strategy === "object" ? strategy : null;
+  if (!st) return "";
+  const sl = Number(st.stop_loss_pct);
+  const tp = Number(st.take_profit_pct);
+  const parts = [];
+  if (Number.isFinite(sl) && sl > 0) parts.push(`SL ${fmtPct(sl, 2)}`);
+  if (Number.isFinite(tp) && tp > 0) parts.push(`TP ${fmtPct(tp, 2)}`);
+  if (!parts.length) return "";
+  return `risk ${parts.join(" / ")}`;
+}
+
+function formatMaPairProgressSummary(fastTypes, slowTypes) {
+  const fast = (Array.isArray(fastTypes) ? fastTypes : [])
+    .map((x) => String(x || "").trim().toUpperCase())
+    .filter((x) => !!x);
+  const slow = (Array.isArray(slowTypes) ? slowTypes : [])
+    .map((x) => String(x || "").trim().toUpperCase())
+    .filter((x) => !!x);
+  if (fast.length === 1 && slow.length === 1) return `${fast[0]} vs ${slow[0]}`;
+  if (fast.length || slow.length) return `MA sets f${Math.max(1, fast.length)}×s${Math.max(1, slow.length)}`;
+  return "";
+}
+
+function buildOptimizationProgressContext(req) {
+  const kind = kindFromReq(req);
+  const parts = [strategyKindLabel(kind)];
+  const risk = formatRiskProgressSummary(kind === "CompositeMo" ? (req?.base_strategy || req?.strategy) : req?.strategy);
+  const work = estimateOptimizationWorkLabel(req);
+
+  if (kind === "DoubleMa") {
+    parts.push(backendProgressLabel(req?.backend?.backend));
+    const maPair = formatMaPairProgressSummary(req?.fast_ma_types, req?.slow_ma_types);
+    if (maPair) parts.push(maPair);
+    const objective = String(req?.objective || "").trim();
+    if (objective) parts.push(`obj ${objective}`);
+    const mode = String(req?.mode || "").trim();
+    if (mode) parts.push(mode === "CoarseToFine" ? "Coarse→Fine" : mode);
+  } else if (kind === "CompositeCpu") {
+    parts.push("CPU");
+    const maPair = formatMaPairProgressSummary(req?.fast_ma_types, req?.slow_ma_types);
+    if (maPair) parts.push(maPair);
+    const objective = String(req?.objective || "").trim();
+    if (objective) parts.push(`obj ${objective}`);
+  } else {
+    parts.push(samplerProgressLabel(req?.sampler?.sampler));
+    const fastMa = String(req?.fast_ma_type || "").trim().toUpperCase();
+    const slowMa = String(req?.slow_ma_type || "").trim().toUpperCase();
+    if (fastMa && slowMa) parts.push(`${fastMa} vs ${slowMa}`);
+    const maxObj = String(req?.objectives?.maximize || req?.objective || "").trim();
+    const minObj = String(req?.objectives?.minimize || "").trim();
+    if (maxObj && minObj) parts.push(`obj ${maxObj}/${minObj}`);
+    else if (maxObj) parts.push(`obj ${maxObj}`);
+    if (req?.gpu_prescan && typeof req.gpu_prescan === "object") parts.push("GPU prescan");
+  }
+
+  if (risk) parts.push(risk);
+  if (work) parts.push(work);
+  return { group: "optimize", summary: parts.join(" · ") };
+}
+
+function buildValidationProgressContext(req, runKind) {
+  const runReq = CURRENT_RUN?.req && typeof CURRENT_RUN.req === "object" ? CURRENT_RUN.req : null;
+  const kind = String(runKind || (runReq ? kindFromReq(runReq) : "DoubleMa")).trim() || "DoubleMa";
+  const parts = [strategyKindLabel(kind)];
+
+  const candidatesN = Array.isArray(req?.candidates)
+    ? req.candidates.length
+    : Math.max(0, Math.floor(Number(req?.max_candidates || 0)));
+  if (candidatesN > 0) parts.push(`${formatCompactNumber(candidatesN)} candidates`);
+
+  const objective = kind === "CompositeMo"
+    ? String(runReq?.objectives?.maximize || runReq?.objective || "").trim()
+    : String(runReq?.objective || "").trim();
+  if (objective) parts.push(`obj ${objective}`);
+
+  const crossN = Array.isArray(req?.cross_ticker?.datasets) ? req.cross_ticker.datasets.length : 0;
+  if (crossN > 0) parts.push(`${crossN} cross datasets`);
+
+  const wf = req?.walk_forward && typeof req.walk_forward === "object" ? req.walk_forward : null;
+  if (wf) {
+    const wb = Math.max(0, Math.floor(Number(wf.window_bars || 0)));
+    const sb = Math.max(0, Math.floor(Number(wf.step_bars || 0)));
+    if (wb > 0 && sb > 0) parts.push(`WF ${formatCompactNumber(wb)}/${formatCompactNumber(sb)}`);
+  }
+
+  const cscv = req?.cscv_pbo && typeof req.cscv_pbo === "object" ? req.cscv_pbo : null;
+  if (cscv) {
+    const slices = Math.max(0, Math.floor(Number(cscv.slices || 0)));
+    if (slices > 0) parts.push(`CSCV ${slices} slices`);
+  }
+
+  const perturb = req?.perturb && typeof req.perturb === "object" ? req.perturb : null;
+  if (perturb) {
+    const iters = Math.max(0, Math.floor(Number(perturb.iterations || 0)));
+    if (iters > 0) parts.push(`perturb ${iters}`);
+  }
+
+  const mc = req?.trade_bootstrap && typeof req.trade_bootstrap === "object" ? req.trade_bootstrap : null;
+  if (mc) {
+    const sims = Math.max(0, Math.floor(Number(mc.simulations || 0)));
+    if (sims > 0) parts.push(`bootstrap ${formatCompactNumber(sims)}`);
+  }
+
+  const minPsr = Number(req?.min_psr);
+  const minDsr = Number(req?.min_dsr);
+  const gates = [];
+  if (Number.isFinite(minPsr)) gates.push(`PSR≥${fmtFixed(minPsr, 2)}`);
+  if (Number.isFinite(minDsr)) gates.push(`DSR≥${fmtFixed(minDsr, 2)}`);
+  if (gates.length) parts.push(gates.join(" "));
+
+  const risk = formatRiskProgressSummary(
+    kind === "CompositeMo"
+      ? (runReq?.base_strategy || runReq?.strategy)
+      : runReq?.strategy
+  );
+  if (risk) parts.push(risk);
+
+  return { group: "validate", summary: parts.join(" · ") };
+}
+
+function buildMetaProgressContext(req) {
+  const kind = String(req?.strategy_kind || "CompositeMo").trim() || "CompositeMo";
+  const parts = [strategyKindLabel(kind)];
+
+  const tf = String(req?.timeframe || "").trim();
+  if (tf) parts.push(`tf ${tf}`);
+
+  const minSamples = Math.max(0, Math.floor(Number(req?.min_samples || 0)));
+  if (minSamples > 0) parts.push(`min ${formatCompactNumber(minSamples)}`);
+
+  const topK = Math.max(0, Math.floor(Number(req?.top_k || 0)));
+  if (topK > 0) parts.push(`top ${formatCompactNumber(topK)}`);
+
+  const grouping = String(req?.grouping_mode || "").trim();
+  if (grouping) parts.push(grouping === "clustered" ? "clustered groups" : `${grouping} groups`);
+
+  const requiredTag = String(req?.required_tag || "").trim();
+  if (requiredTag) parts.push(`tag ${requiredTag}`);
+
+  if (req?.eval_holdout) {
+    const holdoutMode = String(req?.holdout_mode || "light").trim() || "light";
+    parts.push(`holdout ${holdoutMode}`);
+    const holdoutTag = String(req?.holdout_tag || "").trim();
+    if (holdoutTag) parts.push(`holdout-tag ${holdoutTag}`);
+  }
+
+  return { group: "meta", summary: parts.join(" · ") };
+}
+
+function setActiveProgressContext(ctx) {
+  ACTIVE_PROGRESS_CONTEXT = ctx && typeof ctx === "object" ? ctx : null;
+}
+
+function phaseHint(phase) {
+  const ph = String(phase || "").trim();
+  const hint = String(PHASE_HINTS[ph] || "").trim();
+  if (hint) return hint;
+  const group = phaseGroup(ph);
+  if (group === "optimize") return "Evaluating parameter combinations.";
+  if (group === "validate") return "Computing robustness checks for selected candidates.";
+  if (group === "meta") return "Aggregating and scoring run artifacts.";
+  if (group === "export") return "Preparing export output.";
+  if (group === "reveal") return "Opening generated output.";
+  return "";
+}
+
+function phaseProgressUnit(phase) {
+  const ph = String(phase || "").trim();
+  if (!ph) return "items";
+  if (ph === "cpu" || ph === "gpu-sweep" || ph === "gpu-kernel" || ph === "composite_cpu") return "pairs";
+  if (ph.startsWith("composite_mo_")) return "evals";
+  if (ph.endsWith("_cross")) return "datasets";
+  if (ph.endsWith("_cscv")) return "combos";
+  if (ph.startsWith("meta_")) return ph === "meta_holdout" ? "groups" : "artifacts";
+  if (ph.startsWith("distributed_")) return "tasks";
+  if (ph.startsWith("parity_")) return "runs";
+  return "items";
+}
+
+function activeProgressContextSummary(phase) {
+  const ctx = ACTIVE_PROGRESS_CONTEXT && typeof ACTIVE_PROGRESS_CONTEXT === "object" ? ACTIVE_PROGRESS_CONTEXT : null;
+  if (!ctx) return "";
+  const phaseGrp = phaseGroup(phase);
+  const ctxGrp = String(ctx.group || "").trim();
+  if (ctxGrp && phaseGrp && ctxGrp !== phaseGrp) return "";
+  return String(ctx.summary || "").trim();
+}
+
+function renderProgressDetail(opts) {
+  const detail = $("progressDetail");
+  if (!detail) return;
+  const phase = String(opts?.phase || "").trim();
+  const processed = Number(opts?.processed || 0);
+  const total = Number(opts?.total || 0);
+
+  const hint = phaseHint(phase);
+  let remainText = "";
+  if (Number.isFinite(processed) && Number.isFinite(total) && total > 0) {
+    const remaining = Math.max(0, Math.floor(total - processed));
+    if (remaining > 0) {
+      const unit = phaseProgressUnit(phase);
+      remainText = `remaining ${formatCompactNumber(remaining)} ${unit}`;
+    } else if (processed >= total) {
+      remainText = "finalizing";
+    }
+  }
+
+  const left = [hint, remainText].filter((x) => !!String(x || "").trim()).join(" · ");
+  const ctx = activeProgressContextSummary(phase);
+  const text = ctx ? (left ? `${left} | ${ctx}` : ctx) : left;
+  detail.textContent = compactProgressText(text, 380);
 }
 
 function optimizationProgressPhase(req) {
@@ -4353,6 +4694,7 @@ function setProgressIndeterminateUi(phase, suffixText) {
   if (meta) {
     meta.textContent = suffix ? `${label} · ${suffix}` : label;
   }
+  renderProgressDetail({ phase: ph, processed: 0, total: 0, suffixText });
   if (RUNNING) updateOverviewEmptyUi();
 }
 
@@ -4400,7 +4742,10 @@ function phaseGroup(phase) {
   if (ph.startsWith("meta_")) return "meta";
   if (ph === "export_xlsx" || ph.startsWith("export_")) return "export";
   if (ph === "reveal_report" || ph.startsWith("reveal_")) return "reveal";
+  if (ph.startsWith("double_ma_validate")) return "validate";
   if (ph.startsWith("composite_validate")) return "validate";
+  if (ph.startsWith("distributed_")) return "optimize";
+  if (ph.startsWith("parity_")) return "optimize";
   if (ph.startsWith("composite_")) return "optimize";
   if (ph === "cpu" || ph.startsWith("gpu")) return "optimize";
   return "";
@@ -4531,6 +4876,7 @@ function setProgressUi(processed, total, phase, suffixText) {
     const suffix2 = suffix ? ` · ${suffix}` : "";
     meta.textContent = `${label} ${proc}/${tot}${pct}${suffix2}`.trim();
   }
+  renderProgressDetail({ phase: ph, processed: proc, total: tot, suffixText });
   if (RUNNING) updateOverviewEmptyUi();
 }
 
@@ -5926,6 +6272,7 @@ async function refreshGpuStatusUi() {
   }
 
   el.textContent = `GPU: ${parts.join(" | ")}${hint}`;
+  updateRunPlanUi();
 }
 
 function buildTinyDoubleMaRequestForParity(backendObj) {
@@ -6157,6 +6504,228 @@ function updatePairsPreviewUi() {
     : `Pairs: ${pairsText} (fast < slow)${varText}`;
 }
 
+function runButtonLabelForKind(kind) {
+  if (kind === "CompositeMo") return "Run optimization (Composite MO)";
+  if (kind === "CompositeCpu") return "Run optimization (Composite CPU)";
+  return "Run optimization (Double MA)";
+}
+
+function appendRunReadinessBadge(host, label, value, tone, title) {
+  if (!host) return;
+  const badge = document.createElement("span");
+  const cls = tone === "on" ? "on" : (tone === "warn" ? "warn" : "off");
+  badge.className = `badge ${cls}`;
+  badge.textContent = `${label}: ${value}`;
+  if (title) badge.title = title;
+  host.appendChild(badge);
+}
+
+function selectedValidationChecksSummary() {
+  const checks = [];
+  if (!!$("valWfEnable")?.checked) checks.push("WF");
+  if (!!$("valPerturbEnable")?.checked) checks.push("perturb");
+  if (!!$("valMcEnable")?.checked) checks.push("MC");
+  if (!!$("valCscvEnable")?.checked) checks.push("CSCV");
+  if (!!$("valCrossEnable")?.checked) {
+    const n = getCrossSelectedDatasets().length;
+    checks.push(n ? `cross(${n})` : "cross");
+  }
+  return checks;
+}
+
+function tryBuildRunRequestPreview() {
+  const kind = strategyKind();
+  try {
+    if (kind === "CompositeCpu" || kind === "CompositeMo") return getRequestForFingerprint();
+    return getDoubleMaRequest();
+  } catch {
+    return null;
+  }
+}
+
+function updateRunReadinessUi() {
+  const host = $("runReadiness");
+  const hint = $("runReadinessHint");
+  const btnRun = $("btnRun");
+  const btnQaRun = $("btnQaRun");
+  if (!host && !hint && !btnRun && !btnQaRun) return;
+
+  const kind = strategyKind();
+  const blockers = [];
+  const warnings = [];
+  const pushUnique = (arr, text) => {
+    const s = String(text || "").trim();
+    if (!s) return;
+    if (!arr.includes(s)) arr.push(s);
+  };
+
+  if (btnRun) {
+    btnRun.textContent = RUNNING ? "Running..." : runButtonLabelForKind(kind);
+  }
+
+  const dataIdText = String($("dataId")?.textContent || "").trim();
+  const dataReady = !!dataIdText && dataIdText !== "—" && dataIdText !== "-";
+  const meta = CURRENT_DATA_META && typeof CURRENT_DATA_META === "object" ? CURRENT_DATA_META : null;
+  const fastMaType = String($("fastMaType")?.value || "").trim();
+  const slowMaType = String($("slowMaType")?.value || "").trim();
+  const maSource = String($("maSource")?.value || "close").trim() || "close";
+
+  const fast = [
+    Math.max(1, Math.floor(num($("fastStart")?.value, 5))),
+    Math.max(1, Math.floor(num($("fastEnd")?.value, 30))),
+    Math.floor(num($("fastStep")?.value, 1)),
+  ];
+  const slow = [
+    Math.max(1, Math.floor(num($("slowStart")?.value, 20))),
+    Math.max(1, Math.floor(num($("slowEnd")?.value, 120))),
+    Math.floor(num($("slowStep")?.value, 1)),
+  ];
+  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2]);
+  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2]);
+  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods);
+  const includeAll = String($("includeAll")?.value || "false") === "true";
+
+  if (!dataReady) pushUnique(blockers, "Load CSV first (missing data id).");
+  if (!fastMaType) pushUnique(blockers, "Select a fast MA type.");
+  if (!slowMaType) pushUnique(blockers, "Select a slow MA type.");
+  if (!pairs) pushUnique(blockers, "No valid parameter combinations (fast must be < slow).");
+
+  let backendValue = "CPU";
+  let backendTone = "on";
+  if (kind === "DoubleMa") {
+    const backend = String($("backend")?.value || "CpuOnly").trim() || "CpuOnly";
+    backendValue = backend;
+    let backendOk = true;
+    if (fastMaType && slowMaType) {
+      if (backend === "CpuOnly") {
+        backendOk = maSupportsCpu(fastMaType) && maSupportsCpu(slowMaType);
+        if (!backendOk) pushUnique(blockers, "CPU backend does not support one of the selected MA types.");
+      } else if (backend === "GpuOnly") {
+        backendOk = maSupportsCuda(fastMaType) && maSupportsCuda(slowMaType);
+        if (!backendOk) pushUnique(blockers, "GPU backend requires CUDA support for both selected MAs.");
+      } else if (backend === "GpuKernel") {
+        backendOk = maSupportsKernel(fastMaType) && maSupportsKernel(slowMaType);
+        if (!backendOk) pushUnique(blockers, "GPU (kernel) supports only sma/ema/wma/alma.");
+      } else {
+        const okFast = maSupportsCpu(fastMaType) || maSupportsCuda(fastMaType) || maSupportsKernel(fastMaType);
+        const okSlow = maSupportsCpu(slowMaType) || maSupportsCuda(slowMaType) || maSupportsKernel(slowMaType);
+        backendOk = okFast && okSlow;
+        if (!backendOk) pushUnique(blockers, "Auto backend cannot run the selected MA(s).");
+      }
+    }
+
+    const s = LAST_GPU_STATUS && typeof LAST_GPU_STATUS === "object" ? LAST_GPU_STATUS : null;
+    if (backend === "GpuOnly" || backend === "GpuKernel") {
+      if (s) {
+        if (!s.built_with_cuda || !s.cuda_available) {
+          backendOk = false;
+          pushUnique(blockers, "CUDA backend is unavailable on this machine.");
+        }
+        if (backend === "GpuKernel" && !s.built_with_cuda_backtest_kernel) {
+          backendOk = false;
+          pushUnique(blockers, "This build is missing cuda-backtest-kernel support.");
+        }
+      } else {
+        pushUnique(warnings, "GPU status is unknown (use Refresh GPU status).");
+      }
+    }
+    backendTone = backendOk ? "on" : "off";
+  } else if (kind === "CompositeMo") {
+    const prescanOn = !!$("moPrescanEnable")?.checked;
+    backendValue = prescanOn ? "CPU + GPU pre-scan" : "CPU";
+    if (prescanOn) {
+      const requireGpu = !!$("moPrescanRequireGpu")?.checked;
+      const s = LAST_GPU_STATUS && typeof LAST_GPU_STATUS === "object" ? LAST_GPU_STATUS : null;
+      if (requireGpu) {
+        if (s) {
+          const ok = !!s.built_with_cuda && !!s.cuda_available;
+          if (!ok) pushUnique(blockers, "Pre-scan requires a CUDA-capable GPU.");
+          backendTone = ok ? "on" : "off";
+        } else {
+          backendTone = "warn";
+          pushUnique(warnings, "Pre-scan requires GPU, but status is unknown.");
+        }
+      } else {
+        backendTone = "warn";
+      }
+    }
+  }
+
+  if (dataReady && meta && fastMaType && slowMaType) {
+    try {
+      validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource);
+    } catch (e) {
+      pushUnique(blockers, String(e));
+    }
+    if ((kind === "CompositeCpu" || kind === "CompositeMo") && (!meta.has_high || !meta.has_low)) {
+      pushUnique(blockers, "Composite strategy requires high/low candle fields.");
+    }
+  }
+
+  const fastVar = fastMaType ? estimateMaParamVariantCount("fast", fastMaType) : 1;
+  const slowVar = slowMaType ? estimateMaParamVariantCount("slow", slowMaType) : 1;
+  const combos = Math.max(0, Math.floor(pairs * Math.max(1, fastVar) * Math.max(1, slowVar)));
+  if (kind === "DoubleMa" && includeAll && combos > 2_000_000) {
+    pushUnique(blockers, `includeAll=true would return ${combos} rows; disable it or reduce ranges/sweeps.`);
+  } else if (kind === "CompositeCpu" && includeAll && pairs > 2_000_000) {
+    pushUnique(blockers, `includeAll=true would return ${pairs} rows; disable it or reduce ranges.`);
+  }
+
+  const sl = parseRiskPctInput("stopLossPct");
+  const tp = parseRiskPctInput("takeProfitPct");
+  const slRaw = String($("stopLossPct")?.value || "").trim();
+  const tpRaw = String($("takeProfitPct")?.value || "").trim();
+  if (slRaw && sl == null) pushUnique(warnings, "Stop-loss input is invalid and will be ignored.");
+  if (tpRaw && tp == null) pushUnique(warnings, "Take-profit input is invalid and will be ignored.");
+  if (!sl && !tp) pushUnique(warnings, "TP/SL is disabled.");
+
+  const supportsVal = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa";
+  const autoVal = supportsVal && !!$("valAutoRun")?.checked;
+  const checks = selectedValidationChecksSummary();
+  if (supportsVal && !autoVal) pushUnique(warnings, "Auto-run validation is disabled.");
+
+  const previewReq = tryBuildRunRequestPreview();
+  const workLabel = previewReq ? estimateOptimizationWorkLabel(previewReq) : "";
+  const searchValue = workLabel || (pairs > 0 ? `${formatCompactNumber(pairs)} MA pairs` : "invalid range");
+  const searchTone = pairs > 0 ? "on" : "off";
+  const riskValue = sl && tp
+    ? `SL ${fmtFixed(sl * 100, 2)}% / TP ${fmtFixed(tp * 100, 2)}%`
+    : (sl ? `SL ${fmtFixed(sl * 100, 2)}%` : (tp ? `TP ${fmtFixed(tp * 100, 2)}%` : "off"));
+  const riskTone = sl || tp ? "on" : "warn";
+  const valValue = autoVal
+    ? (checks.length ? `auto (${checks.join("+")})` : "auto")
+    : "manual";
+  const valTone = autoVal ? "on" : "warn";
+
+  if (host) {
+    host.innerHTML = "";
+    appendRunReadinessBadge(host, "Data", dataReady ? "loaded" : "missing", dataReady ? "on" : "off");
+    appendRunReadinessBadge(host, "Search", searchValue, searchTone);
+    appendRunReadinessBadge(host, "Backend", backendValue, backendTone);
+    appendRunReadinessBadge(host, "Risk", riskValue, riskTone);
+    appendRunReadinessBadge(host, "Validation", valValue, valTone);
+  }
+
+  const canRun = !RUNNING && blockers.length === 0;
+  LAST_RUN_READINESS = { can_run: canRun, blockers: blockers.slice(), warnings: warnings.slice() };
+
+  if (btnRun) {
+    btnRun.disabled = !canRun;
+    btnRun.title = blockers.length ? blockers[0] : "";
+  }
+  if (btnQaRun) {
+    btnQaRun.disabled = !canRun;
+    btnQaRun.title = blockers.length ? blockers[0] : "";
+  }
+
+  if (hint) {
+    if (RUNNING) hint.textContent = "Readiness: run in progress.";
+    else if (blockers.length) hint.textContent = `Readiness: blocked — ${blockers[0]}`;
+    else if (warnings.length) hint.textContent = `Readiness: ready — ${warnings[0]}`;
+    else hint.textContent = "Readiness: ready.";
+  }
+}
+
 function updateRunPlanUi() {
   const el = $("runPlanMeta");
   if (!el) return;
@@ -6187,12 +6756,29 @@ function updateRunPlanUi() {
 
   parts.push(`Plan: ${steps.join(" → ")}`);
 
+  const objective = kind === "CompositeMo"
+    ? `obj=max ${String($("objective")?.value || "Sharpe")} / min ${String($("moObjectiveMin")?.value || "MaxDrawdown")}`
+    : `obj=${String($("objective")?.value || "Sharpe")}`;
+  parts.push(objective);
+
+  const sl = parseRiskPctInput("stopLossPct");
+  const tp = parseRiskPctInput("takeProfitPct");
+  const riskText = sl && tp
+    ? `risk=SL ${fmtFixed(sl * 100, 2)}% / TP ${fmtFixed(tp * 100, 2)}%`
+    : (sl ? `risk=SL ${fmtFixed(sl * 100, 2)}%` : (tp ? `risk=TP ${fmtFixed(tp * 100, 2)}%` : "risk=none"));
+  parts.push(riskText);
+
+  const req = tryBuildRunRequestPreview();
+  const work = req ? estimateOptimizationWorkLabel(req) : "";
+  if (work) parts.push(`work=${work}`);
+
   // Quick reminder when validate is off.
   if (supportsVal && !autoVal) {
     parts.push("tip: enable Auto-run validation for hands-off robustness");
   }
 
   el.textContent = parts.join(" • ");
+  updateRunReadinessUi();
 }
 
 function updateValidateTabUi() {
@@ -6221,15 +6807,7 @@ function updateValidateTabUi() {
   }
 
   const maxCandidates = Math.max(1, Math.floor(num($("valCandidates")?.value, 32)));
-  const checks = [];
-  if (!!$("valWfEnable")?.checked) checks.push("WF");
-  if (!!$("valPerturbEnable")?.checked) checks.push("perturb");
-  if (!!$("valMcEnable")?.checked) checks.push("MC");
-  if (!!$("valCscvEnable")?.checked) checks.push("CSCV");
-  if (!!$("valCrossEnable")?.checked) {
-    const n = getCrossSelectedDatasets().length;
-    checks.push(n ? `cross(${n})` : "cross");
-  }
+  const checks = selectedValidationChecksSummary();
   const checksText = checks.length ? ` • checks=${checks.join("+")}` : "";
   hint.textContent = `Ready: validate up to ${maxCandidates} candidates from Top/Pareto.${checksText}`;
 }
@@ -6553,6 +7131,8 @@ function readStrategyCfgFromUi() {
   const cost_preset = String($("costPreset")?.value || "custom").trim() || "custom";
   const commission = commissionFractionFromCostBps({ fee_bps, spread_bps, slippage_bps });
   const eps_rel = num($("epsRel")?.value, 0);
+  const stop_loss_pct = parseRiskPctInput("stopLossPct");
+  const take_profit_pct = parseRiskPctInput("takeProfitPct");
   if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("total cost must be in [0, 1).");
   if (!Number.isFinite(eps_rel) || eps_rel < 0) throw new Error("eps_rel must be >= 0.");
   return {
@@ -6564,6 +7144,8 @@ function readStrategyCfgFromUi() {
     spread_bps,
     slippage_bps,
     commission,
+    stop_loss_pct,
+    take_profit_pct,
     eps_rel,
   };
 }
@@ -6652,6 +7234,8 @@ function updateMoSamplerUi() {
   setDis("moPrescanRequireGpu");
   setDis("moPrescanTopK");
   setDis("moPrescanWindow");
+  setDis("moPrescanPredictiveTopK");
+  setDis("moPrescanPredictiveStride");
   setDis("moPrescanObjectives");
   setDis("moPrescanMode");
   setDis("moPrescanMaPairs");
@@ -6741,6 +7325,16 @@ function readSettingsFromUi() {
     "spreadBps",
     "slippageBps",
     "epsRel",
+    "stopLossPct",
+    "takeProfitPct",
+    "execMode",
+    "execSymbol",
+    "execQty",
+    "execParamSource",
+    "execManualFastLen",
+    "execManualSlowLen",
+    "execRiskStopLossPct",
+    "execRiskTakeProfitPct",
     "halfTrendAmplitude",
     "halfTrendAtrPeriod",
     "halfTrendChannelDev",
@@ -6781,11 +7375,14 @@ function readSettingsFromUi() {
     "moTpeMaxModelPoints",
     "moQmcSeed",
     "moQmcTrials",
+    "moQmcSequence",
     "moConstraintMinTrades",
     "moConstraintMaxDd",
     "moConstraintMaxAbsExposure",
     "moPrescanTopK",
     "moPrescanWindow",
+    "moPrescanPredictiveTopK",
+    "moPrescanPredictiveStride",
     "moPrescanObjectives",
     "moPrescanMode",
     "moPrescanMaPairs",
@@ -6828,6 +7425,9 @@ function readSettingsFromUi() {
     "longOnly",
     "allowFlip",
     "tradeOnNext",
+    "execDryRun",
+    "execRememberKeys",
+    "execLiveUseDelayed",
     "polygonStocksAdjusted",
     "maczUseVolume",
     "maczUseLag",
@@ -6866,6 +7466,37 @@ function saveSettingsSoon() {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(readSettingsFromUi()));
     } catch {}
   }, 120);
+}
+
+function clearExecutionApiKeysFromStorage() {
+  try {
+    localStorage.removeItem(EXEC_KEYS_STORAGE_KEY);
+  } catch {}
+}
+
+function saveExecutionApiKeysToStorage() {
+  if (!$("execRememberKeys")?.checked) {
+    clearExecutionApiKeysFromStorage();
+    return;
+  }
+  const api_key = String($("execApiKey")?.value || "").trim();
+  const api_secret = String($("execApiSecret")?.value || "").trim();
+  try {
+    localStorage.setItem(EXEC_KEYS_STORAGE_KEY, JSON.stringify({ api_key, api_secret }));
+  } catch {}
+}
+
+function loadExecutionApiKeysFromStorage() {
+  if (!$("execRememberKeys")?.checked) return;
+  let payload = null;
+  try {
+    payload = JSON.parse(localStorage.getItem(EXEC_KEYS_STORAGE_KEY) || "null");
+  } catch {
+    payload = null;
+  }
+  if (!payload || typeof payload !== "object") return;
+  if ($("execApiKey")) $("execApiKey").value = String(payload.api_key || "");
+  if ($("execApiSecret")) $("execApiSecret").value = String(payload.api_secret || "");
 }
 
 function loadSettings() {
@@ -6962,6 +7593,7 @@ function loadSettings() {
   setDef("spreadBps", 0);
   setDef("slippageBps", 0);
   syncCostUi({ save: false });
+  loadExecutionApiKeysFromStorage();
   if (patched) saveSettingsSoon();
   updateDeviceIdEnabled();
   updatePolygonAdjustedUi();
@@ -6995,6 +7627,7 @@ function applySettingsObject(settings) {
   }
 
   syncCostUi({ save: false });
+  loadExecutionApiKeysFromStorage();
   updateStrategyUi();
   applyBackendSelectionConstraints();
   updateDeviceIdEnabled();
@@ -7100,6 +7733,8 @@ function applyRequestToUi(req) {
   const feeBps = Number(st.fee_bps);
   const spreadBps = Number(st.spread_bps);
   const slipBps = Number(st.slippage_bps);
+  const stopLossPct = Number(st.stop_loss_pct);
+  const takeProfitPct = Number(st.take_profit_pct);
 
   const hasBps =
     Number.isFinite(feeBps) && feeBps >= 0
@@ -7111,6 +7746,8 @@ function applyRequestToUi(req) {
   if ($("slippageBps")) $("slippageBps").value = String(hasBps ? slipBps : 0);
   syncCostUi({ save: false });
   if ($("epsRel")) $("epsRel").value = String(num(st.eps_rel, 0));
+  if ($("stopLossPct")) $("stopLossPct").value = Number.isFinite(stopLossPct) && stopLossPct > 0 ? String(stopLossPct) : "";
+  if ($("takeProfitPct")) $("takeProfitPct").value = Number.isFinite(takeProfitPct) && takeProfitPct > 0 ? String(takeProfitPct) : "";
   if ($("longOnly")) $("longOnly").checked = !!st.long_only;
   if ($("allowFlip")) $("allowFlip").checked = !!st.allow_flip;
   if ($("tradeOnNext")) $("tradeOnNext").checked = !!st.trade_on_next_bar;
@@ -7196,6 +7833,8 @@ function applyRequestToUi(req) {
     if ($("moPrescanRequireGpu")) $("moPrescanRequireGpu").checked = !!prescan?.require_gpu;
     if ($("moPrescanTopK")) $("moPrescanTopK").value = String(Number(prescan?.top_k ?? 128));
     if ($("moPrescanWindow")) $("moPrescanWindow").value = String(Number(prescan?.window ?? 8));
+    if ($("moPrescanPredictiveTopK")) $("moPrescanPredictiveTopK").value = String(Number(prescan?.predictive_top_k ?? 12));
+    if ($("moPrescanPredictiveStride")) $("moPrescanPredictiveStride").value = String(Number(prescan?.predictive_stride ?? 8));
     if ($("moPrescanObjectives")) $("moPrescanObjectives").value = String(prescan?.objectives ?? "both");
     if ($("moPrescanMode")) $("moPrescanMode").value = String(prescan?.mode ?? "Auto");
     if ($("moPrescanMaPairs")) {
@@ -7858,6 +8497,8 @@ function buildSavedRunReqSnapshot(req) {
     const feeBps = Number(strategy.fee_bps);
     const spreadBps = Number(strategy.spread_bps);
     const slipBps = Number(strategy.slippage_bps);
+    const stopLossPct = Number(strategy.stop_loss_pct);
+    const takeProfitPct = Number(strategy.take_profit_pct);
     const eps = Number(strategy.eps_rel || 0);
     const hasBps =
       Number.isFinite(feeBps) && feeBps >= 0
@@ -7866,7 +8507,11 @@ function buildSavedRunReqSnapshot(req) {
     const costText = hasBps
       ? `fee_bps=${fmtFixed(feeBps, 2)}, spread_bps=${fmtFixed(spreadBps, 2)}, slippage_bps=${fmtFixed(slipBps, 2)}`
       : `commission=${fmtFixed(commission, 4)}`;
-    lines.push(`strategy params: ${costText}, eps_rel=${fmtFixed(eps, 4)}${flags.length ? ` (${flags.join(",")})` : ""}`);
+    const riskParts = [];
+    if (Number.isFinite(stopLossPct) && stopLossPct > 0) riskParts.push(`sl=${fmtFixed(stopLossPct, 4)}`);
+    if (Number.isFinite(takeProfitPct) && takeProfitPct > 0) riskParts.push(`tp=${fmtFixed(takeProfitPct, 4)}`);
+    const riskText = riskParts.length ? `, ${riskParts.join(", ")}` : "";
+    lines.push(`strategy params: ${costText}, eps_rel=${fmtFixed(eps, 4)}${riskText}${flags.length ? ` (${flags.join(",")})` : ""}`);
   }
 
   if (kind !== "DoubleMa") {
@@ -9258,7 +9903,15 @@ function drillChartThemeOptions() {
       horzLines: { color: border, visible: true },
     },
     rightPriceScale: { borderColor: border },
-    timeScale: { borderColor: border, rightOffset: 8, barSpacing: 7 },
+    timeScale: {
+      borderColor: border,
+      rightOffset: 8,
+      barSpacing: 7,
+      enableConflation: true,
+      conflationThresholdFactor: 0.75,
+      precomputeConflationOnInit: false,
+      maxBarSpacing: 40,
+    },
     crosshair: { mode: 1 },
   };
 }
@@ -9506,6 +10159,8 @@ function updateDrillTvLegendFromCrosshair(param) {
   const candle = DRILL_TV_SERIES ? sd.get(DRILL_TV_SERIES) : null;
   const fast = DRILL_TV_FAST_SERIES ? sd.get(DRILL_TV_FAST_SERIES) : null;
   const slow = DRILL_TV_SLOW_SERIES ? sd.get(DRILL_TV_SLOW_SERIES) : null;
+  const halftrend = DRILL_TV_HALF_SERIES ? sd.get(DRILL_TV_HALF_SERIES) : null;
+  const macz = DRILL_TV_MACZ_SERIES ? sd.get(DRILL_TV_MACZ_SERIES) : null;
 
   const lines = [formatUtcTimeFromSec(time)];
 
@@ -9523,6 +10178,15 @@ function updateDrillTvLegendFromCrosshair(param) {
     const fStr = Number.isFinite(fv) ? fmtPrice(fv) : "-";
     const sStr = Number.isFinite(sv) ? fmtPrice(sv) : "-";
     lines.push(`fast ${fStr}  slow ${sStr}`);
+  }
+
+  const htv = Number(halftrend?.value);
+  if (Number.isFinite(htv)) {
+    lines.push(`halftrend ${fmt(htv, 4)}`);
+  }
+  const mzv = Number(macz?.value);
+  if (Number.isFinite(mzv)) {
+    lines.push(`macz ${fmt(mzv, 6)}`);
   }
 
   const ev = DRILL_TV_TRADE_EVENTS_BY_TIME && typeof DRILL_TV_TRADE_EVENTS_BY_TIME.get === "function"
@@ -9695,10 +10359,75 @@ function onDrillTvChartClick(param) {
   selectDrillTradeByIndex(idx, { scroll: true });
 }
 
+function ensureDrillTvAuxPanes() {
+  if (!DRILL_TV_CHART || typeof DRILL_TV_CHART.addSeries !== "function") return;
+  if (typeof DRILL_TV_CHART.addPane !== "function" || typeof DRILL_TV_CHART.panes !== "function") return;
+
+  try {
+    while (Array.isArray(DRILL_TV_CHART.panes()) && DRILL_TV_CHART.panes().length < 3) {
+      DRILL_TV_CHART.addPane();
+    }
+  } catch {
+    return;
+  }
+
+  const halfOpts = {
+    color: "rgba(56, 189, 248, 0.95)",
+    lineWidth: 2,
+    crosshairMarkerVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  };
+  const maczOpts = {
+    color: "rgba(148, 163, 184, 0.9)",
+    base: 0,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  };
+
+  try {
+    if (!DRILL_TV_HALF_SERIES && LineSeries) {
+      DRILL_TV_HALF_SERIES = DRILL_TV_CHART.addSeries(LineSeries, halfOpts, 1);
+      if (DRILL_TV_HALF_SERIES && typeof DRILL_TV_HALF_SERIES.createPriceLine === "function") {
+        DRILL_TV_HALF_SERIES.createPriceLine({
+          price: 0,
+          color: "rgba(148, 163, 184, 0.35)",
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: false,
+          title: "",
+        });
+      }
+    }
+  } catch {
+    DRILL_TV_HALF_SERIES = null;
+  }
+  try {
+    if (!DRILL_TV_MACZ_SERIES && HistogramSeries) {
+      DRILL_TV_MACZ_SERIES = DRILL_TV_CHART.addSeries(HistogramSeries, maczOpts, 2);
+    }
+  } catch {
+    DRILL_TV_MACZ_SERIES = null;
+  }
+
+  try {
+    const panes = DRILL_TV_CHART.panes();
+    if (Array.isArray(panes)) {
+      if (panes[1] && typeof panes[1].setHeight === "function") panes[1].setHeight(96);
+      if (panes[2] && typeof panes[2].setHeight === "function") panes[2].setHeight(120);
+    }
+  } catch {
+    // optional pane sizing
+  }
+}
+
 function ensureDrillTvChart() {
   const host = $("drillTvChart");
   if (!host) return null;
-  if (DRILL_TV_CHART && DRILL_TV_SERIES) return { chart: DRILL_TV_CHART, series: DRILL_TV_SERIES, host };
+  if (DRILL_TV_CHART && DRILL_TV_SERIES) {
+    ensureDrillTvAuxPanes();
+    return { chart: DRILL_TV_CHART, series: DRILL_TV_SERIES, host };
+  }
 
   const width = Math.max(240, Math.floor(host.clientWidth || 820));
   const height = Math.max(220, Math.floor(host.clientHeight || 360));
@@ -9751,6 +10480,7 @@ function ensureDrillTvChart() {
     DRILL_TV_SLOW_SERIES = DRILL_TV_SLOW_SERIES || DRILL_TV_CHART.addLineSeries(slowOpts);
   }
   DRILL_TV_MARKERS = createSeriesMarkers(DRILL_TV_SERIES, []);
+  ensureDrillTvAuxPanes();
 
   if (typeof ResizeObserver !== "undefined") {
     DRILL_TV_RESIZE_OBSERVER = new ResizeObserver(() => {
@@ -9790,6 +10520,8 @@ function clearDrillTvChart(msg = "Hover for OHLC/MA values; click a marker to fo
   if (DRILL_TV_SERIES) DRILL_TV_SERIES.setData([]);
   if (DRILL_TV_FAST_SERIES) DRILL_TV_FAST_SERIES.setData([]);
   if (DRILL_TV_SLOW_SERIES) DRILL_TV_SLOW_SERIES.setData([]);
+  if (DRILL_TV_HALF_SERIES) DRILL_TV_HALF_SERIES.setData([]);
+  if (DRILL_TV_MACZ_SERIES) DRILL_TV_MACZ_SERIES.setData([]);
   if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
     DRILL_TV_MARKERS.setMarkers([]);
   }
@@ -9871,6 +10603,45 @@ function normalizeIndicatorBarsForChart(rows) {
         ...row,
         fast: row.fast != null ? row.fast : last.fast,
         slow: row.slow != null ? row.slow : last.slow,
+      };
+    } else {
+      deduped.push(row);
+    }
+  }
+  return deduped;
+}
+
+function normalizeCompositeIndicatorBarsForChart(rows) {
+  const input = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (const r of input) {
+    const time = normalizeChartTimeSec(r?.time ?? r?.timestamp ?? r?.ts ?? r?.t);
+    const fromIndex = Math.max(0, Math.floor(Number(r?.from_index ?? r?.fromIndex ?? r?.from ?? 0)));
+    const toIndex = Math.max(fromIndex, Math.floor(Number(r?.to_index ?? r?.toIndex ?? r?.to ?? fromIndex)));
+    const halftrendRaw = Number(r?.halftrend);
+    const maczRaw = Number(r?.macz_hist ?? r?.macz);
+    const ottLineRaw = Number(r?.ott_line);
+    const ottPriceRaw = Number(r?.ott_price);
+    const halftrend = Number.isFinite(halftrendRaw) ? halftrendRaw : null;
+    const macz = Number.isFinite(maczRaw) ? maczRaw : null;
+    const ottLine = Number.isFinite(ottLineRaw) ? ottLineRaw : null;
+    const ottPrice = Number.isFinite(ottPriceRaw) ? ottPriceRaw : null;
+    if (!Number.isFinite(time)) continue;
+    if (halftrend == null && macz == null && ottLine == null && ottPrice == null) continue;
+    out.push({ time, fromIndex, toIndex, halftrend, macz, ottLine, ottPrice });
+  }
+  if (out.length <= 1) return out;
+  out.sort((a, b) => a.time - b.time);
+  const deduped = [];
+  for (const row of out) {
+    const last = deduped[deduped.length - 1];
+    if (last && row.time === last.time) {
+      deduped[deduped.length - 1] = {
+        ...row,
+        halftrend: row.halftrend != null ? row.halftrend : last.halftrend,
+        macz: row.macz != null ? row.macz : last.macz,
+        ottLine: row.ottLine != null ? row.ottLine : last.ottLine,
+        ottPrice: row.ottPrice != null ? row.ottPrice : last.ottPrice,
       };
     } else {
       deduped.push(row);
@@ -10308,6 +11079,22 @@ async function renderDrillTvChart(curves, runReq, seq, context) {
     if (DRILL_TV_FAST_SERIES) DRILL_TV_FAST_SERIES.setData(fastData);
     if (DRILL_TV_SLOW_SERIES) DRILL_TV_SLOW_SERIES.setData(slowData);
 
+    const compositeBars = normalizeCompositeIndicatorBarsForChart(curves?.composite_indicator_bars);
+    const halftrendData = [];
+    const maczData = [];
+    for (const b of compositeBars) {
+      if (Number.isFinite(b.halftrend)) halftrendData.push({ time: b.time, value: b.halftrend });
+      if (Number.isFinite(b.macz)) {
+        maczData.push({
+          time: b.time,
+          value: b.macz,
+          color: b.macz >= 0 ? "rgba(16, 185, 129, 0.9)" : "rgba(244, 63, 94, 0.9)",
+        });
+      }
+    }
+    if (DRILL_TV_HALF_SERIES) DRILL_TV_HALF_SERIES.setData(halftrendData);
+    if (DRILL_TV_MACZ_SERIES) DRILL_TV_MACZ_SERIES.setData(maczData);
+
     const markers = buildDrillTradeMarkers(curves, bars);
     DRILL_TV_TRADE_EVENTS_BY_TIME = buildDrillTradeEventIndex(curves, bars);
     renderTrades(curves, { bars });
@@ -10337,6 +11124,10 @@ async function renderDrillTvChart(curves, runReq, seq, context) {
           const sStr = Number.isFinite(sv) ? fmtPrice(sv) : "-";
           lines.push(`fast ${fStr}  slow ${sStr}`);
         }
+        const htv = halftrendData.length ? Number(halftrendData[halftrendData.length - 1]?.value) : NaN;
+        const mzv = maczData.length ? Number(maczData[maczData.length - 1]?.value) : NaN;
+        if (Number.isFinite(htv)) lines.push(`halftrend ${fmt(htv, 4)}`);
+        if (Number.isFinite(mzv)) lines.push(`macz ${fmt(mzv, 6)}`);
         const ev = DRILL_TV_TRADE_EVENTS_BY_TIME && typeof DRILL_TV_TRADE_EVENTS_BY_TIME.get === "function"
           ? DRILL_TV_TRADE_EVENTS_BY_TIME.get(time)
           : null;
@@ -10363,6 +11154,7 @@ async function renderDrillTvChart(curves, runReq, seq, context) {
       const last = bars[bars.length - 1];
       const tradesN = Array.isArray(curves?.trades) ? curves.trades.length : 0;
       const indBarsN = indicatorBars.length;
+      const compBarsN = compositeBars.length;
       const stats = curves?.trade_stats && typeof curves.trade_stats === "object" ? curves.trade_stats : null;
       const wr = Number(stats?.win_rate ?? NaN);
       const pf = Number(stats?.profit_factor ?? NaN);
@@ -10375,6 +11167,8 @@ async function renderDrillTvChart(curves, runReq, seq, context) {
       const cachePart = ctxMeta.cacheHit ? "cached" : "fresh";
       meta.textContent =
         `bars=${bars.length} idx=${first.fromIndex}..${last.toIndex} markers=${markers.length} trades=${tradesN} ind=${indBarsN} fast=${fastData.length} slow=${slowData.length}` +
+        ` halftrend=${halftrendData.length} macz=${maczData.length}` +
+        (compBarsN ? ` comp=${compBarsN}` : "") +
         (tradeStatsPart ? ` | ${tradeStatsPart}` : "") +
         (metricPart ? ` | ${metricPart}` : "") +
         (moPart ? ` | ${moPart}` : "") +
@@ -12673,7 +13467,7 @@ function getCompositeMoRequest() {
   } else if (samplerKind === "Qmc") {
     const seed = Math.max(0, Math.floor(num($("moQmcSeed")?.value, 1)));
     const trials = Math.max(1, Math.floor(num($("moQmcTrials")?.value, 5000)));
-    const sequence = String($("moQmcSequence")?.value || "sobol");
+    const sequence = String($("moQmcSequence")?.value || "sobol").trim().toLowerCase() || "sobol";
     if (trials > 200_000) throw new Error("QMC trials too large (max 200000).");
     sampler = { sampler: "Qmc", config: { seed, trials, sequence } };
   } else {
@@ -12730,12 +13524,16 @@ function getCompositeMoRequest() {
     const device_id = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
     const top_k = Math.max(1, Math.floor(num($("moPrescanTopK")?.value, 128)));
     const window = Math.max(0, Math.floor(num($("moPrescanWindow")?.value, 8)));
+    const predictive_top_k = Math.max(0, Math.floor(num($("moPrescanPredictiveTopK")?.value, 12)));
+    const predictive_stride = Math.max(1, Math.min(65535, Math.floor(num($("moPrescanPredictiveStride")?.value, 8))));
     const objectives = String($("moPrescanObjectives")?.value || "both").trim();
     const mode = String($("moPrescanMode")?.value || "Auto").trim();
     const ma_pairs = parseCompositeMoPrescanMaPairs($("moPrescanMaPairs")?.value || "");
     gpu_prescan = {
       top_k,
       window,
+      predictive_top_k,
+      predictive_stride,
       device_id,
       require_gpu: !!$("moPrescanRequireGpu")?.checked,
       objectives,
@@ -12913,6 +13711,893 @@ function getRequest() {
 function kindFromReq(req) {
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
   return kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+}
+
+function setExecStatus(msg, kind) {
+  const el = $("execStatusHint");
+  if (!el) return;
+  el.textContent = String(msg || "-");
+  el.classList.remove("goodText", "badText");
+  if (kind === "ok") el.classList.add("goodText");
+  else if (kind === "danger") el.classList.add("badText");
+}
+
+function setExecLiveStatus(msg, kind) {
+  const el = $("execLiveStatusHint");
+  if (!el) return;
+  el.textContent = String(msg || "-");
+  el.classList.remove("goodText", "badText");
+  if (kind === "ok") el.classList.add("goodText");
+  else if (kind === "danger") el.classList.add("badText");
+}
+
+function setExecOutput(value) {
+  const el = $("execOutput");
+  if (!el) return;
+  if (typeof value === "string") {
+    el.textContent = value;
+    return;
+  }
+  try {
+    el.textContent = pretty(value);
+  } catch {
+    el.textContent = String(value);
+  }
+}
+
+function normalizeExecSymbolKey(s) {
+  return String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function execOrderTimeSec(order) {
+  const o = order && typeof order === "object" ? order : {};
+  const picks = [o.filled_at, o.submitted_at, o.updated_at, o.canceled_at, o.created_at];
+  for (const raw of picks) {
+    if (!raw) continue;
+    if (typeof raw === "number") {
+      const abs = Math.abs(raw);
+      if (!Number.isFinite(abs) || abs <= 0) continue;
+      if (abs >= 1e12) return Math.floor(raw / 1000);
+      return Math.floor(raw);
+    }
+    const ms = Date.parse(String(raw));
+    if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+  }
+  return NaN;
+}
+
+function fmtExecOrderTime(order) {
+  const sec = execOrderTimeSec(order);
+  return Number.isFinite(sec) ? formatUtcTimeShortFromSec(sec) : "-";
+}
+
+function shortExecOrderId(id) {
+  const s = String(id || "").trim();
+  if (!s) return "-";
+  if (s.length <= 12) return s;
+  return `${s.slice(0, 8)}…`;
+}
+
+function nearestExecBarTimeSec(targetSec, bars) {
+  if (!Array.isArray(bars) || !bars.length) return null;
+  const t = Number(targetSec);
+  if (!Number.isFinite(t)) return null;
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const mt = Number(bars[mid]?.time);
+    if (!Number.isFinite(mt)) return null;
+    if (t < mt) hi = mid - 1;
+    else if (t > mt) lo = mid + 1;
+    else return mt;
+  }
+  if (hi < 0) return Number(bars[0]?.time);
+  if (lo >= bars.length) return Number(bars[bars.length - 1]?.time);
+  const lt = Number(bars[hi]?.time);
+  const rt = Number(bars[lo]?.time);
+  return Math.abs(t - lt) <= Math.abs(rt - t) ? lt : rt;
+}
+
+function buildExecOrderMarkers(snapshot, bars) {
+  const orders = Array.isArray(snapshot?.orders) ? snapshot.orders : [];
+  if (!orders.length || !Array.isArray(bars) || !bars.length) return [];
+  const out = [];
+  for (const o0 of orders) {
+    const o = o0 && typeof o0 === "object" ? o0 : {};
+    const sec = execOrderTimeSec(o);
+    const time = nearestExecBarTimeSec(sec, bars);
+    if (!Number.isFinite(time)) continue;
+
+    const side = String(o.side || "").trim().toLowerCase();
+    const status = String(o.status || "").trim().toLowerCase();
+    const isBuy = side === "buy";
+    const isSell = side === "sell";
+    const isCancelled = status.includes("cancel");
+    const isRejected = status.includes("reject");
+    const isFilled = status === "filled" || status === "partially_filled";
+    const isOpen = status === "new" || status === "accepted" || status === "pending_new";
+
+    let color = "rgba(148, 163, 184, 0.9)";
+    if (isRejected) color = "rgba(245, 158, 11, 0.95)";
+    else if (isCancelled) color = "rgba(100, 116, 139, 0.9)";
+    else if (isFilled && isBuy) color = "rgba(22, 163, 74, 0.95)";
+    else if (isFilled && isSell) color = "rgba(225, 29, 72, 0.95)";
+    else if (isOpen) color = "rgba(2, 132, 199, 0.95)";
+    else if (isBuy) color = "rgba(22, 163, 74, 0.95)";
+    else if (isSell) color = "rgba(225, 29, 72, 0.95)";
+
+    const qtyRaw = Number(o.filled_qty ?? o.qty ?? NaN);
+    const qty = Number.isFinite(qtyRaw) ? qtyRaw : NaN;
+    const qtyText = Number.isFinite(qty) ? String(qty) : "-";
+    const statusText = status || "unknown";
+
+    out.push({
+      time,
+      position: isBuy ? "belowBar" : "aboveBar",
+      shape: isFilled ? (isBuy ? "arrowUp" : "arrowDown") : "circle",
+      color,
+      text: `${isBuy ? "B" : (isSell ? "S" : "?")} ${qtyText} ${statusText}`,
+      size: isFilled ? 2 : 1,
+    });
+  }
+  out.sort((a, b) => Number(a.time) - Number(b.time));
+  if (out.length > 4000) return out.slice(out.length - 4000);
+  return out;
+}
+
+function execCurrentSymbolKey() {
+  const fromCfg = normalizeExecSymbolKey(EXEC_LIVE_STREAM_CFG?.symbol || "");
+  if (fromCfg) return fromCfg;
+  const fromUi = normalizeExecSymbolKey($("execSymbol")?.value || "");
+  if (fromUi) return fromUi;
+  return normalizeExecSymbolKey(CURRENT_DATASET_CTX?.symbol || "");
+}
+
+function execMergedBars() {
+  const map = new Map();
+  const base = Array.isArray(EXEC_TV_BASE_BARS) ? EXEC_TV_BASE_BARS : [];
+  for (const b0 of base) {
+    const t = Number(b0?.time);
+    if (!Number.isFinite(t)) continue;
+    map.set(t, {
+      time: t,
+      open: Number(b0.open),
+      high: Number(b0.high),
+      low: Number(b0.low),
+      close: Number(b0.close),
+    });
+  }
+  for (const [t0, b0] of EXEC_TV_LIVE_BARS.entries()) {
+    const t = Number(t0);
+    if (!Number.isFinite(t)) continue;
+    const b = b0 && typeof b0 === "object" ? b0 : {};
+    map.set(t, {
+      time: t,
+      open: Number(b.open),
+      high: Number(b.high),
+      low: Number(b.low),
+      close: Number(b.close),
+    });
+  }
+  const out = [...map.values()]
+    .filter((b) => Number.isFinite(b.time) && Number.isFinite(b.open) && Number.isFinite(b.high) && Number.isFinite(b.low) && Number.isFinite(b.close))
+    .sort((a, b) => a.time - b.time);
+  if (out.length > 12000) return out.slice(out.length - 12000);
+  return out;
+}
+
+function updateExecChartSeries(snapshot, opts) {
+  if (!EXEC_TV_SERIES) return;
+  const merged = execMergedBars();
+  EXEC_TV_SERIES.setData(merged);
+  const markers = buildExecOrderMarkers(snapshot, merged);
+  if (EXEC_TV_MARKERS && typeof EXEC_TV_MARKERS.setMarkers === "function") {
+    EXEC_TV_MARKERS.setMarkers(markers);
+  }
+  const meta = $("execTvChartMeta");
+  if (meta) {
+    const baseN = Array.isArray(EXEC_TV_BASE_BARS) ? EXEC_TV_BASE_BARS.length : 0;
+    const liveN = EXEC_TV_LIVE_BARS.size;
+    const ordersN = Array.isArray(snapshot?.orders) ? snapshot.orders.length : 0;
+    meta.textContent = `bars=${merged.length} (base=${baseN} live=${liveN}) orders=${ordersN} markers=${markers.length}`;
+  }
+  if (opts?.fit) {
+    try {
+      EXEC_TV_CHART?.timeScale?.().fitContent?.();
+    } catch {}
+  }
+}
+
+function clearExecLiveBars(opts) {
+  EXEC_TV_LIVE_BARS.clear();
+  if (opts?.refresh && EXEC_TV_SERIES) {
+    updateExecChartSeries(EXEC_LAST_SNAPSHOT, { fit: false });
+  }
+}
+
+function execCandleFromLivePayload(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const openMs = Number(p.time_open_unix_ms);
+  const tSec = Math.floor(openMs / 1000);
+  const open = Number(p.open);
+  const high = Number(p.high);
+  const low = Number(p.low);
+  const close = Number(p.close);
+  if (!Number.isFinite(tSec) || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+    return null;
+  }
+  return { time: tSec, open, high, low, close };
+}
+
+function onExecLiveBarEvent(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const evSym = normalizeExecSymbolKey(p.symbol || "");
+  const curSym = execCurrentSymbolKey();
+  if (curSym && evSym && curSym !== evSym) return;
+
+  const candle = execCandleFromLivePayload(p);
+  if (!candle) return;
+  EXEC_TV_LIVE_BARS.set(Number(candle.time), candle);
+  if (EXEC_TV_SERIES) updateExecChartSeries(EXEC_LAST_SNAPSHOT, { fit: false });
+  const when = formatUtcTimeShortFromSec(Number(candle.time));
+  const delayed = !!p.delayed;
+  setExecLiveStatus(`Live candle: ${String(p.symbol || "-")} @ ${when}${delayed ? " (delayed)" : ""}`, "ok");
+}
+
+function onExecLiveStatusEvent(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const status = String(p.status || "").trim().toLowerCase();
+  const message = String(p.message || "").trim();
+  const symbol = String(p.symbol || "").trim() || String(EXEC_LIVE_STREAM_CFG?.symbol || "").trim();
+  if (status === "error") {
+    EXEC_LIVE_STREAM_ACTIVE = false;
+    setExecLiveStatus(`Live candles error (${symbol || "-"})${message ? `: ${message}` : ""}`, "danger");
+    return;
+  }
+  if (status === "closed") {
+    EXEC_LIVE_STREAM_ACTIVE = false;
+    setExecLiveStatus(`Live candles stopped (${symbol || "-"})${message ? `: ${message}` : ""}`, "muted");
+    return;
+  }
+  if (status === "subscribed" || status === "connected" || status === "auth_success") {
+    EXEC_LIVE_STREAM_ACTIVE = true;
+    setExecLiveStatus(`Live candles active (${symbol || "-"})${message ? `: ${message}` : ""}`, "ok");
+    return;
+  }
+  setExecLiveStatus(`Live candles: ${status || "status"}${message ? ` (${message})` : ""}`, "muted");
+}
+
+async function initExecLiveStreamListeners() {
+  if (EXEC_LIVE_LISTENERS_READY) return;
+  const listen = tauriListen();
+  if (!listen) return;
+  EXEC_LIVE_LISTENERS_READY = true;
+  try {
+    await listen("polygon_live_bar", (event) => {
+      try {
+        onExecLiveBarEvent(event?.payload);
+      } catch {}
+    });
+  } catch {}
+  try {
+    await listen("polygon_live_status", (event) => {
+      try {
+        onExecLiveStatusEvent(event?.payload);
+      } catch {}
+    });
+  } catch {}
+}
+
+function ensureExecTvChart() {
+  const host = $("execTvChart");
+  if (!host) return null;
+  if (EXEC_TV_CHART && EXEC_TV_SERIES) return { chart: EXEC_TV_CHART, series: EXEC_TV_SERIES, host };
+
+  const width = Math.max(240, Math.floor(host.clientWidth || 820));
+  const height = Math.max(220, Math.floor(host.clientHeight || 300));
+  EXEC_TV_CHART = createChart(host, { ...drillChartThemeOptions(), width, height });
+  const candleOpts = {
+    upColor: "rgba(22, 163, 74, 0.9)",
+    downColor: "rgba(225, 29, 72, 0.9)",
+    wickUpColor: "rgba(22, 163, 74, 0.9)",
+    wickDownColor: "rgba(225, 29, 72, 0.9)",
+    borderVisible: true,
+    borderUpColor: "rgba(22, 163, 74, 1)",
+    borderDownColor: "rgba(225, 29, 72, 1)",
+  };
+  if (typeof EXEC_TV_CHART.addSeries === "function" && CandlestickSeries) {
+    try {
+      EXEC_TV_SERIES = EXEC_TV_CHART.addSeries(CandlestickSeries, candleOpts);
+    } catch {
+      EXEC_TV_SERIES = null;
+    }
+  }
+  if (!EXEC_TV_SERIES && typeof EXEC_TV_CHART.addCandlestickSeries === "function") {
+    EXEC_TV_SERIES = EXEC_TV_CHART.addCandlestickSeries(candleOpts);
+  }
+  if (!EXEC_TV_SERIES) throw new Error("Lightweight Charts candlestick API unavailable.");
+  EXEC_TV_MARKERS = createSeriesMarkers(EXEC_TV_SERIES, []);
+
+  if (typeof ResizeObserver !== "undefined") {
+    EXEC_TV_RESIZE_OBSERVER = new ResizeObserver(() => {
+      if (!EXEC_TV_CHART) return;
+      const rect = host.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      EXEC_TV_CHART.applyOptions({
+        width: Math.max(240, Math.floor(rect.width)),
+        height: Math.max(220, Math.floor(rect.height)),
+      });
+    });
+    EXEC_TV_RESIZE_OBSERVER.observe(host);
+  }
+
+  return { chart: EXEC_TV_CHART, series: EXEC_TV_SERIES, host };
+}
+
+function refreshExecTvChartTheme() {
+  if (!EXEC_TV_CHART) return;
+  EXEC_TV_CHART.applyOptions(drillChartThemeOptions());
+}
+
+function clearExecTvChart(msg) {
+  const meta = $("execTvChartMeta");
+  if (meta && msg != null) meta.textContent = String(msg);
+  EXEC_TV_BASE_BARS = [];
+  EXEC_TV_LIVE_BARS.clear();
+  if (EXEC_TV_SERIES) EXEC_TV_SERIES.setData([]);
+  if (EXEC_TV_MARKERS && typeof EXEC_TV_MARKERS.setMarkers === "function") {
+    EXEC_TV_MARKERS.setMarkers([]);
+  }
+}
+
+function renderExecOrdersTable(snapshot) {
+  const body = $("execOrdersTableBody");
+  if (!body) return;
+  body.innerHTML = "";
+  const ordersRaw = Array.isArray(snapshot?.orders) ? snapshot.orders : [];
+  const orders = [...ordersRaw].sort((a, b) => {
+    const ta = execOrderTimeSec(a);
+    const tb = execOrderTimeSec(b);
+    if (!Number.isFinite(ta) && !Number.isFinite(tb)) return 0;
+    if (!Number.isFinite(ta)) return 1;
+    if (!Number.isFinite(tb)) return -1;
+    return tb - ta;
+  });
+  if (!orders.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 7;
+    td.className = "left muted";
+    td.textContent = "No broker orders for current symbol.";
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  for (const o0 of orders.slice(0, 200)) {
+    const o = o0 && typeof o0 === "object" ? o0 : {};
+    const tr = document.createElement("tr");
+
+    const sideRaw = String(o.side || "").trim().toLowerCase();
+    const isBuy = sideRaw === "buy";
+    const isSell = sideRaw === "sell";
+
+    const tdTime = document.createElement("td");
+    tdTime.className = "left mono";
+    tdTime.textContent = fmtExecOrderTime(o);
+
+    const tdSide = document.createElement("td");
+    tdSide.className = `left ${isBuy ? "goodText" : (isSell ? "badText" : "")}`.trim();
+    tdSide.textContent = sideRaw || "-";
+
+    const tdStatus = document.createElement("td");
+    tdStatus.className = "left";
+    tdStatus.textContent = String(o.status || "-");
+
+    const tdQty = document.createElement("td");
+    tdQty.className = "mono";
+    tdQty.textContent = Number.isFinite(Number(o.qty)) ? String(Number(o.qty)) : "-";
+
+    const tdFilled = document.createElement("td");
+    tdFilled.className = "mono";
+    tdFilled.textContent = Number.isFinite(Number(o.filled_qty)) ? String(Number(o.filled_qty)) : "-";
+
+    const tdPx = document.createElement("td");
+    tdPx.className = "mono";
+    tdPx.textContent = Number.isFinite(Number(o.filled_avg_price)) ? fmtPrice(Number(o.filled_avg_price)) : "-";
+
+    const tdId = document.createElement("td");
+    tdId.className = "left mono";
+    const id = String(o.id || "").trim();
+    tdId.textContent = shortExecOrderId(id);
+    if (id) tdId.title = id;
+
+    tr.appendChild(tdTime);
+    tr.appendChild(tdSide);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdQty);
+    tr.appendChild(tdFilled);
+    tr.appendChild(tdPx);
+    tr.appendChild(tdId);
+    body.appendChild(tr);
+  }
+}
+
+function renderExecPositionMeta(snapshot) {
+  const el = $("execPositionMeta");
+  if (!el) return;
+  const pos = snapshot?.position && typeof snapshot.position === "object" ? snapshot.position : null;
+  if (!pos || !Number.isFinite(Number(pos.qty)) || Math.abs(Number(pos.qty)) < 1e-9) {
+    const sym = String(snapshot?.symbol || "").trim();
+    el.textContent = sym ? `Position: flat (${sym})` : "Position: flat";
+    return;
+  }
+  const qty = Number(pos.qty);
+  const side = String(pos.side || (qty >= 0 ? "long" : "short")).trim();
+  const avg = Number(pos.avg_entry_price);
+  const cur = Number(pos.current_price);
+  const upl = Number(pos.unrealized_pl);
+  const uplpc = Number(pos.unrealized_plpc);
+  const parts = [
+    `Position ${String(pos.symbol || snapshot?.symbol || "").trim() || "-"}`,
+    `qty=${qty}`,
+    `side=${side || "-"}`,
+  ];
+  if (Number.isFinite(avg)) parts.push(`avg=${fmtPrice(avg)}`);
+  if (Number.isFinite(cur)) parts.push(`px=${fmtPrice(cur)}`);
+  if (Number.isFinite(upl)) parts.push(`uPnL=${upl >= 0 ? "+" : ""}${upl.toFixed(2)}`);
+  if (Number.isFinite(uplpc)) parts.push(`uPnL%=${uplpc >= 0 ? "+" : ""}${(uplpc * 100).toFixed(2)}%`);
+  el.textContent = parts.join(" • ");
+}
+
+async function renderExecSnapshotChart(snapshot) {
+  const meta = $("execTvChartMeta");
+  const dataIdText = String($("dataId")?.textContent || "").trim();
+  const dataId = dataIdText === "—" ? "" : dataIdText;
+  if (!dataId || dataId === "-") {
+    clearExecTvChart("Load a dataset to render execution chart.");
+    return;
+  }
+
+  const bars = await fetchDrillPriceBars(dataId);
+  if (!bars.length) {
+    clearExecTvChart("No valid OHLC bars available for chart rendering.");
+    return;
+  }
+
+  const ctx = ensureExecTvChart();
+  if (!ctx) return;
+  const candleData = bars.map((b) => ({
+    time: b.time,
+    open: b.open,
+    high: b.high,
+    low: b.low,
+    close: b.close,
+  }));
+  EXEC_TV_BASE_BARS = candleData;
+  updateExecChartSeries(snapshot, { fit: true });
+}
+
+async function refreshExecutionSnapshotUi(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    setExecStatus("Tauri invoke is unavailable.", "danger");
+    return;
+  }
+  if (RUNNING || EXEC_BUSY) return;
+
+  const mode = String($("execMode")?.value || "paper").trim().toLowerCase() === "live" ? "live" : "paper";
+  const alpaca_api_key = String($("execApiKey")?.value || "").trim();
+  const alpaca_api_secret = String($("execApiSecret")?.value || "").trim();
+  if (!alpaca_api_key || !alpaca_api_secret) {
+    setExecStatus("API key + secret are required to refresh broker orders.", "danger");
+    return;
+  }
+
+  let symbol = String($("execSymbol")?.value || "").trim().toUpperCase();
+  if (!symbol) {
+    const fromCtx = String(CURRENT_DATASET_CTX?.symbol || "").trim().toUpperCase();
+    if (fromCtx) {
+      symbol = fromCtx;
+      if ($("execSymbol")) $("execSymbol").value = symbol;
+    }
+  }
+
+  setExecBusy(true);
+  if (!opts?.silentStatus) setExecStatus(`Refreshing ${mode} orders...`, "muted");
+  try {
+    const resp = await invoke("get_live_execution_snapshot", {
+      req: {
+        mode,
+        alpaca_api_key,
+        alpaca_api_secret,
+        symbol,
+        limit: 200,
+      },
+    });
+    EXEC_LAST_SNAPSHOT = resp;
+    if (opts?.showOutput !== false) setExecOutput(resp);
+    renderExecOrdersTable(resp);
+    renderExecPositionMeta(resp);
+    await renderExecSnapshotChart(resp);
+    saveExecutionApiKeysToStorage();
+    const n = Array.isArray(resp?.orders) ? resp.orders.length : 0;
+    if (!opts?.silentStatus) {
+      setExecStatus(`Loaded ${n} order${n === 1 ? "" : "s"} for ${symbol || "all symbols"}.`, "ok");
+    }
+  } catch (e) {
+    const msg = String(e);
+    setExecStatus(`Execution snapshot failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+}
+
+function resolveExecLiveStreamSymbol() {
+  let symbol = String($("execSymbol")?.value || "").trim().toUpperCase();
+  if (!symbol) {
+    const fromCtx = String(CURRENT_DATASET_CTX?.symbol || "").trim().toUpperCase();
+    if (fromCtx) {
+      symbol = fromCtx;
+      if ($("execSymbol")) $("execSymbol").value = symbol;
+    }
+  }
+  if (!symbol) throw new Error("Execution symbol is required for live candles (e.g. AAPL).");
+  return symbol;
+}
+
+async function startExecLiveCandleStream() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const symbol = resolveExecLiveStreamSymbol();
+  const market = String(CURRENT_DATASET_CTX?.market || "stocks").trim().toLowerCase() || "stocks";
+  const delayed = !!$("execLiveUseDelayed")?.checked;
+  if (market !== "stocks") {
+    throw new Error("Live websocket candles currently support stocks only.");
+  }
+  setExecLiveStatus(`Starting ${delayed ? "delayed " : ""}live candles for ${symbol}...`, "muted");
+  const resp = await invoke("polygon_start_live_candle_stream", {
+    req: { symbol, market, delayed },
+  });
+  EXEC_LIVE_STREAM_ACTIVE = true;
+  EXEC_LIVE_STREAM_CFG = {
+    symbol: String(resp?.symbol || symbol).trim().toUpperCase(),
+    market: String(resp?.market || market).trim().toLowerCase(),
+    delayed: !!resp?.delayed,
+    channel: String(resp?.channel || "").trim(),
+  };
+  clearExecLiveBars({ refresh: true });
+  const channel = String(resp?.channel || "").trim();
+  setExecLiveStatus(
+    `Live candles started for ${EXEC_LIVE_STREAM_CFG.symbol}${channel ? ` (${channel})` : ""}${EXEC_LIVE_STREAM_CFG.delayed ? " [delayed]" : ""}.`,
+    "ok",
+  );
+}
+
+async function stopExecLiveCandleStream() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const resp = await invoke("polygon_stop_live_candle_stream");
+  EXEC_LIVE_STREAM_ACTIVE = false;
+  EXEC_LIVE_STREAM_CFG = null;
+  const stopped = !!resp?.stopped;
+  setExecLiveStatus(stopped ? "Live candles stopped." : "Live candles were already stopped.", "muted");
+}
+
+async function refreshExecLiveCandleStreamStatusUi(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    const resp = await invoke("polygon_live_candle_stream_status");
+    const active = !!resp?.active;
+    const stream = resp?.stream && typeof resp.stream === "object" ? resp.stream : null;
+    EXEC_LIVE_STREAM_ACTIVE = active;
+    EXEC_LIVE_STREAM_CFG = stream
+      ? {
+        symbol: String(stream.symbol || "").trim().toUpperCase(),
+        market: String(stream.market || "").trim().toLowerCase(),
+        delayed: !!stream.delayed,
+      }
+      : null;
+    if (opts?.silent) return;
+    if (active && EXEC_LIVE_STREAM_CFG?.symbol) {
+      setExecLiveStatus(
+        `Live candles active for ${EXEC_LIVE_STREAM_CFG.symbol}${EXEC_LIVE_STREAM_CFG.delayed ? " [delayed]" : ""}.`,
+        "ok",
+      );
+    } else {
+      setExecLiveStatus("Live candles: off", "muted");
+    }
+  } catch (e) {
+    if (!opts?.silent) setExecLiveStatus(`Live status unavailable: ${String(e)}`, "danger");
+  }
+}
+
+function updateExecParamSourceUi() {
+  const src = String($("execParamSource")?.value || "selected").trim().toLowerCase();
+  const manual = src === "manual";
+  const disabled = !manual || RUNNING || EXEC_BUSY;
+  for (const id of ["execManualFastLen", "execManualSlowLen"]) {
+    const el = $(id);
+    if (el) el.disabled = disabled;
+  }
+}
+
+function setExecBusy(busy) {
+  EXEC_BUSY = !!busy;
+  const disabled = RUNNING || EXEC_BUSY;
+  for (const id of ["btnExecTestConnection", "btnExecRunOnce", "btnExecClearKeys", "btnExecRefresh", "btnExecLiveStart", "btnExecLiveStop"]) {
+    const el = $(id);
+    if (el) el.disabled = disabled;
+  }
+  updateExecParamSourceUi();
+}
+
+function parseExecutionRiskPct(inputId, label) {
+  const raw = String($(inputId)?.value || "").trim();
+  if (!raw) return null;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v <= 0) throw new Error(`${label} must be finite and > 0.`);
+  const frac = v > 1 ? v / 100.0 : v;
+  if (!Number.isFinite(frac) || frac <= 0 || frac >= 1) throw new Error(`${label} must be in (0, 1) or a percent in (0, 100).`);
+  return frac;
+}
+
+function getExecutionDataIdFromUi() {
+  const dataIdText = String($("dataId")?.textContent || "").trim();
+  const data_id = dataIdText === "—" ? "" : dataIdText;
+  if (!data_id || data_id === "-") throw new Error("Load CSV first (missing data id).");
+  return data_id;
+}
+
+function parseExecutionManualLen(inputId, fallbackInputId, label) {
+  const raw = String($(inputId)?.value || "").trim();
+  const base = raw ? Number(raw) : Number($(fallbackInputId)?.value);
+  const x = Math.floor(base);
+  if (!Number.isFinite(x) || x < 1 || x > 65535) {
+    throw new Error(`${label} must be an integer in [1, 65535].`);
+  }
+  return x;
+}
+
+function buildManualExecutionStrategySpec() {
+  const data_id = getExecutionDataIdFromUi();
+  const meta = CURRENT_DATA_META;
+  if (!meta || typeof meta !== "object") throw new Error("Load CSV first.");
+
+  const fast_ma_type = String($("fastMaType")?.value || "").trim();
+  const slow_ma_type = String($("slowMaType")?.value || "").trim();
+  if (!fast_ma_type) throw new Error("Select a fast MA type.");
+  if (!slow_ma_type) throw new Error("Select a slow MA type.");
+
+  const fast_len = parseExecutionManualLen("execManualFastLen", "fastStart", "Manual fast length");
+  const slow_len = parseExecutionManualLen("execManualSlowLen", "slowStart", "Manual slow length");
+  if (fast_len >= slow_len) throw new Error("Manual parameters require fast length < slow length.");
+
+  const ma_source = String($("maSource")?.value || "close").trim() || "close";
+  validateCandleFieldRequirements(meta, fast_ma_type, slow_ma_type, ma_source);
+
+  const fast_ma_params = resolvedMaParams("fast", fast_ma_type);
+  const slow_ma_params = resolvedMaParams("slow", slow_ma_type);
+  const strategy = readStrategyCfgFromUi();
+  const bins = desiredDrillBins();
+  const params = { fast_len, slow_len, fast_ma_type, slow_ma_type };
+  const uiKind = strategyKind();
+
+  if (uiKind === "DoubleMa") {
+    if (!maSupportsCpu(fast_ma_type) || !maSupportsCpu(slow_ma_type)) {
+      throw new Error("Execution currently requires CPU-supporting MA types for manual Double MA mode.");
+    }
+    return {
+      strategy_kind: "DoubleMa",
+      strategy: {
+        kind: "double_ma",
+        req: {
+          data_id,
+          params,
+          ma_source,
+          fast_ma_params,
+          slow_ma_params,
+          strategy,
+          bins,
+          halftrend_filter: null,
+        },
+      },
+    };
+  }
+
+  if (!meta.has_high || !meta.has_low) {
+    throw new Error("Composite execution requires high/low candle fields in the loaded dataset.");
+  }
+  if (!maSupportsCpu(fast_ma_type) || !maSupportsCpu(slow_ma_type)) {
+    throw new Error("Composite execution is CPU-only and does not support one of the selected MA types.");
+  }
+
+  const amp = Math.floor(num($("halfTrendAmplitude")?.value, 2));
+  const atrP = Math.floor(num($("halfTrendAtrPeriod")?.value, 100));
+  const dev = num($("halfTrendChannelDev")?.value, 2.0);
+  if (!Number.isFinite(amp) || amp < 1 || amp > 65535) throw new Error("HalfTrend amplitude must be in [1, 65535].");
+  if (!Number.isFinite(atrP) || atrP < 1 || atrP > 65535) throw new Error("HalfTrend ATR period must be in [1, 65535].");
+  if (!Number.isFinite(dev) || dev < 0) throw new Error("HalfTrend channel deviation must be finite and >= 0.");
+  const halftrend = { amplitude: amp, atr_period: atrP, channel_deviation: dev };
+
+  const maczFast = Math.floor(num($("maczFastLength")?.value, 12));
+  const maczSlow = Math.floor(num($("maczSlowLength")?.value, 25));
+  const maczSig = Math.floor(num($("maczSignalLength")?.value, 9));
+  const maczLz = Math.floor(num($("maczLengthZ")?.value, 20));
+  const maczLsd = Math.floor(num($("maczLengthStdev")?.value, 25));
+  const maczGamma = num($("maczGamma")?.value, 0.02);
+  const maczA = num($("maczA")?.value, 1.0);
+  const maczB = num($("maczB")?.value, 1.0);
+  const maczUseVolume = !!$("maczUseVolume")?.checked;
+  const maczUseLag = !!$("maczUseLag")?.checked;
+
+  if (!Number.isFinite(maczFast) || maczFast < 1) throw new Error("MACZ fast_length must be >= 1.");
+  if (!Number.isFinite(maczSlow) || maczSlow < 1) throw new Error("MACZ slow_length must be >= 1.");
+  if (maczFast >= maczSlow) throw new Error("MACZ requires fast_length < slow_length.");
+  if (!Number.isFinite(maczSig) || maczSig < 1) throw new Error("MACZ signal_length must be >= 1.");
+  if (!Number.isFinite(maczLz) || maczLz < 1) throw new Error("MACZ lengthz must be >= 1.");
+  if (!Number.isFinite(maczLsd) || maczLsd < 1) throw new Error("MACZ length_stdev must be >= 1.");
+  if (!Number.isFinite(maczA) || maczA < -2 || maczA > 2) throw new Error("MACZ a must be in [-2, 2].");
+  if (!Number.isFinite(maczB) || maczB < -2 || maczB > 2) throw new Error("MACZ b must be in [-2, 2].");
+  if (!Number.isFinite(maczGamma) || maczGamma < 0 || maczGamma >= 1) throw new Error("MACZ gamma must be in [0, 1).");
+  if (maczUseVolume && !meta.has_volume) throw new Error("MACZ use_volume requires volume column in the CSV.");
+
+  const macz = {
+    fast_length: maczFast,
+    slow_length: maczSlow,
+    signal_length: maczSig,
+    lengthz: maczLz,
+    length_stdev: maczLsd,
+    a: maczA,
+    b: maczB,
+    use_lag: maczUseLag,
+    gamma: maczGamma,
+    use_volume: maczUseVolume,
+  };
+
+  const ottPeriod = Math.floor(num($("ottPeriod")?.value, 2));
+  const ottPercent = num($("ottPercent")?.value, 1.4);
+  const ottMaType = String($("ottMaType")?.value || "VAR").trim();
+  if (!Number.isFinite(ottPeriod) || ottPeriod < 1) throw new Error("OTT period must be >= 1.");
+  if (!Number.isFinite(ottPercent) || ottPercent < 0) throw new Error("OTT percent must be finite and >= 0.");
+  if (!ottMaType) throw new Error("OTT MA type is required.");
+  const ott = { period: ottPeriod, percent: ottPercent, ma_type: ottMaType };
+
+  return {
+    strategy_kind: uiKind === "CompositeMo" ? "CompositeMo" : "CompositeCpu",
+    strategy: {
+      kind: "composite_cpu",
+      req: {
+        data_id,
+        params,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        strategy,
+        halftrend,
+        macz,
+        ott,
+        bins,
+      },
+    },
+  };
+}
+
+function resolveExecutionTargetRow(paramSource) {
+  const source = String(paramSource || "selected").trim().toLowerCase();
+  const rowsFiltered = Array.isArray(TOP_ROWS_FILTERED) ? TOP_ROWS_FILTERED : [];
+  const rowsAll = Array.isArray(TOP_ROWS) ? TOP_ROWS : [];
+  const fallback = rowsFiltered[0] || rowsAll[0] || null;
+
+  if (source === "best") {
+    const best = CURRENT_RUN?.res?.best_params;
+    if (best && typeof best === "object") {
+      const key = paramsKey(best);
+      const row = findTopRowByParamsKey(key);
+      if (row) return { row, source: "best" };
+      return {
+        row: {
+          rank: 1,
+          params: best,
+          metrics: CURRENT_RUN?.res?.best_metrics && typeof CURRENT_RUN.res.best_metrics === "object"
+            ? CURRENT_RUN.res.best_metrics
+            : {},
+        },
+        source: "best",
+      };
+    }
+    if (fallback) return { row: fallback, source: "best_top_fallback" };
+    throw new Error("No Top rows available. Run an optimization first.");
+  }
+
+  const selectedKey = String(DRILL_SELECTED_KEY || "").trim();
+  if (!selectedKey) {
+    throw new Error("No Top row selected. Click a row in the Top tab or switch Parameter source to Best row.");
+  }
+  const selected = findTopRowByParamsKey(selectedKey);
+  if (!selected) {
+    throw new Error("Selected Top row is unavailable (filters changed). Select a row again or use Best row.");
+  }
+  return { row: selected, source: "selected" };
+}
+
+function buildExecutionInvokePayload() {
+  const mode = String($("execMode")?.value || "paper").trim().toLowerCase() === "live" ? "live" : "paper";
+  const dry_run = !!$("execDryRun")?.checked;
+  const paramSource = String($("execParamSource")?.value || "selected").trim().toLowerCase() || "selected";
+  const qtyRaw = Number($("execQty")?.value);
+  if (!Number.isFinite(qtyRaw) || qtyRaw <= 0) throw new Error("Execution quantity must be finite and > 0.");
+  const qty = Math.round(qtyRaw * 10_000) / 10_000;
+  if (!Number.isFinite(qty) || qty <= 0) throw new Error("Execution quantity is too small.");
+
+  let symbol = String($("execSymbol")?.value || "").trim().toUpperCase();
+  if (!symbol) {
+    const fromCtx = String(CURRENT_DATASET_CTX?.symbol || "").trim().toUpperCase();
+    if (fromCtx) {
+      symbol = fromCtx;
+      if ($("execSymbol")) $("execSymbol").value = symbol;
+    }
+  }
+  if (!symbol) throw new Error("Execution symbol is required (e.g. AAPL).");
+
+  const risk = {
+    stop_loss_pct: parseExecutionRiskPct("execRiskStopLossPct", "Risk override SL"),
+    take_profit_pct: parseExecutionRiskPct("execRiskTakeProfitPct", "Risk override TP"),
+  };
+
+  let strategy = null;
+  let strategy_kind = "";
+  let source = paramSource;
+  let params_key = "";
+  if (paramSource === "manual") {
+    const manual = buildManualExecutionStrategySpec();
+    strategy = manual.strategy;
+    strategy_kind = manual.strategy_kind;
+    source = "manual_ui";
+  } else {
+    if (!CURRENT_RUN?.req || !CURRENT_RUN?.res) {
+      throw new Error("No optimization run loaded. Use Manual parameter source or run an optimization.");
+    }
+    const picked = resolveExecutionTargetRow(paramSource);
+    const row = picked.row;
+    source = picked.source;
+    const params = row?.params && typeof row.params === "object" ? row.params : null;
+    if (!params) throw new Error("Unable to resolve execution parameters from Top row.");
+
+    const drill = buildDrilldownInvocation(params, CURRENT_RUN.req);
+    if (!drill?.req) throw new Error("Unable to build strategy request from selected parameters.");
+    strategy = drill.kind === "DoubleMa"
+      ? { kind: "double_ma", req: drill.req }
+      : { kind: "composite_cpu", req: drill.req };
+    strategy_kind = drill.kind;
+    params_key = paramsKey(params);
+  }
+
+  const req = {
+    symbol,
+    qty,
+    mode,
+    dry_run,
+    risk,
+    alpaca_api_key: String($("execApiKey")?.value || "").trim(),
+    alpaca_api_secret: String($("execApiSecret")?.value || "").trim(),
+    strategy,
+  };
+
+  return {
+    req,
+    meta: {
+      mode,
+      dry_run,
+      symbol,
+      qty,
+      source,
+      strategy_kind,
+      params_key,
+    },
+  };
 }
 
 function parseValidationProbabilityGate(inputId) {
@@ -13464,8 +15149,10 @@ async function runValidation(opts) {
   const req = getValidationRequest(opts);
   const runKind = kindFromReq(CURRENT_RUN?.req);
   const cmd = runKind === "DoubleMa" ? "run_double_ma_validation" : "run_composite_validation";
+  setActiveProgressContext(buildValidationProgressContext(req, runKind));
   setRunning(true);
   try {
+    setProgressUi(0, 1, runKind === "DoubleMa" ? "double_ma_validate" : "composite_validate", "");
     setStatus("Running validation...", "muted");
     const t0 = performance.now();
     const res = await invoke(cmd, { req });
@@ -13503,6 +15190,7 @@ async function runValidation(opts) {
     }
     return res;
   } finally {
+    setActiveProgressContext(null);
     setRunning(false);
   }
 }
@@ -13543,12 +15231,21 @@ async function loadCsv() {
   addRecentCsvPath(path);
   saveSettingsSoon();
   updateOverviewEmptyUi();
+  updateRunPlanUi();
+  if (EXEC_LAST_SNAPSHOT) {
+    try {
+      await renderExecSnapshotChart(EXEC_LAST_SNAPSHOT);
+    } catch {}
+  } else {
+    clearExecTvChart("Load a dataset and refresh orders to overlay broker events.");
+  }
 }
 
 async function runOptimization(opts) {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
   const req = getRequest();
+  setActiveProgressContext(buildOptimizationProgressContext(req));
   setRunning(true);
   try {
     setStatus("Running optimization...", "muted");
@@ -13573,6 +15270,7 @@ async function runOptimization(opts) {
     return res;
   } finally {
     stopOptimizationProgressHeartbeat();
+    setActiveProgressContext(null);
     setRunning(false);
   }
 }
@@ -13871,7 +15569,7 @@ function getCompositeMoRequestForFingerprint() {
   } else if (samplerKind === "Qmc") {
     const seed = Math.max(0, Math.floor(num($("moQmcSeed")?.value, 1)));
     const trials = Math.max(1, Math.floor(num($("moQmcTrials")?.value, 5000)));
-    const sequence = String($("moQmcSequence")?.value || "Sobol").trim() || "Sobol";
+    const sequence = String($("moQmcSequence")?.value || "sobol").trim().toLowerCase() || "sobol";
     sampler = { sampler: "Qmc", config: { seed, trials, sequence } };
   } else {
     const seed = Math.max(0, Math.floor(num($("moNsga2Seed")?.value, 1)));
@@ -13909,10 +15607,12 @@ function getCompositeMoRequestForFingerprint() {
     const device_id = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
     const top_k = Math.max(1, Math.floor(num($("moPrescanTopK")?.value, 128)));
     const window = Math.max(0, Math.floor(num($("moPrescanWindow")?.value, 8)));
+    const predictive_top_k = Math.max(0, Math.floor(num($("moPrescanPredictiveTopK")?.value, 12)));
+    const predictive_stride = Math.max(1, Math.min(65535, Math.floor(num($("moPrescanPredictiveStride")?.value, 8))));
     const objectives = String($("moPrescanObjectives")?.value || "both").trim();
     const mode = String($("moPrescanMode")?.value || "Auto").trim();
     const ma_pairs = parseCompositeMoPrescanMaPairs($("moPrescanMaPairs")?.value || "");
-    gpu_prescan = { top_k, window, device_id, require_gpu: !!$("moPrescanRequireGpu")?.checked, objectives, ma_pairs, mode };
+    gpu_prescan = { top_k, window, predictive_top_k, predictive_stride, device_id, require_gpu: !!$("moPrescanRequireGpu")?.checked, objectives, ma_pairs, mode };
   }
 
   const useRangeBuilder = !!$("moUseRangeBuilder")?.checked;
@@ -14490,6 +16190,193 @@ $("btnPolygonClearKey")?.addEventListener("click", async () => {
   }
 });
 
+$("execRememberKeys")?.addEventListener("change", () => {
+  if ($("execRememberKeys")?.checked) saveExecutionApiKeysToStorage();
+  else clearExecutionApiKeysFromStorage();
+  saveSettingsSoon();
+});
+
+$("execParamSource")?.addEventListener("change", () => {
+  updateExecParamSourceUi();
+  saveSettingsSoon();
+});
+
+for (const id of ["execApiKey", "execApiSecret"]) {
+  const el = $(id);
+  if (!el) continue;
+  el.addEventListener("input", () => {
+    if ($("execRememberKeys")?.checked) saveExecutionApiKeysToStorage();
+  });
+  el.addEventListener("change", () => {
+    if ($("execRememberKeys")?.checked) saveExecutionApiKeysToStorage();
+  });
+}
+
+$("btnExecClearKeys")?.addEventListener("click", () => {
+  if (RUNNING || EXEC_BUSY) return;
+  if ($("execApiKey")) $("execApiKey").value = "";
+  if ($("execApiSecret")) $("execApiSecret").value = "";
+  clearExecutionApiKeysFromStorage();
+  EXEC_LAST_SNAPSHOT = null;
+  renderExecOrdersTable(null);
+  renderExecPositionMeta(null);
+  clearExecTvChart("Load a dataset and refresh orders to overlay broker events.");
+  setExecOutput("-");
+  setExecStatus("Cleared execution API keys.", "muted");
+});
+
+$("btnExecRefresh")?.addEventListener("click", async () => {
+  try {
+    await refreshExecutionSnapshotUi();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnExecLiveStart")?.addEventListener("click", async () => {
+  if (RUNNING || EXEC_BUSY) return;
+  setExecBusy(true);
+  try {
+    await startExecLiveCandleStream();
+  } catch (e) {
+    const msg = String(e);
+    setExecLiveStatus(`Live start failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+});
+
+$("btnExecLiveStop")?.addEventListener("click", async () => {
+  if (RUNNING || EXEC_BUSY) return;
+  setExecBusy(true);
+  try {
+    await stopExecLiveCandleStream();
+  } catch (e) {
+    const msg = String(e);
+    setExecLiveStatus(`Live stop failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+});
+
+$("btnExecTestConnection")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    setStatus("Tauri invoke not available (window.__TAURI__ missing).", "danger");
+    setExecStatus("Tauri invoke is unavailable.", "danger");
+    return;
+  }
+  if (RUNNING || EXEC_BUSY) return;
+
+  const mode = String($("execMode")?.value || "paper").trim().toLowerCase() === "live" ? "live" : "paper";
+  const alpaca_api_key = String($("execApiKey")?.value || "").trim();
+  const alpaca_api_secret = String($("execApiSecret")?.value || "").trim();
+  if (!alpaca_api_key || !alpaca_api_secret) {
+    setExecStatus("API key + secret are required for account test.", "danger");
+    return;
+  }
+
+  setExecBusy(true);
+  setExecStatus(`Testing Alpaca ${mode} account...`, "muted");
+  try {
+    const resp = await invoke("test_alpaca_connection", {
+      req: { mode, alpaca_api_key, alpaca_api_secret },
+    });
+    setExecOutput(resp);
+    const acct = String(resp?.account_number || resp?.account_id || "").trim();
+    const st = String(resp?.status || "").trim();
+    const suffix = `${acct ? ` account=${acct}` : ""}${st ? ` status=${st}` : ""}`;
+    setExecStatus(`Alpaca ${mode} connection OK.${suffix}`, "ok");
+    setStatus(`Alpaca ${mode} connection OK.`, "ok");
+    saveExecutionApiKeysToStorage();
+  } catch (e) {
+    const msg = String(e);
+    setExecOutput(msg);
+    setExecStatus(`Connection test failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+});
+
+$("btnExecRunOnce")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    setStatus("Tauri invoke not available (window.__TAURI__ missing).", "danger");
+    setExecStatus("Tauri invoke is unavailable.", "danger");
+    return;
+  }
+  if (RUNNING || EXEC_BUSY) return;
+
+  let payload = null;
+  try {
+    payload = buildExecutionInvokePayload();
+  } catch (e) {
+    const msg = String(e);
+    setExecStatus(msg, "danger");
+    setExecOutput(msg);
+    return;
+  }
+
+  const req = payload.req;
+  const meta = payload.meta || {};
+  if (!req.dry_run && (!req.alpaca_api_key || !req.alpaca_api_secret)) {
+    setExecStatus("API key + secret are required unless dry-run is enabled.", "danger");
+    return;
+  }
+
+  if (!req.dry_run) {
+    const modeLabel = req.mode === "live" ? "LIVE" : "PAPER";
+    const strategyLabel = meta.strategy_kind === "DoubleMa" ? "Double MA" : "Composite";
+    const confirmText =
+      `Submit ${modeLabel} order now?\n` +
+      `Symbol: ${req.symbol}\n` +
+      `Qty: ${req.qty}\n` +
+      `Strategy: ${strategyLabel}\n` +
+      `Row source: ${meta.source || "selected"}`;
+    if (!confirm(confirmText)) {
+      setExecStatus("Execution cancelled.", "muted");
+      return;
+    }
+  }
+
+  setExecBusy(true);
+  setExecStatus(
+    `Executing signal (${req.mode}${req.dry_run ? ", dry-run" : ""}, ${meta.strategy_kind || "strategy"})...`,
+    "muted",
+  );
+  let shouldAutoRefreshSnapshot = false;
+  try {
+    const resp = await invoke("execute_strategy_signal_once", { req });
+    setExecOutput(resp);
+    const action = String(resp?.action || "hold").trim() || "hold";
+    const submitted = !!resp?.order_submitted;
+    const orderId = String(resp?.order_id || "").trim();
+    const warningCount = Array.isArray(resp?.warnings) ? resp.warnings.length : 0;
+    let msg = submitted
+      ? `Submitted ${action.toUpperCase()} order${orderId ? ` (id=${orderId})` : ""}.`
+      : `Signal processed: action=${action}.`;
+    if (req.dry_run) msg += " Dry-run only.";
+    if (warningCount) msg += ` Warnings=${warningCount}.`;
+    setExecStatus(msg, submitted ? "ok" : "muted");
+    setStatus(msg, submitted ? "ok" : "muted");
+    saveExecutionApiKeysToStorage();
+    shouldAutoRefreshSnapshot = submitted && !req.dry_run;
+  } catch (e) {
+    const msg = String(e);
+    setExecOutput(msg);
+    setExecStatus(`Execution failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+  if (shouldAutoRefreshSnapshot) {
+    await refreshExecutionSnapshotUi({ showOutput: false, silentStatus: true });
+  }
+});
+
 $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
   const invoke = tauriInvoke();
   if (!invoke) {
@@ -14566,6 +16453,13 @@ $("btnPolygonDownloadLoad")?.addEventListener("click", async () => {
 
     if (path) addRecentCsvPath(path);
     saveSettingsSoon();
+    if (EXEC_LAST_SNAPSHOT) {
+      try {
+        await renderExecSnapshotChart(EXEC_LAST_SNAPSHOT);
+      } catch {}
+    } else {
+      clearExecTvChart("Load a dataset and refresh orders to overlay broker events.");
+    }
     await initPolygonUi();
     await initCrossTickerList();
     closePolygonModal();
@@ -14667,6 +16561,10 @@ $("btnClear").addEventListener("click", () => {
   setHintVisible("paretoEmptyHint", true);
   clearDrillCaches({ clearBars: true });
   setDrillVisible(false);
+  EXEC_LAST_SNAPSHOT = null;
+  renderExecOrdersTable(null);
+  renderExecPositionMeta(null);
+  clearExecTvChart("Load a dataset and refresh orders to overlay broker events.");
   $("heatmapWrap").style.display = "none";
   setHintVisible("heatmapEmptyHint", true);
   renderCompare();
@@ -14899,6 +16797,19 @@ for (const id of [
   "spreadBps",
   "slippageBps",
   "epsRel",
+  "stopLossPct",
+  "takeProfitPct",
+  "execMode",
+  "execSymbol",
+  "execQty",
+  "execParamSource",
+  "execManualFastLen",
+  "execManualSlowLen",
+  "execRiskStopLossPct",
+  "execRiskTakeProfitPct",
+  "execDryRun",
+  "execRememberKeys",
+  "execLiveUseDelayed",
   "longOnly",
   "allowFlip",
   "tradeOnNext",
@@ -14952,6 +16863,8 @@ for (const id of [
   "moPrescanRequireGpu",
   "moPrescanTopK",
   "moPrescanWindow",
+  "moPrescanPredictiveTopK",
+  "moPrescanPredictiveStride",
   "moPrescanObjectives",
   "moPrescanMode",
   "moPrescanMaPairs",
@@ -15063,7 +16976,44 @@ for (const id of ["fastStart", "fastEnd", "fastStep", "slowStart", "slowEnd", "s
   el.addEventListener("input", updatePairsPreviewUi);
 }
 
-for (const id of ["valAutoRun", "valAutoExportXlsx", "valAutoRevealReport"]) {
+for (const id of [
+  "strategyKind",
+  "backend",
+  "deviceId",
+  "fastStart",
+  "fastEnd",
+  "fastStep",
+  "slowStart",
+  "slowEnd",
+  "slowStep",
+  "fastMaType",
+  "slowMaType",
+  "maSource",
+  "objective",
+  "moObjectiveMin",
+  "mode",
+  "includeAll",
+  "stopLossPct",
+  "takeProfitPct",
+  "moSampler",
+  "moPrescanEnable",
+  "moPrescanRequireGpu",
+  "moPrescanTopK",
+  "moPrescanWindow",
+  "moPrescanPredictiveTopK",
+  "moPrescanPredictiveStride",
+  "moPrescanObjectives",
+  "moPrescanMode",
+  "moPrescanMaPairs",
+  "valAutoRun",
+  "valAutoExportXlsx",
+  "valAutoRevealReport",
+  "valWfEnable",
+  "valPerturbEnable",
+  "valMcEnable",
+  "valCscvEnable",
+  "valCrossEnable",
+]) {
   const el = $(id);
   if (!el) continue;
   el.addEventListener("change", updateRunPlanUi);
@@ -15771,9 +17721,15 @@ refreshSavedRuns();
 refreshMetaSaved();
 updateDeviceIdEnabled();
 updateStrategyUi();
+updateExecParamSourceUi();
+renderExecOrdersTable(null);
+renderExecPositionMeta(null);
+clearExecTvChart("Load a dataset and refresh orders to overlay broker events.");
+setExecLiveStatus("Live candles: off", "muted");
 
 initMaSelects();
 initProgressListener();
+initExecLiveStreamListeners();
 initDistributedProgressListener();
 initSampleCsvs();
 initMarketDataDirUi();
@@ -15782,3 +17738,4 @@ initCrossTickerList();
 initBatchDatasetList();
 initDistributedUi();
 loadLastBatchSummaryFromDisk();
+refreshExecLiveCandleStreamStatusUi({ silent: false });

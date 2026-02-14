@@ -74,7 +74,7 @@ fn default_strict_shortlist() -> bool {
 }
 
 fn default_allow_shortlist_fallback() -> bool {
-    true
+    false
 }
 
 fn default_eval_holdout() -> bool {
@@ -746,6 +746,8 @@ fn shortlist_candidates<'a>(
     allow_fallback: bool,
 ) -> Vec<&'a Value> {
     const CSCV_RANK_FRAC_MIN: f64 = 0.55;
+    const CROSS_SCORE_MIN: f64 = 0.0;
+    const CROSS_PNL_POS_FRAC_MIN: f64 = 0.50;
 
     if !strict {
         let base: Vec<&Value> = candidates.iter().collect();
@@ -804,9 +806,25 @@ fn shortlist_candidates<'a>(
             if !has_cross {
                 return true;
             }
-            cand.get("cross_ticker_pareto")
+            let cross_pareto = cand
+                .get("cross_ticker_pareto")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+                .unwrap_or(false);
+            if !cross_pareto {
+                return false;
+            }
+            let cross_score = cand
+                .pointer("/cross_ticker/score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(f64::NEG_INFINITY);
+            if !cross_score.is_finite() || cross_score <= CROSS_SCORE_MIN {
+                return false;
+            }
+            let pnl_positive_frac = cand
+                .pointer("/cross_ticker/pnl_positive_frac")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            pnl_positive_frac >= CROSS_PNL_POS_FRAC_MIN
         })
         .collect();
 
@@ -988,6 +1006,11 @@ mod tests {
     }
 
     #[test]
+    fn default_shortlist_fallback_is_hard_mode() {
+        assert!(!default_allow_shortlist_fallback());
+    }
+
+    #[test]
     fn meta_select_groups_and_scores() {
         let params = json!({
             "fast_ma_type": "sma",
@@ -1110,6 +1133,57 @@ mod tests {
             "tags": [],
             "validation": { "res": { "candidates": [
                 { "params": params, "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 }, "robust_score": 1.1, "robust_pareto": true, "cross_ticker": { "score": 0.5 }, "cross_ticker_pareto": false }
+            ]}}
+        });
+
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: false,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &[art], None);
+        assert_eq!(res.groups.len(), 0);
+        assert!(res
+            .warnings
+            .iter()
+            .any(|w| w.contains("Hard shortlist rejected")));
+    }
+
+    #[test]
+    fn strict_shortlist_hard_mode_excludes_when_cross_score_non_positive() {
+        let params = json!({"fast_ma_type":"sma","slow_ma_type":"sma","fast_len":5,"slow_len":20,"halftrend":{"amplitude":2,"atr_period":100,"channel_deviation":2.0},"macz":{},"ott":{},"strategy":{}});
+        let art = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-01-26T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+            "tags": [],
+            "validation": { "res": { "candidates": [
+                {
+                    "params": params,
+                    "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                    "robust_score": 1.1,
+                    "robust_pareto": true,
+                    "cross_ticker": { "score": 0.0, "pnl_positive_frac": 1.0 },
+                    "cross_ticker_pareto": true
+                }
             ]}}
         });
 

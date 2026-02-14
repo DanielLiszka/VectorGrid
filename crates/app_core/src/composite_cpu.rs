@@ -1,9 +1,10 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationMode, OptimizationResult};
+use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig};
 
 use crate::composite_mo::CompositeGpuPrescanConfig;
@@ -17,6 +18,7 @@ use crate::double_ma::{
     OptimizationModeResolved,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
+use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
 use crate::progress::ProgressSink;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -133,6 +135,8 @@ pub struct CompositeCpuRequest {
     pub macz: MaczGateParams,
     #[serde(default)]
     pub ott: OttGateParams,
+    #[serde(default)]
+    pub signal_mode: CompositeSignalMode,
     pub objective: ObjectiveKind,
     pub mode: OptimizationMode,
     /// Optional stage-0 prescan (double-MA optimization) to narrow MA-length ranges before running
@@ -163,7 +167,32 @@ pub struct CompositeCpuDrilldownRequest {
     pub macz: MaczGateParams,
     #[serde(default)]
     pub ott: OttGateParams,
+    #[serde(default)]
+    pub signal_mode: CompositeSignalMode,
     pub bins: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CompositeIndicatorBar {
+    pub time: i64,
+    pub from_index: u32,
+    pub to_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub halftrend: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macz_hist: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ott_line: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ott_price: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CompositeCpuDrilldownResult {
+    #[serde(flatten)]
+    pub curves: DoubleMaCurves,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composite_indicator_bars: Vec<CompositeIndicatorBar>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -181,6 +210,8 @@ pub struct CompositeCpuLocalStabilityRequest {
     pub macz: MaczGateParams,
     #[serde(default)]
     pub ott: OttGateParams,
+    #[serde(default)]
+    pub signal_mode: CompositeSignalMode,
     pub objective: ObjectiveKind,
     pub radius: Option<u16>,
     pub step: Option<u16>,
@@ -206,6 +237,14 @@ fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
             | ObjectiveKind::Omega
             | ObjectiveKind::Volatility
     )
+}
+
+fn period_window_slice(periods: &[u16], center: u16, window: u16) -> &[u16] {
+    let lo = center.saturating_sub(window);
+    let hi = center.saturating_add(window);
+    let start = periods.partition_point(|&x| x < lo);
+    let end = periods.partition_point(|&x| x <= hi);
+    &periods[start..end]
 }
 
 pub fn run_composite_cpu_optimization_blocking_with_candles(
@@ -279,10 +318,13 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     const AUTO_PRESCAN_WINDOW: u16 = 8;
     const AUTO_PRESCAN_MAX_PERIODS: usize = 256;
 
+    let mut allowed_pairs: Option<HashSet<(u16, u16)>> = None;
     if req.gpu_prescan.is_some() || total_pairs > AUTO_PRESCAN_MIN_PAIRS {
         let cfg = req.gpu_prescan.as_ref();
         let prescan_top_k = cfg.map(|c| c.top_k).unwrap_or(AUTO_PRESCAN_TOP_K);
         let prescan_window = cfg.map(|c| c.window).unwrap_or(AUTO_PRESCAN_WINDOW);
+        let predictive_top_k = cfg.map(|c| c.predictive_top_k).unwrap_or(0);
+        let predictive_stride = cfg.map(|c| c.predictive_stride).unwrap_or(8);
         let device_id = cfg.and_then(|c| c.device_id).unwrap_or(0);
         let require_gpu = cfg.map(|c| c.require_gpu).unwrap_or(false);
         let prescan_mode = cfg.map(|c| c.mode).unwrap_or(OptimizationMode::Auto);
@@ -326,25 +368,46 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         for (p, _) in &dm_res.top {
             pairs.push((p.fast_len, p.slow_len));
         }
+        if predictive_top_k > 0 {
+            let rescue = predictive_prescan_seed_pairs(PredictivePrescanParams {
+                candles,
+                ma_source: &req.ma_source,
+                fast_periods: &fast_periods,
+                slow_periods: &slow_periods,
+                fast_ma_type: &fast_ma,
+                slow_ma_type: &slow_ma,
+                fast_ma_params: req.fast_ma_params.as_ref(),
+                slow_ma_params: req.slow_ma_params.as_ref(),
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                long_only: req.strategy.long_only,
+                top_k: predictive_top_k,
+                period_stride: predictive_stride,
+            })?;
+            pairs.extend(rescue);
+        }
         pairs.sort();
         pairs.dedup();
 
         let mut fast_set: BTreeSet<u16> = BTreeSet::new();
         let mut slow_set: BTreeSet<u16> = BTreeSet::new();
-
-        let add_window = |allowed: &[u16], center: u16, window: u16, out: &mut BTreeSet<u16>| {
-            let lo = center.saturating_sub(window);
-            let hi = center.saturating_add(window);
-            let start = allowed.partition_point(|&x| x < lo);
-            let end = allowed.partition_point(|&x| x <= hi);
-            for &p in &allowed[start..end] {
-                out.insert(p);
-            }
-        };
+        let mut pair_set: HashSet<(u16, u16)> = HashSet::new();
 
         for (f, s) in pairs {
-            add_window(&fast_periods, f, prescan_window, &mut fast_set);
-            add_window(&slow_periods, s, prescan_window, &mut slow_set);
+            let fast_window = period_window_slice(&fast_periods, f, prescan_window);
+            let slow_window = period_window_slice(&slow_periods, s, prescan_window);
+            for &fast in fast_window {
+                for &slow in slow_window {
+                    if fast >= slow {
+                        continue;
+                    }
+                    fast_set.insert(fast);
+                    slow_set.insert(slow);
+                    pair_set.insert((fast, slow));
+                }
+            }
         }
 
         let best_fast = dm_res.best_params.fast_len;
@@ -369,12 +432,17 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             return Err("gpu_prescan produced empty candidate set".to_string());
         }
 
-        fast_periods = fast_candidates;
-        slow_periods = slow_candidates;
-        total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
-        if total_pairs == 0 {
+        let fast_allowed: HashSet<u16> = fast_candidates.iter().copied().collect();
+        let slow_allowed: HashSet<u16> = slow_candidates.iter().copied().collect();
+        pair_set.retain(|(f, s)| fast_allowed.contains(f) && slow_allowed.contains(s) && f < s);
+        if pair_set.is_empty() {
             return Err("gpu_prescan produced no valid parameter combinations".to_string());
         }
+
+        fast_periods = fast_candidates;
+        slow_periods = slow_candidates;
+        total_pairs = pair_set.len();
+        allowed_pairs = Some(pair_set);
     }
 
     let ma_source = req.ma_source;
@@ -437,6 +505,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         &ott_line,
         first_valid,
         &req.strategy,
+        req.signal_mode,
         objective,
         top_k,
         include_all,
@@ -445,6 +514,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         slow_alma_offset,
         slow_alma_sigma,
         total_pairs,
+        allowed_pairs.as_ref(),
         heatmap_bins,
         cancel,
         progress,
@@ -520,7 +590,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
 pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     req: CompositeCpuDrilldownRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
-) -> Result<DoubleMaCurves, String> {
+) -> Result<CompositeCpuDrilldownResult, String> {
     let n = candles.close.len();
     if n < 2 {
         return Err("not enough candles (need at least 2)".to_string());
@@ -628,7 +698,7 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     let lr = compute_log_returns_f64(close);
     let bins = req.bins.unwrap_or(1024);
     let mut curves =
-        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64(
+        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
             &lr,
             ma_prices,
             &fast_mat,
@@ -639,9 +709,112 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
             start_t,
             &req.strategy,
             bins,
+            req.signal_mode,
         );
     curves.indicator_bars = build_indicator_bars_for_chart(candles, &fast_mat, &slow_mat, 8_000)?;
-    Ok(curves)
+    let composite_indicator_bars = build_composite_indicator_bars_for_chart(
+        candles,
+        &halftrend_trend,
+        &macz_hist,
+        ma_prices,
+        &ott_line,
+        8_000,
+    )?;
+    Ok(CompositeCpuDrilldownResult {
+        curves,
+        composite_indicator_bars,
+    })
+}
+
+fn build_composite_indicator_bars_for_chart(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    halftrend_trend: &[f64],
+    macz_hist: &[f64],
+    ott_price: &[f64],
+    ott_line: &[f64],
+    max_points: usize,
+) -> Result<Vec<CompositeIndicatorBar>, String> {
+    let n = candles.timestamp.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if halftrend_trend.len() != n
+        || macz_hist.len() != n
+        || ott_price.len() != n
+        || ott_line.len() != n
+    {
+        return Err("composite indicator series length mismatch".to_string());
+    }
+
+    let cap = max_points.clamp(300, 20_000);
+    let step = if n <= cap { 1usize } else { n.div_ceil(cap) };
+    let mut out: Vec<CompositeIndicatorBar> = Vec::with_capacity(n.div_ceil(step));
+    let mut prev_time: Option<i64> = None;
+
+    let mut from = 0usize;
+    while from < n {
+        let to_exclusive = n.min(from.saturating_add(step));
+        let to = to_exclusive.saturating_sub(1);
+        let time = candles.timestamp[from];
+        if prev_time.is_some_and(|p| time <= p) {
+            from = to_exclusive;
+            continue;
+        }
+
+        let halftrend = (from..to_exclusive).rev().find_map(|i| {
+            let v = halftrend_trend[i];
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+        let macz_hist = (from..to_exclusive).rev().find_map(|i| {
+            let v = macz_hist[i];
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+        let ott_line = (from..to_exclusive).rev().find_map(|i| {
+            let v = ott_line[i];
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+        let ott_price = (from..to_exclusive).rev().find_map(|i| {
+            let v = ott_price[i];
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        });
+
+        if halftrend.is_none() && macz_hist.is_none() && ott_line.is_none() && ott_price.is_none() {
+            from = to_exclusive;
+            continue;
+        }
+
+        out.push(CompositeIndicatorBar {
+            time,
+            from_index: u32::try_from(from)
+                .map_err(|_| "dataset too large for indicator index".to_string())?,
+            to_index: u32::try_from(to)
+                .map_err(|_| "dataset too large for indicator index".to_string())?,
+            halftrend,
+            macz_hist,
+            ott_line,
+            ott_price,
+        });
+        prev_time = Some(time);
+        from = to_exclusive;
+    }
+
+    Ok(out)
 }
 
 pub fn compute_composite_cpu_local_stability_blocking_with_candles(
@@ -807,7 +980,7 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
                 .ok_or_else(|| "slow MA matrix indexing error".to_string())?;
 
             let metrics =
-                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
                     &lr,
                     ma_prices,
                     fast,
@@ -817,6 +990,7 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
                     &ott_line,
                     start_t,
                     &req.strategy,
+                    req.signal_mode,
                 );
             let score = objective_score(&metrics, objective);
             points.push(LocalStabilityPoint {
@@ -982,6 +1156,7 @@ fn optimize_composite_cpu_tiled(
     ott_line: &[f64],
     first_valid: usize,
     strategy: &StrategyConfig,
+    signal_mode: CompositeSignalMode,
     objective: ObjectiveKind,
     top_k: usize,
     include_all: bool,
@@ -990,6 +1165,7 @@ fn optimize_composite_cpu_tiled(
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
     total_pairs: usize,
+    allowed_pairs: Option<&HashSet<(u16, u16)>>,
     heatmap_bins: usize,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
@@ -1093,11 +1269,15 @@ fn optimize_composite_cpu_tiled(
                         if fast_len >= slow_len {
                             continue;
                         }
+                        if allowed_pairs.is_some_and(|pairs| !pairs.contains(&(fast_len, slow_len)))
+                        {
+                            continue;
+                        }
                         let slow_row = &slow_mat[j * cols..(j + 1) * cols];
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+                        let metrics = ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
                             &lr,
                             ott_prices,
                             fast_row,
@@ -1107,6 +1287,7 @@ fn optimize_composite_cpu_tiled(
                             ott_line,
                             start_t,
                             strategy,
+                            signal_mode,
                         );
                         agg.push(
                             DoubleMaParams {
@@ -1159,6 +1340,10 @@ fn optimize_composite_cpu_tiled(
                         if fast_len >= slow_len {
                             return Ok(local);
                         }
+                        if allowed_pairs.is_some_and(|pairs| !pairs.contains(&(fast_len, slow_len)))
+                        {
+                            return Ok(local);
+                        }
 
                         let fast_row = &fast_mat[i * cols..(i + 1) * cols];
                         let slow_row = &slow_mat[j * cols..(j + 1) * cols];
@@ -1167,7 +1352,7 @@ fn optimize_composite_cpu_tiled(
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
                         let metrics = if compute_sharpe {
-                            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+                            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
                                 &lr,
                                 ott_prices,
                                 fast_row,
@@ -1177,9 +1362,10 @@ fn optimize_composite_cpu_tiled(
                                 ott_line,
                                 start_t,
                                 strategy,
+                                signal_mode,
                             )
                         } else {
-                            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast(
+                            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
                                 &lr,
                                 ott_prices,
                                 fast_row,
@@ -1189,6 +1375,7 @@ fn optimize_composite_cpu_tiled(
                                 ott_line,
                                 start_t,
                                 strategy,
+                                signal_mode,
                             )
                         };
                         local.push(
@@ -1286,7 +1473,7 @@ fn optimize_composite_cpu_tiled(
             let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
             let start_t = t_valid.saturating_add(trade_offset);
             Ok(
-                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
                     &lr,
                     ott_prices,
                     fast,
@@ -1296,6 +1483,7 @@ fn optimize_composite_cpu_tiled(
                     ott_line,
                     start_t,
                     strategy,
+                    signal_mode,
                 ),
             )
         };
@@ -1365,6 +1553,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
@@ -1383,6 +1572,44 @@ mod tests {
         assert!(res.heatmap.is_some());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
         assert!(matches!(res.mode_used, OptimizationModeResolved::Grid));
+    }
+
+    #[test]
+    fn composite_cpu_entry_core_exit_overlay_mode_runs() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::EntryCoreExitOverlay,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("composite cpu run");
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
     }
 
     #[test]
@@ -1407,11 +1634,14 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: Some(crate::composite_mo::CompositeGpuPrescanConfig {
                 top_k: 0,
                 window: 0,
+                predictive_top_k: 0,
+                predictive_stride: 8,
                 device_id: None,
                 require_gpu: false,
                 objectives: crate::composite_mo::CompositeGpuPrescanObjectives::Both,
@@ -1430,6 +1660,55 @@ mod tests {
         assert_eq!(res.num_combos, 1);
         assert!(res.best_params.fast_len < res.best_params.slow_len);
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
+    }
+
+    #[test]
+    fn composite_cpu_prescan_predictive_rescue_can_expand_candidates() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            data_id: "test".to_string(),
+            fast_range: (5, 50, 1),
+            slow_range: (20, 200, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: Some(crate::composite_mo::CompositeGpuPrescanConfig {
+                top_k: 0,
+                window: 0,
+                predictive_top_k: 8,
+                predictive_stride: 8,
+                device_id: None,
+                require_gpu: false,
+                objectives: crate::composite_mo::CompositeGpuPrescanObjectives::Both,
+                ma_pairs: None,
+                mode: OptimizationMode::Auto,
+            }),
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("composite cpu run");
+
+        assert!(res.num_combos > 1);
+        assert!(!res.top.is_empty());
     }
 
     #[test]
@@ -1457,11 +1736,13 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             bins: Some(256),
         };
 
-        let curves = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+        let drill = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
             .expect("composite drilldown");
+        let curves = &drill.curves;
 
         assert!(curves.equity.bins > 0);
         assert_eq!(curves.equity.bins, curves.drawdown.bins);
@@ -1480,6 +1761,7 @@ mod tests {
             .minmax
             .iter()
             .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1.0));
+        assert!(!drill.composite_indicator_bars.is_empty());
     }
 
     #[test]
@@ -1507,6 +1789,7 @@ mod tests {
             },
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             objective: ObjectiveKind::Sharpe,
             radius: Some(1),
             step: Some(1),

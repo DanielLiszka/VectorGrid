@@ -267,6 +267,8 @@ fn run_workflow_once(
         fee_bps: 0.0,
         spread_bps: 0.0,
         slippage_bps: 0.0,
+        stop_loss_pct: None,
+        take_profit_pct: None,
         commission: 0.0,
         eps_rel: 0.0,
     };
@@ -321,6 +323,7 @@ fn run_workflow_once(
             halftrend: halftrend.clone(),
             macz: macz.clone(),
             ott: ott.clone(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
@@ -341,6 +344,7 @@ fn run_workflow_once(
                 halftrend: halftrend.clone(),
                 macz: macz.clone(),
                 ott: ott.clone(),
+                signal_mode: ta_app_core::CompositeSignalMode::HardGate,
                 strategy: strategy.clone(),
             });
         }

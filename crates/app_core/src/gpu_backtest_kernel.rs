@@ -27,9 +27,55 @@ const STRAT_TRADE_ON_NEXT_BAR: u32 = 1u32 << 2;
 const STRAT_ENFORCE_FAST_LT_SLOW: u32 = 1u32 << 3;
 #[allow(dead_code)]
 const STRAT_SIGNED_EXPOSURE: u32 = 1u32 << 4;
+const STRAT_STOP_LOSS: u32 = 1u32 << 5;
+const STRAT_TAKE_PROFIT: u32 = 1u32 << 6;
 
 const METRICS_COUNT: usize = 7;
 const TOPK_BLOCK_ITEMS: usize = 512;
+
+#[derive(Clone, Copy)]
+struct KernelStrategyParams {
+    flags: u32,
+    commission: f32,
+    eps_rel: f32,
+    stop_log: f32,
+    take_log: f32,
+}
+
+#[inline]
+fn kernel_strategy_params(strategy: &StrategyConfig) -> KernelStrategyParams {
+    let mut flags = STRAT_ENFORCE_FAST_LT_SLOW | STRAT_SIGNED_EXPOSURE;
+    if strategy.long_only {
+        flags |= STRAT_LONG_ONLY;
+    }
+    if !strategy.allow_flip {
+        flags |= STRAT_NO_FLIP;
+    }
+    if strategy.trade_on_next_bar {
+        flags |= STRAT_TRADE_ON_NEXT_BAR;
+    }
+
+    let stop_loss_pct = strategy.stop_loss_pct();
+    let take_profit_pct = strategy.take_profit_pct();
+    if stop_loss_pct.is_some() {
+        flags |= STRAT_STOP_LOSS;
+    }
+    if take_profit_pct.is_some() {
+        flags |= STRAT_TAKE_PROFIT;
+    }
+
+    KernelStrategyParams {
+        flags,
+        commission: strategy.effective_commission() as f32,
+        eps_rel: strategy.eps_rel as f32,
+        stop_log: stop_loss_pct
+            .map(|pct| (1.0 - pct).ln() as f32)
+            .unwrap_or(0.0),
+        take_log: take_profit_pct
+            .map(|pct| (1.0 + pct).ln() as f32)
+            .unwrap_or(0.0),
+    }
+}
 
 fn calmar_ratio(pnl: f64, max_dd: f64) -> f64 {
     const EPS_DENOM: f64 = 1e-12;
@@ -1155,18 +1201,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let mut tile_host_buf: Vec<f32> = Vec::new();
     tile_host_buf.resize(tile_out_cap, 0.0);
 
-    let mut flags = STRAT_ENFORCE_FAST_LT_SLOW | STRAT_SIGNED_EXPOSURE;
-    if strategy.long_only {
-        flags |= STRAT_LONG_ONLY;
-    }
-    if !strategy.allow_flip {
-        flags |= STRAT_NO_FLIP;
-    }
-    if strategy.trade_on_next_bar {
-        flags |= STRAT_TRADE_ON_NEXT_BAR;
-    }
-    let commission = strategy.effective_commission() as f32;
-    let eps_rel = strategy.eps_rel as f32;
+    let strategy_kernel = kernel_strategy_params(strategy);
+    let flags = strategy_kernel.flags;
+    let commission = strategy_kernel.commission;
+    let eps_rel = strategy_kernel.eps_rel;
+    let stop_log = strategy_kernel.stop_log;
+    let take_log = strategy_kernel.take_log;
 
     let mut f_start = 0usize;
     while f_start < f_total {
@@ -1339,6 +1379,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 let mut fv = first_valid as i32;
                 let mut commission = commission;
                 let mut eps_rel = eps_rel;
+                let mut stop_log = stop_log;
+                let mut take_log = take_log;
                 let mut flags_u = flags;
                 let mut m_i = METRICS_COUNT as i32;
                 let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
@@ -1361,6 +1403,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &mut fv as *mut _ as *mut c_void,
                     &mut commission as *mut _ as *mut c_void,
                     &mut eps_rel as *mut _ as *mut c_void,
+                    &mut stop_log as *mut _ as *mut c_void,
+                    &mut take_log as *mut _ as *mut c_void,
                     &mut flags_u as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
@@ -1957,18 +2001,12 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
     }
 
-    let mut flags = STRAT_ENFORCE_FAST_LT_SLOW | STRAT_SIGNED_EXPOSURE;
-    if strategy.long_only {
-        flags |= STRAT_LONG_ONLY;
-    }
-    if !strategy.allow_flip {
-        flags |= STRAT_NO_FLIP;
-    }
-    if strategy.trade_on_next_bar {
-        flags |= STRAT_TRADE_ON_NEXT_BAR;
-    }
-    let commission = strategy.effective_commission() as f32;
-    let eps_rel = strategy.eps_rel as f32;
+    let strategy_kernel = kernel_strategy_params(strategy);
+    let flags = strategy_kernel.flags;
+    let commission = strategy_kernel.commission;
+    let eps_rel = strategy_kernel.eps_rel;
+    let stop_log = strategy_kernel.stop_log;
+    let take_log = strategy_kernel.take_log;
 
     let mut f_start = 0usize;
     while f_start < f_total {
@@ -2141,6 +2179,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                 let mut fv = first_valid as i32;
                 let mut commission = commission;
                 let mut eps_rel = eps_rel;
+                let mut stop_log = stop_log;
+                let mut take_log = take_log;
                 let mut flags_u = flags;
                 let mut m_i = metrics_count as i32;
                 let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
@@ -2163,6 +2203,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                     &mut fv as *mut _ as *mut c_void,
                     &mut commission as *mut _ as *mut c_void,
                     &mut eps_rel as *mut _ as *mut c_void,
+                    &mut stop_log as *mut _ as *mut c_void,
+                    &mut take_log as *mut _ as *mut c_void,
                     &mut flags_u as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,

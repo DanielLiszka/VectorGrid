@@ -63,6 +63,7 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
             halftrend,
             macz,
             ott,
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         });
     }

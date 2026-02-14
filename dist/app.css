@@ -1169,6 +1169,12 @@ button:disabled {
   color: var(--ok);
 }
 
+.badge.warn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
 .badge.off {
   border-color: var(--danger);
   background: var(--danger-soft);

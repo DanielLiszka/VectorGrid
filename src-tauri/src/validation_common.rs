@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use ta_app_core::composite_validate::CompositeValidationCandidateResult;
 use ta_app_core::double_ma_validate::DoubleMaValidationCandidateResult;
-use ta_app_core::{CrossTickerConfig, CrossTickerStats};
+use ta_app_core::{CrossTickerConfig, CrossTickerGateConfig, CrossTickerStats};
 use ta_strategies::double_ma::Metrics;
 
 #[derive(Clone, Default)]
@@ -80,6 +80,60 @@ pub fn sanitize_cross_ticker_config(cross_cfg: &mut CrossTickerConfig) {
     cross_cfg
         .datasets
         .retain(|d| seen.insert(d.csv_path.trim().to_string()));
+    cross_cfg.gate.min_datasets = cross_cfg.gate.min_datasets.max(1);
+    cross_cfg.gate.min_score = if cross_cfg.gate.min_score.is_finite() {
+        cross_cfg.gate.min_score
+    } else {
+        0.0
+    };
+    cross_cfg.gate.min_sharpe_median = if cross_cfg.gate.min_sharpe_median.is_finite() {
+        cross_cfg.gate.min_sharpe_median
+    } else {
+        0.0
+    };
+    cross_cfg.gate.min_pnl_positive_frac = if cross_cfg.gate.min_pnl_positive_frac.is_finite() {
+        cross_cfg.gate.min_pnl_positive_frac.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    cross_cfg.gate.max_dd_worst = cross_cfg.gate.max_dd_worst.and_then(|v| {
+        if v.is_finite() {
+            Some(v.max(0.0))
+        } else {
+            None
+        }
+    });
+}
+
+pub fn cross_ticker_passes_gate(
+    stats: &CrossTickerStats,
+    cross_ticker_pareto: Option<bool>,
+    gate: &CrossTickerGateConfig,
+) -> bool {
+    if !gate.enabled {
+        return true;
+    }
+    if gate.require_pareto && !cross_ticker_pareto.unwrap_or(false) {
+        return false;
+    }
+    if stats.datasets < gate.min_datasets {
+        return false;
+    }
+    if stats.score < gate.min_score {
+        return false;
+    }
+    if stats.sharpe_median < gate.min_sharpe_median {
+        return false;
+    }
+    if stats.pnl_positive_frac < gate.min_pnl_positive_frac {
+        return false;
+    }
+    if let Some(max_dd_worst) = gate.max_dd_worst {
+        if stats.max_dd_worst > max_dd_worst {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn dataset_label(csv_path: &str, label: &str) -> String {
@@ -132,12 +186,20 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
         return 0.0;
     }
     if sorted.len() == 1 {
-        return if sorted[0].is_finite() { sorted[0] } else { 0.0 };
+        return if sorted[0].is_finite() {
+            sorted[0]
+        } else {
+            0.0
+        };
     }
     let qq = q.clamp(0.0, 1.0);
     let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
     let v = sorted[idx.min(sorted.len() - 1)];
-    if v.is_finite() { v } else { 0.0 }
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 fn median(sorted: &[f64]) -> f64 {
@@ -149,7 +211,11 @@ fn worst_min(xs: &[f64]) -> f64 {
         .iter()
         .copied()
         .fold(f64::INFINITY, |a, b| if b < a { b } else { a });
-    if v.is_finite() { v } else { 0.0 }
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 fn worst_max(xs: &[f64]) -> f64 {
@@ -157,7 +223,11 @@ fn worst_max(xs: &[f64]) -> f64 {
         .iter()
         .copied()
         .fold(f64::NEG_INFINITY, |a, b| if b > a { b } else { a });
-    if v.is_finite() { v } else { 0.0 }
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 fn median_u32(xs: &[u32]) -> u32 {
@@ -241,4 +311,60 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
     }
 
     candidates.sort_by(|a, b| b.robust_score().total_cmp(&a.robust_score()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_cross_ticker_config_clamps_gate_values() {
+        let mut cfg = CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: "  a.csv ".to_string(),
+                label: String::new(),
+            }],
+            max_datasets: 4,
+            gate: CrossTickerGateConfig {
+                enabled: true,
+                require_pareto: true,
+                min_score: f64::NAN,
+                min_pnl_positive_frac: 2.0,
+                min_sharpe_median: f64::NAN,
+                max_dd_worst: Some(f64::NAN),
+                min_datasets: 0,
+            },
+        };
+
+        sanitize_cross_ticker_config(&mut cfg);
+        assert_eq!(cfg.gate.min_datasets, 1);
+        assert_eq!(cfg.gate.min_score, 0.0);
+        assert_eq!(cfg.gate.min_sharpe_median, 0.0);
+        assert_eq!(cfg.gate.min_pnl_positive_frac, 1.0);
+        assert_eq!(cfg.gate.max_dd_worst, None);
+    }
+
+    #[test]
+    fn cross_ticker_gate_enforces_score_and_pareto() {
+        let stats = CrossTickerStats {
+            datasets: 3,
+            sharpe_median: 0.8,
+            sharpe_worst: 0.2,
+            max_dd_median: 0.25,
+            max_dd_worst: 0.40,
+            pnl_median: 1.0,
+            pnl_worst: 0.2,
+            trades_median: 12,
+            trades_worst: 5,
+            pnl_positive_frac: 0.67,
+            score: 0.1,
+        };
+        let gate = CrossTickerGateConfig::default();
+        assert!(cross_ticker_passes_gate(&stats, Some(true), &gate));
+        assert!(!cross_ticker_passes_gate(&stats, Some(false), &gate));
+
+        let mut gate_tight = gate.clone();
+        gate_tight.min_score = 0.2;
+        assert!(!cross_ticker_passes_gate(&stats, Some(true), &gate_tight));
+    }
 }

@@ -451,6 +451,7 @@ fn main() -> Result<(), String> {
         let cross_cfg = CrossTickerConfig {
             datasets,
             max_datasets: cli.cross_max_datasets,
+            gate: ta_app_core::CrossTickerGateConfig::default(),
         };
         println!(
             "Applying cross-ticker validation on {} dataset(s)...",

@@ -40,6 +40,22 @@ pub struct AppState {
     pub candles: Mutex<HashMap<String, Candles>>,
     running: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    live_candle_stream: Mutex<Option<LiveCandleStreamTask>>,
+}
+
+pub struct LiveCandleStreamTask {
+    pub handle: tauri::async_runtime::JoinHandle<()>,
+    pub market: String,
+    pub symbol: String,
+    pub delayed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveCandleStreamInfo {
+    pub market: String,
+    pub symbol: String,
+    pub delayed: bool,
+    pub active: bool,
 }
 
 impl Default for AppState {
@@ -48,6 +64,7 @@ impl Default for AppState {
             candles: Mutex::new(HashMap::new()),
             running: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
+            live_candle_stream: Mutex::new(None),
         }
     }
 }
@@ -198,6 +215,66 @@ impl AppState {
 
     pub fn request_cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn replace_live_candle_stream(
+        &self,
+        task: LiveCandleStreamTask,
+    ) -> Result<Option<LiveCandleStreamInfo>, String> {
+        let mut slot = self
+            .live_candle_stream
+            .lock()
+            .map_err(|_| "failed to lock live stream state".to_string())?;
+        let prior = slot.take().map(|prev| {
+            let info = LiveCandleStreamInfo {
+                market: prev.market,
+                symbol: prev.symbol,
+                delayed: prev.delayed,
+                active: !prev.handle.inner().is_finished(),
+            };
+            prev.handle.abort();
+            info
+        });
+        *slot = Some(task);
+        Ok(prior)
+    }
+
+    pub fn stop_live_candle_stream(&self) -> Result<Option<LiveCandleStreamInfo>, String> {
+        let mut slot = self
+            .live_candle_stream
+            .lock()
+            .map_err(|_| "failed to lock live stream state".to_string())?;
+        let prior = slot.take().map(|prev| {
+            let info = LiveCandleStreamInfo {
+                market: prev.market,
+                symbol: prev.symbol,
+                delayed: prev.delayed,
+                active: !prev.handle.inner().is_finished(),
+            };
+            prev.handle.abort();
+            info
+        });
+        Ok(prior)
+    }
+
+    pub fn live_candle_stream_info(&self) -> Result<Option<LiveCandleStreamInfo>, String> {
+        let mut slot = self
+            .live_candle_stream
+            .lock()
+            .map_err(|_| "failed to lock live stream state".to_string())?;
+        if slot
+            .as_ref()
+            .is_some_and(|s| s.handle.inner().is_finished())
+        {
+            slot.take();
+            return Ok(None);
+        }
+        Ok(slot.as_ref().map(|s| LiveCandleStreamInfo {
+            market: s.market.clone(),
+            symbol: s.symbol.clone(),
+            delayed: s.delayed,
+            active: true,
+        }))
     }
 }
 

@@ -1860,6 +1860,16 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
     if !cfg.eps_rel.is_finite() || cfg.eps_rel < 0.0 {
         return Err("eps_rel must be finite and >= 0".to_string());
     }
+    for (k, v) in [
+        ("stop_loss_pct", cfg.stop_loss_pct),
+        ("take_profit_pct", cfg.take_profit_pct),
+    ] {
+        if let Some(pct) = v {
+            if !pct.is_finite() || pct <= 0.0 || pct >= 1.0 {
+                return Err(format!("{k} must be finite and in (0, 1) when set"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3450,6 +3460,58 @@ mod tests {
     }
 
     #[test]
+    fn cpu_grid_applies_tp_sl_when_enabled() {
+        let candles = make_trending_candles(4000);
+        let cancel = AtomicBool::new(false);
+
+        let base_req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 5, 0),
+            slow_range: (20, 20, 0),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig {
+                commission: 0.0,
+                fee_bps: 1.0,
+                spread_bps: 0.0,
+                slippage_bps: 0.0,
+                ..StrategyConfig::default()
+            },
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let base = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu base run");
+
+        let mut risk_req = base_req;
+        risk_req.strategy.stop_loss_pct = Some(0.02);
+        risk_req.strategy.take_profit_pct = Some(0.02);
+        let risk =
+            run_double_ma_optimization_blocking_with_candles(risk_req, &candles, &cancel, None)
+                .expect("cpu risk run");
+
+        assert!(risk.best_metrics.trades > base.best_metrics.trades);
+        assert!(risk.best_metrics.pnl <= base.best_metrics.pnl + 1e-12);
+    }
+
+    #[test]
     fn validate_strategy_cfg_accepts_bps_derived_costs() {
         let cfg = StrategyConfig {
             long_only: true,
@@ -3459,6 +3521,8 @@ mod tests {
             fee_bps: 2.0,
             spread_bps: 4.0,
             slippage_bps: 1.0,
+            stop_loss_pct: None,
+            take_profit_pct: None,
             commission: 0.0,
             eps_rel: 0.0,
         };

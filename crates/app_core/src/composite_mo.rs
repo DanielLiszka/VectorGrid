@@ -6,16 +6,19 @@ use crate::double_ma::{
     HalfTrendRegimeFilter,
 };
 use crate::progress::ProgressSink;
+use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ta_optimizer::mo::{
     EvalOutcome, Nsga2Config, ParamDomain, ParamValue, QmcMoConfig, RandomMoConfig, SearchSpace,
     TpeMoConfig,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
+use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 
 fn emit_progress(
@@ -102,6 +105,13 @@ pub struct CompositeGpuPrescanConfig {
     pub top_k: usize,
     #[serde(default = "default_prescan_window")]
     pub window: u16,
+    /// Optional predictive rescue pass: add top-K MA pairs by directional edge on a coarse MA grid.
+    /// Set to 0 to disable and keep objective-only prescan behavior.
+    #[serde(default = "default_prescan_predictive_top_k")]
+    pub predictive_top_k: usize,
+    /// Coarsening stride (in period units) for predictive rescue sampling.
+    #[serde(default = "default_prescan_predictive_stride")]
+    pub predictive_stride: u16,
     #[serde(default)]
     pub device_id: Option<u32>,
     #[serde(default)]
@@ -119,6 +129,14 @@ fn default_prescan_top_k() -> usize {
 }
 
 fn default_prescan_window() -> u16 {
+    8
+}
+
+fn default_prescan_predictive_top_k() -> usize {
+    12
+}
+
+fn default_prescan_predictive_stride() -> u16 {
     8
 }
 
@@ -145,6 +163,8 @@ pub struct CompositeMoRequest {
     /// Base strategy config. Individual fields can be overridden by search-space params.
     #[serde(default)]
     pub base_strategy: StrategyConfig,
+    #[serde(default)]
+    pub signal_mode: CompositeSignalMode,
 
     /// Search space for optimization. If a param is omitted, the corresponding base/default value
     /// is used.
@@ -171,6 +191,117 @@ fn default_ma_source() -> String {
     "close".to_string()
 }
 
+fn period_window_slice(periods: &[u16], center: u16, window: u16) -> &[u16] {
+    let lo = center.saturating_sub(window);
+    let hi = center.saturating_add(window);
+    let start = periods.partition_point(|&x| x < lo);
+    let end = periods.partition_point(|&x| x <= hi);
+    &periods[start..end]
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct IndicatorSeriesKey {
+    halftrend_amplitude: u16,
+    halftrend_atr_period: u16,
+    halftrend_channel_deviation_bits: u64,
+    macz_fast_length: u16,
+    macz_slow_length: u16,
+    macz_signal_length: u16,
+    macz_lengthz: u16,
+    macz_length_stdev: u16,
+    macz_a_bits: u64,
+    macz_b_bits: u64,
+    macz_gamma_bits: u64,
+    macz_use_lag: bool,
+    macz_use_volume: bool,
+    ott_period: u16,
+    ott_percent_bits: u64,
+    ott_ma_type: String,
+}
+
+impl IndicatorSeriesKey {
+    fn from_params(
+        halftrend: &HalfTrendRegimeFilter,
+        macz: &MaczGateParams,
+        ott: &OttGateParams,
+    ) -> Self {
+        Self {
+            halftrend_amplitude: halftrend.amplitude,
+            halftrend_atr_period: halftrend.atr_period,
+            halftrend_channel_deviation_bits: halftrend.channel_deviation.to_bits(),
+            macz_fast_length: macz.fast_length,
+            macz_slow_length: macz.slow_length,
+            macz_signal_length: macz.signal_length,
+            macz_lengthz: macz.lengthz,
+            macz_length_stdev: macz.length_stdev,
+            macz_a_bits: macz.a.to_bits(),
+            macz_b_bits: macz.b.to_bits(),
+            macz_gamma_bits: macz.gamma.to_bits(),
+            macz_use_lag: macz.use_lag,
+            macz_use_volume: macz.use_volume,
+            ott_period: ott.period,
+            ott_percent_bits: ott.percent.to_bits(),
+            ott_ma_type: ott.ma_type.trim().to_ascii_lowercase(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct IndicatorSeriesBundle {
+    halftrend_trend: Vec<f64>,
+    macz_hist: Vec<f64>,
+    ott_line: Vec<f64>,
+    first_valid: usize,
+}
+
+#[derive(Debug)]
+struct IndicatorSeriesCache {
+    cap: usize,
+    map: HashMap<IndicatorSeriesKey, Arc<IndicatorSeriesBundle>>,
+    order: VecDeque<IndicatorSeriesKey>,
+}
+
+impl IndicatorSeriesCache {
+    fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &IndicatorSeriesKey) -> Option<Arc<IndicatorSeriesBundle>> {
+        let hit = self.map.get(key).cloned();
+        if hit.is_some() {
+            if let Some(pos) = self.order.iter().position(|k| k == key) {
+                let _ = self.order.remove(pos);
+            }
+            self.order.push_back(key.clone());
+        }
+        hit
+    }
+
+    fn insert(
+        &mut self,
+        key: IndicatorSeriesKey,
+        value: Arc<IndicatorSeriesBundle>,
+    ) -> Arc<IndicatorSeriesBundle> {
+        if let Some(existing) = self.map.get(&key) {
+            return Arc::clone(existing);
+        }
+        self.map.insert(key.clone(), Arc::clone(&value));
+        self.order.push_back(key);
+        while self.map.len() > self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            } else {
+                break;
+            }
+        }
+        value
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CompositeMoParams {
     pub fast_ma_type: String,
@@ -182,6 +313,7 @@ pub struct CompositeMoParams {
     pub macz: MaczGateParams,
     pub ott: OttGateParams,
     pub strategy: StrategyConfig,
+    pub signal_mode: CompositeSignalMode,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -554,6 +686,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
     validate_strategy_cfg(&req.base_strategy)?;
     validate_objectives(&req.objectives)?;
+    let signal_mode = req.signal_mode;
 
     let base_fast_ma = req.fast_ma_type.trim().to_ascii_lowercase();
     let base_slow_ma = req.slow_ma_type.trim().to_ascii_lowercase();
@@ -583,6 +716,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
     let mut fast_periods = allowed_periods_from_domain(fast_domain)?;
     let mut slow_periods = allowed_periods_from_domain(slow_domain)?;
+    let mut allowed_pairs: Option<HashSet<(u16, u16)>> = None;
 
     // Safety limits: precomputing full MA matrices is expensive in RAM.
     let max_periods = 256usize;
@@ -647,17 +781,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
             let mut fast_set: BTreeSet<u16> = BTreeSet::new();
             let mut slow_set: BTreeSet<u16> = BTreeSet::new();
-
-            let add_window =
-                |allowed: &[u16], center: u16, window: u16, out: &mut BTreeSet<u16>| {
-                    let lo = center.saturating_sub(window);
-                    let hi = center.saturating_add(window);
-                    let start = allowed.partition_point(|&x| x < lo);
-                    let end = allowed.partition_point(|&x| x <= hi);
-                    for &p in &allowed[start..end] {
-                        out.insert(p);
-                    }
-                };
+            let mut pair_set: HashSet<(u16, u16)> = HashSet::new();
 
             let max_pairs = 8usize;
             let mut scan_pairs: Vec<(String, String)> = cfg
@@ -695,6 +819,11 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
 
             for (fast_ma_type, slow_ma_type) in scan_pairs {
+                let (fast_alma_offset, fast_alma_sigma) =
+                    resolve_alma_params_for_side("fast", &fast_ma_type, req.fast_ma_params.as_ref())?;
+                let (slow_alma_offset, slow_alma_sigma) =
+                    resolve_alma_params_for_side("slow", &slow_ma_type, req.slow_ma_params.as_ref())?;
+
                 for objective in scan_objectives.iter().copied() {
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".to_string());
@@ -740,15 +869,60 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     }
 
                     for (f, s) in pairs {
-                        add_window(&fast_periods, f, cfg.window, &mut fast_set);
-                        add_window(&slow_periods, s, cfg.window, &mut slow_set);
+                        let fast_window = period_window_slice(&fast_periods, f, cfg.window);
+                        let slow_window = period_window_slice(&slow_periods, s, cfg.window);
+                        for &fast in fast_window {
+                            for &slow in slow_window {
+                                if fast >= slow {
+                                    continue;
+                                }
+                                fast_set.insert(fast);
+                                slow_set.insert(slow);
+                                pair_set.insert((fast, slow));
+                            }
+                        }
+                    }
+                }
+
+                if cfg.predictive_top_k > 0 {
+                    let rescue = predictive_prescan_seed_pairs(PredictivePrescanParams {
+                        candles,
+                        ma_source: &req.ma_source,
+                        fast_periods: &fast_periods,
+                        slow_periods: &slow_periods,
+                        fast_ma_type: &fast_ma_type,
+                        slow_ma_type: &slow_ma_type,
+                        fast_ma_params: req.fast_ma_params.as_ref(),
+                        slow_ma_params: req.slow_ma_params.as_ref(),
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        long_only: req.base_strategy.long_only,
+                        top_k: cfg.predictive_top_k,
+                        period_stride: cfg.predictive_stride,
+                    })?;
+
+                    for (f, s) in rescue {
+                        let fast_window = period_window_slice(&fast_periods, f, cfg.window);
+                        let slow_window = period_window_slice(&slow_periods, s, cfg.window);
+                        for &fast in fast_window {
+                            for &slow in slow_window {
+                                if fast >= slow {
+                                    continue;
+                                }
+                                fast_set.insert(fast);
+                                slow_set.insert(slow);
+                                pair_set.insert((fast, slow));
+                            }
+                        }
                     }
                 }
             }
 
             let fast_candidates: Vec<u16> = fast_set.into_iter().collect();
             let slow_candidates: Vec<u16> = slow_set.into_iter().collect();
-            if fast_candidates.is_empty() || slow_candidates.is_empty() {
+            if fast_candidates.is_empty() || slow_candidates.is_empty() || pair_set.is_empty() {
                 return Err("gpu_prescan produced empty candidate set".to_string());
             }
             if fast_candidates.len() > max_periods || slow_candidates.len() > max_periods {
@@ -788,6 +962,13 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             slow_choice_map = period_choice_map(slow_domain)?;
             fast_periods = allowed_periods_from_domain(fast_domain)?;
             slow_periods = allowed_periods_from_domain(slow_domain)?;
+            let fast_allowed: HashSet<u16> = fast_periods.iter().copied().collect();
+            let slow_allowed: HashSet<u16> = slow_periods.iter().copied().collect();
+            pair_set.retain(|(f, s)| fast_allowed.contains(f) && slow_allowed.contains(s) && f < s);
+            if pair_set.is_empty() {
+                return Err("gpu_prescan produced no valid parameter combinations".to_string());
+            }
+            allowed_pairs = Some(pair_set);
         } else if fast_periods.len() > max_periods || slow_periods.len() > max_periods {
             return Err(
                 "gpu_prescan requires fast_len/slow_len to use IntRange domains".to_string(),
@@ -992,6 +1173,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let ma_source = req.ma_source.clone();
     let objectives = req.objectives.clone();
     let search_space = req.search_space.clone();
+    let allowed_pairs = allowed_pairs.map(Arc::new);
+    let indicator_cache = Arc::new(Mutex::new(IndicatorSeriesCache::new(8)));
 
     let fast_choice_idx_by_period: Option<HashMap<u16, usize>> =
         fast_choice_map.as_ref().map(|m| {
@@ -1044,6 +1227,30 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 macz: default_macz(),
                 ott: default_ott(),
                 strategy: base_strategy.clone(),
+                signal_mode,
+            };
+            return EvalOutcome {
+                objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
+                constraints,
+                payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
+            };
+        }
+        if allowed_pairs
+            .as_ref()
+            .is_some_and(|pairs| !pairs.contains(&(fast_len, slow_len)))
+        {
+            constraints.push(1.0);
+            let metrics = Metrics::default();
+            let params = CompositeMoParams {
+                fast_ma_type: base_fast_ma.clone(),
+                slow_ma_type: base_slow_ma.clone(),
+                fast_len,
+                slow_len,
+                halftrend: default_halftrend(),
+                macz: default_macz(),
+                ott: default_ott(),
+                strategy: base_strategy.clone(),
+                signal_mode,
             };
             return EvalOutcome {
                 objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1067,6 +1274,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         macz: default_macz(),
                         ott: default_ott(),
                         strategy: base_strategy.clone(),
+                        signal_mode,
                     };
                     return EvalOutcome {
                         objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1090,6 +1298,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         macz: default_macz(),
                         ott: default_ott(),
                         strategy: base_strategy.clone(),
+                        signal_mode,
                     };
                     return EvalOutcome {
                         objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1113,6 +1322,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     macz: default_macz(),
                     ott: default_ott(),
                     strategy: base_strategy.clone(),
+                    signal_mode,
                 };
                 return EvalOutcome {
                     objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1135,6 +1345,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     macz: default_macz(),
                     ott: default_ott(),
                     strategy: base_strategy.clone(),
+                    signal_mode,
                 };
                 return EvalOutcome {
                     objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1161,6 +1372,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     macz: default_macz(),
                     ott: default_ott(),
                     strategy: base_strategy.clone(),
+                    signal_mode,
                 };
                 return EvalOutcome {
                     objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1187,6 +1399,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     macz: default_macz(),
                     ott: default_ott(),
                     strategy: base_strategy.clone(),
+                    signal_mode,
                 };
                 return EvalOutcome {
                     objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1362,6 +1575,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 macz,
                 ott,
                 strategy,
+                signal_mode,
             };
             return EvalOutcome {
                 objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -1370,79 +1584,110 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             };
         }
 
-        let halftrend_trend = match compute_halftrend_trend(candles, &halftrend) {
-            Ok(v) => v,
-            Err(_) => {
-                constraints.push(1.0);
-                let metrics = Metrics::default();
-                let params = CompositeMoParams {
-                    fast_ma_type: fast_ma_type.clone(),
-                    slow_ma_type: slow_ma_type.clone(),
-                    fast_len,
-                    slow_len,
-                    halftrend,
-                    macz,
-                    ott,
-                    strategy,
+        let indicator_key = IndicatorSeriesKey::from_params(&halftrend, &macz, &ott);
+        let cached_bundle = if let Ok(mut cache) = indicator_cache.lock() {
+            cache.get(&indicator_key)
+        } else {
+            None
+        };
+        let indicator_bundle = if let Some(hit) = cached_bundle {
+            hit
+        } else {
+            let halftrend_trend = match compute_halftrend_trend(candles, &halftrend) {
+                Ok(v) => v,
+                Err(_) => {
+                    constraints.push(1.0);
+                    let metrics = Metrics::default();
+                    let params = CompositeMoParams {
+                        fast_ma_type: fast_ma_type.clone(),
+                        slow_ma_type: slow_ma_type.clone(),
+                        fast_len,
+                        slow_len,
+                        halftrend,
+                        macz,
+                        ott,
+                        strategy,
+                        signal_mode,
+                    };
+                    return EvalOutcome {
+                        objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
+                        constraints,
+                        payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                    };
+                }
+            };
+            let fv_ht = first_finite_idx(&halftrend_trend).unwrap_or(n);
+
+            let macz_hist =
+                match crate::composite_cpu::compute_macz_hist(candles, &ma_source, &macz) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        constraints.push(1.0);
+                        let metrics = Metrics::default();
+                        let params = CompositeMoParams {
+                            fast_ma_type: fast_ma_type.clone(),
+                            slow_ma_type: slow_ma_type.clone(),
+                            fast_len,
+                            slow_len,
+                            halftrend,
+                            macz,
+                            ott,
+                            strategy,
+                            signal_mode,
+                        };
+                        return EvalOutcome {
+                            objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
+                            constraints,
+                            payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                        };
+                    }
                 };
-                return EvalOutcome {
-                    objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
-                    constraints,
-                    payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
-                };
+            let fv_macz = first_finite_idx(&macz_hist).unwrap_or(n);
+
+            let ott_line = match crate::composite_cpu::compute_ott_line(candles, &ma_source, &ott) {
+                Ok(v) => v,
+                Err(_) => {
+                    constraints.push(1.0);
+                    let metrics = Metrics::default();
+                    let params = CompositeMoParams {
+                        fast_ma_type: fast_ma_type.clone(),
+                        slow_ma_type: slow_ma_type.clone(),
+                        fast_len,
+                        slow_len,
+                        halftrend,
+                        macz,
+                        ott,
+                        strategy,
+                        signal_mode,
+                    };
+                    return EvalOutcome {
+                        objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
+                        constraints,
+                        payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                    };
+                }
+            };
+            let fv_ott = first_finite_idx(&ott_line).unwrap_or(n);
+
+            let bundle = Arc::new(IndicatorSeriesBundle {
+                halftrend_trend,
+                macz_hist,
+                ott_line,
+                first_valid: base_first_valid.max(fv_ht).max(fv_macz).max(fv_ott),
+            });
+
+            if let Ok(mut cache) = indicator_cache.lock() {
+                if let Some(existing) = cache.get(&indicator_key) {
+                    existing
+                } else {
+                    cache.insert(indicator_key.clone(), Arc::clone(&bundle))
+                }
+            } else {
+                bundle
             }
         };
-        let fv_ht = first_finite_idx(&halftrend_trend).unwrap_or(n);
 
-        let macz_hist = match crate::composite_cpu::compute_macz_hist(candles, &ma_source, &macz) {
-            Ok(v) => v,
-            Err(_) => {
-                constraints.push(1.0);
-                let metrics = Metrics::default();
-                let params = CompositeMoParams {
-                    fast_ma_type: fast_ma_type.clone(),
-                    slow_ma_type: slow_ma_type.clone(),
-                    fast_len,
-                    slow_len,
-                    halftrend,
-                    macz,
-                    ott,
-                    strategy,
-                };
-                return EvalOutcome {
-                    objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
-                    constraints,
-                    payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
-                };
-            }
-        };
-        let fv_macz = first_finite_idx(&macz_hist).unwrap_or(n);
-
-        let ott_line = match crate::composite_cpu::compute_ott_line(candles, &ma_source, &ott) {
-            Ok(v) => v,
-            Err(_) => {
-                constraints.push(1.0);
-                let metrics = Metrics::default();
-                let params = CompositeMoParams {
-                    fast_ma_type: fast_ma_type.clone(),
-                    slow_ma_type: slow_ma_type.clone(),
-                    fast_len,
-                    slow_len,
-                    halftrend,
-                    macz,
-                    ott,
-                    strategy,
-                };
-                return EvalOutcome {
-                    objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
-                    constraints,
-                    payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
-                };
-            }
-        };
-        let fv_ott = first_finite_idx(&ott_line).unwrap_or(n);
-
-        let first_valid = base_first_valid.max(fv_ht).max(fv_macz).max(fv_ott);
+        let first_valid = indicator_bundle.first_valid;
         let trade_offset = if strategy.trade_on_next_bar {
             1usize
         } else {
@@ -1459,28 +1704,30 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         }
 
         let metrics = if need_sharpe {
-            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64(
+            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
                 &lr,
                 ma_prices,
                 fast_row,
                 slow_row,
-                &halftrend_trend,
-                &macz_hist,
-                &ott_line,
+                &indicator_bundle.halftrend_trend,
+                &indicator_bundle.macz_hist,
+                &indicator_bundle.ott_line,
                 start_t,
                 &strategy,
+                signal_mode,
             )
         } else {
-            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast(
+            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
                 &lr,
                 ma_prices,
                 fast_row,
                 slow_row,
-                &halftrend_trend,
-                &macz_hist,
-                &ott_line,
+                &indicator_bundle.halftrend_trend,
+                &indicator_bundle.macz_hist,
+                &indicator_bundle.ott_line,
                 start_t,
                 &strategy,
+                signal_mode,
             )
         };
 
@@ -1517,6 +1764,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             macz,
             ott,
             strategy,
+            signal_mode,
         };
 
         EvalOutcome {
@@ -1751,6 +1999,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -1818,6 +2067,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -1868,6 +2118,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -1932,6 +2183,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -2000,6 +2252,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -2074,6 +2327,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -2110,6 +2364,8 @@ mod tests {
             gpu_prescan: Some(CompositeGpuPrescanConfig {
                 top_k: 8,
                 window: 2,
+                predictive_top_k: 0,
+                predictive_stride: 8,
                 device_id: None,
                 require_gpu: false,
                 objectives: CompositeGpuPrescanObjectives::Both,
@@ -2139,6 +2395,7 @@ mod tests {
             fast_ma_params: None,
             slow_ma_params: None,
             base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
             search_space: SearchSpace {
                 params: vec![
                     ta_optimizer::mo::ParamDef {
@@ -2175,6 +2432,8 @@ mod tests {
             gpu_prescan: Some(CompositeGpuPrescanConfig {
                 top_k: 4,
                 window: 2,
+                predictive_top_k: 4,
+                predictive_stride: 8,
                 device_id: None,
                 require_gpu: false,
                 objectives: CompositeGpuPrescanObjectives::Both,
