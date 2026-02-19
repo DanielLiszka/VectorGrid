@@ -2,6 +2,7 @@ use crate::progress::ProgressSink;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::time::Instant;
 
 use crate::composite_validate::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
@@ -23,6 +24,14 @@ pub struct MetaScoreWeights {
     pub w_psr: f64,
     #[serde(default = "default_w_dsr")]
     pub w_dsr: f64,
+    #[serde(default = "default_w_tail_gap")]
+    pub w_tail_gap: f64,
+    #[serde(default = "default_w_holdout_pass_rate")]
+    pub w_holdout_pass_rate: f64,
+    #[serde(default = "default_w_holdout_p10")]
+    pub w_holdout_p10: f64,
+    #[serde(default = "default_w_holdout_dd_p90")]
+    pub w_holdout_dd_p90: f64,
 }
 
 fn default_w_p10() -> f64 {
@@ -46,6 +55,18 @@ fn default_w_psr() -> f64 {
 fn default_w_dsr() -> f64 {
     0.0
 }
+fn default_w_tail_gap() -> f64 {
+    0.20
+}
+fn default_w_holdout_pass_rate() -> f64 {
+    0.30
+}
+fn default_w_holdout_p10() -> f64 {
+    1.00
+}
+fn default_w_holdout_dd_p90() -> f64 {
+    0.75
+}
 
 impl Default for MetaScoreWeights {
     fn default() -> Self {
@@ -57,6 +78,10 @@ impl Default for MetaScoreWeights {
             w_dd_p90: default_w_dd_p90(),
             w_psr: default_w_psr(),
             w_dsr: default_w_dsr(),
+            w_tail_gap: default_w_tail_gap(),
+            w_holdout_pass_rate: default_w_holdout_pass_rate(),
+            w_holdout_p10: default_w_holdout_p10(),
+            w_holdout_dd_p90: default_w_holdout_dd_p90(),
         }
     }
 }
@@ -235,16 +260,22 @@ pub struct MetaCandidateAggregate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub representatives: Vec<Value>,
     pub samples: usize,
+    pub datasets_covered: usize,
     pub pass_rate: f64,
     pub robust_score_median: f64,
     pub robust_score_p10: f64,
+    pub tail_gap: f64,
     pub max_dd_p90: f64,
     pub cross_score_median: f64,
     pub psr_median: f64,
     pub dsr_median: f64,
     pub meta_score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub train_rows: Vec<TrainDatasetRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holdout_rows: Vec<HoldoutDatasetRow>,
 }
@@ -258,6 +289,25 @@ pub struct HoldoutDatasetRow {
     pub max_dd_worst: f64,
     pub pnl_median: f64,
     pub pass: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TrainDatasetRow {
+    pub dataset: String,
+    pub dataset_key: String,
+    pub robust_score: f64,
+    pub pnl: f64,
+    pub pnl_pct: f64,
+    pub sharpe: f64,
+    pub max_dd: f64,
+    pub trades: f64,
+    pub exposure: f64,
+    pub cross_score: f64,
+    pub cross_pnl_positive_frac: f64,
+    pub psr: f64,
+    pub dsr: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -286,7 +336,13 @@ struct GroupAcc {
     cross_scores: Vec<f64>,
     psrs: Vec<f64>,
     dsrs: Vec<f64>,
+    dataset_keys: HashSet<String>,
+    train_rows: Vec<TrainDatasetRow>,
 }
+
+const GROUP_GATE_MIN_ROBUST_P10: f64 = 0.0;
+const GROUP_GATE_MIN_PASS_RATE: f64 = 0.15;
+const GROUP_GATE_MAX_DD_P90: f64 = 0.80;
 
 pub fn meta_select_from_artifacts(
     req: &MetaSelectionRequest,
@@ -301,6 +357,7 @@ pub fn meta_select_from_artifacts(
     let mut artifacts_used = 0usize;
     let mut candidates_considered = 0usize;
     let mut artifacts_rejected_by_shortlist = 0usize;
+    let mut datasets_considered: HashSet<String> = HashSet::new();
 
     for (i, art) in artifacts.iter().enumerate() {
         artifacts_considered += 1;
@@ -348,6 +405,13 @@ pub fn meta_select_from_artifacts(
             artifacts_rejected_by_shortlist = artifacts_rejected_by_shortlist.saturating_add(1);
             continue;
         }
+        let dataset_key = artifact_dataset_key(art, i);
+        let dataset_label = artifact_dataset_label(art, i);
+        let artifact_ts = art
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        datasets_considered.insert(dataset_key.clone());
 
         let ma_source = artifact_ma_source(art).unwrap_or_else(|| "close".to_string());
         let fast_ma_params = artifact_ma_params(art, "fast");
@@ -381,6 +445,38 @@ pub fn meta_select_from_artifacts(
                 .unwrap_or(0.0);
             let psr = cand.get("psr").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let dsr = cand.get("dsr").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let pnl = cand
+                .pointer("/in_sample/pnl")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let pnl_pct = cand
+                .pointer("/in_sample/pnl_pct")
+                .and_then(|v| v.as_f64())
+                .or_else(|| {
+                    cand.pointer("/in_sample/net_profit_pct")
+                        .and_then(|v| v.as_f64())
+                })
+                .unwrap_or(pnl);
+            let sharpe = cand
+                .pointer("/in_sample/sharpe")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let in_sample_dd = cand
+                .pointer("/in_sample/max_dd")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(max_dd);
+            let trades = cand
+                .pointer("/in_sample/trades")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let exposure = cand
+                .pointer("/in_sample/exposure")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let cross_pnl_positive_frac = cand
+                .pointer("/cross_ticker/pnl_positive_frac")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
 
             candidates_considered += 1;
 
@@ -397,12 +493,33 @@ pub fn meta_select_from_artifacts(
             entry.cross_scores.push(cross_score);
             entry.psrs.push(psr);
             entry.dsrs.push(dsr);
+            entry.dataset_keys.insert(dataset_key.clone());
+            entry.train_rows.push(TrainDatasetRow {
+                dataset: dataset_label.clone(),
+                dataset_key: dataset_key.clone(),
+                robust_score,
+                pnl,
+                pnl_pct,
+                sharpe,
+                max_dd: in_sample_dd,
+                trades,
+                exposure,
+                cross_score,
+                cross_pnl_positive_frac,
+                psr,
+                dsr,
+                ts: artifact_ts.clone(),
+            });
         }
     }
 
     emit_progress(progress, 1, 1, "meta_aggregate");
 
     let mut aggregates: Vec<MetaCandidateAggregate> = Vec::with_capacity(groups.len());
+    let dataset_universe = datasets_considered.len();
+    let mut dropped_gate_robust = 0usize;
+    let mut dropped_gate_pass = 0usize;
+    let mut dropped_gate_dd = 0usize;
     for (key, mut acc) in groups {
         let samples = acc.robust_scores.len();
         if samples < req.min_samples {
@@ -422,6 +539,12 @@ pub fn meta_select_from_artifacts(
         } else {
             pick_representatives(&acc.robust_params, req.cluster_representatives.clamp(1, 3))
         };
+        acc.train_rows.sort_by(|a, b| {
+            a.dataset
+                .cmp(&b.dataset)
+                .then_with(|| a.dataset_key.cmp(&b.dataset_key))
+                .then_with(|| a.ts.cmp(&b.ts))
+        });
 
         acc.robust_scores.sort_by(|a, b| a.total_cmp(b));
         acc.max_dds.sort_by(|a, b| a.total_cmp(b));
@@ -435,12 +558,27 @@ pub fn meta_select_from_artifacts(
         let cross_score_median = median(&acc.cross_scores);
         let psr_median = median(&acc.psrs);
         let dsr_median = median(&acc.dsrs);
+        let datasets_covered = acc.dataset_keys.len();
 
-        let pass_rate = if artifacts_used > 0 {
-            (samples as f64) / (artifacts_used as f64)
+        let pass_rate = if dataset_universe > 0 {
+            (datasets_covered as f64) / (dataset_universe as f64)
         } else {
             0.0
         };
+        let tail_gap = (robust_score_median - robust_score_p10).max(0.0);
+
+        if robust_score_p10 <= GROUP_GATE_MIN_ROBUST_P10 {
+            dropped_gate_robust = dropped_gate_robust.saturating_add(1);
+            continue;
+        }
+        if pass_rate < GROUP_GATE_MIN_PASS_RATE {
+            dropped_gate_pass = dropped_gate_pass.saturating_add(1);
+            continue;
+        }
+        if max_dd_p90 > GROUP_GATE_MAX_DD_P90 {
+            dropped_gate_dd = dropped_gate_dd.saturating_add(1);
+            continue;
+        }
 
         let meta_score = req.weights.w_p10 * robust_score_p10
             + req.weights.w_median * robust_score_median
@@ -448,7 +586,8 @@ pub fn meta_select_from_artifacts(
             + req.weights.w_pass_rate * pass_rate
             - req.weights.w_dd_p90 * max_dd_p90
             + req.weights.w_psr * psr_median
-            + req.weights.w_dsr * dsr_median;
+            + req.weights.w_dsr * dsr_median
+            - req.weights.w_tail_gap * tail_gap;
 
         aggregates.push(MetaCandidateAggregate {
             params: acc.params,
@@ -458,15 +597,19 @@ pub fn meta_select_from_artifacts(
             slow_ma_params: acc.slow_ma_params,
             representatives,
             samples,
+            datasets_covered,
             pass_rate,
             robust_score_median,
             robust_score_p10,
+            tail_gap,
             max_dd_p90,
             cross_score_median,
             psr_median,
             dsr_median,
             meta_score,
+            final_score: None,
             holdout: None,
+            train_rows: acc.train_rows,
             holdout_rows: Vec::new(),
         });
     }
@@ -482,6 +625,21 @@ pub fn meta_select_from_artifacts(
         warnings.push(format!(
             "Hard shortlist rejected {} artifact(s): no candidates passed strict/CSCV gates.",
             artifacts_rejected_by_shortlist
+        ));
+    }
+
+    let dropped_total = dropped_gate_robust
+        .saturating_add(dropped_gate_pass)
+        .saturating_add(dropped_gate_dd);
+    if dropped_total > 0 {
+        warnings.push(format!(
+            "Meta group gates filtered {dropped_total} group(s): robust_p10>{:.3} rejected={} · pass_rate>={:.2} rejected={} · dd_p90<={:.2} rejected={}.",
+            GROUP_GATE_MIN_ROBUST_P10,
+            dropped_gate_robust,
+            GROUP_GATE_MIN_PASS_RATE,
+            dropped_gate_pass,
+            GROUP_GATE_MAX_DD_P90,
+            dropped_gate_dd
         ));
     } else if aggregates.is_empty() {
         warnings.push(format!(
@@ -624,6 +782,62 @@ fn artifact_ma_params(art: &Value, side: &str) -> Option<HashMap<String, f64>> {
     };
     let v = art.pointer(ptr).or_else(|| art.pointer(ptr2))?;
     parse_ma_param_map(v)
+}
+
+fn artifact_dataset_key(art: &Value, idx: usize) -> String {
+    let csv = art
+        .pointer("/data/csv_path")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            art.pointer("/dataset_meta/csv_path")
+                .and_then(|v| v.as_str())
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(p) = csv {
+        return format!("csv:{p}");
+    }
+
+    let label = art
+        .pointer("/dataset_meta/label")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(lbl) = label {
+        return format!("label:{lbl}");
+    }
+
+    format!("artifact:{idx}")
+}
+
+fn artifact_dataset_label(art: &Value, idx: usize) -> String {
+    if let Some(lbl) = art
+        .pointer("/dataset_meta/label")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return lbl.to_string();
+    }
+
+    if let Some(csv) = art
+        .pointer("/data/csv_path")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            art.pointer("/dataset_meta/csv_path")
+                .and_then(|v| v.as_str())
+        })
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(name) = Path::new(csv).file_name().and_then(|s| s.to_str()) {
+            if !name.trim().is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+
+    format!("dataset_{}", idx + 1)
 }
 
 fn parse_ma_param_map(v: &Value) -> Option<HashMap<String, f64>> {
@@ -1076,6 +1290,15 @@ mod tests {
         assert!((g.pass_rate - 1.0).abs() < 1e-9);
         assert!(g.meta_score.is_finite());
         assert!(g.robust_score_p10 > 0.0);
+        assert_eq!(g.train_rows.len(), 2);
+        assert!(g
+            .train_rows
+            .iter()
+            .any(|r| r.dataset.eq_ignore_ascii_case("AAPL")));
+        assert!(g
+            .train_rows
+            .iter()
+            .any(|r| r.dataset.eq_ignore_ascii_case("MSFT")));
     }
 
     #[test]

@@ -249,6 +249,10 @@
                 <div class="actions" style="margin-top: 0;">
                   <button id="btnApplyTimeframe">Apply timeframe</button>
                 </div>
+                <label class="inlineCheck" style="margin-top: 0.45rem;">
+                  <input id="autoRestoreDataset" type="checkbox" checked />
+                  Restore last dataset + timeframe on startup
+                </label>
               </div>
             </div>
             <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="datasetContext">—</div>
@@ -268,8 +272,10 @@
                 <label for="strategyKind">Strategy</label>
                 <select id="strategyKind">
                   <option value="DoubleMa" selected>Double MA crossover</option>
-                  <option value="CompositeMo">Composite (optimize all indicator parameters) [CPU + MO]</option>
-                  <option value="CompositeCpu">Composite (legacy alias; auto-upgrades to full optimization)</option>
+                  <option value="CompositeTrend">Composite Trend-Quality (MA + LR angle + BB width + ROC)</option>
+                  <option value="RegimeHybrid">Regime-Switch Hybrid (trend-follow + mean reversion)</option>
+                  <option value="BreakoutMomentum">Breakout Pulse (BB + MACD + CMO + ADOSC)</option>
+                  <option value="CompositeMo">Composite (CPU + MO: Hard Gate / Entry-Overlay / Trend Pullback Reversion)</option>
                 </select>
               </div>
               <div>
@@ -429,6 +435,16 @@
               </div>
             </div>
 
+            <div class="row" style="margin-top: 0.55rem;">
+              <div>
+                <label for="startingEquity" title="Base equity used to report final equity and net PnL amounts from percent returns.">Starting equity</label>
+                <input id="startingEquity" type="number" min="0.01" step="1" value="10000" />
+                <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">
+                  Affects Final Equity / Net PnL reporting only. Optimization ranking still uses return metrics.
+                </div>
+              </div>
+            </div>
+
             <div class="row3" style="margin-top: 0.55rem;">
               <div>
                 <label for="stopLossPct" title="Optional stop-loss as fraction or percent. Examples: 0.02 or 2.">Stop-loss (optional)</label>
@@ -446,10 +462,234 @@
               </div>
             </div>
 
+            <div class="row3" style="margin-top: 0.55rem;">
+              <div>
+                <label for="cooldownBars" title="Optional entry cooldown after closing a trade. 0 disables.">Cooldown bars</label>
+                <input id="cooldownBars" type="number" min="0" step="1" value="0" />
+              </div>
+              <div>
+                <label for="signalPersistenceBars" title="Require a non-zero signal to persist for this many bars before acting. 1 disables.">Signal persistence bars</label>
+                <input id="signalPersistenceBars" type="number" min="1" step="1" value="1" />
+              </div>
+              <div>
+                <label for="trailingStopPct" title="Optional trailing stop as fraction or percent (applied to open-trade equity from its peak). Examples: 0.02 or 2.">Trailing stop (optional)</label>
+                <input id="trailingStopPct" type="number" min="0" step="0.0001" placeholder="0.02 or 2" />
+              </div>
+            </div>
+
+            <div class="row3" id="dmConstraintsWrap" style="margin-top: 0.55rem;">
+              <div>
+                <label for="dmConstraintMinTrades" title="Optional hard filter: ignore parameter sets with fewer than this many trades.">Min trades (optional)</label>
+                <input id="dmConstraintMinTrades" type="number" min="0" step="1" placeholder="e.g. 40" />
+              </div>
+              <div>
+                <label for="dmConstraintMaxDd" title="Optional hard filter: ignore parameter sets with drawdown above this value.">Max drawdown (optional)</label>
+                <input id="dmConstraintMaxDd" type="number" min="0" step="0.0001" placeholder="e.g. 0.25" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="margin-top: 0.25rem; font-size: 0.8rem;">
+                  Filters results without changing indicator calculations.
+                </div>
+              </div>
+            </div>
+
+            <div class="row3" style="margin-top: 0.55rem;">
+              <div>
+                <label for="exitMode" title="Choose how open positions are closed.">Exit mode</label>
+                <select id="exitMode">
+                  <option value="cross" selected>Cross signal</option>
+                  <option value="kaufman_stop">Kaufman-stop</option>
+                </select>
+              </div>
+              <div id="kaufmanStopPeriodWrap">
+                <label for="kaufmanStopPeriod" title="Kaufman-stop lookback period.">Kaufman period</label>
+                <input id="kaufmanStopPeriod" type="number" min="1" step="1" value="22" />
+              </div>
+              <div id="kaufmanStopMultWrap">
+                <label for="kaufmanStopMult" title="Kaufman-stop range multiplier.">Kaufman multiplier</label>
+                <input id="kaufmanStopMult" type="number" min="0.0001" step="0.01" value="2.0" />
+              </div>
+            </div>
+
+            <div class="row" id="kaufmanStopMaTypeWrap" style="margin-top: 0.55rem;">
+              <div>
+                <label for="kaufmanStopMaType" title="MA type used internally by Kaufman-stop.">Kaufman MA type</label>
+                <input id="kaufmanStopMaType" type="text" value="sma" placeholder="sma" />
+              </div>
+              <div>
+                <label>&nbsp;</label>
+                <div class="muted" style="margin-top: 0.25rem; font-size: 0.8rem;">
+                  Used only when Exit mode is Kaufman-stop.
+                </div>
+              </div>
+            </div>
+
+            <div id="trendQualityWrap" style="display: none; margin-top: 0.75rem;">
+              <div class="muted" id="trendQualityTitle" style="margin-bottom: 0.35rem;">Trend-quality filters</div>
+              <div class="row3">
+                <div>
+                  <label for="trendLrPeriod">LR angle period</label>
+                  <input id="trendLrPeriod" type="number" min="1" step="1" value="34" />
+                </div>
+                <div>
+                  <label for="trendLrMinDeg">Min angle (deg)</label>
+                  <input id="trendLrMinDeg" type="number" min="0.0001" step="0.1" value="2.0" />
+                </div>
+                <div>
+                  <label for="trendBbwPeriod">BB width period</label>
+                  <input id="trendBbwPeriod" type="number" min="1" step="1" value="20" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="trendBbwMult">BB width multiplier</label>
+                  <input id="trendBbwMult" type="number" min="0.0001" step="0.1" value="2.0" />
+                </div>
+                <div>
+                  <label for="trendBbwMin">Min BB width</label>
+                  <input id="trendBbwMin" type="number" min="0" step="0.0001" value="0.04" />
+                </div>
+                <div>
+                  <label for="trendRocPeriod">ROC period</label>
+                  <input id="trendRocPeriod" type="number" min="1" step="1" value="9" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="trendAdxPeriod">ADX period</label>
+                  <input id="trendAdxPeriod" type="number" min="1" step="1" value="14" />
+                </div>
+                <div>
+                  <label for="trendAdxMin">Min ADX</label>
+                  <input id="trendAdxMin" type="number" min="0.1" step="0.1" value="20.0" />
+                </div>
+                <div></div>
+              </div>
+              <div class="checks" style="margin-top: 0.55rem;">
+                <label title="Require ROC>0 for long regime and ROC<0 for short regime."><input id="trendUseRoc" type="checkbox" checked /> Use ROC confirmation</label>
+                <label title="Require ADX >= Min ADX before trend-quality signals are allowed."><input id="trendUseAdx" type="checkbox" /> Use ADX confirmation</label>
+              </div>
+
+              <div id="regimeHybridParamsWrap" style="display: none; margin-top: 0.7rem;">
+                <div class="muted" style="margin-bottom: 0.35rem;">Regime hysteresis + mean-reversion thresholds</div>
+                <div class="row3">
+                  <div>
+                    <label for="regimeAdxPeriod">ADX period</label>
+                    <input id="regimeAdxPeriod" type="number" min="1" step="1" value="14" />
+                  </div>
+                  <div>
+                    <label for="regimeAdxEnter">ADX enter trend</label>
+                    <input id="regimeAdxEnter" type="number" min="0.1" step="0.1" value="22.0" />
+                  </div>
+                  <div>
+                    <label for="regimeAdxExit">ADX exit trend</label>
+                    <input id="regimeAdxExit" type="number" min="0.1" step="0.1" value="18.0" />
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 0.55rem;">
+                  <div>
+                    <label for="regimeRevEntryRel">Range reversion entry (rel)</label>
+                    <input id="regimeRevEntryRel" type="number" min="0.0001" step="0.0001" value="0.0035" />
+                  </div>
+                  <div>
+                    <label for="regimeRevExitRel">Range reversion exit (rel)</label>
+                    <input id="regimeRevExitRel" type="number" min="0" step="0.0001" value="0.0012" />
+                  </div>
+                </div>
+                <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                  Uses hysteresis to avoid late/flappy regime switches: trend requires stronger confirmation than trend hold.
+                </div>
+              </div>
+            </div>
+
+            <div id="breakoutMomentumWrap" style="display: none; margin-top: 0.75rem;">
+              <div class="muted" style="margin-bottom: 0.35rem;">Breakout-momentum filters (BB + MACD + CMO + ADOSC)</div>
+              <div class="row3">
+                <div>
+                  <label for="breakoutBbPeriod">BB period</label>
+                  <input id="breakoutBbPeriod" type="number" min="1" step="1" value="20" />
+                </div>
+                <div>
+                  <label for="breakoutBbMult">BB multiplier</label>
+                  <input id="breakoutBbMult" type="number" min="0.0001" step="0.1" value="2.0" />
+                </div>
+                <div>
+                  <label for="breakoutConfirmBars">Confirm bars</label>
+                  <input id="breakoutConfirmBars" type="number" min="1" step="1" value="1" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="breakoutMacdFast">MACD fast</label>
+                  <input id="breakoutMacdFast" type="number" min="1" step="1" value="12" />
+                </div>
+                <div>
+                  <label for="breakoutMacdSlow">MACD slow</label>
+                  <input id="breakoutMacdSlow" type="number" min="1" step="1" value="26" />
+                </div>
+                <div>
+                  <label for="breakoutMacdSignal">MACD signal</label>
+                  <input id="breakoutMacdSignal" type="number" min="1" step="1" value="9" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="breakoutCmoPeriod">CMO period</label>
+                  <input id="breakoutCmoPeriod" type="number" min="1" step="1" value="14" />
+                </div>
+                <div>
+                  <label for="breakoutCmoMinAbs">Min |CMO|</label>
+                  <input id="breakoutCmoMinAbs" type="number" min="0" step="0.1" value="20.0" />
+                </div>
+                <div>
+                  <label for="breakoutAdoscShort">ADOSC short</label>
+                  <input id="breakoutAdoscShort" type="number" min="1" step="1" value="3" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="breakoutAdoscLong">ADOSC long</label>
+                  <input id="breakoutAdoscLong" type="number" min="1" step="1" value="10" />
+                </div>
+                <div>
+                  <label for="breakoutAdxPeriod">ADX period</label>
+                  <input id="breakoutAdxPeriod" type="number" min="1" step="1" value="14" />
+                </div>
+                <div>
+                  <label for="breakoutAdxMin">Min ADX</label>
+                  <input id="breakoutAdxMin" type="number" min="0.1" step="0.1" value="20.0" />
+                </div>
+              </div>
+              <div class="checks" style="margin-top: 0.55rem;">
+                <label title="Optional extra strictness: require ADX >= Min ADX for breakout entries.">
+                  <input id="breakoutUseAdx" type="checkbox" />
+                  Use ADX confirmation
+                </label>
+              </div>
+              <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                Requires high/low/volume candle columns.
+              </div>
+            </div>
+
             <div class="checks" style="margin-top: 0.55rem;">
               <label title="Only take long positions. If enabled, shorts are disabled and 'Allow flip' has no effect."><input id="longOnly" type="checkbox" checked /> Long-only</label>
               <label title="Allow switching long↔short on opposite signals (when Long-only is off)."><input id="allowFlip" type="checkbox" checked /> Allow flip</label>
               <label title="Executes signals on the next bar (reduces lookahead risk)."><input id="tradeOnNext" type="checkbox" checked /> Trade on next bar</label>
+            </div>
+
+            <div id="compositeSignalModeWrap" style="display: none; margin-top: 0.55rem;">
+              <div class="row">
+                <div>
+                  <label for="compositeSignalMode">Composite signal mode</label>
+                  <select id="compositeSignalMode">
+                    <option value="hard_gate" selected>Hard gate (entry+exit require MA + HalfTrend + MACZ + OTT)</option>
+                    <option value="entry_core_exit_overlay">Entry core + exit overlay (entry: MA + HalfTrend; exit: MACZ/OTT)</option>
+                    <option value="trend_pullback_reversion">Trend pullback reversion (trend-follow entries on pullbacks)</option>
+                  </select>
+                  <div id="compositeSignalModeDetails" class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;"></div>
+                </div>
+              </div>
             </div>
 
             <div id="compositeParamsWrap" style="display: none; margin-top: 0.9rem;">
@@ -585,8 +825,87 @@
                 <select id="mode">
                   <option value="Grid">Grid</option>
                   <option value="CoarseToFine">Coarse→Fine</option>
+                  <option value="GpuVdps">GPU VDPS (large-space: Double/Trend/Regime/Breakout)</option>
                   <option value="Auto">Auto</option>
                 </select>
+              </div>
+            </div>
+
+            <div id="vdpsConfigWrap" style="display: none; margin-top: 0.85rem;">
+              <div class="muted" style="margin-bottom: 0.35rem;">
+                GPU VDPS settings (large-space progressive search)
+              </div>
+              <div class="row3">
+                <div>
+                  <label for="vdpsEta">Eta (elimination rate)</label>
+                  <input id="vdpsEta" type="number" min="2" max="32" step="1" value="4" />
+                </div>
+                <div>
+                  <label for="vdpsRungs">Rungs (fractions, CSV)</label>
+                  <input id="vdpsRungs" type="text" value="0.0625,0.125,0.25,0.5,1.0" />
+                </div>
+                <div>
+                  <label for="vdpsRandomInjectionRatio">Random injection ratio</label>
+                  <input id="vdpsRandomInjectionRatio" type="number" min="0" max="1" step="0.01" value="0.10" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="vdpsEliteMutationRatio">Elite mutation ratio</label>
+                  <input id="vdpsEliteMutationRatio" type="number" min="0" max="1" step="0.01" value="0.50" />
+                </div>
+                <div>
+                  <label for="vdpsDifferentialRatio">Differential ratio</label>
+                  <input id="vdpsDifferentialRatio" type="number" min="0" max="1" step="0.01" value="0.40" />
+                </div>
+                <div></div>
+              </div>
+              <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">
+                Refill ratios are auto-normalized if elite + differential + random exceeds 1.0.
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="vdpsMinInitialPairs">Min initial pairs</label>
+                  <input id="vdpsMinInitialPairs" type="number" min="1" step="1" value="4096" />
+                </div>
+                <div>
+                  <label for="vdpsMaxSurvivorSeeds">Max survivor seeds</label>
+                  <input id="vdpsMaxSurvivorSeeds" type="number" min="8" step="1" value="256" />
+                </div>
+                <div>
+                  <label for="vdpsMaxPeriodCandidates">Max period candidates</label>
+                  <input id="vdpsMaxPeriodCandidates" type="number" min="16" step="1" value="384" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="vdpsSeed">Seed</label>
+                  <input id="vdpsSeed" type="number" min="0" step="1" value="1" />
+                </div>
+                <div style="display: flex; align-items: end;">
+                  <label class="inlineCheck" style="margin: 0;">
+                    <input id="vdpsDeterministic" type="checkbox" checked />
+                    <span>Deterministic mode</span>
+                  </label>
+                </div>
+                <div></div>
+              </div>
+              <div class="row3" style="margin-top: 0.55rem;">
+                <div>
+                  <label for="vdpsQualityCheckMaxPairs">Quality check max pairs</label>
+                  <input id="vdpsQualityCheckMaxPairs" type="number" min="0" step="1" value="0" />
+                </div>
+                <div>
+                  <label for="vdpsQualityCheckTopK">Quality check top-K</label>
+                  <input id="vdpsQualityCheckTopK" type="number" min="1" step="1" value="20" />
+                </div>
+                <div></div>
+              </div>
+              <div class="muted" style="margin-top: 0.3rem; font-size: 0.8rem;">
+                Set quality-check max pairs &gt; 0 to run an optional full-grid audit on small spaces.
+              </div>
+              <div id="vdpsTelemetryHint" class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                VDPS telemetry appears after a run.
               </div>
             </div>
 
@@ -1248,6 +1567,7 @@
                     <th data-key="fast" class="left">Fast</th>
                     <th data-key="slow" class="left">Slow</th>
                     <th data-key="pnl">PnL</th>
+                    <th data-key="ret_pct">Ret %</th>
                     <th data-key="sharpe">Sharpe</th>
                     <th data-key="max_dd">MaxDD</th>
                     <th data-key="trades">Trades</th>
@@ -1327,8 +1647,8 @@
                 <div class="row3" style="margin-bottom: 0.75rem;">
                   <div style="display: flex; flex-direction: column; gap: 0.35rem;">
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
-                      <input id="valAutoExportXlsx" type="checkbox" />
-                      <label for="valAutoExportXlsx" style="margin: 0;">Auto-export report (XLSX)</label>
+                      <input id="valAutoExportXlsx" type="checkbox" disabled />
+                      <label for="valAutoExportXlsx" style="margin: 0;">XLSX export is consolidated in Stage 3 (Meta)</label>
                     </div>
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                       <input id="valAutoRevealReport" type="checkbox" />
@@ -1336,8 +1656,8 @@
                     </div>
                   </div>
                   <div>
-                    <label for="valAutoExportTopN">Top N rows (0 = all)</label>
-                    <input id="valAutoExportTopN" type="number" min="0" step="1" value="20" />
+                    <label for="valAutoExportTopN">Top N rows (legacy Stage 2)</label>
+                    <input id="valAutoExportTopN" type="number" min="0" step="1" value="20" disabled />
                   </div>
                   <div>
                     <label>&nbsp;</label>
@@ -1493,7 +1813,7 @@
               <button id="btnExportValidationCsv" disabled>Export shortlist CSV</button>
               <button id="btnExportValidationJson" disabled>Export validation JSON</button>
               <button id="btnExportReportJson" disabled>Export report JSON</button>
-              <button id="btnExportReportXlsx" disabled>Export report XLSX</button>
+              <button id="btnExportReportXlsx" disabled>Open Stage 3 XLSX</button>
             </div>
 
             <div class="muted" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="validationShortlistMeta">-</div>
@@ -1893,6 +2213,9 @@
                 <select id="metaStrategyKind">
                   <option value="CompositeCpu">Composite [CPU]</option>
                   <option value="CompositeMo" selected>Composite [CPU + MO]</option>
+                  <option value="CompositeTrend">Composite Trend-Quality [Double MA + filters]</option>
+                  <option value="RegimeHybrid">Regime-Switch Hybrid [Double MA + filters]</option>
+                  <option value="BreakoutMomentum">Breakout Pulse [Double MA + breakout filters]</option>
                   <option value="DoubleMa">Double MA (requires validation artifacts)</option>
                 </select>
               </div>
@@ -2027,6 +2350,69 @@
                 </div>
               </div>
               <div class="muted" style="margin-top: 0.4rem; font-size: 0.85rem;" id="metaMlStatus">—</div>
+              <hr style="border: none; border-top: 1px solid var(--border); margin: 0.75rem 0;" />
+              <div class="muted" style="font-size: 0.82rem; margin-bottom: 0.45rem;">Experimental Stage 4 (post-meta): ML confidence finalizer</div>
+              <div class="row3" style="margin-top: 0.2rem;">
+                <div>
+                  <label for="metaStage4TopK">Top K</label>
+                  <input id="metaStage4TopK" type="number" min="1" step="1" value="10" />
+                </div>
+                <div>
+                  <label for="metaStage4MinConf">Min ML confidence</label>
+                  <input id="metaStage4MinConf" type="number" min="0" max="1" step="0.01" value="0.55" />
+                </div>
+                <div>
+                  <label>&nbsp;</label>
+                  <div class="actions" style="margin-top: 0;">
+                    <button id="btnRunMetaStage4" disabled>Run Stage 4</button>
+                    <button id="btnRevealMetaStage4" disabled>Reveal Stage 4 file</button>
+                  </div>
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.45rem;">
+                <div>
+                  <label for="metaStage4MetaWeight">Weight: Meta score</label>
+                  <input id="metaStage4MetaWeight" type="number" min="0" step="0.01" value="0.60" />
+                </div>
+                <div>
+                  <label for="metaStage4MlWeight">Weight: ML confidence</label>
+                  <input id="metaStage4MlWeight" type="number" min="0" step="0.01" value="0.35" />
+                </div>
+                <div>
+                  <label for="metaStage4UncertaintyWeight">Weight: uncertainty penalty</label>
+                  <input id="metaStage4UncertaintyWeight" type="number" min="0" step="0.01" value="0.05" />
+                </div>
+              </div>
+              <div class="row3" style="margin-top: 0.45rem;">
+                <div>
+                  <label for="metaStage4AcceptConf">Accept confidence</label>
+                  <input id="metaStage4AcceptConf" type="number" min="0" max="1" step="0.01" value="0.70" />
+                </div>
+                <div>
+                  <label for="metaStage4ReviewConf">Review confidence</label>
+                  <input id="metaStage4ReviewConf" type="number" min="0" max="1" step="0.01" value="0.55" />
+                </div>
+                <div>
+                  <label for="metaStage4MaxAcceptUncertainty">Max accept uncertainty</label>
+                  <input id="metaStage4MaxAcceptUncertainty" type="number" min="0" max="1" step="0.01" value="0.45" />
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.45rem;">
+                <label class="inlineCheck" style="margin: 0;">
+                  <input id="metaStage4AutoTrain" type="checkbox" checked />
+                  <span>Auto-train / retrain model</span>
+                </label>
+                <label class="inlineCheck" style="margin: 0;">
+                  <input id="metaStage4RequireHealthy" type="checkbox" checked />
+                  <span>Require healthy model</span>
+                </label>
+                <label class="inlineCheck" style="margin: 0;">
+                  <input id="metaStage4FallbackToMeta" type="checkbox" checked />
+                  <span>Fallback to meta if empty</span>
+                </label>
+              </div>
+              <div class="muted" style="margin-top: 0.4rem; font-size: 0.82rem;" id="metaStage4Status">—</div>
+              <pre class="mono" id="metaStage4Output" style="white-space: pre-wrap; max-height: 180px; overflow: auto; border: 1px solid var(--border); padding: 0.55rem; border-radius: 8px; margin-top: 0.45rem;">-</pre>
             </details>
 
             <hr style="border: none; border-top: 1px solid var(--border); margin: 0.9rem 0;" />
@@ -2070,6 +2456,47 @@
                   </div>
                 </div>
                 <div class="muted" style="margin-top: 0.4rem; font-size: 0.8rem;" id="metaSavedMeta">—</div>
+              </div>
+            </details>
+
+            <details class="detailsCard" id="stage4SavedWrap" style="margin-bottom: 0.85rem;">
+              <summary>Saved Stage 4 analyses (disk)</summary>
+              <div class="detailsBody">
+                <div class="muted" style="font-size: 0.85rem; margin-bottom: 0.6rem;">
+                  Stage 4 artifacts store final ML-ranked parameter picks from post-meta selection.
+                </div>
+                <div class="row" style="margin-top: 0.35rem;">
+                  <div>
+                    <label for="stage4SavedSearch">Search</label>
+                    <input id="stage4SavedSearch" type="text" placeholder="ts, strategy, timeframe, tags..." />
+                  </div>
+                  <div>
+                    <label for="stage4SavedSelect">Saved Stage 4</label>
+                    <select id="stage4SavedSelect"></select>
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 0.35rem;">
+                  <div>
+                    <label for="stage4SavedTags">Tags (comma-separated)</label>
+                    <div class="rowAuto">
+                      <input id="stage4SavedTags" type="text" placeholder="final,1m,trend" />
+                      <button id="btnSaveStage4SavedTags">Save</button>
+                    </div>
+                  </div>
+                  <div></div>
+                </div>
+                <div class="row" style="margin-top: 0.35rem;">
+                  <div>
+                    <label>&nbsp;</label>
+                    <div class="actions" style="margin-top: 0;">
+                      <button id="btnRefreshStage4Saved">Refresh</button>
+                      <button id="btnLoadStage4Saved">Load</button>
+                      <button id="btnRevealStage4Saved">Reveal file</button>
+                      <button id="btnDeleteStage4Saved">Delete</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="muted" style="margin-top: 0.4rem; font-size: 0.8rem;" id="stage4SavedMeta">—</div>
               </div>
             </details>
 
@@ -2282,6 +2709,8 @@
                 <button id="btnExecRefresh">Refresh orders</button>
                 <button id="btnExecLiveStart">Start live candles</button>
                 <button id="btnExecLiveStop">Stop live candles</button>
+                <button id="btnExecRunnerStart">Start auto-runner</button>
+                <button id="btnExecRunnerStop">Stop auto-runner</button>
               </div>
               <div class="checks" style="margin-top: 0.4rem;">
                 <label title="Uses Polygon websocket aggregates. Delayed feed is often available on lower-tier plans.">
@@ -2290,6 +2719,9 @@
               </div>
               <div class="muted" id="execLiveStatusHint" style="margin-top: 0.35rem; font-size: 0.8rem;">
                 Live candles: off
+              </div>
+              <div class="muted" id="execRunnerStatusHint" style="margin-top: 0.35rem; font-size: 0.8rem;">
+                Auto-runner: off
               </div>
               <div class="muted" id="execStatusHint" style="margin-top: 0.4rem; font-size: 0.8rem;">
                 Requires a loaded dataset. Optimization run is optional when using Manual parameter source.

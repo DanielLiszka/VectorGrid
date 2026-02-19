@@ -256,6 +256,7 @@ fn run_full_workflow_once(
         slippage_bps: 0.0,
         commission: 0.0,
         eps_rel: 0.0,
+        ..StrategyConfig::default()
     };
 
     let halftrend = HalfTrendRegimeFilter {

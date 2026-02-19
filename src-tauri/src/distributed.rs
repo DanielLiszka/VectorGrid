@@ -1125,6 +1125,7 @@ pub async fn distributed_run_double_ma_tiled(
             top,
             all: None,
             heatmap: None,
+            vdps: None,
         };
 
         Ok(DistributedTiledRunResponse {

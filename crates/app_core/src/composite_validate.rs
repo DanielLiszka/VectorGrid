@@ -1295,6 +1295,15 @@ pub fn run_composite_validation_blocking_with_candles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::composite_cpu::{
+        run_composite_cpu_optimization_blocking_with_candles, CompositeCpuRequest,
+    };
+    use crate::composite_mo::{
+        run_composite_mo_optimization_blocking_with_candles, CompositeMoObjectives,
+        CompositeMoRequest, CompositeMoSampler,
+    };
+    use ta_optimizer::mo::{ParamDef, ParamDomain, RandomMoConfig, SearchSpace};
+    use ta_optimizer::{ObjectiveKind, OptimizationMode};
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
@@ -1456,6 +1465,7 @@ mod tests {
                 take_profit_pct: None,
                 commission: f64::NAN,
                 eps_rel: -1.0,
+                ..StrategyConfig::default()
             },
         };
 
@@ -1693,6 +1703,283 @@ mod tests {
         assert!(d.pnl.is_finite());
         assert!(d.sharpe.is_finite());
         assert!(d.max_dd.is_finite());
+    }
+
+    #[test]
+    fn composite_validation_matches_optimizer_top_candidates() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let strategy = StrategyConfig::default();
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+        let macz = MaczGateParams::default();
+        let ott = OttGateParams::default();
+        let signal_mode = CompositeSignalMode::HardGate;
+
+        let opt_req = CompositeCpuRequest {
+            data_id: "opt-comp".to_string(),
+            fast_range: (5, 9, 1),
+            slow_range: (18, 28, 2),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: strategy.clone(),
+            halftrend: halftrend.clone(),
+            macz: macz.clone(),
+            ott: ott.clone(),
+            signal_mode,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(6),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let opt =
+            run_composite_cpu_optimization_blocking_with_candles(opt_req, &candles, &cancel, None)
+                .expect("composite optimization run");
+        assert!(!opt.top.is_empty());
+
+        let candidates: Vec<CompositeParams> = opt
+            .top
+            .iter()
+            .take(6)
+            .map(|(p, _)| CompositeParams {
+                fast_ma_type: p.fast_ma_type.clone(),
+                slow_ma_type: p.slow_ma_type.clone(),
+                fast_len: p.fast_len,
+                slow_len: p.slow_len,
+                halftrend: halftrend.clone(),
+                macz: macz.clone(),
+                ott: ott.clone(),
+                signal_mode,
+                strategy: strategy.clone(),
+            })
+            .collect();
+
+        let mk_req = |validation_engine: ValidationEngine| CompositeValidationRequest {
+            data_id: "opt-comp-vs-val".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: candidates.clone(),
+            walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 19,
+            max_candidates: 32,
+            validation_engine,
+            iterative: IterativeSimConfig {
+                slippage_vol_mult: 0.0,
+                ..IterativeSimConfig::default()
+            },
+            min_psr: None,
+            min_dsr: None,
+        };
+
+        let vec_res = run_composite_validation_blocking_with_candles(
+            mk_req(ValidationEngine::Vectorized),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("vectorized validation run");
+        let iter_res = run_composite_validation_blocking_with_candles(
+            mk_req(ValidationEngine::Iterative),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("iterative validation run");
+
+        assert_eq!(vec_res.candidates.len(), iter_res.candidates.len());
+
+        for vec_cand in &vec_res.candidates {
+            let iter_cand = iter_res
+                .candidates
+                .iter()
+                .find(|c| {
+                    c.params.fast_ma_type == vec_cand.params.fast_ma_type
+                        && c.params.slow_ma_type == vec_cand.params.slow_ma_type
+                        && c.params.fast_len == vec_cand.params.fast_len
+                        && c.params.slow_len == vec_cand.params.slow_len
+                })
+                .expect("matching iterative candidate");
+
+            assert!((iter_cand.in_sample.pnl - vec_cand.in_sample.pnl).abs() < 1e-12);
+            assert!((iter_cand.in_sample.sharpe - vec_cand.in_sample.sharpe).abs() < 1e-12);
+            assert!((iter_cand.in_sample.max_dd - vec_cand.in_sample.max_dd).abs() < 1e-12);
+
+            let iter_m = iter_cand
+                .iterative_in_sample
+                .as_ref()
+                .expect("iterative metrics");
+            let delta = iter_cand.iterative_delta.as_ref().expect("iterative delta");
+
+            assert!(iter_m.pnl.is_finite());
+            assert!(iter_m.sharpe.is_finite());
+            assert!(iter_m.max_dd.is_finite());
+            assert!((iter_m.pnl - iter_cand.in_sample.pnl - delta.pnl).abs() < 1e-9);
+            assert!((iter_m.sharpe - iter_cand.in_sample.sharpe - delta.sharpe).abs() < 1e-9);
+            assert!((iter_m.max_dd - iter_cand.in_sample.max_dd - delta.max_dd).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn composite_mo_candidates_validate_consistently() {
+        let candles = make_trending_candles(2200);
+        let cancel = AtomicBool::new(false);
+
+        let mo_req = CompositeMoRequest {
+            data_id: "mo-stage-parity".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 9,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 18,
+                            high: 28,
+                            step: 2,
+                            log: false,
+                        },
+                    },
+                    ParamDef {
+                        name: "ott_ma_type".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["sma".to_string()],
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig {
+                    seed: 41,
+                    trials: 48,
+                },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let mo_res =
+            run_composite_mo_optimization_blocking_with_candles(mo_req, &candles, &cancel, None)
+                .expect("composite mo run");
+        assert!(!mo_res.pareto.is_empty());
+
+        let candidates: Vec<CompositeParams> = mo_res
+            .pareto
+            .iter()
+            .take(6)
+            .map(|pt| CompositeParams {
+                fast_ma_type: pt.params.fast_ma_type.clone(),
+                slow_ma_type: pt.params.slow_ma_type.clone(),
+                fast_len: pt.params.fast_len,
+                slow_len: pt.params.slow_len,
+                halftrend: pt.params.halftrend.clone(),
+                macz: pt.params.macz.clone(),
+                ott: pt.params.ott.clone(),
+                signal_mode: pt.params.signal_mode,
+                strategy: pt.params.strategy.clone(),
+            })
+            .collect();
+        assert!(!candidates.is_empty());
+
+        let mk_req = |validation_engine: ValidationEngine| CompositeValidationRequest {
+            data_id: "mo-stage-parity".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: candidates.clone(),
+            walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 23,
+            max_candidates: 32,
+            validation_engine,
+            iterative: IterativeSimConfig {
+                slippage_vol_mult: 0.0,
+                ..IterativeSimConfig::default()
+            },
+            min_psr: None,
+            min_dsr: None,
+        };
+
+        let vec_res = run_composite_validation_blocking_with_candles(
+            mk_req(ValidationEngine::Vectorized),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("vectorized validation run");
+        let iter_res = run_composite_validation_blocking_with_candles(
+            mk_req(ValidationEngine::Iterative),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("iterative validation run");
+
+        assert_eq!(vec_res.candidates.len(), iter_res.candidates.len());
+        for vec_cand in &vec_res.candidates {
+            let iter_cand = iter_res
+                .candidates
+                .iter()
+                .find(|c| {
+                    c.params.fast_ma_type == vec_cand.params.fast_ma_type
+                        && c.params.slow_ma_type == vec_cand.params.slow_ma_type
+                        && c.params.fast_len == vec_cand.params.fast_len
+                        && c.params.slow_len == vec_cand.params.slow_len
+                        && c.params.halftrend.amplitude == vec_cand.params.halftrend.amplitude
+                        && c.params.halftrend.atr_period == vec_cand.params.halftrend.atr_period
+                        && c.params.signal_mode == vec_cand.params.signal_mode
+                })
+                .expect("matching iterative candidate");
+
+            assert!((iter_cand.in_sample.pnl - vec_cand.in_sample.pnl).abs() < 1e-12);
+            assert!((iter_cand.in_sample.sharpe - vec_cand.in_sample.sharpe).abs() < 1e-12);
+            assert!((iter_cand.in_sample.max_dd - vec_cand.in_sample.max_dd).abs() < 1e-12);
+
+            let iter_m = iter_cand
+                .iterative_in_sample
+                .as_ref()
+                .expect("iterative metrics");
+            let delta = iter_cand.iterative_delta.as_ref().expect("iterative delta");
+            assert!((iter_m.pnl - iter_cand.in_sample.pnl - delta.pnl).abs() < 1e-9);
+            assert!((iter_m.sharpe - iter_cand.in_sample.sharpe - delta.sharpe).abs() < 1e-9);
+            assert!((iter_m.max_dd - iter_cand.in_sample.max_dd - delta.max_dd).abs() < 1e-9);
+        }
     }
 
     #[test]

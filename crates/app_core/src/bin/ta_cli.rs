@@ -264,6 +264,7 @@ fn main() -> Result<(), String> {
         top_k: Some(cli.top_k),
         include_all: Some(cli.include_all),
         heatmap_bins: Some(cli.heatmap_bins),
+        vdps: None,
     };
 
     let cancel = AtomicBool::new(false);

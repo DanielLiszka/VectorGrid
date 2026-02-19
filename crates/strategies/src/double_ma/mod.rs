@@ -97,6 +97,161 @@ pub struct TradeStats {
     pub expectancy: f64,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitMode {
+    Cross,
+    KaufmanStop,
+}
+
+fn default_exit_mode() -> ExitMode {
+    ExitMode::Cross
+}
+
+fn default_kaufman_stop_period() -> u16 {
+    22
+}
+
+fn default_kaufman_stop_mult() -> f64 {
+    2.0
+}
+
+fn default_kaufman_stop_ma_type() -> String {
+    "sma".to_string()
+}
+
+fn default_trend_quality_enable() -> bool {
+    false
+}
+
+fn default_trend_quality_linearreg_period() -> u16 {
+    34
+}
+
+fn default_trend_quality_angle_min_deg() -> f64 {
+    2.0
+}
+
+fn default_trend_quality_bbw_period() -> u16 {
+    20
+}
+
+fn default_trend_quality_bbw_mult() -> f64 {
+    2.0
+}
+
+fn default_trend_quality_bbw_min() -> f64 {
+    0.04
+}
+
+fn default_trend_quality_roc_period() -> u16 {
+    9
+}
+
+fn default_trend_quality_use_roc() -> bool {
+    true
+}
+
+fn default_trend_quality_use_adx() -> bool {
+    false
+}
+
+fn default_trend_quality_adx_period() -> u16 {
+    14
+}
+
+fn default_trend_quality_adx_min() -> f64 {
+    20.0
+}
+
+fn default_regime_hybrid_enable() -> bool {
+    false
+}
+
+fn default_regime_hybrid_adx_period() -> u16 {
+    14
+}
+
+fn default_regime_hybrid_adx_enter() -> f64 {
+    22.0
+}
+
+fn default_regime_hybrid_adx_exit() -> f64 {
+    18.0
+}
+
+fn default_regime_hybrid_reversion_entry_rel() -> f64 {
+    0.0035
+}
+
+fn default_regime_hybrid_reversion_exit_rel() -> f64 {
+    0.0012
+}
+
+fn default_breakout_momentum_enable() -> bool {
+    false
+}
+
+fn default_breakout_bbands_period() -> u16 {
+    20
+}
+
+fn default_breakout_bbands_mult() -> f64 {
+    2.0
+}
+
+fn default_breakout_confirm_bars() -> u16 {
+    1
+}
+
+fn default_breakout_macd_fast_period() -> u16 {
+    12
+}
+
+fn default_breakout_macd_slow_period() -> u16 {
+    26
+}
+
+fn default_breakout_macd_signal_period() -> u16 {
+    9
+}
+
+fn default_breakout_cmo_period() -> u16 {
+    14
+}
+
+fn default_breakout_cmo_min_abs() -> f64 {
+    20.0
+}
+
+fn default_breakout_adosc_short_period() -> u16 {
+    3
+}
+
+fn default_breakout_adosc_long_period() -> u16 {
+    10
+}
+
+fn default_breakout_use_adx() -> bool {
+    false
+}
+
+fn default_breakout_adx_period() -> u16 {
+    14
+}
+
+fn default_breakout_adx_min() -> f64 {
+    20.0
+}
+
+fn default_cooldown_bars() -> u16 {
+    0
+}
+
+fn default_signal_persistence_bars() -> u16 {
+    1
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StrategyConfig {
     pub long_only: bool,
@@ -114,6 +269,82 @@ pub struct StrategyConfig {
     pub stop_loss_pct: Option<f64>,
     #[serde(default)]
     pub take_profit_pct: Option<f64>,
+    #[serde(default = "default_exit_mode")]
+    pub exit_mode: ExitMode,
+    #[serde(default = "default_kaufman_stop_period")]
+    pub kaufman_stop_period: u16,
+    #[serde(default = "default_kaufman_stop_mult")]
+    pub kaufman_stop_mult: f64,
+    #[serde(default = "default_kaufman_stop_ma_type")]
+    pub kaufman_stop_ma_type: String,
+    #[serde(default = "default_trend_quality_enable")]
+    pub trend_quality_enable: bool,
+    #[serde(default = "default_trend_quality_linearreg_period")]
+    pub trend_quality_linearreg_period: u16,
+    #[serde(default = "default_trend_quality_angle_min_deg")]
+    pub trend_quality_angle_min_deg: f64,
+    #[serde(default = "default_trend_quality_bbw_period")]
+    pub trend_quality_bbw_period: u16,
+    #[serde(default = "default_trend_quality_bbw_mult")]
+    pub trend_quality_bbw_mult: f64,
+    #[serde(default = "default_trend_quality_bbw_min")]
+    pub trend_quality_bbw_min: f64,
+    #[serde(default = "default_trend_quality_roc_period")]
+    pub trend_quality_roc_period: u16,
+    #[serde(default = "default_trend_quality_use_roc")]
+    pub trend_quality_use_roc: bool,
+    #[serde(default = "default_trend_quality_use_adx")]
+    pub trend_quality_use_adx: bool,
+    #[serde(default = "default_trend_quality_adx_period")]
+    pub trend_quality_adx_period: u16,
+    #[serde(default = "default_trend_quality_adx_min")]
+    pub trend_quality_adx_min: f64,
+    #[serde(default = "default_regime_hybrid_enable")]
+    pub regime_hybrid_enable: bool,
+    #[serde(default = "default_regime_hybrid_adx_period")]
+    pub regime_hybrid_adx_period: u16,
+    #[serde(default = "default_regime_hybrid_adx_enter")]
+    pub regime_hybrid_adx_enter: f64,
+    #[serde(default = "default_regime_hybrid_adx_exit")]
+    pub regime_hybrid_adx_exit: f64,
+    #[serde(default = "default_regime_hybrid_reversion_entry_rel")]
+    pub regime_hybrid_reversion_entry_rel: f64,
+    #[serde(default = "default_regime_hybrid_reversion_exit_rel")]
+    pub regime_hybrid_reversion_exit_rel: f64,
+    #[serde(default = "default_breakout_momentum_enable")]
+    pub breakout_momentum_enable: bool,
+    #[serde(default = "default_breakout_bbands_period")]
+    pub breakout_bbands_period: u16,
+    #[serde(default = "default_breakout_bbands_mult")]
+    pub breakout_bbands_mult: f64,
+    #[serde(default = "default_breakout_confirm_bars")]
+    pub breakout_confirm_bars: u16,
+    #[serde(default = "default_breakout_macd_fast_period")]
+    pub breakout_macd_fast_period: u16,
+    #[serde(default = "default_breakout_macd_slow_period")]
+    pub breakout_macd_slow_period: u16,
+    #[serde(default = "default_breakout_macd_signal_period")]
+    pub breakout_macd_signal_period: u16,
+    #[serde(default = "default_breakout_cmo_period")]
+    pub breakout_cmo_period: u16,
+    #[serde(default = "default_breakout_cmo_min_abs")]
+    pub breakout_cmo_min_abs: f64,
+    #[serde(default = "default_breakout_adosc_short_period")]
+    pub breakout_adosc_short_period: u16,
+    #[serde(default = "default_breakout_adosc_long_period")]
+    pub breakout_adosc_long_period: u16,
+    #[serde(default = "default_breakout_use_adx")]
+    pub breakout_use_adx: bool,
+    #[serde(default = "default_breakout_adx_period")]
+    pub breakout_adx_period: u16,
+    #[serde(default = "default_breakout_adx_min")]
+    pub breakout_adx_min: f64,
+    #[serde(default = "default_cooldown_bars")]
+    pub cooldown_bars: u16,
+    #[serde(default = "default_signal_persistence_bars")]
+    pub signal_persistence_bars: u16,
+    #[serde(default)]
+    pub trailing_stop_pct: Option<f64>,
     /// Compatibility fallback. When positive, this takes precedence over bps fields.
     pub commission: f64,
     pub eps_rel: f64,
@@ -131,6 +362,44 @@ impl Default for StrategyConfig {
             slippage_bps: 0.0,
             stop_loss_pct: None,
             take_profit_pct: None,
+            exit_mode: ExitMode::Cross,
+            kaufman_stop_period: 22,
+            kaufman_stop_mult: 2.0,
+            kaufman_stop_ma_type: "sma".to_string(),
+            trend_quality_enable: false,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.04,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            trend_quality_use_adx: false,
+            trend_quality_adx_period: 14,
+            trend_quality_adx_min: 20.0,
+            regime_hybrid_enable: false,
+            regime_hybrid_adx_period: 14,
+            regime_hybrid_adx_enter: 22.0,
+            regime_hybrid_adx_exit: 18.0,
+            regime_hybrid_reversion_entry_rel: 0.0035,
+            regime_hybrid_reversion_exit_rel: 0.0012,
+            breakout_momentum_enable: false,
+            breakout_bbands_period: 20,
+            breakout_bbands_mult: 2.0,
+            breakout_confirm_bars: 1,
+            breakout_macd_fast_period: 12,
+            breakout_macd_slow_period: 26,
+            breakout_macd_signal_period: 9,
+            breakout_cmo_period: 14,
+            breakout_cmo_min_abs: 20.0,
+            breakout_adosc_short_period: 3,
+            breakout_adosc_long_period: 10,
+            breakout_use_adx: false,
+            breakout_adx_period: 14,
+            breakout_adx_min: 20.0,
+            cooldown_bars: 0,
+            signal_persistence_bars: 1,
+            trailing_stop_pct: None,
             commission: 0.0,
             eps_rel: 0.0,
         }
@@ -188,6 +457,274 @@ impl StrategyConfig {
     #[inline]
     pub fn take_profit_pct(&self) -> Option<f64> {
         Self::clean_risk_pct(self.take_profit_pct)
+    }
+
+    #[inline]
+    pub fn trailing_stop_pct(&self) -> Option<f64> {
+        Self::clean_risk_pct(self.trailing_stop_pct)
+    }
+
+    #[inline]
+    pub fn cooldown_bars(&self) -> usize {
+        self.cooldown_bars as usize
+    }
+
+    #[inline]
+    pub fn signal_persistence_bars(&self) -> usize {
+        self.signal_persistence_bars.max(1) as usize
+    }
+
+    #[inline]
+    pub fn uses_execution_overlays(&self) -> bool {
+        self.cooldown_bars() > 0
+            || self.signal_persistence_bars() > 1
+            || self.trailing_stop_pct().is_some()
+    }
+
+    #[inline]
+    pub fn exit_mode(&self) -> ExitMode {
+        self.exit_mode
+    }
+
+    #[inline]
+    pub fn uses_kaufman_stop_exit(&self) -> bool {
+        matches!(self.exit_mode, ExitMode::KaufmanStop)
+    }
+
+    #[inline]
+    pub fn kaufman_stop_period(&self) -> usize {
+        let p = self.kaufman_stop_period.max(1);
+        p as usize
+    }
+
+    #[inline]
+    pub fn kaufman_stop_mult(&self) -> f64 {
+        let m = self.kaufman_stop_mult;
+        if m.is_finite() && m > 0.0 {
+            m
+        } else {
+            2.0
+        }
+    }
+
+    #[inline]
+    pub fn kaufman_stop_ma_type(&self) -> &str {
+        let s = self.kaufman_stop_ma_type.trim();
+        if s.is_empty() {
+            "sma"
+        } else {
+            s
+        }
+    }
+
+    #[inline]
+    pub fn uses_trend_quality_filter(&self) -> bool {
+        self.trend_quality_enable
+    }
+
+    #[inline]
+    pub fn trend_quality_linearreg_period(&self) -> usize {
+        self.trend_quality_linearreg_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn trend_quality_angle_min_deg(&self) -> f64 {
+        let x = self.trend_quality_angle_min_deg;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            2.0
+        }
+    }
+
+    #[inline]
+    pub fn trend_quality_bbw_period(&self) -> usize {
+        self.trend_quality_bbw_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn trend_quality_bbw_mult(&self) -> f64 {
+        let x = self.trend_quality_bbw_mult;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            2.0
+        }
+    }
+
+    #[inline]
+    pub fn trend_quality_bbw_min(&self) -> f64 {
+        let x = self.trend_quality_bbw_min;
+        if x.is_finite() && x >= 0.0 {
+            x
+        } else {
+            0.04
+        }
+    }
+
+    #[inline]
+    pub fn trend_quality_roc_period(&self) -> usize {
+        self.trend_quality_roc_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn trend_quality_use_roc(&self) -> bool {
+        self.trend_quality_use_roc
+    }
+
+    #[inline]
+    pub fn trend_quality_use_adx(&self) -> bool {
+        self.trend_quality_use_adx
+    }
+
+    #[inline]
+    pub fn trend_quality_adx_period(&self) -> usize {
+        self.trend_quality_adx_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn trend_quality_adx_min(&self) -> f64 {
+        let x = self.trend_quality_adx_min;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            20.0
+        }
+    }
+
+    #[inline]
+    pub fn uses_regime_hybrid_filter(&self) -> bool {
+        self.regime_hybrid_enable
+    }
+
+    #[inline]
+    pub fn regime_hybrid_adx_period(&self) -> usize {
+        self.regime_hybrid_adx_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn regime_hybrid_adx_enter(&self) -> f64 {
+        let x = self.regime_hybrid_adx_enter;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            22.0
+        }
+    }
+
+    #[inline]
+    pub fn regime_hybrid_adx_exit(&self) -> f64 {
+        let x = self.regime_hybrid_adx_exit;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            18.0
+        }
+    }
+
+    #[inline]
+    pub fn regime_hybrid_reversion_entry_rel(&self) -> f64 {
+        let x = self.regime_hybrid_reversion_entry_rel;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            0.0035
+        }
+    }
+
+    #[inline]
+    pub fn regime_hybrid_reversion_exit_rel(&self) -> f64 {
+        let x = self.regime_hybrid_reversion_exit_rel;
+        if x.is_finite() && x >= 0.0 {
+            x
+        } else {
+            0.0012
+        }
+    }
+
+    #[inline]
+    pub fn uses_breakout_momentum_filter(&self) -> bool {
+        self.breakout_momentum_enable
+    }
+
+    #[inline]
+    pub fn breakout_bbands_period(&self) -> usize {
+        self.breakout_bbands_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_bbands_mult(&self) -> f64 {
+        let x = self.breakout_bbands_mult;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            2.0
+        }
+    }
+
+    #[inline]
+    pub fn breakout_confirm_bars(&self) -> usize {
+        self.breakout_confirm_bars.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_macd_fast_period(&self) -> usize {
+        self.breakout_macd_fast_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_macd_slow_period(&self) -> usize {
+        self.breakout_macd_slow_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_macd_signal_period(&self) -> usize {
+        self.breakout_macd_signal_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_cmo_period(&self) -> usize {
+        self.breakout_cmo_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_cmo_min_abs(&self) -> f64 {
+        let x = self.breakout_cmo_min_abs;
+        if x.is_finite() && x >= 0.0 {
+            x
+        } else {
+            20.0
+        }
+    }
+
+    #[inline]
+    pub fn breakout_adosc_short_period(&self) -> usize {
+        self.breakout_adosc_short_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_adosc_long_period(&self) -> usize {
+        self.breakout_adosc_long_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_use_adx(&self) -> bool {
+        self.breakout_use_adx
+    }
+
+    #[inline]
+    pub fn breakout_adx_period(&self) -> usize {
+        self.breakout_adx_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn breakout_adx_min(&self) -> f64 {
+        let x = self.breakout_adx_min;
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            20.0
+        }
     }
 }
 

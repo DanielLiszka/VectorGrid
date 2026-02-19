@@ -3,7 +3,7 @@ use super::{
     TauriProgressSink,
 };
 use crate::state::AppState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -48,6 +48,115 @@ pub struct ApplyMlConfidenceResponse {
     pub warnings: Vec<String>,
 }
 
+fn default_stage4_top_k() -> usize {
+    10
+}
+
+fn default_stage4_min_ml_confidence() -> f64 {
+    0.55
+}
+
+fn default_stage4_meta_weight() -> f64 {
+    0.60
+}
+
+fn default_stage4_ml_weight() -> f64 {
+    0.35
+}
+
+fn default_stage4_uncertainty_weight() -> f64 {
+    0.05
+}
+
+fn default_stage4_accept_confidence() -> f64 {
+    0.70
+}
+
+fn default_stage4_review_confidence() -> f64 {
+    0.55
+}
+
+fn default_stage4_max_accept_uncertainty() -> f64 {
+    0.45
+}
+
+fn default_stage4_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetaStage4Request {
+    pub strategy_kind: String,
+    #[serde(default)]
+    pub timeframe: Option<String>,
+    #[serde(default)]
+    pub source_meta_path: Option<String>,
+    #[serde(default = "default_stage4_top_k")]
+    pub top_k: usize,
+    /// Probability threshold in [0,1]. Values in (1,100] are interpreted as percentages.
+    #[serde(default = "default_stage4_min_ml_confidence")]
+    pub min_ml_confidence: f64,
+    #[serde(default = "default_stage4_meta_weight")]
+    pub meta_weight: f64,
+    #[serde(default = "default_stage4_ml_weight")]
+    pub ml_weight: f64,
+    #[serde(default = "default_stage4_uncertainty_weight")]
+    pub uncertainty_weight: f64,
+    #[serde(default = "default_stage4_accept_confidence")]
+    pub accept_confidence: f64,
+    #[serde(default = "default_stage4_review_confidence")]
+    pub review_confidence: f64,
+    #[serde(default = "default_stage4_max_accept_uncertainty")]
+    pub max_accept_uncertainty: f64,
+    #[serde(default = "default_stage4_true")]
+    pub auto_train_model: bool,
+    #[serde(default = "default_stage4_true")]
+    pub auto_retrain_stale: bool,
+    #[serde(default = "default_stage4_true")]
+    pub require_healthy_model: bool,
+    #[serde(default = "default_stage4_true")]
+    pub fallback_to_meta_if_empty: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaStage4Result {
+    pub strategy_kind: String,
+    pub timeframe: String,
+    pub source_meta_json_path: String,
+    pub model_path: String,
+    pub model_healthy: bool,
+    pub model_trained_now: bool,
+    pub groups_considered: usize,
+    pub groups_scored: usize,
+    pub groups_selected: usize,
+    pub min_ml_confidence: f64,
+    pub top_k: usize,
+    pub meta_weight: f64,
+    pub ml_weight: f64,
+    pub uncertainty_weight: f64,
+    pub accept_confidence: f64,
+    pub review_confidence: f64,
+    pub max_accept_uncertainty: f64,
+    pub decision_counts: Stage4DecisionCounts,
+    pub selected_groups: Vec<Value>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Stage4DecisionCounts {
+    pub accept: usize,
+    pub review: usize,
+    pub reject: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunMetaStage4Response {
+    pub ts: String,
+    pub stage4_json_path: String,
+    pub stage4_json_bytes: usize,
+    pub result: MetaStage4Result,
+}
+
 fn normalize_ml_scope(mut scope: MlConfidenceScope) -> Result<MlConfidenceScope, String> {
     scope.strategy_kind = scope.strategy_kind.trim().to_string();
     scope.timeframe = normalize_timeframe_label(&scope.timeframe);
@@ -77,7 +186,9 @@ fn ml_confidence_model_path(
     Ok(dir.join(format!("ml_confidence_{sk}_{tf}.json")))
 }
 
-fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
+fn load_meta_artifacts_with_paths_blocking(
+    app: &tauri::AppHandle,
+) -> Result<Vec<(PathBuf, Value)>, String> {
     let dir = run_artifacts::runs_dir(app)?;
     let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
 
@@ -98,7 +209,7 @@ fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, St
     }
     paths.sort();
 
-    let mut out: Vec<Value> = Vec::with_capacity(paths.len());
+    let mut out: Vec<(PathBuf, Value)> = Vec::with_capacity(paths.len());
     for p in paths {
         let raw = match std::fs::read_to_string(&p) {
             Ok(s) => s,
@@ -108,9 +219,171 @@ fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, St
             Ok(v) => v,
             Err(_) => continue,
         };
-        out.push(v);
+        out.push((p, v));
     }
     Ok(out)
+}
+
+fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let metas = load_meta_artifacts_with_paths_blocking(app)?;
+    Ok(metas.into_iter().map(|(_p, v)| v).collect())
+}
+
+fn stage4_training_metas_excluding_source(
+    metas_with_paths: Vec<(PathBuf, Value)>,
+    source_meta_path: &Path,
+) -> (Vec<Value>, usize) {
+    let source_canon = std::fs::canonicalize(source_meta_path).ok();
+    let mut out: Vec<Value> = Vec::with_capacity(metas_with_paths.len());
+    let mut excluded = 0usize;
+
+    for (path, meta) in metas_with_paths {
+        let matches_source = if let Some(src) = source_canon.as_ref() {
+            std::fs::canonicalize(&path)
+                .map(|p| p == *src)
+                .unwrap_or(path == source_meta_path)
+        } else {
+            path == source_meta_path
+        };
+        if matches_source {
+            excluded = excluded.saturating_add(1);
+            continue;
+        }
+        out.push(meta);
+    }
+
+    (out, excluded)
+}
+
+fn try_load_ml_confidence_model(path: &Path) -> Option<MlConfidenceModel> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<MlConfidenceModel>(&raw).ok()
+}
+
+fn should_block_stage4_for_unhealthy_model(
+    require_healthy_model: bool,
+    model_health: Option<bool>,
+) -> bool {
+    require_healthy_model && matches!(model_health, Some(false))
+}
+
+fn stage4_autotrain_failure_fallback(
+    train_err: String,
+    model_path: &Path,
+    existing_model_loaded: bool,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    if existing_model_loaded {
+        warnings.push(format!(
+            "Auto-train failed ({train_err}); falling back to existing model at '{}'.",
+            model_path.to_string_lossy()
+        ));
+        return Ok(());
+    }
+    Err(format!(
+        "Auto-train failed and no usable existing model is available: {train_err}"
+    ))
+}
+
+fn ensure_path_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
+    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if !path.starts_with(&dir) {
+        return Err("path is outside app runs dir".to_string());
+    }
+    Ok(())
+}
+
+fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = run_artifacts::runs_dir(app)?;
+    let safe_ts = sanitize_filename_component(ts);
+    let base_name = format!("vectorbt_stage4_{safe_ts}");
+
+    let mut path = dir.join(format!("{base_name}.json"));
+    if !path.exists() {
+        return Ok(path);
+    }
+    for i in 2..=999u32 {
+        let p = dir.join(format!("{base_name}_{i}.json"));
+        if !p.exists() {
+            path = p;
+            break;
+        }
+    }
+    Ok(path)
+}
+
+fn normalize_ml_threshold(raw: f64) -> f64 {
+    if !raw.is_finite() {
+        return 0.0;
+    }
+    if raw > 1.0 && raw <= 100.0 {
+        return (raw / 100.0).clamp(0.0, 1.0);
+    }
+    raw.clamp(0.0, 1.0)
+}
+
+fn normalize_non_negative(raw: f64, default_v: f64) -> f64 {
+    if raw.is_finite() && raw >= 0.0 {
+        raw
+    } else {
+        default_v
+    }
+}
+
+fn stable_logit(p: f64) -> f64 {
+    let pp = p.clamp(1e-9, 1.0 - 1e-9);
+    (pp / (1.0 - pp)).ln()
+}
+
+fn ml_uncertainty_from_prob(p: f64) -> f64 {
+    // 4*p*(1-p) in [0,1], maximum at p=0.5.
+    (4.0 * p * (1.0 - p)).clamp(0.0, 1.0)
+}
+
+fn mean_std(xs: &[f64]) -> (f64, f64) {
+    if xs.is_empty() {
+        return (0.0, 1.0);
+    }
+    let n = xs.len() as f64;
+    let mean = xs.iter().copied().sum::<f64>() / n;
+    let var = xs
+        .iter()
+        .copied()
+        .map(|x| {
+            let d = x - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n;
+    let std = var.sqrt();
+    if std.is_finite() && std > 1e-12 {
+        (mean, std)
+    } else {
+        (mean, 1.0)
+    }
+}
+
+fn zscore(x: f64, mean: f64, std: f64) -> f64 {
+    (x - mean) / std
+}
+
+fn decision_bucket_label(
+    req: &MetaStage4Request,
+    p: Option<f64>,
+    unc: Option<f64>,
+) -> &'static str {
+    let Some(pp) = p else {
+        return "reject";
+    };
+    let uu = unc.unwrap_or(1.0);
+    if pp >= req.accept_confidence && uu <= req.max_accept_uncertainty {
+        "accept"
+    } else if pp >= req.review_confidence {
+        "review"
+    } else {
+        "reject"
+    }
 }
 
 fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
@@ -311,132 +584,135 @@ fn summarize_meta_artifacts_for_scope(
     (count, newest, labeled_rows)
 }
 
+fn ml_confidence_model_status_blocking(
+    scope: MlConfidenceScope,
+    app: &tauri::AppHandle,
+) -> Result<MlConfidenceModelStatus, String> {
+    let scope = normalize_ml_scope(scope)?;
+    let path = ml_confidence_model_path(&scope, app)?;
+    let model_path = path.to_string_lossy().to_string();
+    let exists = path.exists();
+
+    let mut bytes = 0usize;
+    let mut model: Option<MlConfidenceModel> = None;
+    let mut error: Option<String> = None;
+    let mut label_cfg = MlConfidenceLabelConfig::default();
+
+    if exists {
+        bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        match serde_json::from_str::<MlConfidenceModel>(&raw) {
+            Ok(m) => {
+                label_cfg = m.label.clone();
+                model = Some(m);
+            }
+            Err(e) => {
+                error = Some(e.to_string());
+            }
+        }
+    }
+
+    let metas = load_meta_artifacts_blocking(app).unwrap_or_default();
+    let (available_meta_artifacts, newest_meta_ts_available, available_labeled_rows) =
+        summarize_meta_artifacts_for_scope(&metas, &scope, &label_cfg);
+
+    // Staleness/retrain policy: conservative defaults to avoid surprise compute.
+    let mut stale = false;
+    let mut retrain_recommended = false;
+    let mut retrain_reason: Option<String> = None;
+
+    if model.is_none() {
+        if !exists {
+            retrain_recommended = true;
+            retrain_reason = Some("No model saved for this scope.".to_string());
+        } else if error.is_some() {
+            retrain_recommended = true;
+            retrain_reason =
+                Some("Model exists but failed to load; retrain recommended.".to_string());
+        }
+    } else if let Some(m) = model.as_ref() {
+        let meta = m.meta.as_ref();
+        if meta.is_none() {
+            stale = available_meta_artifacts > 0;
+            if stale && available_labeled_rows >= 25 {
+                retrain_recommended = true;
+                retrain_reason = Some(
+                    "Legacy model (missing training metadata); retrain recommended.".to_string(),
+                );
+            } else if stale {
+                retrain_reason = Some(
+                    "Legacy model (missing training metadata); retrain when more labels exist."
+                        .to_string(),
+                );
+            }
+        } else if let Some(mm) = meta {
+            if let (Some(used), Some(avail)) = (
+                mm.newest_meta_ts_used.as_ref(),
+                newest_meta_ts_available.as_ref(),
+            ) {
+                if avail.as_str() > used.as_str() {
+                    stale = true;
+                }
+            } else if newest_meta_ts_available.is_some() {
+                stale = true;
+            }
+            if let Some(used_count) = mm.meta_artifacts_used {
+                if available_meta_artifacts > used_count {
+                    stale = true;
+                }
+            } else if available_meta_artifacts > 0 {
+                stale = true;
+            }
+
+            let trained_rows = mm.trained_rows;
+            let new_rows = available_labeled_rows.saturating_sub(trained_rows);
+            let threshold = std::cmp::max(25, trained_rows / 10);
+
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000; // 60s cooldown
+
+            if stale && new_rows >= threshold && cooldown_ok {
+                retrain_recommended = true;
+                retrain_reason = Some(format!(
+                    "Model stale: new labeled rows {new_rows} (threshold {threshold})."
+                ));
+            } else if stale && new_rows > 0 {
+                retrain_reason = Some(format!(
+                    "Model stale: new labeled rows {new_rows} (<{threshold})."
+                ));
+            } else if stale && !cooldown_ok {
+                retrain_reason = Some("Model stale but recently trained (cooldown).".to_string());
+            }
+        }
+    }
+
+    Ok(MlConfidenceModelStatus {
+        exists,
+        model_path,
+        bytes,
+        available_meta_artifacts,
+        available_labeled_rows,
+        newest_meta_ts_available,
+        stale,
+        retrain_recommended,
+        retrain_reason,
+        model,
+        error,
+    })
+}
+
 #[tauri::command]
 pub async fn ml_confidence_model_status(
     scope: MlConfidenceScope,
     app: tauri::AppHandle,
 ) -> Result<MlConfidenceModelStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let scope = normalize_ml_scope(scope)?;
-        let path = ml_confidence_model_path(&scope, &app)?;
-        let model_path = path.to_string_lossy().to_string();
-        let exists = path.exists();
-
-        let mut bytes = 0usize;
-        let mut model: Option<MlConfidenceModel> = None;
-        let mut error: Option<String> = None;
-        let mut label_cfg = MlConfidenceLabelConfig::default();
-
-        if exists {
-            bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
-            let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            match serde_json::from_str::<MlConfidenceModel>(&raw) {
-                Ok(m) => {
-                    label_cfg = m.label.clone();
-                    model = Some(m);
-                }
-                Err(e) => {
-                    error = Some(e.to_string());
-                }
-            }
-        }
-
-        let metas = load_meta_artifacts_blocking(&app).unwrap_or_default();
-        let (available_meta_artifacts, newest_meta_ts_available, available_labeled_rows) =
-            summarize_meta_artifacts_for_scope(&metas, &scope, &label_cfg);
-
-        // Staleness/retrain policy: conservative defaults to avoid surprise compute.
-        let mut stale = false;
-        let mut retrain_recommended = false;
-        let mut retrain_reason: Option<String> = None;
-
-        if model.is_none() {
-            if !exists {
-                retrain_recommended = true;
-                retrain_reason = Some("No model saved for this scope.".to_string());
-            } else if error.is_some() {
-                retrain_recommended = true;
-                retrain_reason =
-                    Some("Model exists but failed to load; retrain recommended.".to_string());
-            }
-        } else if let Some(m) = model.as_ref() {
-            let meta = m.meta.as_ref();
-            if meta.is_none() {
-                stale = available_meta_artifacts > 0;
-                if stale && available_labeled_rows >= 25 {
-                    retrain_recommended = true;
-                    retrain_reason = Some(
-                        "Legacy model (missing training metadata); retrain recommended."
-                            .to_string(),
-                    );
-                } else if stale {
-                    retrain_reason = Some(
-                        "Legacy model (missing training metadata); retrain when more labels exist."
-                            .to_string(),
-                    );
-                }
-            } else if let Some(mm) = meta {
-                if let (Some(used), Some(avail)) = (
-                    mm.newest_meta_ts_used.as_ref(),
-                    newest_meta_ts_available.as_ref(),
-                ) {
-                    if avail.as_str() > used.as_str() {
-                        stale = true;
-                    }
-                } else if newest_meta_ts_available.is_some() {
-                    stale = true;
-                }
-                if let Some(used_count) = mm.meta_artifacts_used {
-                    if available_meta_artifacts > used_count {
-                        stale = true;
-                    }
-                } else if available_meta_artifacts > 0 {
-                    stale = true;
-                }
-
-                let trained_rows = mm.trained_rows;
-                let new_rows = available_labeled_rows.saturating_sub(trained_rows);
-                let threshold = std::cmp::max(25, trained_rows / 10);
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-                    .min(u128::from(u64::MAX)) as u64;
-                let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000; // 60s cooldown
-
-                if stale && new_rows >= threshold && cooldown_ok {
-                    retrain_recommended = true;
-                    retrain_reason = Some(format!(
-                        "Model stale: new labeled rows {new_rows} (threshold {threshold})."
-                    ));
-                } else if stale && new_rows > 0 {
-                    retrain_reason = Some(format!(
-                        "Model stale: new labeled rows {new_rows} (<{threshold})."
-                    ));
-                } else if stale && !cooldown_ok {
-                    retrain_reason =
-                        Some("Model stale but recently trained (cooldown).".to_string());
-                }
-            }
-        }
-
-        Ok(MlConfidenceModelStatus {
-            exists,
-            model_path,
-            bytes,
-            available_meta_artifacts,
-            available_labeled_rows,
-            newest_meta_ts_available,
-            stale,
-            retrain_recommended,
-            retrain_reason,
-            model,
-            error,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || ml_confidence_model_status_blocking(scope, &app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -524,6 +800,488 @@ pub async fn delete_ml_confidence_model(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn normalize_meta_stage4_request(mut req: MetaStage4Request) -> Result<MetaStage4Request, String> {
+    req.strategy_kind = req.strategy_kind.trim().to_string();
+    if req.strategy_kind.is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+
+    req.timeframe = req
+        .timeframe
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|s| !s.is_empty());
+
+    req.source_meta_path = req
+        .source_meta_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    req.top_k = req.top_k.max(1);
+    req.min_ml_confidence = normalize_ml_threshold(req.min_ml_confidence);
+    req.accept_confidence = normalize_ml_threshold(req.accept_confidence);
+    req.review_confidence = normalize_ml_threshold(req.review_confidence);
+    req.max_accept_uncertainty = normalize_ml_threshold(req.max_accept_uncertainty);
+    if req.review_confidence > req.accept_confidence {
+        req.review_confidence = req.accept_confidence;
+    }
+
+    req.meta_weight = normalize_non_negative(req.meta_weight, default_stage4_meta_weight());
+    req.ml_weight = normalize_non_negative(req.ml_weight, default_stage4_ml_weight());
+    req.uncertainty_weight =
+        normalize_non_negative(req.uncertainty_weight, default_stage4_uncertainty_weight());
+    let sum_w = req.meta_weight + req.ml_weight + req.uncertainty_weight;
+    if !(sum_w.is_finite() && sum_w > 0.0) {
+        req.meta_weight = default_stage4_meta_weight();
+        req.ml_weight = default_stage4_ml_weight();
+        req.uncertainty_weight = default_stage4_uncertainty_weight();
+    } else {
+        req.meta_weight /= sum_w;
+        req.ml_weight /= sum_w;
+        req.uncertainty_weight /= sum_w;
+    }
+
+    if !req.auto_train_model {
+        req.auto_retrain_stale = false;
+    }
+    Ok(req)
+}
+
+fn resolve_meta_stage4_source(
+    req: &MetaStage4Request,
+    app: &tauri::AppHandle,
+) -> Result<(PathBuf, Value, String), String> {
+    let runs_dir = run_artifacts::runs_dir(app)?;
+    let strategy_kind = req.strategy_kind.trim();
+    let req_tf = req.timeframe.as_deref().unwrap_or("");
+
+    if let Some(path_raw) = req.source_meta_path.as_deref() {
+        let path = PathBuf::from(path_raw);
+        ensure_path_within_dir(&path, &runs_dir)?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+        if kind != "vectorbt_meta_selection" {
+            return Err(format!(
+                "source_meta_path must point to kind='vectorbt_meta_selection' (got '{kind}')."
+            ));
+        }
+        let Some((sk, tf)) = extract_meta_scope(&v) else {
+            return Err(
+                "source meta artifact is missing scope metadata (strategy/timeframe)".to_string(),
+            );
+        };
+        if sk != strategy_kind {
+            return Err(format!(
+                "source meta strategy mismatch: expected '{strategy_kind}', got '{sk}'."
+            ));
+        }
+        if !req_tf.is_empty() && tf != req_tf {
+            return Err(format!(
+                "source meta timeframe mismatch: expected '{req_tf}', got '{tf}'."
+            ));
+        }
+        return Ok((path, v, tf));
+    }
+
+    let metas = load_meta_artifacts_with_paths_blocking(app)?;
+    let mut chosen: Option<(String, PathBuf, Value, String)> = None;
+    for (path, v) in metas {
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+        if kind != "vectorbt_meta_selection" {
+            continue;
+        }
+        let Some((sk, tf)) = extract_meta_scope(&v) else {
+            continue;
+        };
+        if sk != strategy_kind {
+            continue;
+        }
+        if !req_tf.is_empty() && tf != req_tf {
+            continue;
+        }
+        let ts = v
+            .get("ts")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let take = chosen
+            .as_ref()
+            .map(|(best_ts, _, _, _)| ts.as_str() > best_ts.as_str())
+            .unwrap_or(true);
+        if take {
+            chosen = Some((ts, path, v, tf));
+        }
+    }
+
+    if let Some((_ts, path, v, tf)) = chosen {
+        return Ok((path, v, tf));
+    }
+    if req_tf.is_empty() {
+        Err(format!(
+            "No saved meta artifact found for strategy_kind='{strategy_kind}'. Run meta analysis first."
+        ))
+    } else {
+        Err(format!(
+            "No saved meta artifact found for strategy_kind='{strategy_kind}' timeframe='{req_tf}'."
+        ))
+    }
+}
+
+fn group_rank_score(group: &Value) -> f64 {
+    group
+        .get("final_score")
+        .and_then(|v| v.as_f64())
+        .or_else(|| group.get("meta_score").and_then(|v| v.as_f64()))
+        .unwrap_or(f64::NEG_INFINITY)
+}
+
+fn run_meta_stage4_experimental_blocking(
+    req: MetaStage4Request,
+    app: tauri::AppHandle,
+) -> Result<RunMetaStage4Response, String> {
+    let req = normalize_meta_stage4_request(req)?;
+    let (source_meta_path, source_meta, meta_tf) = resolve_meta_stage4_source(&req, &app)?;
+    let timeframe = req.timeframe.clone().unwrap_or(meta_tf);
+    let scope = normalize_ml_scope(MlConfidenceScope {
+        strategy_kind: req.strategy_kind.clone(),
+        timeframe,
+    })?;
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut model_trained_now = false;
+    let model_path = ml_confidence_model_path(&scope, &app)?;
+    let mut model = try_load_ml_confidence_model(&model_path);
+
+    let mut status = ml_confidence_model_status_blocking(scope.clone(), &app)?;
+    let should_train = req.auto_train_model
+        && (!status.exists
+            || status.error.is_some()
+            || (req.auto_retrain_stale && status.retrain_recommended));
+    if should_train {
+        let metas_with_paths = load_meta_artifacts_with_paths_blocking(&app)?;
+        let (metas, excluded_source_count) =
+            stage4_training_metas_excluding_source(metas_with_paths, &source_meta_path);
+        if excluded_source_count > 0 {
+            warnings.push(format!(
+                "Auto-train excluded {excluded_source_count} source meta artifact(s) to avoid train/score leakage."
+            ));
+        }
+        let cfg = MlConfidenceTrainConfig::default();
+        match ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope.clone(), &metas, cfg)
+        {
+            Ok((trained_model, _metrics)) => {
+                let bytes = serde_json::to_vec_pretty(&trained_model).map_err(|e| e.to_string())?;
+                std::fs::write(&model_path, &bytes).map_err(|e| e.to_string())?;
+                model = Some(trained_model);
+                model_trained_now = true;
+                status = ml_confidence_model_status_blocking(scope.clone(), &app)?;
+            }
+            Err(e) => {
+                stage4_autotrain_failure_fallback(e, &model_path, model.is_some(), &mut warnings)?;
+            }
+        }
+    }
+
+    let model: MlConfidenceModel = if let Some(m) = model {
+        m
+    } else {
+        if !model_path.exists() {
+            return Err(
+                "ML confidence model not found for this scope. Train one first (or enable auto-train)."
+                    .to_string(),
+            );
+        }
+        let model_raw = std::fs::read_to_string(&model_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&model_raw).map_err(|e| e.to_string())?
+    };
+    let model_health = model.meta.as_ref().map(|m| m.healthy);
+    let model_healthy = model_health.unwrap_or(false);
+    if should_block_stage4_for_unhealthy_model(req.require_healthy_model, model_health) {
+        return Err(
+            "ML model is unhealthy for this scope. Retrain with more labeled rows or disable strict healthy-model requirement."
+                .to_string(),
+        );
+    }
+    match model_health {
+        Some(true) => {}
+        Some(false) => {
+            warnings.push(
+                "Using an unhealthy ML model (AUC/Brier gates failed). Treat Stage 4 ranking as experimental."
+                    .to_string(),
+            );
+        }
+        None => {
+            warnings.push(
+                "Using a legacy ML model without health metadata; strict healthy-model gate is skipped for compatibility."
+                    .to_string(),
+            );
+        }
+    }
+    if status.stale {
+        warnings.push("ML model is stale relative to available meta artifacts.".to_string());
+    }
+
+    let groups = source_meta
+        .pointer("/res/groups")
+        .and_then(|v| v.as_array())
+        .map(|xs| xs.as_slice())
+        .unwrap_or(&[]);
+    if groups.is_empty() {
+        return Err("Source meta artifact has no groups to rank.".to_string());
+    }
+
+    #[derive(Clone)]
+    struct Stage4Entry {
+        ml: Option<f64>,
+        ml_logit: Option<f64>,
+        ml_uncertainty: Option<f64>,
+        meta_score: f64,
+        final_rank_score: Option<f64>,
+        group: Value,
+    }
+
+    let mut entries: Vec<Stage4Entry> = Vec::with_capacity(groups.len());
+    let mut groups_scored = 0usize;
+    let mut groups_bad_meta_score = 0usize;
+    for g in groups {
+        let ml = ta_app_core::predict_ml_confidence_for_group(&model, g).filter(|p| p.is_finite());
+        if ml.is_some() {
+            groups_scored = groups_scored.saturating_add(1);
+        }
+        let ml_logit = ml.map(stable_logit);
+        let ml_uncertainty = ml.map(ml_uncertainty_from_prob);
+        let raw_meta_score = group_rank_score(g);
+        let meta_score = if raw_meta_score.is_finite() {
+            raw_meta_score
+        } else {
+            groups_bad_meta_score = groups_bad_meta_score.saturating_add(1);
+            0.0
+        };
+        let mut g2 = g.clone();
+        if let Some(obj) = g2.as_object_mut() {
+            if let Some(p) = ml {
+                obj.insert("ml_confidence".to_string(), serde_json::json!(p));
+            } else {
+                obj.insert("ml_confidence".to_string(), Value::Null);
+            }
+            if let Some(u) = ml_uncertainty {
+                obj.insert("ml_uncertainty".to_string(), serde_json::json!(u));
+            } else {
+                obj.insert("ml_uncertainty".to_string(), Value::Null);
+            }
+            obj.insert("final_rank_score".to_string(), Value::Null);
+        }
+        entries.push(Stage4Entry {
+            ml,
+            ml_logit,
+            ml_uncertainty,
+            meta_score,
+            final_rank_score: None,
+            group: g2,
+        });
+    }
+
+    if groups_bad_meta_score > 0 {
+        warnings.push(format!(
+            "{} group(s) had non-finite meta score; fallback value 0.0 was used.",
+            groups_bad_meta_score
+        ));
+    }
+
+    let candidate_indices: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| e.ml.filter(|p| *p >= req.min_ml_confidence).map(|_| i))
+        .collect();
+
+    if !candidate_indices.is_empty() {
+        let meta_vals: Vec<f64> = candidate_indices
+            .iter()
+            .map(|&i| entries[i].meta_score)
+            .collect();
+        let ml_vals: Vec<f64> = candidate_indices
+            .iter()
+            .filter_map(|&i| entries[i].ml_logit)
+            .collect();
+        let unc_vals: Vec<f64> = candidate_indices
+            .iter()
+            .filter_map(|&i| entries[i].ml_uncertainty)
+            .collect();
+
+        let (meta_mean, meta_std) = mean_std(&meta_vals);
+        let (ml_mean, ml_std) = mean_std(&ml_vals);
+        let (unc_mean, unc_std) = mean_std(&unc_vals);
+
+        for &i in &candidate_indices {
+            let z_meta = zscore(entries[i].meta_score, meta_mean, meta_std);
+            let z_ml = zscore(entries[i].ml_logit.unwrap_or(0.0), ml_mean, ml_std);
+            let z_unc = zscore(entries[i].ml_uncertainty.unwrap_or(0.0), unc_mean, unc_std);
+            let final_rank =
+                req.meta_weight * z_meta + req.ml_weight * z_ml - req.uncertainty_weight * z_unc;
+            entries[i].final_rank_score = Some(final_rank);
+            if let Some(obj) = entries[i].group.as_object_mut() {
+                obj.insert(
+                    "final_rank_score".to_string(),
+                    serde_json::json!(final_rank),
+                );
+                obj.insert("stage4_fallback".to_string(), Value::Bool(false));
+            }
+        }
+    }
+
+    let mut selected_groups: Vec<Value> = Vec::new();
+    if !candidate_indices.is_empty() {
+        let mut ranked = candidate_indices;
+        ranked.sort_by(|&a, &b| {
+            let af = entries[a].final_rank_score.unwrap_or(f64::NEG_INFINITY);
+            let bf = entries[b].final_rank_score.unwrap_or(f64::NEG_INFINITY);
+            let ap = entries[a].ml.unwrap_or(-1.0);
+            let bp = entries[b].ml.unwrap_or(-1.0);
+            bf.total_cmp(&af)
+                .then_with(|| bp.total_cmp(&ap))
+                .then_with(|| entries[b].meta_score.total_cmp(&entries[a].meta_score))
+        });
+        selected_groups = ranked
+            .into_iter()
+            .take(req.top_k)
+            .map(|i| entries[i].group.clone())
+            .collect();
+    } else if req.fallback_to_meta_if_empty {
+        let mut fallback_indices: Vec<usize> = (0..entries.len()).collect();
+        fallback_indices.sort_by(|&a, &b| entries[b].meta_score.total_cmp(&entries[a].meta_score));
+        selected_groups = fallback_indices
+            .into_iter()
+            .take(req.top_k)
+            .map(|i| {
+                let mut g = entries[i].group.clone();
+                if let Some(obj) = g.as_object_mut() {
+                    obj.insert("stage4_fallback".to_string(), Value::Bool(true));
+                    if !obj
+                        .get("final_rank_score")
+                        .map(|v| v.is_number())
+                        .unwrap_or(false)
+                    {
+                        obj.insert(
+                            "final_rank_score".to_string(),
+                            serde_json::json!(entries[i].meta_score),
+                        );
+                    }
+                }
+                g
+            })
+            .collect();
+        warnings.push(format!(
+            "No groups met min_ml_confidence={:.3}. Fell back to meta-score ranking.",
+            req.min_ml_confidence
+        ));
+    }
+
+    let mut decision_counts = Stage4DecisionCounts {
+        accept: 0,
+        review: 0,
+        reject: 0,
+    };
+    for (i, g) in selected_groups.iter_mut().enumerate() {
+        if let Some(obj) = g.as_object_mut() {
+            obj.insert(
+                "stage4_rank".to_string(),
+                Value::Number(serde_json::Number::from((i + 1) as u64)),
+            );
+            if !obj
+                .get("final_rank_score")
+                .map(|v| v.is_number())
+                .unwrap_or(false)
+            {
+                let fallback_rank = obj
+                    .get("final_score")
+                    .and_then(|v| v.as_f64())
+                    .or_else(|| obj.get("meta_score").and_then(|v| v.as_f64()))
+                    .unwrap_or(0.0);
+                obj.insert(
+                    "final_rank_score".to_string(),
+                    serde_json::json!(fallback_rank),
+                );
+            }
+            let ml = obj.get("ml_confidence").and_then(|v| v.as_f64());
+            let unc = obj.get("ml_uncertainty").and_then(|v| v.as_f64());
+            let bucket = decision_bucket_label(&req, ml, unc);
+            obj.insert("decision_bucket".to_string(), serde_json::json!(bucket));
+            match bucket {
+                "accept" => decision_counts.accept = decision_counts.accept.saturating_add(1),
+                "review" => decision_counts.review = decision_counts.review.saturating_add(1),
+                _ => decision_counts.reject = decision_counts.reject.saturating_add(1),
+            }
+        }
+    }
+
+    if groups_scored < groups.len() {
+        warnings.push(format!(
+            "ML model produced confidences for {}/{} groups.",
+            groups_scored,
+            groups.len()
+        ));
+    }
+
+    let ts = chrono::Utc::now().to_rfc3339();
+    let result = MetaStage4Result {
+        strategy_kind: scope.strategy_kind.clone(),
+        timeframe: scope.timeframe.clone(),
+        source_meta_json_path: source_meta_path.to_string_lossy().to_string(),
+        model_path: model_path.to_string_lossy().to_string(),
+        model_healthy,
+        model_trained_now,
+        groups_considered: groups.len(),
+        groups_scored,
+        groups_selected: selected_groups.len(),
+        min_ml_confidence: req.min_ml_confidence,
+        top_k: req.top_k,
+        meta_weight: req.meta_weight,
+        ml_weight: req.ml_weight,
+        uncertainty_weight: req.uncertainty_weight,
+        accept_confidence: req.accept_confidence,
+        review_confidence: req.review_confidence,
+        max_accept_uncertainty: req.max_accept_uncertainty,
+        decision_counts,
+        selected_groups,
+        warnings,
+    };
+
+    let out_obj = serde_json::json!({
+        "version": 1,
+        "kind": "vectorbt_meta_stage4_experimental",
+        "ts": ts,
+        "tags": [],
+        "req": req,
+        "res": &result,
+    });
+    let out_bytes = serde_json::to_vec_pretty(&out_obj).map_err(|e| e.to_string())?;
+    let out_path = suggest_stage4_artifact_path(&ts, &app)?;
+    std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
+    run_artifacts::prune_old_stage4_artifacts_blocking(&app, 100);
+
+    Ok(RunMetaStage4Response {
+        ts,
+        stage4_json_path: out_path.to_string_lossy().to_string(),
+        stage4_json_bytes: out_bytes.len(),
+        result,
+    })
+}
+
+#[tauri::command]
+pub async fn run_meta_stage4_experimental(
+    req: MetaStage4Request,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<RunMetaStage4Response, String> {
+    let _run_guard = state.try_begin_run()?;
+    tauri::async_runtime::spawn_blocking(move || run_meta_stage4_experimental_blocking(req, app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -633,7 +1391,10 @@ fn run_meta_selection_blocking(
 
     let supports_holdout = req.strategy_kind == "CompositeCpu"
         || req.strategy_kind == "CompositeMo"
-        || req.strategy_kind == "DoubleMa";
+        || req.strategy_kind == "DoubleMa"
+        || req.strategy_kind == "CompositeTrend"
+        || req.strategy_kind == "RegimeHybrid"
+        || req.strategy_kind == "BreakoutMomentum";
     let holdout_tag = if req.eval_holdout && supports_holdout {
         req.holdout_tag
             .as_deref()
@@ -1186,7 +1947,11 @@ fn apply_holdout_evaluation(
             let Some(first) = idxs.first() else { continue };
             let g0 = &result.groups[*first];
 
-            if req.strategy_kind == "DoubleMa" {
+            if req.strategy_kind == "DoubleMa"
+                || req.strategy_kind == "CompositeTrend"
+                || req.strategy_kind == "RegimeHybrid"
+                || req.strategy_kind == "BreakoutMomentum"
+            {
                 let mut candidates: Vec<ta_app_core::DoubleMaValidationParams> = Vec::new();
                 candidates.reserve(idxs.len().saturating_mul(3));
                 for &gi in idxs {
@@ -1507,11 +2272,113 @@ fn apply_holdout_evaluation(
         }
     }
 
+    for g in &mut result.groups {
+        let base = g.meta_score;
+        let final_score = if let Some(h) = g.holdout.as_ref() {
+            base + req.weights.w_holdout_pass_rate * h.pass_rate
+                + req.weights.w_holdout_p10 * h.score_p10
+                - req.weights.w_holdout_dd_p90 * h.max_dd_p90
+        } else {
+            base
+        };
+        g.final_score = Some(final_score);
+    }
+
+    result.groups.sort_by(|a, b| {
+        let a_eval = a.holdout.is_some();
+        let b_eval = b.holdout.is_some();
+        if a_eval != b_eval {
+            return b_eval.cmp(&a_eval);
+        }
+        let ascore = a.final_score.unwrap_or(a.meta_score);
+        let bscore = b.final_score.unwrap_or(b.meta_score);
+        bscore
+            .total_cmp(&ascore)
+            .then_with(|| b.meta_score.total_cmp(&a.meta_score))
+    });
+
     if skipped > 0 {
         result.warnings.push(format!(
             "Holdout evaluation: skipped {skipped} dataset(s) (missing/invalid CSV path or parse error) for tag='{holdout_tag}'."
         ));
     }
+    result.warnings.push(
+        "Final group ordering uses holdout-adjusted score when holdout is available.".to_string(),
+    );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_block_stage4_for_unhealthy_model, stage4_autotrain_failure_fallback,
+        stage4_training_metas_excluding_source,
+    };
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn stage4_training_set_excludes_source_meta_artifact() {
+        let source = PathBuf::from("runs/vectorbt_meta_source.json");
+        let other = PathBuf::from("runs/vectorbt_meta_other.json");
+        let metas = vec![
+            (
+                source.clone(),
+                json!({"kind":"vectorbt_meta_selection","ts":"2026-01-01T00:00:00Z"}),
+            ),
+            (
+                other,
+                json!({"kind":"vectorbt_meta_selection","ts":"2026-01-01T00:01:00Z"}),
+            ),
+        ];
+
+        let (filtered, excluded) = stage4_training_metas_excluding_source(metas, &source);
+        assert_eq!(excluded, 1);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].get("ts").and_then(|v| v.as_str()),
+            Some("2026-01-01T00:01:00Z")
+        );
+    }
+
+    #[test]
+    fn stage4_health_gate_blocks_only_explicit_unhealthy_models() {
+        assert!(should_block_stage4_for_unhealthy_model(true, Some(false)));
+        assert!(!should_block_stage4_for_unhealthy_model(true, Some(true)));
+        assert!(!should_block_stage4_for_unhealthy_model(true, None));
+        assert!(!should_block_stage4_for_unhealthy_model(false, Some(false)));
+    }
+
+    #[test]
+    fn stage4_autotrain_failure_falls_back_to_existing_model() {
+        let mut warnings: Vec<String> = Vec::new();
+        let model_path = PathBuf::from("models/confidence/ml_confidence_test_1m.json");
+        let out = stage4_autotrain_failure_fallback(
+            "simulated training error".to_string(),
+            &model_path,
+            true,
+            &mut warnings,
+        );
+
+        assert!(out.is_ok());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("falling back to existing model"));
+    }
+
+    #[test]
+    fn stage4_autotrain_failure_errors_without_existing_model() {
+        let mut warnings: Vec<String> = Vec::new();
+        let model_path = PathBuf::from("models/confidence/ml_confidence_test_1m.json");
+        let err = stage4_autotrain_failure_fallback(
+            "simulated training error".to_string(),
+            &model_path,
+            false,
+            &mut warnings,
+        )
+        .unwrap_err();
+
+        assert!(warnings.is_empty());
+        assert!(err.contains("no usable existing model"));
+    }
 }

@@ -96,7 +96,8 @@ pub(crate) fn predictive_prescan_seed_pairs(
     }
 
     let close = vector_ta::utilities::data_loader::source_type(params.candles, "close");
-    let ma_prices = vector_ta::utilities::data_loader::source_type(params.candles, params.ma_source);
+    let ma_prices =
+        vector_ta::utilities::data_loader::source_type(params.candles, params.ma_source);
     if close.len() != ma_prices.len() || close.len() < 3 {
         return Ok(Vec::new());
     }
@@ -193,4 +194,3 @@ pub(crate) fn predictive_prescan_seed_pairs(
     }
     Ok(out)
 }
-

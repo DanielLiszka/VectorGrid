@@ -6,8 +6,9 @@ use cust::module::Module;
 use cust::module::{ModuleJitOption, OptLevel};
 use cust::prelude::*;
 use cust::stream::{Stream, StreamFlags};
+use cust::sys as cuda_sys;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -17,6 +18,7 @@ use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::{source_type, Candles};
 
+use crate::double_ma::{metrics_pass_constraints, DoubleMaConstraints};
 use crate::progress::ProgressSink;
 use crate::vram_ma::{supports_vram_kernel_ma, VramMaComputer, VramMaInputs};
 
@@ -32,6 +34,81 @@ const STRAT_TAKE_PROFIT: u32 = 1u32 << 6;
 
 const METRICS_COUNT: usize = 7;
 const TOPK_BLOCK_ITEMS: usize = 512;
+
+#[derive(Debug)]
+struct CudaGraphExecHandle {
+    raw: cuda_sys::CUgraphExec,
+}
+
+#[inline]
+fn cu_result(res: cuda_sys::CUresult) -> Result<(), String> {
+    if res == cuda_sys::CUresult::CUDA_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("{res:?}"))
+    }
+}
+
+impl CudaGraphExecHandle {
+    #[inline]
+    fn launch(&self, stream: &Stream) -> Result<(), String> {
+        cu_result(unsafe { cuda_sys::cuGraphLaunch(self.raw, stream.as_inner()) })
+    }
+}
+
+impl Drop for CudaGraphExecHandle {
+    fn drop(&mut self) {
+        if self.raw.is_null() {
+            return;
+        }
+        unsafe {
+            let _ = cuda_sys::cuGraphExecDestroy(self.raw);
+        }
+        self.raw = std::ptr::null_mut();
+    }
+}
+
+fn capture_graph_exec(
+    stream: &Stream,
+    record: impl FnOnce() -> Result<(), String>,
+) -> Result<CudaGraphExecHandle, String> {
+    cu_result(unsafe {
+        cuda_sys::cuStreamBeginCapture_v2(
+            stream.as_inner(),
+            cuda_sys::CUstreamCaptureMode_enum::CU_STREAM_CAPTURE_MODE_GLOBAL,
+        )
+    })?;
+
+    if let Err(e) = record() {
+        let mut graph: cuda_sys::CUgraph = std::ptr::null_mut();
+        let _ = unsafe { cuda_sys::cuStreamEndCapture(stream.as_inner(), &mut graph as *mut _) };
+        if !graph.is_null() {
+            let _ = unsafe { cuda_sys::cuGraphDestroy(graph) };
+        }
+        return Err(e);
+    }
+
+    let mut graph = std::mem::MaybeUninit::<cuda_sys::CUgraph>::uninit();
+    cu_result(unsafe { cuda_sys::cuStreamEndCapture(stream.as_inner(), graph.as_mut_ptr()) })?;
+    let graph = unsafe { graph.assume_init() };
+
+    let mut graph_exec = std::mem::MaybeUninit::<cuda_sys::CUgraphExec>::uninit();
+    let inst = unsafe {
+        cuda_sys::cuGraphInstantiate_v2(
+            graph_exec.as_mut_ptr(),
+            graph,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let _ = unsafe { cuda_sys::cuGraphDestroy(graph) };
+    cu_result(inst)?;
+
+    Ok(CudaGraphExecHandle {
+        raw: unsafe { graph_exec.assume_init() },
+    })
+}
 
 #[derive(Clone, Copy)]
 struct KernelStrategyParams {
@@ -113,40 +190,69 @@ struct KernelScratch {
 }
 
 impl KernelScratch {
-    fn ensure_len_f32(buf: &mut Option<DeviceBuffer<f32>>, len: usize) -> Result<(), String> {
-        if buf.as_ref().map(|b| b.len()) != Some(len) {
-            *buf = Some(
-                unsafe { DeviceBuffer::<f32>::uninitialized(len) }.map_err(|e| e.to_string())?,
-            );
+    fn drop_opt_async<T: cust::memory::DeviceCopy>(
+        buf: &mut Option<DeviceBuffer<T>>,
+        stream: &Stream,
+    ) -> Result<(), String> {
+        if let Some(old) = buf.take() {
+            old.drop_async(stream).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
-    fn ensure_len_i32(buf: &mut Option<DeviceBuffer<i32>>, len: usize) -> Result<(), String> {
+    fn ensure_len_f32(
+        buf: &mut Option<DeviceBuffer<f32>>,
+        len: usize,
+        stream: &Stream,
+    ) -> Result<(), String> {
         if buf.as_ref().map(|b| b.len()) != Some(len) {
-            *buf = Some(
-                unsafe { DeviceBuffer::<i32>::uninitialized(len) }.map_err(|e| e.to_string())?,
-            );
+            Self::drop_opt_async(buf, stream)?;
+            let next = if kernel_async_alloc_enabled() {
+                unsafe { DeviceBuffer::<f32>::uninitialized_async(len, stream) }
+            } else {
+                unsafe { DeviceBuffer::<f32>::uninitialized(len) }
+            }
+            .map_err(|e| e.to_string())?;
+            *buf = Some(next);
         }
         Ok(())
     }
 
-    fn clear(&mut self) {
-        self.d_lr = None;
-        self.d_fast_p = None;
-        self.d_fast_ma = None;
-        self.d_fast_ma_tm = None;
-        self.d_slow_p = None;
-        self.d_slow_ma = None;
-        self.d_slow_ma_tm = None;
-        self.d_tile = None;
+    fn ensure_len_i32(
+        buf: &mut Option<DeviceBuffer<i32>>,
+        len: usize,
+        stream: &Stream,
+    ) -> Result<(), String> {
+        if buf.as_ref().map(|b| b.len()) != Some(len) {
+            Self::drop_opt_async(buf, stream)?;
+            let next = if kernel_async_alloc_enabled() {
+                unsafe { DeviceBuffer::<i32>::uninitialized_async(len, stream) }
+            } else {
+                unsafe { DeviceBuffer::<i32>::uninitialized(len) }
+            }
+            .map_err(|e| e.to_string())?;
+            *buf = Some(next);
+        }
+        Ok(())
+    }
 
-        self.d_heatmap = None;
-        self.d_cand_a = None;
-        self.d_cand_b = None;
-        self.d_top_fast = None;
-        self.d_top_slow = None;
-        self.d_top_metrics = None;
+    fn clear_async(&mut self, stream: &Stream) -> Result<(), String> {
+        Self::drop_opt_async(&mut self.d_lr, stream)?;
+        Self::drop_opt_async(&mut self.d_fast_p, stream)?;
+        Self::drop_opt_async(&mut self.d_fast_ma, stream)?;
+        Self::drop_opt_async(&mut self.d_fast_ma_tm, stream)?;
+        Self::drop_opt_async(&mut self.d_slow_p, stream)?;
+        Self::drop_opt_async(&mut self.d_slow_ma, stream)?;
+        Self::drop_opt_async(&mut self.d_slow_ma_tm, stream)?;
+        Self::drop_opt_async(&mut self.d_tile, stream)?;
+
+        Self::drop_opt_async(&mut self.d_heatmap, stream)?;
+        Self::drop_opt_async(&mut self.d_cand_a, stream)?;
+        Self::drop_opt_async(&mut self.d_cand_b, stream)?;
+        Self::drop_opt_async(&mut self.d_top_fast, stream)?;
+        Self::drop_opt_async(&mut self.d_top_slow, stream)?;
+        Self::drop_opt_async(&mut self.d_top_metrics, stream)?;
+        Ok(())
     }
 }
 
@@ -477,6 +583,217 @@ fn kernel_fast_path_enabled(fast_ma: &str, slow_ma: &str) -> bool {
     }
 }
 
+#[inline]
+fn env_flag_enabled(name: &str, default_enabled: bool) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.trim();
+            !(v == "0" || v.eq_ignore_ascii_case("false"))
+        }
+        Err(_) => default_enabled,
+    }
+}
+
+#[inline]
+fn kernel_async_alloc_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_ASYNC_ALLOC", true)
+}
+
+#[inline]
+fn kernel_cuda_graphs_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_USE_CUDA_GRAPHS", false)
+}
+
+#[inline]
+fn kernel_force_legacy_topk_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", false)
+}
+
+#[inline]
+fn kernel_global_topk_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_GLOBAL_TOPK", false)
+}
+
+#[inline]
+fn cu_memcpy_d2d_async(
+    dst: cuda_sys::CUdeviceptr,
+    src: cuda_sys::CUdeviceptr,
+    bytes: usize,
+    stream: &Stream,
+) -> Result<(), String> {
+    if bytes == 0 {
+        return Ok(());
+    }
+    cu_result(unsafe { cuda_sys::cuMemcpyDtoDAsync_v2(dst, src, bytes, stream.as_inner()) })
+}
+
+#[inline]
+fn scaled_vdps_counts(
+    sample_total: usize,
+    elite_target: usize,
+    diff_target: usize,
+    rand_target: usize,
+) -> (usize, usize, usize) {
+    let target_total = elite_target
+        .saturating_add(diff_target)
+        .saturating_add(rand_target);
+    if sample_total == 0 || target_total == 0 {
+        return (0, 0, 0);
+    }
+    let ratio = sample_total as f64 / (target_total as f64);
+    let mut elite = ((elite_target as f64) * ratio).round() as usize;
+    let mut diff = ((diff_target as f64) * ratio).round() as usize;
+    let mut rand = ((rand_target as f64) * ratio).round() as usize;
+    let assigned = elite.saturating_add(diff).saturating_add(rand);
+    if assigned > sample_total {
+        let overflow = assigned.saturating_sub(sample_total);
+        let take_rand = overflow.min(rand);
+        rand = rand.saturating_sub(take_rand);
+        let rem = overflow.saturating_sub(take_rand);
+        let take_diff = rem.min(diff);
+        diff = diff.saturating_sub(take_diff);
+        let rem2 = rem.saturating_sub(take_diff);
+        elite = elite.saturating_sub(rem2.min(elite));
+    } else if assigned < sample_total {
+        rand = rand.saturating_add(sample_total.saturating_sub(assigned));
+    }
+    (elite, diff, rand)
+}
+
+pub fn vdps_generate_seed_pairs_gpu_kernel(
+    device_id: u32,
+    elite_seeds: &[(u16, u16)],
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    elite_target: usize,
+    diff_target: usize,
+    rand_target: usize,
+    fast_step: u16,
+    slow_step: u16,
+    seed: u64,
+) -> Result<Option<Vec<(u16, u16)>>, String> {
+    let target_total = elite_target
+        .saturating_add(diff_target)
+        .saturating_add(rand_target);
+    if target_total == 0 || fast_periods.is_empty() || slow_periods.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+
+    // Oversample to offset duplicate/invalid pairs from nearest-period projection.
+    let sample_total = target_total.saturating_mul(4).max(target_total).min(16_384);
+    let (elite_count, diff_count, rand_count) =
+        scaled_vdps_counts(sample_total, elite_target, diff_target, rand_target);
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<Option<Vec<(u16, u16)>>, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            let rt = CudaKernelRuntime::new(device_id)?;
+            map.insert(device_id, rt);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let mut elite_fast_h: Vec<i32> = Vec::with_capacity(elite_seeds.len().max(1));
+        let mut elite_slow_h: Vec<i32> = Vec::with_capacity(elite_seeds.len().max(1));
+        for &(f, s) in elite_seeds.iter() {
+            elite_fast_h.push(f as i32);
+            elite_slow_h.push(s as i32);
+        }
+        let elite_len = elite_fast_h.len() as i32;
+        if elite_fast_h.is_empty() {
+            elite_fast_h.push(0);
+            elite_slow_h.push(0);
+        }
+        let fast_h: Vec<i32> = fast_periods.iter().map(|&p| p as i32).collect();
+        let slow_h: Vec<i32> = slow_periods.iter().map(|&p| p as i32).collect();
+
+        let d_elite_fast = DeviceBuffer::from_slice(&elite_fast_h).map_err(|e| e.to_string())?;
+        let d_elite_slow = DeviceBuffer::from_slice(&elite_slow_h).map_err(|e| e.to_string())?;
+        let d_fast = DeviceBuffer::from_slice(&fast_h).map_err(|e| e.to_string())?;
+        let d_slow = DeviceBuffer::from_slice(&slow_h).map_err(|e| e.to_string())?;
+        let d_out_fast = unsafe { DeviceBuffer::<i32>::uninitialized(sample_total) }
+            .map_err(|e| e.to_string())?;
+        let d_out_slow = unsafe { DeviceBuffer::<i32>::uninitialized(sample_total) }
+            .map_err(|e| e.to_string())?;
+
+        let kernel = match rt.module.get_function("vdps_generate_seed_pairs_tm_i32") {
+            Ok(f) => f,
+            Err(_) => return Ok(None),
+        };
+        let stream = &rt.stream;
+        unsafe {
+            let mut elite_fast_ptr = d_elite_fast.as_device_ptr().as_raw();
+            let mut elite_slow_ptr = d_elite_slow.as_device_ptr().as_raw();
+            let mut elite_len_i = elite_len;
+            let mut fast_ptr = d_fast.as_device_ptr().as_raw();
+            let mut fast_len_i = fast_h.len() as i32;
+            let mut slow_ptr = d_slow.as_device_ptr().as_raw();
+            let mut slow_len_i = slow_h.len() as i32;
+            let mut elite_count_i = elite_count as i32;
+            let mut diff_count_i = diff_count as i32;
+            let mut rand_count_i = rand_count as i32;
+            let mut fast_step_i = fast_step.max(1) as i32;
+            let mut slow_step_i = slow_step.max(1) as i32;
+            let mut seed_u64 = seed;
+            let mut out_len_i = sample_total as i32;
+            let mut out_fast_ptr = d_out_fast.as_device_ptr().as_raw();
+            let mut out_slow_ptr = d_out_slow.as_device_ptr().as_raw();
+
+            let block_x: u32 = 256;
+            let grid_x: u32 = ((sample_total as u32) + block_x - 1) / block_x;
+            let args: &mut [*mut c_void] = &mut [
+                &mut elite_fast_ptr as *mut _ as *mut c_void,
+                &mut elite_slow_ptr as *mut _ as *mut c_void,
+                &mut elite_len_i as *mut _ as *mut c_void,
+                &mut fast_ptr as *mut _ as *mut c_void,
+                &mut fast_len_i as *mut _ as *mut c_void,
+                &mut slow_ptr as *mut _ as *mut c_void,
+                &mut slow_len_i as *mut _ as *mut c_void,
+                &mut elite_count_i as *mut _ as *mut c_void,
+                &mut diff_count_i as *mut _ as *mut c_void,
+                &mut rand_count_i as *mut _ as *mut c_void,
+                &mut fast_step_i as *mut _ as *mut c_void,
+                &mut slow_step_i as *mut _ as *mut c_void,
+                &mut seed_u64 as *mut _ as *mut c_void,
+                &mut out_len_i as *mut _ as *mut c_void,
+                &mut out_fast_ptr as *mut _ as *mut c_void,
+                &mut out_slow_ptr as *mut _ as *mut c_void,
+            ];
+            stream
+                .launch(&kernel, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out_fast_h = vec![0i32; sample_total];
+        let mut out_slow_h = vec![0i32; sample_total];
+        d_out_fast
+            .copy_to(&mut out_fast_h)
+            .map_err(|e| e.to_string())?;
+        d_out_slow
+            .copy_to(&mut out_slow_h)
+            .map_err(|e| e.to_string())?;
+
+        let mut out: Vec<(u16, u16)> = Vec::with_capacity(target_total);
+        let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+        for i in 0..sample_total {
+            let f = out_fast_h[i];
+            let s = out_slow_h[i];
+            if f <= 0 || s <= 0 || f >= s || f > (u16::MAX as i32) || s > (u16::MAX as i32) {
+                continue;
+            }
+            let pair = (f as u16, s as u16);
+            if seen.insert(pair) {
+                out.push(pair);
+                if out.len() >= target_total {
+                    break;
+                }
+            }
+        }
+        Ok(Some(out))
+    })
+}
+
 fn estimate_tile_bytes(
     pf: usize,
     ps: usize,
@@ -795,6 +1112,225 @@ fn choose_tiles(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn reduce_metric_rows_topk_on_device(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    rows_fast: &DeviceBuffer<i32>,
+    rows_slow: &DeviceBuffer<i32>,
+    rows_metrics: &DeviceBuffer<f32>,
+    rows_len: usize,
+    metrics_count: usize,
+    objective_i: i32,
+    topk_select: usize,
+    constraints_on_device: bool,
+    constraint_use_min_trades: i32,
+    constraint_min_trades: f32,
+    constraint_use_max_dd: i32,
+    constraint_max_dd: f32,
+    select_rows_legacy: &cust::function::Function<'_>,
+    select_rows_candidates_legacy: &cust::function::Function<'_>,
+    select_rows_v2: Option<&cust::function::Function<'_>>,
+    select_rows_candidates_v2: Option<&cust::function::Function<'_>>,
+    gather_rows: &cust::function::Function<'_>,
+) -> Result<(), String> {
+    if rows_len == 0 || topk_select == 0 {
+        return Ok(());
+    }
+
+    let blocks1 = (rows_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+    let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len1, bt_stream)?;
+
+    unsafe {
+        let mut metrics_ptr = rows_metrics.as_device_ptr().as_raw();
+        let mut rows_i = rows_len as i32;
+        let mut m_i = metrics_count as i32;
+        let mut obj_i = objective_i;
+        let mut topk_i = topk_select as i32;
+        let mut out_ptr = scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = blocks1 as u32;
+        if constraints_on_device {
+            let mut use_min_trades = constraint_use_min_trades;
+            let mut min_trades = constraint_min_trades;
+            let mut use_max_dd = constraint_use_max_dd;
+            let mut max_dd = constraint_max_dd;
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut obj_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut use_min_trades as *mut _ as *mut c_void,
+                &mut min_trades as *mut _ as *mut c_void,
+                &mut use_max_dd as *mut _ as *mut c_void,
+                &mut max_dd as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            bt_stream
+                .launch(
+                    select_rows_v2
+                        .ok_or_else(|| "missing select_topk_metric_rows_f32_v2".to_string())?,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        } else {
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut obj_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            bt_stream
+                .launch(select_rows_legacy, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut blocks_prev = blocks1;
+    let mut in_len = cand_len1;
+    let mut in_is_a = true;
+    while blocks_prev > 1 {
+        let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+        let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
+        unsafe {
+            let mut metrics_ptr = rows_metrics.as_device_ptr().as_raw();
+            let mut rows_i = rows_len as i32;
+            let mut m_i = metrics_count as i32;
+            let mut obj_i = objective_i;
+            let mut topk_i = topk_select as i32;
+            let mut in_ptr = if in_is_a {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+            let mut in_len_i = in_len as i32;
+            let mut out_ptr = if in_is_a {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+
+            let block_x: u32 = 256;
+            let grid_x: u32 = blocks_next as u32;
+            if constraints_on_device {
+                let mut use_min_trades = constraint_use_min_trades;
+                let mut min_trades = constraint_min_trades;
+                let mut use_max_dd = constraint_use_max_dd;
+                let mut max_dd = constraint_max_dd;
+                let args: &mut [*mut c_void] = &mut [
+                    &mut metrics_ptr as *mut _ as *mut c_void,
+                    &mut rows_i as *mut _ as *mut c_void,
+                    &mut m_i as *mut _ as *mut c_void,
+                    &mut obj_i as *mut _ as *mut c_void,
+                    &mut topk_i as *mut _ as *mut c_void,
+                    &mut in_ptr as *mut _ as *mut c_void,
+                    &mut in_len_i as *mut _ as *mut c_void,
+                    &mut use_min_trades as *mut _ as *mut c_void,
+                    &mut min_trades as *mut _ as *mut c_void,
+                    &mut use_max_dd as *mut _ as *mut c_void,
+                    &mut max_dd as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                bt_stream
+                    .launch(
+                        select_rows_candidates_v2.ok_or_else(|| {
+                            "missing select_topk_metric_rows_from_candidates_f32_v2".to_string()
+                        })?,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                    )
+                    .map_err(|e| e.to_string())?;
+            } else {
+                let args: &mut [*mut c_void] = &mut [
+                    &mut metrics_ptr as *mut _ as *mut c_void,
+                    &mut rows_i as *mut _ as *mut c_void,
+                    &mut m_i as *mut _ as *mut c_void,
+                    &mut obj_i as *mut _ as *mut c_void,
+                    &mut topk_i as *mut _ as *mut c_void,
+                    &mut in_ptr as *mut _ as *mut c_void,
+                    &mut in_len_i as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                bt_stream
+                    .launch(
+                        select_rows_candidates_legacy,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        in_is_a = !in_is_a;
+        blocks_prev = blocks_next;
+        in_len = out_len;
+    }
+
+    unsafe {
+        let mut metrics_ptr = rows_metrics.as_device_ptr().as_raw();
+        let mut rows_i = rows_len as i32;
+        let mut m_i = metrics_count as i32;
+        let mut fast_ptr = rows_fast.as_device_ptr().as_raw();
+        let mut slow_ptr = rows_slow.as_device_ptr().as_raw();
+        let mut top_ptr = if in_is_a {
+            scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+        } else {
+            scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+        };
+        let mut topk_i = topk_select as i32;
+        let mut out_f = scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_s = scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_m = scratch
+            .d_top_metrics
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut metrics_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut m_i as *mut _ as *mut c_void,
+            &mut fast_ptr as *mut _ as *mut c_void,
+            &mut slow_ptr as *mut _ as *mut c_void,
+            &mut top_ptr as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut out_f as *mut _ as *mut c_void,
+            &mut out_s as *mut _ as *mut c_void,
+            &mut out_m as *mut _ as *mut c_void,
+        ];
+        bt_stream
+            .launch(gather_rows, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 pub fn eval_double_ma_batch_gpu_kernel(
     candles: &Candles,
     combos: &[DoubleMaParams],
@@ -905,7 +1441,22 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     if low.map_or(false, |l| l.len() != n) {
         return Err("low length mismatch".to_string());
     }
-
+    let regime_f64 =
+        crate::double_ma::compute_combined_regime_filter(candles, ma_source, strategy, None)?;
+    let regime_f32: Option<Vec<f32>> = if let Some(regime) = regime_f64.as_ref() {
+        if regime.len() != n {
+            return Err("regime trend series length mismatch".to_string());
+        }
+        Some(regime.iter().map(|&x| x as f32).collect())
+    } else {
+        None
+    };
+    if regime_f32.is_some() && !crate::double_ma::kernel_regime_filters_enabled() {
+        return Err(
+            "GPU kernel regime filters are disabled (set VECTORBT_KERNEL_ENABLE_REGIME_FILTERS=1 to enable)"
+                .to_string(),
+        );
+    }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
     let mut start_at = fv_close;
@@ -927,6 +1478,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     if let Some(l) = low {
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         start_at = start_at.max(fv_low);
+    }
+    if let Some(regime) = regime_f64.as_ref() {
+        let fv_regime =
+            first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        start_at = start_at.max(fv_regime);
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
         .ok_or_else(|| "no index where all required series are finite".to_string())?;
@@ -1079,6 +1635,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     } else {
         None
     };
+    let d_regime: Option<DeviceBuffer<f32>> = if let Some(regime) = regime_f32.as_ref() {
+        Some(DeviceBuffer::from_slice(regime).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
 
     let vram_inputs = VramMaInputs {
         prices: d_ma_prices,
@@ -1136,12 +1697,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .get_function("double_cross_backtest_tm_flex_f32")
         .map_err(|e| e.to_string())?;
 
-    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n)?;
-    let d_lr = scratch.d_lr.as_ref().unwrap();
+    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
+    let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     unsafe {
         let mut prices_ptr = d_close.as_device_ptr().as_raw();
         let mut t_i = n as i32;
-        let mut out_ptr = d_lr.as_device_ptr().as_raw();
+        let mut out_ptr = d_lr_ptr;
         let block_x: u32 = 256;
         let grid_x: u32 = ((n as u32) + block_x - 1) / block_x;
         let args: &mut [*mut c_void] = &mut [
@@ -1180,21 +1741,21 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .and_then(|v| v.checked_mul(METRICS_COUNT))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
 
-    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile, bt_stream)?;
     if use_fast_path {
         scratch.d_fast_ma = None;
     } else {
-        KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma, fast_ma_cap)?;
+        KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma, fast_ma_cap, bt_stream)?;
     }
-    KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma_tm, fast_ma_cap)?;
-    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma_tm, fast_ma_cap, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile, bt_stream)?;
     if use_fast_path {
         scratch.d_slow_ma = None;
     } else {
-        KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma, slow_ma_cap)?;
+        KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma, slow_ma_cap, bt_stream)?;
     }
-    KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap)?;
-    KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
     let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile.max(1));
     let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile.max(1));
@@ -1207,6 +1768,22 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let eps_rel = strategy_kernel.eps_rel;
     let stop_log = strategy_kernel.stop_log;
     let take_log = strategy_kernel.take_log;
+    let regime_use = if d_regime.is_some() { 1i32 } else { 0i32 };
+    let regime_use_hybrid = if d_regime.is_some() && strategy.uses_regime_hybrid_filter() {
+        1i32
+    } else {
+        0i32
+    };
+    let regime_entry_rel = if regime_use_hybrid != 0 {
+        strategy.regime_hybrid_reversion_entry_rel() as f32
+    } else {
+        0.0
+    };
+    let regime_exit_rel = if regime_use_hybrid != 0 {
+        strategy.regime_hybrid_reversion_exit_rel() as f32
+    } else {
+        0.0
+    };
 
     let mut f_start = 0usize;
     while f_start < f_total {
@@ -1220,6 +1797,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         );
         let f_pad = host_p_fast.last().copied().unwrap_or(2);
         host_p_fast.resize(pf_tile, f_pad);
+        // Host period vectors are pageable and mutated per tile; keep this copy
+        // synchronous to avoid host-data races with async H2D semantics.
         scratch
             .d_fast_p
             .as_mut()
@@ -1286,6 +1865,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             );
             let s_pad = host_p_slow.last().copied().unwrap_or(2);
             host_p_slow.resize(ps_tile, s_pad);
+            // Host period vectors are pageable and mutated per tile; keep this copy
+            // synchronous to avoid host-data races with async H2D semantics.
             scratch
                 .d_slow_p
                 .as_mut()
@@ -1366,7 +1947,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     .unwrap()
                     .as_device_ptr()
                     .as_raw();
-                let mut lr = d_lr.as_device_ptr().as_raw();
+                let mut lr = d_lr_ptr;
                 let mut t_i = n as i32;
                 let mut pf_tile_i = pf as i32;
                 let mut ps_tile_i = ps as i32;
@@ -1376,6 +1957,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 let mut s_off = 0i32;
                 let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                 let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+                let mut regime_ptr = d_regime
+                    .as_ref()
+                    .map(|d| d.as_device_ptr().as_raw())
+                    .unwrap_or(0);
+                let mut use_regime_i = regime_use;
+                let mut use_regime_hybrid_i = regime_use_hybrid;
+                let mut regime_entry = regime_entry_rel;
+                let mut regime_exit = regime_exit_rel;
                 let mut fv = first_valid as i32;
                 let mut commission = commission;
                 let mut eps_rel = eps_rel;
@@ -1400,6 +1989,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &mut s_off as *mut _ as *mut c_void,
                     &mut f_per as *mut _ as *mut c_void,
                     &mut s_per as *mut _ as *mut c_void,
+                    &mut regime_ptr as *mut _ as *mut c_void,
+                    &mut use_regime_i as *mut _ as *mut c_void,
+                    &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                    &mut regime_entry as *mut _ as *mut c_void,
+                    &mut regime_exit as *mut _ as *mut c_void,
                     &mut fv as *mut _ as *mut c_void,
                     &mut commission as *mut _ as *mut c_void,
                     &mut eps_rel as *mut _ as *mut c_void,
@@ -1464,7 +2058,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
 
     if !kernel_persist_buffers_enabled() {
         ma.clear_cached_constants();
-        scratch.clear();
+        scratch.clear_async(bt_stream)?;
     }
 
     Ok(out_metrics)
@@ -1479,11 +2073,13 @@ pub fn optimize_double_ma_gpu_kernel(
     ma_source: &str,
     fast_ma_params: Option<&HashMap<String, f64>>,
     slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
+    constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
@@ -1510,11 +2106,13 @@ pub fn optimize_double_ma_gpu_kernel(
             ma_source,
             fast_ma_params,
             slow_ma_params,
+            regime_filter,
             strategy,
             objective,
             top_k,
             include_all,
             cfg,
+            constraints,
             export_all_csv_path,
             total_pairs,
             heatmap_bins,
@@ -1534,11 +2132,13 @@ fn optimize_double_ma_gpu_kernel_impl(
     ma_source: &str,
     fast_ma_params: Option<&HashMap<String, f64>>,
     slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
+    constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
@@ -1627,6 +2227,20 @@ fn optimize_double_ma_gpu_kernel_impl(
     if low.map_or(false, |l| l.len() != n) {
         return Err("low length mismatch".to_string());
     }
+    let regime_f32: Option<Vec<f32>> = if let Some(regime) = regime_filter {
+        if regime.len() != n {
+            return Err("regime trend series length mismatch".to_string());
+        }
+        Some(regime.iter().map(|&x| x as f32).collect())
+    } else {
+        None
+    };
+    if regime_f32.is_some() && !crate::double_ma::kernel_regime_filters_enabled() {
+        return Err(
+            "GPU kernel regime filters are disabled (set VECTORBT_KERNEL_ENABLE_REGIME_FILTERS=1 to enable)"
+                .to_string(),
+        );
+    }
 
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
@@ -1649,6 +2263,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     if let Some(l) = low {
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         start_at = start_at.max(fv_low);
+    }
+    if let Some(regime) = regime_filter {
+        let fv_regime =
+            first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        start_at = start_at.max(fv_regime);
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
         .ok_or_else(|| "no index where all required series are finite".to_string())?;
@@ -1820,6 +2439,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         None
     };
+    let d_regime: Option<DeviceBuffer<f32>> = if let Some(regime) = regime_f32.as_ref() {
+        Some(DeviceBuffer::from_slice(regime).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
 
     let vram_inputs = VramMaInputs {
         prices: d_ma_prices,
@@ -1882,22 +2506,42 @@ fn optimize_double_ma_gpu_kernel_impl(
     let heatmap_update = bt_module
         .get_function("heatmap_update_scores_tm_f32")
         .map_err(|e| e.to_string())?;
-    let select_topk_pairs = bt_module
+    let select_topk_pairs_legacy = bt_module
         .get_function("select_topk_from_pairs_tm_f32")
         .map_err(|e| e.to_string())?;
-    let select_topk_candidates = bt_module
+    let select_topk_candidates_legacy = bt_module
         .get_function("select_topk_from_candidates_tm_f32")
         .map_err(|e| e.to_string())?;
+    let select_topk_pairs_v2 = bt_module
+        .get_function("select_topk_from_pairs_tm_f32_v2")
+        .ok();
+    let select_topk_candidates_v2 = bt_module
+        .get_function("select_topk_from_candidates_tm_f32_v2")
+        .ok();
+    let select_v2_supported = !kernel_force_legacy_topk_enabled()
+        && select_topk_pairs_v2.is_some()
+        && select_topk_candidates_v2.is_some();
     let gather_topk = bt_module
         .get_function("gather_topk_pairs_tm_f32")
         .map_err(|e| e.to_string())?;
+    let select_topk_rows_legacy = bt_module.get_function("select_topk_metric_rows_f32").ok();
+    let select_topk_rows_candidates_legacy = bt_module
+        .get_function("select_topk_metric_rows_from_candidates_f32")
+        .ok();
+    let select_topk_rows_v2 = bt_module
+        .get_function("select_topk_metric_rows_f32_v2")
+        .ok();
+    let select_topk_rows_candidates_v2 = bt_module
+        .get_function("select_topk_metric_rows_from_candidates_f32_v2")
+        .ok();
+    let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
 
-    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n)?;
-    let d_lr = scratch.d_lr.as_ref().unwrap();
+    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
+    let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     unsafe {
         let mut prices_ptr = d_close.as_device_ptr().as_raw();
         let mut t_i = n as i32;
-        let mut out_ptr = d_lr.as_device_ptr().as_raw();
+        let mut out_ptr = d_lr_ptr;
         let block_x: u32 = 256;
         let grid_x: u32 = ((n as u32) + block_x - 1) / block_x;
         let args: &mut [*mut c_void] = &mut [
@@ -1936,29 +2580,66 @@ fn optimize_double_ma_gpu_kernel_impl(
         .and_then(|v| v.checked_mul(metrics_count))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
 
-    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile, bt_stream)?;
     if use_fast_path {
         scratch.d_fast_ma = None;
     } else {
-        KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma, fast_ma_cap)?;
+        KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma, fast_ma_cap, bt_stream)?;
     }
-    KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma_tm, fast_ma_cap)?;
-    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma_tm, fast_ma_cap, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile, bt_stream)?;
     if use_fast_path {
         scratch.d_slow_ma = None;
     } else {
-        KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma, slow_ma_cap)?;
+        KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma, slow_ma_cap, bt_stream)?;
     }
-    KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap)?;
-    KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
     let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile.max(1));
     let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile.max(1));
 
+    let constraints_on_device = constraints.is_some() && !include_all && select_v2_supported;
+    let host_filter_mode = constraints.is_some() && !include_all && !constraints_on_device;
+    let row_select_v2_supported = !kernel_force_legacy_topk_enabled()
+        && select_topk_rows_v2.is_some()
+        && select_topk_rows_candidates_v2.is_some();
+    let global_topk_mode = kernel_global_topk_enabled()
+        && !include_all
+        && !export_enabled
+        && !host_filter_mode
+        && topk_select > 0
+        && select_topk_rows_legacy.is_some()
+        && select_topk_rows_candidates_legacy.is_some()
+        && gather_topk_rows.is_some();
+    let global_constraints_on_device =
+        constraints.is_some() && global_topk_mode && row_select_v2_supported;
+    let (constraint_use_min_trades, constraint_min_trades) =
+        match constraints.and_then(|c| c.min_trades) {
+            Some(v) => (1i32, v as f32),
+            None => (0i32, 0.0f32),
+        };
+    let (constraint_use_max_dd, constraint_max_dd) = match constraints.and_then(|c| c.max_drawdown)
+    {
+        Some(v) => (1i32, v as f32),
+        None => (0i32, f32::INFINITY),
+    };
     let mut tile_host_buf: Vec<f32> = Vec::new();
-    if include_all || export_enabled {
+    if include_all || export_enabled || host_filter_mode {
         tile_host_buf.resize(tile_out_cap, 0.0);
     }
+
+    let mut global_fast_rows: Option<DeviceBuffer<i32>> = None;
+    let mut global_slow_rows: Option<DeviceBuffer<i32>> = None;
+    let mut global_metrics_rows: Option<DeviceBuffer<f32>> = None;
+    let mut global_rows_len: usize = 0;
+    let global_rows_cap: usize = if global_topk_mode {
+        topk_select
+            .saturating_mul(4096)
+            .max(topk_select.saturating_mul(8))
+    } else {
+        0
+    };
 
     let mut top_fast_host: Vec<i32> = Vec::new();
     let mut top_slow_host: Vec<i32> = Vec::new();
@@ -1969,19 +2650,32 @@ fn optimize_double_ma_gpu_kernel_impl(
         let blocks_max = (max_pairs_tile + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
         let cand_len_max = blocks_max.saturating_mul(topk_select).max(topk_select);
 
-        KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len_max)?;
-        KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len_max)?;
-        KernelScratch::ensure_len_i32(&mut scratch.d_top_fast, topk_select)?;
-        KernelScratch::ensure_len_i32(&mut scratch.d_top_slow, topk_select)?;
-        KernelScratch::ensure_len_f32(&mut scratch.d_top_metrics, topk_select * metrics_count)?;
+        KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len_max, bt_stream)?;
+        KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len_max, bt_stream)?;
+        KernelScratch::ensure_len_i32(&mut scratch.d_top_fast, topk_select, bt_stream)?;
+        KernelScratch::ensure_len_i32(&mut scratch.d_top_slow, topk_select, bt_stream)?;
+        KernelScratch::ensure_len_f32(
+            &mut scratch.d_top_metrics,
+            topk_select * metrics_count,
+            bt_stream,
+        )?;
         top_fast_host.resize(topk_select, 0);
         top_slow_host.resize(topk_select, 0);
         top_metrics_host.resize(topk_select * metrics_count, f32::NAN);
+        if global_topk_mode {
+            KernelScratch::ensure_len_i32(&mut global_fast_rows, global_rows_cap, bt_stream)?;
+            KernelScratch::ensure_len_i32(&mut global_slow_rows, global_rows_cap, bt_stream)?;
+            KernelScratch::ensure_len_f32(
+                &mut global_metrics_rows,
+                global_rows_cap.saturating_mul(metrics_count),
+                bt_stream,
+            )?;
+        }
 
         if heatmap_cfg.is_some() {
             let heatmap_len = heatmap_bins.saturating_mul(heatmap_bins);
             if heatmap_len > 0 {
-                KernelScratch::ensure_len_f32(&mut scratch.d_heatmap, heatmap_len)?;
+                KernelScratch::ensure_len_f32(&mut scratch.d_heatmap, heatmap_len, bt_stream)?;
                 unsafe {
                     let mut out_ptr = scratch.d_heatmap.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut n_i = heatmap_len as i32;
@@ -2007,6 +2701,29 @@ fn optimize_double_ma_gpu_kernel_impl(
     let eps_rel = strategy_kernel.eps_rel;
     let stop_log = strategy_kernel.stop_log;
     let take_log = strategy_kernel.take_log;
+    let regime_use = if d_regime.is_some() { 1i32 } else { 0i32 };
+    let regime_use_hybrid = if d_regime.is_some() && strategy.uses_regime_hybrid_filter() {
+        1i32
+    } else {
+        0i32
+    };
+    let regime_entry_rel = if regime_use_hybrid != 0 {
+        strategy.regime_hybrid_reversion_entry_rel() as f32
+    } else {
+        0.0
+    };
+    let regime_exit_rel = if regime_use_hybrid != 0 {
+        strategy.regime_hybrid_reversion_exit_rel() as f32
+    } else {
+        0.0
+    };
+    // Graph replay is currently limited to non-heatmap runs; heatmap parity can diverge
+    // between batched/unbatched when score+heatmap nodes are captured and reused.
+    let use_cuda_graphs =
+        kernel_cuda_graphs_enabled() && !include_all && !host_filter_mode && heatmap_cfg.is_none();
+    let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
+    let mut tile_graph_shape: Option<(usize, usize, usize, bool)> = None;
+    let mut graph_capture_disabled = false;
 
     let mut f_start = 0usize;
     while f_start < f_total {
@@ -2020,6 +2737,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         );
         let f_pad = host_p_fast.last().copied().unwrap_or(2);
         host_p_fast.resize(pf_tile, f_pad);
+        // Host period vectors are pageable and mutated per tile; keep this copy
+        // synchronous to avoid host-data races with async H2D semantics.
         scratch
             .d_fast_p
             .as_mut()
@@ -2086,6 +2805,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             );
             let s_pad = host_p_slow.last().copied().unwrap_or(2);
             host_p_slow.resize(ps_tile, s_pad);
+            // Host period vectors are pageable and mutated per tile; keep this copy
+            // synchronous to avoid host-data races with async H2D semantics.
             scratch
                 .d_slow_p
                 .as_mut()
@@ -2153,110 +2874,158 @@ fn optimize_double_ma_gpu_kernel_impl(
                 ));
             }
 
-            unsafe {
-                let mut f_ma_tm = scratch
-                    .d_fast_ma_tm
-                    .as_ref()
-                    .unwrap()
-                    .as_device_ptr()
-                    .as_raw();
-                let mut s_ma_tm = scratch
-                    .d_slow_ma_tm
-                    .as_ref()
-                    .unwrap()
-                    .as_device_ptr()
-                    .as_raw();
-                let mut lr = d_lr.as_device_ptr().as_raw();
-                let mut t_i = n as i32;
-                let mut pf_tile_i = pf as i32;
-                let mut ps_tile_i = ps as i32;
-                let mut pf_total_i = pf as i32;
-                let mut ps_total_i = ps as i32;
-                let mut f_off = 0i32;
-                let mut s_off = 0i32;
-                let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
-                let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                let mut fv = first_valid as i32;
-                let mut commission = commission;
-                let mut eps_rel = eps_rel;
-                let mut stop_log = stop_log;
-                let mut take_log = take_log;
-                let mut flags_u = flags;
-                let mut m_i = metrics_count as i32;
-                let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-
-                let block_x: u32 = 256;
-                let grid_x: u32 = ((pairs as u32) + block_x - 1) / block_x;
-                let args: &mut [*mut c_void] = &mut [
-                    &mut f_ma_tm as *mut _ as *mut c_void,
-                    &mut s_ma_tm as *mut _ as *mut c_void,
-                    &mut lr as *mut _ as *mut c_void,
-                    &mut t_i as *mut _ as *mut c_void,
-                    &mut pf_tile_i as *mut _ as *mut c_void,
-                    &mut ps_tile_i as *mut _ as *mut c_void,
-                    &mut pf_total_i as *mut _ as *mut c_void,
-                    &mut ps_total_i as *mut _ as *mut c_void,
-                    &mut f_off as *mut _ as *mut c_void,
-                    &mut s_off as *mut _ as *mut c_void,
-                    &mut f_per as *mut _ as *mut c_void,
-                    &mut s_per as *mut _ as *mut c_void,
-                    &mut fv as *mut _ as *mut c_void,
-                    &mut commission as *mut _ as *mut c_void,
-                    &mut eps_rel as *mut _ as *mut c_void,
-                    &mut stop_log as *mut _ as *mut c_void,
-                    &mut take_log as *mut _ as *mut c_void,
-                    &mut flags_u as *mut _ as *mut c_void,
-                    &mut m_i as *mut _ as *mut c_void,
-                    &mut out_ptr as *mut _ as *mut c_void,
-                ];
-                bt_stream
-                    .launch(&backtest, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                    .map_err(|e| e.to_string())?;
-            }
-
-            if let (Some(h), Some((f_min, f_max, s_min, s_max))) =
-                (scratch.d_heatmap.as_ref(), heatmap_cfg)
-            {
+            let launch_score_stage = || -> Result<(), String> {
                 unsafe {
-                    let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut pairs_i = pairs as i32;
-                    let mut m_i = metrics_count as i32;
-                    let mut pf_i = pf as i32;
-                    let mut ps_i = ps as i32;
+                    let mut f_ma_tm = scratch
+                        .d_fast_ma_tm
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let mut s_ma_tm = scratch
+                        .d_slow_ma_tm
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let mut lr = d_lr_ptr;
+                    let mut t_i = n as i32;
+                    let mut pf_tile_i = pf as i32;
+                    let mut ps_tile_i = ps as i32;
+                    let mut pf_total_i = pf as i32;
+                    let mut ps_total_i = ps as i32;
+                    let mut f_off = 0i32;
+                    let mut s_off = 0i32;
                     let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut obj_i = objective_i;
-                    let mut bins_f = heatmap_bins as i32;
-                    let mut bins_s = heatmap_bins as i32;
-                    let mut f_min_i = f_min as i32;
-                    let mut f_max_i = f_max as i32;
-                    let mut s_min_i = s_min as i32;
-                    let mut s_max_i = s_max as i32;
-                    let mut out_ptr = h.as_device_ptr().as_raw();
+                    let mut regime_ptr = d_regime
+                        .as_ref()
+                        .map(|d| d.as_device_ptr().as_raw())
+                        .unwrap_or(0);
+                    let mut use_regime_i = regime_use;
+                    let mut use_regime_hybrid_i = regime_use_hybrid;
+                    let mut regime_entry = regime_entry_rel;
+                    let mut regime_exit = regime_exit_rel;
+                    let mut fv = first_valid as i32;
+                    let mut commission = commission;
+                    let mut eps_rel = eps_rel;
+                    let mut stop_log = stop_log;
+                    let mut take_log = take_log;
+                    let mut flags_u = flags;
+                    let mut m_i = metrics_count as i32;
+                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
 
                     let block_x: u32 = 256;
                     let grid_x: u32 = ((pairs as u32) + block_x - 1) / block_x;
                     let args: &mut [*mut c_void] = &mut [
-                        &mut metrics_ptr as *mut _ as *mut c_void,
-                        &mut pairs_i as *mut _ as *mut c_void,
-                        &mut m_i as *mut _ as *mut c_void,
-                        &mut pf_i as *mut _ as *mut c_void,
-                        &mut ps_i as *mut _ as *mut c_void,
+                        &mut f_ma_tm as *mut _ as *mut c_void,
+                        &mut s_ma_tm as *mut _ as *mut c_void,
+                        &mut lr as *mut _ as *mut c_void,
+                        &mut t_i as *mut _ as *mut c_void,
+                        &mut pf_tile_i as *mut _ as *mut c_void,
+                        &mut ps_tile_i as *mut _ as *mut c_void,
+                        &mut pf_total_i as *mut _ as *mut c_void,
+                        &mut ps_total_i as *mut _ as *mut c_void,
+                        &mut f_off as *mut _ as *mut c_void,
+                        &mut s_off as *mut _ as *mut c_void,
                         &mut f_per as *mut _ as *mut c_void,
                         &mut s_per as *mut _ as *mut c_void,
-                        &mut obj_i as *mut _ as *mut c_void,
-                        &mut bins_f as *mut _ as *mut c_void,
-                        &mut bins_s as *mut _ as *mut c_void,
-                        &mut f_min_i as *mut _ as *mut c_void,
-                        &mut f_max_i as *mut _ as *mut c_void,
-                        &mut s_min_i as *mut _ as *mut c_void,
-                        &mut s_max_i as *mut _ as *mut c_void,
+                        &mut regime_ptr as *mut _ as *mut c_void,
+                        &mut use_regime_i as *mut _ as *mut c_void,
+                        &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                        &mut regime_entry as *mut _ as *mut c_void,
+                        &mut regime_exit as *mut _ as *mut c_void,
+                        &mut fv as *mut _ as *mut c_void,
+                        &mut commission as *mut _ as *mut c_void,
+                        &mut eps_rel as *mut _ as *mut c_void,
+                        &mut stop_log as *mut _ as *mut c_void,
+                        &mut take_log as *mut _ as *mut c_void,
+                        &mut flags_u as *mut _ as *mut c_void,
+                        &mut m_i as *mut _ as *mut c_void,
                         &mut out_ptr as *mut _ as *mut c_void,
                     ];
                     bt_stream
-                        .launch(&heatmap_update, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .launch(&backtest, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                         .map_err(|e| e.to_string())?;
                 }
+
+                if let (Some(h), Some((f_min, f_max, s_min, s_max))) =
+                    (scratch.d_heatmap.as_ref(), heatmap_cfg)
+                {
+                    unsafe {
+                        let mut metrics_ptr =
+                            scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut pairs_i = pairs as i32;
+                        let mut m_i = metrics_count as i32;
+                        let mut pf_i = pf as i32;
+                        let mut ps_i = ps as i32;
+                        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut obj_i = objective_i;
+                        let mut bins_f = heatmap_bins as i32;
+                        let mut bins_s = heatmap_bins as i32;
+                        let mut f_min_i = f_min as i32;
+                        let mut f_max_i = f_max as i32;
+                        let mut s_min_i = s_min as i32;
+                        let mut s_max_i = s_max as i32;
+                        let mut out_ptr = h.as_device_ptr().as_raw();
+
+                        let block_x: u32 = 256;
+                        let grid_x: u32 = ((pairs as u32) + block_x - 1) / block_x;
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut metrics_ptr as *mut _ as *mut c_void,
+                            &mut pairs_i as *mut _ as *mut c_void,
+                            &mut m_i as *mut _ as *mut c_void,
+                            &mut pf_i as *mut _ as *mut c_void,
+                            &mut ps_i as *mut _ as *mut c_void,
+                            &mut f_per as *mut _ as *mut c_void,
+                            &mut s_per as *mut _ as *mut c_void,
+                            &mut obj_i as *mut _ as *mut c_void,
+                            &mut bins_f as *mut _ as *mut c_void,
+                            &mut bins_s as *mut _ as *mut c_void,
+                            &mut f_min_i as *mut _ as *mut c_void,
+                            &mut f_max_i as *mut _ as *mut c_void,
+                            &mut s_min_i as *mut _ as *mut c_void,
+                            &mut s_max_i as *mut _ as *mut c_void,
+                            &mut out_ptr as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(&heatmap_update, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok(())
+            };
+
+            let can_graph_tile = use_cuda_graphs
+                && !graph_capture_disabled
+                && pf == pf_tile
+                && ps == ps_tile
+                && !host_filter_mode;
+            if can_graph_tile {
+                let shape = (pf, ps, pairs, heatmap_cfg.is_some());
+                let reusable = tile_graph_shape.map_or(false, |s| s == shape);
+                if !reusable {
+                    tile_graph_exec = None;
+                    tile_graph_shape = None;
+                    match capture_graph_exec(bt_stream, || launch_score_stage()) {
+                        Ok(exec) => {
+                            tile_graph_shape = Some(shape);
+                            tile_graph_exec = Some(exec);
+                        }
+                        Err(_e) => {
+                            graph_capture_disabled = true;
+                            launch_score_stage()?;
+                        }
+                    }
+                }
+                if !graph_capture_disabled {
+                    if let Some(exec) = tile_graph_exec.as_ref() {
+                        exec.launch(bt_stream)?;
+                    }
+                }
+            } else {
+                launch_score_stage()?;
             }
 
             if include_all {
@@ -2310,31 +3079,31 @@ fn optimize_double_ma_gpu_kernel_impl(
                         };
                         let sharpe = if std > 0.0 { mean / std } else { 0.0 };
 
-                        let params = DoubleMaParams {
-                            fast_len,
-                            slow_len,
-                            fast_ma_id: 0,
-                            slow_ma_id: 0,
-                        };
-                        agg.push(
-                            params,
-                            Metrics {
-                                pnl,
-                                sharpe,
-                                sortino: 0.0,
-                                calmar: calmar_ratio(pnl, max_dd),
-                                omega: 0.0,
-                                volatility: std,
-                                max_dd,
-                                trades: if trades.is_finite() && trades >= 0.0 {
-                                    trades as u32
-                                } else {
-                                    0
-                                },
-                                exposure,
-                                net_exposure,
+                        let metrics = Metrics {
+                            pnl,
+                            sharpe,
+                            sortino: 0.0,
+                            calmar: calmar_ratio(pnl, max_dd),
+                            omega: 0.0,
+                            volatility: std,
+                            max_dd,
+                            trades: if trades.is_finite() && trades >= 0.0 {
+                                trades as u32
+                            } else {
+                                0
                             },
-                        );
+                            exposure,
+                            net_exposure,
+                        };
+                        if metrics_pass_constraints(&metrics, constraints) {
+                            let params = DoubleMaParams {
+                                fast_len,
+                                slow_len,
+                                fast_ma_id: 0,
+                                slow_ma_id: 0,
+                            };
+                            agg.push(params, metrics);
+                        }
                         processed = processed.saturating_add(1);
                         if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
@@ -2349,6 +3118,133 @@ fn optimize_double_ma_gpu_kernel_impl(
                 for &f in fast_chunk {
                     let idx = slow_chunk.partition_point(|&s| s <= f);
                     tile_valid = tile_valid.saturating_add(s_len.saturating_sub(idx));
+                }
+
+                if host_filter_mode {
+                    bt_stream.synchronize().map_err(|e| e.to_string())?;
+                    scratch
+                        .d_tile
+                        .as_ref()
+                        .unwrap()
+                        .copy_to(&mut tile_host_buf)
+                        .map_err(|e| e.to_string())?;
+
+                    let mut exported = 0usize;
+                    for i in 0..pf {
+                        let fast_len = fast_periods[f_start + i];
+                        for j in 0..ps {
+                            let slow_len = slow_periods[s_start + j];
+                            if fast_len >= slow_len {
+                                continue;
+                            }
+
+                            let src_base = (i * ps + j) * metrics_count;
+                            if src_base + metrics_count > tile_host_buf.len() {
+                                continue;
+                            }
+                            let pnl = tile_host_buf[src_base + 0] as f64;
+                            let trades = if metrics_count > 1 {
+                                tile_host_buf[src_base + 1]
+                            } else {
+                                0.0
+                            };
+                            let max_dd = if metrics_count > 2 {
+                                tile_host_buf[src_base + 2] as f64
+                            } else {
+                                0.0
+                            };
+                            let mean = if metrics_count > 3 {
+                                tile_host_buf[src_base + 3] as f64
+                            } else {
+                                0.0
+                            };
+                            let std = if metrics_count > 4 {
+                                tile_host_buf[src_base + 4] as f64
+                            } else {
+                                0.0
+                            };
+                            let exposure = if metrics_count > 5 {
+                                tile_host_buf[src_base + 5] as f64
+                            } else {
+                                0.0
+                            };
+                            let net_exposure = if metrics_count > 6 {
+                                tile_host_buf[src_base + 6] as f64
+                            } else {
+                                0.0
+                            };
+                            let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+
+                            let metrics = Metrics {
+                                pnl,
+                                sharpe,
+                                sortino: 0.0,
+                                calmar: calmar_ratio(pnl, max_dd),
+                                omega: 0.0,
+                                volatility: std,
+                                max_dd,
+                                trades: if trades.is_finite() && trades >= 0.0 {
+                                    trades as u32
+                                } else {
+                                    0
+                                },
+                                exposure,
+                                net_exposure,
+                            };
+                            if !metrics_pass_constraints(&metrics, constraints) {
+                                continue;
+                            }
+
+                            let params = DoubleMaParams {
+                                fast_len,
+                                slow_len,
+                                fast_ma_id: 0,
+                                slow_ma_id: 0,
+                            };
+                            agg.push(params, metrics.clone());
+
+                            if let Some(w) = export_writer.as_mut() {
+                                let score = match objective {
+                                    ObjectiveKind::Pnl => pnl,
+                                    ObjectiveKind::Sharpe => sharpe,
+                                    ObjectiveKind::MaxDrawdown => -max_dd,
+                                    ObjectiveKind::Calmar => calmar_ratio(pnl, max_dd),
+                                    ObjectiveKind::Volatility => -std,
+                                    ObjectiveKind::Sortino | ObjectiveKind::Omega => {
+                                        f64::NEG_INFINITY
+                                    }
+                                };
+                                writeln!(
+                                    w,
+                                    "{},{},{},{},{},{},{},{},{},{},{}",
+                                    fast_ma.as_str(),
+                                    slow_ma.as_str(),
+                                    fast_len,
+                                    slow_len,
+                                    pnl,
+                                    sharpe,
+                                    max_dd,
+                                    metrics.trades,
+                                    exposure,
+                                    net_exposure,
+                                    score
+                                )
+                                .map_err(|e| e.to_string())?;
+                                exported = exported.saturating_add(1);
+                                if (exported & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
+                                    return Err("cancelled".to_string());
+                                }
+                            }
+                        }
+                    }
+
+                    processed = processed.saturating_add(tile_valid);
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
+                    }
+                    emit_progress(progress, processed, total_pairs, "gpu-kernel");
+                    s_start += ps;
+                    continue;
                 }
 
                 let blocks1 = (pairs + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
@@ -2370,21 +3266,61 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                     let block_x: u32 = 256;
                     let grid_x: u32 = blocks1 as u32;
-                    let args: &mut [*mut c_void] = &mut [
-                        &mut metrics_ptr as *mut _ as *mut c_void,
-                        &mut pairs_i as *mut _ as *mut c_void,
-                        &mut m_i as *mut _ as *mut c_void,
-                        &mut pf_i as *mut _ as *mut c_void,
-                        &mut ps_i as *mut _ as *mut c_void,
-                        &mut f_per as *mut _ as *mut c_void,
-                        &mut s_per as *mut _ as *mut c_void,
-                        &mut obj_i as *mut _ as *mut c_void,
-                        &mut topk_i as *mut _ as *mut c_void,
-                        &mut out_ptr as *mut _ as *mut c_void,
-                    ];
-                    bt_stream
-                        .launch(&select_topk_pairs, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    if constraints_on_device {
+                        let mut use_min_trades = constraint_use_min_trades;
+                        let mut min_trades = constraint_min_trades;
+                        let mut use_max_dd = constraint_use_max_dd;
+                        let mut max_dd = constraint_max_dd;
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut metrics_ptr as *mut _ as *mut c_void,
+                            &mut pairs_i as *mut _ as *mut c_void,
+                            &mut m_i as *mut _ as *mut c_void,
+                            &mut pf_i as *mut _ as *mut c_void,
+                            &mut ps_i as *mut _ as *mut c_void,
+                            &mut f_per as *mut _ as *mut c_void,
+                            &mut s_per as *mut _ as *mut c_void,
+                            &mut obj_i as *mut _ as *mut c_void,
+                            &mut topk_i as *mut _ as *mut c_void,
+                            &mut use_min_trades as *mut _ as *mut c_void,
+                            &mut min_trades as *mut _ as *mut c_void,
+                            &mut use_max_dd as *mut _ as *mut c_void,
+                            &mut max_dd as *mut _ as *mut c_void,
+                            &mut out_ptr as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(
+                                select_topk_pairs_v2.as_ref().ok_or_else(|| {
+                                    "missing select_topk_from_pairs_tm_f32_v2".to_string()
+                                })?,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut metrics_ptr as *mut _ as *mut c_void,
+                            &mut pairs_i as *mut _ as *mut c_void,
+                            &mut m_i as *mut _ as *mut c_void,
+                            &mut pf_i as *mut _ as *mut c_void,
+                            &mut ps_i as *mut _ as *mut c_void,
+                            &mut f_per as *mut _ as *mut c_void,
+                            &mut s_per as *mut _ as *mut c_void,
+                            &mut obj_i as *mut _ as *mut c_void,
+                            &mut topk_i as *mut _ as *mut c_void,
+                            &mut out_ptr as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(
+                                &select_topk_pairs_legacy,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
 
                 let mut blocks_prev = blocks1;
@@ -2418,29 +3354,65 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                         let block_x: u32 = 256;
                         let grid_x: u32 = blocks_next as u32;
-                        let args: &mut [*mut c_void] = &mut [
-                            &mut metrics_ptr as *mut _ as *mut c_void,
-                            &mut pairs_i as *mut _ as *mut c_void,
-                            &mut m_i as *mut _ as *mut c_void,
-                            &mut pf_i as *mut _ as *mut c_void,
-                            &mut ps_i as *mut _ as *mut c_void,
-                            &mut f_per as *mut _ as *mut c_void,
-                            &mut s_per as *mut _ as *mut c_void,
-                            &mut obj_i as *mut _ as *mut c_void,
-                            &mut topk_i as *mut _ as *mut c_void,
-                            &mut in_ptr as *mut _ as *mut c_void,
-                            &mut in_len_i as *mut _ as *mut c_void,
-                            &mut out_ptr as *mut _ as *mut c_void,
-                        ];
-                        bt_stream
-                            .launch(
-                                &select_topk_candidates,
-                                (grid_x, 1, 1),
-                                (block_x, 1, 1),
-                                0,
-                                args,
-                            )
-                            .map_err(|e| e.to_string())?;
+                        if constraints_on_device {
+                            let mut use_min_trades = constraint_use_min_trades;
+                            let mut min_trades = constraint_min_trades;
+                            let mut use_max_dd = constraint_use_max_dd;
+                            let mut max_dd = constraint_max_dd;
+                            let args: &mut [*mut c_void] = &mut [
+                                &mut metrics_ptr as *mut _ as *mut c_void,
+                                &mut pairs_i as *mut _ as *mut c_void,
+                                &mut m_i as *mut _ as *mut c_void,
+                                &mut pf_i as *mut _ as *mut c_void,
+                                &mut ps_i as *mut _ as *mut c_void,
+                                &mut f_per as *mut _ as *mut c_void,
+                                &mut s_per as *mut _ as *mut c_void,
+                                &mut obj_i as *mut _ as *mut c_void,
+                                &mut topk_i as *mut _ as *mut c_void,
+                                &mut in_ptr as *mut _ as *mut c_void,
+                                &mut in_len_i as *mut _ as *mut c_void,
+                                &mut use_min_trades as *mut _ as *mut c_void,
+                                &mut min_trades as *mut _ as *mut c_void,
+                                &mut use_max_dd as *mut _ as *mut c_void,
+                                &mut max_dd as *mut _ as *mut c_void,
+                                &mut out_ptr as *mut _ as *mut c_void,
+                            ];
+                            bt_stream
+                                .launch(
+                                    select_topk_candidates_v2.as_ref().ok_or_else(|| {
+                                        "missing select_topk_from_candidates_tm_f32_v2".to_string()
+                                    })?,
+                                    (grid_x, 1, 1),
+                                    (block_x, 1, 1),
+                                    0,
+                                    args,
+                                )
+                                .map_err(|e| e.to_string())?;
+                        } else {
+                            let args: &mut [*mut c_void] = &mut [
+                                &mut metrics_ptr as *mut _ as *mut c_void,
+                                &mut pairs_i as *mut _ as *mut c_void,
+                                &mut m_i as *mut _ as *mut c_void,
+                                &mut pf_i as *mut _ as *mut c_void,
+                                &mut ps_i as *mut _ as *mut c_void,
+                                &mut f_per as *mut _ as *mut c_void,
+                                &mut s_per as *mut _ as *mut c_void,
+                                &mut obj_i as *mut _ as *mut c_void,
+                                &mut topk_i as *mut _ as *mut c_void,
+                                &mut in_ptr as *mut _ as *mut c_void,
+                                &mut in_len_i as *mut _ as *mut c_void,
+                                &mut out_ptr as *mut _ as *mut c_void,
+                            ];
+                            bt_stream
+                                .launch(
+                                    &select_topk_candidates_legacy,
+                                    (grid_x, 1, 1),
+                                    (block_x, 1, 1),
+                                    0,
+                                    args,
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
                     }
                     in_is_a = !in_is_a;
                     blocks_prev = blocks_next;
@@ -2501,178 +3473,304 @@ fn optimize_double_ma_gpu_kernel_impl(
                         .map_err(|e| e.to_string())?;
                 }
 
-                bt_stream.synchronize().map_err(|e| e.to_string())?;
-
-                if let Some(w) = export_writer.as_mut() {
-                    scratch
-                        .d_tile
+                if global_topk_mode {
+                    let global_fast = global_fast_rows
                         .as_ref()
-                        .unwrap()
-                        .copy_to(&mut tile_host_buf)
-                        .map_err(|e| e.to_string())?;
+                        .ok_or_else(|| "missing global fast-row buffer".to_string())?;
+                    let global_slow = global_slow_rows
+                        .as_ref()
+                        .ok_or_else(|| "missing global slow-row buffer".to_string())?;
+                    let global_metrics = global_metrics_rows
+                        .as_ref()
+                        .ok_or_else(|| "missing global metrics-row buffer".to_string())?;
+                    let row_i32_bytes = topk_select
+                        .checked_mul(std::mem::size_of::<i32>())
+                        .ok_or_else(|| "topk row bytes overflow (i32)".to_string())?;
+                    let row_metrics_bytes = topk_select
+                        .checked_mul(metrics_count)
+                        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+                        .ok_or_else(|| "topk row bytes overflow (metrics)".to_string())?;
 
-                    let mut exported = 0usize;
-                    for i in 0..pf {
-                        let fast_len = fast_periods[f_start + i];
-                        for j in 0..ps {
-                            let slow_len = slow_periods[s_start + j];
-                            if fast_len >= slow_len {
-                                continue;
-                            }
+                    if global_rows_len.saturating_add(topk_select) > global_rows_cap {
+                        reduce_metric_rows_topk_on_device(
+                            bt_stream,
+                            scratch,
+                            global_fast,
+                            global_slow,
+                            global_metrics,
+                            global_rows_len,
+                            metrics_count,
+                            objective_i,
+                            topk_select,
+                            global_constraints_on_device,
+                            constraint_use_min_trades,
+                            constraint_min_trades,
+                            constraint_use_max_dd,
+                            constraint_max_dd,
+                            select_topk_rows_legacy
+                                .as_ref()
+                                .ok_or_else(|| "missing select_topk_metric_rows_f32".to_string())?,
+                            select_topk_rows_candidates_legacy.as_ref().ok_or_else(|| {
+                                "missing select_topk_metric_rows_from_candidates_f32".to_string()
+                            })?,
+                            select_topk_rows_v2.as_ref(),
+                            select_topk_rows_candidates_v2.as_ref(),
+                            gather_topk_rows
+                                .as_ref()
+                                .ok_or_else(|| "missing gather_topk_metric_rows_f32".to_string())?,
+                        )?;
 
-                            let src_base = (i * ps + j) * metrics_count;
-                            if src_base + metrics_count > tile_host_buf.len() {
-                                continue;
-                            }
-                            let pnl = tile_host_buf[src_base + 0] as f64;
-                            let trades = if metrics_count > 1 {
-                                tile_host_buf[src_base + 1]
-                            } else {
-                                0.0
-                            };
-                            let max_dd = if metrics_count > 2 {
-                                tile_host_buf[src_base + 2] as f64
-                            } else {
-                                0.0
-                            };
-                            let mean = if metrics_count > 3 {
-                                tile_host_buf[src_base + 3] as f64
-                            } else {
-                                0.0
-                            };
-                            let std = if metrics_count > 4 {
-                                tile_host_buf[src_base + 4] as f64
-                            } else {
-                                0.0
-                            };
-                            let exposure = if metrics_count > 5 {
-                                tile_host_buf[src_base + 5] as f64
-                            } else {
-                                0.0
-                            };
-                            let net_exposure = if metrics_count > 6 {
-                                tile_host_buf[src_base + 6] as f64
-                            } else {
-                                0.0
-                            };
-                            let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-                            let trades_u = if trades.is_finite() && trades >= 0.0 {
-                                trades as u32
-                            } else {
-                                0
-                            };
+                        cu_memcpy_d2d_async(
+                            global_fast.as_device_ptr().as_raw(),
+                            scratch
+                                .d_top_fast
+                                .as_ref()
+                                .unwrap()
+                                .as_device_ptr()
+                                .as_raw(),
+                            row_i32_bytes,
+                            bt_stream,
+                        )?;
+                        cu_memcpy_d2d_async(
+                            global_slow.as_device_ptr().as_raw(),
+                            scratch
+                                .d_top_slow
+                                .as_ref()
+                                .unwrap()
+                                .as_device_ptr()
+                                .as_raw(),
+                            row_i32_bytes,
+                            bt_stream,
+                        )?;
+                        cu_memcpy_d2d_async(
+                            global_metrics.as_device_ptr().as_raw(),
+                            scratch
+                                .d_top_metrics
+                                .as_ref()
+                                .unwrap()
+                                .as_device_ptr()
+                                .as_raw(),
+                            row_metrics_bytes,
+                            bt_stream,
+                        )?;
+                        global_rows_len = topk_select;
+                    }
 
-                            let score = match objective {
-                                ObjectiveKind::Pnl => pnl,
-                                ObjectiveKind::Sharpe => sharpe,
-                                ObjectiveKind::MaxDrawdown => -max_dd,
-                                ObjectiveKind::Calmar => calmar_ratio(pnl, max_dd),
-                                ObjectiveKind::Volatility => -std,
-                                ObjectiveKind::Sortino | ObjectiveKind::Omega => f64::NEG_INFINITY,
-                            };
+                    let dst_fast = global_fast
+                        .as_device_ptr()
+                        .as_raw()
+                        .saturating_add((global_rows_len * std::mem::size_of::<i32>()) as u64);
+                    let dst_slow = global_slow
+                        .as_device_ptr()
+                        .as_raw()
+                        .saturating_add((global_rows_len * std::mem::size_of::<i32>()) as u64);
+                    let dst_metrics = global_metrics.as_device_ptr().as_raw().saturating_add(
+                        (global_rows_len
+                            .saturating_mul(metrics_count)
+                            .saturating_mul(std::mem::size_of::<f32>()))
+                            as u64,
+                    );
+                    cu_memcpy_d2d_async(
+                        dst_fast,
+                        scratch
+                            .d_top_fast
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw(),
+                        row_i32_bytes,
+                        bt_stream,
+                    )?;
+                    cu_memcpy_d2d_async(
+                        dst_slow,
+                        scratch
+                            .d_top_slow
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw(),
+                        row_i32_bytes,
+                        bt_stream,
+                    )?;
+                    cu_memcpy_d2d_async(
+                        dst_metrics,
+                        scratch
+                            .d_top_metrics
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw(),
+                        row_metrics_bytes,
+                        bt_stream,
+                    )?;
+                    global_rows_len = global_rows_len.saturating_add(topk_select);
+                } else {
+                    bt_stream.synchronize().map_err(|e| e.to_string())?;
 
-                            writeln!(
-                                w,
-                                "{},{},{},{},{},{},{},{},{},{},{}",
-                                fast_ma.as_str(),
-                                slow_ma.as_str(),
-                                fast_len,
-                                slow_len,
-                                pnl,
-                                sharpe,
-                                max_dd,
-                                trades_u,
-                                exposure,
-                                net_exposure,
-                                score
-                            )
+                    if let Some(w) = export_writer.as_mut() {
+                        scratch
+                            .d_tile
+                            .as_ref()
+                            .unwrap()
+                            .copy_to(&mut tile_host_buf)
                             .map_err(|e| e.to_string())?;
 
-                            exported = exported.saturating_add(1);
-                            if (exported & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
-                                return Err("cancelled".to_string());
+                        let mut exported = 0usize;
+                        for i in 0..pf {
+                            let fast_len = fast_periods[f_start + i];
+                            for j in 0..ps {
+                                let slow_len = slow_periods[s_start + j];
+                                if fast_len >= slow_len {
+                                    continue;
+                                }
+
+                                let src_base = (i * ps + j) * metrics_count;
+                                if src_base + metrics_count > tile_host_buf.len() {
+                                    continue;
+                                }
+                                let pnl = tile_host_buf[src_base + 0] as f64;
+                                let trades = if metrics_count > 1 {
+                                    tile_host_buf[src_base + 1]
+                                } else {
+                                    0.0
+                                };
+                                let max_dd = if metrics_count > 2 {
+                                    tile_host_buf[src_base + 2] as f64
+                                } else {
+                                    0.0
+                                };
+                                let mean = if metrics_count > 3 {
+                                    tile_host_buf[src_base + 3] as f64
+                                } else {
+                                    0.0
+                                };
+                                let std = if metrics_count > 4 {
+                                    tile_host_buf[src_base + 4] as f64
+                                } else {
+                                    0.0
+                                };
+                                let exposure = if metrics_count > 5 {
+                                    tile_host_buf[src_base + 5] as f64
+                                } else {
+                                    0.0
+                                };
+                                let net_exposure = if metrics_count > 6 {
+                                    tile_host_buf[src_base + 6] as f64
+                                } else {
+                                    0.0
+                                };
+                                let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+                                let trades_u = if trades.is_finite() && trades >= 0.0 {
+                                    trades as u32
+                                } else {
+                                    0
+                                };
+
+                                let score = match objective {
+                                    ObjectiveKind::Pnl => pnl,
+                                    ObjectiveKind::Sharpe => sharpe,
+                                    ObjectiveKind::MaxDrawdown => -max_dd,
+                                    ObjectiveKind::Calmar => calmar_ratio(pnl, max_dd),
+                                    ObjectiveKind::Volatility => -std,
+                                    ObjectiveKind::Sortino | ObjectiveKind::Omega => {
+                                        f64::NEG_INFINITY
+                                    }
+                                };
+
+                                writeln!(
+                                    w,
+                                    "{},{},{},{},{},{},{},{},{},{},{}",
+                                    fast_ma.as_str(),
+                                    slow_ma.as_str(),
+                                    fast_len,
+                                    slow_len,
+                                    pnl,
+                                    sharpe,
+                                    max_dd,
+                                    trades_u,
+                                    exposure,
+                                    net_exposure,
+                                    score
+                                )
+                                .map_err(|e| e.to_string())?;
+
+                                exported = exported.saturating_add(1);
+                                if (exported & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
+                                    return Err("cancelled".to_string());
+                                }
                             }
                         }
                     }
-                }
 
-                scratch
-                    .d_top_fast
-                    .as_ref()
-                    .unwrap()
-                    .copy_to(&mut top_fast_host)
-                    .map_err(|e| e.to_string())?;
-                scratch
-                    .d_top_slow
-                    .as_ref()
-                    .unwrap()
-                    .copy_to(&mut top_slow_host)
-                    .map_err(|e| e.to_string())?;
-                scratch
-                    .d_top_metrics
-                    .as_ref()
-                    .unwrap()
-                    .copy_to(&mut top_metrics_host)
-                    .map_err(|e| e.to_string())?;
+                    scratch
+                        .d_top_fast
+                        .as_ref()
+                        .unwrap()
+                        .copy_to(&mut top_fast_host)
+                        .map_err(|e| e.to_string())?;
+                    scratch
+                        .d_top_slow
+                        .as_ref()
+                        .unwrap()
+                        .copy_to(&mut top_slow_host)
+                        .map_err(|e| e.to_string())?;
+                    scratch
+                        .d_top_metrics
+                        .as_ref()
+                        .unwrap()
+                        .copy_to(&mut top_metrics_host)
+                        .map_err(|e| e.to_string())?;
 
-                for r in 0..topk_select {
-                    let fast_len_i = top_fast_host[r];
-                    let slow_len_i = top_slow_host[r];
-                    if fast_len_i <= 0 || slow_len_i <= 0 {
-                        continue;
-                    }
-                    let fast_len = fast_len_i as u16;
-                    let slow_len = slow_len_i as u16;
-                    if fast_len >= slow_len {
-                        continue;
-                    }
+                    for r in 0..topk_select {
+                        let fast_len_i = top_fast_host[r];
+                        let slow_len_i = top_slow_host[r];
+                        if fast_len_i <= 0 || slow_len_i <= 0 {
+                            continue;
+                        }
+                        let fast_len = fast_len_i as u16;
+                        let slow_len = slow_len_i as u16;
+                        if fast_len >= slow_len {
+                            continue;
+                        }
 
-                    let base = r.saturating_mul(metrics_count);
-                    if base >= top_metrics_host.len() {
-                        continue;
-                    }
-                    let pnl = top_metrics_host[base + 0] as f64;
-                    let trades = if metrics_count > 1 {
-                        top_metrics_host[base + 1]
-                    } else {
-                        0.0
-                    };
-                    let max_dd = if metrics_count > 2 {
-                        top_metrics_host[base + 2] as f64
-                    } else {
-                        0.0
-                    };
-                    let mean = if metrics_count > 3 {
-                        top_metrics_host[base + 3] as f64
-                    } else {
-                        0.0
-                    };
-                    let std = if metrics_count > 4 {
-                        top_metrics_host[base + 4] as f64
-                    } else {
-                        0.0
-                    };
-                    let exposure = if metrics_count > 5 {
-                        top_metrics_host[base + 5] as f64
-                    } else {
-                        0.0
-                    };
-                    let net_exposure = if metrics_count > 6 {
-                        top_metrics_host[base + 6] as f64
-                    } else {
-                        0.0
-                    };
-                    let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+                        let base = r.saturating_mul(metrics_count);
+                        if base >= top_metrics_host.len() {
+                            continue;
+                        }
+                        let pnl = top_metrics_host[base + 0] as f64;
+                        let trades = if metrics_count > 1 {
+                            top_metrics_host[base + 1]
+                        } else {
+                            0.0
+                        };
+                        let max_dd = if metrics_count > 2 {
+                            top_metrics_host[base + 2] as f64
+                        } else {
+                            0.0
+                        };
+                        let mean = if metrics_count > 3 {
+                            top_metrics_host[base + 3] as f64
+                        } else {
+                            0.0
+                        };
+                        let std = if metrics_count > 4 {
+                            top_metrics_host[base + 4] as f64
+                        } else {
+                            0.0
+                        };
+                        let exposure = if metrics_count > 5 {
+                            top_metrics_host[base + 5] as f64
+                        } else {
+                            0.0
+                        };
+                        let net_exposure = if metrics_count > 6 {
+                            top_metrics_host[base + 6] as f64
+                        } else {
+                            0.0
+                        };
+                        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
 
-                    let params = DoubleMaParams {
-                        fast_len,
-                        slow_len,
-                        fast_ma_id: 0,
-                        slow_ma_id: 0,
-                    };
-                    agg.push(
-                        params,
-                        Metrics {
+                        let metrics = Metrics {
                             pnl,
                             sharpe,
                             sortino: 0.0,
@@ -2687,8 +3785,17 @@ fn optimize_double_ma_gpu_kernel_impl(
                             },
                             exposure,
                             net_exposure,
-                        },
-                    );
+                        };
+                        if metrics_pass_constraints(&metrics, constraints) {
+                            let params = DoubleMaParams {
+                                fast_len,
+                                slow_len,
+                                fast_ma_id: 0,
+                                slow_ma_id: 0,
+                            };
+                            agg.push(params, metrics);
+                        }
+                    }
                 }
 
                 processed = processed.saturating_add(tile_valid);
@@ -2703,6 +3810,141 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
 
         f_start += pf;
+    }
+
+    if global_topk_mode && !include_all && global_rows_len > 0 {
+        let global_fast = global_fast_rows
+            .as_ref()
+            .ok_or_else(|| "missing global fast-row buffer".to_string())?;
+        let global_slow = global_slow_rows
+            .as_ref()
+            .ok_or_else(|| "missing global slow-row buffer".to_string())?;
+        let global_metrics = global_metrics_rows
+            .as_ref()
+            .ok_or_else(|| "missing global metrics-row buffer".to_string())?;
+        reduce_metric_rows_topk_on_device(
+            bt_stream,
+            scratch,
+            global_fast,
+            global_slow,
+            global_metrics,
+            global_rows_len,
+            metrics_count,
+            objective_i,
+            topk_select,
+            global_constraints_on_device,
+            constraint_use_min_trades,
+            constraint_min_trades,
+            constraint_use_max_dd,
+            constraint_max_dd,
+            select_topk_rows_legacy
+                .as_ref()
+                .ok_or_else(|| "missing select_topk_metric_rows_f32".to_string())?,
+            select_topk_rows_candidates_legacy
+                .as_ref()
+                .ok_or_else(|| "missing select_topk_metric_rows_from_candidates_f32".to_string())?,
+            select_topk_rows_v2.as_ref(),
+            select_topk_rows_candidates_v2.as_ref(),
+            gather_topk_rows
+                .as_ref()
+                .ok_or_else(|| "missing gather_topk_metric_rows_f32".to_string())?,
+        )?;
+
+        bt_stream.synchronize().map_err(|e| e.to_string())?;
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .copy_to(&mut top_fast_host)
+            .map_err(|e| e.to_string())?;
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .copy_to(&mut top_slow_host)
+            .map_err(|e| e.to_string())?;
+        scratch
+            .d_top_metrics
+            .as_ref()
+            .unwrap()
+            .copy_to(&mut top_metrics_host)
+            .map_err(|e| e.to_string())?;
+
+        for r in 0..topk_select {
+            let fast_len_i = top_fast_host[r];
+            let slow_len_i = top_slow_host[r];
+            if fast_len_i <= 0 || slow_len_i <= 0 {
+                continue;
+            }
+            let fast_len = fast_len_i as u16;
+            let slow_len = slow_len_i as u16;
+            if fast_len >= slow_len {
+                continue;
+            }
+
+            let base = r.saturating_mul(metrics_count);
+            if base >= top_metrics_host.len() {
+                continue;
+            }
+            let pnl = top_metrics_host[base + 0] as f64;
+            let trades = if metrics_count > 1 {
+                top_metrics_host[base + 1]
+            } else {
+                0.0
+            };
+            let max_dd = if metrics_count > 2 {
+                top_metrics_host[base + 2] as f64
+            } else {
+                0.0
+            };
+            let mean = if metrics_count > 3 {
+                top_metrics_host[base + 3] as f64
+            } else {
+                0.0
+            };
+            let std = if metrics_count > 4 {
+                top_metrics_host[base + 4] as f64
+            } else {
+                0.0
+            };
+            let exposure = if metrics_count > 5 {
+                top_metrics_host[base + 5] as f64
+            } else {
+                0.0
+            };
+            let net_exposure = if metrics_count > 6 {
+                top_metrics_host[base + 6] as f64
+            } else {
+                0.0
+            };
+            let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+
+            let metrics = Metrics {
+                pnl,
+                sharpe,
+                sortino: 0.0,
+                calmar: calmar_ratio(pnl, max_dd),
+                omega: 0.0,
+                volatility: std,
+                max_dd,
+                trades: if trades.is_finite() && trades >= 0.0 {
+                    trades as u32
+                } else {
+                    0
+                },
+                exposure,
+                net_exposure,
+            };
+            if metrics_pass_constraints(&metrics, constraints) {
+                let params = DoubleMaParams {
+                    fast_len,
+                    slow_len,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                };
+                agg.push(params, metrics);
+            }
+        }
     }
 
     let heatmap_out: Option<OptimizationHeatmap> = if !include_all {
@@ -2783,11 +4025,13 @@ fn optimize_double_ma_gpu_kernel_impl(
             ma_source,
             fast_ma_params,
             slow_ma_params,
+            regime_filter,
             strategy,
             objective,
             0,
             true,
             cfg_recompute,
+            constraints,
             None,
             total_pairs_subset,
             0,
@@ -2824,7 +4068,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     if !kernel_persist_buffers_enabled() {
         rt.ma.clear_cached_constants();
-        rt.scratch.clear();
+        rt.scratch.clear_async(&rt.stream)?;
     }
 
     Ok(result)

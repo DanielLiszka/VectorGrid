@@ -345,6 +345,8 @@ fn main() -> Result<(), String> {
         top_k: Some(cli.optimize_top_k),
         include_all: Some(false),
         heatmap_bins: Some(cli.heatmap_bins),
+        constraints: None,
+        vdps: None,
     };
 
     let cancel = AtomicBool::new(false);
@@ -413,6 +415,8 @@ fn main() -> Result<(), String> {
         .and_then(|s| s.to_str())
         .unwrap_or("dataset")
         .to_string();
+    let validation_engine = ta_app_core::ValidationEngine::Vectorized;
+    let iterative_cfg = ta_app_core::IterativeSimConfig::default();
 
     let val_req = DoubleMaValidationRequest {
         data_id,
@@ -427,8 +431,8 @@ fn main() -> Result<(), String> {
         cscv_pbo,
         seed: cli.seed,
         max_candidates: cli.validate_max_candidates,
-        validation_engine: ta_app_core::ValidationEngine::Vectorized,
-        iterative: ta_app_core::IterativeSimConfig::default(),
+        validation_engine,
+        iterative: iterative_cfg.clone(),
         min_psr: None,
         min_dsr: None,
     };
@@ -466,6 +470,8 @@ fn main() -> Result<(), String> {
             cli.seed,
             &cli.cache_dir,
             &cancel,
+            validation_engine,
+            iterative_cfg.clone(),
         )?;
     }
 

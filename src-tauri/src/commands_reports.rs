@@ -3228,6 +3228,8 @@ mod tests {
             &app_cache_dir,
             &cancel,
             None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
         )
         .expect("cross validation");
 

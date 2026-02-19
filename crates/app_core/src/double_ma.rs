@@ -1,11 +1,13 @@
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
 use ta_strategies::double_ma::{
-    DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig,
+    DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig, Trade, TradeStats,
 };
 
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
@@ -49,6 +51,42 @@ fn default_halftrend_atr_period() -> u16 {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DoubleMaConstraints {
+    #[serde(default)]
+    pub min_trades: Option<u32>,
+    #[serde(default)]
+    pub max_drawdown: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct VdpsConfig {
+    #[serde(default)]
+    pub eta: Option<u32>,
+    #[serde(default)]
+    pub rungs: Option<Vec<f64>>,
+    #[serde(default)]
+    pub min_initial_pairs: Option<u32>,
+    #[serde(default)]
+    pub max_survivor_seeds: Option<u32>,
+    #[serde(default)]
+    pub max_period_candidates: Option<u32>,
+    #[serde(default)]
+    pub random_injection_ratio: Option<f64>,
+    #[serde(default)]
+    pub elite_mutation_ratio: Option<f64>,
+    #[serde(default)]
+    pub differential_ratio: Option<f64>,
+    #[serde(default)]
+    pub deterministic: Option<bool>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub quality_check_max_pairs: Option<u32>,
+    #[serde(default)]
+    pub quality_check_top_k: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DoubleMaRequest {
     pub backend: Backend,
     pub data_id: String,
@@ -71,6 +109,10 @@ pub struct DoubleMaRequest {
     pub top_k: Option<usize>,
     pub include_all: Option<bool>,
     pub heatmap_bins: Option<u16>,
+    #[serde(default)]
+    pub constraints: Option<DoubleMaConstraints>,
+    #[serde(default)]
+    pub vdps: Option<VdpsConfig>,
 }
 
 fn default_ma_source() -> String {
@@ -83,9 +125,10 @@ const DRILL_INDICATOR_MAX_POINTS: usize = 8_000;
 pub enum OptimizationModeResolved {
     Grid,
     CoarseToFine,
+    GpuVdps,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BackendUsed {
     Cpu,
     Gpu,
@@ -180,6 +223,55 @@ pub struct BackendOptimizationResult {
     pub all: Option<Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heatmap: Option<OptimizationHeatmap>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vdps: Option<VdpsTelemetry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VdpsTelemetry {
+    pub eta: u32,
+    pub rungs: Vec<f64>,
+    pub min_initial_pairs: u32,
+    pub max_survivor_seeds: u32,
+    pub max_period_candidates: u32,
+    pub random_injection_ratio: f64,
+    pub elite_mutation_ratio: f64,
+    pub differential_ratio: f64,
+    pub deterministic: bool,
+    pub seed: u64,
+    pub rng_kind: String,
+    pub tie_break_schema_version: String,
+    pub full_grid_pairs: usize,
+    pub full_fidelity_pairs_evaluated: usize,
+    pub full_fidelity_pairs_saved: usize,
+    pub evaluated_pairs_total: usize,
+    pub runtime_ms_total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_top_k_overlap: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_best_score_regret: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_baseline_runtime_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_baseline_backend: Option<BackendUsed>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_baseline_pairs: Option<usize>,
+    pub rung_stats: Vec<VdpsRungTelemetry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VdpsRungTelemetry {
+    pub rung_index: usize,
+    pub rung_fraction: f64,
+    pub target_pairs: usize,
+    pub evaluated_pairs: usize,
+    pub promoted_pairs: usize,
+    pub dropped_pairs: usize,
+    pub fast_candidates: usize,
+    pub slow_candidates: usize,
+    pub backend_used: BackendUsed,
+    pub runtime_ms: u64,
+    pub throughput_pairs_per_sec: f64,
 }
 
 fn objective_score(metrics: &ta_strategies::double_ma::Metrics, objective: ObjectiveKind) -> f64 {
@@ -202,6 +294,2124 @@ fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
             | ObjectiveKind::Omega
             | ObjectiveKind::Volatility
     )
+}
+
+const VDPS_DEFAULT_RUNGS: [f64; 5] = [0.0625, 0.125, 0.25, 0.5, 1.0];
+const VDPS_ELIMINATION_RATE: usize = 4;
+const VDPS_MIN_INITIAL_PAIRS: usize = 4_096;
+const VDPS_MAX_SURVIVOR_SEEDS: usize = 256;
+const VDPS_MAX_PERIOD_CANDIDATES: usize = 384;
+const VDPS_DEFAULT_RANDOM_INJECTION_RATIO: f64 = 0.10;
+const VDPS_DEFAULT_ELITE_MUTATION_RATIO: f64 = 0.50;
+const VDPS_DEFAULT_DIFFERENTIAL_RATIO: f64 = 0.40;
+const VDPS_DEFAULT_QUALITY_CHECK_MAX_PAIRS: usize = 0;
+const VDPS_DEFAULT_QUALITY_CHECK_TOP_K: usize = 20;
+const VDPS_MAX_RUNGS: usize = 16;
+
+#[derive(Clone, Debug)]
+struct VdpsResolvedConfig {
+    eta: usize,
+    rungs: Vec<f64>,
+    min_initial_pairs: usize,
+    max_survivor_seeds: usize,
+    max_period_candidates: usize,
+    random_injection_ratio: f64,
+    elite_mutation_ratio: f64,
+    differential_ratio: f64,
+    deterministic: bool,
+    seed: u64,
+    quality_check_max_pairs: usize,
+    quality_check_top_k: usize,
+}
+
+impl VdpsResolvedConfig {
+    #[inline]
+    fn from_request(cfg: Option<&VdpsConfig>) -> Result<Self, String> {
+        let eta = cfg
+            .and_then(|v| v.eta)
+            .unwrap_or(VDPS_ELIMINATION_RATE as u32);
+        if !(2..=32).contains(&eta) {
+            return Err("vdps.eta must be in [2, 32]".to_string());
+        }
+
+        let mut rungs = cfg
+            .and_then(|v| v.rungs.clone())
+            .unwrap_or_else(|| VDPS_DEFAULT_RUNGS.to_vec());
+        rungs.retain(|v| v.is_finite() && *v > 0.0);
+        for v in rungs.iter_mut() {
+            *v = v.clamp(0.000_001, 1.0);
+        }
+        rungs.sort_by(|a, b| a.total_cmp(b));
+        rungs.dedup_by(|a, b| (*a - *b).abs() <= f64::EPSILON);
+        if rungs.is_empty() {
+            return Err("vdps.rungs must include at least one positive fraction".to_string());
+        }
+        if rungs.len() > VDPS_MAX_RUNGS {
+            return Err(format!("vdps.rungs length must be <= {}", VDPS_MAX_RUNGS));
+        }
+        if rungs.last().copied().unwrap_or(1.0) < 1.0 {
+            rungs.push(1.0);
+        }
+
+        let min_initial_pairs = cfg
+            .and_then(|v| v.min_initial_pairs)
+            .unwrap_or(VDPS_MIN_INITIAL_PAIRS as u32);
+        if min_initial_pairs == 0 {
+            return Err("vdps.min_initial_pairs must be > 0".to_string());
+        }
+
+        let max_survivor_seeds = cfg
+            .and_then(|v| v.max_survivor_seeds)
+            .unwrap_or(VDPS_MAX_SURVIVOR_SEEDS as u32);
+        if max_survivor_seeds < 8 {
+            return Err("vdps.max_survivor_seeds must be >= 8".to_string());
+        }
+
+        let max_period_candidates = cfg
+            .and_then(|v| v.max_period_candidates)
+            .unwrap_or(VDPS_MAX_PERIOD_CANDIDATES as u32);
+        if max_period_candidates < 16 {
+            return Err("vdps.max_period_candidates must be >= 16".to_string());
+        }
+
+        let random_injection_ratio = cfg
+            .and_then(|v| v.random_injection_ratio)
+            .unwrap_or(VDPS_DEFAULT_RANDOM_INJECTION_RATIO);
+        if !(0.0..=1.0).contains(&random_injection_ratio) {
+            return Err("vdps.random_injection_ratio must be in [0, 1]".to_string());
+        }
+        let elite_mutation_ratio = cfg
+            .and_then(|v| v.elite_mutation_ratio)
+            .unwrap_or(VDPS_DEFAULT_ELITE_MUTATION_RATIO);
+        if !(0.0..=1.0).contains(&elite_mutation_ratio) {
+            return Err("vdps.elite_mutation_ratio must be in [0, 1]".to_string());
+        }
+        let differential_ratio = cfg
+            .and_then(|v| v.differential_ratio)
+            .unwrap_or(VDPS_DEFAULT_DIFFERENTIAL_RATIO);
+        if !(0.0..=1.0).contains(&differential_ratio) {
+            return Err("vdps.differential_ratio must be in [0, 1]".to_string());
+        }
+
+        let deterministic = cfg.and_then(|v| v.deterministic).unwrap_or(true);
+        let seed = cfg.and_then(|v| v.seed).unwrap_or(1);
+        let quality_check_max_pairs =
+            cfg.and_then(|v| v.quality_check_max_pairs)
+                .unwrap_or(VDPS_DEFAULT_QUALITY_CHECK_MAX_PAIRS as u32) as usize;
+        let quality_check_top_k =
+            cfg.and_then(|v| v.quality_check_top_k)
+                .unwrap_or(VDPS_DEFAULT_QUALITY_CHECK_TOP_K as u32) as usize;
+        if quality_check_top_k == 0 {
+            return Err("vdps.quality_check_top_k must be > 0".to_string());
+        }
+
+        Ok(Self {
+            eta: eta as usize,
+            rungs,
+            min_initial_pairs: min_initial_pairs as usize,
+            max_survivor_seeds: max_survivor_seeds as usize,
+            max_period_candidates: max_period_candidates as usize,
+            random_injection_ratio,
+            elite_mutation_ratio,
+            differential_ratio,
+            deterministic,
+            seed,
+            quality_check_max_pairs,
+            quality_check_top_k,
+        })
+    }
+}
+
+#[inline]
+fn vdps_target_pairs(total_pairs: usize, rung_fraction: f64) -> usize {
+    if total_pairs == 0 {
+        return 0;
+    }
+    let frac = if rung_fraction.is_finite() {
+        rung_fraction.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let target = ((total_pairs as f64) * frac).ceil() as usize;
+    target.max(1).min(total_pairs)
+}
+
+fn vdps_decimated_periods(periods: &[u16], stride: usize) -> Vec<u16> {
+    if periods.is_empty() {
+        return Vec::new();
+    }
+    let step = stride.max(1);
+    let mut out: Vec<u16> =
+        Vec::with_capacity(periods.len().saturating_div(step).saturating_add(2));
+    out.push(periods[0]);
+    for (i, &p) in periods.iter().enumerate() {
+        if (i % step) == 0 {
+            out.push(p);
+        }
+    }
+    out.push(*periods.last().unwrap_or(&periods[0]));
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+fn vdps_period_window_slice(periods: &[u16], center: u16, window: u16) -> &[u16] {
+    if periods.is_empty() {
+        return periods;
+    }
+    let lo = center.saturating_sub(window);
+    let hi = center.saturating_add(window);
+    let start = periods.partition_point(|&x| x < lo);
+    let end = periods.partition_point(|&x| x <= hi);
+    &periods[start..end]
+}
+
+fn vdps_rank_candidates(
+    mut rows: Vec<(DoubleMaParams, Metrics)>,
+    objective: ObjectiveKind,
+    limit: usize,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    if rows.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    rows.sort_by(|(pa, ma), (pb, mb)| {
+        let sa = {
+            let v = objective_score(ma, objective);
+            if v.is_finite() {
+                v
+            } else {
+                f64::NEG_INFINITY
+            }
+        };
+        let sb = {
+            let v = objective_score(mb, objective);
+            if v.is_finite() {
+                v
+            } else {
+                f64::NEG_INFINITY
+            }
+        };
+        sb.total_cmp(&sa)
+            .then_with(|| ma.max_dd.total_cmp(&mb.max_dd))
+            .then_with(|| mb.trades.cmp(&ma.trades))
+            .then_with(|| pa.fast_len.cmp(&pb.fast_len))
+            .then_with(|| pa.slow_len.cmp(&pb.slow_len))
+            .then_with(|| pa.fast_ma_id.cmp(&pb.fast_ma_id))
+            .then_with(|| pa.slow_ma_id.cmp(&pb.slow_ma_id))
+    });
+    rows.dedup_by(|(pa, _), (pb, _)| {
+        pa.fast_len == pb.fast_len
+            && pa.slow_len == pb.slow_len
+            && pa.fast_ma_id == pb.fast_ma_id
+            && pa.slow_ma_id == pb.slow_ma_id
+    });
+    rows.truncate(limit.min(rows.len()));
+    rows
+}
+
+fn vdps_inject_random_seed_pairs(
+    current: &mut Vec<(u16, u16)>,
+    fast: &[u16],
+    slow: &[u16],
+    target_count: usize,
+    rng: &mut StdRng,
+) {
+    if target_count == 0 || fast.is_empty() || slow.is_empty() {
+        return;
+    }
+    let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
+    let mut attempts: usize = 0;
+    let max_attempts = target_count.saturating_mul(32).max(128);
+    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
+        attempts = attempts.saturating_add(1);
+        let f = fast[rng.gen_range(0..fast.len())];
+        let s = slow[rng.gen_range(0..slow.len())];
+        if f >= s {
+            continue;
+        }
+        if seen.insert((f, s)) {
+            current.push((f, s));
+        }
+    }
+}
+
+#[inline]
+fn vdps_normalized_refill_mix(cfg: &VdpsResolvedConfig) -> (f64, f64, f64) {
+    let mut elite = cfg.elite_mutation_ratio.max(0.0);
+    let mut diff = cfg.differential_ratio.max(0.0);
+    let mut rand = cfg.random_injection_ratio.max(0.0);
+    let sum = elite + diff + rand;
+    if sum > 1.0 && sum.is_finite() {
+        elite /= sum;
+        diff /= sum;
+        rand /= sum;
+    }
+    (elite, diff, rand)
+}
+
+#[inline]
+fn vdps_gpu_refill_enabled() -> bool {
+    match std::env::var("VECTORBT_VDPS_GPU_REFILL") {
+        Ok(v) => {
+            let v = v.trim();
+            !(v == "0" || v.eq_ignore_ascii_case("false"))
+        }
+        Err(_) => true,
+    }
+}
+
+#[inline]
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+pub(crate) fn kernel_regime_filters_enabled() -> bool {
+    match std::env::var("VECTORBT_KERNEL_ENABLE_REGIME_FILTERS") {
+        Ok(v) => {
+            let v = v.trim();
+            !(v == "0" || v.eq_ignore_ascii_case("false"))
+        }
+        Err(_) => true,
+    }
+}
+
+fn vdps_nearest_period(periods: &[u16], value: i32) -> Option<u16> {
+    if periods.is_empty() {
+        return None;
+    }
+    let v = value.clamp(0, u16::MAX as i32) as u16;
+    let idx = periods.partition_point(|&p| p < v);
+    if idx == 0 {
+        return periods.first().copied();
+    }
+    if idx >= periods.len() {
+        return periods.last().copied();
+    }
+    let lo = periods[idx - 1];
+    let hi = periods[idx];
+    if v.abs_diff(lo) <= v.abs_diff(hi) {
+        Some(lo)
+    } else {
+        Some(hi)
+    }
+}
+
+fn vdps_inject_elite_mutation_pairs(
+    current: &mut Vec<(u16, u16)>,
+    elite_seeds: &[(u16, u16)],
+    fast: &[u16],
+    slow: &[u16],
+    target_count: usize,
+    f_step: u16,
+    s_step: u16,
+    rng: &mut StdRng,
+) {
+    if target_count == 0 || elite_seeds.is_empty() || fast.is_empty() || slow.is_empty() {
+        return;
+    }
+    let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
+    let mut attempts: usize = 0;
+    let max_attempts = target_count.saturating_mul(48).max(192);
+    let f_delta = (f_step.max(1) as i32).saturating_mul(2);
+    let s_delta = (s_step.max(1) as i32).saturating_mul(2);
+    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
+        attempts = attempts.saturating_add(1);
+        let (base_f, base_s) = elite_seeds[rng.gen_range(0..elite_seeds.len())];
+        let cand_f = (base_f as i32).saturating_add(rng.gen_range(-f_delta..=f_delta));
+        let cand_s = (base_s as i32).saturating_add(rng.gen_range(-s_delta..=s_delta));
+        let Some(f) = vdps_nearest_period(fast, cand_f) else {
+            continue;
+        };
+        let Some(s) = vdps_nearest_period(slow, cand_s) else {
+            continue;
+        };
+        if f >= s {
+            continue;
+        }
+        if seen.insert((f, s)) {
+            current.push((f, s));
+        }
+    }
+}
+
+fn vdps_inject_differential_seed_pairs(
+    current: &mut Vec<(u16, u16)>,
+    elite_seeds: &[(u16, u16)],
+    fast: &[u16],
+    slow: &[u16],
+    target_count: usize,
+    rng: &mut StdRng,
+) {
+    if target_count == 0 || elite_seeds.len() < 3 || fast.is_empty() || slow.is_empty() {
+        return;
+    }
+    let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
+    let mut attempts: usize = 0;
+    let max_attempts = target_count.saturating_mul(64).max(256);
+    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
+        attempts = attempts.saturating_add(1);
+        let ia = rng.gen_range(0..elite_seeds.len());
+        let ib = rng.gen_range(0..elite_seeds.len());
+        let ic = rng.gen_range(0..elite_seeds.len());
+        if ia == ib || ib == ic || ia == ic {
+            continue;
+        }
+        let (a_f, a_s) = elite_seeds[ia];
+        let (b_f, b_s) = elite_seeds[ib];
+        let (c_f, c_s) = elite_seeds[ic];
+        let f_coeff = rng.gen_range(0.55..0.90);
+        let s_coeff = rng.gen_range(0.55..0.90);
+        let cand_f = (a_f as f64) + ((b_f as f64) - (c_f as f64)) * f_coeff;
+        let cand_s = (a_s as f64) + ((b_s as f64) - (c_s as f64)) * s_coeff;
+        let Some(f) = vdps_nearest_period(fast, cand_f.round() as i32) else {
+            continue;
+        };
+        let Some(s) = vdps_nearest_period(slow, cand_s.round() as i32) else {
+            continue;
+        };
+        if f >= s {
+            continue;
+        }
+        if seen.insert((f, s)) {
+            current.push((f, s));
+        }
+    }
+}
+
+fn merge_vdps_telemetry(target: &mut Option<VdpsTelemetry>, incoming: Option<VdpsTelemetry>) {
+    let Some(mut inc) = incoming else {
+        return;
+    };
+    if let Some(cur) = target.as_mut() {
+        cur.evaluated_pairs_total = cur
+            .evaluated_pairs_total
+            .saturating_add(inc.evaluated_pairs_total);
+        cur.full_grid_pairs = cur.full_grid_pairs.saturating_add(inc.full_grid_pairs);
+        cur.full_fidelity_pairs_evaluated = cur
+            .full_fidelity_pairs_evaluated
+            .saturating_add(inc.full_fidelity_pairs_evaluated);
+        cur.full_fidelity_pairs_saved = cur
+            .full_fidelity_pairs_saved
+            .saturating_add(inc.full_fidelity_pairs_saved);
+        cur.runtime_ms_total = cur.runtime_ms_total.saturating_add(inc.runtime_ms_total);
+        // Quality-audit fields are single-run diagnostics and do not aggregate cleanly
+        // across multiple MA-type sub-runs.
+        cur.quality_check_top_k_overlap = None;
+        cur.quality_check_best_score_regret = None;
+        cur.quality_check_baseline_runtime_ms = None;
+        cur.quality_check_baseline_backend = None;
+        cur.quality_check_baseline_pairs = None;
+        if cur.rungs.len() == inc.rungs.len() {
+            for (a, b) in cur.rung_stats.iter_mut().zip(inc.rung_stats.iter()) {
+                a.target_pairs = a.target_pairs.saturating_add(b.target_pairs);
+                a.evaluated_pairs = a.evaluated_pairs.saturating_add(b.evaluated_pairs);
+                a.promoted_pairs = a.promoted_pairs.saturating_add(b.promoted_pairs);
+                a.dropped_pairs = a.dropped_pairs.saturating_add(b.dropped_pairs);
+                a.fast_candidates = a.fast_candidates.saturating_add(b.fast_candidates);
+                a.slow_candidates = a.slow_candidates.saturating_add(b.slow_candidates);
+                a.runtime_ms = a.runtime_ms.saturating_add(b.runtime_ms);
+                a.throughput_pairs_per_sec = if a.runtime_ms > 0 {
+                    (a.evaluated_pairs as f64) * 1000.0 / (a.runtime_ms as f64)
+                } else {
+                    a.evaluated_pairs as f64
+                };
+                if matches!(b.backend_used, BackendUsed::Gpu) {
+                    a.backend_used = BackendUsed::Gpu;
+                }
+            }
+        } else {
+            cur.rung_stats.append(&mut inc.rung_stats);
+        }
+    } else {
+        *target = Some(inc);
+    }
+}
+
+#[inline]
+pub(crate) fn metrics_pass_constraints(
+    metrics: &ta_strategies::double_ma::Metrics,
+    constraints: Option<&DoubleMaConstraints>,
+) -> bool {
+    let Some(cfg) = constraints else {
+        return true;
+    };
+    if let Some(min_trades) = cfg.min_trades {
+        if metrics.trades < min_trades {
+            return false;
+        }
+    }
+    if let Some(max_dd) = cfg.max_drawdown {
+        if metrics.max_dd > max_dd {
+            return false;
+        }
+    }
+    true
+}
+
+#[derive(Clone)]
+pub(crate) struct KaufmanStopSeries {
+    pub long: Vec<f64>,
+    pub short: Vec<f64>,
+}
+
+#[inline]
+fn strategy_uses_kaufman_stop_exit(strategy: &StrategyConfig) -> bool {
+    strategy.uses_kaufman_stop_exit()
+}
+
+pub(crate) fn compute_kaufman_stop_series(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    strategy: &StrategyConfig,
+) -> Result<Option<KaufmanStopSeries>, String> {
+    if !strategy_uses_kaufman_stop_exit(strategy) {
+        return Ok(None);
+    }
+    if !candles.fields.high || !candles.fields.low {
+        return Err("Kaufman-stop exit requires 'high' and 'low' candle columns".to_string());
+    }
+
+    let params_long = vector_ta::indicators::kaufmanstop::KaufmanstopParams {
+        period: Some(strategy.kaufman_stop_period()),
+        mult: Some(strategy.kaufman_stop_mult()),
+        direction: Some("long".to_string()),
+        ma_type: Some(strategy.kaufman_stop_ma_type().to_string()),
+    };
+    let params_short = vector_ta::indicators::kaufmanstop::KaufmanstopParams {
+        period: Some(strategy.kaufman_stop_period()),
+        mult: Some(strategy.kaufman_stop_mult()),
+        direction: Some("short".to_string()),
+        ma_type: Some(strategy.kaufman_stop_ma_type().to_string()),
+    };
+
+    let long = vector_ta::indicators::kaufmanstop::kaufmanstop(
+        &vector_ta::indicators::kaufmanstop::KaufmanstopInput::from_candles(candles, params_long),
+    )
+    .map_err(|e| format!("kaufman-stop (long) failed: {e}"))?
+    .values;
+    let short = vector_ta::indicators::kaufmanstop::kaufmanstop(
+        &vector_ta::indicators::kaufmanstop::KaufmanstopInput::from_candles(candles, params_short),
+    )
+    .map_err(|e| format!("kaufman-stop (short) failed: {e}"))?
+    .values;
+
+    if long.len() != candles.close.len() || short.len() != candles.close.len() {
+        return Err("kaufman-stop output length mismatch".to_string());
+    }
+
+    Ok(Some(KaufmanStopSeries { long, short }))
+}
+
+#[inline]
+fn base_cross_sign(f: f64, s: f64, cfg: &StrategyConfig) -> i32 {
+    let mut sign = if f.is_finite() && s.is_finite() {
+        let eps = if cfg.eps_rel > 0.0 {
+            cfg.eps_rel * 1.0_f64.max(s.abs())
+        } else {
+            0.0
+        };
+        (f > s + eps) as i32 - (f < s - eps) as i32
+    } else {
+        0
+    };
+    if cfg.long_only && sign < 0 {
+        sign = 0;
+    }
+    sign
+}
+
+#[inline]
+fn desired_sign_with_filters(f: f64, s: f64, cfg: &StrategyConfig, regime_v: Option<f64>) -> i32 {
+    let sign = base_cross_sign(f, s, cfg);
+
+    if let Some(v) = regime_v {
+        if !v.is_finite() {
+            return 0;
+        } else if cfg.uses_regime_hybrid_filter() && v >= 1.5 && v < 2.5 {
+            if !f.is_finite() || !s.is_finite() {
+                return 0;
+            }
+            let denom = 1.0_f64.max(s.abs());
+            let spread_rel = (f - s) / denom;
+            let entry_rel = cfg.regime_hybrid_reversion_entry_rel();
+            let exit_rel = cfg.regime_hybrid_reversion_exit_rel();
+            let mut range_sign = if spread_rel >= entry_rel {
+                -1
+            } else if spread_rel <= -entry_rel {
+                1
+            } else if spread_rel.abs() <= exit_rel {
+                0
+            } else {
+                0
+            };
+            if cfg.long_only && range_sign < 0 {
+                range_sign = 0;
+            }
+            return range_sign;
+        } else if v < 0.5 {
+            return sign.max(0);
+        } else {
+            return sign.min(0);
+        }
+    }
+    sign
+}
+
+pub(crate) fn desired_positions_with_exit_mode(
+    close: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend: Option<&[f64]>,
+    start_t: usize,
+    cfg: &StrategyConfig,
+    kaufman: Option<&KaufmanStopSeries>,
+) -> Vec<i32> {
+    let n_total = fast.len();
+    let mut out: Vec<i32> = vec![0; n_total];
+    if n_total == 0 || slow.len() != n_total || close.len() != n_total || start_t >= n_total {
+        return out;
+    }
+    if let Some(ht) = halftrend {
+        if ht.len() != n_total {
+            return out;
+        }
+    }
+
+    let trade_offset = if cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+
+    if cfg.uses_kaufman_stop_exit() {
+        let Some(ks) = kaufman else {
+            return out;
+        };
+        if ks.long.len() < n_total || ks.short.len() < n_total {
+            return out;
+        }
+
+        let mut pos: i32 = 0;
+        for t in start_t..n_total {
+            let t_sig = t.saturating_sub(trade_offset);
+            let ht_sig = halftrend.map(|h| h[t_sig]);
+            let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+
+            if pos == 0 && raw_sign != 0 {
+                pos = raw_sign;
+            }
+
+            if pos != 0 {
+                let c = close[t_sig];
+                let stop_v = if pos > 0 {
+                    ks.long[t_sig]
+                } else {
+                    ks.short[t_sig]
+                };
+                let hit_kaufman = c.is_finite()
+                    && stop_v.is_finite()
+                    && ((pos > 0 && c <= stop_v) || (pos < 0 && c >= stop_v));
+                if hit_kaufman {
+                    pos = 0;
+                }
+            }
+
+            out[t] = pos;
+        }
+        return out;
+    }
+
+    for t in start_t..n_total {
+        let t_sig = t.saturating_sub(trade_offset);
+        let ht_sig = halftrend.map(|h| h[t_sig]);
+        out[t] = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+    }
+
+    out
+}
+
+#[derive(Clone, Copy)]
+struct ExecutionOverlayParams {
+    cooldown_bars: usize,
+    persistence_bars: usize,
+    trailing_log: Option<f64>,
+}
+
+impl ExecutionOverlayParams {
+    #[inline]
+    fn from_cfg(cfg: &StrategyConfig) -> Self {
+        Self {
+            cooldown_bars: cfg.cooldown_bars(),
+            persistence_bars: cfg.signal_persistence_bars().max(1),
+            trailing_log: cfg.trailing_stop_pct().map(|pct| (1.0 - pct).ln()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ExecutionOverlayState {
+    cooldown_left: usize,
+    pending_sign: i32,
+    pending_count: usize,
+    trade_peak_log_ret: f64,
+}
+
+#[inline]
+fn overlay_on_bar_start(state: &mut ExecutionOverlayState) {
+    if state.cooldown_left > 0 {
+        state.cooldown_left = state.cooldown_left.saturating_sub(1);
+    }
+}
+
+#[inline]
+fn overlay_apply_signal_persistence(
+    raw_sign: i32,
+    current_pos: i32,
+    params: &ExecutionOverlayParams,
+    state: &mut ExecutionOverlayState,
+) -> i32 {
+    if params.persistence_bars <= 1 {
+        if raw_sign == 0 {
+            state.pending_sign = 0;
+            state.pending_count = 0;
+        } else {
+            state.pending_sign = raw_sign;
+            state.pending_count = 1;
+        }
+        return raw_sign;
+    }
+
+    if raw_sign == 0 {
+        state.pending_sign = 0;
+        state.pending_count = 0;
+        return 0;
+    }
+
+    if raw_sign == state.pending_sign {
+        state.pending_count = state.pending_count.saturating_add(1);
+    } else {
+        state.pending_sign = raw_sign;
+        state.pending_count = 1;
+    }
+
+    if state.pending_count >= params.persistence_bars {
+        raw_sign
+    } else if current_pos != 0 {
+        current_pos
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn overlay_apply_entry_cooldown(sign: i32, current_pos: i32, state: &ExecutionOverlayState) -> i32 {
+    if current_pos == 0 && sign != 0 && state.cooldown_left > 0 {
+        0
+    } else {
+        sign
+    }
+}
+
+#[inline]
+fn overlay_on_trade_open(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
+    state.trade_peak_log_ret = trade_log_ret;
+}
+
+#[inline]
+fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionOverlayParams) {
+    if params.cooldown_bars > 0 {
+        state.cooldown_left = params.cooldown_bars;
+    }
+    state.trade_peak_log_ret = 0.0;
+}
+
+#[inline]
+fn overlay_update_trade_peak(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
+    if trade_log_ret > state.trade_peak_log_ret {
+        state.trade_peak_log_ret = trade_log_ret;
+    }
+}
+
+#[inline]
+fn overlay_hit_trailing_stop(
+    trade_log_ret: f64,
+    params: &ExecutionOverlayParams,
+    state: &ExecutionOverlayState,
+) -> bool {
+    let Some(trail_log) = params.trailing_log else {
+        return false;
+    };
+    state.trade_peak_log_ret > 0.0 && trade_log_ret <= state.trade_peak_log_ret + trail_log
+}
+
+fn build_trade_stats(trades: &[Trade]) -> Option<TradeStats> {
+    let mut open_trades: usize = 0;
+    let mut closed_trades: usize = 0;
+    let mut wins: usize = 0;
+    let mut losses: usize = 0;
+    let mut sum_win: f64 = 0.0;
+    let mut sum_loss_abs: f64 = 0.0;
+    let mut sum_win_count: usize = 0;
+    let mut sum_loss_count: usize = 0;
+    let mut sum_all: f64 = 0.0;
+
+    for tr in trades.iter() {
+        if tr.open {
+            open_trades += 1;
+            continue;
+        }
+        closed_trades += 1;
+        let r = tr.pnl;
+        sum_all += r;
+        if r > 0.0 {
+            wins += 1;
+            sum_win += r;
+            sum_win_count += 1;
+        } else if r < 0.0 {
+            losses += 1;
+            sum_loss_abs += -r;
+            sum_loss_count += 1;
+        }
+    }
+
+    if closed_trades == 0 && open_trades == 0 {
+        return None;
+    }
+
+    let denom = wins + losses;
+    let win_rate = if denom > 0 {
+        wins as f64 / denom as f64
+    } else {
+        0.0
+    };
+    let avg_win = if sum_win_count > 0 {
+        sum_win / sum_win_count as f64
+    } else {
+        0.0
+    };
+    let avg_loss = if sum_loss_count > 0 {
+        -(sum_loss_abs / sum_loss_count as f64)
+    } else {
+        0.0
+    };
+    let profit_factor = if sum_loss_abs > 0.0 {
+        sum_win / sum_loss_abs
+    } else if sum_win > 0.0 {
+        f64::INFINITY
+    } else {
+        0.0
+    };
+    let expectancy = if closed_trades > 0 {
+        sum_all / closed_trades as f64
+    } else {
+        0.0
+    };
+
+    Some(TradeStats {
+        closed_trades,
+        open_trades,
+        wins,
+        losses,
+        win_rate,
+        avg_win,
+        avg_loss,
+        profit_factor,
+        expectancy,
+    })
+}
+
+fn eval_double_ma_metrics_kaufman_impl<const COMPUTE_SHARPE: bool, FastAt, SlowAt>(
+    lr: &[f64],
+    close: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    halftrend: Option<&[f64]>,
+    kaufman: &KaufmanStopSeries,
+    fast_at: FastAt,
+    slow_at: SlowAt,
+) -> Metrics
+where
+    FastAt: Fn(usize) -> f64,
+    SlowAt: Fn(usize) -> f64,
+{
+    let n_total = lr.len();
+    if n_total < 2 || close.len() != n_total || start_t >= n_total {
+        return Metrics::default();
+    }
+    if let Some(ht) = halftrend {
+        if ht.len() != n_total {
+            return Metrics::default();
+        }
+    }
+    if kaufman.long.len() < n_total || kaufman.short.len() < n_total {
+        return Metrics::default();
+    }
+
+    let commission = cfg.effective_commission();
+    if !(0.0..1.0).contains(&commission) && commission != 0.0 {
+        return Metrics::default();
+    }
+
+    let obs: u64 = (n_total - start_t) as u64;
+    let log_comm = if commission > 0.0 {
+        (1.0 - commission).ln()
+    } else {
+        0.0
+    };
+    let has_commission = commission > 0.0;
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let trade_offset = if cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+
+    let mut pos: i32 = 0;
+    let mut log_eq = 0.0_f64;
+    let mut log_peak = 0.0_f64;
+    let mut max_log_dd = 0.0_f64;
+    let mut trades: u32 = 0;
+
+    let mut count: u64 = 0;
+    let mut mean = 0.0_f64;
+    let mut m2 = 0.0_f64;
+    let mut sum_neg_sq = 0.0_f64;
+    let mut sum_pos_r = 0.0_f64;
+    let mut sum_neg_abs_r = 0.0_f64;
+
+    let mut sum_abs_pos: i64 = 0;
+    let mut sum_pos: i64 = 0;
+    let mut trade_log_ret = 0.0_f64;
+    let mut overlay_state = ExecutionOverlayState::default();
+
+    for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
+        let t_sig = t.saturating_sub(trade_offset);
+        let ht_sig = halftrend.map(|h| h[t_sig]);
+        let raw_sign = desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig);
+        let persisted_sign =
+            overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
+        let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
+
+        if pos == 0 && sign != 0 {
+            if has_commission {
+                log_eq += log_comm;
+            }
+            trades = trades.saturating_add(1);
+            pos = sign;
+            trade_log_ret = if has_commission { log_comm } else { 0.0 };
+            overlay_on_trade_open(&mut overlay_state, trade_log_ret);
+        }
+
+        if pos != 0 {
+            let c = close[t_sig];
+            let stop_v = if pos > 0 {
+                kaufman.long[t_sig]
+            } else {
+                kaufman.short[t_sig]
+            };
+            let hit_kaufman = c.is_finite()
+                && stop_v.is_finite()
+                && ((pos > 0 && c <= stop_v) || (pos < 0 && c >= stop_v));
+            if hit_kaufman {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
+        let pos_bar = pos;
+        let lr_t = lr[t];
+        let step_log_ret = (pos_bar as f64) * lr_t;
+        log_eq += step_log_ret;
+
+        if risk_enabled && pos_bar != 0 {
+            trade_log_ret += step_log_ret;
+            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
+            let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
+            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
+            if hit_stop || hit_take || hit_trailing {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
+        if log_eq > log_peak {
+            log_peak = log_eq;
+        }
+        let dd_log = log_peak - log_eq;
+        if dd_log > max_log_dd {
+            max_log_dd = dd_log;
+        }
+
+        if COMPUTE_SHARPE {
+            let step_r = if pos_bar == 0 {
+                0.0
+            } else {
+                (pos_bar as f64) * lr_t.exp_m1()
+            };
+            count += 1;
+            let delta = step_r - mean;
+            mean += delta / count as f64;
+            let delta2 = step_r - mean;
+            m2 += delta * delta2;
+
+            if step_r < 0.0 {
+                sum_neg_sq += step_r * step_r;
+                sum_neg_abs_r += -step_r;
+            } else {
+                sum_pos_r += step_r;
+            }
+        }
+
+        sum_abs_pos += (pos_bar as i64).abs();
+        sum_pos += pos_bar as i64;
+    }
+
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
+        let variance = if count > 1 {
+            m2 / (count as f64 - 1.0)
+        } else {
+            0.0
+        };
+        let std = variance.sqrt();
+        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+        let volatility = std;
+        let denom = (count as f64).max(1.0);
+        let downside_dev = (sum_neg_sq / denom).sqrt();
+        let sortino_raw = if downside_dev > 0.0 {
+            mean / downside_dev
+        } else if mean > 0.0 {
+            CLAMP_MAX
+        } else if mean < 0.0 {
+            -CLAMP_MAX
+        } else {
+            0.0
+        };
+        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
+        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
+        (sharpe, volatility, sortino, omega)
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
+    let denom = if COMPUTE_SHARPE { count } else { obs };
+    let exposure = if denom > 0 {
+        sum_abs_pos as f64 / denom as f64
+    } else {
+        0.0
+    };
+    let net_exposure = if denom > 0 {
+        sum_pos as f64 / denom as f64
+    } else {
+        0.0
+    };
+    let max_dd = if max_log_dd > 0.0 {
+        -(-max_log_dd).exp_m1()
+    } else {
+        0.0
+    };
+
+    let pnl = log_eq.exp() - 1.0;
+    let calmar_raw = if max_dd > EPS_DENOM {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+
+    Metrics {
+        pnl,
+        sharpe,
+        sortino,
+        calmar,
+        omega,
+        volatility,
+        max_dd,
+        trades,
+        exposure,
+        net_exposure,
+    }
+}
+
+fn eval_double_ma_curves_kaufman_f64(
+    lr: &[f64],
+    close: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend: Option<&[f64]>,
+    start_t: usize,
+    cfg: &StrategyConfig,
+    bins: usize,
+    kaufman: &KaufmanStopSeries,
+) -> DoubleMaCurves {
+    let n_total = lr.len();
+    if n_total < 2 || close.len() != n_total || fast.len() != n_total || slow.len() != n_total {
+        return DoubleMaCurves {
+            equity: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
+    if let Some(ht) = halftrend {
+        if ht.len() != n_total {
+            return DoubleMaCurves {
+                equity: ta_strategies::double_ma::MinMaxBins {
+                    start_t,
+                    end_t: n_total,
+                    bins: 0,
+                    minmax: Vec::new(),
+                },
+                drawdown: ta_strategies::double_ma::MinMaxBins {
+                    start_t,
+                    end_t: n_total,
+                    bins: 0,
+                    minmax: Vec::new(),
+                },
+                trades: Vec::new(),
+                trade_stats: None,
+                indicator_bars: Vec::new(),
+            };
+        }
+    }
+    if kaufman.long.len() < n_total || kaufman.short.len() < n_total || start_t >= n_total {
+        return DoubleMaCurves {
+            equity: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
+
+    let trade_offset = if cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+    let commission = cfg.effective_commission();
+    let log_comm = if commission > 0.0 {
+        (1.0 - commission).ln()
+    } else {
+        0.0
+    };
+    let has_commission = commission > 0.0;
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+
+    let n_steps = n_total.saturating_sub(start_t);
+    let bins = {
+        if n_steps == 0 {
+            0
+        } else {
+            bins.clamp(1, 8192).min(n_steps)
+        }
+    };
+    if bins == 0 {
+        return DoubleMaCurves {
+            equity: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
+
+    let mut eq_min: Vec<f64> = vec![f64::INFINITY; bins];
+    let mut eq_max: Vec<f64> = vec![f64::NEG_INFINITY; bins];
+    let mut dd_min: Vec<f64> = vec![f64::INFINITY; bins];
+    let mut dd_max: Vec<f64> = vec![f64::NEG_INFINITY; bins];
+
+    let mut pos: i32 = 0;
+    let mut log_eq = 0.0_f64;
+    let mut log_peak = 0.0_f64;
+
+    let mut trades: Vec<Trade> = Vec::new();
+    let mut cur_entry_t: usize = 0;
+    let mut cur_dir: i32 = 0;
+    let mut cur_log_ret: f64 = 0.0;
+    let mut overlay_state = ExecutionOverlayState::default();
+
+    for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
+        let t_sig = t.saturating_sub(trade_offset);
+        let ht_sig = halftrend.map(|h| h[t_sig]);
+        let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+        let persisted_sign =
+            overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
+        let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
+
+        if pos == 0 && sign != 0 {
+            if has_commission {
+                log_eq += log_comm;
+            }
+            pos = sign;
+            cur_entry_t = t;
+            cur_dir = sign;
+            cur_log_ret = if has_commission { log_comm } else { 0.0 };
+            overlay_on_trade_open(&mut overlay_state, cur_log_ret);
+        }
+
+        if pos != 0 && cur_dir != 0 {
+            let c = close[t_sig];
+            let stop_v = if pos > 0 {
+                kaufman.long[t_sig]
+            } else {
+                kaufman.short[t_sig]
+            };
+            let hit_kaufman = c.is_finite()
+                && stop_v.is_finite()
+                && ((pos > 0 && c <= stop_v) || (pos < 0 && c >= stop_v));
+            if hit_kaufman {
+                if has_commission {
+                    log_eq += log_comm;
+                    cur_log_ret += log_comm;
+                }
+                trades.push(Trade {
+                    entry_t: cur_entry_t,
+                    exit_t: t,
+                    direction: cur_dir,
+                    pnl: cur_log_ret.exp() - 1.0,
+                    bars: t.saturating_sub(cur_entry_t) as u32,
+                    open: false,
+                });
+                pos = 0;
+                cur_dir = 0;
+                cur_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
+        let pos_bar = pos;
+        log_eq += (pos_bar as f64) * lr[t];
+        if cur_dir != 0 {
+            cur_log_ret += (pos_bar as f64) * lr[t];
+            overlay_update_trade_peak(&mut overlay_state, cur_log_ret);
+        }
+
+        if risk_enabled && cur_dir != 0 {
+            let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
+            let hit_trailing = overlay_hit_trailing_stop(cur_log_ret, &overlays, &overlay_state);
+            if hit_stop || hit_take || hit_trailing {
+                if has_commission {
+                    log_eq += log_comm;
+                    cur_log_ret += log_comm;
+                }
+                trades.push(Trade {
+                    entry_t: cur_entry_t,
+                    exit_t: t,
+                    direction: cur_dir,
+                    pnl: cur_log_ret.exp() - 1.0,
+                    bars: t.saturating_sub(cur_entry_t) as u32,
+                    open: false,
+                });
+                cur_dir = 0;
+                cur_log_ret = 0.0;
+                pos = 0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
+        if log_eq > log_peak {
+            log_peak = log_eq;
+        }
+        let dd_log = log_peak - log_eq;
+        let eq = log_eq.exp();
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        let i = t - start_t;
+        let b = (i.saturating_mul(bins)) / n_steps.max(1);
+        let b = b.min(bins - 1);
+
+        if eq < eq_min[b] {
+            eq_min[b] = eq;
+        }
+        if eq > eq_max[b] {
+            eq_max[b] = eq;
+        }
+        if dd < dd_min[b] {
+            dd_min[b] = dd;
+        }
+        if dd > dd_max[b] {
+            dd_max[b] = dd;
+        }
+    }
+
+    let mut eq_mm: Vec<f32> = Vec::with_capacity(bins.saturating_mul(2));
+    let mut dd_mm: Vec<f32> = Vec::with_capacity(bins.saturating_mul(2));
+    for i in 0..bins {
+        let (a, b) = (eq_min[i], eq_max[i]);
+        if a.is_finite() && b.is_finite() {
+            eq_mm.push(a as f32);
+            eq_mm.push(b as f32);
+        } else {
+            eq_mm.push(f32::NAN);
+            eq_mm.push(f32::NAN);
+        }
+
+        let (a, b) = (dd_min[i], dd_max[i]);
+        if a.is_finite() && b.is_finite() {
+            dd_mm.push(a as f32);
+            dd_mm.push(b as f32);
+        } else {
+            dd_mm.push(f32::NAN);
+            dd_mm.push(f32::NAN);
+        }
+    }
+
+    if cur_dir != 0 {
+        let exit_t = n_total.saturating_sub(1);
+        trades.push(Trade {
+            entry_t: cur_entry_t,
+            exit_t,
+            direction: cur_dir,
+            pnl: cur_log_ret.exp() - 1.0,
+            bars: exit_t.saturating_sub(cur_entry_t) as u32,
+            open: true,
+        });
+    }
+
+    DoubleMaCurves {
+        equity: ta_strategies::double_ma::MinMaxBins {
+            start_t,
+            end_t: n_total,
+            bins,
+            minmax: eq_mm,
+        },
+        drawdown: ta_strategies::double_ma::MinMaxBins {
+            start_t,
+            end_t: n_total,
+            bins,
+            minmax: dd_mm,
+        },
+        trade_stats: build_trade_stats(&trades),
+        trades,
+        indicator_bars: Vec::new(),
+    }
+}
+
+fn eval_double_ma_metrics_cross_overlay_impl<const COMPUTE_SHARPE: bool, FastAt, SlowAt>(
+    lr: &[f64],
+    close: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    halftrend: Option<&[f64]>,
+    fast_at: FastAt,
+    slow_at: SlowAt,
+) -> Metrics
+where
+    FastAt: Fn(usize) -> f64,
+    SlowAt: Fn(usize) -> f64,
+{
+    let n_total = lr.len();
+    if n_total < 2 || close.len() != n_total || start_t >= n_total {
+        return Metrics::default();
+    }
+    if let Some(ht) = halftrend {
+        if ht.len() != n_total {
+            return Metrics::default();
+        }
+    }
+
+    let commission = cfg.effective_commission();
+    if !(0.0..1.0).contains(&commission) && commission != 0.0 {
+        return Metrics::default();
+    }
+
+    let obs: u64 = (n_total - start_t) as u64;
+    let log_comm = if commission > 0.0 {
+        (1.0 - commission).ln()
+    } else {
+        0.0
+    };
+    let has_commission = commission > 0.0;
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let trade_offset = if cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+
+    let mut pos: i32 = 0;
+    let mut log_eq = 0.0_f64;
+    let mut log_peak = 0.0_f64;
+    let mut max_log_dd = 0.0_f64;
+    let mut trades: u32 = 0;
+
+    let mut count: u64 = 0;
+    let mut mean = 0.0_f64;
+    let mut m2 = 0.0_f64;
+    let mut sum_neg_sq = 0.0_f64;
+    let mut sum_pos_r = 0.0_f64;
+    let mut sum_neg_abs_r = 0.0_f64;
+
+    let mut sum_abs_pos: i64 = 0;
+    let mut sum_pos: i64 = 0;
+    let mut trade_log_ret = 0.0_f64;
+    let mut overlay_state = ExecutionOverlayState::default();
+
+    for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
+        let t_sig = t.saturating_sub(trade_offset);
+        let ht_sig = halftrend.map(|h| h[t_sig]);
+        let raw_sign = desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig);
+        let persisted_sign =
+            overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
+        let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
+
+        if sign != pos {
+            if pos == 0 || sign == 0 {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                trades = trades.saturating_add(1);
+                pos = if sign == 0 { 0 } else { sign };
+                if pos == 0 {
+                    trade_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
+                } else {
+                    trade_log_ret = if has_commission { log_comm } else { 0.0 };
+                    overlay_on_trade_open(&mut overlay_state, trade_log_ret);
+                }
+            } else if !cfg.allow_flip {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            } else {
+                if has_commission {
+                    log_eq += 2.0 * log_comm;
+                }
+                trades = trades.saturating_add(2);
+                pos = sign;
+                trade_log_ret = if has_commission { log_comm } else { 0.0 };
+                overlay_on_trade_open(&mut overlay_state, trade_log_ret);
+            }
+        }
+
+        let pos_bar = pos;
+        let lr_t = lr[t];
+        let step_log_ret = (pos_bar as f64) * lr_t;
+        log_eq += step_log_ret;
+
+        if risk_enabled && pos_bar != 0 {
+            trade_log_ret += step_log_ret;
+            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
+            let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
+            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
+            if hit_stop || hit_take || hit_trailing {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
+        if log_eq > log_peak {
+            log_peak = log_eq;
+        }
+        let dd_log = log_peak - log_eq;
+        if dd_log > max_log_dd {
+            max_log_dd = dd_log;
+        }
+
+        if COMPUTE_SHARPE {
+            let step_r = if pos_bar == 0 {
+                0.0
+            } else {
+                (pos_bar as f64) * lr_t.exp_m1()
+            };
+            count += 1;
+            let delta = step_r - mean;
+            mean += delta / count as f64;
+            let delta2 = step_r - mean;
+            m2 += delta * delta2;
+
+            if step_r < 0.0 {
+                sum_neg_sq += step_r * step_r;
+                sum_neg_abs_r += -step_r;
+            } else {
+                sum_pos_r += step_r;
+            }
+        }
+
+        sum_abs_pos += (pos_bar as i64).abs();
+        sum_pos += pos_bar as i64;
+    }
+
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
+        let variance = if count > 1 {
+            m2 / (count as f64 - 1.0)
+        } else {
+            0.0
+        };
+        let std = variance.sqrt();
+        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+        let volatility = std;
+        let denom = (count as f64).max(1.0);
+        let downside_dev = (sum_neg_sq / denom).sqrt();
+        let sortino_raw = if downside_dev > 0.0 {
+            mean / downside_dev
+        } else if mean > 0.0 {
+            CLAMP_MAX
+        } else if mean < 0.0 {
+            -CLAMP_MAX
+        } else {
+            0.0
+        };
+        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
+        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
+        (sharpe, volatility, sortino, omega)
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
+    let denom = if COMPUTE_SHARPE { count } else { obs };
+    let exposure = if denom > 0 {
+        sum_abs_pos as f64 / denom as f64
+    } else {
+        0.0
+    };
+    let net_exposure = if denom > 0 {
+        sum_pos as f64 / denom as f64
+    } else {
+        0.0
+    };
+    let max_dd = if max_log_dd > 0.0 {
+        -(-max_log_dd).exp_m1()
+    } else {
+        0.0
+    };
+
+    let pnl = log_eq.exp() - 1.0;
+    let calmar_raw = if max_dd > EPS_DENOM {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+
+    Metrics {
+        pnl,
+        sharpe,
+        sortino,
+        calmar,
+        omega,
+        volatility,
+        max_dd,
+        trades,
+        exposure,
+        net_exposure,
+    }
+}
+
+fn eval_double_ma_curves_cross_overlay_f64(
+    lr: &[f64],
+    close: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend: Option<&[f64]>,
+    start_t: usize,
+    cfg: &StrategyConfig,
+    bins: usize,
+) -> DoubleMaCurves {
+    let n_total = lr.len();
+    if n_total < 2 || close.len() != n_total || fast.len() != n_total || slow.len() != n_total {
+        return DoubleMaCurves {
+            equity: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
+    if let Some(ht) = halftrend {
+        if ht.len() != n_total {
+            return DoubleMaCurves {
+                equity: ta_strategies::double_ma::MinMaxBins {
+                    start_t,
+                    end_t: n_total,
+                    bins: 0,
+                    minmax: Vec::new(),
+                },
+                drawdown: ta_strategies::double_ma::MinMaxBins {
+                    start_t,
+                    end_t: n_total,
+                    bins: 0,
+                    minmax: Vec::new(),
+                },
+                trades: Vec::new(),
+                trade_stats: None,
+                indicator_bars: Vec::new(),
+            };
+        }
+    }
+    if start_t >= n_total {
+        return DoubleMaCurves {
+            equity: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
+
+    let trade_offset = if cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+    let commission = cfg.effective_commission();
+    let log_comm = if commission > 0.0 {
+        (1.0 - commission).ln()
+    } else {
+        0.0
+    };
+    let has_commission = commission > 0.0;
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+
+    let n_steps = n_total.saturating_sub(start_t);
+    let bins = {
+        if n_steps == 0 {
+            0
+        } else {
+            bins.clamp(1, 8192).min(n_steps)
+        }
+    };
+    if bins == 0 {
+        return DoubleMaCurves {
+            equity: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: ta_strategies::double_ma::MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
+
+    let mut eq_min: Vec<f64> = vec![f64::INFINITY; bins];
+    let mut eq_max: Vec<f64> = vec![f64::NEG_INFINITY; bins];
+    let mut dd_min: Vec<f64> = vec![f64::INFINITY; bins];
+    let mut dd_max: Vec<f64> = vec![f64::NEG_INFINITY; bins];
+
+    let mut pos: i32 = 0;
+    let mut log_eq = 0.0_f64;
+    let mut log_peak = 0.0_f64;
+
+    let mut trades: Vec<Trade> = Vec::new();
+    let mut cur_entry_t: usize = 0;
+    let mut cur_dir: i32 = 0;
+    let mut cur_log_ret: f64 = 0.0;
+    let mut overlay_state = ExecutionOverlayState::default();
+
+    for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
+        let t_sig = t.saturating_sub(trade_offset);
+        let ht_sig = halftrend.map(|h| h[t_sig]);
+        let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+        let persisted_sign =
+            overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
+        let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
+
+        if sign != pos {
+            if pos == 0 || sign == 0 {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                if pos != 0 && cur_dir != 0 {
+                    if has_commission {
+                        cur_log_ret += log_comm;
+                    }
+                    trades.push(Trade {
+                        entry_t: cur_entry_t,
+                        exit_t: t,
+                        direction: cur_dir,
+                        pnl: cur_log_ret.exp() - 1.0,
+                        bars: t.saturating_sub(cur_entry_t) as u32,
+                        open: false,
+                    });
+                    cur_dir = 0;
+                    cur_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
+                } else if pos == 0 && sign != 0 {
+                    cur_entry_t = t;
+                    cur_dir = sign;
+                    cur_log_ret = if has_commission { log_comm } else { 0.0 };
+                    overlay_on_trade_open(&mut overlay_state, cur_log_ret);
+                }
+                pos = if sign == 0 { 0 } else { sign };
+            } else if !cfg.allow_flip {
+                if has_commission {
+                    log_eq += log_comm;
+                }
+                if cur_dir != 0 {
+                    if has_commission {
+                        cur_log_ret += log_comm;
+                    }
+                    trades.push(Trade {
+                        entry_t: cur_entry_t,
+                        exit_t: t,
+                        direction: cur_dir,
+                        pnl: cur_log_ret.exp() - 1.0,
+                        bars: t.saturating_sub(cur_entry_t) as u32,
+                        open: false,
+                    });
+                    cur_dir = 0;
+                    cur_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
+                }
+                pos = 0;
+            } else {
+                if has_commission {
+                    log_eq += 2.0 * log_comm;
+                }
+                if cur_dir != 0 {
+                    if has_commission {
+                        cur_log_ret += log_comm;
+                    }
+                    trades.push(Trade {
+                        entry_t: cur_entry_t,
+                        exit_t: t,
+                        direction: cur_dir,
+                        pnl: cur_log_ret.exp() - 1.0,
+                        bars: t.saturating_sub(cur_entry_t) as u32,
+                        open: false,
+                    });
+                }
+                cur_entry_t = t;
+                cur_dir = sign;
+                cur_log_ret = if has_commission { log_comm } else { 0.0 };
+                overlay_on_trade_open(&mut overlay_state, cur_log_ret);
+                pos = sign;
+            }
+        }
+
+        let pos_bar = pos;
+        log_eq += (pos_bar as f64) * lr[t];
+        if cur_dir != 0 {
+            cur_log_ret += (pos_bar as f64) * lr[t];
+            overlay_update_trade_peak(&mut overlay_state, cur_log_ret);
+        }
+        if risk_enabled && cur_dir != 0 {
+            let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
+            let hit_trailing = overlay_hit_trailing_stop(cur_log_ret, &overlays, &overlay_state);
+            if hit_stop || hit_take || hit_trailing {
+                if has_commission {
+                    log_eq += log_comm;
+                    cur_log_ret += log_comm;
+                }
+                trades.push(Trade {
+                    entry_t: cur_entry_t,
+                    exit_t: t,
+                    direction: cur_dir,
+                    pnl: cur_log_ret.exp() - 1.0,
+                    bars: t.saturating_sub(cur_entry_t) as u32,
+                    open: false,
+                });
+                cur_dir = 0;
+                cur_log_ret = 0.0;
+                pos = 0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
+        if log_eq > log_peak {
+            log_peak = log_eq;
+        }
+        let dd_log = log_peak - log_eq;
+        let eq = log_eq.exp();
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        let i = t - start_t;
+        let b = (i.saturating_mul(bins)) / n_steps.max(1);
+        let b = b.min(bins - 1);
+
+        if eq < eq_min[b] {
+            eq_min[b] = eq;
+        }
+        if eq > eq_max[b] {
+            eq_max[b] = eq;
+        }
+        if dd < dd_min[b] {
+            dd_min[b] = dd;
+        }
+        if dd > dd_max[b] {
+            dd_max[b] = dd;
+        }
+    }
+
+    let mut eq_mm: Vec<f32> = Vec::with_capacity(bins.saturating_mul(2));
+    let mut dd_mm: Vec<f32> = Vec::with_capacity(bins.saturating_mul(2));
+    for i in 0..bins {
+        let (a, b) = (eq_min[i], eq_max[i]);
+        if a.is_finite() && b.is_finite() {
+            eq_mm.push(a as f32);
+            eq_mm.push(b as f32);
+        } else {
+            eq_mm.push(f32::NAN);
+            eq_mm.push(f32::NAN);
+        }
+
+        let (a, b) = (dd_min[i], dd_max[i]);
+        if a.is_finite() && b.is_finite() {
+            dd_mm.push(a as f32);
+            dd_mm.push(b as f32);
+        } else {
+            dd_mm.push(f32::NAN);
+            dd_mm.push(f32::NAN);
+        }
+    }
+
+    if cur_dir != 0 {
+        let exit_t = n_total.saturating_sub(1);
+        trades.push(Trade {
+            entry_t: cur_entry_t,
+            exit_t,
+            direction: cur_dir,
+            pnl: cur_log_ret.exp() - 1.0,
+            bars: exit_t.saturating_sub(cur_entry_t) as u32,
+            open: true,
+        });
+    }
+
+    DoubleMaCurves {
+        equity: ta_strategies::double_ma::MinMaxBins {
+            start_t,
+            end_t: n_total,
+            bins,
+            minmax: eq_mm,
+        },
+        drawdown: ta_strategies::double_ma::MinMaxBins {
+            start_t,
+            end_t: n_total,
+            bins,
+            minmax: dd_mm,
+        },
+        trade_stats: build_trade_stats(&trades),
+        trades,
+        indicator_bars: Vec::new(),
+    }
+}
+
+pub(crate) fn eval_metrics_f64_with_exit_mode(
+    lr: &[f64],
+    close: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend: Option<&[f64]>,
+    start_t: usize,
+    strategy: &StrategyConfig,
+    kaufman: Option<&KaufmanStopSeries>,
+    compute_sharpe: bool,
+) -> Metrics {
+    if strategy_uses_kaufman_stop_exit(strategy) {
+        let Some(ks) = kaufman else {
+            return Metrics::default();
+        };
+        if compute_sharpe {
+            eval_double_ma_metrics_kaufman_impl::<true, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                ks,
+                |i| fast[i],
+                |i| slow[i],
+            )
+        } else {
+            eval_double_ma_metrics_kaufman_impl::<false, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                ks,
+                |i| fast[i],
+                |i| slow[i],
+            )
+        }
+    } else if strategy.uses_execution_overlays() {
+        if compute_sharpe {
+            eval_double_ma_metrics_cross_overlay_impl::<true, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                |i| fast[i],
+                |i| slow[i],
+            )
+        } else {
+            eval_double_ma_metrics_cross_overlay_impl::<false, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                |i| fast[i],
+                |i| slow[i],
+            )
+        }
+    } else if compute_sharpe {
+        if let Some(trend) = halftrend {
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
+                lr, fast, slow, trend, start_t, strategy,
+            )
+        } else {
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
+                lr, fast, slow, start_t, strategy,
+            )
+        }
+    } else if let Some(trend) = halftrend {
+        ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_fast(
+            lr, fast, slow, trend, start_t, strategy,
+        )
+    } else {
+        ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_fast(
+            lr, fast, slow, start_t, strategy,
+        )
+    }
+}
+
+fn eval_metrics_f32_with_exit_mode(
+    lr: &[f64],
+    close: &[f64],
+    fast: &[f32],
+    slow: &[f32],
+    halftrend: Option<&[f64]>,
+    start_t: usize,
+    strategy: &StrategyConfig,
+    kaufman: Option<&KaufmanStopSeries>,
+    compute_sharpe: bool,
+) -> Metrics {
+    if strategy_uses_kaufman_stop_exit(strategy) {
+        let Some(ks) = kaufman else {
+            return Metrics::default();
+        };
+        if compute_sharpe {
+            eval_double_ma_metrics_kaufman_impl::<true, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                ks,
+                |i| fast[i] as f64,
+                |i| slow[i] as f64,
+            )
+        } else {
+            eval_double_ma_metrics_kaufman_impl::<false, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                ks,
+                |i| fast[i] as f64,
+                |i| slow[i] as f64,
+            )
+        }
+    } else if strategy.uses_execution_overlays() {
+        if compute_sharpe {
+            eval_double_ma_metrics_cross_overlay_impl::<true, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                |i| fast[i] as f64,
+                |i| slow[i] as f64,
+            )
+        } else {
+            eval_double_ma_metrics_cross_overlay_impl::<false, _, _>(
+                lr,
+                close,
+                start_t,
+                strategy,
+                halftrend,
+                |i| fast[i] as f64,
+                |i| slow[i] as f64,
+            )
+        }
+    } else if compute_sharpe {
+        if let Some(trend) = halftrend {
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
+                lr, fast, slow, trend, start_t, strategy,
+            )
+        } else {
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32(
+                lr, fast, slow, start_t, strategy,
+            )
+        }
+    } else if let Some(trend) = halftrend {
+        ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_fast(
+            lr, fast, slow, trend, start_t, strategy,
+        )
+    } else {
+        ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_fast(
+            lr, fast, slow, start_t, strategy,
+        )
+    }
+}
+
+pub(crate) fn eval_curves_f64_with_exit_mode(
+    lr: &[f64],
+    close: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend: Option<&[f64]>,
+    start_t: usize,
+    strategy: &StrategyConfig,
+    bins: usize,
+    kaufman: Option<&KaufmanStopSeries>,
+) -> DoubleMaCurves {
+    if strategy_uses_kaufman_stop_exit(strategy) {
+        let Some(ks) = kaufman else {
+            return DoubleMaCurves {
+                equity: ta_strategies::double_ma::MinMaxBins {
+                    start_t,
+                    end_t: lr.len(),
+                    bins: 0,
+                    minmax: Vec::new(),
+                },
+                drawdown: ta_strategies::double_ma::MinMaxBins {
+                    start_t,
+                    end_t: lr.len(),
+                    bins: 0,
+                    minmax: Vec::new(),
+                },
+                trades: Vec::new(),
+                trade_stats: None,
+                indicator_bars: Vec::new(),
+            };
+        };
+        eval_double_ma_curves_kaufman_f64(
+            lr, close, fast, slow, halftrend, start_t, strategy, bins, ks,
+        )
+    } else if strategy.uses_execution_overlays() {
+        eval_double_ma_curves_cross_overlay_f64(
+            lr, close, fast, slow, halftrend, start_t, strategy, bins,
+        )
+    } else if let Some(trend) = halftrend {
+        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
+            lr, fast, slow, trend, start_t, strategy, bins,
+        )
+    } else {
+        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64(
+            lr, fast, slow, start_t, strategy, bins,
+        )
+    }
 }
 
 pub fn compute_double_ma_drilldown_blocking_with_candles(
@@ -242,16 +2452,26 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
     let mut first_valid = fv_close.max(fv_ma);
 
-    let halftrend_trend: Option<Vec<f64>> = match req.halftrend_filter.as_ref() {
-        Some(f) => Some(compute_halftrend_trend(candles, f)?),
-        None => None,
-    };
+    let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
+        candles,
+        &req.ma_source,
+        &req.strategy,
+        req.halftrend_filter.as_ref(),
+    )?;
+    let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
+    if let Some(ks) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
+    }
     if let Some(trend) = halftrend_trend.as_ref() {
         if trend.len() != n {
-            return Err("HalfTrend trend series length mismatch".to_string());
+            return Err("regime trend series length mismatch".to_string());
         }
         let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         first_valid = first_valid.max(fv_ht);
     }
 
@@ -302,26 +2522,17 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
 
     let lr = compute_log_returns_f64(close);
     let bins = req.bins.unwrap_or(1024);
-    let mut curves = if let Some(trend) = halftrend_trend.as_ref() {
-        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
-            &lr,
-            &fast_mat,
-            &slow_mat,
-            trend,
-            start_t,
-            &req.strategy,
-            bins,
-        )
-    } else {
-        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64(
-            &lr,
-            &fast_mat,
-            &slow_mat,
-            start_t,
-            &req.strategy,
-            bins,
-        )
-    };
+    let mut curves = eval_curves_f64_with_exit_mode(
+        &lr,
+        close,
+        &fast_mat,
+        &slow_mat,
+        halftrend_trend.as_deref(),
+        start_t,
+        &req.strategy,
+        bins,
+        kaufman_stops.as_ref(),
+    );
     curves.indicator_bars =
         build_indicator_bars_for_chart(candles, &fast_mat, &slow_mat, DRILL_INDICATOR_MAX_POINTS)?;
     Ok(curves)
@@ -368,19 +2579,28 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
     let mut first_valid = fv_close.max(fv_ma);
 
-    let halftrend_trend: Option<Vec<f64>> = match req.halftrend_filter.as_ref() {
-        Some(f) => {
-            let trend = compute_halftrend_trend(candles, f)?;
-            if trend.len() != n {
-                return Err("HalfTrend trend series length mismatch".to_string());
-            }
-            let fv_ht = first_finite_idx(&trend)
-                .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
-            first_valid = first_valid.max(fv_ht);
-            Some(trend)
+    let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
+        candles,
+        &req.ma_source,
+        &req.strategy,
+        req.halftrend_filter.as_ref(),
+    )?;
+    if let Some(trend) = halftrend_trend.as_ref() {
+        if trend.len() != n {
+            return Err("regime trend series length mismatch".to_string());
         }
-        None => None,
-    };
+        let fv_ht = first_finite_idx(trend)
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_ht);
+    }
+    let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
+    if let Some(ks) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
+    }
 
     let radius = req.radius.unwrap_or(1).min(32);
     let step = req.step.unwrap_or(1).max(1);
@@ -474,24 +2694,17 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
                 .get(slow_off..slow_off + n)
                 .ok_or_else(|| "slow MA matrix indexing error".to_string())?;
 
-            let metrics = if let Some(trend) = halftrend_trend.as_ref() {
-                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
-                    &lr,
-                    fast,
-                    slow,
-                    trend,
-                    start_t,
-                    &req.strategy,
-                )
-            } else {
-                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
-                    &lr,
-                    fast,
-                    slow,
-                    start_t,
-                    &req.strategy,
-                )
-            };
+            let metrics = eval_metrics_f64_with_exit_mode(
+                &lr,
+                close,
+                fast,
+                slow,
+                halftrend_trend.as_deref(),
+                start_t,
+                &req.strategy,
+                kaufman_stops.as_ref(),
+                true,
+            );
             let score = objective_score(&metrics, objective);
             points.push(LocalStabilityPoint {
                 fast_len,
@@ -571,8 +2784,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let slow_ma_param_sweeps = req.slow_ma_param_sweeps;
     let strategy = req.strategy;
     let halftrend_filter = req.halftrend_filter;
+    let constraints = sanitize_double_ma_constraints(req.constraints)?;
     let heatmap_bins = req.heatmap_bins.unwrap_or(0) as usize;
     validate_strategy_cfg(&strategy)?;
+    let strategy = strategy_cfg_for_optimization(strategy);
     if heatmap_bins > 512 {
         return Err("heatmap_bins too large (max 512)".to_string());
     }
@@ -640,20 +2855,11 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let close = vector_ta::utilities::data_loader::source_type(candles, "close");
     let n = close.len();
 
-    if halftrend_filter.is_some() && export_all_csv_path.is_some() {
-        return Err(
-            "export_all_csv_path is not supported with HalfTrend filter (GPU kernel only)"
-                .to_string(),
-        );
-    }
-
-    let halftrend_trend: Option<Vec<f64>> = match halftrend_filter.as_ref() {
-        Some(f) => Some(compute_halftrend_trend(candles, f)?),
-        None => None,
-    };
+    let halftrend_trend: Option<Vec<f64>> =
+        compute_combined_regime_filter(candles, &ma_source, &strategy, halftrend_filter.as_ref())?;
     if let Some(trend) = halftrend_trend.as_ref() {
         if trend.len() != n {
-            return Err("HalfTrend trend series length mismatch".to_string());
+            return Err("regime trend series length mismatch".to_string());
         }
     }
 
@@ -679,6 +2885,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let mode_used = match req.mode {
         OptimizationMode::Grid => OptimizationModeResolved::Grid,
         OptimizationMode::CoarseToFine => OptimizationModeResolved::CoarseToFine,
+        OptimizationMode::GpuVdps => OptimizationModeResolved::GpuVdps,
         OptimizationMode::Auto => {
             let can_adapt = !include_all && export_all_csv_path.is_none() && heatmap_bins == 0;
             if can_adapt && total_combos > 500_000 {
@@ -699,6 +2906,22 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             return Err("CoarseToFine mode cannot be used with export_all_csv_path".to_string());
         }
     }
+    if matches!(mode_used, OptimizationModeResolved::GpuVdps) {
+        if include_all {
+            return Err("GpuVdps mode requires include_all=false".to_string());
+        }
+        if heatmap_bins > 0 {
+            return Err("GpuVdps mode currently requires heatmap_bins=0".to_string());
+        }
+        if export_all_csv_path.is_some() {
+            return Err("GpuVdps mode does not support export_all_csv_path".to_string());
+        }
+    }
+    let vdps_cfg = if matches!(mode_used, OptimizationModeResolved::GpuVdps) {
+        Some(VdpsResolvedConfig::from_request(req.vdps.as_ref())?)
+    } else {
+        None
+    };
 
     let mut backend = match req.backend {
         Backend::Auto { device_id } => {
@@ -718,20 +2941,26 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             let cuda_ok = false;
 
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-            let kernel_ok = halftrend_trend.is_none()
+            let kernel_supported = !strategy_uses_kaufman_stop_exit(&strategy)
+                && !strategy.uses_execution_overlays()
+                && (kernel_regime_filters_enabled() || halftrend_trend.is_none())
                 && cuda_available()
                 && crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str())
                 && crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str());
             #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-            let kernel_ok = false;
+            let kernel_supported = false;
 
-            if export_requested && !kernel_ok {
+            let kernel_preferred = kernel_supported
+                && crate::ma_policy::prefers_gpu_kernel_ma(fast_ma.as_str())
+                && crate::ma_policy::prefers_gpu_kernel_ma(slow_ma.as_str());
+
+            if export_requested && !kernel_supported {
                 return Err(
                     "export_all_csv_path requires the GPU (kernel) backend, which is not available for this MA selection/build.".to_string(),
                 );
             }
 
-            if kernel_ok {
+            if kernel_preferred || (export_requested && kernel_supported) {
                 Backend::GpuKernel { device_id }
             } else if cuda_ok {
                 Backend::GpuOnly { device_id }
@@ -756,20 +2985,22 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         let export_requested = export_all_csv_path.is_some();
 
         #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-        let kernel_ok = halftrend_trend.is_none()
+        let kernel_supported = !strategy_uses_kaufman_stop_exit(&strategy)
+            && !strategy.uses_execution_overlays()
+            && (kernel_regime_filters_enabled() || halftrend_trend.is_none())
             && cuda_available()
             && crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str())
             && crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str());
         #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-        let kernel_ok = false;
+        let kernel_supported = false;
 
-        if export_requested && !kernel_ok {
+        if export_requested && !kernel_supported {
             return Err(
                 "export_all_csv_path requires the GPU (kernel) backend, which is not available for this MA selection/build.".to_string(),
             );
         }
 
-        if !kernel_ok {
+        if !kernel_supported {
             let fast_info =
                 lookup_ma_info(&fast_ma).ok_or_else(|| "unknown fast MA".to_string())?;
             let slow_info =
@@ -794,6 +3025,18 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             };
         }
     }
+
+    if matches!(mode_used, OptimizationModeResolved::GpuVdps) && matches!(backend, Backend::CpuOnly)
+    {
+        return Err(
+            "GpuVdps mode requires a GPU backend. Choose backend=Auto/GpuOnly/GpuKernel with CUDA available."
+                .to_string(),
+        );
+    }
+    let vdps_gpu_refill_device_id = match backend {
+        Backend::GpuKernel { device_id } => Some(device_id),
+        _ => None,
+    };
 
     struct OffsetProgress<'a> {
         inner: &'a dyn ProgressSink,
@@ -825,6 +3068,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     fast_alma_sigma: f64,
                     slow_alma_offset: f64,
                     slow_alma_sigma: f64,
+                    constraints: Option<&DoubleMaConstraints>,
                     progress: Option<&dyn ProgressSink>|
      -> Result<(OptimizationResult, BackendUsed), String> {
         match &backend {
@@ -850,6 +3094,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    constraints,
                     total_pairs,
                     heatmap_bins,
                     cancel,
@@ -880,6 +3125,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    constraints,
                     total_pairs,
                     heatmap_bins,
                     cancel,
@@ -898,6 +3144,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     &ma_source,
                     fast_ma_params,
                     slow_ma_params,
+                    halftrend_trend.as_deref(),
                     &strategy,
                     objective,
                     top_k,
@@ -906,6 +3153,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    constraints,
                     export_all_csv_path,
                     total_pairs,
                     heatmap_bins,
@@ -920,31 +3168,46 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
     };
 
+    struct ModeRunResult {
+        res: OptimizationResult,
+        backend_used: BackendUsed,
+        vdps: Option<VdpsTelemetry>,
+    }
+
     let run_mode_for_params = |fast_ma_params: Option<&HashMap<String, f64>>,
                                slow_ma_params: Option<&HashMap<String, f64>>,
                                fast_alma_offset: f64,
                                fast_alma_sigma: f64,
                                slow_alma_offset: f64,
                                slow_alma_sigma: f64,
+                               constraints: Option<&DoubleMaConstraints>,
                                progress: Option<&dyn ProgressSink>|
-     -> Result<(OptimizationResult, BackendUsed), String> {
+     -> Result<ModeRunResult, String> {
         match mode_used {
-            OptimizationModeResolved::Grid => run_grid(
-                &fast_periods,
-                &slow_periods,
-                top_k,
-                include_all,
-                heatmap_bins,
-                export_all_csv_path.as_deref(),
-                total_pairs,
-                fast_ma_params,
-                slow_ma_params,
-                fast_alma_offset,
-                fast_alma_sigma,
-                slow_alma_offset,
-                slow_alma_sigma,
-                progress,
-            ),
+            OptimizationModeResolved::Grid => {
+                let (res, backend_used) = run_grid(
+                    &fast_periods,
+                    &slow_periods,
+                    top_k,
+                    include_all,
+                    heatmap_bins,
+                    export_all_csv_path.as_deref(),
+                    total_pairs,
+                    fast_ma_params,
+                    slow_ma_params,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    progress,
+                )?;
+                Ok(ModeRunResult {
+                    res,
+                    backend_used,
+                    vdps: None,
+                })
+            }
             OptimizationModeResolved::CoarseToFine => {
                 let target_pairs = 200_000usize;
                 let mut factor = 1u32;
@@ -955,7 +3218,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 }
 
                 if factor <= 1 {
-                    run_grid(
+                    let (res, backend_used) = run_grid(
                         &fast_periods,
                         &slow_periods,
                         top_k,
@@ -969,8 +3232,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         fast_alma_sigma,
                         slow_alma_offset,
                         slow_alma_sigma,
+                        constraints,
                         progress,
-                    )
+                    )?;
+                    Ok(ModeRunResult {
+                        res,
+                        backend_used,
+                        vdps: None,
+                    })
                 } else {
                     let coarse_fast = (
                         fast.0,
@@ -1014,6 +3283,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         fast_alma_sigma,
                         slow_alma_offset,
                         slow_alma_sigma,
+                        constraints,
                         progress,
                     )?;
 
@@ -1071,6 +3341,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         fast_alma_sigma,
                         slow_alma_offset,
                         slow_alma_sigma,
+                        constraints,
                         progress,
                     )?;
                     fine_res.num_combos = coarse_res.num_combos.saturating_add(fine_res.num_combos);
@@ -1083,8 +3354,482 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         BackendUsed::Gpu
                     };
 
-                    Ok((fine_res, backend_used))
+                    Ok(ModeRunResult {
+                        res: fine_res,
+                        backend_used,
+                        vdps: None,
+                    })
                 }
+            }
+            OptimizationModeResolved::GpuVdps => {
+                let cfg = vdps_cfg
+                    .clone()
+                    .ok_or_else(|| "GpuVdps config is not available".to_string())?;
+                let rung_plan = cfg.rungs.clone();
+                if rung_plan.is_empty() {
+                    return Err("GpuVdps mode has no valid rung schedule".to_string());
+                }
+
+                let mut total_evaluated_pairs: usize = 0;
+                let mut full_fidelity_pairs_evaluated: usize = 0;
+                let mut any_gpu = false;
+                let mut last_res: Option<OptimizationResult> = None;
+                let mut rung_stats: Vec<VdpsRungTelemetry> = Vec::with_capacity(rung_plan.len());
+
+                let mut seed_pairs: Vec<(u16, u16)> = Vec::new();
+                let fast_step_base = fast.2.max(1) as u16;
+                let slow_step_base = slow.2.max(1) as u16;
+                let random_seed = if cfg.deterministic {
+                    cfg.seed
+                } else {
+                    rand::thread_rng().gen()
+                };
+                let mut rng = StdRng::seed_from_u64(random_seed);
+                let (elite_refill_ratio, diff_refill_ratio, rand_refill_ratio) =
+                    vdps_normalized_refill_mix(&cfg);
+
+                for (ri, frac) in rung_plan.iter().enumerate() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
+                    }
+                    let rung_start = std::time::Instant::now();
+
+                    emit_progress(
+                        progress,
+                        ri,
+                        rung_plan.len(),
+                        if ri + 1 == rung_plan.len() {
+                            "vdps-finalize"
+                        } else {
+                            "vdps-schedule"
+                        },
+                    );
+
+                    let target_pairs_raw = vdps_target_pairs(total_pairs, *frac);
+                    let target_pairs = if ri == 0 {
+                        target_pairs_raw.max(cfg.min_initial_pairs.min(total_pairs))
+                    } else {
+                        target_pairs_raw
+                    };
+
+                    let (rung_fast, rung_slow) = if ri == 0 {
+                        let mut stride =
+                            (((total_pairs as f64) / (target_pairs as f64)).sqrt().ceil() as usize)
+                                .max(1);
+                        let mut fast_sel = vdps_decimated_periods(&fast_periods, stride);
+                        let mut slow_sel = vdps_decimated_periods(&slow_periods, stride);
+                        let mut rung_pairs = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
+                        while rung_pairs > target_pairs.saturating_mul(2)
+                            && (fast_sel.len() > 8 || slow_sel.len() > 8)
+                            && stride < 256
+                        {
+                            stride = stride.saturating_add(1);
+                            fast_sel = vdps_decimated_periods(&fast_periods, stride);
+                            slow_sel = vdps_decimated_periods(&slow_periods, stride);
+                            rung_pairs = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
+                        }
+                        (fast_sel, slow_sel)
+                    } else {
+                        let mut fast_set: BTreeSet<u16> = BTreeSet::new();
+                        let mut slow_set: BTreeSet<u16> = BTreeSet::new();
+
+                        let rem = rung_plan.len().saturating_sub(ri);
+                        let rem_u16 = rem.min(u16::MAX as usize) as u16;
+                        let f_win = fast_step_base
+                            .saturating_mul(rem_u16)
+                            .saturating_mul(2)
+                            .max(fast_step_base);
+                        let s_win = slow_step_base
+                            .saturating_mul(rem_u16)
+                            .saturating_mul(2)
+                            .max(slow_step_base);
+
+                        for (f, s) in seed_pairs.iter().copied() {
+                            for &fp in vdps_period_window_slice(&fast_periods, f, f_win) {
+                                fast_set.insert(fp);
+                            }
+                            for &sp in vdps_period_window_slice(&slow_periods, s, s_win) {
+                                slow_set.insert(sp);
+                            }
+                        }
+
+                        if fast_set.is_empty() || slow_set.is_empty() {
+                            (fast_periods.clone(), slow_periods.clone())
+                        } else {
+                            let mut fast_candidates: Vec<u16> = fast_set.into_iter().collect();
+                            let mut slow_candidates: Vec<u16> = slow_set.into_iter().collect();
+
+                            let best_seed = seed_pairs.first().copied().unwrap_or_else(|| {
+                                (
+                                    fast_periods[fast_periods.len() / 2],
+                                    slow_periods[slow_periods.len() / 2],
+                                )
+                            });
+
+                            if fast_candidates.len() > cfg.max_period_candidates {
+                                fast_candidates.sort_by_key(|&p| (p.abs_diff(best_seed.0), p));
+                                fast_candidates.truncate(cfg.max_period_candidates);
+                                fast_candidates.sort_unstable();
+                            }
+                            if slow_candidates.len() > cfg.max_period_candidates {
+                                slow_candidates.sort_by_key(|&p| (p.abs_diff(best_seed.1), p));
+                                slow_candidates.truncate(cfg.max_period_candidates);
+                                slow_candidates.sort_unstable();
+                            }
+
+                            let mut thin_stride = 1usize;
+                            let mut fast_sel = fast_candidates.clone();
+                            let mut slow_sel = slow_candidates.clone();
+                            let mut rung_pairs = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
+                            while rung_pairs > target_pairs.saturating_mul(3)
+                                && (fast_sel.len() > 8 || slow_sel.len() > 8)
+                                && thin_stride < 128
+                            {
+                                thin_stride = thin_stride.saturating_add(1);
+                                fast_sel = vdps_decimated_periods(&fast_candidates, thin_stride);
+                                slow_sel = vdps_decimated_periods(&slow_candidates, thin_stride);
+                                rung_pairs = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
+                            }
+                            (fast_sel, slow_sel)
+                        }
+                    };
+
+                    let rung_pairs = estimate_pairs_fast_lt_slow(&rung_fast, &rung_slow);
+                    if rung_pairs == 0 {
+                        continue;
+                    }
+
+                    let survivors_target =
+                        ((target_pairs as f64) / (cfg.eta as f64)).ceil() as usize;
+                    let rung_top_k = if ri + 1 == rung_plan.len() {
+                        top_k
+                    } else {
+                        survivors_target.clamp(top_k.max(8), cfg.max_survivor_seeds)
+                    };
+
+                    let (mut rung_res, rung_backend) = run_grid(
+                        &rung_fast,
+                        &rung_slow,
+                        rung_top_k,
+                        false,
+                        0,
+                        None,
+                        rung_pairs,
+                        fast_ma_params,
+                        slow_ma_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        constraints,
+                        progress,
+                    )?;
+
+                    if matches!(rung_backend, BackendUsed::Gpu) {
+                        any_gpu = true;
+                    }
+
+                    total_evaluated_pairs =
+                        total_evaluated_pairs.saturating_add(rung_res.num_combos);
+
+                    let mut ranked_input: Vec<(DoubleMaParams, Metrics)> =
+                        Vec::with_capacity(rung_res.top.len().saturating_add(1));
+                    ranked_input
+                        .push((rung_res.best_params.clone(), rung_res.best_metrics.clone()));
+                    ranked_input.extend(rung_res.top.iter().cloned());
+                    let ranked_limit = survivors_target.clamp(8, cfg.max_survivor_seeds);
+                    let ranked = vdps_rank_candidates(ranked_input, objective, ranked_limit);
+                    let promoted_pairs = ranked.len();
+                    let mut next_seed_pairs = ranked
+                        .iter()
+                        .map(|(p, _)| (p.fast_len, p.slow_len))
+                        .collect::<Vec<_>>();
+
+                    if ri + 1 != rung_plan.len() {
+                        let refill_budget =
+                            cfg.max_survivor_seeds.saturating_sub(next_seed_pairs.len());
+                        if refill_budget > 0 {
+                            let mut elite_inject =
+                                ((refill_budget as f64) * elite_refill_ratio).round() as usize;
+                            let mut diff_inject =
+                                ((refill_budget as f64) * diff_refill_ratio).round() as usize;
+                            let mut rand_inject =
+                                ((refill_budget as f64) * rand_refill_ratio).round() as usize;
+                            let assigned = elite_inject
+                                .saturating_add(diff_inject)
+                                .saturating_add(rand_inject);
+                            if assigned > refill_budget {
+                                let overflow = assigned.saturating_sub(refill_budget);
+                                let take_rand = overflow.min(rand_inject);
+                                rand_inject = rand_inject.saturating_sub(take_rand);
+                                let rem = overflow.saturating_sub(take_rand);
+                                let take_diff = rem.min(diff_inject);
+                                diff_inject = diff_inject.saturating_sub(take_diff);
+                                let rem2 = rem.saturating_sub(take_diff);
+                                elite_inject = elite_inject.saturating_sub(rem2.min(elite_inject));
+                            } else if assigned < refill_budget {
+                                rand_inject = rand_inject
+                                    .saturating_add(refill_budget.saturating_sub(assigned));
+                            }
+                            let elite_seeds = next_seed_pairs.clone();
+                            if vdps_gpu_refill_enabled() {
+                                if let Some(device_id) = vdps_gpu_refill_device_id {
+                                    let gpu_seed: u64 = rng.gen();
+                                    if let Ok(Some(gpu_pairs)) = vdps_generate_seed_pairs_gpu(
+                                        device_id,
+                                        &elite_seeds,
+                                        &rung_fast,
+                                        &rung_slow,
+                                        elite_inject,
+                                        diff_inject,
+                                        rand_inject,
+                                        fast_step_base,
+                                        slow_step_base,
+                                        gpu_seed,
+                                    ) {
+                                        let mut seen: BTreeSet<(u16, u16)> =
+                                            next_seed_pairs.iter().copied().collect();
+                                        for pair in gpu_pairs.into_iter() {
+                                            if seen.insert(pair) {
+                                                next_seed_pairs.push(pair);
+                                                if next_seed_pairs.len() >= cfg.max_survivor_seeds {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let refill_remaining =
+                                cfg.max_survivor_seeds.saturating_sub(next_seed_pairs.len());
+                            if refill_remaining > 0 {
+                                let mut elite_cpu = ((refill_remaining as f64) * elite_refill_ratio)
+                                    .round()
+                                    as usize;
+                                let mut diff_cpu = ((refill_remaining as f64) * diff_refill_ratio)
+                                    .round()
+                                    as usize;
+                                let mut rand_cpu = ((refill_remaining as f64) * rand_refill_ratio)
+                                    .round()
+                                    as usize;
+                                let assigned_cpu =
+                                    elite_cpu.saturating_add(diff_cpu).saturating_add(rand_cpu);
+                                if assigned_cpu > refill_remaining {
+                                    let overflow = assigned_cpu.saturating_sub(refill_remaining);
+                                    let take_rand = overflow.min(rand_cpu);
+                                    rand_cpu = rand_cpu.saturating_sub(take_rand);
+                                    let rem = overflow.saturating_sub(take_rand);
+                                    let take_diff = rem.min(diff_cpu);
+                                    diff_cpu = diff_cpu.saturating_sub(take_diff);
+                                    let rem2 = rem.saturating_sub(take_diff);
+                                    elite_cpu = elite_cpu.saturating_sub(rem2.min(elite_cpu));
+                                } else if assigned_cpu < refill_remaining {
+                                    rand_cpu = rand_cpu.saturating_add(
+                                        refill_remaining.saturating_sub(assigned_cpu),
+                                    );
+                                }
+
+                                vdps_inject_elite_mutation_pairs(
+                                    &mut next_seed_pairs,
+                                    &elite_seeds,
+                                    &rung_fast,
+                                    &rung_slow,
+                                    elite_cpu,
+                                    fast_step_base,
+                                    slow_step_base,
+                                    &mut rng,
+                                );
+                                vdps_inject_differential_seed_pairs(
+                                    &mut next_seed_pairs,
+                                    &elite_seeds,
+                                    &rung_fast,
+                                    &rung_slow,
+                                    diff_cpu,
+                                    &mut rng,
+                                );
+                                vdps_inject_random_seed_pairs(
+                                    &mut next_seed_pairs,
+                                    &rung_fast,
+                                    &rung_slow,
+                                    rand_cpu,
+                                    &mut rng,
+                                );
+                            }
+                        }
+                        // Intermediate rungs are only for seed generation.
+                        rung_res.top = ranked;
+                    } else {
+                        full_fidelity_pairs_evaluated = rung_res.num_combos;
+                    }
+                    seed_pairs = next_seed_pairs;
+                    let runtime_ms = rung_start.elapsed().as_millis() as u64;
+                    let throughput_pairs_per_sec = if runtime_ms > 0 {
+                        (rung_res.num_combos as f64) * 1000.0 / (runtime_ms as f64)
+                    } else {
+                        rung_res.num_combos as f64
+                    };
+                    rung_stats.push(VdpsRungTelemetry {
+                        rung_index: ri,
+                        rung_fraction: *frac,
+                        target_pairs,
+                        evaluated_pairs: rung_res.num_combos,
+                        promoted_pairs,
+                        dropped_pairs: rung_res.num_combos.saturating_sub(promoted_pairs),
+                        fast_candidates: rung_fast.len(),
+                        slow_candidates: rung_slow.len(),
+                        backend_used: rung_backend,
+                        runtime_ms,
+                        throughput_pairs_per_sec,
+                    });
+                    last_res = Some(rung_res);
+                }
+
+                let mut final_res =
+                    last_res.ok_or_else(|| "GpuVdps produced no valid rung result".to_string())?;
+                final_res.num_combos = total_evaluated_pairs.max(final_res.num_combos);
+                final_res.all = None;
+                final_res.heatmap = None;
+
+                if top_k > 0 {
+                    let mut ranked_input: Vec<(DoubleMaParams, Metrics)> =
+                        Vec::with_capacity(final_res.top.len().saturating_add(1));
+                    ranked_input.push((
+                        final_res.best_params.clone(),
+                        final_res.best_metrics.clone(),
+                    ));
+                    ranked_input.extend(final_res.top.into_iter());
+                    let ranked = vdps_rank_candidates(ranked_input, objective, top_k.max(1));
+                    if let Some((p, m)) = ranked.first() {
+                        final_res.best_params = p.clone();
+                        final_res.best_metrics = m.clone();
+                    }
+                    final_res.top = ranked;
+                } else {
+                    final_res.top.clear();
+                }
+
+                let backend_used = if any_gpu {
+                    BackendUsed::Gpu
+                } else {
+                    BackendUsed::Cpu
+                };
+                let runtime_ms_total = rung_stats
+                    .iter()
+                    .fold(0u64, |acc, r| acc.saturating_add(r.runtime_ms));
+                let mut quality_check_top_k_overlap: Option<f64> = None;
+                let mut quality_check_best_score_regret: Option<f64> = None;
+                let mut quality_check_baseline_runtime_ms: Option<u64> = None;
+                let mut quality_check_baseline_backend: Option<BackendUsed> = None;
+                let mut quality_check_baseline_pairs: Option<usize> = None;
+                if cfg.quality_check_max_pairs > 0 && total_pairs <= cfg.quality_check_max_pairs {
+                    let quality_top_k = cfg.quality_check_top_k.max(1).min(top_k.max(1));
+                    let quality_start = std::time::Instant::now();
+                    if let Ok((baseline_res, baseline_backend)) = run_grid(
+                        &fast_periods,
+                        &slow_periods,
+                        quality_top_k,
+                        false,
+                        0,
+                        None,
+                        total_pairs,
+                        fast_ma_params,
+                        slow_ma_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        constraints,
+                        None,
+                    ) {
+                        quality_check_baseline_runtime_ms =
+                            Some(quality_start.elapsed().as_millis() as u64);
+                        quality_check_baseline_backend = Some(baseline_backend);
+                        quality_check_baseline_pairs = Some(baseline_res.num_combos);
+
+                        let mut baseline_ranked_input: Vec<(DoubleMaParams, Metrics)> =
+                            Vec::with_capacity(baseline_res.top.len().saturating_add(1));
+                        baseline_ranked_input.push((
+                            baseline_res.best_params.clone(),
+                            baseline_res.best_metrics.clone(),
+                        ));
+                        baseline_ranked_input.extend(baseline_res.top.iter().cloned());
+                        let baseline_ranked =
+                            vdps_rank_candidates(baseline_ranked_input, objective, quality_top_k);
+
+                        let mut vdps_ranked_input: Vec<(DoubleMaParams, Metrics)> =
+                            Vec::with_capacity(final_res.top.len().saturating_add(1));
+                        vdps_ranked_input.push((
+                            final_res.best_params.clone(),
+                            final_res.best_metrics.clone(),
+                        ));
+                        vdps_ranked_input.extend(final_res.top.iter().cloned());
+                        let vdps_ranked =
+                            vdps_rank_candidates(vdps_ranked_input, objective, quality_top_k);
+
+                        let mut baseline_keys: BTreeSet<(u16, u16, u16, u16)> = BTreeSet::new();
+                        for (p, _) in baseline_ranked.iter() {
+                            baseline_keys.insert((
+                                p.fast_len,
+                                p.slow_len,
+                                p.fast_ma_id,
+                                p.slow_ma_id,
+                            ));
+                        }
+                        let mut overlap_count = 0usize;
+                        for (p, _) in vdps_ranked.iter() {
+                            if baseline_keys.contains(&(
+                                p.fast_len,
+                                p.slow_len,
+                                p.fast_ma_id,
+                                p.slow_ma_id,
+                            )) {
+                                overlap_count = overlap_count.saturating_add(1);
+                            }
+                        }
+                        let denom = quality_top_k.max(1) as f64;
+                        quality_check_top_k_overlap = Some((overlap_count as f64) / denom);
+
+                        let baseline_best_score =
+                            objective_score(&baseline_res.best_metrics, objective);
+                        let vdps_best_score = objective_score(&final_res.best_metrics, objective);
+                        if baseline_best_score.is_finite() && vdps_best_score.is_finite() {
+                            quality_check_best_score_regret =
+                                Some((baseline_best_score - vdps_best_score).max(0.0));
+                        }
+                    }
+                }
+                let vdps = VdpsTelemetry {
+                    eta: cfg.eta as u32,
+                    rungs: rung_plan,
+                    min_initial_pairs: cfg.min_initial_pairs as u32,
+                    max_survivor_seeds: cfg.max_survivor_seeds as u32,
+                    max_period_candidates: cfg.max_period_candidates as u32,
+                    random_injection_ratio: rand_refill_ratio,
+                    elite_mutation_ratio: elite_refill_ratio,
+                    differential_ratio: diff_refill_ratio,
+                    deterministic: cfg.deterministic,
+                    seed: random_seed,
+                    rng_kind: "StdRng/ChaCha12".to_string(),
+                    tie_break_schema_version: "v1".to_string(),
+                    full_grid_pairs: total_pairs,
+                    full_fidelity_pairs_evaluated,
+                    full_fidelity_pairs_saved: total_pairs
+                        .saturating_sub(full_fidelity_pairs_evaluated),
+                    evaluated_pairs_total: total_evaluated_pairs,
+                    runtime_ms_total,
+                    quality_check_top_k_overlap,
+                    quality_check_best_score_regret,
+                    quality_check_baseline_runtime_ms,
+                    quality_check_baseline_backend,
+                    quality_check_baseline_pairs,
+                    rung_stats,
+                };
+                Ok(ModeRunResult {
+                    res: final_res,
+                    backend_used,
+                    vdps: Some(vdps),
+                })
             }
         }
     };
@@ -1141,6 +3886,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         if include_all { Some(Vec::new()) } else { None };
     let mut merged_heatmap: Option<OptimizationHeatmap> = None;
     let mut merged_num_combos: usize = 0;
+    let mut merged_vdps: Option<VdpsTelemetry> = None;
 
     let multi_grid_offset_progress =
         matches!(mode_used, OptimizationModeResolved::Grid) && variant_pairs > 1;
@@ -1176,15 +3922,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 progress
             };
 
-            let (mut res, backend_used) = run_mode_for_params(
+            let mut mode_out = run_mode_for_params(
                 fast_params,
                 slow_params,
                 fast_alma_offset,
                 fast_alma_sigma,
                 slow_alma_offset,
                 slow_alma_sigma,
+                constraints.as_ref(),
                 progress_for_run,
             )?;
+            merge_vdps_telemetry(&mut merged_vdps, mode_out.vdps.take());
+            let backend_used = mode_out.backend_used;
+            let mut res = mode_out.res;
 
             let fast_id = fi as u16;
             let slow_id = si as u16;
@@ -1355,6 +4105,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         top,
         all,
         heatmap,
+        vdps: merged_vdps,
     })
 }
 
@@ -1863,6 +4614,7 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
     for (k, v) in [
         ("stop_loss_pct", cfg.stop_loss_pct),
         ("take_profit_pct", cfg.take_profit_pct),
+        ("trailing_stop_pct", cfg.trailing_stop_pct),
     ] {
         if let Some(pct) = v {
             if !pct.is_finite() || pct <= 0.0 || pct >= 1.0 {
@@ -1870,7 +4622,177 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
             }
         }
     }
+
+    if strategy_uses_kaufman_stop_exit(cfg) {
+        if cfg.kaufman_stop_period() == 0 {
+            return Err("kaufman_stop_period must be > 0".to_string());
+        }
+        let mult = cfg.kaufman_stop_mult();
+        if !mult.is_finite() || mult <= 0.0 {
+            return Err("kaufman_stop_mult must be finite and > 0".to_string());
+        }
+        if cfg.kaufman_stop_ma_type().trim().is_empty() {
+            return Err("kaufman_stop_ma_type cannot be empty".to_string());
+        }
+    }
+
+    if cfg.uses_trend_quality_filter() || cfg.uses_regime_hybrid_filter() {
+        if cfg.trend_quality_linearreg_period() == 0 {
+            return Err("trend_quality_linearreg_period must be > 0".to_string());
+        }
+        let angle_min = cfg.trend_quality_angle_min_deg();
+        if !angle_min.is_finite() || angle_min <= 0.0 {
+            return Err("trend_quality_angle_min_deg must be finite and > 0".to_string());
+        }
+        if cfg.trend_quality_bbw_period() == 0 {
+            return Err("trend_quality_bbw_period must be > 0".to_string());
+        }
+        let bbw_mult = cfg.trend_quality_bbw_mult();
+        if !bbw_mult.is_finite() || bbw_mult <= 0.0 {
+            return Err("trend_quality_bbw_mult must be finite and > 0".to_string());
+        }
+        let bbw_min = cfg.trend_quality_bbw_min();
+        if !bbw_min.is_finite() || bbw_min < 0.0 {
+            return Err("trend_quality_bbw_min must be finite and >= 0".to_string());
+        }
+        if cfg.trend_quality_use_roc() && cfg.trend_quality_roc_period() == 0 {
+            return Err(
+                "trend_quality_roc_period must be > 0 when ROC confirmation is enabled".to_string(),
+            );
+        }
+        if cfg.trend_quality_use_adx() {
+            if cfg.trend_quality_adx_period() == 0 {
+                return Err(
+                    "trend_quality_adx_period must be > 0 when ADX confirmation is enabled"
+                        .to_string(),
+                );
+            }
+            let adx_min = cfg.trend_quality_adx_min();
+            if !adx_min.is_finite() || adx_min <= 0.0 {
+                return Err(
+                    "trend_quality_adx_min must be finite and > 0 when ADX confirmation is enabled"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    if cfg.uses_breakout_momentum_filter() {
+        if cfg.breakout_bbands_period() == 0 {
+            return Err("breakout_bbands_period must be > 0".to_string());
+        }
+        let bb_mult = cfg.breakout_bbands_mult();
+        if !bb_mult.is_finite() || bb_mult <= 0.0 {
+            return Err("breakout_bbands_mult must be finite and > 0".to_string());
+        }
+        if cfg.breakout_confirm_bars() == 0 {
+            return Err("breakout_confirm_bars must be > 0".to_string());
+        }
+        let macd_fast = cfg.breakout_macd_fast_period();
+        let macd_slow = cfg.breakout_macd_slow_period();
+        let macd_signal = cfg.breakout_macd_signal_period();
+        if macd_fast == 0 || macd_slow == 0 || macd_signal == 0 {
+            return Err("breakout MACD periods must be > 0 (fast/slow/signal)".to_string());
+        }
+        if macd_fast >= macd_slow {
+            return Err("breakout MACD requires fast period < slow period".to_string());
+        }
+        if cfg.breakout_cmo_period() == 0 {
+            return Err("breakout_cmo_period must be > 0".to_string());
+        }
+        let cmo_min_abs = cfg.breakout_cmo_min_abs();
+        if !cmo_min_abs.is_finite() || cmo_min_abs < 0.0 {
+            return Err("breakout_cmo_min_abs must be finite and >= 0".to_string());
+        }
+        let adosc_short = cfg.breakout_adosc_short_period();
+        let adosc_long = cfg.breakout_adosc_long_period();
+        if adosc_short == 0 || adosc_long == 0 {
+            return Err("breakout ADOSC periods must be > 0".to_string());
+        }
+        if adosc_short >= adosc_long {
+            return Err("breakout ADOSC requires short period < long period".to_string());
+        }
+        if cfg.breakout_use_adx() {
+            if cfg.breakout_adx_period() == 0 {
+                return Err(
+                    "breakout_adx_period must be > 0 when breakout ADX is enabled".to_string(),
+                );
+            }
+            let adx_min = cfg.breakout_adx_min();
+            if !adx_min.is_finite() || adx_min <= 0.0 {
+                return Err(
+                    "breakout_adx_min must be finite and > 0 when breakout ADX is enabled"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    if cfg.uses_regime_hybrid_filter() {
+        if cfg.regime_hybrid_adx_period() == 0 {
+            return Err("regime_hybrid_adx_period must be > 0".to_string());
+        }
+        let adx_enter = cfg.regime_hybrid_adx_enter();
+        if !adx_enter.is_finite() || adx_enter <= 0.0 {
+            return Err("regime_hybrid_adx_enter must be finite and > 0".to_string());
+        }
+        let adx_exit = cfg.regime_hybrid_adx_exit();
+        if !adx_exit.is_finite() || adx_exit <= 0.0 || adx_exit > adx_enter {
+            return Err(
+                "regime_hybrid_adx_exit must be finite, > 0, and <= regime_hybrid_adx_enter"
+                    .to_string(),
+            );
+        }
+        let rev_entry = cfg.regime_hybrid_reversion_entry_rel();
+        if !rev_entry.is_finite() || rev_entry <= 0.0 {
+            return Err("regime_hybrid_reversion_entry_rel must be finite and > 0".to_string());
+        }
+        let rev_exit = cfg.regime_hybrid_reversion_exit_rel();
+        if !rev_exit.is_finite() || rev_exit < 0.0 || rev_exit > rev_entry {
+            return Err(
+                "regime_hybrid_reversion_exit_rel must be finite, >= 0, and <= regime_hybrid_reversion_entry_rel".to_string(),
+            );
+        }
+    }
+    if cfg.uses_regime_hybrid_filter() && cfg.uses_breakout_momentum_filter() {
+        return Err(
+            "regime_hybrid_enable is not compatible with breakout_momentum_enable in double-MA flow"
+                .to_string(),
+        );
+    }
     Ok(())
+}
+
+pub(crate) fn strategy_cfg_for_optimization(mut cfg: StrategyConfig) -> StrategyConfig {
+    // Grid backtests are bar-close based, so trailing-stop behavior can be misleading without
+    // intrabar modeling. Keep trailing available in validation/live flows, but disable it here.
+    cfg.trailing_stop_pct = None;
+    cfg
+}
+
+fn sanitize_double_ma_constraints(
+    constraints: Option<DoubleMaConstraints>,
+) -> Result<Option<DoubleMaConstraints>, String> {
+    let Some(mut c) = constraints else {
+        return Ok(None);
+    };
+
+    c.min_trades = c
+        .min_trades
+        .and_then(|v| if v > 0 { Some(v) } else { None });
+    c.max_drawdown = match c.max_drawdown {
+        Some(v) if v.is_finite() && v >= 0.0 => Some(v),
+        Some(_) => {
+            return Err("constraints.max_drawdown must be finite and >= 0".to_string());
+        }
+        None => None,
+    };
+
+    if c.min_trades.is_none() && c.max_drawdown.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(c))
+    }
 }
 
 fn validate_halftrend_filter(f: &HalfTrendRegimeFilter) -> Result<(), String> {
@@ -1907,6 +4829,438 @@ pub(crate) fn compute_halftrend_trend(
 
     let out = vector_ta::indicators::halftrend::halftrend(&input).map_err(|e| e.to_string())?;
     Ok(out.trend)
+}
+
+fn merge_regime_filters(
+    a: Option<Vec<f64>>,
+    b: Option<Vec<f64>>,
+) -> Result<Option<Vec<f64>>, String> {
+    match (a, b) {
+        (None, None) => Ok(None),
+        (Some(x), None) => Ok(Some(x)),
+        (None, Some(y)) => Ok(Some(y)),
+        (Some(x), Some(y)) => {
+            if x.len() != y.len() {
+                return Err("regime filter length mismatch".to_string());
+            }
+            let mut out = vec![f64::NAN; x.len()];
+            for i in 0..x.len() {
+                let (a_long, a_short) = if !x[i].is_finite() {
+                    (false, false)
+                } else if x[i] < 0.5 {
+                    (true, false)
+                } else {
+                    (false, true)
+                };
+                let (b_long, b_short) = if !y[i].is_finite() {
+                    (false, false)
+                } else if y[i] < 0.5 {
+                    (true, false)
+                } else {
+                    (false, true)
+                };
+                let long_ok = a_long && b_long;
+                let short_ok = a_short && b_short;
+                out[i] = if long_ok && !short_ok {
+                    0.0
+                } else if short_ok && !long_ok {
+                    1.0
+                } else {
+                    f64::NAN
+                };
+            }
+            Ok(Some(out))
+        }
+    }
+}
+
+pub(crate) fn compute_trend_quality_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    let trend_adx_enabled =
+        strategy.uses_trend_quality_filter() && strategy.trend_quality_use_adx();
+    if !strategy.uses_trend_quality_filter() && !strategy.uses_regime_hybrid_filter() {
+        return Ok(None);
+    }
+
+    let n = candles.close.len();
+    let lr_angle = vector_ta::indicators::linearreg_angle::linearreg_angle(
+        &vector_ta::indicators::linearreg_angle::Linearreg_angleInput::from_candles(
+            candles,
+            ma_source,
+            vector_ta::indicators::linearreg_angle::Linearreg_angleParams {
+                period: Some(strategy.trend_quality_linearreg_period()),
+            },
+        ),
+    )
+    .map_err(|e| format!("trend-quality linearreg_angle failed: {e}"))?
+    .values;
+
+    let bbw = vector_ta::indicators::bollinger_bands_width::bollinger_bands_width(
+        &vector_ta::indicators::bollinger_bands_width::BollingerBandsWidthInput::from_candles(
+            candles,
+            ma_source,
+            vector_ta::indicators::bollinger_bands_width::BollingerBandsWidthParams {
+                period: Some(strategy.trend_quality_bbw_period()),
+                devup: Some(strategy.trend_quality_bbw_mult()),
+                devdn: Some(strategy.trend_quality_bbw_mult()),
+                matype: Some("sma".to_string()),
+                devtype: Some(0),
+            },
+        ),
+    )
+    .map_err(|e| format!("trend-quality bollinger_bands_width failed: {e}"))?
+    .values;
+
+    if lr_angle.len() != n || bbw.len() != n {
+        return Err("trend-quality indicator length mismatch".to_string());
+    }
+
+    let roc_vals = if strategy.trend_quality_use_roc() {
+        Some(
+            vector_ta::indicators::roc::roc(&vector_ta::indicators::roc::RocInput::from_candles(
+                candles,
+                ma_source,
+                vector_ta::indicators::roc::RocParams {
+                    period: Some(strategy.trend_quality_roc_period()),
+                },
+            ))
+            .map_err(|e| format!("trend-quality roc failed: {e}"))?
+            .values,
+        )
+    } else {
+        None
+    };
+
+    if let Some(roc) = roc_vals.as_ref() {
+        if roc.len() != n {
+            return Err("trend-quality roc length mismatch".to_string());
+        }
+    }
+
+    let adx_period = if strategy.uses_regime_hybrid_filter() {
+        strategy.regime_hybrid_adx_period()
+    } else if trend_adx_enabled {
+        strategy.trend_quality_adx_period()
+    } else {
+        0
+    };
+    let adx_vals = if adx_period > 0 {
+        Some(
+            vector_ta::indicators::adx::adx(&vector_ta::indicators::adx::AdxInput::from_candles(
+                candles,
+                vector_ta::indicators::adx::AdxParams {
+                    period: Some(adx_period),
+                },
+            ))
+            .map_err(|e| format!("trend-quality adx failed: {e}"))?
+            .values,
+        )
+    } else {
+        None
+    };
+    if let Some(adx) = adx_vals.as_ref() {
+        if adx.len() != n {
+            return Err("trend-quality adx length mismatch".to_string());
+        }
+    }
+
+    let angle_min = strategy.trend_quality_angle_min_deg();
+    let bbw_min = strategy.trend_quality_bbw_min();
+    let adx_min = if trend_adx_enabled {
+        strategy.trend_quality_adx_min()
+    } else {
+        f64::NAN
+    };
+
+    if !strategy.uses_regime_hybrid_filter() {
+        let mut regime = vec![f64::NAN; n];
+        for i in 0..n {
+            let a = lr_angle[i];
+            let b = bbw[i];
+            if !a.is_finite() || !b.is_finite() || b < bbw_min {
+                continue;
+            }
+
+            let mut long_ok = a >= angle_min;
+            let mut short_ok = a <= -angle_min;
+            if let Some(roc) = roc_vals.as_ref() {
+                let r = roc[i];
+                if !r.is_finite() {
+                    continue;
+                }
+                long_ok = long_ok && r > 0.0;
+                short_ok = short_ok && r < 0.0;
+            }
+            if trend_adx_enabled {
+                let d = adx_vals
+                    .as_ref()
+                    .and_then(|v| v.get(i))
+                    .copied()
+                    .unwrap_or(f64::NAN);
+                if !d.is_finite() || d < adx_min {
+                    continue;
+                }
+            }
+
+            regime[i] = if long_ok && !short_ok {
+                0.0
+            } else if short_ok && !long_ok {
+                1.0
+            } else {
+                f64::NAN
+            };
+        }
+
+        return Ok(Some(regime));
+    }
+
+    let adx_enter = strategy.regime_hybrid_adx_enter();
+    let adx_exit = strategy.regime_hybrid_adx_exit();
+    let angle_exit = (angle_min * 0.6).max(0.0001);
+    let bbw_exit = (bbw_min * 0.7).max(0.0);
+    let mut regime = vec![f64::NAN; n];
+    let mut state: i8 = 0; // +1 trend-long, -1 trend-short, 0 range
+    for i in 0..n {
+        let a = lr_angle[i];
+        let b = bbw[i];
+        let d = adx_vals
+            .as_ref()
+            .and_then(|v| v.get(i))
+            .copied()
+            .unwrap_or(f64::NAN);
+        if !a.is_finite() || !b.is_finite() || !d.is_finite() {
+            continue;
+        }
+
+        let mut long_entry = a >= angle_min && b >= bbw_min && d >= adx_enter;
+        let mut short_entry = a <= -angle_min && b >= bbw_min && d >= adx_enter;
+        let mut long_hold = a >= angle_exit && b >= bbw_exit && d >= adx_exit;
+        let mut short_hold = a <= -angle_exit && b >= bbw_exit && d >= adx_exit;
+
+        if let Some(roc) = roc_vals.as_ref() {
+            let r = roc[i];
+            if !r.is_finite() {
+                regime[i] = 2.0;
+                state = 0;
+                continue;
+            }
+            long_entry = long_entry && r > 0.0;
+            short_entry = short_entry && r < 0.0;
+            long_hold = long_hold && r >= 0.0;
+            short_hold = short_hold && r <= 0.0;
+        }
+
+        state = match state {
+            1 => {
+                if long_hold {
+                    1
+                } else {
+                    0
+                }
+            }
+            -1 => {
+                if short_hold {
+                    -1
+                } else {
+                    0
+                }
+            }
+            _ => {
+                if long_entry && !short_entry {
+                    1
+                } else if short_entry && !long_entry {
+                    -1
+                } else {
+                    0
+                }
+            }
+        };
+
+        regime[i] = if state > 0 {
+            0.0
+        } else if state < 0 {
+            1.0
+        } else {
+            2.0
+        };
+    }
+
+    Ok(Some(regime))
+}
+
+pub(crate) fn compute_breakout_momentum_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    if !strategy.uses_breakout_momentum_filter() {
+        return Ok(None);
+    }
+    if !candles.fields.high || !candles.fields.low || !candles.fields.volume {
+        return Err(
+            "breakout_momentum_enable requires 'high', 'low', and 'volume' candle columns"
+                .to_string(),
+        );
+    }
+
+    let n = candles.close.len();
+    let bb = vector_ta::indicators::bollinger_bands::bollinger_bands(
+        &vector_ta::indicators::bollinger_bands::BollingerBandsInput::from_candles(
+            candles,
+            ma_source,
+            vector_ta::indicators::bollinger_bands::BollingerBandsParams {
+                period: Some(strategy.breakout_bbands_period()),
+                devup: Some(strategy.breakout_bbands_mult()),
+                devdn: Some(strategy.breakout_bbands_mult()),
+                matype: Some("sma".to_string()),
+                devtype: Some(0),
+            },
+        ),
+    )
+    .map_err(|e| format!("breakout bollinger_bands failed: {e}"))?;
+    let macd =
+        vector_ta::indicators::macd::macd(&vector_ta::indicators::macd::MacdInput::from_candles(
+            candles,
+            ma_source,
+            vector_ta::indicators::macd::MacdParams {
+                fast_period: Some(strategy.breakout_macd_fast_period()),
+                slow_period: Some(strategy.breakout_macd_slow_period()),
+                signal_period: Some(strategy.breakout_macd_signal_period()),
+                ma_type: Some("ema".to_string()),
+            },
+        ))
+        .map_err(|e| format!("breakout macd failed: {e}"))?;
+    let cmo = vector_ta::indicators::cmo::cmo(&vector_ta::indicators::cmo::CmoInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::cmo::CmoParams {
+            period: Some(strategy.breakout_cmo_period()),
+        },
+    ))
+    .map_err(|e| format!("breakout cmo failed: {e}"))?;
+    let adosc = vector_ta::indicators::adosc::adosc(
+        &vector_ta::indicators::adosc::AdoscInput::from_candles(
+            candles,
+            vector_ta::indicators::adosc::AdoscParams {
+                short_period: Some(strategy.breakout_adosc_short_period()),
+                long_period: Some(strategy.breakout_adosc_long_period()),
+            },
+        ),
+    )
+    .map_err(|e| format!("breakout adosc failed: {e}"))?;
+
+    if bb.upper_band.len() != n
+        || bb.lower_band.len() != n
+        || macd.hist.len() != n
+        || cmo.values.len() != n
+        || adosc.values.len() != n
+    {
+        return Err("breakout indicator length mismatch".to_string());
+    }
+
+    let adx_vals = if strategy.breakout_use_adx() {
+        let adx =
+            vector_ta::indicators::adx::adx(&vector_ta::indicators::adx::AdxInput::from_candles(
+                candles,
+                vector_ta::indicators::adx::AdxParams {
+                    period: Some(strategy.breakout_adx_period()),
+                },
+            ))
+            .map_err(|e| format!("breakout adx failed: {e}"))?
+            .values;
+        if adx.len() != n {
+            return Err("breakout adx length mismatch".to_string());
+        }
+        Some(adx)
+    } else {
+        None
+    };
+
+    let confirm_bars = strategy.breakout_confirm_bars();
+    let cmo_min_abs = strategy.breakout_cmo_min_abs();
+    let adx_min = strategy.breakout_adx_min();
+
+    let mut regime = vec![f64::NAN; n];
+    let mut long_count = 0usize;
+    let mut short_count = 0usize;
+    for i in 0..n {
+        let close = candles.close[i];
+        let upper = bb.upper_band[i];
+        let lower = bb.lower_band[i];
+        let hist = macd.hist[i];
+        let c = cmo.values[i];
+        let flow = adosc.values[i];
+        let adx_ok = if let Some(adx) = adx_vals.as_ref() {
+            let d = adx[i];
+            d.is_finite() && d >= adx_min
+        } else {
+            true
+        };
+
+        if !close.is_finite()
+            || !upper.is_finite()
+            || !lower.is_finite()
+            || !hist.is_finite()
+            || !c.is_finite()
+            || !flow.is_finite()
+            || !adx_ok
+        {
+            long_count = 0;
+            short_count = 0;
+            continue;
+        }
+
+        let long_ok = close >= upper && hist > 0.0 && c >= cmo_min_abs && flow > 0.0;
+        let short_ok = close <= lower && hist < 0.0 && c <= -cmo_min_abs && flow < 0.0;
+
+        long_count = if long_ok {
+            long_count.saturating_add(1)
+        } else {
+            0
+        };
+        short_count = if short_ok {
+            short_count.saturating_add(1)
+        } else {
+            0
+        };
+
+        let long_active = long_count >= confirm_bars;
+        let short_active = short_count >= confirm_bars;
+        regime[i] = if long_active && !short_active {
+            0.0
+        } else if short_active && !long_active {
+            1.0
+        } else {
+            f64::NAN
+        };
+    }
+
+    Ok(Some(regime))
+}
+
+pub(crate) fn compute_combined_regime_filter(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+) -> Result<Option<Vec<f64>>, String> {
+    if strategy.uses_regime_hybrid_filter() && halftrend_filter.is_some() {
+        return Err(
+            "regime_hybrid_enable is not compatible with halftrend_filter in double-MA flow"
+                .to_string(),
+        );
+    }
+    let halftrend_trend = match halftrend_filter {
+        Some(f) => Some(compute_halftrend_trend(candles, f)?),
+        None => None,
+    };
+    let trend_quality = compute_trend_quality_regime(candles, ma_source, strategy)?;
+    let breakout = compute_breakout_momentum_regime(candles, ma_source, strategy)?;
+    let merged = merge_regime_filters(halftrend_trend, trend_quality)?;
+    merge_regime_filters(merged, breakout)
 }
 
 pub(crate) fn resolve_alma_params_for_side(
@@ -2438,6 +5792,7 @@ fn optimize_double_ma_cpu_tiled(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    constraints: Option<&DoubleMaConstraints>,
     total_pairs: usize,
     heatmap_bins: usize,
     cancel: &AtomicBool,
@@ -2479,10 +5834,10 @@ fn optimize_double_ma_cpu_tiled(
     let mut first_valid = fv_close.max(fv_ma);
     if let Some(trend) = halftrend_trend {
         if trend.len() != n {
-            return Err("HalfTrend trend series length mismatch".to_string());
+            return Err("regime trend series length mismatch".to_string());
         }
         let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         first_valid = first_valid.max(fv_ht);
     }
 
@@ -2492,7 +5847,14 @@ fn optimize_double_ma_cpu_tiled(
     } else {
         0usize
     };
-
+    let kaufman_stops = compute_kaufman_stop_series(candles, strategy)?;
+    if let Some(ks) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
+    }
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
     let heatmap_cfg = if heatmap_bins > 0 {
         Some((
@@ -2554,27 +5916,26 @@ fn optimize_double_ma_cpu_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = if let Some(trend) = halftrend_trend {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
-                                &lr,
-                                fast_row,
-                                slow_row,
-                                trend,
-                                start_t,
-                                strategy,
-                            )
-                        } else {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
-                                &lr, fast_row, slow_row, start_t, strategy,
-                            )
-                        };
-                        let params = DoubleMaParams {
-                            fast_len,
-                            slow_len,
-                            fast_ma_id: 0,
-                            slow_ma_id: 0,
-                        };
-                        agg.push(params, metrics);
+                        let metrics = eval_metrics_f64_with_exit_mode(
+                            &lr,
+                            close,
+                            fast_row,
+                            slow_row,
+                            halftrend_trend,
+                            start_t,
+                            strategy,
+                            kaufman_stops.as_ref(),
+                            true,
+                        );
+                        if metrics_pass_constraints(&metrics, constraints) {
+                            let params = DoubleMaParams {
+                                fast_len,
+                                slow_len,
+                                fast_ma_id: 0,
+                                slow_ma_id: 0,
+                            };
+                            agg.push(params, metrics);
+                        }
                         processed = processed.saturating_add(1);
                         if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
@@ -2624,52 +5985,28 @@ fn optimize_double_ma_cpu_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = if compute_sharpe {
-                            if let Some(trend) = halftrend_trend {
-                                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
-                                    &lr,
-                                    fast_row,
-                                    slow_row,
-                                    trend,
-                                    start_t,
-                                    strategy,
-                                )
-                            } else {
-                                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
-                                    &lr,
-                                    fast_row,
-                                    slow_row,
-                                    start_t,
-                                    strategy,
-                                )
-                            }
-                        } else if let Some(trend) = halftrend_trend {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_fast(
-                                &lr,
-                                fast_row,
-                                slow_row,
-                                trend,
-                                start_t,
-                                strategy,
-                            )
-                        } else {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_fast(
-                                &lr,
-                                fast_row,
-                                slow_row,
-                                start_t,
-                                strategy,
-                            )
-                        };
-                        local.push(
-                            DoubleMaParams {
-                                fast_len,
-                                slow_len,
-                                fast_ma_id: 0,
-                                slow_ma_id: 0,
-                            },
-                            metrics,
+                        let metrics = eval_metrics_f64_with_exit_mode(
+                            &lr,
+                            close,
+                            fast_row,
+                            slow_row,
+                            halftrend_trend,
+                            start_t,
+                            strategy,
+                            kaufman_stops.as_ref(),
+                            compute_sharpe,
                         );
+                        if metrics_pass_constraints(&metrics, constraints) {
+                            local.push(
+                                DoubleMaParams {
+                                    fast_len,
+                                    slow_len,
+                                    fast_ma_id: 0,
+                                    slow_ma_id: 0,
+                                },
+                                metrics,
+                            );
+                        }
                         Ok(local)
                     })
                     .try_reduce(init, |mut a, b| {
@@ -2677,7 +6014,7 @@ fn optimize_double_ma_cpu_tiled(
                         Ok(a)
                     })?;
 
-                processed = processed.saturating_add(tile.num_combos());
+                processed = processed.saturating_add(estimate_pairs_fast_lt_slow(f_chunk, s_chunk));
                 agg.merge(tile);
             }
 
@@ -2755,20 +6092,17 @@ fn optimize_double_ma_cpu_tiled(
             let max_p = (fast_len as usize).max(slow_len as usize).max(1);
             let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
             let start_t = t_valid.saturating_add(trade_offset);
-            Ok(if let Some(trend) = halftrend_trend {
-                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
-                    &lr,
-                    fast,
-                    slow,
-                    trend,
-                    start_t,
-                    strategy,
-                )
-            } else {
-                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
-                    &lr, fast, slow, start_t, strategy,
-                )
-            })
+            Ok(eval_metrics_f64_with_exit_mode(
+                &lr,
+                close,
+                fast,
+                slow,
+                halftrend_trend,
+                start_t,
+                strategy,
+                kaufman_stops.as_ref(),
+                true,
+            ))
         };
 
         result.best_metrics = recompute(
@@ -2809,6 +6143,7 @@ fn optimize_double_ma_gpu_sweep_tiled(
     _fast_alma_sigma: f64,
     _slow_alma_offset: f64,
     _slow_alma_sigma: f64,
+    _constraints: Option<&DoubleMaConstraints>,
     _total_pairs: usize,
     _heatmap_bins: usize,
     _cancel: &AtomicBool,
@@ -2951,6 +6286,7 @@ fn optimize_double_ma_gpu_sweep_tiled(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    constraints: Option<&DoubleMaConstraints>,
     total_pairs: usize,
     heatmap_bins: usize,
     cancel: &AtomicBool,
@@ -2992,11 +6328,19 @@ fn optimize_double_ma_gpu_sweep_tiled(
     let mut first_valid = fv_close.max(fv_ma);
     if let Some(trend) = halftrend_trend {
         if trend.len() != n {
-            return Err("HalfTrend trend series length mismatch".to_string());
+            return Err("regime trend series length mismatch".to_string());
         }
         let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         first_valid = first_valid.max(fv_ht);
+    }
+    let kaufman_stops = compute_kaufman_stop_series(candles, strategy)?;
+    if let Some(ks) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
     }
     let lr = compute_log_returns_f64(close);
     let trade_offset = if strategy.trade_on_next_bar {
@@ -3075,27 +6419,26 @@ fn optimize_double_ma_gpu_sweep_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = if let Some(trend) = halftrend_trend {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
-                                &lr,
-                                fast_row,
-                                slow_row,
-                                trend,
-                                start_t,
-                                strategy,
-                            )
-                        } else {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32(
-                                &lr, fast_row, slow_row, start_t, strategy,
-                            )
-                        };
-                        let params = DoubleMaParams {
-                            fast_len,
-                            slow_len,
-                            fast_ma_id: 0,
-                            slow_ma_id: 0,
-                        };
-                        agg.push(params, metrics);
+                        let metrics = eval_metrics_f32_with_exit_mode(
+                            &lr,
+                            close,
+                            fast_row,
+                            slow_row,
+                            halftrend_trend,
+                            start_t,
+                            strategy,
+                            kaufman_stops.as_ref(),
+                            true,
+                        );
+                        if metrics_pass_constraints(&metrics, constraints) {
+                            let params = DoubleMaParams {
+                                fast_len,
+                                slow_len,
+                                fast_ma_id: 0,
+                                slow_ma_id: 0,
+                            };
+                            agg.push(params, metrics);
+                        }
                         processed = processed.saturating_add(1);
                         if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
@@ -3145,52 +6488,28 @@ fn optimize_double_ma_gpu_sweep_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = if compute_sharpe {
-                            if let Some(trend) = halftrend_trend {
-                                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
-                                    &lr,
-                                    fast_row,
-                                    slow_row,
-                                    trend,
-                                    start_t,
-                                    strategy,
-                                )
-                            } else {
-                                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32(
-                                    &lr,
-                                    fast_row,
-                                    slow_row,
-                                    start_t,
-                                    strategy,
-                                )
-                            }
-                        } else if let Some(trend) = halftrend_trend {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_fast(
-                                &lr,
-                                fast_row,
-                                slow_row,
-                                trend,
-                                start_t,
-                                strategy,
-                            )
-                        } else {
-                            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_fast(
-                                &lr,
-                                fast_row,
-                                slow_row,
-                                start_t,
-                                strategy,
-                            )
-                        };
-                        local.push(
-                            DoubleMaParams {
-                                fast_len,
-                                slow_len,
-                                fast_ma_id: 0,
-                                slow_ma_id: 0,
-                            },
-                            metrics,
+                        let metrics = eval_metrics_f32_with_exit_mode(
+                            &lr,
+                            close,
+                            fast_row,
+                            slow_row,
+                            halftrend_trend,
+                            start_t,
+                            strategy,
+                            kaufman_stops.as_ref(),
+                            compute_sharpe,
                         );
+                        if metrics_pass_constraints(&metrics, constraints) {
+                            local.push(
+                                DoubleMaParams {
+                                    fast_len,
+                                    slow_len,
+                                    fast_ma_id: 0,
+                                    slow_ma_id: 0,
+                                },
+                                metrics,
+                            );
+                        }
                         Ok(local)
                     })
                     .try_reduce(init, |mut a, b| {
@@ -3198,7 +6517,7 @@ fn optimize_double_ma_gpu_sweep_tiled(
                         Ok(a)
                     })?;
 
-                processed = processed.saturating_add(tile.num_combos());
+                processed = processed.saturating_add(estimate_pairs_fast_lt_slow(f_chunk, s_chunk));
                 agg.merge(tile);
             }
 
@@ -3279,20 +6598,17 @@ fn optimize_double_ma_gpu_sweep_tiled(
             let max_p = (fast_len as usize).max(slow_len as usize).max(1);
             let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
             let start_t = t_valid.saturating_add(trade_offset);
-            Ok(if let Some(trend) = halftrend_trend {
-                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
-                    &lr,
-                    fast,
-                    slow,
-                    trend,
-                    start_t,
-                    strategy,
-                )
-            } else {
-                ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32(
-                    &lr, fast, slow, start_t, strategy,
-                )
-            })
+            Ok(eval_metrics_f32_with_exit_mode(
+                &lr,
+                close,
+                fast,
+                slow,
+                halftrend_trend,
+                start_t,
+                strategy,
+                kaufman_stops.as_ref(),
+                true,
+            ))
         };
 
         result.best_metrics = recompute(
@@ -3314,6 +6630,49 @@ fn optimize_double_ma_gpu_sweep_tiled(
 }
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn vdps_generate_seed_pairs_gpu(
+    _device_id: u32,
+    _elite_seeds: &[(u16, u16)],
+    _fast_periods: &[u16],
+    _slow_periods: &[u16],
+    _elite_target: usize,
+    _diff_target: usize,
+    _rand_target: usize,
+    _fast_step: u16,
+    _slow_step: u16,
+    _seed: u64,
+) -> Result<Option<Vec<(u16, u16)>>, String> {
+    Ok(None)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn vdps_generate_seed_pairs_gpu(
+    device_id: u32,
+    elite_seeds: &[(u16, u16)],
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    elite_target: usize,
+    diff_target: usize,
+    rand_target: usize,
+    fast_step: u16,
+    slow_step: u16,
+    seed: u64,
+) -> Result<Option<Vec<(u16, u16)>>, String> {
+    crate::gpu_backtest_kernel::vdps_generate_seed_pairs_gpu_kernel(
+        device_id,
+        elite_seeds,
+        fast_periods,
+        slow_periods,
+        elite_target,
+        diff_target,
+        rand_target,
+        fast_step,
+        slow_step,
+        seed,
+    )
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 fn optimize_double_ma_gpu_kernel_tiled(
     _candles: &vector_ta::utilities::data_loader::Candles,
     _device_id: u32,
@@ -3324,6 +6683,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
     _ma_source: &str,
     _fast_ma_params: Option<&HashMap<String, f64>>,
     _slow_ma_params: Option<&HashMap<String, f64>>,
+    _regime_filter: Option<&[f64]>,
     _strategy: &StrategyConfig,
     _objective: ObjectiveKind,
     _top_k: usize,
@@ -3332,6 +6692,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
     _fast_alma_sigma: f64,
     _slow_alma_offset: f64,
     _slow_alma_sigma: f64,
+    _constraints: Option<&DoubleMaConstraints>,
     _export_all_csv_path: Option<&str>,
     _total_pairs: usize,
     _heatmap_bins: usize,
@@ -3352,6 +6713,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
     ma_source: &str,
     fast_ma_params: Option<&HashMap<String, f64>>,
     slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
     top_k: usize,
@@ -3360,6 +6722,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
@@ -3379,6 +6742,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
         ma_source,
         fast_ma_params,
         slow_ma_params,
+        regime_filter,
         strategy,
         objective,
         top_k,
@@ -3390,6 +6754,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
             slow_alma_offset,
             slow_alma_sigma,
         },
+        constraints,
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
@@ -3423,6 +6788,109 @@ mod tests {
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
     }
 
+    fn make_choppy_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + ((i as f64) / 9.0).sin() * 2.0 + ((i as f64) / 37.0).sin() * 0.7;
+            let c = base + if (i & 1) == 0 { 0.15 } else { -0.15 };
+            let o = base;
+            open.push(o);
+            close.push(c);
+            high.push(o.max(c) + 0.45);
+            low.push(o.min(c) - 0.45);
+            vol.push(1_000.0 + (i % 5) as f64 * 25.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn make_breakout_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        let up_start = len / 3;
+        let down_start = (len * 2) / 3;
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = if i < up_start {
+                100.0 + i as f64 * 0.02
+            } else if i < down_start {
+                102.0 + (i - up_start) as f64 * 0.35
+            } else {
+                102.0 + (down_start - up_start) as f64 * 0.35 - (i - down_start) as f64 * 0.38
+            };
+            let n = ((i as f64) / 7.0).sin() * 0.08;
+            let o = base + n;
+            let c = if i < down_start {
+                base + 0.30 + n
+            } else {
+                base - 0.30 + n
+            };
+            open.push(o);
+            close.push(c);
+            high.push(o.max(c) + 0.22);
+            low.push(o.min(c) - 0.22);
+            let burst = if i < up_start {
+                950.0
+            } else if i < down_start {
+                2_200.0
+            } else {
+                2_450.0
+            };
+            vol.push(burst + ((i % 11) as f64) * 35.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn trend_quality_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.trend_quality_enable = true;
+        s.trend_quality_use_adx = false;
+        s
+    }
+
+    fn regime_hybrid_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.regime_hybrid_enable = true;
+        s
+    }
+
+    fn breakout_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.breakout_momentum_enable = true;
+        s.breakout_use_adx = false;
+        s.breakout_bbands_mult = 0.8;
+        s.breakout_cmo_min_abs = 0.0;
+        s.breakout_macd_fast_period = 5;
+        s.breakout_macd_slow_period = 13;
+        s.breakout_macd_signal_period = 4;
+        s.breakout_adosc_short_period = 2;
+        s.breakout_adosc_long_period = 4;
+        s
+    }
+
+    fn double_like_kernel_strategy_cases() -> Vec<(&'static str, StrategyConfig)> {
+        vec![
+            ("composite_trend", trend_quality_strategy_for_kernel()),
+            ("regime_hybrid", regime_hybrid_strategy_for_kernel()),
+            ("breakout_momentum", breakout_strategy_for_kernel()),
+        ]
+    }
+
     #[test]
     fn cpu_smoke_small_grid_counts_and_shapes() {
         let candles = make_trending_candles(5000);
@@ -3448,6 +6916,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -3457,6 +6927,614 @@ mod tests {
         assert!(res.best_params.fast_len < res.best_params.slow_len);
         assert!(res.top.len() <= 5);
         assert!(res.heatmap.is_some());
+    }
+
+    #[test]
+    fn gpu_vdps_rejects_cpu_backend() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 60, 1),
+            slow_range: (10, 200, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(8),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("GpuVdps should reject CPU backend");
+        assert!(
+            err.to_ascii_lowercase().contains("requires a gpu backend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_vdps_deterministic_same_seed_reproducible() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(20_000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 80, 1),
+            slow_range: (10, 180, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(12),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: Some(VdpsConfig {
+                eta: Some(4),
+                rungs: Some(vec![0.125, 0.25, 0.5, 1.0]),
+                min_initial_pairs: Some(2048),
+                max_survivor_seeds: Some(256),
+                max_period_candidates: Some(320),
+                random_injection_ratio: Some(0.10),
+                elite_mutation_ratio: Some(0.50),
+                differential_ratio: Some(0.40),
+                deterministic: Some(true),
+                seed: Some(42),
+                quality_check_max_pairs: Some(0),
+                quality_check_top_k: Some(12),
+            }),
+        };
+
+        let a =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("first deterministic vdps run");
+        let b = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("second deterministic vdps run");
+
+        assert_eq!(a.best_params.fast_len, b.best_params.fast_len);
+        assert_eq!(a.best_params.slow_len, b.best_params.slow_len);
+        assert_eq!(a.top.len(), b.top.len());
+        assert!((a.best_metrics.sharpe - b.best_metrics.sharpe).abs() <= 1e-9);
+
+        let key_a: Vec<(u16, u16, String, String)> = a
+            .top
+            .iter()
+            .map(|(p, _)| {
+                (
+                    p.fast_len,
+                    p.slow_len,
+                    p.fast_ma_type.clone(),
+                    p.slow_ma_type.clone(),
+                )
+            })
+            .collect();
+        let key_b: Vec<(u16, u16, String, String)> = b
+            .top
+            .iter()
+            .map(|(p, _)| {
+                (
+                    p.fast_len,
+                    p.slow_len,
+                    p.fast_ma_type.clone(),
+                    p.slow_ma_type.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(key_a, key_b);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_vdps_deterministic_reproducible_for_double_like_strategies() {
+        if !cuda_available() {
+            return;
+        }
+
+        let cancel = AtomicBool::new(false);
+        for (label, strategy) in double_like_kernel_strategy_cases() {
+            let candles = if label == "breakout_momentum" {
+                make_breakout_candles(12_000)
+            } else {
+                make_trending_candles(12_000)
+            };
+            let req = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: "test".to_string(),
+                fast_range: (5, 60, 1),
+                slow_range: (10, 160, 1),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy,
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::GpuVdps,
+                top_k: Some(10),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: Some(VdpsConfig {
+                    eta: Some(4),
+                    rungs: Some(vec![0.125, 0.25, 0.5, 1.0]),
+                    min_initial_pairs: Some(1024),
+                    max_survivor_seeds: Some(192),
+                    max_period_candidates: Some(256),
+                    random_injection_ratio: Some(0.10),
+                    elite_mutation_ratio: Some(0.50),
+                    differential_ratio: Some(0.40),
+                    deterministic: Some(true),
+                    seed: Some(2026),
+                    quality_check_max_pairs: Some(0),
+                    quality_check_top_k: Some(10),
+                }),
+            };
+
+            let a =
+                run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                    .unwrap_or_else(|e| panic!("first deterministic vdps run ({label}) failed: {e}"));
+            let b = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .unwrap_or_else(|e| panic!("second deterministic vdps run ({label}) failed: {e}"));
+
+            assert_eq!(
+                (a.best_params.fast_len, a.best_params.slow_len),
+                (b.best_params.fast_len, b.best_params.slow_len),
+                "best params mismatch for {label}"
+            );
+            assert_eq!(a.top.len(), b.top.len(), "top-k len mismatch for {label}");
+            assert!(
+                (a.best_metrics.sharpe - b.best_metrics.sharpe).abs() <= 1e-9,
+                "best sharpe mismatch for {label}: {} vs {}",
+                a.best_metrics.sharpe,
+                b.best_metrics.sharpe
+            );
+
+            let key_a: Vec<(u16, u16, String, String)> = a
+                .top
+                .iter()
+                .map(|(p, _)| {
+                    (
+                        p.fast_len,
+                        p.slow_len,
+                        p.fast_ma_type.clone(),
+                        p.slow_ma_type.clone(),
+                    )
+                })
+                .collect();
+            let key_b: Vec<(u16, u16, String, String)> = b
+                .top
+                .iter()
+                .map(|(p, _)| {
+                    (
+                        p.fast_len,
+                        p.slow_len,
+                        p.fast_ma_type.clone(),
+                        p.slow_ma_type.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(key_a, key_b, "top-k key mismatch for {label}");
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_single_combo_sanity_matches_cpu_for_double_like_strategies() {
+        if !cuda_available() {
+            return;
+        }
+
+        let cancel = AtomicBool::new(false);
+        for (label, strategy) in double_like_kernel_strategy_cases() {
+            let candles = if label == "breakout_momentum" {
+                make_breakout_candles(8_000)
+            } else {
+                make_trending_candles(8_000)
+            };
+            let req_cpu = DoubleMaRequest {
+                backend: Backend::CpuOnly,
+                data_id: "test".to_string(),
+                fast_range: (9, 9, 0),
+                slow_range: (21, 21, 0),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy,
+                halftrend_filter: None,
+                objective: ObjectiveKind::Pnl,
+                mode: OptimizationMode::Grid,
+                top_k: Some(1),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
+            let req_gpu = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                ..req_cpu.clone()
+            };
+
+            let cpu = run_double_ma_optimization_blocking_with_candles(req_cpu, &candles, &cancel, None)
+                .unwrap_or_else(|e| panic!("cpu run failed for {label}: {e}"));
+            let gpu = run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
+                .unwrap_or_else(|e| panic!("gpu-kernel run failed for {label}: {e}"));
+
+            assert_eq!(
+                (cpu.best_params.fast_len, cpu.best_params.slow_len),
+                (gpu.best_params.fast_len, gpu.best_params.slow_len),
+                "best params mismatch for {label}"
+            );
+
+            let pnl_delta = (cpu.best_metrics.pnl - gpu.best_metrics.pnl).abs();
+            let sharpe_delta = (cpu.best_metrics.sharpe - gpu.best_metrics.sharpe).abs();
+            let dd_delta = (cpu.best_metrics.max_dd - gpu.best_metrics.max_dd).abs();
+            let trades_delta =
+                (cpu.best_metrics.trades as i64 - gpu.best_metrics.trades as i64).abs();
+
+            assert!(pnl_delta <= 1e-3, "pnl delta too large for {label}: {pnl_delta}");
+            assert!(
+                sharpe_delta <= 1e-3,
+                "sharpe delta too large for {label}: {sharpe_delta}"
+            );
+            assert!(dd_delta <= 1e-3, "max_dd delta too large for {label}: {dd_delta}");
+            assert!(
+                trades_delta <= 1,
+                "trades delta too large for {label}: {trades_delta}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_export_rejects_regime_filters_when_flag_disabled() {
+        if !cuda_available() {
+            return;
+        }
+
+        use std::sync::{Mutex, OnceLock};
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let prev = std::env::var("VECTORBT_KERNEL_ENABLE_REGIME_FILTERS").ok();
+        std::env::set_var("VECTORBT_KERNEL_ENABLE_REGIME_FILTERS", "0");
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let export_path = std::env::temp_dir()
+            .join(format!("gpu_kernel_regime_flag_off_{t}.csv"))
+            .to_string_lossy()
+            .to_string();
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 11, 1),
+            slow_range: (15, 29, 2),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: Some(export_path.clone()),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: trend_quality_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("expected regime-disabled kernel export to fail");
+        assert!(
+            err.contains("not available for this MA selection/build")
+                || err.contains("regime filters are disabled"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_file(export_path);
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_ENABLE_REGIME_FILTERS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_ENABLE_REGIME_FILTERS"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_export_rejects_kaufman_exit_combo() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let export_path = std::env::temp_dir()
+            .join(format!("gpu_kernel_kaufman_unsupported_{t}.csv"))
+            .to_string_lossy()
+            .to_string();
+
+        let mut strategy = StrategyConfig::default();
+        strategy.exit_mode = ta_strategies::double_ma::ExitMode::KaufmanStop;
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 11, 1),
+            slow_range: (15, 29, 2),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: Some(export_path.clone()),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy,
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("expected kaufman-stop kernel export to fail");
+        assert!(
+            err.contains("not available for this MA selection/build"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_file(export_path);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_vdps_quality_check_emits_overlap_and_regret() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(12_000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 40, 1),
+            slow_range: (10, 80, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(10),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: Some(VdpsConfig {
+                eta: Some(4),
+                rungs: Some(vec![0.125, 0.25, 0.5, 1.0]),
+                min_initial_pairs: Some(1024),
+                max_survivor_seeds: Some(192),
+                max_period_candidates: Some(256),
+                random_injection_ratio: Some(0.10),
+                elite_mutation_ratio: Some(0.50),
+                differential_ratio: Some(0.40),
+                deterministic: Some(true),
+                seed: Some(7),
+                quality_check_max_pairs: Some(25_000),
+                quality_check_top_k: Some(10),
+            }),
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vdps quality-check run");
+        let vdps = res.vdps.expect("vdps telemetry");
+        let overlap = vdps
+            .quality_check_top_k_overlap
+            .expect("top-k overlap should be present");
+        let regret = vdps
+            .quality_check_best_score_regret
+            .expect("best-score regret should be present");
+        let baseline_pairs = vdps
+            .quality_check_baseline_pairs
+            .expect("baseline pair count should be present");
+        let baseline_ms = vdps
+            .quality_check_baseline_runtime_ms
+            .expect("baseline runtime should be present");
+
+        assert!(overlap.is_finite() && (0.0..=1.0).contains(&overlap));
+        assert!(regret.is_finite() && regret >= 0.0);
+        assert!(overlap >= 0.2, "unexpectedly low top-k overlap: {overlap}");
+        assert!(baseline_pairs > 0);
+        assert!(baseline_ms > 0);
+    }
+
+    #[test]
+    fn vdps_refill_mix_normalizes_when_sum_exceeds_one() {
+        let cfg = VdpsResolvedConfig {
+            eta: 4,
+            rungs: vec![0.25, 0.5, 1.0],
+            min_initial_pairs: 1024,
+            max_survivor_seeds: 128,
+            max_period_candidates: 256,
+            random_injection_ratio: 0.7,
+            elite_mutation_ratio: 0.6,
+            differential_ratio: 0.5,
+            deterministic: true,
+            seed: 7,
+            quality_check_max_pairs: 0,
+            quality_check_top_k: 10,
+        };
+        let (elite, diff, rand) = vdps_normalized_refill_mix(&cfg);
+        let sum = elite + diff + rand;
+        assert!((sum - 1.0).abs() < 1e-9, "unexpected sum: {sum}");
+        assert!(elite > 0.0 && diff > 0.0 && rand > 0.0);
+    }
+
+    #[test]
+    fn vdps_config_rejects_invalid_differential_ratio() {
+        let cfg = VdpsConfig {
+            eta: None,
+            rungs: None,
+            min_initial_pairs: None,
+            max_survivor_seeds: None,
+            max_period_candidates: None,
+            random_injection_ratio: None,
+            elite_mutation_ratio: None,
+            differential_ratio: Some(1.5),
+            deterministic: None,
+            seed: None,
+            quality_check_max_pairs: None,
+            quality_check_top_k: None,
+        };
+        let err = VdpsResolvedConfig::from_request(Some(&cfg))
+            .expect_err("invalid differential ratio should fail");
+        assert!(
+            err.contains("vdps.differential_ratio"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cpu_regime_hybrid_small_grid_runs() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig {
+                long_only: false,
+                trend_quality_enable: false,
+                regime_hybrid_enable: true,
+                ..StrategyConfig::default()
+            },
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu hybrid run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn cpu_breakout_momentum_small_grid_runs() {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig {
+                long_only: false,
+                breakout_momentum_enable: true,
+                breakout_bbands_mult: 1.6,
+                breakout_cmo_min_abs: 5.0,
+                ..StrategyConfig::default()
+            },
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu breakout run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
     }
 
     #[test]
@@ -3490,6 +7568,8 @@ mod tests {
             top_k: Some(1),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
         };
 
         let base = run_double_ma_optimization_blocking_with_candles(
@@ -3512,6 +7592,63 @@ mod tests {
     }
 
     #[test]
+    fn cpu_grid_ignores_trailing_stop_in_optimization() {
+        let candles = make_trending_candles(4000);
+        let cancel = AtomicBool::new(false);
+
+        let base_req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 5, 0),
+            slow_range: (20, 20, 0),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let base = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu base run");
+
+        let mut trailing_req = base_req;
+        trailing_req.strategy.trailing_stop_pct = Some(0.02);
+        let with_trailing =
+            run_double_ma_optimization_blocking_with_candles(trailing_req, &candles, &cancel, None)
+                .expect("cpu trailing run");
+
+        assert_eq!(
+            with_trailing.best_params.fast_len,
+            base.best_params.fast_len
+        );
+        assert_eq!(
+            with_trailing.best_params.slow_len,
+            base.best_params.slow_len
+        );
+        assert_eq!(with_trailing.best_metrics.trades, base.best_metrics.trades);
+        assert!((with_trailing.best_metrics.pnl - base.best_metrics.pnl).abs() < 1e-12);
+        assert!((with_trailing.best_metrics.sharpe - base.best_metrics.sharpe).abs() < 1e-12);
+        assert!((with_trailing.best_metrics.max_dd - base.best_metrics.max_dd).abs() < 1e-12);
+    }
+
+    #[test]
     fn validate_strategy_cfg_accepts_bps_derived_costs() {
         let cfg = StrategyConfig {
             long_only: true,
@@ -3525,6 +7662,7 @@ mod tests {
             take_profit_pct: None,
             commission: 0.0,
             eps_rel: 0.0,
+            ..StrategyConfig::default()
         };
         assert!(validate_strategy_cfg(&cfg).is_ok());
     }
@@ -3537,6 +7675,131 @@ mod tests {
         };
         let err = validate_strategy_cfg(&cfg).expect_err("negative fee_bps must fail");
         assert!(err.contains("fee_bps"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_invalid_trailing_stop_pct() {
+        let cfg = StrategyConfig {
+            trailing_stop_pct: Some(1.2),
+            ..StrategyConfig::default()
+        };
+        let err = validate_strategy_cfg(&cfg).expect_err("trailing_stop_pct > 1 must fail");
+        assert!(err.contains("trailing_stop_pct"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_invalid_regime_hybrid_thresholds() {
+        let cfg = StrategyConfig {
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_enter: 18.0,
+            regime_hybrid_adx_exit: 22.0,
+            ..StrategyConfig::default()
+        };
+        let err = validate_strategy_cfg(&cfg).expect_err("adx_exit > adx_enter must fail");
+        assert!(err.contains("regime_hybrid_adx_exit"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_incompatible_hybrid_and_breakout_modes() {
+        let cfg = StrategyConfig {
+            regime_hybrid_enable: true,
+            breakout_momentum_enable: true,
+            ..StrategyConfig::default()
+        };
+        let err =
+            validate_strategy_cfg(&cfg).expect_err("regime_hybrid + breakout_momentum must fail");
+        assert!(err.contains("regime_hybrid_enable"));
+    }
+
+    #[test]
+    fn regime_hybrid_produces_range_state() {
+        let candles = make_choppy_candles(1200);
+        let cfg = StrategyConfig {
+            regime_hybrid_enable: true,
+            trend_quality_enable: false,
+            ..StrategyConfig::default()
+        };
+        let regime = compute_trend_quality_regime(&candles, "close", &cfg)
+            .expect("compute regime")
+            .expect("regime enabled");
+        assert!(regime.iter().any(|v| v.to_bits() == 2.0_f64.to_bits()));
+    }
+
+    #[test]
+    fn trend_quality_optional_adx_confirmation_changes_regime_density() {
+        let candles = make_trending_candles(1200);
+        let base = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_use_roc: false,
+            trend_quality_angle_min_deg: 0.1,
+            trend_quality_bbw_min: 0.0,
+            ..StrategyConfig::default()
+        };
+        let with_adx_strict = StrategyConfig {
+            trend_quality_use_adx: true,
+            trend_quality_adx_period: 14,
+            trend_quality_adx_min: 1_000.0,
+            ..base.clone()
+        };
+
+        let dense = compute_trend_quality_regime(&candles, "close", &base)
+            .expect("compute regime")
+            .expect("regime enabled");
+        let strict = compute_trend_quality_regime(&candles, "close", &with_adx_strict)
+            .expect("compute regime with adx")
+            .expect("regime enabled");
+
+        let dense_count = dense.iter().filter(|v| v.is_finite()).count();
+        let strict_count = strict.iter().filter(|v| v.is_finite()).count();
+        assert!(
+            dense_count > 0,
+            "base trend-quality regime should produce signals"
+        );
+        assert_eq!(
+            strict_count, 0,
+            "very high ADX threshold should suppress trend-quality regime"
+        );
+    }
+
+    #[test]
+    fn breakout_momentum_regime_produces_directional_windows() {
+        let candles = make_breakout_candles(1500);
+        let cfg = StrategyConfig {
+            breakout_momentum_enable: true,
+            breakout_bbands_period: 20,
+            breakout_bbands_mult: 1.6,
+            breakout_confirm_bars: 1,
+            breakout_cmo_min_abs: 5.0,
+            breakout_use_adx: false,
+            ..StrategyConfig::default()
+        };
+        let regime = compute_breakout_momentum_regime(&candles, "close", &cfg)
+            .expect("compute breakout regime")
+            .expect("breakout regime enabled");
+        let finite = regime.iter().filter(|v| v.is_finite()).count();
+        let longs = regime
+            .iter()
+            .filter(|v| v.to_bits() == 0.0_f64.to_bits())
+            .count();
+        assert!(
+            finite > 0,
+            "breakout regime should emit directional windows"
+        );
+        assert!(longs > 0, "breakout regime should include long windows");
+    }
+
+    #[test]
+    fn desired_sign_with_filters_uses_range_mean_reversion() {
+        let cfg = StrategyConfig {
+            long_only: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_reversion_entry_rel: 0.01,
+            regime_hybrid_reversion_exit_rel: 0.002,
+            ..StrategyConfig::default()
+        };
+        assert_eq!(desired_sign_with_filters(102.0, 100.0, &cfg, Some(2.0)), -1);
+        assert_eq!(desired_sign_with_filters(98.0, 100.0, &cfg, Some(2.0)), 1);
+        assert_eq!(desired_sign_with_filters(100.05, 100.0, &cfg, Some(2.0)), 0);
     }
 
     #[test]
@@ -3571,6 +7834,8 @@ mod tests {
             top_k: Some(3),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -3593,6 +7858,46 @@ mod tests {
         assert_eq!(
             slow_p.get("sigma").copied().unwrap_or(f64::NAN).to_bits(),
             6.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn cpu_constraints_can_filter_out_all_candidates() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: Some(DoubleMaConstraints {
+                min_trades: Some(u32::MAX),
+                max_drawdown: None,
+            }),
+            vdps: None,
+        };
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("constraints should filter all candidates");
+        assert!(
+            err.contains("no result"),
+            "unexpected error message when all rows are filtered: {err}"
         );
     }
 
@@ -3787,6 +8092,64 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn gpu_kernel_supports_double_like_regime_strategies() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        for (label, strategy) in double_like_kernel_strategy_cases() {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let export_path = std::env::temp_dir()
+                .join(format!("gpu_kernel_{label}_{t}.csv"))
+                .to_string_lossy()
+                .to_string();
+
+            let req = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: "test".to_string(),
+                fast_range: (5, 11, 1),
+                slow_range: (15, 29, 2),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: Some(export_path.clone()),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy,
+                halftrend_filter: None,
+                objective: ObjectiveKind::Pnl,
+                mode: OptimizationMode::Grid,
+                top_k: Some(3),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
+
+            let out = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .unwrap_or_else(|e| panic!("gpu kernel strategy '{label}' failed: {e}"));
+            assert!(
+                out.best_metrics.pnl.is_finite(),
+                "non-finite pnl for strategy '{label}'"
+            );
+            assert!(
+                !out.top.is_empty(),
+                "empty top results for strategy '{label}'"
+            );
+            let _ = std::fs::remove_file(export_path);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn gpu_kernel_best_matches_include_all_true() {
         if !cuda_available() {
             return;
@@ -3806,6 +8169,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -3813,6 +8178,8 @@ mod tests {
             top_k: Some(0),
             include_all: Some(true),
             heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
         };
 
         let req_top = DoubleMaRequest {
@@ -3826,6 +8193,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -3833,6 +8202,8 @@ mod tests {
             top_k: Some(1),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         let a = run_double_ma_optimization_blocking_with_candles(req_all, &candles, &cancel, None)
@@ -3847,6 +8218,166 @@ mod tests {
         let h = b.heatmap.expect("heatmap");
         assert_eq!(h.values.len(), h.bins_fast.saturating_mul(h.bins_slow));
         assert!(h.values.iter().any(|v| v.is_some()));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_topk_v2_matches_forced_legacy() {
+        if !cuda_available() {
+            return;
+        }
+
+        use std::sync::{Mutex, OnceLock};
+
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 40, 1),
+            slow_range: (10, 80, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(20),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: Some(DoubleMaConstraints {
+                min_trades: Some(1),
+                max_drawdown: None,
+            }),
+            vdps: None,
+        };
+
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+        let v2 =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("gpu-kernel topk v2");
+
+        std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", "1");
+        let legacy = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu-kernel topk legacy");
+
+        match prev_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+
+        assert!(v2.best_params.fast_len < v2.best_params.slow_len);
+        assert!(legacy.best_params.fast_len < legacy.best_params.slow_len);
+        assert!(
+            v2.best_metrics.pnl.is_finite() && legacy.best_metrics.pnl.is_finite(),
+            "non-finite pnl v2={} legacy={}",
+            v2.best_metrics.pnl,
+            legacy.best_metrics.pnl
+        );
+        assert!(
+            v2.top.len() >= legacy.top.len(),
+            "expected device-filtered v2 top len >= legacy, got v2={} legacy={}",
+            v2.top.len(),
+            legacy.top.len()
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_global_topk_matches_host_merge_path() {
+        if !cuda_available() {
+            return;
+        }
+
+        use std::sync::{Mutex, OnceLock};
+
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let prev_global = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+
+        let candles = make_trending_candles(6000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 80, 1),
+            slow_range: (10, 160, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(20),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: Some(DoubleMaConstraints {
+                min_trades: Some(1),
+                max_drawdown: None,
+            }),
+            vdps: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", "1");
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "0");
+        let host_merged =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("gpu-kernel host-merge topk");
+
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        let device_merged =
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("gpu-kernel device-merge topk");
+
+        match prev_global {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+
+        assert_eq!(
+            host_merged.best_params.fast_len,
+            device_merged.best_params.fast_len
+        );
+        assert_eq!(
+            host_merged.best_params.slow_len,
+            device_merged.best_params.slow_len
+        );
+        assert!(
+            (host_merged.best_metrics.pnl - device_merged.best_metrics.pnl).abs() <= 1e-6,
+            "best pnl mismatch host={} device={}",
+            host_merged.best_metrics.pnl,
+            device_merged.best_metrics.pnl
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3878,6 +8409,8 @@ mod tests {
             export_all_csv_path: Some(path.to_string_lossy().to_string()),
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Sharpe,
@@ -3885,6 +8418,8 @@ mod tests {
             top_k: Some(1),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -3949,6 +8484,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -3956,6 +8493,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4027,6 +8566,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: Some(alma_p.clone()),
             slow_ma_params: Some(alma_p),
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4034,6 +8575,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4101,6 +8644,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4108,6 +8653,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4175,6 +8722,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4182,6 +8731,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4253,6 +8804,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: Some(p.clone()),
             slow_ma_params: Some(p),
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4260,6 +8813,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4330,6 +8885,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: Some(epma_p.clone()),
             slow_ma_params: Some(epma_p),
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4337,6 +8894,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4404,6 +8963,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4411,6 +8972,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4478,6 +9041,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4485,6 +9050,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4552,6 +9119,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4559,6 +9128,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4626,6 +9197,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4633,6 +9206,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4700,6 +9275,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4707,6 +9284,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4774,6 +9353,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4781,6 +9362,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4848,6 +9431,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4855,6 +9440,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4922,6 +9509,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -4929,6 +9518,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -4996,6 +9587,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -5003,6 +9596,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -5070,6 +9665,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -5077,6 +9674,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -5144,6 +9743,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -5151,6 +9752,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
@@ -5218,6 +9821,8 @@ mod tests {
             export_all_csv_path: None,
             fast_ma_params: None,
             slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
@@ -5225,6 +9830,8 @@ mod tests {
             top_k: Some(10),
             include_all: Some(false),
             heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
         };
 
         std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");

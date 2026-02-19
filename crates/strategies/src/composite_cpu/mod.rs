@@ -15,6 +15,7 @@ pub enum CompositeSignalMode {
     #[default]
     HardGate,
     EntryCoreExitOverlay,
+    TrendPullbackReversion,
 }
 
 #[inline(always)]
@@ -98,7 +99,206 @@ pub fn composite_desired_position(
                 core_sign
             }
         }
+        CompositeSignalMode::TrendPullbackReversion => {
+            if core_sign == 0 {
+                return 0;
+            }
+            let pos = current_pos.clamp(-1, 1);
+            let price_eps = if cfg.eps_rel > 0.0 {
+                cfg.eps_rel * 1.0_f64.max(ott_price.abs())
+            } else {
+                0.0
+            };
+
+            // Treat MA trend + HalfTrend regime as the directional bias; only enter on pullbacks.
+            // MACZ is used as pullback/reversion timing, and OTT line as a protective regime break.
+            let pullback_long = macz_hist.is_finite()
+                && macz_hist <= 0.0
+                && ott_price.is_finite()
+                && fast.is_finite()
+                && slow.is_finite()
+                && ott_price <= fast + price_eps
+                && ott_price >= slow - price_eps
+                && ott_line.is_finite()
+                && ott_price >= ott_line - price_eps;
+
+            let pullback_short = macz_hist.is_finite()
+                && macz_hist >= 0.0
+                && ott_price.is_finite()
+                && fast.is_finite()
+                && slow.is_finite()
+                && ott_price >= fast - price_eps
+                && ott_price <= slow + price_eps
+                && ott_line.is_finite()
+                && ott_price <= ott_line + price_eps;
+
+            if pos == 0 {
+                if core_sign > 0 {
+                    if pullback_long {
+                        1
+                    } else {
+                        0
+                    }
+                } else if core_sign < 0 {
+                    if pullback_short {
+                        -1
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            } else if pos > 0 {
+                if core_sign <= 0 {
+                    return 0;
+                }
+                if !ott_price.is_finite()
+                    || !ott_line.is_finite()
+                    || ott_price < ott_line - price_eps
+                {
+                    return 0;
+                }
+                let reverted = (macz_hist.is_finite() && macz_hist >= 0.0)
+                    && (ott_price.is_finite() && fast.is_finite() && ott_price >= fast - price_eps);
+                if reverted {
+                    0
+                } else {
+                    1
+                }
+            } else {
+                if core_sign >= 0 {
+                    return 0;
+                }
+                if !ott_price.is_finite()
+                    || !ott_line.is_finite()
+                    || ott_price > ott_line + price_eps
+                {
+                    return 0;
+                }
+                let reverted = (macz_hist.is_finite() && macz_hist <= 0.0)
+                    && (ott_price.is_finite() && fast.is_finite() && ott_price <= fast + price_eps);
+                if reverted {
+                    0
+                } else {
+                    -1
+                }
+            }
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct ExecutionOverlayParams {
+    cooldown_bars: usize,
+    persistence_bars: usize,
+    trailing_log: Option<f64>,
+}
+
+impl ExecutionOverlayParams {
+    #[inline]
+    fn from_cfg(cfg: &StrategyConfig) -> Self {
+        Self {
+            cooldown_bars: cfg.cooldown_bars(),
+            persistence_bars: cfg.signal_persistence_bars().max(1),
+            trailing_log: cfg.trailing_stop_pct().map(|pct| (1.0 - pct).ln()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ExecutionOverlayState {
+    cooldown_left: usize,
+    pending_sign: i32,
+    pending_count: usize,
+    trade_peak_log_ret: f64,
+}
+
+#[inline]
+fn overlay_on_bar_start(state: &mut ExecutionOverlayState) {
+    if state.cooldown_left > 0 {
+        state.cooldown_left = state.cooldown_left.saturating_sub(1);
+    }
+}
+
+#[inline]
+fn overlay_apply_signal_persistence(
+    raw_sign: i32,
+    current_pos: i32,
+    params: &ExecutionOverlayParams,
+    state: &mut ExecutionOverlayState,
+) -> i32 {
+    if params.persistence_bars <= 1 {
+        if raw_sign == 0 {
+            state.pending_sign = 0;
+            state.pending_count = 0;
+        } else {
+            state.pending_sign = raw_sign;
+            state.pending_count = 1;
+        }
+        return raw_sign;
+    }
+
+    if raw_sign == 0 {
+        state.pending_sign = 0;
+        state.pending_count = 0;
+        return 0;
+    }
+
+    if raw_sign == state.pending_sign {
+        state.pending_count = state.pending_count.saturating_add(1);
+    } else {
+        state.pending_sign = raw_sign;
+        state.pending_count = 1;
+    }
+
+    if state.pending_count >= params.persistence_bars {
+        raw_sign
+    } else if current_pos != 0 {
+        current_pos
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn overlay_apply_entry_cooldown(sign: i32, current_pos: i32, state: &ExecutionOverlayState) -> i32 {
+    if current_pos == 0 && sign != 0 && state.cooldown_left > 0 {
+        0
+    } else {
+        sign
+    }
+}
+
+#[inline]
+fn overlay_on_trade_open(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
+    state.trade_peak_log_ret = trade_log_ret;
+}
+
+#[inline]
+fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionOverlayParams) {
+    if params.cooldown_bars > 0 {
+        state.cooldown_left = params.cooldown_bars;
+    }
+    state.trade_peak_log_ret = 0.0;
+}
+
+#[inline]
+fn overlay_update_trade_peak(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
+    if trade_log_ret > state.trade_peak_log_ret {
+        state.trade_peak_log_ret = trade_log_ret;
+    }
+}
+
+#[inline]
+fn overlay_hit_trailing_stop(
+    trade_log_ret: f64,
+    params: &ExecutionOverlayParams,
+    state: &ExecutionOverlayState,
+) -> bool {
+    let Some(trail_log) = params.trailing_log else {
+        return false;
+    };
+    state.trade_peak_log_ret > 0.0 && trade_log_ret <= state.trade_peak_log_ret + trail_log
 }
 
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
@@ -279,7 +479,8 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     let has_commission = commission > 0.0;
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
-    let risk_enabled = stop_log.is_some() || take_log.is_some();
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
@@ -302,10 +503,12 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
     let mut trade_log_ret = 0.0_f64;
+    let mut overlay_state = ExecutionOverlayState::default();
 
     for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
-        let sign = composite_desired_position(
+        let raw_sign = composite_desired_position(
             fast[t_sig],
             slow[t_sig],
             halftrend_trend[t_sig],
@@ -316,48 +519,40 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             cfg,
             signal_mode,
         );
+        let persisted_sign =
+            overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
+        let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
 
         if sign != pos {
             if pos == 0 || sign == 0 {
                 if has_commission {
                     log_eq += log_comm;
-                    if risk_enabled && pos != 0 {
-                        trade_log_ret += log_comm;
-                    }
                 }
                 trades = trades.saturating_add(1);
                 pos = if sign == 0 { 0 } else { sign };
-                if risk_enabled {
-                    trade_log_ret = if pos != 0 && has_commission {
-                        log_comm
-                    } else {
-                        0.0
-                    };
+                if pos == 0 {
+                    trade_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
+                } else {
+                    trade_log_ret = if has_commission { log_comm } else { 0.0 };
+                    overlay_on_trade_open(&mut overlay_state, trade_log_ret);
                 }
             } else if !cfg.allow_flip {
                 if has_commission {
                     log_eq += log_comm;
-                    if risk_enabled {
-                        trade_log_ret += log_comm;
-                    }
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
-                if risk_enabled {
-                    trade_log_ret = 0.0;
-                }
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
             } else {
                 if has_commission {
                     log_eq += 2.0 * log_comm;
-                    if risk_enabled {
-                        trade_log_ret += log_comm;
-                    }
                 }
                 trades = trades.saturating_add(2);
                 pos = sign;
-                if risk_enabled {
-                    trade_log_ret = if has_commission { log_comm } else { 0.0 };
-                }
+                trade_log_ret = if has_commission { log_comm } else { 0.0 };
+                overlay_on_trade_open(&mut overlay_state, trade_log_ret);
             }
         }
 
@@ -368,15 +563,18 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
 
         if risk_enabled && pos_bar != 0 {
             trade_log_ret += step_log_ret;
+            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
             let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
-            if hit_stop || hit_take {
+            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
+            if hit_stop || hit_take || hit_trailing {
                 if has_commission {
                     log_eq += log_comm;
                 }
                 trades = trades.saturating_add(1);
                 pos = 0;
                 trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
             }
         }
 
@@ -573,7 +771,8 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     let has_commission = commission > 0.0;
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
-    let risk_enabled = stop_log.is_some() || take_log.is_some();
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
 
     let n_steps = n_total.saturating_sub(start_t);
     let bins = clamp_bins(bins, n_steps);
@@ -610,10 +809,12 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     let mut cur_entry_t: usize = 0;
     let mut cur_dir: i32 = 0;
     let mut cur_log_ret: f64 = 0.0;
+    let mut overlay_state = ExecutionOverlayState::default();
 
     for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
-        let sign = composite_desired_position(
+        let raw_sign = composite_desired_position(
             fast[t_sig],
             slow[t_sig],
             halftrend_trend[t_sig],
@@ -624,6 +825,9 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
             cfg,
             signal_mode,
         );
+        let persisted_sign =
+            overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
+        let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
 
         if sign != pos {
             if pos == 0 || sign == 0 {
@@ -644,10 +848,12 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
                     });
                     cur_dir = 0;
                     cur_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
                 } else if pos == 0 && sign != 0 {
                     cur_entry_t = t;
                     cur_dir = sign;
                     cur_log_ret = if has_commission { log_comm } else { 0.0 };
+                    overlay_on_trade_open(&mut overlay_state, cur_log_ret);
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
@@ -668,6 +874,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
                     });
                     cur_dir = 0;
                     cur_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
                 }
                 pos = 0;
             } else {
@@ -690,6 +897,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
                 cur_entry_t = t;
                 cur_dir = sign;
                 cur_log_ret = if has_commission { log_comm } else { 0.0 };
+                overlay_on_trade_open(&mut overlay_state, cur_log_ret);
                 pos = sign;
             }
         }
@@ -697,11 +905,13 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
         log_eq += (pos as f64) * lr[t];
         if cur_dir != 0 {
             cur_log_ret += (pos as f64) * lr[t];
+            overlay_update_trade_peak(&mut overlay_state, cur_log_ret);
         }
         if risk_enabled && cur_dir != 0 {
             let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
-            if hit_stop || hit_take {
+            let hit_trailing = overlay_hit_trailing_stop(cur_log_ret, &overlays, &overlay_state);
+            if hit_stop || hit_take || hit_trailing {
                 if has_commission {
                     log_eq += log_comm;
                     cur_log_ret += log_comm;
@@ -717,6 +927,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
                 cur_dir = 0;
                 cur_log_ret = 0.0;
                 pos = 0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
             }
         }
         if log_eq > log_peak {
@@ -993,6 +1204,57 @@ mod tests {
         assert_eq!(a.trades, b.trades);
         assert!((a.exposure - b.exposure).abs() < 1e-12);
         assert!((a.net_exposure - b.net_exposure).abs() < 1e-12);
+    }
+
+    #[test]
+    fn trend_pullback_reversion_enters_long_on_bull_pullback() {
+        let cfg = StrategyConfig::default();
+        let sign = composite_desired_position(
+            110.0,
+            100.0,
+            0.0, // HalfTrend bullish
+            -0.4,
+            105.0, // below fast, above slow (pullback)
+            103.0, // above OTT line
+            0,
+            &cfg,
+            CompositeSignalMode::TrendPullbackReversion,
+        );
+        assert_eq!(sign, 1);
+    }
+
+    #[test]
+    fn trend_pullback_reversion_stays_flat_without_pullback() {
+        let cfg = StrategyConfig::default();
+        let sign = composite_desired_position(
+            110.0,
+            100.0,
+            0.0,   // HalfTrend bullish
+            0.6,   // not a pullback
+            111.0, // above fast
+            103.0,
+            0,
+            &cfg,
+            CompositeSignalMode::TrendPullbackReversion,
+        );
+        assert_eq!(sign, 0);
+    }
+
+    #[test]
+    fn trend_pullback_reversion_exits_long_on_reversion() {
+        let cfg = StrategyConfig::default();
+        let sign = composite_desired_position(
+            110.0,
+            100.0,
+            0.0,   // HalfTrend bullish
+            0.3,   // reverted momentum
+            111.0, // above fast => reversion complete
+            104.0,
+            1,
+            &cfg,
+            CompositeSignalMode::TrendPullbackReversion,
+        );
+        assert_eq!(sign, 0);
     }
 
     #[test]

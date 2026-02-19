@@ -9,6 +9,7 @@ pub mod double_ma_validate;
 pub mod gpu_backtest_kernel;
 pub mod indicator_factory;
 pub mod iterative_sim;
+pub mod ma_policy;
 pub mod matrix_index;
 pub mod meta_select;
 pub mod ml_confidence;
@@ -73,13 +74,14 @@ pub use meta_select::{
     meta_group_key, meta_group_key_for_request, meta_select_from_artifacts, HoldoutAggregate,
     HoldoutDatasetRow, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode,
     MetaHoldoutMode, MetaHoldoutValidationConfig, MetaScoreWeights, MetaSelectionRequest,
-    MetaSelectionResult,
+    MetaSelectionResult, TrainDatasetRow,
 };
 
 pub use ml_confidence::{
     predict_ml_confidence_for_group, train_ml_confidence_model_from_meta_artifacts,
-    MlConfidenceCalibrationBin, MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceScope,
-    MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
+    MlConfidenceCalibrationBin, MlConfidenceLabelConfig, MlConfidenceModel,
+    MlConfidenceModelFamily, MlConfidenceModelKind, MlConfidenceScope, MlConfidenceTrainConfig,
+    MlConfidenceTrainMetrics,
 };
 
 pub use sharpe_stats::{

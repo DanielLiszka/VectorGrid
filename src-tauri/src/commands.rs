@@ -28,8 +28,8 @@ pub use commands_analysis::{
     compute_double_ma_drilldown, compute_double_ma_local_stability,
 };
 pub use commands_artifacts::{
-    delete_run_artifact, list_meta_artifacts, list_run_artifacts, load_run_artifact, open_runs_dir,
-    save_batch_summary, save_run_artifact, update_artifact_tags,
+    delete_run_artifact, list_meta_artifacts, list_run_artifacts, list_stage4_artifacts,
+    load_run_artifact, open_runs_dir, save_batch_summary, save_run_artifact, update_artifact_tags,
 };
 pub use commands_data::{
     clear_market_data_dir, get_market_data_dir_info, list_moving_averages, list_repo_data_csvs,
@@ -43,15 +43,19 @@ pub use commands_data::{
     RepoDataCsvList, SampleCsv,
 };
 pub use commands_execution::{
-    execute_strategy_signal_once, get_live_execution_snapshot, test_alpaca_connection,
+    execute_strategy_signal_once, get_live_execution_snapshot, live_execution_runner_status,
+    start_live_execution_runner, stop_live_execution_runner, test_alpaca_connection,
     ExecuteStrategySignalRequest, ExecuteStrategySignalResponse, GetLiveExecutionSnapshotRequest,
-    GetLiveExecutionSnapshotResponse, LiveExecutionMode, LiveOrderSnapshot, LivePositionSnapshot,
-    LiveRiskOverride, LiveStrategySpec, TestAlpacaConnectionRequest, TestAlpacaConnectionResponse,
+    GetLiveExecutionSnapshotResponse, LiveExecutionMode, LiveExecutionRunnerConfig,
+    LiveExecutionRunnerStatus, LiveOrderSnapshot, LivePositionSnapshot, LiveRiskOverride,
+    LiveStrategySpec, StopLiveExecutionRunnerResponse, TestAlpacaConnectionRequest,
+    TestAlpacaConnectionResponse,
 };
 pub use commands_meta::{
     apply_ml_confidence_model, delete_ml_confidence_model, ml_confidence_model_status,
-    run_meta_selection, train_ml_confidence_model, ApplyMlConfidenceResponse,
-    MlConfidenceModelStatus, RunMetaSelectionResponse, TrainMlConfidenceResponse,
+    run_meta_selection, run_meta_stage4_experimental, train_ml_confidence_model,
+    ApplyMlConfidenceResponse, MetaStage4Request, MetaStage4Result, MlConfidenceModelStatus,
+    RunMetaSelectionResponse, RunMetaStage4Response, TrainMlConfidenceResponse,
 };
 pub use commands_optimize::{
     cancel_background_task, cancel_current_run, cancel_double_ma_optimization,
@@ -78,6 +82,7 @@ pub use commands_validation::{
 };
 pub use run_artifacts::{
     MetaArtifactSummary, RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse,
+    Stage4ArtifactSummary,
 };
 
 pub use ta_app_core::{

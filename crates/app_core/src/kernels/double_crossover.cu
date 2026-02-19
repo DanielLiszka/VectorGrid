@@ -23,6 +23,49 @@ static __device__ __forceinline__ int sgn_eps(float f, float s, float eps) {
     return (f > s + eps) - (f < s - eps);
 }
 
+static __device__ __forceinline__ int desired_sign_with_regime_f32(
+    float f,
+    float s,
+    float eps,
+    unsigned int flags,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    int t_sig,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel)
+{
+    int sign = sgn_eps(f, s, eps);
+    if (flags & (1u << 0)) sign = max(sign, 0);
+    if (!use_regime || regime_filter == nullptr) return sign;
+
+    const float rv = regime_filter[t_sig];
+    if (!isfinite(rv)) return 0;
+
+    if (use_regime_hybrid && rv >= 1.5f && rv < 2.5f) {
+        if (!isfinite(f) || !isfinite(s)) return 0;
+        const float denom = fmaxf(1.0f, fabsf(s));
+        const float spread_rel = (f - s) / denom;
+        int range_sign = 0;
+        if (spread_rel >= regime_range_entry_rel) {
+            range_sign = -1;
+        } else if (spread_rel <= -regime_range_entry_rel) {
+            range_sign = 1;
+        } else if (fabsf(spread_rel) <= regime_range_exit_rel) {
+            range_sign = 0;
+        } else {
+            range_sign = 0;
+        }
+        if ((flags & (1u << 0)) && range_sign < 0) {
+            range_sign = 0;
+        }
+        return range_sign;
+    }
+
+    if (rv < 0.5f) return max(sign, 0);
+    return min(sign, 0);
+}
+
 static __device__ __forceinline__ float ld_tm(const float* __restrict__ a, int dim, int t, int i) {
 #if __CUDA_ARCH__ >= 350
     return __ldg(a + (size_t)t * (size_t)dim + (size_t)i);
@@ -95,6 +138,11 @@ void double_cross_backtest_tm_flex_f32(
 
     const int* __restrict__ fast_periods,
     const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
     int first_valid,
 
     float commission,
@@ -174,9 +222,17 @@ void double_cross_backtest_tm_flex_f32(
                 const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
                 const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
                 const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
-
-                int sign = sgn_eps(f, s, eps);
-                if (flags & STRAT_LONG_ONLY) sign = max(sign, 0);
+                int sign = desired_sign_with_regime_f32(
+                    f,
+                    s,
+                    eps,
+                    flags,
+                    regime_filter,
+                    use_regime,
+                    use_regime_hybrid,
+                    t_sig,
+                    regime_range_entry_rel,
+                    regime_range_exit_rel);
 
                 if (sign != pos) {
                     if (pos == 0 || sign == 0) {
@@ -227,9 +283,17 @@ void double_cross_backtest_tm_flex_f32(
                 const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
                 const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
                 const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
-
-                int sign = sgn_eps(f, s, eps);
-                if (flags & STRAT_LONG_ONLY) sign = max(sign, 0);
+                int sign = desired_sign_with_regime_f32(
+                    f,
+                    s,
+                    eps,
+                    flags,
+                    regime_filter,
+                    use_regime,
+                    use_regime_hybrid,
+                    t_sig,
+                    regime_range_entry_rel,
+                    regime_range_exit_rel);
 
                 if (sign != pos) {
                     if (pos == 0 || sign == 0) {
@@ -354,6 +418,26 @@ static __device__ __forceinline__ float objective_score_f32(const float* __restr
         return -std;
     }
     return NEG_INF_F;
+}
+
+static __device__ __forceinline__ bool passes_constraints_f32(
+    const float* __restrict__ metrics,
+    size_t base,
+    int M,
+    int use_min_trades,
+    float min_trades,
+    int use_max_dd,
+    float max_dd
+) {
+    if (use_min_trades && M > 1) {
+        const float trades = metrics[base + 1];
+        if (!(trades >= min_trades)) return false;
+    }
+    if (use_max_dd && M > 2) {
+        const float dd = metrics[base + 2];
+        if (!(dd <= max_dd)) return false;
+    }
+    return true;
 }
 
 static __device__ __forceinline__ void atomicMaxFloat(float* addr, float value) {
@@ -541,6 +625,128 @@ void select_topk_from_candidates_tm_f32(
 }
 
 extern "C" __global__
+void select_topk_from_pairs_tm_f32_v2(
+    const float* __restrict__ metrics,
+    int pairs,
+    int M,
+    int Pf_tile,
+    int Ps_tile,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    int objective,
+    int topk,
+    int use_min_trades,
+    float min_trades,
+    int use_max_dd,
+    float max_dd,
+    int* __restrict__ out_pair_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (idx < pairs) {
+            const int pf_local = idx / Ps_tile;
+            const int ps_local = idx - pf_local * Ps_tile;
+            if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                const int f = fast_periods[pf_local];
+                const int s = slow_periods[ps_local];
+                if (f < s) {
+                    const size_t base = (size_t)idx * (size_t)M;
+                    if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                        score = objective_score_f32(metrics, base, M, objective);
+                        if (!isfinite(score)) score = NEG_INF_F;
+                    }
+                }
+            }
+            val = idx;
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_from_candidates_tm_f32_v2(
+    const float* __restrict__ metrics,
+    int pairs,
+    int M,
+    int Pf_tile,
+    int Ps_tile,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    int objective,
+    int topk,
+    const int* __restrict__ in_pair_idx,
+    int in_len,
+    int use_min_trades,
+    float min_trades,
+    int use_max_dd,
+    float max_dd,
+    int* __restrict__ out_pair_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int pair = -1;
+        float score = NEG_INF_F;
+        if (in_pos < in_len) {
+            pair = in_pair_idx[in_pos];
+            if (pair >= 0 && pair < pairs) {
+                const int pf_local = pair / Ps_tile;
+                const int ps_local = pair - pf_local * Ps_tile;
+                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                    const int f = fast_periods[pf_local];
+                    const int s = slow_periods[ps_local];
+                    if (f < s) {
+                        const size_t base = (size_t)pair * (size_t)M;
+                        if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                            score = objective_score_f32(metrics, base, M, objective);
+                            if (!isfinite(score)) score = NEG_INF_F;
+                        }
+                    }
+                }
+            }
+        }
+        keys[item] = score;
+        vals[item] = pair;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
 void gather_topk_pairs_tm_f32(
     const float* __restrict__ metrics,
     int pairs,
@@ -576,5 +782,354 @@ void gather_topk_pairs_tm_f32(
         const size_t base_in = (size_t)pair * (size_t)M;
         const size_t base_out = (size_t)i * (size_t)M;
         for (int m = 0; m < M; ++m) out_metrics[base_out + (size_t)m] = metrics[base_in + (size_t)m];
+    }
+}
+
+extern "C" __global__
+void select_topk_metric_rows_f32(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    int topk,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (idx < rows) {
+            const size_t base = (size_t)idx * (size_t)M;
+            score = objective_score_f32(metrics_rows, base, M, objective);
+            if (!isfinite(score)) score = NEG_INF_F;
+            val = idx;
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_metric_rows_from_candidates_f32(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    int topk,
+    const int* __restrict__ in_row_idx,
+    int in_len,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int row = -1;
+        float score = NEG_INF_F;
+        if (in_pos < in_len) {
+            row = in_row_idx[in_pos];
+            if (row >= 0 && row < rows) {
+                const size_t base = (size_t)row * (size_t)M;
+                score = objective_score_f32(metrics_rows, base, M, objective);
+                if (!isfinite(score)) score = NEG_INF_F;
+            }
+        }
+        keys[item] = score;
+        vals[item] = row;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_metric_rows_f32_v2(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    int topk,
+    int use_min_trades,
+    float min_trades,
+    int use_max_dd,
+    float max_dd,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (idx < rows) {
+            const size_t base = (size_t)idx * (size_t)M;
+            if (passes_constraints_f32(metrics_rows, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                score = objective_score_f32(metrics_rows, base, M, objective);
+                if (!isfinite(score)) score = NEG_INF_F;
+            }
+            val = idx;
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_metric_rows_from_candidates_f32_v2(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    int topk,
+    const int* __restrict__ in_row_idx,
+    int in_len,
+    int use_min_trades,
+    float min_trades,
+    int use_max_dd,
+    float max_dd,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int row = -1;
+        float score = NEG_INF_F;
+        if (in_pos < in_len) {
+            row = in_row_idx[in_pos];
+            if (row >= 0 && row < rows) {
+                const size_t base = (size_t)row * (size_t)M;
+                if (passes_constraints_f32(metrics_rows, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                    score = objective_score_f32(metrics_rows, base, M, objective);
+                    if (!isfinite(score)) score = NEG_INF_F;
+                }
+            }
+        }
+        keys[item] = score;
+        vals[item] = row;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void gather_topk_metric_rows_f32(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    const int* __restrict__ fast_rows,
+    const int* __restrict__ slow_rows,
+    const int* __restrict__ top_row_idx,
+    int topk,
+    int* __restrict__ out_fast_len,
+    int* __restrict__ out_slow_len,
+    float* __restrict__ out_metrics
+) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < topk; i += blockDim.x * gridDim.x) {
+        const int row = top_row_idx[i];
+        if (row < 0 || row >= rows) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            for (int m = 0; m < M; ++m) out_metrics[(size_t)i * (size_t)M + (size_t)m] = NAN;
+            continue;
+        }
+        out_fast_len[i] = fast_rows[row];
+        out_slow_len[i] = slow_rows[row];
+        const size_t base_in = (size_t)row * (size_t)M;
+        const size_t base_out = (size_t)i * (size_t)M;
+        for (int m = 0; m < M; ++m) out_metrics[base_out + (size_t)m] = metrics_rows[base_in + (size_t)m];
+    }
+}
+
+static __device__ __forceinline__ uint64_t splitmix64_step(uint64_t x) {
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static __device__ __forceinline__ float u64_unit_f32(uint64_t x) {
+    const double denom = 9007199254740992.0; // 2^53
+    return (float)((double)((x >> 11) & 0x1fffffffffffffULL) / denom);
+}
+
+static __device__ __forceinline__ int nearest_period_i32(
+    const int* __restrict__ periods,
+    int len,
+    int value
+) {
+    if (len <= 0) return 0;
+    if (value <= periods[0]) return periods[0];
+    if (value >= periods[len - 1]) return periods[len - 1];
+
+    int lo = 0;
+    int hi = len;
+    while (lo < hi) {
+        const int mid = lo + ((hi - lo) >> 1);
+        if (periods[mid] < value) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    const int idx = lo;
+    if (idx <= 0) return periods[0];
+    if (idx >= len) return periods[len - 1];
+    const int p_lo = periods[idx - 1];
+    const int p_hi = periods[idx];
+    const int d_lo = (value >= p_lo) ? (value - p_lo) : (p_lo - value);
+    const int d_hi = (value >= p_hi) ? (value - p_hi) : (p_hi - value);
+    return (d_lo <= d_hi) ? p_lo : p_hi;
+}
+
+extern "C" __global__
+void vdps_generate_seed_pairs_tm_i32(
+    const int* __restrict__ elite_fast,
+    const int* __restrict__ elite_slow,
+    int elite_len,
+    const int* __restrict__ fast_periods,
+    int fast_len,
+    const int* __restrict__ slow_periods,
+    int slow_len,
+    int elite_count,
+    int diff_count,
+    int random_count,
+    int fast_step,
+    int slow_step,
+    unsigned long long seed,
+    int out_len,
+    int* __restrict__ out_fast,
+    int* __restrict__ out_slow
+) {
+    const int stride = blockDim.x * gridDim.x;
+    const int diff_start = elite_count;
+    const int rand_start = elite_count + diff_count;
+    const int f_step = max(fast_step, 1);
+    const int s_step = max(slow_step, 1);
+    const int f_delta = f_step * 2;
+    const int s_delta = s_step * 2;
+
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < out_len; i += stride) {
+        if (fast_len <= 0 || slow_len <= 0 || (i >= (elite_count + diff_count + random_count))) {
+            out_fast[i] = 0;
+            out_slow[i] = 0;
+            continue;
+        }
+
+        uint64_t h0 = splitmix64_step((uint64_t)seed ^ ((uint64_t)(i + 1) * 0x9e3779b97f4a7c15ULL));
+        uint64_t h1 = splitmix64_step(h0 ^ 0x243f6a8885a308d3ULL);
+        uint64_t h2 = splitmix64_step(h1 ^ 0x13198a2e03707344ULL);
+        uint64_t h3 = splitmix64_step(h2 ^ 0xa4093822299f31d0ULL);
+        uint64_t h4 = splitmix64_step(h3 ^ 0x082efa98ec4e6c89ULL);
+
+        int cand_f = 0;
+        int cand_s = 0;
+
+        const bool can_diff = elite_len >= 3;
+        const bool use_elite = (i < diff_start) && elite_len > 0;
+        const bool use_diff = (i >= diff_start && i < rand_start) && can_diff;
+
+        if (use_elite) {
+            const int e_idx = (int)(h0 % (uint64_t)elite_len);
+            const int base_f = elite_fast[e_idx];
+            const int base_s = elite_slow[e_idx];
+            const int df = (int)(h1 % (uint64_t)(2 * f_delta + 1)) - f_delta;
+            const int ds = (int)(h2 % (uint64_t)(2 * s_delta + 1)) - s_delta;
+            cand_f = base_f + df;
+            cand_s = base_s + ds;
+        } else if (use_diff) {
+            int ia = (int)(h0 % (uint64_t)elite_len);
+            int ib = (int)(h1 % (uint64_t)elite_len);
+            int ic = (int)(h2 % (uint64_t)elite_len);
+
+            if (ib == ia) ib = (ib + 1) % elite_len;
+            if (ic == ia || ic == ib) ic = (ic + 1) % elite_len;
+            if (ic == ia || ic == ib) ic = (ic + 1) % elite_len;
+
+            const float f_coeff = 0.55f + 0.35f * u64_unit_f32(h3);
+            const float s_coeff = 0.55f + 0.35f * u64_unit_f32(h4);
+
+            const float a_f = (float)elite_fast[ia];
+            const float b_f = (float)elite_fast[ib];
+            const float c_f = (float)elite_fast[ic];
+            const float a_s = (float)elite_slow[ia];
+            const float b_s = (float)elite_slow[ib];
+            const float c_s = (float)elite_slow[ic];
+
+            cand_f = (int)nearbyintf(a_f + (b_f - c_f) * f_coeff);
+            cand_s = (int)nearbyintf(a_s + (b_s - c_s) * s_coeff);
+        } else {
+            const int f_idx = (int)(h0 % (uint64_t)fast_len);
+            const int s_idx = (int)(h1 % (uint64_t)slow_len);
+            cand_f = fast_periods[f_idx];
+            cand_s = slow_periods[s_idx];
+        }
+
+        const int f = nearest_period_i32(fast_periods, fast_len, cand_f);
+        const int s = nearest_period_i32(slow_periods, slow_len, cand_s);
+        if (f <= 0 || s <= 0 || f >= s) {
+            out_fast[i] = 0;
+            out_slow[i] = 0;
+        } else {
+            out_fast[i] = f;
+            out_slow[i] = s;
+        }
     }
 }

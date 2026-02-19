@@ -12,10 +12,10 @@ use crate::double_ma::{
     build_indicator_bars_for_chart, compute_halftrend_trend, compute_log_returns_f64,
     cpu_tile_sizes, estimate_pairs_fast_lt_slow, expand_u16_range, first_finite_idx,
     lookup_ma_info, ma_matrix_cpu_f64, resolve_alma_params_for_side,
-    run_double_ma_optimization_blocking_with_candles, validate_ma_kind, validate_strategy_cfg,
-    Backend, BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, DoubleMaRequest,
-    HalfTrendRegimeFilter, LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary,
-    OptimizationModeResolved,
+    run_double_ma_optimization_blocking_with_candles, strategy_cfg_for_optimization,
+    validate_ma_kind, validate_strategy_cfg, Backend, BackendOptimizationResult, BackendUsed,
+    DoubleMaParamsResolved, DoubleMaRequest, HalfTrendRegimeFilter, LocalStabilityPoint,
+    LocalStabilityResult, LocalStabilitySummary, OptimizationModeResolved,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
@@ -258,13 +258,17 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     }
 
     validate_strategy_cfg(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
 
     let heatmap_bins = req.heatmap_bins.unwrap_or(0) as usize;
     if heatmap_bins > 512 {
         return Err("heatmap_bins too large (max 512)".to_string());
     }
 
-    if matches!(req.mode, OptimizationMode::CoarseToFine) {
+    if matches!(
+        req.mode,
+        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
+    ) {
         return Err("Composite strategy currently supports mode=Grid only.".to_string());
     }
     let mode_used = OptimizationModeResolved::Grid;
@@ -342,13 +346,15 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             slow_ma_params: req.slow_ma_params.clone(),
             fast_ma_param_sweeps: None,
             slow_ma_param_sweeps: None,
-            strategy: req.strategy.clone(),
+            strategy: strategy.clone(),
             halftrend_filter: None,
             objective,
             mode: prescan_mode,
             top_k: Some(prescan_top_k),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
         };
 
         let dm_res = run_double_ma_optimization_blocking_with_candles(
@@ -382,7 +388,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
                 fast_alma_sigma,
                 slow_alma_offset,
                 slow_alma_sigma,
-                long_only: req.strategy.long_only,
+                long_only: strategy.long_only,
                 top_k: predictive_top_k,
                 period_stride: predictive_stride,
             })?;
@@ -504,7 +510,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         ma_prices,
         &ott_line,
         first_valid,
-        &req.strategy,
+        &strategy,
         req.signal_mode,
         objective,
         top_k,
@@ -584,6 +590,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         top,
         all,
         heatmap,
+        vdps: None,
     })
 }
 
@@ -1610,6 +1617,147 @@ mod tests {
                 .expect("composite cpu run");
         assert_eq!(res.num_combos, 6);
         assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn composite_cpu_rejects_gpu_vdps_mode() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let err =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect_err("GpuVdps mode should be rejected for composite CPU optimization");
+        assert!(
+            err.to_ascii_lowercase().contains("mode=grid"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn composite_cpu_trend_pullback_reversion_mode_runs() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::TrendPullbackReversion,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("composite cpu run");
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn composite_cpu_optimization_ignores_trailing_stop() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let base_req = CompositeCpuRequest {
+            data_id: "test".to_string(),
+            fast_range: (5, 5, 0),
+            slow_range: (20, 20, 0),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let base = run_composite_cpu_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("composite cpu base run");
+
+        let mut trailing_req = base_req;
+        trailing_req.strategy.trailing_stop_pct = Some(0.02);
+        let with_trailing = run_composite_cpu_optimization_blocking_with_candles(
+            trailing_req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("composite cpu trailing run");
+
+        assert_eq!(
+            with_trailing.best_params.fast_len,
+            base.best_params.fast_len
+        );
+        assert_eq!(
+            with_trailing.best_params.slow_len,
+            base.best_params.slow_len
+        );
+        assert_eq!(with_trailing.best_metrics.trades, base.best_metrics.trades);
+        assert!((with_trailing.best_metrics.pnl - base.best_metrics.pnl).abs() < 1e-12);
+        assert!((with_trailing.best_metrics.sharpe - base.best_metrics.sharpe).abs() < 1e-12);
+        assert!((with_trailing.best_metrics.max_dd - base.best_metrics.max_dd).abs() < 1e-12);
     }
 
     #[test]

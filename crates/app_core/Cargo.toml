@@ -58,3 +58,7 @@ harness = false
 name = "ta_cli"
 path = "src/bin/ta_cli.rs"
 required-features = ["cli"]
+
+[[bin]]
+name = "stage6b_kernel_report"
+path = "src/bin/stage6b_kernel_report.rs"

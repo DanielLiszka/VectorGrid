@@ -7,7 +7,7 @@ use crate::cscv_pbo::{
     SliceReturnStats,
 };
 use crate::double_ma::{
-    compute_halftrend_trend, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
+    compute_combined_regime_filter, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
     resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, HalfTrendRegimeFilter,
 };
 use crate::iterative_sim::{
@@ -187,15 +187,17 @@ fn emit_progress(
 struct CandidateSeries<'a> {
     n: usize,
     lr: &'a [f64],
+    close: &'a [f64],
     fast: Vec<f64>,
     slow: Vec<f64>,
     halftrend_trend: Option<Vec<f64>>,
+    kaufman_stops: Option<crate::double_ma::KaufmanStopSeries>,
     start_t: usize,
     cfg: StrategyConfig,
 }
 
 fn build_candidate_series<'a>(
-    candles: &vector_ta::utilities::data_loader::Candles,
+    candles: &'a vector_ta::utilities::data_loader::Candles,
     lr: &'a [f64],
     base_first_valid: usize,
     ma_source: &str,
@@ -250,11 +252,26 @@ fn build_candidate_series<'a>(
     if fast_mat.len() != n || slow_mat.len() != n {
         return Err("MA series length mismatch".to_string());
     }
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    if close.len() != n {
+        return Err("close series length mismatch".to_string());
+    }
+    let kaufman_stops = crate::double_ma::compute_kaufman_stop_series(candles, &params.strategy)?;
+    let mut first_valid_extra = base_first_valid;
+    if let Some(ks) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        first_valid_extra = first_valid_extra.max(fv_k_long.max(fv_k_short));
+    }
 
-    let halftrend_trend: Option<Vec<f64>> = match params.halftrend_filter.as_ref() {
-        Some(f) => Some(compute_halftrend_trend(candles, f)?),
-        None => None,
-    };
+    let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
+        candles,
+        ma_source,
+        &params.strategy,
+        params.halftrend_filter.as_ref(),
+    )?;
 
     let trade_offset = if params.strategy.trade_on_next_bar {
         1usize
@@ -266,14 +283,14 @@ fn build_candidate_series<'a>(
         .zip(slow_mat.iter())
         .position(|(f, s)| f.is_finite() && s.is_finite())
         .unwrap_or(n);
-    let mut start_t = t_sig0.saturating_add(trade_offset).max(base_first_valid);
+    let mut start_t = t_sig0.saturating_add(trade_offset).max(first_valid_extra);
 
     if let Some(trend) = halftrend_trend.as_ref() {
         if trend.len() != n {
-            return Err("HalfTrend trend series length mismatch".to_string());
+            return Err("regime trend series length mismatch".to_string());
         }
         let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         start_t = start_t.max(fv_ht);
     }
 
@@ -284,9 +301,11 @@ fn build_candidate_series<'a>(
     Ok(CandidateSeries {
         n,
         lr,
+        close,
         fast: fast_mat,
         slow: slow_mat,
         halftrend_trend,
+        kaufman_stops,
         start_t,
         cfg: params.strategy.clone(),
     })
@@ -300,53 +319,36 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
     }
 
     let lr = &series.lr[..end_t];
+    let close = &series.close[..end_t];
     let fast = &series.fast[..end_t];
     let slow = &series.slow[..end_t];
-
-    if let Some(ht) = series.halftrend_trend.as_ref() {
-        let ht2 = &ht[..end_t];
-        ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
-            lr,
-            fast,
-            slow,
-            ht2,
-            start_t,
-            &series.cfg,
-        )
-    } else {
-        ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
-            lr,
-            fast,
-            slow,
-            start_t,
-            &series.cfg,
-        )
-    }
+    let ht2 = series.halftrend_trend.as_ref().map(|h| &h[..end_t]);
+    crate::double_ma::eval_metrics_f64_with_exit_mode(
+        lr,
+        close,
+        fast,
+        slow,
+        ht2,
+        start_t,
+        &series.cfg,
+        series.kaufman_stops.as_ref(),
+        true,
+    )
 }
 
 fn trades_for_series(series: &CandidateSeries<'_>) -> Vec<Trade> {
-    if let Some(ht) = series.halftrend_trend.as_ref() {
-        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64_with_halftrend_filter(
-            series.lr,
-            &series.fast,
-            &series.slow,
-            ht,
-            series.start_t,
-            &series.cfg,
-            1,
-        )
-        .trades
-    } else {
-        ta_strategies::double_ma::eval_double_ma_curves_from_log_returns_and_mas_f64(
-            series.lr,
-            &series.fast,
-            &series.slow,
-            series.start_t,
-            &series.cfg,
-            1,
-        )
-        .trades
-    }
+    crate::double_ma::eval_curves_f64_with_exit_mode(
+        series.lr,
+        series.close,
+        &series.fast,
+        &series.slow,
+        series.halftrend_trend.as_deref(),
+        series.start_t,
+        &series.cfg,
+        1,
+        series.kaufman_stops.as_ref(),
+    )
+    .trades
 }
 
 fn desired_positions_for_series(
@@ -355,48 +357,18 @@ fn desired_positions_for_series(
     end_t: usize,
 ) -> Vec<i32> {
     let n = series.n;
+    let mut out = crate::double_ma::desired_positions_with_exit_mode(
+        series.close,
+        &series.fast,
+        &series.slow,
+        series.halftrend_trend.as_deref(),
+        start_t,
+        &series.cfg,
+        series.kaufman_stops.as_ref(),
+    );
     let end_t = end_t.min(n);
-    let mut out: Vec<i32> = vec![0; n];
-    if start_t >= end_t || n == 0 {
-        return out;
-    }
-
-    let trade_offset = if series.cfg.trade_on_next_bar {
-        1usize
-    } else {
-        0usize
-    };
-
-    for t in start_t..end_t {
-        let t_sig = t.saturating_sub(trade_offset);
-        let f = series.fast[t_sig];
-        let s = series.slow[t_sig];
-
-        let mut sign: i32 = 0;
-        if f.is_finite() && s.is_finite() {
-            let eps = if series.cfg.eps_rel > 0.0 {
-                series.cfg.eps_rel * 1.0_f64.max(s.abs())
-            } else {
-                0.0
-            };
-            sign = (f > s + eps) as i32 - (f < s - eps) as i32;
-            if series.cfg.long_only && sign < 0 {
-                sign = 0;
-            }
-        }
-
-        if let Some(ht) = series.halftrend_trend.as_ref() {
-            let v = ht[t_sig];
-            if !v.is_finite() {
-                sign = 0;
-            } else if v < 0.5 {
-                sign = sign.max(0);
-            } else {
-                sign = sign.min(0);
-            }
-        }
-
-        out[t] = sign;
+    if end_t < n {
+        out[end_t..].fill(0);
     }
     out
 }
@@ -580,6 +552,32 @@ fn repair_params(p: &mut DoubleMaValidationParams) {
     if !p.strategy.eps_rel.is_finite() || p.strategy.eps_rel < 0.0 {
         p.strategy.eps_rel = 0.0;
     }
+    if !p.strategy.trend_quality_angle_min_deg.is_finite()
+        || p.strategy.trend_quality_angle_min_deg <= 0.0
+    {
+        p.strategy.trend_quality_angle_min_deg = 2.0;
+    }
+    if !p.strategy.trend_quality_bbw_mult.is_finite() || p.strategy.trend_quality_bbw_mult <= 0.0 {
+        p.strategy.trend_quality_bbw_mult = 2.0;
+    }
+    if !p.strategy.trend_quality_bbw_min.is_finite() || p.strategy.trend_quality_bbw_min < 0.0 {
+        p.strategy.trend_quality_bbw_min = 0.04;
+    }
+    if p.strategy.trend_quality_linearreg_period == 0 {
+        p.strategy.trend_quality_linearreg_period = 1;
+    }
+    if p.strategy.trend_quality_bbw_period == 0 {
+        p.strategy.trend_quality_bbw_period = 1;
+    }
+    if p.strategy.trend_quality_roc_period == 0 {
+        p.strategy.trend_quality_roc_period = 1;
+    }
+    if p.strategy.trend_quality_adx_period == 0 {
+        p.strategy.trend_quality_adx_period = 1;
+    }
+    if !p.strategy.trend_quality_adx_min.is_finite() || p.strategy.trend_quality_adx_min <= 0.0 {
+        p.strategy.trend_quality_adx_min = 20.0;
+    }
 
     // HalfTrend filter (optional)
     if let Some(f) = p.halftrend_filter.as_mut() {
@@ -691,6 +689,50 @@ fn perturb_params(
         apply_pct_f64(p.strategy.slippage_bps, rand_mult(rng, pct_min, pct_max)).abs();
     p.strategy.commission = apply_pct_f64(p.strategy.commission, rand_mult(rng, pct_min, pct_max));
     p.strategy.eps_rel = apply_pct_f64(p.strategy.eps_rel, rand_mult(rng, pct_min, pct_max)).abs();
+    if p.strategy.uses_trend_quality_filter() {
+        p.strategy.trend_quality_linearreg_period = apply_pct_u16(
+            p.strategy.trend_quality_linearreg_period,
+            rand_mult(rng, pct_min, pct_max),
+        );
+        p.strategy.trend_quality_angle_min_deg = apply_pct_f64(
+            p.strategy.trend_quality_angle_min_deg,
+            rand_mult(rng, pct_min, pct_max),
+        )
+        .abs();
+        p.strategy.trend_quality_bbw_period = apply_pct_u16(
+            p.strategy.trend_quality_bbw_period,
+            rand_mult(rng, pct_min, pct_max),
+        );
+        p.strategy.trend_quality_bbw_mult = apply_pct_f64(
+            p.strategy.trend_quality_bbw_mult,
+            rand_mult(rng, pct_min, pct_max),
+        )
+        .abs();
+        p.strategy.trend_quality_bbw_min = apply_pct_f64(
+            p.strategy.trend_quality_bbw_min,
+            rand_mult(rng, pct_min, pct_max),
+        )
+        .abs();
+        p.strategy.trend_quality_roc_period = apply_pct_u16(
+            p.strategy.trend_quality_roc_period,
+            rand_mult(rng, pct_min, pct_max),
+        );
+        if rng.gen_bool(flip_bool_prob) {
+            p.strategy.trend_quality_use_roc = !p.strategy.trend_quality_use_roc;
+        }
+        p.strategy.trend_quality_adx_period = apply_pct_u16(
+            p.strategy.trend_quality_adx_period,
+            rand_mult(rng, pct_min, pct_max),
+        );
+        p.strategy.trend_quality_adx_min = apply_pct_f64(
+            p.strategy.trend_quality_adx_min,
+            rand_mult(rng, pct_min, pct_max),
+        )
+        .abs();
+        if rng.gen_bool(flip_bool_prob) {
+            p.strategy.trend_quality_use_adx = !p.strategy.trend_quality_use_adx;
+        }
+    }
     if rng.gen_bool(flip_bool_prob) {
         p.strategy.long_only = !p.strategy.long_only;
     }
@@ -1073,7 +1115,13 @@ mod tests {
     use crate::double_ma::{
         run_double_ma_optimization_blocking_with_candles, Backend, DoubleMaRequest,
     };
+    use crate::meta_select::{
+        meta_select_from_artifacts, MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode,
+        MetaScoreWeights, MetaSelectionRequest,
+    };
+    use serde_json::json;
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
+    use ta_strategies::double_ma::ExitMode;
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
@@ -1091,6 +1139,37 @@ mod tests {
             low.push(base - 1.0);
             close.push(base + 0.25);
             vol.push(1_000.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn make_choppy_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        let mut prev_close: f64 = 100.0;
+        for i in 0..len {
+            ts.push(i as i64);
+            let x = i as f64;
+            let wave = (x * 0.11).sin() * 2.5 + (x * 0.037).cos() * 1.4;
+            let drift = x * 0.012;
+            let c: f64 = 100.0 + drift + wave;
+            let o: f64 = prev_close;
+            let hi_pad = 0.9 + (x * 0.17).sin().abs() * 0.4;
+            let lo_pad = 0.9 + (x * 0.13).cos().abs() * 0.4;
+            let h = o.max(c) + hi_pad;
+            let l = o.min(c) - lo_pad;
+            open.push(o);
+            high.push(h);
+            low.push(l);
+            close.push(c);
+            vol.push(1_000.0 + (x * 0.09).sin().abs() * 300.0);
+            prev_close = c;
         }
 
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
@@ -1297,123 +1376,185 @@ mod tests {
 
     #[test]
     fn double_ma_validation_iterative_engine_matches_optimizer_top_candidates() {
-        let candles = make_trending_candles(4096);
-        let cancel = AtomicBool::new(false);
-
-        let strategy = StrategyConfig::default();
-        let opt_req = DoubleMaRequest {
-            backend: Backend::CpuOnly,
-            data_id: "opt".to_string(),
-            fast_range: (5, 10, 1),
-            slow_range: (20, 25, 1),
-            fast_ma_types: vec!["sma".to_string()],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            export_all_csv_path: None,
-            fast_ma_params: None,
-            slow_ma_params: None,
-            fast_ma_param_sweeps: None,
-            slow_ma_param_sweeps: None,
-            strategy: strategy.clone(),
-            halftrend_filter: None,
-            objective: ObjectiveKind::Sharpe,
-            mode: OptimizationMode::Grid,
-            top_k: Some(4),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-        };
-
-        let opt =
-            run_double_ma_optimization_blocking_with_candles(opt_req, &candles, &cancel, None)
-                .expect("optimization run");
-        assert!(!opt.top.is_empty());
-
-        let candidates: Vec<DoubleMaValidationParams> = opt
-            .top
-            .iter()
-            .take(4)
-            .map(|(p, _)| DoubleMaValidationParams {
-                fast_ma_type: p.fast_ma_type.clone(),
-                slow_ma_type: p.slow_ma_type.clone(),
-                fast_len: p.fast_len,
-                slow_len: p.slow_len,
-                fast_ma_params: p.fast_ma_params.clone(),
-                slow_ma_params: p.slow_ma_params.clone(),
+        fn run_case(
+            label: &str,
+            candles: &vector_ta::utilities::data_loader::Candles,
+            strategy: StrategyConfig,
+            halftrend_filter: Option<HalfTrendRegimeFilter>,
+        ) {
+            let cancel = AtomicBool::new(false);
+            let opt_req = DoubleMaRequest {
+                backend: Backend::CpuOnly,
+                data_id: format!("opt-{label}"),
+                fast_range: (5, 9, 1),
+                slow_range: (18, 28, 2),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
                 strategy: strategy.clone(),
-                halftrend_filter: None,
-            })
-            .collect();
+                halftrend_filter: halftrend_filter.clone(),
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::Grid,
+                top_k: Some(6),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
 
-        let mk_req = |validation_engine: ValidationEngine| DoubleMaValidationRequest {
-            data_id: "opt-vs-iter".to_string(),
-            ma_source: "close".to_string(),
-            fast_ma_params: None,
-            slow_ma_params: None,
-            candidates: candidates.clone(),
-            walk_forward: None,
-            perturb: None,
-            trade_bootstrap: None,
-            cross_ticker: None,
-            cscv_pbo: None,
-            seed: 17,
-            max_candidates: 32,
-            validation_engine,
-            iterative: IterativeSimConfig {
-                slippage_vol_mult: 0.0,
-                ..IterativeSimConfig::default()
-            },
-            min_psr: None,
-            min_dsr: None,
-        };
+            let opt =
+                run_double_ma_optimization_blocking_with_candles(opt_req, candles, &cancel, None)
+                    .expect("optimization run");
+            assert!(
+                !opt.top.is_empty(),
+                "optimization returned no candidates for {label}"
+            );
 
-        let vec_res = run_double_ma_validation_blocking_with_candles(
-            mk_req(ValidationEngine::Vectorized),
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("vectorized validation run");
-        let iter_res = run_double_ma_validation_blocking_with_candles(
-            mk_req(ValidationEngine::Iterative),
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("iterative validation run");
-
-        assert_eq!(vec_res.candidates.len(), iter_res.candidates.len());
-
-        for vec_cand in &vec_res.candidates {
-            let iter_cand = iter_res
-                .candidates
+            let candidates: Vec<DoubleMaValidationParams> = opt
+                .top
                 .iter()
-                .find(|c| {
-                    c.params.fast_ma_type == vec_cand.params.fast_ma_type
-                        && c.params.slow_ma_type == vec_cand.params.slow_ma_type
-                        && c.params.fast_len == vec_cand.params.fast_len
-                        && c.params.slow_len == vec_cand.params.slow_len
-                        && c.params.fast_ma_params == vec_cand.params.fast_ma_params
-                        && c.params.slow_ma_params == vec_cand.params.slow_ma_params
+                .take(6)
+                .map(|(p, _)| DoubleMaValidationParams {
+                    fast_ma_type: p.fast_ma_type.clone(),
+                    slow_ma_type: p.slow_ma_type.clone(),
+                    fast_len: p.fast_len,
+                    slow_len: p.slow_len,
+                    fast_ma_params: p.fast_ma_params.clone(),
+                    slow_ma_params: p.slow_ma_params.clone(),
+                    strategy: strategy.clone(),
+                    halftrend_filter: halftrend_filter.clone(),
                 })
-                .expect("matching iterative candidate");
+                .collect();
 
-            assert!((iter_cand.in_sample.pnl - vec_cand.in_sample.pnl).abs() < 1e-12);
-            assert!((iter_cand.in_sample.sharpe - vec_cand.in_sample.sharpe).abs() < 1e-12);
-            assert!((iter_cand.in_sample.max_dd - vec_cand.in_sample.max_dd).abs() < 1e-12);
+            let mk_req = |validation_engine: ValidationEngine| DoubleMaValidationRequest {
+                data_id: format!("opt-vs-iter-{label}"),
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 17,
+                max_candidates: 32,
+                validation_engine,
+                iterative: IterativeSimConfig {
+                    slippage_vol_mult: 0.0,
+                    ..IterativeSimConfig::default()
+                },
+                min_psr: None,
+                min_dsr: None,
+            };
 
-            let iter_m = iter_cand
-                .iterative_in_sample
-                .as_ref()
-                .expect("iterative metrics");
-            let delta = iter_cand.iterative_delta.as_ref().expect("iterative delta");
+            let vec_res = run_double_ma_validation_blocking_with_candles(
+                mk_req(ValidationEngine::Vectorized),
+                candles,
+                &cancel,
+                None,
+            )
+            .expect("vectorized validation run");
+            let iter_res = run_double_ma_validation_blocking_with_candles(
+                mk_req(ValidationEngine::Iterative),
+                candles,
+                &cancel,
+                None,
+            )
+            .expect("iterative validation run");
 
-            assert!(iter_m.pnl.is_finite());
-            assert!(iter_m.sharpe.is_finite());
-            assert!(iter_m.max_dd.is_finite());
-            assert!((iter_m.pnl - iter_cand.in_sample.pnl - delta.pnl).abs() < 1e-9);
-            assert!((iter_m.sharpe - iter_cand.in_sample.sharpe - delta.sharpe).abs() < 1e-9);
-            assert!((iter_m.max_dd - iter_cand.in_sample.max_dd - delta.max_dd).abs() < 1e-9);
+            assert_eq!(vec_res.candidates.len(), iter_res.candidates.len());
+
+            for vec_cand in &vec_res.candidates {
+                let iter_cand = iter_res
+                    .candidates
+                    .iter()
+                    .find(|c| {
+                        c.params.fast_ma_type == vec_cand.params.fast_ma_type
+                            && c.params.slow_ma_type == vec_cand.params.slow_ma_type
+                            && c.params.fast_len == vec_cand.params.fast_len
+                            && c.params.slow_len == vec_cand.params.slow_len
+                            && c.params.fast_ma_params == vec_cand.params.fast_ma_params
+                            && c.params.slow_ma_params == vec_cand.params.slow_ma_params
+                    })
+                    .expect("matching iterative candidate");
+
+                assert!((iter_cand.in_sample.pnl - vec_cand.in_sample.pnl).abs() < 1e-12);
+                assert!((iter_cand.in_sample.sharpe - vec_cand.in_sample.sharpe).abs() < 1e-12);
+                assert!((iter_cand.in_sample.max_dd - vec_cand.in_sample.max_dd).abs() < 1e-12);
+
+                let iter_m = iter_cand
+                    .iterative_in_sample
+                    .as_ref()
+                    .expect("iterative metrics");
+                let delta = iter_cand.iterative_delta.as_ref().expect("iterative delta");
+
+                assert!(iter_m.pnl.is_finite());
+                assert!(iter_m.sharpe.is_finite());
+                assert!(iter_m.max_dd.is_finite());
+                assert!((iter_m.pnl - iter_cand.in_sample.pnl - delta.pnl).abs() < 1e-9);
+                assert!((iter_m.sharpe - iter_cand.in_sample.sharpe - delta.sharpe).abs() < 1e-9);
+                assert!((iter_m.max_dd - iter_cand.in_sample.max_dd - delta.max_dd).abs() < 1e-9);
+            }
         }
+
+        run_case(
+            "double-ma-default",
+            &make_trending_candles(4096),
+            StrategyConfig::default(),
+            None,
+        );
+
+        run_case(
+            "composite-trend",
+            &make_trending_candles(4096),
+            StrategyConfig {
+                trend_quality_enable: true,
+                trend_quality_linearreg_period: 34,
+                trend_quality_angle_min_deg: 2.0,
+                trend_quality_bbw_period: 20,
+                trend_quality_bbw_mult: 2.0,
+                trend_quality_bbw_min: 0.01,
+                trend_quality_roc_period: 9,
+                trend_quality_use_roc: true,
+                ..StrategyConfig::default()
+            },
+            None,
+        );
+
+        run_case(
+            "regime-hybrid",
+            &make_choppy_candles(4096),
+            StrategyConfig {
+                trend_quality_enable: false,
+                regime_hybrid_enable: true,
+                regime_hybrid_adx_period: 14,
+                regime_hybrid_adx_enter: 22.0,
+                regime_hybrid_adx_exit: 18.0,
+                regime_hybrid_reversion_entry_rel: 0.004,
+                regime_hybrid_reversion_exit_rel: 0.0015,
+                ..StrategyConfig::default()
+            },
+            None,
+        );
+
+        run_case(
+            "kaufman-stop",
+            &make_choppy_candles(4096),
+            StrategyConfig {
+                exit_mode: ExitMode::KaufmanStop,
+                kaufman_stop_period: 22,
+                kaufman_stop_mult: 2.0,
+                kaufman_stop_ma_type: "sma".to_string(),
+                ..StrategyConfig::default()
+            },
+            None,
+        );
     }
 
     #[test]
@@ -1533,5 +1674,174 @@ mod tests {
             assert!(cand.psr.unwrap_or(0.0) >= 0.80);
             assert!(cand.dsr.unwrap_or(0.0) >= 0.60);
         }
+    }
+
+    #[test]
+    fn composite_trend_opt_validate_meta_smoke() {
+        fn make_trending_candles_with_slope(
+            len: usize,
+            slope: f64,
+        ) -> vector_ta::utilities::data_loader::Candles {
+            let mut ts = Vec::with_capacity(len);
+            let mut open = Vec::with_capacity(len);
+            let mut high = Vec::with_capacity(len);
+            let mut low = Vec::with_capacity(len);
+            let mut close = Vec::with_capacity(len);
+            let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+            for i in 0..len {
+                ts.push(i as i64);
+                let base = 100.0 + i as f64 * slope;
+                open.push(base);
+                high.push(base + 1.0);
+                low.push(base - 1.0);
+                close.push(base + 0.25);
+                vol.push(1_000.0);
+            }
+            vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+        }
+
+        let cancel = AtomicBool::new(false);
+        let candles_a = make_trending_candles_with_slope(4096, 0.10);
+        let candles_b = make_trending_candles_with_slope(4096, 0.07);
+
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            ..StrategyConfig::default()
+        };
+
+        let run_for = |label: &str, candles: &vector_ta::utilities::data_loader::Candles| {
+            let opt_req = DoubleMaRequest {
+                backend: Backend::CpuOnly,
+                data_id: label.to_string(),
+                fast_range: (5, 12, 1),
+                slow_range: (20, 40, 2),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::Grid,
+                top_k: Some(16),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
+
+            let opt =
+                run_double_ma_optimization_blocking_with_candles(opt_req, candles, &cancel, None)
+                    .expect("composite-trend optimization run");
+            assert!(
+                !opt.top.is_empty(),
+                "optimization returned no top candidates"
+            );
+
+            let candidates: Vec<DoubleMaValidationParams> = opt
+                .top
+                .iter()
+                .take(16)
+                .map(|(p, _)| DoubleMaValidationParams {
+                    fast_ma_type: p.fast_ma_type.clone(),
+                    slow_ma_type: p.slow_ma_type.clone(),
+                    fast_len: p.fast_len,
+                    slow_len: p.slow_len,
+                    fast_ma_params: p.fast_ma_params.clone(),
+                    slow_ma_params: p.slow_ma_params.clone(),
+                    strategy: strategy.clone(),
+                    halftrend_filter: None,
+                })
+                .collect();
+
+            let val_req = DoubleMaValidationRequest {
+                data_id: label.to_string(),
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 7,
+                max_candidates: 16,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+            };
+
+            let val =
+                run_double_ma_validation_blocking_with_candles(val_req, candles, &cancel, None)
+                    .expect("composite-trend validation run");
+            assert!(
+                !val.candidates.is_empty(),
+                "validation returned no candidates"
+            );
+            val
+        };
+
+        let val_a = run_for("asset_a", &candles_a);
+        let val_b = run_for("asset_b", &candles_b);
+
+        let artifacts = vec![
+            json!({
+                "kind": "vectorbt_run_artifact",
+                "ts": "ct_0001",
+                "tags": ["ct-e2e"],
+                "run": { "req": { "strategy_kind": "CompositeTrend", "ma_source": "close" }, "res": {} },
+                "dataset_meta": { "label": "asset_a", "timeframe": "1m", "csv_path": "asset_a.csv" },
+                "validation": { "req": { "ma_source": "close" }, "res": val_a }
+            }),
+            json!({
+                "kind": "vectorbt_run_artifact",
+                "ts": "ct_0002",
+                "tags": ["ct-e2e"],
+                "run": { "req": { "strategy_kind": "CompositeTrend", "ma_source": "close" }, "res": {} },
+                "dataset_meta": { "label": "asset_b", "timeframe": "1m", "csv_path": "asset_b.csv" },
+                "validation": { "req": { "ma_source": "close" }, "res": val_b }
+            }),
+        ];
+
+        let meta_req = MetaSelectionRequest {
+            strategy_kind: "CompositeTrend".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: Some("ct-e2e".to_string()),
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: false,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 1,
+        };
+
+        let meta = meta_select_from_artifacts(&meta_req, &artifacts, None);
+        assert!(meta.artifacts_used >= 2);
+        assert!(!meta.groups.is_empty());
+        assert!(meta.groups[0].meta_score.is_finite());
     }
 }

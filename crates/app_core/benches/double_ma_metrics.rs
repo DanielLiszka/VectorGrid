@@ -144,6 +144,8 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
                 export_all_csv_path: None,
                 fast_ma_params: Some(alma_p.clone()),
                 slow_ma_params: Some(alma_p.clone()),
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
                 strategy: StrategyConfig::default(),
                 halftrend_filter: None,
                 objective: ObjectiveKind::Pnl,
@@ -151,6 +153,8 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
                 top_k: Some(50),
                 include_all: Some(false),
                 heatmap_bins: Some(64),
+                constraints: None,
+                vdps: None,
             };
 
             let name = format!("{case_label}/{pairs}pairs/{m_label}");

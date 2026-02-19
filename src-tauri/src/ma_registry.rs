@@ -10,15 +10,12 @@ pub struct MaInfo {
     pub supports_cuda: bool,
     pub supports_cuda_ma_sweep: bool,
     pub supports_cuda_kernel: bool,
+    pub prefers_cuda_kernel: bool,
     pub requires_candles: bool,
     pub period_based: bool,
     pub single_output: bool,
     pub params: Vec<MaParamInfo>,
     pub notes: Option<String>,
-}
-
-fn is_cuda_kernel_supported(id: &str) -> bool {
-    matches!(id, "sma" | "ema" | "wma" | "alma")
 }
 
 pub fn list_mas() -> Vec<MaInfo> {
@@ -30,7 +27,8 @@ pub fn list_mas() -> Vec<MaInfo> {
             supports_cpu: m.supports_cpu_single,
             supports_cuda: m.supports_cuda_single,
             supports_cuda_ma_sweep: m.supports_cuda_sweep,
-            supports_cuda_kernel: is_cuda_kernel_supported(m.id),
+            supports_cuda_kernel: ta_app_core::ma_policy::supports_gpu_kernel_ma(m.id),
+            prefers_cuda_kernel: ta_app_core::ma_policy::prefers_gpu_kernel_ma(m.id),
             requires_candles: m.requires_candles,
             period_based: m.period_based,
             single_output: m.single_output,

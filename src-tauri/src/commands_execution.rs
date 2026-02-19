@@ -3,7 +3,11 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
+use tauri::Manager;
+use vector_ta::utilities::data_loader::Candles;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -167,6 +171,101 @@ pub struct ExecuteStrategySignalResponse {
     pub warnings: Vec<String>,
 }
 
+const LIVE_EXECUTION_RUNNER_EVENT: &str = "live_execution_runner_event";
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LiveExecutionRunnerConfig {
+    pub symbol: String,
+    pub qty: f64,
+    pub mode: LiveExecutionMode,
+    pub dry_run: bool,
+    pub data_id: String,
+    pub strategy_kind: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LiveExecutionRunnerStatus {
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<LiveExecutionRunnerConfig>,
+    pub inflight: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_bar_open_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_triggered_at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_at_unix_ms: Option<i64>,
+    pub run_count: u64,
+    pub skip_count: u64,
+    pub error_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StopLiveExecutionRunnerResponse {
+    pub stopped: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior: Option<LiveExecutionRunnerStatus>,
+    pub status: LiveExecutionRunnerStatus,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct LiveExecutionRunnerEvent {
+    pub status: String,
+    pub message: String,
+    pub symbol: String,
+    pub at_unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_open_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecuteStrategySignalResponse>,
+}
+
+#[derive(Clone, Debug)]
+struct LiveExecutionRunnerRuntime {
+    cfg: LiveExecutionRunnerInternalCfg,
+    inflight: bool,
+    started_at_unix_ms: i64,
+    last_bar_open_unix_ms: Option<i64>,
+    last_triggered_at_unix_ms: Option<i64>,
+    last_completed_at_unix_ms: Option<i64>,
+    run_count: u64,
+    skip_count: u64,
+    error_count: u64,
+    last_action: Option<String>,
+    last_order_id: Option<String>,
+    last_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct LiveExecutionRunnerInternalCfg {
+    req: ExecuteStrategySignalRequest,
+    symbol: String,
+    qty: f64,
+    data_id: String,
+    strategy_kind: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LiveExecutionRunnerBar {
+    pub symbol: String,
+    pub time_open_unix_ms: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: Option<f64>,
+}
+
+static LIVE_EXECUTION_RUNNER: OnceLock<Mutex<Option<LiveExecutionRunnerRuntime>>> = OnceLock::new();
+
 struct SignalDecision {
     desired_position: i32,
     cfg: ta_strategies::double_ma::StrategyConfig,
@@ -256,6 +355,112 @@ fn strategy_data_id(spec: &LiveStrategySpec) -> &str {
         LiveStrategySpec::DoubleMa { req } => &req.data_id,
         LiveStrategySpec::CompositeCpu { req } => &req.data_id,
     }
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn live_execution_runner_slot() -> &'static Mutex<Option<LiveExecutionRunnerRuntime>> {
+    LIVE_EXECUTION_RUNNER.get_or_init(|| Mutex::new(None))
+}
+
+fn strategy_kind_label(spec: &LiveStrategySpec) -> String {
+    match spec {
+        LiveStrategySpec::DoubleMa { .. } => "DoubleMa",
+        LiveStrategySpec::CompositeCpu { .. } => "CompositeCpu",
+    }
+    .to_string()
+}
+
+fn runner_config_view(cfg: &LiveExecutionRunnerInternalCfg) -> LiveExecutionRunnerConfig {
+    LiveExecutionRunnerConfig {
+        symbol: cfg.symbol.clone(),
+        qty: cfg.qty,
+        mode: cfg.req.mode,
+        dry_run: cfg.req.dry_run,
+        data_id: cfg.data_id.clone(),
+        strategy_kind: cfg.strategy_kind.clone(),
+    }
+}
+
+fn runner_status_from_runtime(
+    rt: Option<&LiveExecutionRunnerRuntime>,
+) -> LiveExecutionRunnerStatus {
+    if let Some(r) = rt {
+        LiveExecutionRunnerStatus {
+            active: true,
+            config: Some(runner_config_view(&r.cfg)),
+            inflight: r.inflight,
+            started_at_unix_ms: Some(r.started_at_unix_ms),
+            last_bar_open_unix_ms: r.last_bar_open_unix_ms,
+            last_triggered_at_unix_ms: r.last_triggered_at_unix_ms,
+            last_completed_at_unix_ms: r.last_completed_at_unix_ms,
+            run_count: r.run_count,
+            skip_count: r.skip_count,
+            error_count: r.error_count,
+            last_action: r.last_action.clone(),
+            last_order_id: r.last_order_id.clone(),
+            last_error: r.last_error.clone(),
+        }
+    } else {
+        LiveExecutionRunnerStatus {
+            active: false,
+            config: None,
+            inflight: false,
+            started_at_unix_ms: None,
+            last_bar_open_unix_ms: None,
+            last_triggered_at_unix_ms: None,
+            last_completed_at_unix_ms: None,
+            run_count: 0,
+            skip_count: 0,
+            error_count: 0,
+            last_action: None,
+            last_order_id: None,
+            last_error: None,
+        }
+    }
+}
+
+fn emit_live_execution_runner_event(
+    app: &tauri::AppHandle,
+    status: &str,
+    message: impl Into<String>,
+    symbol: impl Into<String>,
+    bar_open_unix_ms: Option<i64>,
+    execution: Option<ExecuteStrategySignalResponse>,
+) {
+    let payload = LiveExecutionRunnerEvent {
+        status: status.to_string(),
+        message: message.into(),
+        symbol: symbol.into(),
+        at_unix_ms: now_unix_ms(),
+        bar_open_unix_ms,
+        execution,
+    };
+    let _ = app.emit(LIVE_EXECUTION_RUNNER_EVENT, payload);
+}
+
+fn normalize_execute_request(
+    mut req: ExecuteStrategySignalRequest,
+) -> Result<(ExecuteStrategySignalRequest, String, f64), String> {
+    let symbol = req.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return Err("symbol is required".to_string());
+    }
+    if !req.qty.is_finite() || req.qty <= 0.0 {
+        return Err("qty must be finite and > 0".to_string());
+    }
+    let qty = (req.qty * 10_000.0).round() / 10_000.0;
+    if qty <= 0.0 {
+        return Err("qty is too small after normalization".to_string());
+    }
+    req.symbol = symbol.clone();
+    req.qty = qty;
+    Ok((req, symbol, qty))
 }
 
 fn base_url(mode: LiveExecutionMode) -> &'static str {
@@ -565,132 +770,424 @@ fn submit_alpaca_order(
     Ok(id.to_string())
 }
 
+fn execute_strategy_signal_blocking(
+    req: ExecuteStrategySignalRequest,
+    symbol: String,
+    qty: f64,
+    candles: Candles,
+) -> Result<ExecuteStrategySignalResponse, String> {
+    let decision = signal_decision_from_request(&req.strategy, &candles, &req.risk)?;
+    let target_position_qty = (decision.desired_position as f64) * qty;
+    let mut warnings: Vec<String> = Vec::new();
+
+    let mut current_position_qty = 0.0_f64;
+    if !req.dry_run {
+        if req.alpaca_api_key.trim().is_empty() || req.alpaca_api_secret.trim().is_empty() {
+            return Err(
+                "alpaca_api_key and alpaca_api_secret are required unless dry_run=true".to_string(),
+            );
+        }
+        let client = Client::new();
+        current_position_qty = fetch_alpaca_position_qty(
+            &client,
+            req.mode,
+            req.alpaca_api_key.trim(),
+            req.alpaca_api_secret.trim(),
+            &symbol,
+        )?;
+    }
+
+    let delta_qty = target_position_qty - current_position_qty;
+    if delta_qty.abs() < 1e-6 {
+        return Ok(ExecuteStrategySignalResponse {
+            symbol,
+            mode: req.mode,
+            desired_position: decision.desired_position,
+            current_position_qty,
+            target_position_qty,
+            delta_qty: 0.0,
+            order_submitted: false,
+            order_id: None,
+            action: "hold".to_string(),
+            last_bar_ts: decision.last_bar_ts,
+            last_close: Some(decision.last_close),
+            warnings,
+        });
+    }
+
+    if req.dry_run {
+        return Ok(ExecuteStrategySignalResponse {
+            symbol,
+            mode: req.mode,
+            desired_position: decision.desired_position,
+            current_position_qty,
+            target_position_qty,
+            delta_qty,
+            order_submitted: false,
+            order_id: None,
+            action: "dry_run_signal_only".to_string(),
+            last_bar_ts: decision.last_bar_ts,
+            last_close: Some(decision.last_close),
+            warnings,
+        });
+    }
+
+    let client = Client::new();
+    let opening_new = current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6;
+    let (payload, bracket_warnings) = if opening_new {
+        alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
+    } else {
+        (
+            serde_json::json!({
+                "symbol": symbol,
+                "qty": format!("{:.6}", delta_qty.abs()),
+                "side": if delta_qty > 0.0 { "buy" } else { "sell" },
+                "type": "market",
+                "time_in_force": "day"
+            }),
+            Vec::new(),
+        )
+    };
+    warnings.extend(bracket_warnings);
+
+    let order_id = submit_alpaca_order(
+        &client,
+        req.mode,
+        req.alpaca_api_key.trim(),
+        req.alpaca_api_secret.trim(),
+        &payload,
+    )?;
+
+    Ok(ExecuteStrategySignalResponse {
+        symbol,
+        mode: req.mode,
+        desired_position: decision.desired_position,
+        current_position_qty,
+        target_position_qty,
+        delta_qty,
+        order_submitted: true,
+        order_id: Some(order_id),
+        action: if delta_qty > 0.0 {
+            "buy".to_string()
+        } else {
+            "sell".to_string()
+        },
+        last_bar_ts: decision.last_bar_ts,
+        last_close: Some(decision.last_close),
+        warnings,
+    })
+}
+
 #[tauri::command]
 pub async fn execute_strategy_signal_once(
     req: ExecuteStrategySignalRequest,
     state: tauri::State<'_, AppState>,
 ) -> Result<ExecuteStrategySignalResponse, String> {
-    let symbol = req.symbol.trim().to_uppercase();
-    if symbol.is_empty() {
-        return Err("symbol is required".to_string());
-    }
-    if !req.qty.is_finite() || req.qty <= 0.0 {
-        return Err("qty must be finite and > 0".to_string());
-    }
-    let qty = (req.qty * 10_000.0).round() / 10_000.0;
-    if qty <= 0.0 {
-        return Err("qty is too small after normalization".to_string());
-    }
-
+    let (req, symbol, qty) = normalize_execute_request(req)?;
     let data_id = strategy_data_id(&req.strategy).to_string();
     let candles = state.get_candles(&data_id)?;
-    let req2 = req.clone();
-
     tauri::async_runtime::spawn_blocking(move || {
-        let decision = signal_decision_from_request(&req2.strategy, &candles, &req2.risk)?;
-        let target_position_qty = (decision.desired_position as f64) * qty;
-        let mut warnings: Vec<String> = Vec::new();
-
-        let mut current_position_qty = 0.0_f64;
-        if !req2.dry_run {
-            if req2.alpaca_api_key.trim().is_empty() || req2.alpaca_api_secret.trim().is_empty() {
-                return Err(
-                    "alpaca_api_key and alpaca_api_secret are required unless dry_run=true"
-                        .to_string(),
-                );
-            }
-            let client = Client::new();
-            current_position_qty = fetch_alpaca_position_qty(
-                &client,
-                req2.mode,
-                req2.alpaca_api_key.trim(),
-                req2.alpaca_api_secret.trim(),
-                &symbol,
-            )?;
-        }
-
-        let delta_qty = target_position_qty - current_position_qty;
-        if delta_qty.abs() < 1e-6 {
-            return Ok(ExecuteStrategySignalResponse {
-                symbol,
-                mode: req2.mode,
-                desired_position: decision.desired_position,
-                current_position_qty,
-                target_position_qty,
-                delta_qty: 0.0,
-                order_submitted: false,
-                order_id: None,
-                action: "hold".to_string(),
-                last_bar_ts: decision.last_bar_ts,
-                last_close: Some(decision.last_close),
-                warnings,
-            });
-        }
-
-        if req2.dry_run {
-            return Ok(ExecuteStrategySignalResponse {
-                symbol,
-                mode: req2.mode,
-                desired_position: decision.desired_position,
-                current_position_qty,
-                target_position_qty,
-                delta_qty,
-                order_submitted: false,
-                order_id: None,
-                action: "dry_run_signal_only".to_string(),
-                last_bar_ts: decision.last_bar_ts,
-                last_close: Some(decision.last_close),
-                warnings,
-            });
-        }
-
-        let client = Client::new();
-        let opening_new = current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6;
-        let (payload, bracket_warnings) = if opening_new {
-            alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
-        } else {
-            (
-                serde_json::json!({
-                    "symbol": symbol,
-                    "qty": format!("{:.6}", delta_qty.abs()),
-                    "side": if delta_qty > 0.0 { "buy" } else { "sell" },
-                    "type": "market",
-                    "time_in_force": "day"
-                }),
-                Vec::new(),
-            )
-        };
-        warnings.extend(bracket_warnings);
-
-        let order_id = submit_alpaca_order(
-            &client,
-            req2.mode,
-            req2.alpaca_api_key.trim(),
-            req2.alpaca_api_secret.trim(),
-            &payload,
-        )?;
-
-        Ok(ExecuteStrategySignalResponse {
-            symbol,
-            mode: req2.mode,
-            desired_position: decision.desired_position,
-            current_position_qty,
-            target_position_qty,
-            delta_qty,
-            order_submitted: true,
-            order_id: Some(order_id),
-            action: if delta_qty > 0.0 {
-                "buy".to_string()
-            } else {
-                "sell".to_string()
-            },
-            last_bar_ts: decision.last_bar_ts,
-            last_close: Some(decision.last_close),
-            warnings,
-        })
+        execute_strategy_signal_blocking(req, symbol, qty, candles)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn start_live_execution_runner(
+    req: ExecuteStrategySignalRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<LiveExecutionRunnerStatus, String> {
+    let (req, symbol, qty) = normalize_execute_request(req)?;
+    let data_id = strategy_data_id(&req.strategy).trim().to_string();
+    if data_id.is_empty() {
+        return Err("strategy data_id is required".to_string());
+    }
+    let _ = state.get_candles(&data_id)?;
+
+    let strategy_kind = strategy_kind_label(&req.strategy);
+    let cfg = LiveExecutionRunnerInternalCfg {
+        req: req.clone(),
+        symbol: symbol.clone(),
+        qty,
+        data_id: data_id.clone(),
+        strategy_kind: strategy_kind.clone(),
+    };
+    let runtime = LiveExecutionRunnerRuntime {
+        cfg,
+        inflight: false,
+        started_at_unix_ms: now_unix_ms(),
+        last_bar_open_unix_ms: None,
+        last_triggered_at_unix_ms: None,
+        last_completed_at_unix_ms: None,
+        run_count: 0,
+        skip_count: 0,
+        error_count: 0,
+        last_action: None,
+        last_order_id: None,
+        last_error: None,
+    };
+
+    {
+        let mut slot = live_execution_runner_slot()
+            .lock()
+            .map_err(|_| "failed to lock live execution runner state".to_string())?;
+        *slot = Some(runtime);
+    }
+
+    emit_live_execution_runner_event(
+        &app,
+        "started",
+        format!(
+            "auto-runner started for {symbol} ({strategy_kind}, {}, qty={qty})",
+            if req.dry_run { "dry-run" } else { "broker" }
+        ),
+        symbol,
+        None,
+        None,
+    );
+    live_execution_runner_status()
+}
+
+#[tauri::command]
+pub fn stop_live_execution_runner(
+    app: tauri::AppHandle,
+) -> Result<StopLiveExecutionRunnerResponse, String> {
+    let prior = {
+        let mut slot = live_execution_runner_slot()
+            .lock()
+            .map_err(|_| "failed to lock live execution runner state".to_string())?;
+        slot.take().map(|r| runner_status_from_runtime(Some(&r)))
+    };
+    let stopped = prior.is_some();
+    if stopped {
+        let symbol = prior
+            .as_ref()
+            .and_then(|s| s.config.as_ref().map(|c| c.symbol.clone()))
+            .unwrap_or_default();
+        emit_live_execution_runner_event(
+            &app,
+            "stopped",
+            "auto-runner stopped",
+            symbol,
+            None,
+            None,
+        );
+    }
+    let status = live_execution_runner_status()?;
+    Ok(StopLiveExecutionRunnerResponse {
+        stopped,
+        prior,
+        status,
+    })
+}
+
+#[tauri::command]
+pub fn live_execution_runner_status() -> Result<LiveExecutionRunnerStatus, String> {
+    let slot = live_execution_runner_slot()
+        .lock()
+        .map_err(|_| "failed to lock live execution runner state".to_string())?;
+    Ok(runner_status_from_runtime(slot.as_ref()))
+}
+
+pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRunnerBar) {
+    let mut cfg_to_run: Option<LiveExecutionRunnerInternalCfg> = None;
+    let mut skipped_busy = false;
+    let symbol_norm = normalize_symbol_key(&bar.symbol);
+
+    {
+        let Ok(mut slot) = live_execution_runner_slot().lock() else {
+            return;
+        };
+        let Some(runtime) = slot.as_mut() else {
+            return;
+        };
+        if normalize_symbol_key(&runtime.cfg.symbol) != symbol_norm {
+            return;
+        }
+        if runtime
+            .last_bar_open_unix_ms
+            .map(|t| bar.time_open_unix_ms <= t)
+            .unwrap_or(false)
+        {
+            runtime.skip_count = runtime.skip_count.saturating_add(1);
+            return;
+        }
+        if runtime.inflight {
+            runtime.skip_count = runtime.skip_count.saturating_add(1);
+            skipped_busy = true;
+        } else {
+            runtime.inflight = true;
+            runtime.last_bar_open_unix_ms = Some(bar.time_open_unix_ms);
+            runtime.last_triggered_at_unix_ms = Some(now_unix_ms());
+            runtime.last_error = None;
+            cfg_to_run = Some(runtime.cfg.clone());
+        }
+    }
+
+    if skipped_busy {
+        emit_live_execution_runner_event(
+            app,
+            "skipped_busy",
+            "runner skipped bar because previous run is still in flight",
+            bar.symbol.clone(),
+            Some(bar.time_open_unix_ms),
+            None,
+        );
+        return;
+    }
+
+    let Some(cfg) = cfg_to_run else {
+        return;
+    };
+    emit_live_execution_runner_event(
+        app,
+        "triggered",
+        "runner triggered on new live bar",
+        cfg.symbol.clone(),
+        Some(bar.time_open_unix_ms),
+        None,
+    );
+
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app2.state::<AppState>();
+        if let Err(e) = state.upsert_live_bar(
+            &cfg.data_id,
+            bar.time_open_unix_ms,
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close,
+            bar.volume,
+        ) {
+            if let Ok(mut slot) = live_execution_runner_slot().lock() {
+                if let Some(runtime) = slot.as_mut() {
+                    if normalize_symbol_key(&runtime.cfg.symbol)
+                        == normalize_symbol_key(&cfg.symbol)
+                    {
+                        runtime.inflight = false;
+                        runtime.error_count = runtime.error_count.saturating_add(1);
+                        runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                        runtime.last_error = Some(e.clone());
+                    }
+                }
+            }
+            emit_live_execution_runner_event(
+                &app2,
+                "error",
+                format!("runner failed to apply live bar: {e}"),
+                cfg.symbol.clone(),
+                Some(bar.time_open_unix_ms),
+                None,
+            );
+            return;
+        }
+
+        let candles = match state.get_candles(&cfg.data_id) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Ok(mut slot) = live_execution_runner_slot().lock() {
+                    if let Some(runtime) = slot.as_mut() {
+                        if normalize_symbol_key(&runtime.cfg.symbol)
+                            == normalize_symbol_key(&cfg.symbol)
+                        {
+                            runtime.inflight = false;
+                            runtime.error_count = runtime.error_count.saturating_add(1);
+                            runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                            runtime.last_error = Some(e.clone());
+                        }
+                    }
+                }
+                emit_live_execution_runner_event(
+                    &app2,
+                    "error",
+                    format!("runner failed to load strategy candles: {e}"),
+                    cfg.symbol.clone(),
+                    Some(bar.time_open_unix_ms),
+                    None,
+                );
+                return;
+            }
+        };
+
+        let req = cfg.req.clone();
+        let symbol = cfg.symbol.clone();
+        let qty = cfg.qty;
+        let exec_result = tauri::async_runtime::spawn_blocking(move || {
+            execute_strategy_signal_blocking(req, symbol, qty, candles)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+
+        match exec_result {
+            Ok(resp) => {
+                if let Ok(mut slot) = live_execution_runner_slot().lock() {
+                    if let Some(runtime) = slot.as_mut() {
+                        if normalize_symbol_key(&runtime.cfg.symbol)
+                            == normalize_symbol_key(&cfg.symbol)
+                        {
+                            runtime.inflight = false;
+                            runtime.run_count = runtime.run_count.saturating_add(1);
+                            runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                            runtime.last_action = Some(resp.action.clone());
+                            runtime.last_order_id = resp.order_id.clone();
+                            runtime.last_error = None;
+                        }
+                    }
+                }
+                let status = if resp.order_submitted {
+                    "order_submitted"
+                } else {
+                    "signal_processed"
+                };
+                let msg = if resp.order_submitted {
+                    format!(
+                        "runner submitted {} order{}",
+                        resp.action,
+                        resp.order_id
+                            .as_deref()
+                            .map(|id| format!(" (id={id})"))
+                            .unwrap_or_default()
+                    )
+                } else {
+                    format!("runner processed signal action={}", resp.action)
+                };
+                emit_live_execution_runner_event(
+                    &app2,
+                    status,
+                    msg,
+                    cfg.symbol.clone(),
+                    Some(bar.time_open_unix_ms),
+                    Some(resp),
+                );
+            }
+            Err(e) => {
+                if let Ok(mut slot) = live_execution_runner_slot().lock() {
+                    if let Some(runtime) = slot.as_mut() {
+                        if normalize_symbol_key(&runtime.cfg.symbol)
+                            == normalize_symbol_key(&cfg.symbol)
+                        {
+                            runtime.inflight = false;
+                            runtime.error_count = runtime.error_count.saturating_add(1);
+                            runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                            runtime.last_error = Some(e.clone());
+                        }
+                    }
+                }
+                emit_live_execution_runner_event(
+                    &app2,
+                    "error",
+                    format!("runner execution failed: {e}"),
+                    cfg.symbol.clone(),
+                    Some(bar.time_open_unix_ms),
+                    None,
+                );
+            }
+        }
+    });
 }
 
 #[tauri::command]

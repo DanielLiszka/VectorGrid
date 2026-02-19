@@ -537,7 +537,19 @@ fn handle_polygon_ws_text(
             continue;
         }
         if let Some(bar) = normalize_polygon_live_bar(item, market, symbol, delayed, channel) {
-            let _ = app.emit(POLYGON_LIVE_BAR_EVENT, bar);
+            let _ = app.emit(POLYGON_LIVE_BAR_EVENT, bar.clone());
+            super::commands_execution::on_live_execution_bar(
+                app,
+                super::commands_execution::LiveExecutionRunnerBar {
+                    symbol: bar.symbol.clone(),
+                    time_open_unix_ms: bar.time_open_unix_ms,
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                    volume: bar.volume,
+                },
+            );
         }
     }
 }

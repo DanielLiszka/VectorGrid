@@ -63,6 +63,30 @@ fn default_k_folds() -> usize {
     5
 }
 
+fn default_model_family() -> MlConfidenceModelFamily {
+    MlConfidenceModelFamily::Auto
+}
+
+fn default_gbdt_rounds() -> usize {
+    120
+}
+
+fn default_gbdt_learning_rate() -> f64 {
+    0.08
+}
+
+fn default_gbdt_max_bins() -> usize {
+    48
+}
+
+fn default_gbdt_min_leaf() -> usize {
+    8
+}
+
+fn default_model_kind() -> MlConfidenceModelKind {
+    MlConfidenceModelKind::Logistic
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlConfidenceTarget {
@@ -80,6 +104,31 @@ impl Default for MlConfidenceTarget {
     fn default() -> Self {
         Self::Auto
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlConfidenceModelFamily {
+    /// Prefer non-linear boosted stumps when enough labeled rows exist;
+    /// fall back to logistic when needed.
+    Auto,
+    /// Linear baseline model.
+    Logistic,
+    /// Non-linear boosted tree stumps (tabular-friendly, lightweight).
+    GbdtStump,
+}
+
+impl Default for MlConfidenceModelFamily {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlConfidenceModelKind {
+    Logistic,
+    GbdtStump,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +151,16 @@ pub struct MlConfidenceTrainConfig {
     pub max_iter: usize,
     #[serde(default = "default_k_folds")]
     pub k_folds: usize,
+    #[serde(default = "default_model_family")]
+    pub model_family: MlConfidenceModelFamily,
+    #[serde(default = "default_gbdt_rounds")]
+    pub gbdt_rounds: usize,
+    #[serde(default = "default_gbdt_learning_rate")]
+    pub gbdt_learning_rate: f64,
+    #[serde(default = "default_gbdt_max_bins")]
+    pub gbdt_max_bins: usize,
+    #[serde(default = "default_gbdt_min_leaf")]
+    pub gbdt_min_leaf: usize,
 }
 
 impl Default for MlConfidenceTrainConfig {
@@ -113,6 +172,11 @@ impl Default for MlConfidenceTrainConfig {
             learning_rate: default_learning_rate(),
             max_iter: default_max_iter(),
             k_folds: default_k_folds(),
+            model_family: default_model_family(),
+            gbdt_rounds: default_gbdt_rounds(),
+            gbdt_learning_rate: default_gbdt_learning_rate(),
+            gbdt_max_bins: default_gbdt_max_bins(),
+            gbdt_min_leaf: default_gbdt_min_leaf(),
         }
     }
 }
@@ -131,6 +195,8 @@ pub struct MlConfidenceTrainMetrics {
     pub positives: usize,
     pub negatives: usize,
     pub target: MlConfidenceTarget,
+    #[serde(default = "default_model_kind")]
+    pub model_kind: MlConfidenceModelKind,
     pub train_auc: f64,
     pub train_brier: f64,
     pub baseline_brier: f64,
@@ -169,6 +235,8 @@ pub struct MlConfidenceModelMeta {
     pub trained_negatives: usize,
     #[serde(default = "default_model_target")]
     pub target: MlConfidenceTarget,
+    #[serde(default = "default_model_kind")]
+    pub model_kind: MlConfidenceModelKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta_artifacts_used: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,11 +262,30 @@ pub struct MlConfidenceModel {
     pub std: Vec<f64>,
     pub weights: Vec<f64>,
     pub bias: f64,
+    #[serde(default = "default_model_kind")]
+    pub model_kind: MlConfidenceModelKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gbdt: Option<MlConfidenceGbdtModel>,
     pub label: MlConfidenceLabelConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calibration: Option<MlConfidenceCalibration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<MlConfidenceModelMeta>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MlConfidenceTreeStump {
+    pub feature_index: usize,
+    pub threshold: f64,
+    pub left_value: f64,
+    pub right_value: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MlConfidenceGbdtModel {
+    pub base_logit: f64,
+    pub learning_rate: f64,
+    pub trees: Vec<MlConfidenceTreeStump>,
 }
 
 const FEATURE_NAMES: [&str; 7] = [
@@ -699,6 +786,385 @@ fn predict_probs_raw(weights: &[f64], bias: f64, xs: &[Vec<f64>]) -> Vec<f64> {
     ps
 }
 
+fn select_threshold_candidates(sorted_values: &[f64], max_bins: usize) -> Vec<f64> {
+    if sorted_values.len() < 2 {
+        return Vec::new();
+    }
+    let mut uniq: Vec<f64> = Vec::with_capacity(sorted_values.len());
+    for &v in sorted_values {
+        if uniq.last().copied() != Some(v) {
+            uniq.push(v);
+        }
+    }
+    if uniq.len() < 2 {
+        return Vec::new();
+    }
+    let max_splits = max_bins.clamp(4, 256).min(uniq.len() - 1);
+    let mut out: Vec<f64> = Vec::new();
+    if uniq.len() - 1 <= max_splits {
+        for i in 1..uniq.len() {
+            out.push(0.5 * (uniq[i - 1] + uniq[i]));
+        }
+        return out;
+    }
+    for c in 1..=max_splits {
+        let idx = (c * (uniq.len() - 1)) / (max_splits + 1);
+        if idx == 0 || idx >= uniq.len() {
+            continue;
+        }
+        let t = 0.5 * (uniq[idx - 1] + uniq[idx]);
+        if out.last().copied() != Some(t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+fn fit_best_stump(
+    xs: &[Vec<f64>],
+    residuals: &[f64],
+    max_bins: usize,
+    min_leaf: usize,
+) -> Option<MlConfidenceTreeStump> {
+    if xs.is_empty() || xs.len() != residuals.len() {
+        return None;
+    }
+    let n = xs.len();
+    let d = xs[0].len();
+    if d == 0 {
+        return None;
+    }
+    let min_leaf = min_leaf.max(1).min((n / 2).max(1));
+    let mut best_sse = f64::INFINITY;
+    let mut best: Option<MlConfidenceTreeStump> = None;
+
+    for j in 0..d {
+        let mut col: Vec<f64> = xs.iter().map(|x| x[j]).collect();
+        col.sort_by(|a, b| a.total_cmp(b));
+        let thresholds = select_threshold_candidates(&col, max_bins);
+        if thresholds.is_empty() {
+            continue;
+        }
+        for &th in &thresholds {
+            let mut l_n = 0usize;
+            let mut r_n = 0usize;
+            let mut l_sum = 0.0;
+            let mut r_sum = 0.0;
+            for i in 0..n {
+                if xs[i][j] <= th {
+                    l_n += 1;
+                    l_sum += residuals[i];
+                } else {
+                    r_n += 1;
+                    r_sum += residuals[i];
+                }
+            }
+            if l_n < min_leaf || r_n < min_leaf {
+                continue;
+            }
+            let l_mean = l_sum / (l_n as f64);
+            let r_mean = r_sum / (r_n as f64);
+            let mut sse = 0.0;
+            for i in 0..n {
+                let pred = if xs[i][j] <= th { l_mean } else { r_mean };
+                let e = residuals[i] - pred;
+                sse += e * e;
+            }
+            if !sse.is_finite() {
+                continue;
+            }
+            if sse < best_sse {
+                best_sse = sse;
+                best = Some(MlConfidenceTreeStump {
+                    feature_index: j,
+                    threshold: th,
+                    left_value: l_mean.clamp(-2.0, 2.0),
+                    right_value: r_mean.clamp(-2.0, 2.0),
+                });
+            }
+        }
+    }
+
+    best
+}
+
+fn predict_prob_gbdt_row(gbdt: &MlConfidenceGbdtModel, x: &[f64]) -> Option<f64> {
+    let mut z = gbdt.base_logit;
+    for t in &gbdt.trees {
+        let v = x.get(t.feature_index).copied()?;
+        let leaf = if v <= t.threshold {
+            t.left_value
+        } else {
+            t.right_value
+        };
+        z += gbdt.learning_rate * leaf;
+    }
+    Some(sigmoid(z))
+}
+
+fn predict_probs_gbdt(gbdt: &MlConfidenceGbdtModel, xs: &[Vec<f64>]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(xs.len());
+    for x in xs {
+        out.push(predict_prob_gbdt_row(gbdt, x).unwrap_or(0.5));
+    }
+    out
+}
+
+fn fit_gbdt_stumps(
+    xs: &[Vec<f64>],
+    ys: &[f64],
+    rounds: usize,
+    learning_rate: f64,
+    max_bins: usize,
+    min_leaf: usize,
+) -> Option<MlConfidenceGbdtModel> {
+    if xs.is_empty() || xs.len() != ys.len() {
+        return None;
+    }
+    let pos = ys.iter().filter(|&&y| y > 0.5).count();
+    let neg = ys.len().saturating_sub(pos);
+    if pos == 0 || neg == 0 {
+        return None;
+    }
+    let base_p = (pos as f64) / (ys.len() as f64);
+    let base_logit = logit(base_p);
+    let mut margin = vec![base_logit; ys.len()];
+    let rounds = rounds.clamp(1, 512);
+    let learning_rate = learning_rate.clamp(0.005, 0.5);
+    let mut trees: Vec<MlConfidenceTreeStump> = Vec::with_capacity(rounds);
+
+    for _ in 0..rounds {
+        let mut residuals: Vec<f64> = Vec::with_capacity(ys.len());
+        for i in 0..ys.len() {
+            let p = sigmoid(margin[i]);
+            residuals.push((ys[i] - p).clamp(-1.0, 1.0));
+        }
+        let Some(stump) = fit_best_stump(xs, &residuals, max_bins, min_leaf) else {
+            break;
+        };
+
+        let mut mean_abs_update = 0.0;
+        for (i, x) in xs.iter().enumerate() {
+            let leaf = if x[stump.feature_index] <= stump.threshold {
+                stump.left_value
+            } else {
+                stump.right_value
+            };
+            let delta = learning_rate * leaf;
+            margin[i] += delta;
+            mean_abs_update += delta.abs();
+        }
+        mean_abs_update /= ys.len().max(1) as f64;
+        trees.push(stump);
+        if mean_abs_update < 1e-6 {
+            break;
+        }
+    }
+
+    if trees.is_empty() {
+        return None;
+    }
+    Some(MlConfidenceGbdtModel {
+        base_logit,
+        learning_rate,
+        trees,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct TrainedCandidate {
+    model_kind: MlConfidenceModelKind,
+    mean: Vec<f64>,
+    std: Vec<f64>,
+    weights: Vec<f64>,
+    bias: f64,
+    gbdt: Option<MlConfidenceGbdtModel>,
+    train_ps: Vec<f64>,
+    cv_ps: Vec<f64>,
+    cv_ys: Vec<f64>,
+    cv_warnings: Vec<String>,
+}
+
+fn train_logistic_candidate(
+    rows: &[DatasetRow],
+    cfg: &MlConfidenceTrainConfig,
+) -> TrainedCandidate {
+    let xs_raw: Vec<Vec<f64>> = rows.iter().map(|r| r.x.clone()).collect();
+    let ys: Vec<f64> = rows.iter().map(|r| r.y).collect();
+
+    let mut cv_ps: Vec<f64> = Vec::new();
+    let mut cv_ys: Vec<f64> = Vec::new();
+    let mut cv_warnings: Vec<String> = Vec::new();
+
+    let uniq_groups = {
+        use std::collections::HashSet;
+        let mut s = HashSet::new();
+        for r in rows {
+            s.insert(r.group_id.clone());
+        }
+        s.len()
+    };
+    let k = cfg.k_folds.clamp(2, 10).min(uniq_groups.max(2));
+    if uniq_groups >= 2 && k >= 2 {
+        for fold in 0..k {
+            let mut train_x: Vec<Vec<f64>> = Vec::new();
+            let mut train_y: Vec<f64> = Vec::new();
+            let mut test_x: Vec<Vec<f64>> = Vec::new();
+            let mut test_y: Vec<f64> = Vec::new();
+
+            for (r, x) in rows.iter().zip(xs_raw.iter()) {
+                let f = (fnv1a64(&r.group_id) % (k as u64)) as usize;
+                if f == fold {
+                    test_x.push(x.clone());
+                    test_y.push(r.y);
+                } else {
+                    train_x.push(x.clone());
+                    train_y.push(r.y);
+                }
+            }
+
+            if train_x.is_empty() || test_x.is_empty() {
+                continue;
+            }
+
+            let scaler = StandardScaler::fit(&train_x);
+            let mut train_xs = train_x;
+            for x in &mut train_xs {
+                scaler.transform_row_in_place(x);
+            }
+            let mut test_xs = test_x;
+            for x in &mut test_xs {
+                scaler.transform_row_in_place(x);
+            }
+
+            let (w, b, _) = fit_logistic_regression(
+                &train_xs,
+                &train_y,
+                cfg.l2,
+                cfg.learning_rate,
+                cfg.max_iter,
+            );
+            let ps = predict_probs_raw(&w, b, &test_xs);
+            cv_ps.extend(ps);
+            cv_ys.extend(test_y);
+        }
+        if cv_ps.is_empty() {
+            cv_warnings.push("CV produced no predictions.".to_string());
+        }
+    } else {
+        cv_warnings.push("CV skipped (need at least 2 unique meta runs).".to_string());
+    }
+
+    let scaler = StandardScaler::fit(&xs_raw);
+    let mut xs_all = xs_raw;
+    for x in &mut xs_all {
+        scaler.transform_row_in_place(x);
+    }
+    let (weights, bias, _) =
+        fit_logistic_regression(&xs_all, &ys, cfg.l2, cfg.learning_rate, cfg.max_iter);
+    let train_ps = predict_probs_raw(&weights, bias, &xs_all);
+
+    TrainedCandidate {
+        model_kind: MlConfidenceModelKind::Logistic,
+        mean: scaler.mean,
+        std: scaler.std,
+        weights,
+        bias,
+        gbdt: None,
+        train_ps,
+        cv_ps,
+        cv_ys,
+        cv_warnings,
+    }
+}
+
+fn train_gbdt_candidate(
+    rows: &[DatasetRow],
+    cfg: &MlConfidenceTrainConfig,
+) -> Option<TrainedCandidate> {
+    let xs_raw: Vec<Vec<f64>> = rows.iter().map(|r| r.x.clone()).collect();
+    let ys: Vec<f64> = rows.iter().map(|r| r.y).collect();
+    let mut cv_ps: Vec<f64> = Vec::new();
+    let mut cv_ys: Vec<f64> = Vec::new();
+    let mut cv_warnings: Vec<String> = Vec::new();
+
+    let uniq_groups = {
+        use std::collections::HashSet;
+        let mut s = HashSet::new();
+        for r in rows {
+            s.insert(r.group_id.clone());
+        }
+        s.len()
+    };
+    let k = cfg.k_folds.clamp(2, 10).min(uniq_groups.max(2));
+    if uniq_groups >= 2 && k >= 2 {
+        for fold in 0..k {
+            let mut train_x: Vec<Vec<f64>> = Vec::new();
+            let mut train_y: Vec<f64> = Vec::new();
+            let mut test_x: Vec<Vec<f64>> = Vec::new();
+            let mut test_y: Vec<f64> = Vec::new();
+
+            for (r, x) in rows.iter().zip(xs_raw.iter()) {
+                let f = (fnv1a64(&r.group_id) % (k as u64)) as usize;
+                if f == fold {
+                    test_x.push(x.clone());
+                    test_y.push(r.y);
+                } else {
+                    train_x.push(x.clone());
+                    train_y.push(r.y);
+                }
+            }
+            if train_x.is_empty() || test_x.is_empty() {
+                continue;
+            }
+            let Some(gbdt) = fit_gbdt_stumps(
+                &train_x,
+                &train_y,
+                cfg.gbdt_rounds,
+                cfg.gbdt_learning_rate,
+                cfg.gbdt_max_bins,
+                cfg.gbdt_min_leaf,
+            ) else {
+                continue;
+            };
+            let ps = predict_probs_gbdt(&gbdt, &test_x);
+            cv_ps.extend(ps);
+            cv_ys.extend(test_y);
+        }
+        if cv_ps.is_empty() {
+            cv_warnings.push(
+                "GBDT CV produced no predictions (likely fold class imbalance); will rely on train metrics."
+                    .to_string(),
+            );
+        }
+    } else {
+        cv_warnings.push("CV skipped (need at least 2 unique meta runs).".to_string());
+    }
+
+    let gbdt = fit_gbdt_stumps(
+        &xs_raw,
+        &ys,
+        cfg.gbdt_rounds,
+        cfg.gbdt_learning_rate,
+        cfg.gbdt_max_bins,
+        cfg.gbdt_min_leaf,
+    )?;
+    let train_ps = predict_probs_gbdt(&gbdt, &xs_raw);
+
+    Some(TrainedCandidate {
+        model_kind: MlConfidenceModelKind::GbdtStump,
+        mean: Vec::new(),
+        std: Vec::new(),
+        weights: Vec::new(),
+        bias: 0.0,
+        gbdt: Some(gbdt),
+        train_ps,
+        cv_ps,
+        cv_ys,
+        cv_warnings,
+    })
+}
+
 fn brier_score(ps: &[f64], ys: &[f64]) -> f64 {
     if ps.is_empty() || ps.len() != ys.len() {
         return 0.0;
@@ -876,21 +1342,9 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         return Err(warnings.join(" "));
     }
 
-    let xs_raw: Vec<Vec<f64>> = rows.iter().map(|r| r.x.clone()).collect();
     let ys: Vec<f64> = rows.iter().map(|r| r.y).collect();
     let base_brier = baseline_brier(positives, n);
-
-    // CV metrics (out-of-fold) using `group_id` hashing to avoid leakage.
-    // - Gate mode uses meta run `ts` as the group id.
-    // - Dataset mode uses holdout `dataset` as the group id (stronger generalization check).
-    let mut cv_auc: Option<f64> = None;
-    let mut cv_brier: Option<f64> = None;
-    let mut cv_brier_cal: Option<f64> = None;
-    let mut cv_ps: Vec<f64> = Vec::new();
-    let mut cv_ys: Vec<f64> = Vec::new();
-    let mut cv_warnings: Vec<String> = Vec::new();
-
-    let uniq_groups = {
+    let unique_groups = {
         use std::collections::HashSet;
         let mut s = HashSet::new();
         for r in &rows {
@@ -899,79 +1353,54 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         s.len()
     };
 
-    let k = cfg.k_folds.clamp(2, 10).min(uniq_groups.max(2));
-    if uniq_groups >= 2 && k >= 2 {
-        for fold in 0..k {
-            let mut train_x: Vec<Vec<f64>> = Vec::new();
-            let mut train_y: Vec<f64> = Vec::new();
-            let mut test_x: Vec<Vec<f64>> = Vec::new();
-            let mut test_y: Vec<f64> = Vec::new();
-
-            for (r, x) in rows.iter().zip(xs_raw.iter()) {
-                let f = (fnv1a64(&r.group_id) % (k as u64)) as usize;
-                if f == fold {
-                    test_x.push(x.clone());
-                    test_y.push(r.y);
-                } else {
-                    train_x.push(x.clone());
-                    train_y.push(r.y);
-                }
+    let resolved_family = match cfg.model_family.clone() {
+        MlConfidenceModelFamily::Auto => {
+            if n >= 50 && unique_groups >= 2 {
+                MlConfidenceModelFamily::GbdtStump
+            } else {
+                MlConfidenceModelFamily::Logistic
             }
-            if test_x.is_empty() {
-                continue;
-            }
-            let pos = train_y.iter().filter(|&&y| y > 0.5).count();
-            let neg = train_y.len().saturating_sub(pos);
-            if pos == 0 || neg == 0 {
-                cv_warnings.push(format!(
-                    "Skipped CV fold {fold} due to single-class training split."
-                ));
-                continue;
-            }
-
-            let scaler = StandardScaler::fit(&train_x);
-            let mut train_xs = train_x;
-            for x in &mut train_xs {
-                scaler.transform_row_in_place(x);
-            }
-            let mut test_xs = test_x;
-            for x in &mut test_xs {
-                scaler.transform_row_in_place(x);
-            }
-
-            let (w, b, _) = fit_logistic_regression(
-                &train_xs,
-                &train_y,
-                cfg.l2,
-                cfg.learning_rate,
-                cfg.max_iter,
-            );
-            let ps = predict_probs_raw(&w, b, &test_xs);
-
-            cv_ps.extend(ps);
-            cv_ys.extend(test_y);
         }
+        x => x,
+    };
 
-        if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
-            cv_brier = Some(brier_score(&cv_ps, &cv_ys));
-        }
-        if let Some(auc) = auc_roc(&cv_ps, &cv_ys) {
-            cv_auc = Some(auc);
-        } else {
-            cv_warnings.push("CV AUC unavailable (need both classes in predictions).".to_string());
-        }
-    } else {
-        cv_warnings.push("CV skipped (need at least 2 unique meta runs).".to_string());
+    let mut family_warnings: Vec<String> = Vec::new();
+    let trained = match resolved_family {
+        MlConfidenceModelFamily::Logistic => train_logistic_candidate(&rows, &cfg),
+        MlConfidenceModelFamily::GbdtStump => match train_gbdt_candidate(&rows, &cfg) {
+            Some(c) => c,
+            None => {
+                family_warnings.push(
+                    "GBDT training failed (insufficient split diversity or class balance); falling back to logistic."
+                        .to_string(),
+                );
+                train_logistic_candidate(&rows, &cfg)
+            }
+        },
+        MlConfidenceModelFamily::Auto => unreachable!(),
+    };
+
+    let mut cv_auc: Option<f64> = None;
+    let mut cv_brier: Option<f64> = None;
+    let mut cv_brier_cal: Option<f64> = None;
+    if !trained.cv_ps.is_empty() && trained.cv_ps.len() == trained.cv_ys.len() {
+        cv_brier = Some(brier_score(&trained.cv_ps, &trained.cv_ys));
+    }
+    if let Some(auc) = auc_roc(&trained.cv_ps, &trained.cv_ys) {
+        cv_auc = Some(auc);
+    } else if !trained.cv_ps.is_empty() {
+        family_warnings.push("CV AUC unavailable (need both classes in predictions).".to_string());
     }
 
-    let calibration = if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
-        if let Some(cal) = fit_platt_scaling_from_probs(&cv_ps, &cv_ys) {
-            let ps_cal: Vec<f64> = cv_ps
+    let calibration = if !trained.cv_ps.is_empty() && trained.cv_ps.len() == trained.cv_ys.len() {
+        if let Some(cal) = fit_platt_scaling_from_probs(&trained.cv_ps, &trained.cv_ys) {
+            let ps_cal: Vec<f64> = trained
+                .cv_ps
                 .iter()
                 .copied()
                 .map(|p| apply_calibration(p, &cal))
                 .collect();
-            let b_cal = brier_score(&ps_cal, &cv_ys);
+            let b_cal = brier_score(&ps_cal, &trained.cv_ys);
             cv_brier_cal = Some(b_cal);
 
             if let Some(b_raw) = cv_brier {
@@ -979,7 +1408,7 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
                     Some(cal)
                 } else {
                     cv_brier_cal = None;
-                    warnings
+                    family_warnings
                         .push("Calibration skipped (did not improve CV Brier score).".to_string());
                     None
                 }
@@ -993,23 +1422,14 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         None
     };
 
-    warnings.extend(cv_warnings);
+    warnings.extend(family_warnings);
+    warnings.extend(trained.cv_warnings.clone());
 
-    // Fit final model on all rows.
-    let scaler = StandardScaler::fit(&xs_raw);
-    let mut xs: Vec<Vec<f64>> = xs_raw;
-    for x in &mut xs {
-        scaler.transform_row_in_place(x);
-    }
-
-    let (weights, bias, _) =
-        fit_logistic_regression(&xs, &ys, cfg.l2, cfg.learning_rate, cfg.max_iter);
-    let train_ps = predict_probs_raw(&weights, bias, &xs);
-
-    let train_auc = auc_roc(&train_ps, &ys).unwrap_or(0.0);
-    let train_brier = brier_score(&train_ps, &ys);
+    let train_auc = auc_roc(&trained.train_ps, &ys).unwrap_or(0.0);
+    let train_brier = brier_score(&trained.train_ps, &ys);
     let train_brier_cal = calibration.as_ref().map(|cal| {
-        let ps_cal: Vec<f64> = train_ps
+        let ps_cal: Vec<f64> = trained
+            .train_ps
             .iter()
             .copied()
             .map(|p| apply_calibration(p, cal))
@@ -1017,28 +1437,28 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         brier_score(&ps_cal, &ys)
     });
 
-    let calib_bins = if !cv_ps.is_empty() && cv_ps.len() == cv_ys.len() {
+    let calib_bins = if !trained.cv_ps.is_empty() && trained.cv_ps.len() == trained.cv_ys.len() {
         if let Some(cal) = calibration.as_ref() {
-            let ps_cal: Vec<f64> = cv_ps
+            let ps_cal: Vec<f64> = trained
+                .cv_ps
                 .iter()
                 .copied()
                 .map(|p| apply_calibration(p, cal))
                 .collect();
-            calibration_bins(&ps_cal, &cv_ys, 10)
+            calibration_bins(&ps_cal, &trained.cv_ys, 10)
         } else {
-            calibration_bins(&cv_ps, &cv_ys, 10)
+            calibration_bins(&trained.cv_ps, &trained.cv_ys, 10)
         }
+    } else if let Some(cal) = calibration.as_ref() {
+        let ps_cal: Vec<f64> = trained
+            .train_ps
+            .iter()
+            .copied()
+            .map(|p| apply_calibration(p, cal))
+            .collect();
+        calibration_bins(&ps_cal, &ys, 10)
     } else {
-        if let Some(cal) = calibration.as_ref() {
-            let ps_cal: Vec<f64> = train_ps
-                .iter()
-                .copied()
-                .map(|p| apply_calibration(p, cal))
-                .collect();
-            calibration_bins(&ps_cal, &ys, 10)
-        } else {
-            calibration_bins(&train_ps, &ys, 10)
-        }
+        calibration_bins(&trained.train_ps, &ys, 10)
     };
 
     let eval_auc = cv_auc.unwrap_or(train_auc);
@@ -1058,13 +1478,15 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
     }
 
     let model = MlConfidenceModel {
-        version: 3,
+        version: 4,
         scope: scope.clone(),
         feature_names: FEATURE_NAMES.iter().map(|s| s.to_string()).collect(),
-        mean: scaler.mean,
-        std: scaler.std,
-        weights,
-        bias,
+        mean: trained.mean.clone(),
+        std: trained.std.clone(),
+        weights: trained.weights.clone(),
+        bias: trained.bias,
+        model_kind: trained.model_kind.clone(),
+        gbdt: trained.gbdt.clone(),
         label: cfg.label,
         calibration: calibration.clone(),
         meta: Some(MlConfidenceModelMeta {
@@ -1077,6 +1499,7 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
             trained_positives: positives,
             trained_negatives: negatives,
             target: target_used.clone(),
+            model_kind: trained.model_kind.clone(),
             meta_artifacts_used: Some(build.used_meta),
             newest_meta_ts_used: build.newest_meta_ts.clone(),
             cv_auc,
@@ -1093,6 +1516,7 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
         positives,
         negatives,
         target: target_used,
+        model_kind: trained.model_kind,
         train_auc,
         train_brier,
         baseline_brier: base_brier,
@@ -1111,22 +1535,28 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
 }
 
 pub fn predict_ml_confidence_for_group(model: &MlConfidenceModel, group: &Value) -> Option<f64> {
-    if model.weights.len() != model.mean.len()
-        || model.weights.len() != model.std.len()
-        || model.weights.is_empty()
-    {
-        return None;
-    }
     let x0 = extract_features_from_meta_group(group)?;
-    if x0.len() != model.weights.len() {
-        return None;
-    }
-    let mut z = model.bias;
-    for j in 0..x0.len() {
-        let x = (x0[j] - model.mean[j]) / model.std[j];
-        z += model.weights[j] * x;
-    }
-    let p_raw = sigmoid(z);
+    let p_raw = match model.model_kind {
+        MlConfidenceModelKind::Logistic => {
+            if model.weights.len() != model.mean.len()
+                || model.weights.len() != model.std.len()
+                || model.weights.is_empty()
+                || x0.len() != model.weights.len()
+            {
+                return None;
+            }
+            let mut z = model.bias;
+            for j in 0..x0.len() {
+                let x = (x0[j] - model.mean[j]) / model.std[j];
+                z += model.weights[j] * x;
+            }
+            sigmoid(z)
+        }
+        MlConfidenceModelKind::GbdtStump => {
+            let gbdt = model.gbdt.as_ref()?;
+            predict_prob_gbdt_row(gbdt, &x0)?
+        }
+    };
     if let Some(cal) = model.calibration.as_ref() {
         Some(apply_calibration(p_raw, cal))
     } else {
@@ -1334,6 +1764,90 @@ mod tests {
             "meta_score": -0.2
         });
 
+        let p_good = predict_ml_confidence_for_group(&model, &good_g).unwrap();
+        let p_bad = predict_ml_confidence_for_group(&model, &bad_g).unwrap();
+        assert!(p_good > p_bad);
+    }
+
+    #[test]
+    fn trains_gbdt_when_requested() {
+        let mk_group = |pass_rate: f64, p10: f64, dd: f64| {
+            json!({
+                "samples": 64,
+                "pass_rate": pass_rate,
+                "robust_score_p10": p10,
+                "robust_score_median": p10 + 0.05,
+                "max_dd_p90": dd,
+                "cross_score_median": p10 * 0.5,
+                "meta_score": p10 * 1.2,
+                "holdout": {
+                    "datasets": 50,
+                    "pass_rate": pass_rate,
+                    "score_p10": p10,
+                    "score_median": p10 + 0.03,
+                    "sharpe_median": 1.0,
+                    "max_dd_p90": dd,
+                    "pnl_median": 1.0
+                }
+            })
+        };
+        let mut groups1 = Vec::new();
+        let mut groups2 = Vec::new();
+        for i in 0..30 {
+            let good = i % 2 == 0;
+            groups1.push(if good {
+                mk_group(0.78, 0.14, 0.22)
+            } else {
+                mk_group(0.30, -0.10, 0.58)
+            });
+            groups2.push(if good {
+                mk_group(0.74, 0.12, 0.24)
+            } else {
+                mk_group(0.34, -0.08, 0.55)
+            });
+        }
+        let meta1 = json!({
+            "kind": "vectorbt_meta_selection",
+            "ts": "2026-01-30T00:00:00Z",
+            "req": { "strategy_kind": "CompositeTrend", "timeframe": "1m" },
+            "res": { "strategy_kind": "CompositeTrend", "timeframe": "1m", "groups": groups1 }
+        });
+        let meta2 = json!({
+            "kind": "vectorbt_meta_selection",
+            "ts": "2026-01-30T00:01:00Z",
+            "req": { "strategy_kind": "CompositeTrend", "timeframe": "1m" },
+            "res": { "strategy_kind": "CompositeTrend", "timeframe": "1m", "groups": groups2 }
+        });
+
+        let mut cfg = MlConfidenceTrainConfig::default();
+        cfg.model_family = MlConfidenceModelFamily::GbdtStump;
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeTrend".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let (model, metrics) =
+            train_ml_confidence_model_from_meta_artifacts(scope, &[meta1, meta2], cfg).unwrap();
+        assert_eq!(model.model_kind, MlConfidenceModelKind::GbdtStump);
+        assert_eq!(metrics.model_kind, MlConfidenceModelKind::GbdtStump);
+
+        let good_g = json!({
+            "samples": 64,
+            "pass_rate": 0.79,
+            "robust_score_p10": 0.15,
+            "robust_score_median": 0.20,
+            "max_dd_p90": 0.20,
+            "cross_score_median": 0.07,
+            "meta_score": 0.24
+        });
+        let bad_g = json!({
+            "samples": 64,
+            "pass_rate": 0.28,
+            "robust_score_p10": -0.12,
+            "robust_score_median": -0.08,
+            "max_dd_p90": 0.60,
+            "cross_score_median": -0.05,
+            "meta_score": -0.18
+        });
         let p_good = predict_ml_confidence_for_group(&model, &good_g).unwrap();
         let p_bad = predict_ml_confidence_for_group(&model, &bad_g).unwrap();
         assert!(p_good > p_bad);

@@ -458,6 +458,7 @@ html[data-workflow="history"] #mainSplitter {
   flex: 0 0 auto;
   min-height: auto;
   overflow: visible;
+  container-type: inline-size;
 }
 
 .cardFooter {
@@ -702,6 +703,39 @@ html[data-workflow="settings"] #resultsTabBar button[data-tab="history"] {
   }
 }
 
+@container (max-width: 980px) {
+  .row4 {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .aggregateSummaryGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@container (max-width: 760px) {
+  .libraryGrid,
+  .settingsGrid,
+  .libraryDetailGrid,
+  .aggregateSummaryGrid,
+  .row,
+  .row3,
+  .row4 {
+    grid-template-columns: 1fr;
+  }
+
+  .tabBar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    border-radius: 14px;
+    scrollbar-width: thin;
+  }
+
+  .tabBtn {
+    flex: 0 0 auto;
+  }
+}
+
 label {
   display: block;
   font-size: 0.8rem;
@@ -748,6 +782,15 @@ input[type="number"] {
   align-items: center;
   color: var(--text);
   margin: 0;
+}
+
+.inlineCheck {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.8rem;
 }
 
 .actions {
@@ -1492,12 +1535,49 @@ details summary {
   border-color: var(--accent-hover);
 }
 
+html.ui-transitions .tabBtn {
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
 .tabPanel {
   display: none;
 }
 
 .tabPanel.active {
   display: block;
+}
+
+html.ui-transitions .tabPanel.active {
+  animation: tabPanelIn 140ms ease-out both;
+}
+
+@keyframes tabPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@supports (view-transition-name: none) {
+  :root.ui-transitions::view-transition-old(root),
+  :root.ui-transitions::view-transition-new(root) {
+    animation-duration: 140ms;
+    animation-timing-function: ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.ui-transitions .tabBtn {
+    transition: none !important;
+  }
+
+  html.ui-transitions .tabPanel.active {
+    animation: none !important;
+  }
 }
 
 .modal {

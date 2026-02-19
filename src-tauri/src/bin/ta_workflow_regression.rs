@@ -263,14 +263,7 @@ fn run_workflow_once(
         long_only: false,
         allow_flip: true,
         trade_on_next_bar: true,
-        cost_preset: None,
-        fee_bps: 0.0,
-        spread_bps: 0.0,
-        slippage_bps: 0.0,
-        stop_loss_pct: None,
-        take_profit_pct: None,
-        commission: 0.0,
-        eps_rel: 0.0,
+        ..StrategyConfig::default()
     };
     let halftrend = HalfTrendRegimeFilter {
         amplitude: 2,

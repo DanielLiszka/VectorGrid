@@ -32,6 +32,8 @@ pub async fn run_composite_validation(
         let fast_ma_params = base_req.fast_ma_params.clone();
         let slow_ma_params = base_req.slow_ma_params.clone();
         let seed = base_req.seed;
+        let validation_engine = base_req.validation_engine;
+        let iterative_cfg = base_req.iterative.clone();
         let cross_cfg = base_req.cross_ticker.take();
         let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
             base_req,
@@ -51,6 +53,8 @@ pub async fn run_composite_validation(
                 &app_cache_dir,
                 cancel2.as_ref(),
                 Some(sink.app.clone()),
+                validation_engine,
+                iterative_cfg,
             )?;
         }
         res.runtime_ms = started.elapsed().as_millis() as u64;
@@ -70,6 +74,8 @@ pub(crate) fn apply_cross_ticker_validation(
     app_cache_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
     app_for_progress: Option<tauri::AppHandle>,
+    validation_engine: ta_app_core::ValidationEngine,
+    iterative_cfg: ta_app_core::IterativeSimConfig,
 ) -> Result<(), String> {
     validation_common::sanitize_cross_ticker_config(&mut cross_cfg);
     if cross_cfg.max_datasets == 0 {
@@ -125,8 +131,8 @@ pub(crate) fn apply_cross_ticker_validation(
             cscv_pbo: None,
             seed,
             max_candidates: total_candidates,
-            validation_engine: ta_app_core::ValidationEngine::Vectorized,
-            iterative: ta_app_core::IterativeSimConfig::default(),
+            validation_engine,
+            iterative: iterative_cfg.clone(),
             min_psr: None,
             min_dsr: None,
         };
@@ -200,6 +206,8 @@ pub async fn run_double_ma_validation(
         let fast_ma_params = base_req.fast_ma_params.clone();
         let slow_ma_params = base_req.slow_ma_params.clone();
         let seed = base_req.seed;
+        let validation_engine = base_req.validation_engine;
+        let iterative_cfg = base_req.iterative.clone();
         let cross_cfg = base_req.cross_ticker.take();
         let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
             base_req,
@@ -219,6 +227,8 @@ pub async fn run_double_ma_validation(
                 &app_cache_dir,
                 cancel2.as_ref(),
                 Some(sink.app.clone()),
+                validation_engine,
+                iterative_cfg,
             )?;
         }
         res.runtime_ms = started.elapsed().as_millis() as u64;
@@ -238,6 +248,8 @@ fn apply_cross_ticker_validation_double_ma(
     app_cache_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
     app_for_progress: Option<tauri::AppHandle>,
+    validation_engine: ta_app_core::ValidationEngine,
+    iterative_cfg: ta_app_core::IterativeSimConfig,
 ) -> Result<(), String> {
     validation_common::sanitize_cross_ticker_config(&mut cross_cfg);
     if cross_cfg.max_datasets == 0 {
@@ -293,8 +305,8 @@ fn apply_cross_ticker_validation_double_ma(
             cscv_pbo: None,
             seed,
             max_candidates: total_candidates,
-            validation_engine: ta_app_core::ValidationEngine::Vectorized,
-            iterative: ta_app_core::IterativeSimConfig::default(),
+            validation_engine,
+            iterative: iterative_cfg.clone(),
             min_psr: None,
             min_dsr: None,
         };
@@ -356,6 +368,8 @@ pub fn apply_cross_ticker_validation_double_ma_headless(
     seed: u64,
     app_cache_dir: &Path,
     cancel: &AtomicBool,
+    validation_engine: ta_app_core::ValidationEngine,
+    iterative_cfg: ta_app_core::IterativeSimConfig,
 ) -> Result<(), String> {
     apply_cross_ticker_validation_double_ma(
         res,
@@ -367,6 +381,8 @@ pub fn apply_cross_ticker_validation_double_ma_headless(
         app_cache_dir,
         cancel,
         None,
+        validation_engine,
+        iterative_cfg,
     )
 }
 

@@ -2,11 +2,11 @@ use crate::composite_cpu::{MaczGateParams, OttGateParams};
 use crate::double_ma::{
     compute_halftrend_trend, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
     resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles,
-    validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed, DoubleMaRequest,
-    HalfTrendRegimeFilter,
+    strategy_cfg_for_optimization, validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed,
+    DoubleMaRequest, HalfTrendRegimeFilter,
 };
-use crate::progress::ProgressSink;
 use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
+use crate::progress::ProgressSink;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -685,6 +685,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let _ = req.mode;
 
     validate_strategy_cfg(&req.base_strategy)?;
+    req.base_strategy = strategy_cfg_for_optimization(req.base_strategy.clone());
     validate_objectives(&req.objectives)?;
     let signal_mode = req.signal_mode;
 
@@ -819,10 +820,16 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
 
             for (fast_ma_type, slow_ma_type) in scan_pairs {
-                let (fast_alma_offset, fast_alma_sigma) =
-                    resolve_alma_params_for_side("fast", &fast_ma_type, req.fast_ma_params.as_ref())?;
-                let (slow_alma_offset, slow_alma_sigma) =
-                    resolve_alma_params_for_side("slow", &slow_ma_type, req.slow_ma_params.as_ref())?;
+                let (fast_alma_offset, fast_alma_sigma) = resolve_alma_params_for_side(
+                    "fast",
+                    &fast_ma_type,
+                    req.fast_ma_params.as_ref(),
+                )?;
+                let (slow_alma_offset, slow_alma_sigma) = resolve_alma_params_for_side(
+                    "slow",
+                    &slow_ma_type,
+                    req.slow_ma_params.as_ref(),
+                )?;
 
                 for objective in scan_objectives.iter().copied() {
                     if cancel.load(Ordering::Relaxed) {
@@ -849,6 +856,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         top_k: Some(cfg.top_k),
                         include_all: Some(false),
                         heatmap_bins: Some(0),
+                        constraints: None,
+                        vdps: None,
                     };
 
                     let dm_res = run_double_ma_optimization_blocking_with_candles(
@@ -2457,5 +2466,68 @@ mod tests {
 
         assert_eq!(res.total_evaluations, 10);
         assert!(!res.pareto.is_empty());
+    }
+
+    #[test]
+    fn composite_mo_optimization_clears_trailing_stop_from_params() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig {
+                trailing_stop_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 7,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 10,
+                            high: 12,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig {
+                    seed: 13,
+                    trials: 20,
+                },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let res = run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("composite mo run");
+        assert!(!res.pareto.is_empty());
+        assert!(res
+            .pareto
+            .iter()
+            .all(|p| p.params.strategy.trailing_stop_pct.is_none()));
     }
 }

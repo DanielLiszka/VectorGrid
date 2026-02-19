@@ -21,6 +21,9 @@ pub enum ObjectiveKind {
 pub enum OptimizationMode {
     Grid,
     CoarseToFine,
+    /// VRAM-aware deterministic progressive search (GPU-oriented).
+    /// Uses staged pruning/refinement for very large spaces.
+    GpuVdps,
     Auto,
 }
 

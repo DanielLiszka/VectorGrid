@@ -1,6 +1,6 @@
 use super::run_artifacts::{
     self, MetaArtifactSummary, RunArtifactSummary, SaveBatchSummaryResponse,
-    SaveRunArtifactResponse,
+    SaveRunArtifactResponse, Stage4ArtifactSummary,
 };
 use serde_json::Value;
 
@@ -55,6 +55,15 @@ pub async fn update_artifact_tags(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_stage4_artifacts(
+    app: tauri::AppHandle,
+) -> Result<Vec<Stage4ArtifactSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::list_stage4_artifacts_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

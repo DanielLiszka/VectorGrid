@@ -199,6 +199,105 @@ impl AppState {
             .ok_or_else(|| format!("unknown data id: {id}"))
     }
 
+    pub fn upsert_live_bar(
+        &self,
+        data_id: &str,
+        time_open_unix_ms: i64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: Option<f64>,
+    ) -> Result<(), String> {
+        if !open.is_finite()
+            || !high.is_finite()
+            || !low.is_finite()
+            || !close.is_finite()
+            || high < low
+        {
+            return Err("invalid live bar values".to_string());
+        }
+        if time_open_unix_ms <= 0 {
+            return Err("invalid live bar timestamp".to_string());
+        }
+
+        let mut map = self
+            .candles
+            .lock()
+            .map_err(|_| "failed to lock candles map".to_string())?;
+        let candles = map
+            .get_mut(data_id)
+            .ok_or_else(|| format!("unknown data id: {data_id}"))?;
+        if candles.timestamp.is_empty() || candles.close.is_empty() {
+            return Err("cannot upsert live bar into an empty dataset".to_string());
+        }
+        if !candles.fields.close {
+            return Err("dataset has no close field".to_string());
+        }
+
+        let use_ms = candles
+            .timestamp
+            .last()
+            .copied()
+            .map(timestamp_uses_millis)
+            .unwrap_or(true);
+        let ts = if use_ms {
+            time_open_unix_ms
+        } else {
+            time_open_unix_ms.div_euclid(1000)
+        };
+        if ts <= 0 {
+            return Err("live bar timestamp normalization failed".to_string());
+        }
+
+        let last_ts = candles.timestamp.last().copied().unwrap_or(ts);
+        if ts > last_ts {
+            candles.timestamp.push(ts);
+            if candles.fields.open {
+                candles.open.push(open);
+            }
+            if candles.fields.high {
+                candles.high.push(high);
+            }
+            if candles.fields.low {
+                candles.low.push(low);
+            }
+            candles.close.push(close);
+            if candles.fields.volume {
+                candles
+                    .volume
+                    .push(volume.filter(|v| v.is_finite()).unwrap_or(0.0));
+            }
+            return Ok(());
+        }
+
+        let idx = if ts == last_ts {
+            candles.timestamp.len().saturating_sub(1)
+        } else if let Some(i) = candles.timestamp.iter().rposition(|&x| x == ts) {
+            i
+        } else {
+            // Stale/out-of-order bar not present in the current dataset.
+            return Ok(());
+        };
+
+        if candles.fields.open && idx < candles.open.len() {
+            candles.open[idx] = open;
+        }
+        if candles.fields.high && idx < candles.high.len() {
+            candles.high[idx] = high;
+        }
+        if candles.fields.low && idx < candles.low.len() {
+            candles.low[idx] = low;
+        }
+        if idx < candles.close.len() {
+            candles.close[idx] = close;
+        }
+        if candles.fields.volume && idx < candles.volume.len() {
+            candles.volume[idx] = volume.filter(|v| v.is_finite()).unwrap_or(0.0);
+        }
+        Ok(())
+    }
+
     pub fn try_begin_run(&self) -> Result<RunGuard, String> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Err("an optimization run is already in progress".to_string());
@@ -337,6 +436,10 @@ fn min_max_ts(ts: &[i64]) -> (i64, i64) {
         }
     }
     (min, max)
+}
+
+fn timestamp_uses_millis(ts: i64) -> bool {
+    ts.abs() >= 1_000_000_000_000
 }
 
 fn infer_timeframe_label(ts: &[i64]) -> Option<String> {

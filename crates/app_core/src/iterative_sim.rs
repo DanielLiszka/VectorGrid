@@ -167,6 +167,119 @@ fn fill_price_from_intrabar(
     }
 }
 
+#[derive(Clone, Copy)]
+struct ExecutionOverlayParams {
+    cooldown_bars: usize,
+    persistence_bars: usize,
+    trailing_log: Option<f64>,
+}
+
+impl ExecutionOverlayParams {
+    fn from_cfg(cfg: &StrategyConfig) -> Self {
+        Self {
+            cooldown_bars: cfg.cooldown_bars(),
+            persistence_bars: cfg.signal_persistence_bars().max(1),
+            trailing_log: cfg.trailing_stop_pct().map(|pct| (1.0 - pct).ln()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ExecutionOverlayState {
+    cooldown_left: usize,
+    pending_sign: i32,
+    pending_count: usize,
+    trade_peak_log_ret: f64,
+}
+
+#[inline]
+fn overlay_on_bar_start(state: &mut ExecutionOverlayState) {
+    if state.cooldown_left > 0 {
+        state.cooldown_left = state.cooldown_left.saturating_sub(1);
+    }
+}
+
+#[inline]
+fn overlay_apply_signal_persistence(
+    raw_sign: i32,
+    current_pos: i32,
+    params: &ExecutionOverlayParams,
+    state: &mut ExecutionOverlayState,
+) -> i32 {
+    if params.persistence_bars <= 1 {
+        if raw_sign == 0 {
+            state.pending_sign = 0;
+            state.pending_count = 0;
+        } else {
+            state.pending_sign = raw_sign;
+            state.pending_count = 1;
+        }
+        return raw_sign;
+    }
+
+    if raw_sign == 0 {
+        state.pending_sign = 0;
+        state.pending_count = 0;
+        return 0;
+    }
+
+    if raw_sign == state.pending_sign {
+        state.pending_count = state.pending_count.saturating_add(1);
+    } else {
+        state.pending_sign = raw_sign;
+        state.pending_count = 1;
+    }
+
+    if state.pending_count >= params.persistence_bars {
+        raw_sign
+    } else if current_pos != 0 {
+        current_pos
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn overlay_apply_entry_cooldown(sign: i32, current_pos: i32, state: &ExecutionOverlayState) -> i32 {
+    if current_pos == 0 && sign != 0 && state.cooldown_left > 0 {
+        0
+    } else {
+        sign
+    }
+}
+
+#[inline]
+fn overlay_on_trade_open(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
+    state.trade_peak_log_ret = trade_log_ret;
+}
+
+#[inline]
+fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionOverlayParams) {
+    if params.cooldown_bars > 0 {
+        state.cooldown_left = params.cooldown_bars;
+    }
+    state.trade_peak_log_ret = 0.0;
+}
+
+#[inline]
+fn overlay_update_trade_peak(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
+    if trade_log_ret > state.trade_peak_log_ret {
+        state.trade_peak_log_ret = trade_log_ret;
+    }
+}
+
+#[inline]
+fn overlay_hit_trailing_stop(
+    trade_log_ret: f64,
+    params: &ExecutionOverlayParams,
+    state: &ExecutionOverlayState,
+) -> bool {
+    let Some(trail_log) = params.trailing_log else {
+        return false;
+    };
+    state.trade_peak_log_ret > 0.0 && trade_log_ret <= state.trade_peak_log_ret + trail_log
+}
+
 pub fn simulate_iterative_from_signals(
     lr: &[f64],
     ohlc: OhlcSlice<'_>,
@@ -189,6 +302,9 @@ pub fn simulate_iterative_from_signals(
 
     let stop_loss_pct = sim.stop_loss_pct.or(cfg.stop_loss_pct());
     let take_profit_pct = sim.take_profit_pct.or(cfg.take_profit_pct());
+    let overlays = ExecutionOverlayParams::from_cfg(cfg);
+    let risk_enabled =
+        stop_loss_pct.is_some() || take_profit_pct.is_some() || overlays.trailing_log.is_some();
 
     let mut pos: i32 = 0;
     let mut entry_px: f64 = 0.0;
@@ -206,12 +322,17 @@ pub fn simulate_iterative_from_signals(
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
+    let mut trade_log_ret: f64 = 0.0;
+    let mut overlay_state = ExecutionOverlayState::default();
 
     for t in start_t..n_total {
+        overlay_on_bar_start(&mut overlay_state);
         let mut desired = desired_pos[t].clamp(-1, 1);
         if cfg.long_only && desired < 0 {
             desired = 0;
         }
+        desired = overlay_apply_signal_persistence(desired, pos, &overlays, &mut overlay_state);
+        desired = overlay_apply_entry_cooldown(desired, pos, &overlay_state);
 
         let lr_abs = lr[t].abs();
         let log_cost = trade_log_cost(cfg, sim, lr_abs);
@@ -228,8 +349,12 @@ pub fn simulate_iterative_from_signals(
                     } else {
                         ohlc.open[t]
                     };
+                    trade_log_ret = if log_cost != 0.0 { log_cost } else { 0.0 };
+                    overlay_on_trade_open(&mut overlay_state, trade_log_ret);
                 } else {
                     entry_px = 0.0;
+                    trade_log_ret = 0.0;
+                    overlay_on_trade_close(&mut overlay_state, &overlays);
                 }
                 pos = desired;
             } else if !cfg.allow_flip {
@@ -239,6 +364,8 @@ pub fn simulate_iterative_from_signals(
                 trades = trades.saturating_add(1);
                 pos = 0;
                 entry_px = 0.0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
             } else {
                 if log_cost != 0.0 {
                     log_eq += 2.0 * log_cost;
@@ -250,10 +377,13 @@ pub fn simulate_iterative_from_signals(
                 } else {
                     ohlc.open[t]
                 };
+                trade_log_ret = if log_cost != 0.0 { log_cost } else { 0.0 };
+                overlay_on_trade_open(&mut overlay_state, trade_log_ret);
             }
         }
 
         let mut step_log = if pos == 0 { 0.0 } else { (pos as f64) * lr[t] };
+        let pos_bar = pos;
 
         if pos != 0 {
             if !entry_px.is_finite() || entry_px <= 0.0 {
@@ -287,10 +417,28 @@ pub fn simulate_iterative_from_signals(
                 trades = trades.saturating_add(1);
                 pos = 0;
                 entry_px = 0.0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
             }
         }
 
         log_eq += step_log;
+        if risk_enabled && pos_bar != 0 && pos != 0 {
+            trade_log_ret += step_log;
+            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
+            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
+            if hit_trailing {
+                if log_cost != 0.0 {
+                    log_eq += log_cost;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                entry_px = 0.0;
+                trade_log_ret = 0.0;
+                overlay_on_trade_close(&mut overlay_state, &overlays);
+            }
+        }
+
         let step_r = step_log.exp_m1();
         if log_eq > log_peak {
             log_peak = log_eq;

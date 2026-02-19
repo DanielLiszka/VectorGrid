@@ -18,6 +18,56 @@ function setHintVisible(id, visible) {
   el.style.display = visible ? "block" : "none";
 }
 
+let UI_REDUCED_MOTION_MQL = null;
+let UI_REDUCED_MOTION_LISTENER_ATTACHED = false;
+
+function prefersReducedMotion() {
+  if (typeof window.matchMedia !== "function") return false;
+  if (!UI_REDUCED_MOTION_MQL) UI_REDUCED_MOTION_MQL = window.matchMedia("(prefers-reduced-motion: reduce)");
+  return !!UI_REDUCED_MOTION_MQL.matches;
+}
+
+function supportsViewTransitions() {
+  return typeof document.startViewTransition === "function";
+}
+
+function syncUiTransitionClass() {
+  const root = document.documentElement;
+  if (!root) return;
+  root.classList.toggle("ui-transitions", !prefersReducedMotion());
+}
+
+function initUiMotionPrefs() {
+  syncUiTransitionClass();
+  if (UI_REDUCED_MOTION_LISTENER_ATTACHED) return;
+  if (typeof window.matchMedia !== "function") return;
+  if (!UI_REDUCED_MOTION_MQL) UI_REDUCED_MOTION_MQL = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const onChange = () => syncUiTransitionClass();
+  try {
+    if (UI_REDUCED_MOTION_MQL.addEventListener) UI_REDUCED_MOTION_MQL.addEventListener("change", onChange);
+    else UI_REDUCED_MOTION_MQL.addListener(onChange);
+    UI_REDUCED_MOTION_LISTENER_ATTACHED = true;
+  } catch {}
+}
+
+function runUiTransition(updateFn, opts) {
+  if (typeof updateFn !== "function") return;
+  const animate = opts?.animate === true;
+  if (!animate || document.hidden || prefersReducedMotion()) {
+    updateFn();
+    return;
+  }
+  if (supportsViewTransitions()) {
+    try {
+      document.startViewTransition(() => {
+        updateFn();
+      });
+      return;
+    } catch {}
+  }
+  updateFn();
+}
+
 const CONTROLS_TAB_KEY = "vectorbt_controls_tab_v1";
 const RESULTS_TAB_KEY = "vectorbt_results_tab_v1";
 let CONTROLS_TABS = null;
@@ -458,21 +508,24 @@ function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
     const t = String(tab || "").trim();
     const save = opts?.save !== false;
     const focus = !!opts?.focus;
+    const animate = opts?.animate === true;
     if (!t || !btnByTab[t] || !panelByTab[t]) return;
 
-    for (const name of tabNames) {
-      const b = btnByTab[name];
-      if (!b) continue;
-      const isActive = name === t;
-      b.classList.toggle("active", isActive);
-      b.setAttribute("aria-selected", isActive ? "true" : "false");
-      b.tabIndex = isActive ? 0 : -1;
-    }
-    for (const [name, p] of Object.entries(panelByTab)) {
-      const isActive = name === t;
-      p.classList.toggle("active", isActive);
-      p.setAttribute("aria-hidden", isActive ? "false" : "true");
-    }
+    runUiTransition(() => {
+      for (const name of tabNames) {
+        const b = btnByTab[name];
+        if (!b) continue;
+        const isActive = name === t;
+        b.classList.toggle("active", isActive);
+        b.setAttribute("aria-selected", isActive ? "true" : "false");
+        b.tabIndex = isActive ? 0 : -1;
+      }
+      for (const [name, p] of Object.entries(panelByTab)) {
+        const isActive = name === t;
+        p.classList.toggle("active", isActive);
+        p.setAttribute("aria-hidden", isActive ? "false" : "true");
+      }
+    }, { animate });
 
     if (save) {
       try { localStorage.setItem(storageKey, t); } catch {}
@@ -491,7 +544,7 @@ function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
   for (const t of tabNames) {
     const btn = btnByTab[t];
     if (!btn) continue;
-    btn.addEventListener("click", () => setActive(t, { save: true, focus: false }));
+    btn.addEventListener("click", () => setActive(t, { save: true, focus: false, animate: true }));
     btn.addEventListener("keydown", (e) => {
       const key = e.key;
       if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
@@ -506,7 +559,7 @@ function initTabSystem({ barId, panelsId, storageKey, defaultTab }) {
       else if (key === "End") next = tabNames.length - 1;
 
       const nt = tabNames[next];
-      setActive(nt, { save: true, focus: true });
+      setActive(nt, { save: true, focus: true, animate: true });
     });
   }
 
@@ -747,13 +800,13 @@ function updateWorkspaceContextStrip() {
   if (timeframeEl) timeframeEl.textContent = tf || "—";
 
   const kind = CURRENT_RUN?.req ? kindFromReq(CURRENT_RUN.req) : strategyKind();
-  const kindLabel = kind === "CompositeCpu" ? "Composite CPU" : (kind === "CompositeMo" ? "Composite MO" : "Double MA");
+  const kindLabel = strategyKindLabel(kind);
   if (strategyEl) strategyEl.textContent = kindLabel || "—";
 
   const backendFromRun = String(CURRENT_RUN?.res?.backend_used || "").trim();
   const backendFromReq = String(CURRENT_RUN?.req?.backend?.backend || "").trim();
   const backendFromUi = String($("backend")?.value || "").trim();
-  const backend = kind === "DoubleMa"
+  const backend = isDoubleLikeKind(kind)
     ? (backendFromRun || backendFromReq || backendFromUi || "CpuOnly")
     : "CpuOnly";
   if (backendEl) backendEl.textContent = backend || "—";
@@ -1433,7 +1486,9 @@ let CURRENT_RUN = null; // { ts, req, res }
 let CURRENT_VALIDATION = null; // { ts, req, res }
 let SAVED_RUNS = []; // disk-backed run artifacts
 let SAVED_META = []; // disk-backed meta artifacts
+let SAVED_STAGE4 = []; // disk-backed stage-4 artifacts
 let LAST_META_RUN = null; // last meta selection response (paths + result)
+let LAST_META_STAGE4_RUN = null; // last stage-4 response (artifact path + selected groups)
 let SAVED_RUN_DETAIL_CACHE = {};
 let SAVED_RUN_DETAIL_SEQ = 0;
 let CURRENT_SAVED_RUN_DETAIL_PATH = "";
@@ -1464,6 +1519,10 @@ let DRILL_TV_LEGEND_LAST_TEXT = "";
 let DRILL_TV_LEGEND_PINNED_TEXT = "";
 let DRILL_TV_LEGEND_SUBSCRIBED = false;
 let DRILL_TV_CLICK_SUBSCRIBED = false;
+let DRILL_TV_RANGE_SUBSCRIBED = false;
+let DRILL_TV_MARKER_RAF = 0;
+let DRILL_TV_MARKER_LAST_KEY = "";
+let DRILL_TV_ALL_MARKERS = [];
 let DRILL_TV_TRADE_EVENTS_BY_TIME = null; // time(sec) -> {entries:[], exits:[]}
 let DRILL_SELECTED_TRADE_IDX = -1;
 let DRILL_TRADES_RANGE_START = 0;
@@ -1488,10 +1547,15 @@ let EXEC_TV_MARKERS = null;
 let EXEC_TV_RESIZE_OBSERVER = null;
 let EXEC_LAST_SNAPSHOT = null;
 let EXEC_TV_BASE_BARS = [];
+let EXEC_TV_BASE_TIME_SET = new Set();
 let EXEC_TV_LIVE_BARS = new Map(); // time(sec) -> candle
+let EXEC_TV_MARKER_COUNT = 0;
+let EXEC_TV_MERGED_COUNT = 0;
 let EXEC_LIVE_STREAM_ACTIVE = false;
 let EXEC_LIVE_STREAM_CFG = null;
 let EXEC_LIVE_LISTENERS_READY = false;
+let EXEC_RUNNER_ACTIVE = false;
+let EXEC_RUNNER_STATUS = null;
 let ACTIVE_PROGRESS_CONTEXT = null;
 
 const DRILL_CURVES_CACHE_MAX = 96;
@@ -1514,6 +1578,13 @@ function clearDrillCaches(opts) {
     DRILL_PRICE_BARS_CACHE.clear();
     DRILL_LAST_BARS = null;
     DRILL_LAST_BARS_DATA_ID = "";
+  }
+  DRILL_TV_ALL_MARKERS = [];
+  DRILL_TV_MARKER_LAST_KEY = "";
+  if (DRILL_TV_MARKER_RAF) {
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(DRILL_TV_MARKER_RAF);
+    else clearTimeout(DRILL_TV_MARKER_RAF);
+    DRILL_TV_MARKER_RAF = 0;
   }
   DRILL_TV_TRADE_EVENTS_BY_TIME = null;
 }
@@ -1675,16 +1746,16 @@ function renderContextChips() {
   }));
 
   const kind = CURRENT_RUN?.req ? kindFromReq(CURRENT_RUN.req) : strategyKind();
-  const kindLabel = kind === "CompositeCpu" ? "Composite CPU" : (kind === "CompositeMo" ? "Composite MO" : "Double MA");
+  const kindLabel = strategyKindLabel(kind);
   host.appendChild(ctxChip("Strategy", kindLabel, {
-    title: kind === "DoubleMa" ? "Fast double moving-average crossover." : "Composite strategy optimization.",
+    title: isDoubleLikeKind(kind) ? "Fast double moving-average crossover family." : "Composite strategy optimization.",
     onClick: () => CONTROLS_TABS?.set("strategy", { save: true, focus: true }),
   }));
 
   const backendFromRun = String(CURRENT_RUN?.res?.backend_used || "").trim();
   const backendFromReq = String(CURRENT_RUN?.req?.backend?.backend || "").trim();
   const backendFromUi = String($("backend")?.value || "").trim();
-  const backend = kind === "DoubleMa"
+  const backend = isDoubleLikeKind(kind)
     ? (backendFromRun || backendFromReq || backendFromUi || "CpuOnly")
     : "CpuOnly";
   const deviceFromReq = Number(CURRENT_RUN?.req?.backend?.device_id ?? NaN);
@@ -1692,7 +1763,7 @@ function renderContextChips() {
   const dev = Number.isFinite(deviceFromReq) ? deviceFromReq : (Number.isFinite(deviceFromUi) ? deviceFromUi : null);
   const backendValue = dev != null && backend.toLowerCase().includes("gpu") ? `${backend} · dev ${dev}` : backend;
   host.appendChild(ctxChip("Backend", backendValue, {
-    title: kind === "DoubleMa" ? "Execution backend used for optimization." : "Composite strategies currently run on CPU.",
+    title: isDoubleLikeKind(kind) ? "Execution backend used for optimization." : "Composite strategies currently run on CPU.",
     onClick: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
   }));
 
@@ -1715,7 +1786,7 @@ function renderContextChips() {
     return m;
   })();
   host.appendChild(ctxChip("Mode", mode, {
-    title: "Search mode (Grid / Coarse→Fine).",
+    title: "Search mode (Grid / Coarse→Fine / GPU VDPS).",
     onClick: () => CONTROLS_TABS?.set("opt", { save: true, focus: true }),
   }));
 
@@ -2060,6 +2131,7 @@ function updateQuickBarUi() {
   const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
   const kind = strategyKind();
   const isComp = kind === "CompositeCpu" || kind === "CompositeMo";
+  const supportsValidate = isComp || isDoubleLikeKind(kind);
   const hasReadiness = !!(LAST_RUN_READINESS && typeof LAST_RUN_READINESS === "object");
   const blockers = hasReadiness && Array.isArray(LAST_RUN_READINESS.blockers) ? LAST_RUN_READINESS.blockers : [];
   const canRun = hasReadiness ? !!LAST_RUN_READINESS.can_run : (!RUNNING && hasData);
@@ -2068,8 +2140,8 @@ function updateQuickBarUi() {
   if (run) run.disabled = !canRun;
   if (cancel) cancel.disabled = !RUNNING;
   if (validate) {
-    validate.disabled = RUNNING || !isComp || !hasRun;
-    validate.style.display = isComp ? "" : "none";
+    validate.disabled = RUNNING || !supportsValidate || !hasRun;
+    validate.style.display = supportsValidate ? "" : "none";
   }
   if (exportCsv) exportCsv.disabled = RUNNING || !hasRun;
   if (palette) palette.disabled = false;
@@ -2120,6 +2192,7 @@ function buildCommandActions() {
   const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
   const kind = strategyKind();
   const isComp = kind === "CompositeCpu" || kind === "CompositeMo";
+  const supportsValidate = isComp || isDoubleLikeKind(kind);
   const eff = currentWindowEffect();
   const supportedEff = supportedWindowEffects();
 
@@ -2220,9 +2293,9 @@ function buildCommandActions() {
     {
       id: "validate",
       name: "Run validation",
-      desc: "Run robustness checks for Top/Pareto candidates (composite only).",
+      desc: "Run robustness checks for current Top/Pareto candidates.",
       keys: keyCaps("Ctrl+Shift+V"),
-      enabled: () => !RUNNING && isComp && hasRun,
+      enabled: () => !RUNNING && supportsValidate && hasRun,
       run: () => {
         setWorkspace("workflow", { save: true, focus: false, step: "validate" });
         $("btnValidate")?.click();
@@ -2744,7 +2817,14 @@ function formatCompositeParamsCompact(params) {
   const ht = p.halftrend && typeof p.halftrend === "object" ? p.halftrend : {};
   const macz = p.macz && typeof p.macz === "object" ? p.macz : {};
   const ott = p.ott && typeof p.ott === "object" ? p.ott : {};
+  const signalMode = String(p.signal_mode || p.signalMode || "").trim().toLowerCase();
   const parts = [];
+  if (signalMode) {
+    const modeLabel = signalMode === "trend_pullback_reversion"
+      ? "TrendMR"
+      : (signalMode === "entry_core_exit_overlay" ? "EntryCoreExitOverlay" : "HardGate");
+    parts.push(`mode=${modeLabel}`);
+  }
   if (ht && (ht.amplitude != null || ht.atr_period != null || ht.channel_deviation != null)) {
     parts.push(`HT(amp=${Number(ht.amplitude || 0)},atr=${Number(ht.atr_period || 0)},dev=${fmtFixed(ht.channel_deviation || 0, 2)})`);
   }
@@ -2755,6 +2835,36 @@ function formatCompositeParamsCompact(params) {
     parts.push(`OTT(p=${Number(ott.period || 0)},pct=${fmtFixed(ott.percent || 0, 2)}${ott.ma_type ? `,${String(ott.ma_type || "").toUpperCase()}` : ""})`);
   }
   return parts.join(" ");
+}
+
+function readCompositeSignalMode() {
+  const raw = String($("compositeSignalMode")?.value || "hard_gate").trim().toLowerCase();
+  if (raw === "entry_core_exit_overlay") return raw;
+  if (raw === "trend_pullback_reversion") return raw;
+  return "hard_gate";
+}
+
+function compositeSignalModeSpec(modeRaw) {
+  const mode = String(modeRaw || "hard_gate").trim().toLowerCase();
+  if (mode === "entry_core_exit_overlay") {
+    return {
+      title: "Entry core + exit overlay",
+      details:
+        "Entry uses MA cross + HalfTrend direction. Exit uses overlay signals from MACZ/OTT or opposing regime shift.",
+    };
+  }
+  if (mode === "trend_pullback_reversion") {
+    return {
+      title: "Trend pullback reversion",
+      details:
+        "Trend is defined by MA + HalfTrend. Entries buy/sell pullbacks in-trend; exits trigger on reversion completion or trend break (MACZ/OTT assist).",
+    };
+  }
+  return {
+    title: "Hard gate",
+    details:
+      "Most selective mode: both entry and exit require agreement from MA, HalfTrend, MACZ, and OTT filters.",
+  };
 }
 
 function updateAggregateSummaryCards() {
@@ -2804,8 +2914,11 @@ function renderMetaSelection(resp) {
   if (metaEl) {
     const warn = Array.isArray(result?.warnings) && result.warnings.length ? ` · warn=${result.warnings.length}` : "";
     const holdout = holdoutDatasets ? ` · holdout=${holdoutDatasets}${holdoutSkipped ? ` (skipped ${holdoutSkipped})` : ""}` : "";
+    const rankMode = groups.some((g) => Number.isFinite(Number(g?.final_score)))
+      ? " · rank=holdout-adjusted"
+      : "";
     metaEl.textContent = result
-      ? `groups=${groups.length} · artifacts=${Number(result.artifacts_used || 0)}/${Number(result.artifacts_considered || 0)} · candidates=${Number(result.candidates_considered || 0)} · runtime=${Number(result.runtime_ms || 0)}ms${holdout}${warn}`
+      ? `groups=${groups.length} · artifacts=${Number(result.artifacts_used || 0)}/${Number(result.artifacts_considered || 0)} · candidates=${Number(result.candidates_considered || 0)} · runtime=${Number(result.runtime_ms || 0)}ms${holdout}${rankMode}${warn}`
       : "—";
   }
 
@@ -2819,13 +2932,15 @@ function renderMetaSelection(resp) {
       const paramsCompact = formatCompositeParamsCompact(p);
       const h = g.holdout && typeof g.holdout === "object" ? g.holdout : null;
       const ml = typeof g.ml_confidence === "number" && Number.isFinite(g.ml_confidence) ? g.ml_confidence : null;
+      const finalScore = Number(g.final_score);
+      const rankScore = Number.isFinite(finalScore) ? finalScore : Number(g.meta_score || 0);
 
       const tr = document.createElement("tr");
       const cells = [
         String(i + 1),
         String(Number(g.samples || 0)),
         fmtFixed(Number(g.pass_rate || 0) * 100, 1) + "%",
-        fmtFixed(g.meta_score || 0, 6),
+        fmtFixed(rankScore, 6),
         ml != null ? (fmtFixed(ml * 100, 1) + "%") : "-",
         fmtFixed(g.robust_score_p10 || 0, 6),
         fmtFixed(g.robust_score_median || 0, 6),
@@ -2854,9 +2969,18 @@ function renderMetaSelection(resp) {
   const revealBtn = $("btnRevealMetaFiles");
   const reportPath = String(resp?.report_xlsx_path || "").trim();
   const metaPath = String(resp?.meta_json_path || "").trim();
+  const prevMetaPath = String(LAST_META_RUN?.meta_json_path || "").trim();
   if (reportBtn) reportBtn.disabled = RUNNING || !reportPath;
   if (revealBtn) revealBtn.disabled = RUNNING || (!reportPath && !metaPath);
   LAST_META_RUN = resp || null;
+  updateValidationExportButtons();
+  if (!resp || metaPath !== prevMetaPath) {
+    LAST_META_STAGE4_RUN = null;
+    setMetaStage4Status("—");
+    renderMetaStage4Output(null);
+  }
+  updateMetaMlButtons();
+  updateMetaStage4Buttons();
   updateAggregateSummaryCards();
 }
 
@@ -2899,6 +3023,134 @@ function updateMetaMlButtons() {
   if (btnTrain) btnTrain.disabled = RUNNING || !hasTf;
   if (btnApply) btnApply.disabled = RUNNING || !hasTf || !hasMeta || !hasModel;
   if (btnDelete) btnDelete.disabled = RUNNING || !hasTf || !hasModel;
+  updateMetaStage4Buttons();
+}
+
+function setMetaStage4Status(text) {
+  const el = $("metaStage4Status");
+  if (!el) return;
+  el.textContent = String(text || "—");
+}
+
+function renderMetaStage4Output(resp) {
+  const out = $("metaStage4Output");
+  if (!out) return;
+  const result = resp?.result && typeof resp.result === "object" ? resp.result : null;
+  const groups = Array.isArray(result?.selected_groups) ? result.selected_groups : [];
+  if (!result || !groups.length) {
+    out.textContent = "-";
+    return;
+  }
+  const lines = [];
+  const dc = result?.decision_counts && typeof result.decision_counts === "object" ? result.decision_counts : {};
+  lines.push(
+    `scope=${String(result.strategy_kind || "")}/${String(result.timeframe || "")} ` +
+    `selected=${Number(result.groups_selected || 0)} scored=${Number(result.groups_scored || 0)}/${Number(result.groups_considered || 0)} ` +
+    `min_ml=${fmtFixed(Number(result.min_ml_confidence || 0), 3)}`
+  );
+  lines.push(
+    `weights(meta/ml/unc)=${fmtFixed(Number(result.meta_weight || 0), 3)}/${fmtFixed(Number(result.ml_weight || 0), 3)}/${fmtFixed(Number(result.uncertainty_weight || 0), 3)} ` +
+    `buckets(accept/review/reject)=${Number(dc.accept || 0)}/${Number(dc.review || 0)}/${Number(dc.reject || 0)}`
+  );
+  lines.push(
+    `policy accept>=${fmtFixed(Number(result.accept_confidence || 0), 3)} review>=${fmtFixed(Number(result.review_confidence || 0), 3)} ` +
+    `max_accept_unc=${fmtFixed(Number(result.max_accept_uncertainty || 0), 3)}`
+  );
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i] || {};
+    const p = g.params && typeof g.params === "object" ? g.params : {};
+    const conf = Number(g.ml_confidence);
+    const confText = Number.isFinite(conf) ? `${fmtFixed(conf * 100, 1)}%` : "-";
+    const unc = Number(g.ml_uncertainty);
+    const uncText = Number.isFinite(unc) ? fmtFixed(unc, 3) : "-";
+    const rank = Number(g.stage4_rank || (i + 1));
+    const bucket = String(g.decision_bucket || "reject").trim().toLowerCase() || "reject";
+    const fast = `${String(p.fast_ma_type || "").toUpperCase()} ${Number(p.fast_len || 0)}`.trim();
+    const slow = `${String(p.slow_ma_type || "").toUpperCase()} ${Number(p.slow_len || 0)}`.trim();
+    const finalRank = Number(g.final_rank_score);
+    const rankScore = Number.isFinite(finalRank)
+      ? finalRank
+      : (Number.isFinite(Number(g.final_score)) ? Number(g.final_score) : Number(g.meta_score || 0));
+    lines.push(`#${rank} ${bucket} ml=${confText} unc=${uncText} final=${fmtFixed(rankScore, 6)} ${fast} vs ${slow}`.trim());
+  }
+  const warns = Array.isArray(result.warnings) ? result.warnings : [];
+  if (warns.length) lines.push(`warnings=${warns.length}: ${warns.join(" | ")}`);
+  out.textContent = lines.join("\n");
+}
+
+function updateMetaStage4Buttons() {
+  const hasTf = !!String(metaMlScopeFromUi().timeframe || "").trim();
+  const hasMeta = !!LAST_META_RUN?.result;
+  const btnRun = $("btnRunMetaStage4");
+  const btnReveal = $("btnRevealMetaStage4");
+  if (btnRun) btnRun.disabled = RUNNING || !hasTf || !hasMeta;
+  if (btnReveal) btnReveal.disabled = RUNNING || !String(LAST_META_STAGE4_RUN?.stage4_json_path || "").trim();
+}
+
+async function runMetaStage4Experimental() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  if (!LAST_META_RUN?.result?.groups?.length) throw new Error("Run or load a meta analysis first.");
+  const scope = metaMlScopeFromUi();
+  if (!String(scope.timeframe || "").trim()) throw new Error("Timeframe required for Stage 4.");
+
+  const top_k = Math.max(1, Math.floor(Number($("metaStage4TopK")?.value || 10)));
+  const min_ml_confidence = Number($("metaStage4MinConf")?.value || 0.55);
+  const meta_weight = Math.max(0, Number($("metaStage4MetaWeight")?.value || 0.60));
+  const ml_weight = Math.max(0, Number($("metaStage4MlWeight")?.value || 0.35));
+  const uncertainty_weight = Math.max(0, Number($("metaStage4UncertaintyWeight")?.value || 0.05));
+  const accept_confidence = Number($("metaStage4AcceptConf")?.value || 0.70);
+  const review_confidence = Number($("metaStage4ReviewConf")?.value || 0.55);
+  const max_accept_uncertainty = Number($("metaStage4MaxAcceptUncertainty")?.value || 0.45);
+  const auto_train_model = !!$("metaStage4AutoTrain")?.checked;
+  const auto_retrain_stale = auto_train_model;
+  const require_healthy_model = !!$("metaStage4RequireHealthy")?.checked;
+  const fallback_to_meta_if_empty = !!$("metaStage4FallbackToMeta")?.checked;
+  const source_meta_path = String(LAST_META_RUN?.meta_json_path || "").trim() || null;
+  const req = {
+    strategy_kind: String(scope.strategy_kind || "").trim() || "CompositeMo",
+    timeframe: String(scope.timeframe || "").trim() || null,
+    source_meta_path,
+    top_k,
+    min_ml_confidence,
+    meta_weight,
+    ml_weight,
+    uncertainty_weight,
+    accept_confidence,
+    review_confidence,
+    max_accept_uncertainty,
+    auto_train_model,
+    auto_retrain_stale,
+    require_healthy_model,
+    fallback_to_meta_if_empty,
+  };
+
+  const wasRunning = RUNNING;
+  setRunning(true);
+  setProgressUi(0, 1, "meta_stage4", "Preparing Stage 4 inputs...");
+  setStatus("Running experimental Stage 4...", "muted");
+  try {
+    const resp = await invoke("run_meta_stage4_experimental", { req });
+    LAST_META_STAGE4_RUN = resp || null;
+    const res = resp?.result || {};
+    const selected = Number(res?.groups_selected || 0);
+    const scored = Number(res?.groups_scored || 0);
+    const total = Number(res?.groups_considered || 0);
+    const dc = res?.decision_counts && typeof res.decision_counts === "object" ? res.decision_counts : {};
+    const path = String(resp?.stage4_json_path || "").trim();
+    setMetaStage4Status(
+      `Stage 4 complete: selected=${selected} scored=${scored}/${total} ` +
+      `accept/review/reject=${Number(dc.accept || 0)}/${Number(dc.review || 0)}/${Number(dc.reject || 0)} ` +
+      `· file=${path ? fileBasename(path) : "—"}`
+    );
+    renderMetaStage4Output(resp);
+    updateMetaStage4Buttons();
+    await refreshStage4Saved(path);
+    setStatus(path ? `Stage 4 complete. Saved: ${path}` : "Stage 4 complete.", "ok");
+  } finally {
+    if (!wasRunning) clearProgressUi();
+    setRunning(false);
+  }
 }
 
 async function refreshMetaMlStatus() {
@@ -3079,7 +3331,7 @@ async function runMetaSelection(opts) {
   if (RUNNING && !opts?.allowWhileRunning) return;
 
   const strategy_kind = String($("metaStrategyKind")?.value || "CompositeMo").trim() || "CompositeMo";
-  const supportsHoldout = strategy_kind === "CompositeCpu" || strategy_kind === "CompositeMo" || strategy_kind === "DoubleMa";
+  const supportsHoldout = strategy_kind === "CompositeCpu" || strategy_kind === "CompositeMo" || strategy_kind === "DoubleMa" || strategy_kind === "CompositeTrend" || strategy_kind === "RegimeHybrid" || strategy_kind === "BreakoutMomentum";
   const timeframeRaw = String($("metaTimeframe")?.value || "").trim();
   const requiredTagRaw = String($("metaRequiredTag")?.value || "").trim();
   const min_samples = Math.max(1, Math.floor(Number($("metaMinSamples")?.value || 30)));
@@ -3159,6 +3411,7 @@ async function runMetaSelection(opts) {
     const resp = await invoke("run_meta_selection", { req });
     LAST_META_RUN = resp;
     renderMetaSelection(resp);
+    updateValidationExportButtons();
     await refreshMetaSaved(String(resp?.meta_json_path || "").trim());
     const path = String(resp?.report_xlsx_path || "").trim();
     setStatus(path ? `Meta complete. Saved report: ${path}` : "Meta complete.", "ok");
@@ -3181,6 +3434,7 @@ function isCancelledError(err) {
 function updateValidationExportButtons() {
   const hasRun = !!CURRENT_RUN?.res;
   const hasVal = !!CURRENT_VALIDATION?.res;
+  const hasMetaXlsx = !!String(LAST_META_RUN?.report_xlsx_path || "").trim();
   const btnCsv = $("btnExportValidationCsv");
   const btnJson = $("btnExportValidationJson");
   const btnReport = $("btnExportReportJson");
@@ -3188,7 +3442,7 @@ function updateValidationExportButtons() {
   if (btnCsv) btnCsv.disabled = RUNNING || !hasVal;
   if (btnJson) btnJson.disabled = RUNNING || !hasVal;
   if (btnReport) btnReport.disabled = RUNNING || !hasRun;
-  if (btnXlsx) btnXlsx.disabled = RUNNING || !hasVal;
+  if (btnXlsx) btnXlsx.disabled = RUNNING || !hasMetaXlsx;
 }
 
 function maParamSchema(maId) {
@@ -3409,6 +3663,46 @@ function refreshMaParamsUi() {
 function num(v, fallback) {
   const x = Number(v);
   return Number.isFinite(x) ? x : fallback;
+}
+
+const DEFAULT_STARTING_EQUITY = 10_000;
+
+function normalizeStartingEquity(raw, fallback) {
+  const x = Number(raw);
+  const fb = Number.isFinite(Number(fallback)) && Number(fallback) > 0 ? Number(fallback) : DEFAULT_STARTING_EQUITY;
+  if (!Number.isFinite(x) || x <= 0) return fb;
+  return x;
+}
+
+function readStartingEquityFromUi() {
+  return normalizeStartingEquity($("startingEquity")?.value, DEFAULT_STARTING_EQUITY);
+}
+
+function startingEquityFromReq(req) {
+  const r = req && typeof req === "object" ? req : {};
+  const direct = Number(r.starting_equity ?? r.startingEquity);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const st = (r.strategy && typeof r.strategy === "object")
+    ? r.strategy
+    : ((r.base_strategy && typeof r.base_strategy === "object") ? r.base_strategy : null);
+  const fromStrategy = Number(st?.starting_equity ?? st?.startingEquity);
+  if (Number.isFinite(fromStrategy) && fromStrategy > 0) return fromStrategy;
+  return DEFAULT_STARTING_EQUITY;
+}
+
+function finalEquityFromPnl(pnl, startingEquity) {
+  const r = Number(pnl);
+  const s = normalizeStartingEquity(startingEquity, DEFAULT_STARTING_EQUITY);
+  if (!Number.isFinite(r)) return NaN;
+  return s * (1 + r);
+}
+
+function fmtMoney(x, digits) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "-";
+  const d = Number.isFinite(digits) ? Math.max(0, Math.min(8, Math.floor(digits))) : 2;
+  return n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
 function parseRiskPctInput(id) {
@@ -3656,6 +3950,7 @@ function updateDataTimeframeUi() {
 
 async function applySelectedDataTimeframe(opts) {
   if (RUNNING && !opts?.allowWhileRunning) return;
+  const persist = opts?.persist !== false;
 
   const baseId = String(CURRENT_BASE_DATA_ID || "").trim();
   if (!baseId || baseId === "—" || baseId === "-") {
@@ -3688,6 +3983,7 @@ async function applySelectedDataTimeframe(opts) {
     applyMaSourceConstraints();
     applyBackendMaConstraints();
     updateOverviewEmptyUi();
+    if (persist) saveSettingsSoon();
     setStatus(baseTf ? `Using base timeframe (${baseTf}).` : "Using base timeframe.", "muted");
     return;
   }
@@ -3725,6 +4021,7 @@ async function applySelectedDataTimeframe(opts) {
 
     setStatus(cacheHit ? `Using ${target} (cached).` : `Using ${target}.`, "ok");
     $("output").textContent = pretty(resp);
+    if (persist) saveSettingsSoon();
   } finally {
     setRunning(false);
   }
@@ -3853,6 +4150,18 @@ function setRunning(running) {
     "maSource",
     "objective",
     "mode",
+    "vdpsEta",
+    "vdpsRungs",
+    "vdpsMinInitialPairs",
+    "vdpsMaxSurvivorSeeds",
+    "vdpsMaxPeriodCandidates",
+    "vdpsRandomInjectionRatio",
+    "vdpsEliteMutationRatio",
+    "vdpsDifferentialRatio",
+    "vdpsDeterministic",
+    "vdpsSeed",
+    "vdpsQualityCheckMaxPairs",
+    "vdpsQualityCheckTopK",
     "topK",
     "includeAll",
     "exportAllCsvPath",
@@ -3862,6 +4171,43 @@ function setRunning(running) {
     "epsRel",
     "stopLossPct",
     "takeProfitPct",
+    "trailingStopPct",
+    "cooldownBars",
+    "signalPersistenceBars",
+    "dmConstraintMinTrades",
+    "dmConstraintMaxDd",
+    "exitMode",
+    "kaufmanStopPeriod",
+    "kaufmanStopMult",
+    "kaufmanStopMaType",
+    "trendLrPeriod",
+    "trendLrMinDeg",
+    "trendBbwPeriod",
+    "trendBbwMult",
+    "trendBbwMin",
+    "trendRocPeriod",
+    "trendUseRoc",
+    "trendUseAdx",
+    "trendAdxPeriod",
+    "trendAdxMin",
+    "regimeAdxPeriod",
+    "regimeAdxEnter",
+    "regimeAdxExit",
+    "regimeRevEntryRel",
+    "regimeRevExitRel",
+    "breakoutBbPeriod",
+    "breakoutBbMult",
+    "breakoutConfirmBars",
+    "breakoutMacdFast",
+    "breakoutMacdSlow",
+    "breakoutMacdSignal",
+    "breakoutCmoPeriod",
+    "breakoutCmoMinAbs",
+    "breakoutAdoscShort",
+    "breakoutAdoscLong",
+    "breakoutUseAdx",
+    "breakoutAdxPeriod",
+    "breakoutAdxMin",
     "execMode",
     "execSymbol",
     "execQty",
@@ -3881,9 +4227,12 @@ function setRunning(running) {
     "btnExecRefresh",
     "btnExecLiveStart",
     "btnExecLiveStop",
+    "btnExecRunnerStart",
+    "btnExecRunnerStop",
     "longOnly",
     "allowFlip",
     "tradeOnNext",
+    "compositeSignalMode",
     "halfTrendAmplitude",
     "halfTrendAtrPeriod",
     "halfTrendChannelDev",
@@ -4032,6 +4381,19 @@ function setRunning(running) {
     "btnRunMeta",
     "btnOpenMetaReport",
     "btnRevealMetaFiles",
+    "metaStage4TopK",
+    "metaStage4MinConf",
+    "metaStage4MetaWeight",
+    "metaStage4MlWeight",
+    "metaStage4UncertaintyWeight",
+    "metaStage4AcceptConf",
+    "metaStage4ReviewConf",
+    "metaStage4MaxAcceptUncertainty",
+    "metaStage4AutoTrain",
+    "metaStage4RequireHealthy",
+    "metaStage4FallbackToMeta",
+    "btnRunMetaStage4",
+    "btnRevealMetaStage4",
     "metaSavedSearch",
     "metaSavedSelect",
     "metaSavedTags",
@@ -4041,6 +4403,14 @@ function setRunning(running) {
     "btnOpenMetaSavedReport",
     "btnRevealMetaSaved",
     "btnDeleteMetaSaved",
+    "stage4SavedSearch",
+    "stage4SavedSelect",
+    "stage4SavedTags",
+    "btnSaveStage4SavedTags",
+    "btnRefreshStage4Saved",
+    "btnLoadStage4Saved",
+    "btnRevealStage4Saved",
+    "btnDeleteStage4Saved",
     "metaCompareSelect",
     "batchDatasetSearch",
     "batchTags",
@@ -4109,6 +4479,9 @@ function setRunning(running) {
   updateValidationExportButtons();
   syncSavedRunSelectionUi();
   syncMetaSavedSelectionUi();
+  syncStage4SavedSelectionUi();
+  updateMetaMlButtons();
+  updateMetaStage4Buttons();
   syncBatchSummaryButtons();
   syncSettingsWorkspaceUi();
   setExecBusy(EXEC_BUSY);
@@ -4198,7 +4571,17 @@ async function initMaSelects() {
     const prevFast = (fastSel.value || "").trim();
     const prevSlow = (slowSel.value || "").trim();
 
-    const mas = [...MA_LIST].sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
+    const maRank = (m) => {
+      if (m && m.prefers_cuda_kernel) return 0;
+      if (m && m.supports_cuda_kernel) return 1;
+      return 2;
+    };
+    const mas = [...MA_LIST].sort((a, b) => {
+      const ra = maRank(a);
+      const rb = maRank(b);
+      if (ra !== rb) return ra - rb;
+      return (a.label || a.id).localeCompare(b.label || b.id);
+    });
     for (const sel of [fastSel, slowSel]) {
       sel.innerHTML = "";
       for (const m of mas) {
@@ -4206,7 +4589,14 @@ async function initMaSelects() {
         opt.value = m.id;
         const isOk = !!m.period_based && !!m.single_output;
         opt.disabled = !isOk;
-        opt.textContent = isOk ? `${m.label} (${m.id})` : `${m.label} (${m.id}) [not supported]`;
+        if (isOk) {
+          const gpuTag = m.prefers_cuda_kernel
+            ? " [GPU preferred]"
+            : (m.supports_cuda_kernel ? " [GPU kernel]" : "");
+          opt.textContent = `${m.label} (${m.id})${gpuTag}`;
+        } else {
+          opt.textContent = `${m.label} (${m.id}) [not supported]`;
+        }
         sel.appendChild(opt);
       }
     }
@@ -4281,7 +4671,8 @@ const PHASE_LABELS = {
   "meta_holdout": "Meta (holdout)",
   "meta_export": "Meta (export XLSX)",
   "meta_save": "Meta (save JSON)",
-  "export_xlsx": "XLSX report",
+  "meta_stage4": "Meta Stage 4 (ML finalize)",
+  "export_xlsx": "Open Stage 3 XLSX",
   "reveal_report": "Reveal report",
 };
 
@@ -4311,7 +4702,8 @@ const PHASE_HINTS = {
   "meta_holdout": "Scoring groups on holdout datasets.",
   "meta_export": "Generating meta XLSX report.",
   "meta_save": "Saving meta JSON artifact.",
-  "export_xlsx": "Writing XLSX report to disk.",
+  "meta_stage4": "Applying ML confidence finalizer to the latest meta groups.",
+  "export_xlsx": "Opening Stage 3 meta XLSX report.",
   "reveal_report": "Opening report location in file explorer.",
 };
 
@@ -4364,7 +4756,7 @@ function countParamSweepVariants(sweeps) {
 
 function estimateOptimizationWorkLabel(req) {
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa").trim();
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+  const kind = normalizeStrategyKindRaw(kindRaw);
 
   if (kind === "CompositeMo") {
     const sampler = req?.sampler && typeof req.sampler === "object" ? req.sampler : null;
@@ -4452,11 +4844,29 @@ function formatRiskProgressSummary(strategy) {
   if (!st) return "";
   const sl = Number(st.stop_loss_pct);
   const tp = Number(st.take_profit_pct);
+  const trail = Number(st.trailing_stop_pct);
+  const cooldown = Math.max(0, Math.floor(num(st.cooldown_bars, 0)));
+  const persist = Math.max(1, Math.floor(num(st.signal_persistence_bars, 1)));
   const parts = [];
   if (Number.isFinite(sl) && sl > 0) parts.push(`SL ${fmtPct(sl, 2)}`);
   if (Number.isFinite(tp) && tp > 0) parts.push(`TP ${fmtPct(tp, 2)}`);
+  if (Number.isFinite(trail) && trail > 0) parts.push(`Trail ${fmtPct(trail, 2)}`);
+  if (cooldown > 0) parts.push(`CD ${cooldown}b`);
+  if (persist > 1) parts.push(`Persist ${persist}b`);
   if (!parts.length) return "";
   return `risk ${parts.join(" / ")}`;
+}
+
+function formatDoubleConstraintsProgressSummary(constraints) {
+  const c = constraints && typeof constraints === "object" ? constraints : null;
+  if (!c) return "";
+  const parts = [];
+  const minTrades = Number(c.min_trades);
+  if (Number.isFinite(minTrades) && minTrades > 0) parts.push(`trades>=${Math.floor(minTrades)}`);
+  const maxDd = Number(c.max_drawdown);
+  if (Number.isFinite(maxDd) && maxDd >= 0) parts.push(`dd<=${fmtPct(maxDd, 2)}`);
+  if (!parts.length) return "";
+  return `filters ${parts.join(", ")}`;
 }
 
 function formatMaPairProgressSummary(fastTypes, slowTypes) {
@@ -4474,10 +4884,12 @@ function formatMaPairProgressSummary(fastTypes, slowTypes) {
 function buildOptimizationProgressContext(req) {
   const kind = kindFromReq(req);
   const parts = [strategyKindLabel(kind)];
+  const startEq = startingEquityFromReq(req);
   const risk = formatRiskProgressSummary(kind === "CompositeMo" ? (req?.base_strategy || req?.strategy) : req?.strategy);
   const work = estimateOptimizationWorkLabel(req);
+  if (Number.isFinite(startEq) && startEq > 0) parts.push(`eq ${fmtMoney(startEq, 0)}`);
 
-  if (kind === "DoubleMa") {
+  if (isDoubleLikeKind(kind)) {
     parts.push(backendProgressLabel(req?.backend?.backend));
     const maPair = formatMaPairProgressSummary(req?.fast_ma_types, req?.slow_ma_types);
     if (maPair) parts.push(maPair);
@@ -4485,6 +4897,8 @@ function buildOptimizationProgressContext(req) {
     if (objective) parts.push(`obj ${objective}`);
     const mode = String(req?.mode || "").trim();
     if (mode) parts.push(mode === "CoarseToFine" ? "Coarse→Fine" : mode);
+    const constraintText = formatDoubleConstraintsProgressSummary(req?.constraints);
+    if (constraintText) parts.push(constraintText);
   } else if (kind === "CompositeCpu") {
     parts.push("CPU");
     const maPair = formatMaPairProgressSummary(req?.fast_ma_types, req?.slow_ma_types);
@@ -6093,7 +6507,7 @@ function formatBytesCompact(bytes) {
 }
 
 function applyCudaBackendAvailabilityConstraints(status) {
-  if (strategyKind() !== "DoubleMa") return;
+  if (!isDoubleLikeKind(strategyKind())) return;
   const backendSel = $("backend");
   if (!backendSel) return;
 
@@ -6249,7 +6663,24 @@ async function refreshGpuStatusUi() {
 
   const fastMa = String($("fastMaType")?.value || "").trim();
   const slowMa = String($("slowMaType")?.value || "").trim();
-  const kernelOk = builtCuda && builtKernel && cudaOk && fastMa && slowMa && maSupportsKernel(fastMa) && maSupportsKernel(slowMa);
+  const exitMode = String($("exitMode")?.value || "cross").trim() || "cross";
+  const cooldownBars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+  const signalPersistenceBars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
+  const trailingStopPct = parseRiskPctInput("trailingStopPct");
+  const hasExecutionOverlays =
+    cooldownBars > 0 || signalPersistenceBars > 1 || trailingStopPct != null;
+  const kind = strategyKind();
+  const kernelStrategyOk = isDoubleLikeKind(kind);
+  const kernelOk = builtCuda
+    && builtKernel
+    && cudaOk
+    && kernelStrategyOk
+    && exitMode === "cross"
+    && !hasExecutionOverlays
+    && fastMa
+    && slowMa
+    && maSupportsKernel(fastMa)
+    && maSupportsKernel(slowMa);
   const sweepOk = builtCuda && cudaOk && fastMa && slowMa && maSupportsCuda(fastMa) && maSupportsCuda(slowMa);
 
   const parts = [];
@@ -6265,6 +6696,12 @@ async function refreshGpuStatusUi() {
     hint = " (rebuild with --features cuda)";
   } else if (builtCuda && !cudaOk && wantsGpu) {
     hint = " (CUDA runtime unavailable)";
+  } else if (backendSel === "GpuKernel" && !kernelStrategyOk) {
+    hint = " (kernel is available for Double MA, Composite Trend-Quality, Regime-Switch Hybrid, and Breakout Pulse)";
+  } else if (backendSel === "GpuKernel" && exitMode !== "cross") {
+    hint = " (kernel requires exit mode = cross)";
+  } else if (backendSel === "GpuKernel" && hasExecutionOverlays) {
+    hint = " (kernel does not support cooldown/persistence/trailing-stop overlays)";
   } else if (backendSel === "GpuKernel" && !kernelOk) {
     hint = " (kernel not available for selected MA types/build)";
   } else if (backendSel === "GpuOnly" && !sweepOk) {
@@ -6307,6 +6744,7 @@ function buildTinyDoubleMaRequestForParity(backendObj) {
     strategy_kind: "DoubleMa",
     backend: backendObj,
     data_id,
+    starting_equity: readStartingEquityFromUi(),
     fast_range,
     slow_range,
     fast_ma_types: [fastMaType],
@@ -6365,9 +6803,15 @@ async function runGpuParityCheck() {
   const device_id = Math.max(0, Math.floor(num($("deviceId")?.value, 0)));
   const fastMa = String($("fastMaType")?.value || "").trim();
   const slowMa = String($("slowMaType")?.value || "").trim();
+  const exitMode = String($("exitMode")?.value || "cross").trim() || "cross";
+  const cooldownBars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+  const signalPersistenceBars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
+  const trailingStopPct = parseRiskPctInput("trailingStopPct");
+  const hasExecutionOverlays =
+    cooldownBars > 0 || signalPersistenceBars > 1 || trailingStopPct != null;
 
   let gpuBackend = null;
-  if (builtKernel && fastMa && slowMa && maSupportsKernel(fastMa) && maSupportsKernel(slowMa)) {
+  if (builtKernel && exitMode === "cross" && !hasExecutionOverlays && fastMa && slowMa && maSupportsKernel(fastMa) && maSupportsKernel(slowMa)) {
     gpuBackend = "GpuKernel";
   } else if (fastMa && slowMa && maSupportsCuda(fastMa) && maSupportsCuda(slowMa)) {
     gpuBackend = "GpuOnly";
@@ -6435,9 +6879,24 @@ function strategyKind() {
   return v;
 }
 
+function normalizeStrategyKindRaw(kindRaw) {
+  const k = String(kindRaw || "DoubleMa").trim() || "DoubleMa";
+  if (k === "CompositeCpu") return "CompositeCpu";
+  if (k === "CompositeMo") return "CompositeMo";
+  if (k === "CompositeTrend") return "CompositeTrend";
+  if (k === "RegimeHybrid") return "RegimeHybrid";
+  if (k === "BreakoutMomentum") return "BreakoutMomentum";
+  return "DoubleMa";
+}
+
+function isDoubleLikeKind(kind) {
+  const k = String(kind || "").trim();
+  return k === "DoubleMa" || k === "CompositeTrend" || k === "RegimeHybrid" || k === "BreakoutMomentum";
+}
+
 function isCompositeStrategy() {
   const k = strategyKind();
-  return k === "CompositeCpu" || k === "CompositeMo";
+  return k === "CompositeCpu" || k === "CompositeMo" || k === "CompositeTrend";
 }
 
 function countF64RangeValues(start, end, step) {
@@ -6507,6 +6966,9 @@ function updatePairsPreviewUi() {
 function runButtonLabelForKind(kind) {
   if (kind === "CompositeMo") return "Run optimization (Composite MO)";
   if (kind === "CompositeCpu") return "Run optimization (Composite CPU)";
+  if (kind === "CompositeTrend") return "Run optimization (Composite Trend-Quality)";
+  if (kind === "RegimeHybrid") return "Run optimization (Regime-Switch Hybrid)";
+  if (kind === "BreakoutMomentum") return "Run optimization (Breakout Pulse)";
   return "Run optimization (Double MA)";
 }
 
@@ -6592,8 +7054,15 @@ function updateRunReadinessUi() {
 
   let backendValue = "CPU";
   let backendTone = "on";
-  if (kind === "DoubleMa") {
+  if (isDoubleLikeKind(kind)) {
     const backend = String($("backend")?.value || "CpuOnly").trim() || "CpuOnly";
+    const exitMode = String($("exitMode")?.value || "cross").trim() || "cross";
+    const cooldownBars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+    const signalPersistenceBars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
+    const trailingStopPct = parseRiskPctInput("trailingStopPct");
+    const hasExecutionOverlays =
+      cooldownBars > 0 || signalPersistenceBars > 1 || trailingStopPct != null;
+    const kernelStrategyOk = isDoubleLikeKind(kind);
     backendValue = backend;
     let backendOk = true;
     if (fastMaType && slowMaType) {
@@ -6604,8 +7073,22 @@ function updateRunReadinessUi() {
         backendOk = maSupportsCuda(fastMaType) && maSupportsCuda(slowMaType);
         if (!backendOk) pushUnique(blockers, "GPU backend requires CUDA support for both selected MAs.");
       } else if (backend === "GpuKernel") {
-        backendOk = maSupportsKernel(fastMaType) && maSupportsKernel(slowMaType);
-        if (!backendOk) pushUnique(blockers, "GPU (kernel) supports only sma/ema/wma/alma.");
+        backendOk = kernelStrategyOk && maSupportsKernel(fastMaType) && maSupportsKernel(slowMaType);
+        if (!kernelStrategyOk) {
+          backendOk = false;
+          pushUnique(blockers, "GPU (kernel) is available for Double MA, Composite Trend-Quality, Regime-Switch Hybrid, and Breakout Pulse only.");
+        }
+        if (exitMode !== "cross") {
+          backendOk = false;
+          pushUnique(blockers, "GPU (kernel) currently supports exit mode = cross only.");
+        }
+        if (hasExecutionOverlays) {
+          backendOk = false;
+          pushUnique(blockers, "GPU (kernel) does not support cooldown/persistence/trailing-stop overlays.");
+        }
+        if (!backendOk && exitMode === "cross" && kernelStrategyOk && !hasExecutionOverlays) {
+          pushUnique(blockers, "GPU (kernel) does not support one of the selected MA types.");
+        }
       } else {
         const okFast = maSupportsCpu(fastMaType) || maSupportsCuda(fastMaType) || maSupportsKernel(fastMaType);
         const okSlow = maSupportsCpu(slowMaType) || maSupportsCuda(slowMaType) || maSupportsKernel(slowMaType);
@@ -6657,15 +7140,25 @@ function updateRunReadinessUi() {
     } catch (e) {
       pushUnique(blockers, String(e));
     }
-    if ((kind === "CompositeCpu" || kind === "CompositeMo") && (!meta.has_high || !meta.has_low)) {
-      pushUnique(blockers, "Composite strategy requires high/low candle fields.");
+    if ((kind === "CompositeCpu" || kind === "CompositeMo" || kind === "RegimeHybrid" || kind === "BreakoutMomentum") && (!meta.has_high || !meta.has_low)) {
+      pushUnique(
+        blockers,
+        kind === "RegimeHybrid"
+          ? "Regime-Switch Hybrid requires high/low candle fields."
+          : (kind === "BreakoutMomentum"
+            ? "Breakout Pulse requires high/low candle fields."
+            : "Composite strategy requires high/low candle fields.")
+      );
+    }
+    if (kind === "BreakoutMomentum" && !meta.has_volume) {
+      pushUnique(blockers, "Breakout Pulse requires volume candle field.");
     }
   }
 
   const fastVar = fastMaType ? estimateMaParamVariantCount("fast", fastMaType) : 1;
   const slowVar = slowMaType ? estimateMaParamVariantCount("slow", slowMaType) : 1;
   const combos = Math.max(0, Math.floor(pairs * Math.max(1, fastVar) * Math.max(1, slowVar)));
-  if (kind === "DoubleMa" && includeAll && combos > 2_000_000) {
+  if (isDoubleLikeKind(kind) && includeAll && combos > 2_000_000) {
     pushUnique(blockers, `includeAll=true would return ${combos} rows; disable it or reduce ranges/sweeps.`);
   } else if (kind === "CompositeCpu" && includeAll && pairs > 2_000_000) {
     pushUnique(blockers, `includeAll=true would return ${pairs} rows; disable it or reduce ranges.`);
@@ -6673,13 +7166,20 @@ function updateRunReadinessUi() {
 
   const sl = parseRiskPctInput("stopLossPct");
   const tp = parseRiskPctInput("takeProfitPct");
+  const trail = parseRiskPctInput("trailingStopPct");
+  const cooldownBars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+  const signalPersistenceBars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
   const slRaw = String($("stopLossPct")?.value || "").trim();
   const tpRaw = String($("takeProfitPct")?.value || "").trim();
+  const trailRaw = String($("trailingStopPct")?.value || "").trim();
   if (slRaw && sl == null) pushUnique(warnings, "Stop-loss input is invalid and will be ignored.");
   if (tpRaw && tp == null) pushUnique(warnings, "Take-profit input is invalid and will be ignored.");
-  if (!sl && !tp) pushUnique(warnings, "TP/SL is disabled.");
+  if (trailRaw && trail == null) pushUnique(warnings, "Trailing-stop input is invalid and will be ignored.");
+  if (!sl && !tp && !trail && cooldownBars === 0 && signalPersistenceBars <= 1) {
+    pushUnique(warnings, "Risk/entry overlays are disabled.");
+  }
 
-  const supportsVal = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa";
+  const supportsVal = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa" || kind === "CompositeTrend" || kind === "RegimeHybrid" || kind === "BreakoutMomentum";
   const autoVal = supportsVal && !!$("valAutoRun")?.checked;
   const checks = selectedValidationChecksSummary();
   if (supportsVal && !autoVal) pushUnique(warnings, "Auto-run validation is disabled.");
@@ -6688,10 +7188,14 @@ function updateRunReadinessUi() {
   const workLabel = previewReq ? estimateOptimizationWorkLabel(previewReq) : "";
   const searchValue = workLabel || (pairs > 0 ? `${formatCompactNumber(pairs)} MA pairs` : "invalid range");
   const searchTone = pairs > 0 ? "on" : "off";
-  const riskValue = sl && tp
-    ? `SL ${fmtFixed(sl * 100, 2)}% / TP ${fmtFixed(tp * 100, 2)}%`
-    : (sl ? `SL ${fmtFixed(sl * 100, 2)}%` : (tp ? `TP ${fmtFixed(tp * 100, 2)}%` : "off"));
-  const riskTone = sl || tp ? "on" : "warn";
+  const riskParts = [];
+  if (sl) riskParts.push(`SL ${fmtFixed(sl * 100, 2)}%`);
+  if (tp) riskParts.push(`TP ${fmtFixed(tp * 100, 2)}%`);
+  if (trail) riskParts.push(`Trail ${fmtFixed(trail * 100, 2)}%`);
+  if (cooldownBars > 0) riskParts.push(`CD ${cooldownBars}b`);
+  if (signalPersistenceBars > 1) riskParts.push(`Persist ${signalPersistenceBars}b`);
+  const riskValue = riskParts.length ? riskParts.join(" / ") : "off";
+  const riskTone = riskParts.length ? "on" : "warn";
   const valValue = autoVal
     ? (checks.length ? `auto (${checks.join("+")})` : "auto")
     : "manual";
@@ -6745,10 +7249,10 @@ function updateRunPlanUi() {
     steps.push(`Optimize (${b})`);
   }
 
-  const supportsVal = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa";
+  const supportsVal = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa" || kind === "CompositeTrend" || kind === "RegimeHybrid" || kind === "BreakoutMomentum";
   const autoVal = !!$("valAutoRun")?.checked && supportsVal;
-  const autoXlsx = autoVal && !!$("valAutoExportXlsx")?.checked;
-  const autoReveal = autoXlsx && !!$("valAutoRevealReport")?.checked;
+  const autoXlsx = false;
+  const autoReveal = false;
 
   if (autoVal) steps.push("Validate (auto)");
   if (autoXlsx) steps.push("Export XLSX (auto)");
@@ -6763,10 +7267,32 @@ function updateRunPlanUi() {
 
   const sl = parseRiskPctInput("stopLossPct");
   const tp = parseRiskPctInput("takeProfitPct");
-  const riskText = sl && tp
-    ? `risk=SL ${fmtFixed(sl * 100, 2)}% / TP ${fmtFixed(tp * 100, 2)}%`
-    : (sl ? `risk=SL ${fmtFixed(sl * 100, 2)}%` : (tp ? `risk=TP ${fmtFixed(tp * 100, 2)}%` : "risk=none"));
-  parts.push(riskText);
+  const trail = parseRiskPctInput("trailingStopPct");
+  const cooldownBars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+  const signalPersistenceBars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
+  const exitMode = String($("exitMode")?.value || "cross").trim() || "cross";
+  const kPeriod = Math.max(1, Math.floor(num($("kaufmanStopPeriod")?.value, 22)));
+  const kMult = Math.max(0.0001, num($("kaufmanStopMult")?.value, 2.0));
+  const kMa = String($("kaufmanStopMaType")?.value || "sma").trim() || "sma";
+  const riskParts = [];
+  if (sl) riskParts.push(`SL ${fmtFixed(sl * 100, 2)}%`);
+  if (tp) riskParts.push(`TP ${fmtFixed(tp * 100, 2)}%`);
+  if (trail) riskParts.push(`Trail ${fmtFixed(trail * 100, 2)}%`);
+  if (cooldownBars > 0) riskParts.push(`cooldown=${cooldownBars}b`);
+  if (signalPersistenceBars > 1) riskParts.push(`persist=${signalPersistenceBars}b`);
+  const riskText = riskParts.length ? `risk=${riskParts.join(", ")}` : "risk=none";
+  const exitText = exitMode === "kaufman_stop"
+    ? `exit=Kaufman-stop (p=${kPeriod}, m=${fmtFixed(kMult, 2)}, ma=${kMa})`
+    : "exit=cross";
+  parts.push(`${riskText} • ${exitText}`);
+  if (isDoubleLikeKind(kind)) {
+    const minTrades = optNum($("dmConstraintMinTrades")?.value);
+    const maxDd = optNum($("dmConstraintMaxDd")?.value);
+    const cParts = [];
+    if (Number.isFinite(minTrades) && minTrades > 0) cParts.push(`trades>=${Math.floor(minTrades)}`);
+    if (Number.isFinite(maxDd) && maxDd >= 0) cParts.push(`dd<=${fmtFixed(maxDd * 100, 2)}%`);
+    if (cParts.length) parts.push(`filters=${cParts.join(",")}`);
+  }
 
   const req = tryBuildRunRequestPreview();
   const work = req ? estimateOptimizationWorkLabel(req) : "";
@@ -6788,7 +7314,7 @@ function updateValidateTabUi() {
 
   const hasRun = !!(CURRENT_RUN?.req && CURRENT_RUN?.res);
   const runKind = hasRun ? kindFromReq(CURRENT_RUN.req) : "";
-  const canValidate = hasRun && (runKind === "CompositeCpu" || runKind === "CompositeMo" || runKind === "DoubleMa");
+  const canValidate = hasRun && (runKind === "CompositeCpu" || runKind === "CompositeMo" || runKind === "DoubleMa" || runKind === "CompositeTrend" || runKind === "RegimeHybrid" || runKind === "BreakoutMomentum");
 
   if (btn) btn.disabled = RUNNING || !canValidate;
 
@@ -6846,10 +7372,17 @@ function applyBackendSelectionConstraints() {
 
 function updateStrategyUi() {
   const kind = strategyKind();
+  const isDoubleLike = isDoubleLikeKind(kind);
   const isDoubleMa = kind === "DoubleMa";
+  const isCompTrend = kind === "CompositeTrend";
+  const isRegimeHybrid = kind === "RegimeHybrid";
+  const isBreakoutMomentum = kind === "BreakoutMomentum";
   const isCompCpu = kind === "CompositeCpu";
   const isCompMo = kind === "CompositeMo";
   const isComp = isCompCpu || isCompMo;
+  const compModeSpec = compositeSignalModeSpec(readCompositeSignalMode());
+  const exitMode = String($("exitMode")?.value || "cross").trim() || "cross";
+  const useKaufmanExit = isDoubleLike && exitMode === "kaufman_stop";
 
   if (isCompMo && String(document.documentElement.dataset.workflowAdvanced || "").trim() !== "1") {
     setWorkflowAdvancedEnabled(true, { persist: true });
@@ -6859,25 +7392,114 @@ function updateStrategyUi() {
   if (hint) {
     hint.textContent = isCompCpu
       ? "Legacy fixed-parameter mode. This selection is auto-upgraded to full composite optimization."
+      : isCompTrend
+      ? "Double MA with trend-quality regime filters (LinearReg angle + BB width + optional ROC/ADX confirmation)."
+      : isRegimeHybrid
+      ? "Hybrid: trend-follow in strong regimes, mean-reversion in range regimes (hysteresis-enabled ADX switching)."
+      : isBreakoutMomentum
+      ? "Breakout Pulse: MA crossover gated by BB breakout + MACD + CMO + ADOSC (optional ADX)."
       : isCompMo
-      ? "Optimizes MA + HalfTrend + MACZ + OTT parameters. Use Advanced → Indicator parameter ranges to control optimization domains."
+      ? `Optimizes MA + HalfTrend + MACZ + OTT parameters. Current variant: ${compModeSpec.title}.`
       : "Fast double moving-average crossover (CPU / GPU sweep / GPU kernel).";
   }
 
   const compWrap = $("compositeParamsWrap");
   if (compWrap) compWrap.style.display = isCompCpu ? "block" : "none";
 
+  const compSignalWrap = $("compositeSignalModeWrap");
+  if (compSignalWrap) compSignalWrap.style.display = isComp ? "block" : "none";
+  if ($("compositeSignalMode")) $("compositeSignalMode").disabled = RUNNING || !isComp;
+  const compSignalDetails = $("compositeSignalModeDetails");
+  if (compSignalDetails) {
+    compSignalDetails.textContent = isComp
+      ? `${compModeSpec.title}: ${compModeSpec.details}`
+      : "";
+  }
+
   const compMoWrap = $("compositeMoWrap");
   if (compMoWrap) compMoWrap.style.display = isCompMo ? "block" : "none";
+  const trendWrap = $("trendQualityWrap");
+  const showTrendWrap = isCompTrend || isRegimeHybrid;
+  const allowTrendAdx = isCompTrend;
+  if (trendWrap) trendWrap.style.display = showTrendWrap ? "block" : "none";
+  const trendTitle = $("trendQualityTitle");
+  if (trendTitle) {
+    trendTitle.textContent = isRegimeHybrid
+      ? "Trend regime detector (used by Regime-Switch Hybrid)"
+      : "Trend-quality filters";
+  }
+  for (const id of [
+    "trendLrPeriod",
+    "trendLrMinDeg",
+    "trendBbwPeriod",
+    "trendBbwMult",
+    "trendBbwMin",
+    "trendRocPeriod",
+    "trendUseRoc",
+  ]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = RUNNING || !showTrendWrap;
+  }
+  if ($("trendUseAdx")) $("trendUseAdx").disabled = RUNNING || !allowTrendAdx;
+  const trendUseAdx = allowTrendAdx && !!$("trendUseAdx")?.checked;
+  if ($("trendAdxPeriod")) $("trendAdxPeriod").disabled = RUNNING || !allowTrendAdx || !trendUseAdx;
+  if ($("trendAdxMin")) $("trendAdxMin").disabled = RUNNING || !allowTrendAdx || !trendUseAdx;
+  const regimeWrap = $("regimeHybridParamsWrap");
+  if (regimeWrap) regimeWrap.style.display = isRegimeHybrid ? "block" : "none";
+  for (const id of [
+    "regimeAdxPeriod",
+    "regimeAdxEnter",
+    "regimeAdxExit",
+    "regimeRevEntryRel",
+    "regimeRevExitRel",
+  ]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = RUNNING || !isRegimeHybrid;
+  }
+  const breakoutWrap = $("breakoutMomentumWrap");
+  if (breakoutWrap) breakoutWrap.style.display = isBreakoutMomentum ? "block" : "none";
+  for (const id of [
+    "breakoutBbPeriod",
+    "breakoutBbMult",
+    "breakoutConfirmBars",
+    "breakoutMacdFast",
+    "breakoutMacdSlow",
+    "breakoutMacdSignal",
+    "breakoutCmoPeriod",
+    "breakoutCmoMinAbs",
+    "breakoutAdoscShort",
+    "breakoutAdoscLong",
+    "breakoutUseAdx",
+  ]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = RUNNING || !isBreakoutMomentum;
+  }
+  const breakoutUseAdx = isBreakoutMomentum && !!$("breakoutUseAdx")?.checked;
+  if ($("breakoutAdxPeriod")) $("breakoutAdxPeriod").disabled = RUNNING || !isBreakoutMomentum || !breakoutUseAdx;
+  if ($("breakoutAdxMin")) $("breakoutAdxMin").disabled = RUNNING || !isBreakoutMomentum || !breakoutUseAdx;
+
+  const dmConstraintsWrap = $("dmConstraintsWrap");
+  if (dmConstraintsWrap) dmConstraintsWrap.style.display = isDoubleLike ? "" : "none";
+  for (const id of ["dmConstraintMinTrades", "dmConstraintMaxDd"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = RUNNING || !isDoubleLike;
+  }
 
   const valAuto = $("valAutoRun");
-  if (valAuto) valAuto.disabled = RUNNING || !(isComp || isDoubleMa);
+  if (valAuto) valAuto.disabled = RUNNING || !(isComp || isDoubleLike);
   const valAutoXlsx = $("valAutoExportXlsx");
-  if (valAutoXlsx) valAutoXlsx.disabled = RUNNING || !(isComp || isDoubleMa);
+  if (valAutoXlsx) {
+    valAutoXlsx.checked = false;
+    valAutoXlsx.disabled = true;
+  }
   const valAutoReveal = $("valAutoRevealReport");
-  if (valAutoReveal) valAutoReveal.disabled = RUNNING || !(isComp || isDoubleMa);
+  if (valAutoReveal) valAutoReveal.disabled = RUNNING || !(isComp || isDoubleLike);
   const valAutoTop = $("valAutoExportTopN");
-  if (valAutoTop) valAutoTop.disabled = RUNNING || !(isComp || isDoubleMa);
+  if (valAutoTop) valAutoTop.disabled = true;
 
   const backendSel = $("backend");
   if (backendSel) {
@@ -6892,6 +7514,27 @@ function updateStrategyUi() {
   if (modeSel) {
     modeSel.disabled = RUNNING || isComp;
     if (isComp && modeSel.value !== "Grid") modeSel.value = "Grid";
+  }
+  const vdpsActive = !!(modeSel && modeSel.value === "GpuVdps" && isDoubleLike && !isComp);
+  const vdpsWrap = $("vdpsConfigWrap");
+  if (vdpsWrap) vdpsWrap.style.display = vdpsActive ? "block" : "none";
+  for (const id of [
+    "vdpsEta",
+    "vdpsRungs",
+    "vdpsMinInitialPairs",
+    "vdpsMaxSurvivorSeeds",
+    "vdpsMaxPeriodCandidates",
+    "vdpsRandomInjectionRatio",
+    "vdpsEliteMutationRatio",
+    "vdpsDifferentialRatio",
+    "vdpsSeed",
+    "vdpsDeterministic",
+    "vdpsQualityCheckMaxPairs",
+    "vdpsQualityCheckTopK",
+  ]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = RUNNING || !vdpsActive;
   }
 
   const presetBtn = $("btnPresetKernelSmaAlma");
@@ -6910,7 +7553,7 @@ function updateStrategyUi() {
 
   const heatmapBins = $("heatmapBins");
   if (heatmapBins) {
-    heatmapBins.disabled = RUNNING || !isDoubleMa;
+    heatmapBins.disabled = RUNNING || !isDoubleLike;
   }
 
   const includeAllSel = $("includeAll");
@@ -6932,11 +7575,31 @@ function updateStrategyUi() {
 
   const heatmapTabBtn = document.querySelector('#resultsTabBar button[data-tab="heatmap"]');
   if (heatmapTabBtn) {
-    heatmapTabBtn.disabled = RUNNING || !isDoubleMa;
-    heatmapTabBtn.title = isDoubleMa ? "" : "Heatmap is available for Double MA only.";
+    heatmapTabBtn.disabled = RUNNING || !isDoubleLike;
+    heatmapTabBtn.title = isDoubleLike ? "" : "Heatmap is available for Double-MA-family strategies only.";
   }
-  if (!isDoubleMa && RESULTS_TABS?.get() === "heatmap") {
+  if (!isDoubleLike && RESULTS_TABS?.get() === "heatmap") {
     RESULTS_TABS.set("overview", { save: false, focus: false });
+  }
+
+  const exitModeEl = $("exitMode");
+  if (exitModeEl) exitModeEl.disabled = RUNNING || !isDoubleLike;
+  const kPeriodWrap = $("kaufmanStopPeriodWrap");
+  const kMultWrap = $("kaufmanStopMultWrap");
+  const kMaWrap = $("kaufmanStopMaTypeWrap");
+  if (kPeriodWrap) kPeriodWrap.style.display = useKaufmanExit ? "" : "none";
+  if (kMultWrap) kMultWrap.style.display = useKaufmanExit ? "" : "none";
+  if (kMaWrap) kMaWrap.style.display = useKaufmanExit ? "" : "none";
+  if ($("kaufmanStopPeriod")) $("kaufmanStopPeriod").disabled = RUNNING || !useKaufmanExit;
+  if ($("kaufmanStopMult")) $("kaufmanStopMult").disabled = RUNNING || !useKaufmanExit;
+  if ($("kaufmanStopMaType")) $("kaufmanStopMaType").disabled = RUNNING || !useKaufmanExit;
+  if ($("allowFlip")) {
+    $("allowFlip").disabled = RUNNING || useKaufmanExit;
+    if (useKaufmanExit) {
+      $("allowFlip").title = "Allow flip is ignored when Exit mode = Kaufman-stop.";
+    } else {
+      $("allowFlip").title = "Allow switching long↔short on opposite signals (when Long-only is off).";
+    }
   }
 
   updateMoSamplerUi();
@@ -6949,6 +7612,7 @@ function updateStrategyUi() {
   updateQuickActionsUi();
   refreshGpuStatusUi();
   updateTopTableNoRunUi();
+  updateVdpsTelemetryHint(CURRENT_RUN?.res || null);
   renderContextChips();
 }
 
@@ -6964,7 +7628,7 @@ function updateMetaGroupingUi() {
 
 function updateMetaHoldoutUi() {
   const kind = String($("metaStrategyKind")?.value || "CompositeMo");
-  const supportsHoldout = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa";
+  const supportsHoldout = kind === "CompositeCpu" || kind === "CompositeMo" || kind === "DoubleMa" || kind === "CompositeTrend" || kind === "RegimeHybrid" || kind === "BreakoutMomentum";
 
   const holdoutTag = $("metaHoldoutTag");
   const evalEl = $("metaEvalHoldout");
@@ -7127,25 +7791,152 @@ function applyCostPreset(presetId, opts) {
 }
 
 function readStrategyCfgFromUi() {
+  const kind = strategyKind();
   const { fee_bps, spread_bps, slippage_bps } = readCostBpsFromUi();
   const cost_preset = String($("costPreset")?.value || "custom").trim() || "custom";
+  const starting_equity = readStartingEquityFromUi();
   const commission = commissionFractionFromCostBps({ fee_bps, spread_bps, slippage_bps });
   const eps_rel = num($("epsRel")?.value, 0);
   const stop_loss_pct = parseRiskPctInput("stopLossPct");
   const take_profit_pct = parseRiskPctInput("takeProfitPct");
+  const trailing_stop_pct = parseRiskPctInput("trailingStopPct");
+  const cooldown_bars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+  const signal_persistence_bars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
+  const exit_mode = String($("exitMode")?.value || "cross").trim() || "cross";
+  const kaufman_stop_period = Math.max(1, Math.floor(num($("kaufmanStopPeriod")?.value, 22)));
+  const kaufman_stop_mult = Math.max(0.0001, num($("kaufmanStopMult")?.value, 2.0));
+  const kaufman_stop_ma_type = String($("kaufmanStopMaType")?.value || "sma").trim() || "sma";
+  const trend_quality_enable = kind === "CompositeTrend" || kind === "RegimeHybrid";
+  const trend_quality_linearreg_period = Math.max(1, Math.floor(num($("trendLrPeriod")?.value, 34)));
+  const trend_quality_angle_min_deg = Math.max(0.0001, num($("trendLrMinDeg")?.value, 2.0));
+  const trend_quality_bbw_period = Math.max(1, Math.floor(num($("trendBbwPeriod")?.value, 20)));
+  const trend_quality_bbw_mult = Math.max(0.0001, num($("trendBbwMult")?.value, 2.0));
+  const trend_quality_bbw_min = Math.max(0, num($("trendBbwMin")?.value, 0.04));
+  const trend_quality_roc_period = Math.max(1, Math.floor(num($("trendRocPeriod")?.value, 9)));
+  const trend_quality_use_roc = !!$("trendUseRoc")?.checked;
+  const trend_quality_use_adx = kind === "CompositeTrend" && !!$("trendUseAdx")?.checked;
+  const trend_quality_adx_period = Math.max(1, Math.floor(num($("trendAdxPeriod")?.value, 14)));
+  const trend_quality_adx_min = Math.max(0.0001, num($("trendAdxMin")?.value, 20.0));
+  const regime_hybrid_enable = kind === "RegimeHybrid";
+  const regime_hybrid_adx_period = Math.max(1, Math.floor(num($("regimeAdxPeriod")?.value, 14)));
+  const regime_hybrid_adx_enter = Math.max(0.0001, num($("regimeAdxEnter")?.value, 22.0));
+  const regime_hybrid_adx_exit = Math.max(0.0001, num($("regimeAdxExit")?.value, 18.0));
+  const regime_hybrid_reversion_entry_rel = Math.max(0.000001, num($("regimeRevEntryRel")?.value, 0.0035));
+  const regime_hybrid_reversion_exit_rel = Math.max(0, num($("regimeRevExitRel")?.value, 0.0012));
+  const breakout_momentum_enable = kind === "BreakoutMomentum";
+  const breakout_bbands_period = Math.max(1, Math.floor(num($("breakoutBbPeriod")?.value, 20)));
+  const breakout_bbands_mult = Math.max(0.0001, num($("breakoutBbMult")?.value, 2.0));
+  const breakout_confirm_bars = Math.max(1, Math.floor(num($("breakoutConfirmBars")?.value, 1)));
+  const breakout_macd_fast_period = Math.max(1, Math.floor(num($("breakoutMacdFast")?.value, 12)));
+  const breakout_macd_slow_period = Math.max(1, Math.floor(num($("breakoutMacdSlow")?.value, 26)));
+  const breakout_macd_signal_period = Math.max(1, Math.floor(num($("breakoutMacdSignal")?.value, 9)));
+  const breakout_cmo_period = Math.max(1, Math.floor(num($("breakoutCmoPeriod")?.value, 14)));
+  const breakout_cmo_min_abs = Math.max(0, num($("breakoutCmoMinAbs")?.value, 20.0));
+  const breakout_adosc_short_period = Math.max(1, Math.floor(num($("breakoutAdoscShort")?.value, 3)));
+  const breakout_adosc_long_period = Math.max(1, Math.floor(num($("breakoutAdoscLong")?.value, 10)));
+  const breakout_use_adx = kind === "BreakoutMomentum" && !!$("breakoutUseAdx")?.checked;
+  const breakout_adx_period = Math.max(1, Math.floor(num($("breakoutAdxPeriod")?.value, 14)));
+  const breakout_adx_min = Math.max(0.0001, num($("breakoutAdxMin")?.value, 20.0));
   if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error("total cost must be in [0, 1).");
   if (!Number.isFinite(eps_rel) || eps_rel < 0) throw new Error("eps_rel must be >= 0.");
+  if (!Number.isFinite(cooldown_bars) || cooldown_bars < 0 || cooldown_bars > 65535) throw new Error("cooldown bars must be in [0, 65535].");
+  if (!Number.isFinite(signal_persistence_bars) || signal_persistence_bars < 1 || signal_persistence_bars > 65535) {
+    throw new Error("signal persistence bars must be in [1, 65535].");
+  }
+  if (!(exit_mode === "cross" || exit_mode === "kaufman_stop")) throw new Error("exit mode must be 'cross' or 'kaufman_stop'.");
+  if (!Number.isFinite(kaufman_stop_mult) || kaufman_stop_mult <= 0) throw new Error("kaufman-stop multiplier must be > 0.");
+  if (!Number.isFinite(trend_quality_angle_min_deg) || trend_quality_angle_min_deg <= 0) throw new Error("trend min angle must be > 0.");
+  if (!Number.isFinite(trend_quality_bbw_mult) || trend_quality_bbw_mult <= 0) throw new Error("trend BB width multiplier must be > 0.");
+  if (!Number.isFinite(trend_quality_bbw_min) || trend_quality_bbw_min < 0) throw new Error("trend min BB width must be >= 0.");
+  if (trend_quality_use_adx) {
+    if (!Number.isFinite(trend_quality_adx_period) || trend_quality_adx_period <= 0) {
+      throw new Error("trend ADX period must be > 0.");
+    }
+    if (!Number.isFinite(trend_quality_adx_min) || trend_quality_adx_min <= 0) {
+      throw new Error("trend min ADX must be > 0.");
+    }
+  }
+  if (regime_hybrid_enable) {
+    if (!Number.isFinite(regime_hybrid_adx_enter) || regime_hybrid_adx_enter <= 0) throw new Error("regime hybrid ADX enter must be > 0.");
+    if (!Number.isFinite(regime_hybrid_adx_exit) || regime_hybrid_adx_exit <= 0 || regime_hybrid_adx_exit > regime_hybrid_adx_enter) {
+      throw new Error("regime hybrid ADX exit must be > 0 and <= ADX enter.");
+    }
+    if (!Number.isFinite(regime_hybrid_reversion_entry_rel) || regime_hybrid_reversion_entry_rel <= 0) {
+      throw new Error("regime hybrid reversion entry must be > 0.");
+    }
+    if (!Number.isFinite(regime_hybrid_reversion_exit_rel) || regime_hybrid_reversion_exit_rel < 0 || regime_hybrid_reversion_exit_rel > regime_hybrid_reversion_entry_rel) {
+      throw new Error("regime hybrid reversion exit must be >= 0 and <= reversion entry.");
+    }
+  }
+  if (breakout_momentum_enable) {
+    if (!Number.isFinite(breakout_bbands_mult) || breakout_bbands_mult <= 0) {
+      throw new Error("breakout BB multiplier must be > 0.");
+    }
+    if (!Number.isFinite(breakout_cmo_min_abs) || breakout_cmo_min_abs < 0) {
+      throw new Error("breakout min |CMO| must be >= 0.");
+    }
+    if (breakout_macd_fast_period >= breakout_macd_slow_period) {
+      throw new Error("breakout MACD requires fast period < slow period.");
+    }
+    if (breakout_adosc_short_period >= breakout_adosc_long_period) {
+      throw new Error("breakout ADOSC requires short period < long period.");
+    }
+    if (breakout_use_adx) {
+      if (!Number.isFinite(breakout_adx_min) || breakout_adx_min <= 0) {
+        throw new Error("breakout ADX min must be > 0.");
+      }
+    }
+  }
   return {
     long_only: !!$("longOnly")?.checked,
     allow_flip: !!$("allowFlip")?.checked,
     trade_on_next_bar: !!$("tradeOnNext")?.checked,
     cost_preset,
+    starting_equity,
     fee_bps,
     spread_bps,
     slippage_bps,
     commission,
     stop_loss_pct,
     take_profit_pct,
+    trailing_stop_pct,
+    cooldown_bars,
+    signal_persistence_bars,
+    exit_mode,
+    kaufman_stop_period,
+    kaufman_stop_mult,
+    kaufman_stop_ma_type,
+    trend_quality_enable,
+    trend_quality_linearreg_period,
+    trend_quality_angle_min_deg,
+    trend_quality_bbw_period,
+    trend_quality_bbw_mult,
+    trend_quality_bbw_min,
+    trend_quality_roc_period,
+    trend_quality_use_roc,
+    trend_quality_use_adx,
+    trend_quality_adx_period,
+    trend_quality_adx_min,
+    regime_hybrid_enable,
+    regime_hybrid_adx_period,
+    regime_hybrid_adx_enter,
+    regime_hybrid_adx_exit,
+    regime_hybrid_reversion_entry_rel,
+    regime_hybrid_reversion_exit_rel,
+    breakout_momentum_enable,
+    breakout_bbands_period,
+    breakout_bbands_mult,
+    breakout_confirm_bars,
+    breakout_macd_fast_period,
+    breakout_macd_slow_period,
+    breakout_macd_signal_period,
+    breakout_cmo_period,
+    breakout_cmo_min_abs,
+    breakout_adosc_short_period,
+    breakout_adosc_long_period,
+    breakout_use_adx,
+    breakout_adx_period,
+    breakout_adx_min,
     eps_rel,
   };
 }
@@ -7325,8 +8116,43 @@ function readSettingsFromUi() {
     "spreadBps",
     "slippageBps",
     "epsRel",
+    "startingEquity",
     "stopLossPct",
     "takeProfitPct",
+    "trailingStopPct",
+    "cooldownBars",
+    "signalPersistenceBars",
+    "dmConstraintMinTrades",
+    "dmConstraintMaxDd",
+    "exitMode",
+    "kaufmanStopPeriod",
+    "kaufmanStopMult",
+    "kaufmanStopMaType",
+    "trendLrPeriod",
+    "trendLrMinDeg",
+    "trendBbwPeriod",
+    "trendBbwMult",
+    "trendBbwMin",
+    "trendRocPeriod",
+    "trendAdxPeriod",
+    "trendAdxMin",
+    "regimeAdxPeriod",
+    "regimeAdxEnter",
+    "regimeAdxExit",
+    "regimeRevEntryRel",
+    "regimeRevExitRel",
+    "breakoutBbPeriod",
+    "breakoutBbMult",
+    "breakoutConfirmBars",
+    "breakoutMacdFast",
+    "breakoutMacdSlow",
+    "breakoutMacdSignal",
+    "breakoutCmoPeriod",
+    "breakoutCmoMinAbs",
+    "breakoutAdoscShort",
+    "breakoutAdoscLong",
+    "breakoutAdxPeriod",
+    "breakoutAdxMin",
     "execMode",
     "execSymbol",
     "execQty",
@@ -7414,6 +8240,16 @@ function readSettingsFromUi() {
     "metaGroupingMode",
     "metaClusterIntBucket",
     "metaClusterFloatBucket",
+    "metaStage4TopK",
+    "metaStage4MinConf",
+    "metaStage4MetaWeight",
+    "metaStage4MlWeight",
+    "metaStage4UncertaintyWeight",
+    "metaStage4AcceptConf",
+    "metaStage4ReviewConf",
+    "metaStage4MaxAcceptUncertainty",
+    "metaSavedSearch",
+    "stage4SavedSearch",
     "metaCompareSelect",
   ];
   for (const id of fields) {
@@ -7425,12 +8261,16 @@ function readSettingsFromUi() {
     "longOnly",
     "allowFlip",
     "tradeOnNext",
+    "autoRestoreDataset",
     "execDryRun",
     "execRememberKeys",
     "execLiveUseDelayed",
     "polygonStocksAdjusted",
     "maczUseVolume",
     "maczUseLag",
+    "trendUseRoc",
+    "trendUseAdx",
+    "breakoutUseAdx",
     "moUseRangeBuilder",
     "moPrescanEnable",
     "moPrescanRequireGpu",
@@ -7445,6 +8285,9 @@ function readSettingsFromUi() {
     "metaEvalHoldout",
     "metaUseMlConfidence",
     "metaMlAutopilot",
+    "metaStage4AutoTrain",
+    "metaStage4RequireHealthy",
+    "metaStage4FallbackToMeta",
     "batchAutoMeta",
     "batchSkipDone",
   ];
@@ -7537,7 +8380,8 @@ function loadSettings() {
     if (!el) continue;
     if (el.type === "checkbox") el.checked = !!value;
     else {
-      const v = String(value);
+      const raw = String(value);
+      const v = id === "strategyKind" && raw === "CompositeCpu" ? "CompositeMo" : raw;
       el.value = v;
       if (id === "deviceId") el.dataset.desired = v;
     }
@@ -7558,6 +8402,18 @@ function loadSettings() {
   setDef("presetProfile", "Balanced");
   setDef("topK", d.topK);
   setDef("includeAll", d.includeAll ? "true" : "false");
+  setDef("vdpsEta", 4);
+  setDef("vdpsRungs", "0.0625,0.125,0.25,0.5,1.0");
+  setDef("vdpsMinInitialPairs", 4096);
+  setDef("vdpsMaxSurvivorSeeds", 256);
+  setDef("vdpsMaxPeriodCandidates", 384);
+  setDef("vdpsRandomInjectionRatio", 0.10);
+  setDef("vdpsEliteMutationRatio", 0.50);
+  setDef("vdpsDifferentialRatio", 0.40);
+  setDef("vdpsDeterministic", true);
+  setDef("vdpsSeed", 1);
+  setDef("vdpsQualityCheckMaxPairs", 0);
+  setDef("vdpsQualityCheckTopK", 20);
   setDef("heatmapBins", d.heatmapBins);
   setDef("heatmapColor", "cividis");
   setDef("heatmapRange", "q2_98");
@@ -7582,9 +8438,11 @@ function loadSettings() {
   setDef("valCrossEnable", d.valCrossEnable);
   setDef("valCrossMax", d.valCrossMax);
   setDef("metaHoldoutMode", "light");
+  setDef("autoRestoreDataset", true);
 
   // Cost model migration: older settings used `commission` directly.
   setDef("costPreset", "custom");
+  setDef("startingEquity", DEFAULT_STARTING_EQUITY);
   if (!has("feeBps") && $("feeBps")) {
     const comm = num(settings.commission, NaN);
     $("feeBps").value = String(Number.isFinite(comm) ? (Math.max(0, comm) * 10_000) : 0);
@@ -7600,6 +8458,31 @@ function loadSettings() {
   updateStrategyUi();
   applyBackendSelectionConstraints();
   return true;
+}
+
+async function restoreLastDatasetOnStartup() {
+  const autoRestore = !!$("autoRestoreDataset")?.checked;
+  if (!autoRestore) return;
+
+  const path = String($("csvPath")?.value || "").trim();
+  if (!path) return;
+
+  const tfWanted = String($("dataTimeframe")?.value || "").trim();
+  try {
+    await loadCsv();
+  } catch (e) {
+    setStatus(`Startup restore skipped: ${String(e)}`, "muted");
+    return;
+  }
+
+  if (tfWanted && $("dataTimeframe")) {
+    try {
+      $("dataTimeframe").value = tfWanted;
+      await applySelectedDataTimeframe({ persist: false });
+    } catch (e) {
+      setStatus(`Timeframe restore skipped: ${String(e)}`, "muted");
+    }
+  }
 }
 
 function applySettingsObject(settings) {
@@ -7623,7 +8506,10 @@ function applySettingsObject(settings) {
     const el = $(id);
     if (!el) continue;
     if (el.type === "checkbox") el.checked = !!value;
-    else el.value = String(value);
+    else {
+      const raw = String(value);
+      el.value = id === "strategyKind" && raw === "CompositeCpu" ? "CompositeMo" : raw;
+    }
   }
 
   syncCostUi({ save: false });
@@ -7641,8 +8527,8 @@ function applyRequestToUi(req) {
   if (!req || typeof req !== "object") return;
 
   const kindRaw = String(req.strategy_kind || req.strategyKind || "DoubleMa");
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
-  if ($("strategyKind")) $("strategyKind").value = kind;
+  const kind = normalizeStrategyKindRaw(kindRaw);
+  if ($("strategyKind")) $("strategyKind").value = kind === "CompositeCpu" ? "CompositeMo" : kind;
   updateStrategyUi();
 
   const backend = String(req?.backend?.backend || "CpuOnly");
@@ -7653,7 +8539,7 @@ function applyRequestToUi(req) {
   const fastMa = kind === "CompositeMo" ? String((req.fast_ma_type || "sma")).trim() : String((req.fast_ma_types?.[0] || "sma")).trim();
   const slowMa = kind === "CompositeMo" ? String((req.slow_ma_type || "sma")).trim() : String((req.slow_ma_types?.[0] || "sma")).trim();
 
-  if (kind === "DoubleMa") {
+  if (isDoubleLikeKind(kind)) {
     if ($("backend")) $("backend").value = backend;
     if ($("deviceId")) {
       $("deviceId").value = String(deviceId);
@@ -7717,7 +8603,23 @@ function applyRequestToUi(req) {
   if (kind === "CompositeMo" && $("moObjectiveMin")) {
     $("moObjectiveMin").value = String(req?.objectives?.minimize || "MaxDrawdown");
   }
-  if ($("mode")) $("mode").value = (kind !== "DoubleMa" ? "Grid" : String(req.mode || "Grid"));
+  if ($("mode")) $("mode").value = ((kind === "CompositeCpu" || kind === "CompositeMo") ? "Grid" : String(req.mode || "Grid"));
+  const vdps = req?.vdps && typeof req.vdps === "object" ? req.vdps : null;
+  if ($("vdpsEta")) $("vdpsEta").value = String(Math.max(2, Math.floor(num(vdps?.eta, 4))));
+  if ($("vdpsRungs")) {
+    const rungs = Array.isArray(vdps?.rungs) ? vdps.rungs.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0) : [];
+    $("vdpsRungs").value = rungs.length ? rungs.join(",") : "0.0625,0.125,0.25,0.5,1.0";
+  }
+  if ($("vdpsMinInitialPairs")) $("vdpsMinInitialPairs").value = String(Math.max(1, Math.floor(num(vdps?.min_initial_pairs, 4096))));
+  if ($("vdpsMaxSurvivorSeeds")) $("vdpsMaxSurvivorSeeds").value = String(Math.max(8, Math.floor(num(vdps?.max_survivor_seeds, 256))));
+  if ($("vdpsMaxPeriodCandidates")) $("vdpsMaxPeriodCandidates").value = String(Math.max(16, Math.floor(num(vdps?.max_period_candidates, 384))));
+  if ($("vdpsRandomInjectionRatio")) $("vdpsRandomInjectionRatio").value = String(Math.min(1, Math.max(0, num(vdps?.random_injection_ratio, 0.10))));
+  if ($("vdpsEliteMutationRatio")) $("vdpsEliteMutationRatio").value = String(Math.min(1, Math.max(0, num(vdps?.elite_mutation_ratio, 0.50))));
+  if ($("vdpsDifferentialRatio")) $("vdpsDifferentialRatio").value = String(Math.min(1, Math.max(0, num(vdps?.differential_ratio, 0.40))));
+  if ($("vdpsDeterministic")) $("vdpsDeterministic").checked = vdps?.deterministic !== false;
+  if ($("vdpsSeed")) $("vdpsSeed").value = String(Math.max(0, Math.floor(num(vdps?.seed, 1))));
+  if ($("vdpsQualityCheckMaxPairs")) $("vdpsQualityCheckMaxPairs").value = String(Math.max(0, Math.floor(num(vdps?.quality_check_max_pairs, 0))));
+  if ($("vdpsQualityCheckTopK")) $("vdpsQualityCheckTopK").value = String(Math.max(1, Math.floor(num(vdps?.quality_check_top_k, 20))));
 
   if ($("topK")) $("topK").value = String(Number(req.top_k || 0));
   if ($("includeAll")) $("includeAll").value = (req.include_all ? "true" : "false");
@@ -7725,6 +8627,8 @@ function applyRequestToUi(req) {
   if ($("exportAllCsvPath")) $("exportAllCsvPath").value = String(req.export_all_csv_path || "");
 
   const st = kind === "CompositeMo" ? (req.base_strategy || {}) : (req.strategy || {});
+  const startingEquity = startingEquityFromReq(req);
+  if ($("startingEquity")) $("startingEquity").value = String(startingEquity);
   const presetRaw = String(st.cost_preset || "").trim();
   const preset = COST_PRESETS[presetRaw] ? presetRaw : "custom";
   if ($("costPreset")) $("costPreset").value = preset;
@@ -7735,6 +8639,41 @@ function applyRequestToUi(req) {
   const slipBps = Number(st.slippage_bps);
   const stopLossPct = Number(st.stop_loss_pct);
   const takeProfitPct = Number(st.take_profit_pct);
+  const trailingStopPct = Number(st.trailing_stop_pct);
+  const cooldownBars = Math.max(0, Math.floor(num(st.cooldown_bars, 0)));
+  const signalPersistenceBars = Math.max(1, Math.floor(num(st.signal_persistence_bars, 1)));
+  const exitMode = String(st.exit_mode || "cross").trim() || "cross";
+  const kaufmanStopPeriod = Math.max(1, Math.floor(num(st.kaufman_stop_period, 22)));
+  const kaufmanStopMult = num(st.kaufman_stop_mult, 2.0);
+  const kaufmanStopMaType = String(st.kaufman_stop_ma_type || "sma").trim() || "sma";
+  const trendLrPeriod = Math.max(1, Math.floor(num(st.trend_quality_linearreg_period, 34)));
+  const trendLrMinDeg = num(st.trend_quality_angle_min_deg, 2.0);
+  const trendBbwPeriod = Math.max(1, Math.floor(num(st.trend_quality_bbw_period, 20)));
+  const trendBbwMult = num(st.trend_quality_bbw_mult, 2.0);
+  const trendBbwMin = num(st.trend_quality_bbw_min, 0.04);
+  const trendRocPeriod = Math.max(1, Math.floor(num(st.trend_quality_roc_period, 9)));
+  const trendUseRoc = !!st.trend_quality_use_roc;
+  const trendUseAdx = !!st.trend_quality_use_adx;
+  const trendAdxPeriod = Math.max(1, Math.floor(num(st.trend_quality_adx_period, 14)));
+  const trendAdxMin = num(st.trend_quality_adx_min, 20.0);
+  const regimeAdxPeriod = Math.max(1, Math.floor(num(st.regime_hybrid_adx_period, 14)));
+  const regimeAdxEnter = num(st.regime_hybrid_adx_enter, 22.0);
+  const regimeAdxExit = num(st.regime_hybrid_adx_exit, 18.0);
+  const regimeRevEntryRel = num(st.regime_hybrid_reversion_entry_rel, 0.0035);
+  const regimeRevExitRel = num(st.regime_hybrid_reversion_exit_rel, 0.0012);
+  const breakoutBbPeriod = Math.max(1, Math.floor(num(st.breakout_bbands_period, 20)));
+  const breakoutBbMult = num(st.breakout_bbands_mult, 2.0);
+  const breakoutConfirmBars = Math.max(1, Math.floor(num(st.breakout_confirm_bars, 1)));
+  const breakoutMacdFast = Math.max(1, Math.floor(num(st.breakout_macd_fast_period, 12)));
+  const breakoutMacdSlow = Math.max(1, Math.floor(num(st.breakout_macd_slow_period, 26)));
+  const breakoutMacdSignal = Math.max(1, Math.floor(num(st.breakout_macd_signal_period, 9)));
+  const breakoutCmoPeriod = Math.max(1, Math.floor(num(st.breakout_cmo_period, 14)));
+  const breakoutCmoMinAbs = num(st.breakout_cmo_min_abs, 20.0);
+  const breakoutAdoscShort = Math.max(1, Math.floor(num(st.breakout_adosc_short_period, 3)));
+  const breakoutAdoscLong = Math.max(1, Math.floor(num(st.breakout_adosc_long_period, 10)));
+  const breakoutUseAdx = !!st.breakout_use_adx;
+  const breakoutAdxPeriod = Math.max(1, Math.floor(num(st.breakout_adx_period, 14)));
+  const breakoutAdxMin = num(st.breakout_adx_min, 20.0);
 
   const hasBps =
     Number.isFinite(feeBps) && feeBps >= 0
@@ -7748,9 +8687,57 @@ function applyRequestToUi(req) {
   if ($("epsRel")) $("epsRel").value = String(num(st.eps_rel, 0));
   if ($("stopLossPct")) $("stopLossPct").value = Number.isFinite(stopLossPct) && stopLossPct > 0 ? String(stopLossPct) : "";
   if ($("takeProfitPct")) $("takeProfitPct").value = Number.isFinite(takeProfitPct) && takeProfitPct > 0 ? String(takeProfitPct) : "";
+  if ($("trailingStopPct")) $("trailingStopPct").value = Number.isFinite(trailingStopPct) && trailingStopPct > 0 ? String(trailingStopPct) : "";
+  if ($("cooldownBars")) $("cooldownBars").value = String(cooldownBars);
+  if ($("signalPersistenceBars")) $("signalPersistenceBars").value = String(signalPersistenceBars);
+  const dmConstraints = req.constraints && typeof req.constraints === "object" ? req.constraints : null;
+  const dmMinTrades = Number(dmConstraints?.min_trades);
+  const dmMaxDd = Number(dmConstraints?.max_drawdown);
+  if ($("dmConstraintMinTrades")) $("dmConstraintMinTrades").value = Number.isFinite(dmMinTrades) && dmMinTrades >= 0 ? String(Math.floor(dmMinTrades)) : "";
+  if ($("dmConstraintMaxDd")) $("dmConstraintMaxDd").value = Number.isFinite(dmMaxDd) && dmMaxDd >= 0 ? String(dmMaxDd) : "";
+  if ($("exitMode")) $("exitMode").value = (exitMode === "kaufman_stop" ? "kaufman_stop" : "cross");
+  if ($("kaufmanStopPeriod")) $("kaufmanStopPeriod").value = String(kaufmanStopPeriod);
+  if ($("kaufmanStopMult")) $("kaufmanStopMult").value = String(Number.isFinite(kaufmanStopMult) && kaufmanStopMult > 0 ? kaufmanStopMult : 2.0);
+  if ($("kaufmanStopMaType")) $("kaufmanStopMaType").value = kaufmanStopMaType;
+  if ($("trendLrPeriod")) $("trendLrPeriod").value = String(trendLrPeriod);
+  if ($("trendLrMinDeg")) $("trendLrMinDeg").value = String(Number.isFinite(trendLrMinDeg) && trendLrMinDeg > 0 ? trendLrMinDeg : 2.0);
+  if ($("trendBbwPeriod")) $("trendBbwPeriod").value = String(trendBbwPeriod);
+  if ($("trendBbwMult")) $("trendBbwMult").value = String(Number.isFinite(trendBbwMult) && trendBbwMult > 0 ? trendBbwMult : 2.0);
+  if ($("trendBbwMin")) $("trendBbwMin").value = String(Number.isFinite(trendBbwMin) && trendBbwMin >= 0 ? trendBbwMin : 0.04);
+  if ($("trendRocPeriod")) $("trendRocPeriod").value = String(trendRocPeriod);
+  if ($("trendUseRoc")) $("trendUseRoc").checked = trendUseRoc;
+  if ($("trendUseAdx")) $("trendUseAdx").checked = trendUseAdx;
+  if ($("trendAdxPeriod")) $("trendAdxPeriod").value = String(trendAdxPeriod);
+  if ($("trendAdxMin")) $("trendAdxMin").value = String(Number.isFinite(trendAdxMin) && trendAdxMin > 0 ? trendAdxMin : 20.0);
+  if ($("regimeAdxPeriod")) $("regimeAdxPeriod").value = String(regimeAdxPeriod);
+  if ($("regimeAdxEnter")) $("regimeAdxEnter").value = String(Number.isFinite(regimeAdxEnter) && regimeAdxEnter > 0 ? regimeAdxEnter : 22.0);
+  if ($("regimeAdxExit")) $("regimeAdxExit").value = String(Number.isFinite(regimeAdxExit) && regimeAdxExit > 0 ? regimeAdxExit : 18.0);
+  if ($("regimeRevEntryRel")) $("regimeRevEntryRel").value = String(Number.isFinite(regimeRevEntryRel) && regimeRevEntryRel > 0 ? regimeRevEntryRel : 0.0035);
+  if ($("regimeRevExitRel")) $("regimeRevExitRel").value = String(Number.isFinite(regimeRevExitRel) && regimeRevExitRel >= 0 ? regimeRevExitRel : 0.0012);
+  if ($("breakoutBbPeriod")) $("breakoutBbPeriod").value = String(breakoutBbPeriod);
+  if ($("breakoutBbMult")) $("breakoutBbMult").value = String(Number.isFinite(breakoutBbMult) && breakoutBbMult > 0 ? breakoutBbMult : 2.0);
+  if ($("breakoutConfirmBars")) $("breakoutConfirmBars").value = String(breakoutConfirmBars);
+  if ($("breakoutMacdFast")) $("breakoutMacdFast").value = String(breakoutMacdFast);
+  if ($("breakoutMacdSlow")) $("breakoutMacdSlow").value = String(breakoutMacdSlow);
+  if ($("breakoutMacdSignal")) $("breakoutMacdSignal").value = String(breakoutMacdSignal);
+  if ($("breakoutCmoPeriod")) $("breakoutCmoPeriod").value = String(breakoutCmoPeriod);
+  if ($("breakoutCmoMinAbs")) $("breakoutCmoMinAbs").value = String(Number.isFinite(breakoutCmoMinAbs) && breakoutCmoMinAbs >= 0 ? breakoutCmoMinAbs : 20.0);
+  if ($("breakoutAdoscShort")) $("breakoutAdoscShort").value = String(breakoutAdoscShort);
+  if ($("breakoutAdoscLong")) $("breakoutAdoscLong").value = String(breakoutAdoscLong);
+  if ($("breakoutUseAdx")) $("breakoutUseAdx").checked = breakoutUseAdx;
+  if ($("breakoutAdxPeriod")) $("breakoutAdxPeriod").value = String(breakoutAdxPeriod);
+  if ($("breakoutAdxMin")) $("breakoutAdxMin").value = String(Number.isFinite(breakoutAdxMin) && breakoutAdxMin > 0 ? breakoutAdxMin : 20.0);
   if ($("longOnly")) $("longOnly").checked = !!st.long_only;
   if ($("allowFlip")) $("allowFlip").checked = !!st.allow_flip;
   if ($("tradeOnNext")) $("tradeOnNext").checked = !!st.trade_on_next_bar;
+
+  if (kind === "CompositeCpu" || kind === "CompositeMo") {
+    const rawSignalMode = String(req.signal_mode || req.signalMode || "hard_gate").trim().toLowerCase();
+    const signalMode = rawSignalMode === "entry_core_exit_overlay" || rawSignalMode === "trend_pullback_reversion"
+      ? rawSignalMode
+      : "hard_gate";
+    if ($("compositeSignalMode")) $("compositeSignalMode").value = signalMode;
+  }
 
   if (kind === "CompositeCpu") {
     const ht = req.halftrend && typeof req.halftrend === "object" ? req.halftrend : null;
@@ -8194,6 +9181,220 @@ async function refreshMetaSaved(selectedPath) {
   }
 }
 
+function populateStage4SavedSelect(items, selectedPath) {
+  const sel = $("stage4SavedSelect");
+  if (!sel) return;
+  sel.innerHTML = "";
+
+  const rows = Array.isArray(items) ? items : [];
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = rows.length ? "Select a saved Stage 4 run..." : "No Stage 4 runs yet";
+  sel.appendChild(opt0);
+
+  for (const r of rows) {
+    const opt = document.createElement("option");
+    opt.value = r.path || "";
+    const kind = String(r.strategy_kind || "");
+    const tf = String(r.timeframe || "");
+    const selected = Number(r.groups_selected || 0);
+    const scored = Number(r.groups_scored || 0);
+    const considered = Number(r.groups_considered || 0);
+    const minConf = Number(r.min_ml_confidence);
+    const tagsN = Array.isArray(r.tags) ? r.tags.length : 0;
+    const tfHint = tf ? ` | ${tf}` : "";
+    const confHint = Number.isFinite(minConf) ? ` | min_ml=${fmtFixed(minConf, 2)}` : "";
+    const tagsHint = tagsN ? ` | tags=${tagsN}` : "";
+    opt.textContent =
+      `${r.ts || "unknown"} | ${kind}${tfHint} | selected=${selected}/${scored}/${considered}${confHint}${tagsHint}`;
+    sel.appendChild(opt);
+  }
+  sel.value = selectedPath || "";
+}
+
+function stage4SavedQuery() {
+  return String($("stage4SavedSearch")?.value || "").trim().toLowerCase();
+}
+
+function filterStage4Saved(items, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return Array.isArray(items) ? items : [];
+  const terms = q.split(/\s+/).filter((t) => !!t);
+  if (!terms.length) return Array.isArray(items) ? items : [];
+
+  const xs = Array.isArray(items) ? items : [];
+  return xs.filter((r) => {
+    const ts = String(r?.ts || "").toLowerCase();
+    const kind = String(r?.strategy_kind || "").toLowerCase();
+    const tf = String(r?.timeframe || "").toLowerCase();
+    const src = String(r?.source_meta_json_path || "").toLowerCase();
+    const tags = Array.isArray(r?.tags) ? r.tags.map((t) => String(t || "").toLowerCase()).join(" ") : "";
+    const hay = `${ts} ${kind} ${tf} ${src} ${tags}`;
+    return terms.every((t) => hay.includes(t));
+  });
+}
+
+function renderStage4SavedSelect(selectedPath) {
+  const cur = String(selectedPath || $("stage4SavedSelect")?.value || "").trim();
+  const filtered = filterStage4Saved(SAVED_STAGE4, stage4SavedQuery());
+  populateStage4SavedSelect(filtered, cur);
+  syncStage4SavedSelectionUi();
+}
+
+async function refreshStage4Saved(selectedPath) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    const runs = await invoke("list_stage4_artifacts");
+    SAVED_STAGE4 = Array.isArray(runs) ? runs : [];
+    renderStage4SavedSelect(selectedPath);
+  } catch (e) {
+    const meta = $("stage4SavedMeta");
+    if (meta) meta.textContent = `failed to list Stage 4 runs: ${String(e)}`;
+  }
+}
+
+function selectedStage4SavedEntry() {
+  const path = String($("stage4SavedSelect")?.value || "").trim();
+  if (!path) return null;
+  return SAVED_STAGE4.find((r) => String(r?.path || "") === path) || null;
+}
+
+function syncStage4SavedSelectionUi() {
+  updateStage4SavedMeta();
+  const entry = selectedStage4SavedEntry();
+  const tagsEl = $("stage4SavedTags");
+  if (tagsEl) tagsEl.value = entry && Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
+
+  const btnLoad = $("btnLoadStage4Saved");
+  const btnReveal = $("btnRevealStage4Saved");
+  const btnDelete = $("btnDeleteStage4Saved");
+  const btnSaveTags = $("btnSaveStage4SavedTags");
+  const btnRefresh = $("btnRefreshStage4Saved");
+  const has = !!entry;
+  if (btnRefresh) btnRefresh.disabled = RUNNING;
+  if (btnLoad) btnLoad.disabled = RUNNING || !has;
+  if (btnReveal) btnReveal.disabled = RUNNING || !has;
+  if (btnDelete) btnDelete.disabled = RUNNING || !has;
+  if (btnSaveTags) btnSaveTags.disabled = RUNNING || !has;
+  if (tagsEl) tagsEl.disabled = RUNNING || !has;
+}
+
+function updateStage4SavedMeta() {
+  const meta = $("stage4SavedMeta");
+  if (!meta) return;
+  const entry = selectedStage4SavedEntry();
+  if (!entry) {
+    const filtered = filterStage4Saved(SAVED_STAGE4, stage4SavedQuery());
+    meta.textContent = `saved Stage 4: ${filtered.length}/${SAVED_STAGE4.length}`;
+    return;
+  }
+  const parts = [];
+  if (entry.ts) parts.push(`ts=${entry.ts}`);
+  if (entry.strategy_kind) parts.push(`strategy=${entry.strategy_kind}`);
+  if (entry.timeframe) parts.push(`tf=${entry.timeframe}`);
+  parts.push(
+    `selected=${Number(entry.groups_selected || 0)}/${Number(entry.groups_scored || 0)}/${Number(entry.groups_considered || 0)}`
+  );
+  if (Number.isFinite(Number(entry.min_ml_confidence))) {
+    parts.push(`min_ml=${fmtFixed(Number(entry.min_ml_confidence), 3)}`);
+  }
+  if (Number.isFinite(Number(entry.top_k))) parts.push(`top_k=${Number(entry.top_k)}`);
+  parts.push(`model=${entry.model_healthy ? "healthy" : "unhealthy"}`);
+  if (entry.source_meta_json_path) parts.push(`source=${fileBasename(entry.source_meta_json_path)}`);
+  if (Array.isArray(entry.tags) && entry.tags.length) parts.push(`tags=${entry.tags.join(",")}`);
+  if (entry.bytes != null) parts.push(`bytes=${entry.bytes}`);
+  meta.textContent = parts.join(" • ");
+}
+
+function buildStage4ResponseFromArtifact(artifact, path) {
+  const ts = String(artifact?.ts || "").trim() || new Date().toISOString();
+  const result = artifact?.res && typeof artifact.res === "object" ? artifact.res : null;
+  return {
+    ts,
+    stage4_json_path: String(path || "").trim(),
+    stage4_json_bytes: 0,
+    result,
+  };
+}
+
+async function saveStage4SavedTags(path, tags) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Select a saved Stage 4 run first.");
+
+  await invoke("update_artifact_tags", { path: p, tags: Array.isArray(tags) ? tags : [] });
+  await refreshStage4Saved(p);
+  setStatus("Saved Stage 4 tags.", "ok");
+}
+
+async function loadStage4Saved(path) {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const p = String(path || "").trim();
+  if (!p) throw new Error("Select a saved Stage 4 run first.");
+
+  const artifact = await invoke("load_run_artifact", { path: p });
+  const kind = String(artifact?.kind || "");
+  if (kind !== "vectorbt_meta_stage4_experimental") {
+    throw new Error(`Not a Stage 4 artifact: kind='${kind}'`);
+  }
+  const resp = buildStage4ResponseFromArtifact(artifact, p);
+
+  const result = resp?.result || {};
+  const sourceMetaPath = String(result?.source_meta_json_path || "").trim();
+  if (sourceMetaPath && String(LAST_META_RUN?.meta_json_path || "").trim() !== sourceMetaPath) {
+    try {
+      const metaArtifact = await invoke("load_run_artifact", { path: sourceMetaPath });
+      if (String(metaArtifact?.kind || "") === "vectorbt_meta_selection") {
+        const metaResp = buildMetaSelectionResponseFromArtifact(metaArtifact, sourceMetaPath);
+        LAST_META_RUN = metaResp;
+        renderMetaSelection(metaResp);
+        updateValidationExportButtons();
+        await maybeAutoTrainAndApplyMetaMl({ silent: true });
+      }
+    } catch {
+      // Stage 4 can still be viewed even when source meta file was removed.
+    }
+  }
+
+  LAST_META_STAGE4_RUN = resp;
+  renderMetaStage4Output(resp);
+  setMetaStage4Status(
+    `Loaded Stage 4 ${resp.ts} · selected=${Number(result?.groups_selected || 0)} · source=${sourceMetaPath ? fileBasename(sourceMetaPath) : "—"}`
+  );
+  updateMetaStage4Buttons();
+  RESULTS_TABS?.set("meta", { save: true, focus: false });
+  setStatus(`Loaded Stage 4 run ${resp.ts}`, "muted");
+}
+
+async function revealSelectedStage4Saved() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const entry = selectedStage4SavedEntry();
+  const p = String(entry?.path || "").trim();
+  if (!p) return;
+  await invoke("reveal_path", { path: p });
+}
+
+async function deleteSelectedStage4Saved() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const entry = selectedStage4SavedEntry();
+  const p = String(entry?.path || "").trim();
+  if (!p) return;
+  await invoke("delete_run_artifact", { path: p });
+  if (LAST_META_STAGE4_RUN && String(LAST_META_STAGE4_RUN.stage4_json_path || "") === p) {
+    LAST_META_STAGE4_RUN = null;
+    renderMetaStage4Output(null);
+    setMetaStage4Status("—");
+    updateMetaStage4Buttons();
+  }
+  await refreshStage4Saved("");
+  setStatus("Deleted Stage 4 run.", "ok");
+}
+
 function selectedMetaSavedEntry() {
   const path = String($("metaSavedSelect")?.value || "").trim();
   if (!path) return null;
@@ -8271,6 +9472,7 @@ async function loadMetaSaved(path) {
 
   LAST_META_RUN = resp;
   renderMetaSelection(resp);
+  updateValidationExportButtons();
   await maybeAutoTrainAndApplyMetaMl({ silent: true });
   RESULTS_TABS?.set("meta", { save: true, focus: false });
   renderMetaCompare();
@@ -8315,6 +9517,7 @@ async function deleteSelectedMetaSaved() {
   if (LAST_META_RUN && String(LAST_META_RUN.meta_json_path || "") === p) {
     LAST_META_RUN = null;
     renderMetaSelection(null);
+    updateValidationExportButtons();
     updateQuickActionsUi();
   }
   await refreshMetaSaved("");
@@ -8450,8 +9653,11 @@ function selectedSavedRunEntry() {
 
 function strategyKindLabel(kind) {
   const k = String(kind || "").trim();
-  if (k === "CompositeCpu") return "Composite CPU";
+  if (k === "CompositeCpu") return "Composite CPU (legacy)";
   if (k === "CompositeMo") return "Composite MO";
+  if (k === "CompositeTrend") return "Composite Trend-Quality";
+  if (k === "RegimeHybrid") return "Regime-Switch Hybrid";
+  if (k === "BreakoutMomentum") return "Breakout Pulse";
   return "Double MA";
 }
 
@@ -8499,6 +9705,13 @@ function buildSavedRunReqSnapshot(req) {
     const slipBps = Number(strategy.slippage_bps);
     const stopLossPct = Number(strategy.stop_loss_pct);
     const takeProfitPct = Number(strategy.take_profit_pct);
+    const trailingStopPct = Number(strategy.trailing_stop_pct);
+    const cooldownBars = Math.max(0, Math.floor(num(strategy.cooldown_bars, 0)));
+    const signalPersistenceBars = Math.max(1, Math.floor(num(strategy.signal_persistence_bars, 1)));
+    const exitMode = String(strategy.exit_mode || "cross").trim() || "cross";
+    const kPeriod = Math.max(1, Math.floor(num(strategy.kaufman_stop_period, 22)));
+    const kMult = num(strategy.kaufman_stop_mult, 2.0);
+    const kMa = String(strategy.kaufman_stop_ma_type || "sma").trim() || "sma";
     const eps = Number(strategy.eps_rel || 0);
     const hasBps =
       Number.isFinite(feeBps) && feeBps >= 0
@@ -8510,11 +9723,36 @@ function buildSavedRunReqSnapshot(req) {
     const riskParts = [];
     if (Number.isFinite(stopLossPct) && stopLossPct > 0) riskParts.push(`sl=${fmtFixed(stopLossPct, 4)}`);
     if (Number.isFinite(takeProfitPct) && takeProfitPct > 0) riskParts.push(`tp=${fmtFixed(takeProfitPct, 4)}`);
+    if (Number.isFinite(trailingStopPct) && trailingStopPct > 0) riskParts.push(`trail=${fmtFixed(trailingStopPct, 4)}`);
+    if (cooldownBars > 0) riskParts.push(`cooldown=${cooldownBars}`);
+    if (signalPersistenceBars > 1) riskParts.push(`persist=${signalPersistenceBars}`);
+    if (exitMode === "kaufman_stop") riskParts.push(`exit=kaufman_stop(p=${kPeriod},m=${fmtFixed(kMult, 2)},ma=${kMa})`);
+    else riskParts.push("exit=cross");
     const riskText = riskParts.length ? `, ${riskParts.join(", ")}` : "";
     lines.push(`strategy params: ${costText}, eps_rel=${fmtFixed(eps, 4)}${riskText}${flags.length ? ` (${flags.join(",")})` : ""}`);
+    if (kind === "BreakoutMomentum" && !!strategy.breakout_momentum_enable) {
+      const bbPeriod = Math.max(1, Math.floor(num(strategy.breakout_bbands_period, 20)));
+      const bbMult = num(strategy.breakout_bbands_mult, 2.0);
+      const confirm = Math.max(1, Math.floor(num(strategy.breakout_confirm_bars, 1)));
+      const macdFast = Math.max(1, Math.floor(num(strategy.breakout_macd_fast_period, 12)));
+      const macdSlow = Math.max(1, Math.floor(num(strategy.breakout_macd_slow_period, 26)));
+      const macdSignal = Math.max(1, Math.floor(num(strategy.breakout_macd_signal_period, 9)));
+      const cmoPeriod = Math.max(1, Math.floor(num(strategy.breakout_cmo_period, 14)));
+      const cmoMinAbs = num(strategy.breakout_cmo_min_abs, 20.0);
+      const adoscShort = Math.max(1, Math.floor(num(strategy.breakout_adosc_short_period, 3)));
+      const adoscLong = Math.max(1, Math.floor(num(strategy.breakout_adosc_long_period, 10)));
+      const useAdx = !!strategy.breakout_use_adx;
+      const adxPeriod = Math.max(1, Math.floor(num(strategy.breakout_adx_period, 14)));
+      const adxMin = num(strategy.breakout_adx_min, 20.0);
+      const adxText = useAdx ? `, adx=${adxPeriod}/${fmtFixed(adxMin, 2)}` : "";
+      lines.push(
+        `breakout filters: bb=${bbPeriod}x${fmtFixed(bbMult, 2)}, confirm=${confirm}, macd=${macdFast}/${macdSlow}/${macdSignal}, cmo=${cmoPeriod}|${fmtFixed(cmoMinAbs, 2)}, adosc=${adoscShort}/${adoscLong}${adxText}`
+      );
+    }
   }
+  lines.push(`starting equity: ${fmtMoney(startingEquityFromReq(req), 2)}`);
 
-  if (kind !== "DoubleMa") {
+  if (kind === "CompositeCpu" || kind === "CompositeMo") {
     const compact = formatCompositeParamsCompact({
       halftrend: req?.halftrend || null,
       macz: req?.macz || null,
@@ -9014,7 +10252,7 @@ function sortRows(rows, key, dir, objective) {
       if (sa !== sb) return d * cmpNum(sa, sb);
       return d * cmpNum(Number(pa.slow_len || 0), Number(pb.slow_len || 0));
     }
-    if (k === "pnl") return d * cmpNum(Number(ma.pnl || 0), Number(mb.pnl || 0));
+    if (k === "pnl" || k === "ret_pct") return d * cmpNum(Number(ma.pnl || 0), Number(mb.pnl || 0));
     if (k === "sharpe") return d * cmpNum(Number(ma.sharpe || 0), Number(mb.sharpe || 0));
     if (k === "max_dd") return d * cmpNum(Number(ma.max_dd || 0), Number(mb.max_dd || 0));
     if (k === "trades") return d * cmpNum(Number(ma.trades || 0), Number(mb.trades || 0));
@@ -9201,6 +10439,7 @@ function updateTopTableHeader(isMo, req) {
       <th data-key="fast" class="left">Fast</th>
       <th data-key="slow" class="left">Slow</th>
       <th data-key="pnl">PnL</th>
+      <th data-key="ret_pct">Ret %</th>
       <th data-key="sharpe">Sharpe</th>
       <th data-key="max_dd">MaxDD</th>
       <th data-key="trades">Trades</th>
@@ -9217,6 +10456,7 @@ function updateTopTableHeader(isMo, req) {
     <th data-key="fast" class="left">Fast</th>
     <th data-key="slow" class="left">Slow</th>
     <th data-key="pnl">PnL</th>
+    <th data-key="ret_pct">Ret %</th>
     <th data-key="sharpe">Sharpe</th>
     <th data-key="max_dd">MaxDD</th>
     <th data-key="trades">Trades</th>
@@ -9248,7 +10488,7 @@ function renderTopTablePlaceholder(text) {
   updateTopTableHeader(isMo, topTablePreviewReq());
   updateTopSortUi();
 
-  const cols = isMo ? 11 : 9;
+  const cols = isMo ? 12 : 10;
   const tr = document.createElement("tr");
   const td = document.createElement("td");
   td.colSpan = cols;
@@ -9268,7 +10508,7 @@ function renderTopTableSkeleton(opts) {
   updateTopTableHeader(isMo, topTablePreviewReq());
   updateTopSortUi();
 
-  const cols = isMo ? 11 : 9;
+  const cols = isMo ? 12 : 10;
   const rows = Math.max(4, Math.min(14, Math.floor(Number(opts?.rows ?? 8))));
 
   for (let r = 0; r < rows; r++) {
@@ -9396,7 +10636,7 @@ function renderTopTable(res, req) {
   if (!TOP_ROWS_FILTERED.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = isMo ? 11 : 9;
+    td.colSpan = isMo ? 12 : 10;
     td.className = "left muted";
     td.textContent = sorted.length ? "No rows match the current filters." : "No rows.";
     tr.appendChild(td);
@@ -9437,6 +10677,14 @@ function renderTopTable(res, req) {
       else if (pnl < 0) tdPnl.classList.add("badText");
     }
 
+    const tdRetPct = document.createElement("td");
+    tdRetPct.textContent = fmtPct(m.pnl, 2);
+    tdRetPct.className = "mono";
+    if (Number.isFinite(pnl)) {
+      if (pnl > 0) tdRetPct.classList.add("goodText");
+      else if (pnl < 0) tdRetPct.classList.add("badText");
+    }
+
     const tdSharpe = document.createElement("td");
     tdSharpe.textContent = fmt(m.sharpe, 6);
     tdSharpe.className = "mono";
@@ -9468,6 +10716,7 @@ function renderTopTable(res, req) {
     tr.appendChild(tdFast);
     tr.appendChild(tdSlow);
     tr.appendChild(tdPnl);
+    tr.appendChild(tdRetPct);
     tr.appendChild(tdSharpe);
     tr.appendChild(tdDd);
     tr.appendChild(tdTrades);
@@ -9661,8 +10910,8 @@ function renderCompare() {
     lines.push("");
 
     lines.push("Optimization best:");
-    lines.push(`  baseline: pnl=${fmt(bm.pnl, 6)} sharpe=${fmt(bm.sharpe, 6)} dd=${fmt(bm.max_dd, 6)} trades=${Number(bm.trades || 0)} expo=${fmt(bm.exposure, 4)} score(${bObj})=${fmt(bScore, 6)}`);
-    lines.push(`  current:  pnl=${fmt(cm.pnl, 6)} sharpe=${fmt(cm.sharpe, 6)} dd=${fmt(cm.max_dd, 6)} trades=${Number(cm.trades || 0)} expo=${fmt(cm.exposure, 4)} score(${cObj})=${fmt(cScore, 6)}`);
+    lines.push(`  baseline: pnl=${fmt(bm.pnl, 6)} ret=${fmtPct(bm.pnl, 2)} sharpe=${fmt(bm.sharpe, 6)} dd=${fmt(bm.max_dd, 6)} trades=${Number(bm.trades || 0)} expo=${fmt(bm.exposure, 4)} score(${bObj})=${fmt(bScore, 6)}`);
+    lines.push(`  current:  pnl=${fmt(cm.pnl, 6)} ret=${fmtPct(cm.pnl, 2)} sharpe=${fmt(cm.sharpe, 6)} dd=${fmt(cm.max_dd, 6)} trades=${Number(cm.trades || 0)} expo=${fmt(cm.exposure, 4)} score(${cObj})=${fmt(cScore, 6)}`);
     lines.push(`  deltas:   pnl=${fmt(delta(cm.pnl, bm.pnl), 6)} sharpe=${fmt(delta(cm.sharpe, bm.sharpe), 6)} dd=${fmt(delta(cm.max_dd, bm.max_dd), 6)} trades=${delta(cm.trades, bm.trades)} expo=${fmt(delta(cm.exposure, bm.exposure), 4)}`);
     if (bObj === cObj) lines.push(`  scoreΔ:   ${fmt(delta(cScore, bScore), 6)} (${cObj})`);
     lines.push("");
@@ -9700,7 +10949,7 @@ function renderCompare() {
         const m = bRec.in_sample || {};
         const cross = bRec.cross_ticker && typeof bRec.cross_ticker === "object" ? bRec.cross_ticker : null;
         lines.push(`  baseline: robust=${fmt(bRec.robust_score, 6)} ${bRec.robust_pareto ? "(robust pareto)" : ""}${cross ? ` | cross=${fmt(cross.score, 6)} ${bRec.cross_ticker_pareto ? "(cross pareto)" : ""}` : ""}`.trim());
-        lines.push(`           in_sample: pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | params=${truncate(stableStringify(p), 140)}`);
+        lines.push(`           in_sample: pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | params=${truncate(stableStringify(p), 140)}`);
         const l1 = wfLine(bRec.walk_forward);
         const l2 = mcLine(bRec.trade_bootstrap);
         const l3 = perturbLine(bRec.perturb);
@@ -9717,7 +10966,7 @@ function renderCompare() {
         const m = cRec.in_sample || {};
         const cross = cRec.cross_ticker && typeof cRec.cross_ticker === "object" ? cRec.cross_ticker : null;
         lines.push(`  current:  robust=${fmt(cRec.robust_score, 6)} ${cRec.robust_pareto ? "(robust pareto)" : ""}${cross ? ` | cross=${fmt(cross.score, 6)} ${cRec.cross_ticker_pareto ? "(cross pareto)" : ""}` : ""}`.trim());
-        lines.push(`           in_sample: pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | params=${truncate(stableStringify(p), 140)}`);
+        lines.push(`           in_sample: pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | params=${truncate(stableStringify(p), 140)}`);
         const l1 = wfLine(cRec.walk_forward);
         const l2 = mcLine(cRec.trade_bootstrap);
         const l3 = perturbLine(cRec.perturb);
@@ -10505,6 +11754,19 @@ function ensureDrillTvChart() {
     DRILL_TV_CHART.subscribeClick((p) => onDrillTvChartClick(p));
     DRILL_TV_CLICK_SUBSCRIBED = true;
   }
+  if (!DRILL_TV_RANGE_SUBSCRIBED) {
+    try {
+      const ts = DRILL_TV_CHART.timeScale && DRILL_TV_CHART.timeScale();
+      if (ts && typeof ts.subscribeVisibleLogicalRangeChange === "function") {
+        ts.subscribeVisibleLogicalRangeChange(() => {
+          scheduleDrillTvVisibleMarkerRefresh();
+        });
+        DRILL_TV_RANGE_SUBSCRIBED = true;
+      }
+    } catch {
+      // optional in older chart API builds
+    }
+  }
 
   return { chart: DRILL_TV_CHART, series: DRILL_TV_SERIES, host };
 }
@@ -10524,6 +11786,13 @@ function clearDrillTvChart(msg = "Hover for OHLC/MA values; click a marker to fo
   if (DRILL_TV_MACZ_SERIES) DRILL_TV_MACZ_SERIES.setData([]);
   if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
     DRILL_TV_MARKERS.setMarkers([]);
+  }
+  DRILL_TV_ALL_MARKERS = [];
+  DRILL_TV_MARKER_LAST_KEY = "";
+  if (DRILL_TV_MARKER_RAF) {
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(DRILL_TV_MARKER_RAF);
+    else clearTimeout(DRILL_TV_MARKER_RAF);
+    DRILL_TV_MARKER_RAF = 0;
   }
   DRILL_TV_TRADE_EVENTS_BY_TIME = null;
   DRILL_TV_LEGEND_LAST_TEXT = "";
@@ -10877,6 +12146,100 @@ function buildDrillTradeEventIndex(curves, bars) {
   return out;
 }
 
+function drillMarkerVisibleWindowFromLogicalRange() {
+  const chart = DRILL_TV_CHART;
+  const bars = Array.isArray(DRILL_LAST_BARS) ? DRILL_LAST_BARS : [];
+  if (!chart || !bars.length) return null;
+  const ts = chart.timeScale && chart.timeScale();
+  if (!ts || typeof ts.getVisibleLogicalRange !== "function") return null;
+
+  const lr = ts.getVisibleLogicalRange();
+  if (!lr) return null;
+  const fromRaw = Number(lr.from);
+  const toRaw = Number(lr.to);
+  if (!Number.isFinite(fromRaw) || !Number.isFinite(toRaw)) return null;
+  if (toRaw < fromRaw) return null;
+
+  const span = Math.max(1, Math.ceil(toRaw - fromRaw));
+  const pad = Math.max(24, Math.min(420, Math.floor(span * 0.12)));
+  const lo = Math.max(0, Math.floor(fromRaw) - pad);
+  const hi = Math.min(bars.length - 1, Math.ceil(toRaw) + pad);
+  if (hi < lo) return null;
+
+  const fromTime = Number(bars[lo]?.time);
+  const toTime = Number(bars[hi]?.time);
+  if (!Number.isFinite(fromTime) || !Number.isFinite(toTime)) return null;
+  return {
+    fromTime,
+    toTime,
+    key: `${lo}:${hi}:${bars.length}`,
+  };
+}
+
+function selectDrillMarkersForVisibleWindow(allMarkers, windowInfo) {
+  const xs = Array.isArray(allMarkers) ? allMarkers : [];
+  if (!xs.length) return [];
+  if (!windowInfo) {
+    return xs;
+  }
+
+  const fromTime = Number(windowInfo.fromTime);
+  const toTime = Number(windowInfo.toTime);
+  if (!Number.isFinite(fromTime) || !Number.isFinite(toTime) || toTime < fromTime) {
+    return xs;
+  }
+
+  const out = [];
+  for (const m0 of xs) {
+    const m = m0 && typeof m0 === "object" ? m0 : null;
+    if (!m) continue;
+    const t = Number(m.time);
+    if (!Number.isFinite(t) || t < fromTime || t > toTime) continue;
+    out.push(m);
+  }
+  return out;
+}
+
+function applyDrillTvVisibleMarkers(opts) {
+  if (!DRILL_TV_MARKERS || typeof DRILL_TV_MARKERS.setMarkers !== "function") return;
+  const allMarkers = Array.isArray(DRILL_TV_ALL_MARKERS) ? DRILL_TV_ALL_MARKERS : [];
+  if (!allMarkers.length) {
+    DRILL_TV_MARKERS.setMarkers([]);
+    DRILL_TV_MARKER_LAST_KEY = "empty";
+    return;
+  }
+
+  const windowInfo = drillMarkerVisibleWindowFromLogicalRange();
+  const visible = selectDrillMarkersForVisibleWindow(allMarkers, windowInfo);
+  const key = windowInfo
+    ? `${windowInfo.key}:${visible.length}:${allMarkers.length}`
+    : `all:${visible.length}:${allMarkers.length}`;
+
+  if (!opts?.force && key === DRILL_TV_MARKER_LAST_KEY) return;
+  DRILL_TV_MARKERS.setMarkers(visible);
+  DRILL_TV_MARKER_LAST_KEY = key;
+}
+
+function scheduleDrillTvVisibleMarkerRefresh(opts) {
+  if (opts?.force) {
+    if (DRILL_TV_MARKER_RAF) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(DRILL_TV_MARKER_RAF);
+      else clearTimeout(DRILL_TV_MARKER_RAF);
+      DRILL_TV_MARKER_RAF = 0;
+    }
+    applyDrillTvVisibleMarkers({ force: true });
+    return;
+  }
+  if (DRILL_TV_MARKER_RAF) return;
+  const schedule = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame
+    : (cb) => setTimeout(cb, 16);
+  DRILL_TV_MARKER_RAF = schedule(() => {
+    DRILL_TV_MARKER_RAF = 0;
+    applyDrillTvVisibleMarkers();
+  });
+}
+
 function drillCurvesCacheKey(cmd, req) {
   const payload = { cmd: String(cmd || ""), req: canonicalizeJsonValue(req) };
   return `${payload.cmd}:${hashFNV1a64Hex(canonicalJsonString(payload))}`;
@@ -10967,7 +12330,7 @@ function resolveDrillContext(params, opts) {
 function formatDrillMetricsSummary(metrics) {
   const m = metrics && typeof metrics === "object" ? metrics : null;
   if (!m) return "";
-  return `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
+  return `pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
 }
 
 function formatDrillMoSummary(row) {
@@ -10992,7 +12355,7 @@ function buildDrilldownInvocation(params, runReqOverride) {
     ? params.slow_ma_params
     : resolveRunMaParams(runReq, "slow", slowId);
   const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+  const kind = normalizeStrategyKindRaw(kindRaw);
 
   const base = {
     data_id: runDataId,
@@ -11009,13 +12372,14 @@ function buildDrilldownInvocation(params, runReqOverride) {
     bins,
   };
 
-  const cmd = kind === "DoubleMa" ? "compute_double_ma_drilldown" : "compute_composite_cpu_drilldown";
+  const cmd = isDoubleLikeKind(kind) ? "compute_double_ma_drilldown" : "compute_composite_cpu_drilldown";
   const req = kind === "CompositeCpu"
     ? {
       ...base,
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
+      signal_mode: runReq.signal_mode || runReq.signalMode || "hard_gate",
     }
     : (kind === "CompositeMo"
       ? {
@@ -11023,6 +12387,7 @@ function buildDrilldownInvocation(params, runReqOverride) {
         halftrend: params.halftrend,
         macz: params.macz || {},
         ott: params.ott || {},
+        signal_mode: params.signal_mode || params.signalMode || runReq.signal_mode || runReq.signalMode || "hard_gate",
         strategy: params.strategy || base.strategy,
       }
       : {
@@ -11099,9 +12464,15 @@ async function renderDrillTvChart(curves, runReq, seq, context) {
     DRILL_TV_TRADE_EVENTS_BY_TIME = buildDrillTradeEventIndex(curves, bars);
     renderTrades(curves, { bars });
     if (DRILL_TV_MARKERS && typeof DRILL_TV_MARKERS.setMarkers === "function") {
-      DRILL_TV_MARKERS.setMarkers(markers);
+      // Marker rendering is viewport-windowed to reduce chart work on dense runs.
+      DRILL_TV_ALL_MARKERS = markers;
+      DRILL_TV_MARKER_LAST_KEY = "";
+      scheduleDrillTvVisibleMarkerRefresh({ force: true });
     } else {
-      DRILL_TV_MARKERS = createSeriesMarkers(ctx.series, markers);
+      DRILL_TV_MARKERS = createSeriesMarkers(ctx.series, []);
+      DRILL_TV_ALL_MARKERS = markers;
+      DRILL_TV_MARKER_LAST_KEY = "";
+      scheduleDrillTvVisibleMarkerRefresh({ force: true });
     }
 
     // Seed the legend with the most recent candle so it isn't empty until you hover.
@@ -11147,6 +12518,7 @@ async function renderDrillTvChart(curves, runReq, seq, context) {
         DRILL_TV_CHART.applyOptions({ width: Math.floor(rect.width), height: Math.floor(rect.height) });
       }
       DRILL_TV_CHART.timeScale().fitContent();
+      scheduleDrillTvVisibleMarkerRefresh({ force: true });
     });
 
     if (meta) {
@@ -11733,7 +13105,7 @@ async function requestLocalStability(params, runReqOverride) {
     : resolveRunMaParams(runReq, "slow", slowId);
 
   const kindRaw = String(runReq.strategy_kind || runReq.strategyKind || "DoubleMa");
-  const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+  const kind = normalizeStrategyKindRaw(kindRaw);
   const objective = String(runReq.objective || "Sharpe");
 
   const base = {
@@ -11753,7 +13125,7 @@ async function requestLocalStability(params, runReqOverride) {
     step: 1,
   };
 
-  const cmd = kind === "DoubleMa" ? "compute_double_ma_local_stability" : "compute_composite_cpu_local_stability";
+  const cmd = isDoubleLikeKind(kind) ? "compute_double_ma_local_stability" : "compute_composite_cpu_local_stability";
   const req = kind === "CompositeCpu"
     ? {
       ...base,
@@ -12051,13 +13423,13 @@ function renderHeatmap(res, req) {
   if (!wrap || !canvas || !overlay || !meta || !stack) return;
   const hint = $("heatmapEmptyHint");
   const kind = kindFromReq(req);
-  if (kind !== "DoubleMa") {
+  if (!isDoubleLikeKind(kind)) {
     HEATMAP_STATE = null;
     HEATMAP_HOVER = null;
     HEATMAP_SELECTED = null;
     wrap.style.display = "none";
     if (hint) {
-      hint.textContent = "Heatmap is available for Double MA only.";
+      hint.textContent = "Heatmap is available for Double-MA-family strategies only.";
     }
     setHintVisible("heatmapEmptyHint", true);
     return;
@@ -12438,6 +13810,7 @@ function renderBest(res, req) {
   const el = $("bestSummary");
   if (!el) return;
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
+  const startEq = startingEquityFromReq(req);
 
   const metaRes = LAST_META_RUN?.result && typeof LAST_META_RUN.result === "object" ? LAST_META_RUN.result : null;
   const metaKind = String(metaRes?.strategy_kind || "").trim();
@@ -12479,10 +13852,12 @@ function renderBest(res, req) {
       const cross = c.cross_ticker && typeof c.cross_ticker === "object" ? c.cross_ticker : null;
       const crossPart = hasCross && cross ? ` cross=${fmt(cross.score, 6)}${c.cross_ticker_pareto ? "" : "(!)"}` : "";
       const fb = usedFallback ? " (fallback)" : "";
+      const finalEq = finalEquityFromPnl(m.pnl, startEq);
       el.textContent =
         `recommended${fb}: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
         `robust=${fmt(c.robust_score, 6)}${c.robust_pareto ? "" : "(!)"}${crossPart} | ` +
-        `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
+        `pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} final_eq=${fmtMoney(finalEq, 2)} ` +
+        `sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)}`;
 
       const title =
         `${String(p.fast_ma_type || "?").toUpperCase()}(${p.fast_len || "?"}) vs ` +
@@ -12498,6 +13873,8 @@ function renderBest(res, req) {
           { label: "Robust", value: robustV },
           ...(crossV ? [{ label: "Cross", value: crossV }] : []),
           { label: "PnL", value: fmt(m.pnl, 6), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+          { label: "Return %", value: fmtPct(m.pnl, 2), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+          { label: "Final Eq", value: fmtMoney(finalEq, 2) },
           { label: "Sharpe", value: fmt(m.sharpe, 6) },
           { label: "MaxDD", value: fmt(m.max_dd, 6) },
           { label: "Trades", value: String(Number(m.trades || 0)) },
@@ -12539,9 +13916,11 @@ function renderBest(res, req) {
     const viol = Number(best?.violation ?? NaN);
     const runtimeMs = Number(res?.runtime_ms || 0);
     const evals = Number(res?.total_evaluations || 0);
+    const finalEq = finalEquityFromPnl(m.pnl, startEq);
     el.textContent =
       `pareto best: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
-      `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} | ` +
+      `pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} final_eq=${fmtMoney(finalEq, 2)} ` +
+      `sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} | ` +
       `maximize(${maxObj})=${fmt(maxV, 6)} minimize(${minObj})=${fmt(minV, 6)} viol=${fmt(viol, 6)} | ` +
       `pareto=${pts.length} evals=${evals} runtime_ms=${runtimeMs}`;
 
@@ -12555,6 +13934,8 @@ function renderBest(res, req) {
       meta: `pareto=${pts.length} · evals=${evals} · runtime=${runtimeMs}ms`,
       stats: [
         { label: "PnL", value: fmt(m.pnl, 6), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+        { label: "Return %", value: fmtPct(m.pnl, 2), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+        { label: "Final Eq", value: fmtMoney(finalEq, 2) },
         { label: "Sharpe", value: fmt(m.sharpe, 6) },
         { label: "MaxDD", value: fmt(m.max_dd, 6) },
         { label: "Trades", value: String(Number(m.trades || 0)) },
@@ -12574,11 +13955,17 @@ function renderBest(res, req) {
   const modeUsed = String(res?.mode_used || "-");
   const combos = Number(res?.num_combos || 0);
   const runtimeMs = Number(res?.runtime_ms || 0);
+  const vdps = res?.vdps && typeof res.vdps === "object" ? res.vdps : null;
+  const vdpsMeta = vdps
+    ? ` vdps_eval=${Number(vdps.evaluated_pairs_total || 0)} vdps_ff_saved=${Number(vdps.full_fidelity_pairs_saved || 0)}`
+    : "";
   const s = fmt(scoreOf(m, obj), 6);
+  const finalEq = finalEquityFromPnl(m.pnl, startEq);
   el.textContent =
     `best: ${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ` +
-    `pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} score(${obj})=${s} | ` +
-    `backend=${backendUsed} mode=${modeUsed} combos=${combos} runtime_ms=${runtimeMs}`;
+    `pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} final_eq=${fmtMoney(finalEq, 2)} ` +
+    `sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} expo=${fmt(m.exposure, 4)} score(${obj})=${s} | ` +
+    `backend=${backendUsed} mode=${modeUsed} combos=${combos} runtime_ms=${runtimeMs}${vdpsMeta}`;
 
   const title =
     `${String(p.fast_ma_type || "?").toUpperCase()}(${p.fast_len || "?"}) vs ` +
@@ -12590,6 +13977,8 @@ function renderBest(res, req) {
     meta: `backend=${backendUsed} · mode=${modeUsed} · combos=${combos} · runtime=${runtimeMs}ms`,
     stats: [
       { label: "PnL", value: fmt(m.pnl, 6), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+      { label: "Return %", value: fmtPct(m.pnl, 2), tone: Number.isFinite(pnl) ? (pnl > 0 ? "good" : (pnl < 0 ? "bad" : "")) : "" },
+      { label: "Final Eq", value: fmtMoney(finalEq, 2) },
       { label: "Sharpe", value: fmt(m.sharpe, 6) },
       { label: "MaxDD", value: fmt(m.max_dd, 6) },
       { label: "Trades", value: String(Number(m.trades || 0)) },
@@ -12633,6 +14022,7 @@ function renderRun(res, req) {
   renderTopTable(res, req);
   renderHeatmap(res, req);
   renderCompare();
+  updateVdpsTelemetryHint(res);
   if (best) {
     requestDrilldown(best, req, {
       source: "best",
@@ -12647,7 +14037,115 @@ function renderRun(res, req) {
   renderContextChips();
 }
 
+function parseVdpsRungsInput(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  const parts = text.split(/[,\s]+/g).map((s) => Number(s)).filter((v) => Number.isFinite(v));
+  const out = [];
+  for (const v of parts) {
+    if (v > 0) out.push(Math.min(1, Math.max(0.000001, v)));
+  }
+  out.sort((a, b) => a - b);
+  const dedup = [];
+  for (const v of out) {
+    if (!dedup.length || Math.abs(dedup[dedup.length - 1] - v) > 1e-12) dedup.push(v);
+  }
+  return dedup;
+}
+
+function readVdpsConfigFromUi(mode) {
+  if (mode !== "GpuVdps") return null;
+  const eta = Math.floor(num($("vdpsEta")?.value, 4));
+  if (!Number.isFinite(eta) || eta < 2 || eta > 32) throw new Error("VDPS eta must be in [2, 32].");
+
+  const rungs = parseVdpsRungsInput($("vdpsRungs")?.value);
+  if (!rungs.length) throw new Error("VDPS rungs must include at least one positive fraction.");
+
+  const minInitialPairs = Math.floor(num($("vdpsMinInitialPairs")?.value, 4096));
+  if (!Number.isFinite(minInitialPairs) || minInitialPairs < 1) {
+    throw new Error("VDPS min initial pairs must be >= 1.");
+  }
+
+  const maxSurvivorSeeds = Math.floor(num($("vdpsMaxSurvivorSeeds")?.value, 256));
+  if (!Number.isFinite(maxSurvivorSeeds) || maxSurvivorSeeds < 8) {
+    throw new Error("VDPS max survivor seeds must be >= 8.");
+  }
+
+  const maxPeriodCandidates = Math.floor(num($("vdpsMaxPeriodCandidates")?.value, 384));
+  if (!Number.isFinite(maxPeriodCandidates) || maxPeriodCandidates < 16) {
+    throw new Error("VDPS max period candidates must be >= 16.");
+  }
+
+  const randomInjectionRatio = num($("vdpsRandomInjectionRatio")?.value, 0.10);
+  if (!Number.isFinite(randomInjectionRatio) || randomInjectionRatio < 0 || randomInjectionRatio > 1) {
+    throw new Error("VDPS random injection ratio must be in [0, 1].");
+  }
+  const eliteMutationRatio = num($("vdpsEliteMutationRatio")?.value, 0.50);
+  if (!Number.isFinite(eliteMutationRatio) || eliteMutationRatio < 0 || eliteMutationRatio > 1) {
+    throw new Error("VDPS elite mutation ratio must be in [0, 1].");
+  }
+  const differentialRatio = num($("vdpsDifferentialRatio")?.value, 0.40);
+  if (!Number.isFinite(differentialRatio) || differentialRatio < 0 || differentialRatio > 1) {
+    throw new Error("VDPS differential ratio must be in [0, 1].");
+  }
+
+  const seed = Math.max(0, Math.floor(num($("vdpsSeed")?.value, 1)));
+  const deterministic = !!$("vdpsDeterministic")?.checked;
+  const qualityCheckMaxPairs = Math.floor(num($("vdpsQualityCheckMaxPairs")?.value, 0));
+  if (!Number.isFinite(qualityCheckMaxPairs) || qualityCheckMaxPairs < 0) {
+    throw new Error("VDPS quality check max pairs must be >= 0.");
+  }
+  const qualityCheckTopK = Math.floor(num($("vdpsQualityCheckTopK")?.value, 20));
+  if (!Number.isFinite(qualityCheckTopK) || qualityCheckTopK < 1) {
+    throw new Error("VDPS quality check top-K must be >= 1.");
+  }
+
+  return {
+    eta,
+    rungs,
+    min_initial_pairs: minInitialPairs,
+    max_survivor_seeds: maxSurvivorSeeds,
+    max_period_candidates: maxPeriodCandidates,
+    random_injection_ratio: randomInjectionRatio,
+    elite_mutation_ratio: eliteMutationRatio,
+    differential_ratio: differentialRatio,
+    deterministic,
+    seed,
+    quality_check_max_pairs: qualityCheckMaxPairs,
+    quality_check_top_k: qualityCheckTopK,
+  };
+}
+
+function updateVdpsTelemetryHint(res) {
+  const el = $("vdpsTelemetryHint");
+  if (!el) return;
+  const vdps = res?.vdps && typeof res.vdps === "object" ? res.vdps : null;
+  if (!vdps) {
+    el.textContent = "VDPS telemetry appears after a run.";
+    return;
+  }
+  const evald = Number(vdps.evaluated_pairs_total || 0);
+  const full = Number(vdps.full_grid_pairs || 0);
+  const saved = Number(vdps.full_fidelity_pairs_saved || 0);
+  const ff = Number(vdps.full_fidelity_pairs_evaluated || 0);
+  const rungs = Array.isArray(vdps.rung_stats) ? vdps.rung_stats.length : 0;
+  const rt = Number(vdps.runtime_ms_total || 0);
+  const elite = Number(vdps.elite_mutation_ratio || 0);
+  const diff = Number(vdps.differential_ratio || 0);
+  const rand = Number(vdps.random_injection_ratio || 0);
+  const qcOverlap = Number(vdps.quality_check_top_k_overlap);
+  const qcRegret = Number(vdps.quality_check_best_score_regret);
+  const qcPairs = Number(vdps.quality_check_baseline_pairs || 0);
+  const qcMs = Number(vdps.quality_check_baseline_runtime_ms || 0);
+  const qcText =
+    Number.isFinite(qcOverlap) && Number.isFinite(qcRegret) && qcPairs > 0
+      ? ` quality(overlap=${qcOverlap.toFixed(2)}, regret=${qcRegret.toFixed(6)}, baseline_pairs=${qcPairs}, baseline_ms=${qcMs})`
+      : "";
+  el.textContent = `VDPS: rungs=${rungs} evals=${evald} full_grid=${full} full_fidelity=${ff} saved=${saved} runtime=${rt}ms mix(e/d/r)=${elite.toFixed(2)}/${diff.toFixed(2)}/${rand.toFixed(2)}${qcText}`;
+}
+
 function getDoubleMaRequest() {
+  const reqKind = strategyKind();
   const dataIdText = $("dataId").textContent.trim();
   const dataId = dataIdText === "—" ? "" : dataIdText;
   if (!dataId || dataId === "-") throw new Error("Load CSV first (missing data id).");
@@ -12673,6 +14171,12 @@ function getDoubleMaRequest() {
 
   const fastMaType = ($("fastMaType")?.value || "").trim();
   const slowMaType = ($("slowMaType")?.value || "").trim();
+  const exitMode = String($("exitMode")?.value || "cross").trim() || "cross";
+  const cooldownBars = Math.max(0, Math.floor(num($("cooldownBars")?.value, 0)));
+  const signalPersistenceBars = Math.max(1, Math.floor(num($("signalPersistenceBars")?.value, 1)));
+  const trailingStopPct = parseRiskPctInput("trailingStopPct");
+  const hasExecutionOverlays =
+    cooldownBars > 0 || signalPersistenceBars > 1 || trailingStopPct != null;
   if (!fastMaType) throw new Error("Select a fast MA type.");
   if (!slowMaType) throw new Error("Select a slow MA type.");
 
@@ -12689,8 +14193,17 @@ function getDoubleMaRequest() {
   }
 
   if (backend === "GpuKernel") {
+    if (!isDoubleLikeKind(reqKind)) {
+      throw new Error("GPU (kernel) is available for Double MA, Composite Trend-Quality, Regime-Switch Hybrid, and Breakout Pulse only.");
+    }
+    if (exitMode !== "cross") {
+      throw new Error("GPU (kernel) currently supports exit mode = cross only.");
+    }
+    if (hasExecutionOverlays) {
+      throw new Error("GPU (kernel) does not support cooldown/persistence/trailing-stop overlays.");
+    }
     if (!maSupportsKernel(fastMaType) || !maSupportsKernel(slowMaType)) {
-      throw new Error("GPU (kernel) currently supports only sma/ema/wma/alma. Choose a supported MA or switch backend.");
+      throw new Error("GPU (kernel) does not support one of the selected MA types. Choose a supported MA or switch backend.");
     }
   } else if (backend === "GpuOnly") {
     if (!maSupportsCuda(fastMaType) || !maSupportsCuda(slowMaType)) {
@@ -12710,6 +14223,19 @@ function getDoubleMaRequest() {
 
   const maSource = $("maSource").value;
   validateCandleFieldRequirements(CURRENT_DATA_META, fastMaType, slowMaType, maSource);
+  if (reqKind === "RegimeHybrid" || reqKind === "BreakoutMomentum") {
+    const meta = CURRENT_DATA_META;
+    if (!meta || !meta.has_high || !meta.has_low) {
+      throw new Error(
+        reqKind === "BreakoutMomentum"
+          ? "Breakout Pulse requires high/low candle fields in the loaded dataset."
+          : "Regime-Switch Hybrid requires high/low candle fields in the loaded dataset."
+      );
+    }
+    if (reqKind === "BreakoutMomentum" && !meta.has_volume) {
+      throw new Error("Breakout Pulse requires volume candle field in the loaded dataset.");
+    }
+  }
 
   const objective = $("objective").value;
   const mode = $("mode").value;
@@ -12739,8 +14265,39 @@ function getDoubleMaRequest() {
     if (heatmapBins > 0) throw new Error("Coarse→Fine mode currently requires heatmapBins=0.");
     if (exportAllCsvPath) throw new Error("Coarse→Fine mode cannot be used with exportAllCsvPath.");
   }
+  if (mode === "GpuVdps") {
+    if (!isDoubleLikeKind(reqKind)) {
+      throw new Error(
+        "GPU VDPS mode is available for Double MA, Composite Trend-Quality, Regime-Switch Hybrid, and Breakout Pulse only."
+      );
+    }
+    if (includeAll) throw new Error("GpuVdps mode requires includeAll=false.");
+    if (heatmapBins > 0) throw new Error("GpuVdps mode currently requires heatmapBins=0.");
+    if (exportAllCsvPath) throw new Error("GpuVdps mode does not support exportAllCsvPath.");
+    if (backend === "CpuOnly") {
+      throw new Error("GpuVdps mode requires backend=Auto/GpuOnly/GpuKernel with CUDA available.");
+    }
+    if (hasExecutionOverlays) {
+      throw new Error("GpuVdps mode does not support cooldown/persistence/trailing-stop overlays.");
+    }
+  }
+  const vdps = readVdpsConfigFromUi(mode);
 
   const strategy = readStrategyCfgFromUi();
+  const minTrades = optNum($("dmConstraintMinTrades")?.value);
+  const maxDd = optNum($("dmConstraintMaxDd")?.value);
+  let constraints = null;
+  if (Number.isFinite(minTrades) || Number.isFinite(maxDd)) {
+    constraints = {};
+    if (Number.isFinite(minTrades)) {
+      if (minTrades < 0) throw new Error("Min trades must be >= 0.");
+      constraints.min_trades = Math.floor(minTrades);
+    }
+    if (Number.isFinite(maxDd)) {
+      if (maxDd < 0) throw new Error("Max drawdown constraint must be >= 0.");
+      constraints.max_drawdown = maxDd;
+    }
+  }
 
   const backendObj =
     backend === "GpuOnly" || backend === "GpuKernel" || backend === "Auto"
@@ -12748,9 +14305,10 @@ function getDoubleMaRequest() {
       : { backend: "CpuOnly" };
 
   return {
-    strategy_kind: "DoubleMa",
+    strategy_kind: reqKind,
     backend: backendObj,
     data_id: dataId,
+    starting_equity: readStartingEquityFromUi(),
     fast_range: fast,
     slow_range: slow,
     fast_ma_types: [fastMaType],
@@ -12764,9 +14322,11 @@ function getDoubleMaRequest() {
     strategy,
     objective,
     mode,
+    vdps,
     top_k: topK,
     include_all: includeAll,
     heatmap_bins: heatmapBins,
+    constraints,
   };
 }
 
@@ -13149,7 +14709,7 @@ function renderDistributedAssetsSummary(resp, req) {
     const p = r.p || {};
     const m = r.m || {};
     lines.push(
-      `${String(i + 1).padStart(3, " ")} score=${fmt(r.score, 6)} pnl=${fmt(m.pnl, 6)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | ` +
+      `${String(i + 1).padStart(3, " ")} score=${fmt(r.score, 6)} pnl=${fmt(m.pnl, 6)} ret=${fmtPct(m.pnl, 2)} sharpe=${fmt(m.sharpe, 6)} dd=${fmt(m.max_dd, 6)} trades=${Number(m.trades || 0)} | ` +
       `${p.fast_ma_type || "?"}(${p.fast_len || "?"}) vs ${p.slow_ma_type || "?"}(${p.slow_len || "?"}) | ${r.csv}`
     );
   }
@@ -13438,6 +14998,7 @@ function getCompositeMoRequest() {
   validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource);
 
   const baseStrategy = readStrategyCfgFromUi();
+  const signal_mode = readCompositeSignalMode();
 
   const maximize = $("objective").value;
   const minimize = $("moObjectiveMin")?.value || "MaxDrawdown";
@@ -13562,12 +15123,14 @@ function getCompositeMoRequest() {
   return {
     strategy_kind: "CompositeMo",
     data_id: dataId,
+    starting_equity: readStartingEquityFromUi(),
     fast_ma_type: fastMaType,
     slow_ma_type: slowMaType,
     ma_source: maSource,
     fast_ma_params: resolvedMaParams("fast", fastMaType),
     slow_ma_params: resolvedMaParams("slow", slowMaType),
     base_strategy: baseStrategy,
+    signal_mode,
     strategy: baseStrategy,
     search_space,
     objective: maximize,
@@ -13679,11 +15242,13 @@ function getCompositeRequest() {
   const heatmapBins = 0;
 
   const strategy = readStrategyCfgFromUi();
+  const signal_mode = readCompositeSignalMode();
 
   return {
     strategy_kind: "CompositeCpu",
     backend: { backend: "CpuOnly" },
     data_id: dataId,
+    starting_equity: readStartingEquityFromUi(),
     fast_range: fast,
     slow_range: slow,
     fast_ma_types: [fastMaType],
@@ -13692,6 +15257,7 @@ function getCompositeRequest() {
     fast_ma_params: resolvedMaParams("fast", fastMaType),
     slow_ma_params: resolvedMaParams("slow", slowMaType),
     strategy,
+    signal_mode,
     halftrend,
     macz,
     ott,
@@ -13710,7 +15276,7 @@ function getRequest() {
 
 function kindFromReq(req) {
   const kindRaw = String(req?.strategy_kind || req?.strategyKind || "DoubleMa");
-  return kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+  return normalizeStrategyKindRaw(kindRaw);
 }
 
 function setExecStatus(msg, kind) {
@@ -13724,6 +15290,15 @@ function setExecStatus(msg, kind) {
 
 function setExecLiveStatus(msg, kind) {
   const el = $("execLiveStatusHint");
+  if (!el) return;
+  el.textContent = String(msg || "-");
+  el.classList.remove("goodText", "badText");
+  if (kind === "ok") el.classList.add("goodText");
+  else if (kind === "danger") el.classList.add("badText");
+}
+
+function setExecRunnerStatus(msg, kind) {
+  const el = $("execRunnerStatusHint");
   if (!el) return;
   el.textContent = String(msg || "-");
   el.classList.remove("goodText", "badText");
@@ -13887,21 +15462,70 @@ function execMergedBars() {
   return out;
 }
 
+function rebuildExecBaseTimeSet() {
+  const out = new Set();
+  const base = Array.isArray(EXEC_TV_BASE_BARS) ? EXEC_TV_BASE_BARS : [];
+  for (const b0 of base) {
+    const t = Number(b0?.time);
+    if (!Number.isFinite(t)) continue;
+    out.add(t);
+  }
+  EXEC_TV_BASE_TIME_SET = out;
+}
+
+function recomputeExecMergedCount() {
+  const baseN = EXEC_TV_BASE_TIME_SET && typeof EXEC_TV_BASE_TIME_SET.size === "number"
+    ? EXEC_TV_BASE_TIME_SET.size
+    : 0;
+  let merged = baseN;
+  for (const t0 of EXEC_TV_LIVE_BARS.keys()) {
+    const t = Number(t0);
+    if (!Number.isFinite(t)) continue;
+    if (!EXEC_TV_BASE_TIME_SET.has(t)) merged++;
+  }
+  EXEC_TV_MERGED_COUNT = Math.max(0, merged);
+}
+
+function updateExecChartMeta(snapshot, opts) {
+  const meta = $("execTvChartMeta");
+  if (!meta) return;
+  const baseN = EXEC_TV_BASE_TIME_SET && typeof EXEC_TV_BASE_TIME_SET.size === "number"
+    ? EXEC_TV_BASE_TIME_SET.size
+    : (Array.isArray(EXEC_TV_BASE_BARS) ? EXEC_TV_BASE_BARS.length : 0);
+  const liveN = EXEC_TV_LIVE_BARS.size;
+  const mergedN = Number.isFinite(Number(opts?.mergedCount))
+    ? Math.max(0, Math.floor(Number(opts.mergedCount)))
+    : Math.max(0, Math.floor(Number(EXEC_TV_MERGED_COUNT || 0)));
+  const markersN = Number.isFinite(Number(opts?.markerCount))
+    ? Math.max(0, Math.floor(Number(opts.markerCount)))
+    : Math.max(0, Math.floor(Number(EXEC_TV_MARKER_COUNT || 0)));
+  const ordersN = Array.isArray(snapshot?.orders) ? snapshot.orders.length : 0;
+  meta.textContent = `bars=${mergedN} (base=${baseN} live=${liveN}) orders=${ordersN} markers=${markersN}`;
+}
+
+function tryExecSeriesIncrementalUpdate(candle) {
+  if (!EXEC_TV_SERIES || typeof EXEC_TV_SERIES.update !== "function") return false;
+  const c = candle && typeof candle === "object" ? candle : null;
+  if (!c) return false;
+  try {
+    EXEC_TV_SERIES.update(c);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function updateExecChartSeries(snapshot, opts) {
   if (!EXEC_TV_SERIES) return;
   const merged = execMergedBars();
   EXEC_TV_SERIES.setData(merged);
+  EXEC_TV_MERGED_COUNT = merged.length;
   const markers = buildExecOrderMarkers(snapshot, merged);
+  EXEC_TV_MARKER_COUNT = markers.length;
   if (EXEC_TV_MARKERS && typeof EXEC_TV_MARKERS.setMarkers === "function") {
     EXEC_TV_MARKERS.setMarkers(markers);
   }
-  const meta = $("execTvChartMeta");
-  if (meta) {
-    const baseN = Array.isArray(EXEC_TV_BASE_BARS) ? EXEC_TV_BASE_BARS.length : 0;
-    const liveN = EXEC_TV_LIVE_BARS.size;
-    const ordersN = Array.isArray(snapshot?.orders) ? snapshot.orders.length : 0;
-    meta.textContent = `bars=${merged.length} (base=${baseN} live=${liveN}) orders=${ordersN} markers=${markers.length}`;
-  }
+  updateExecChartMeta(snapshot, { mergedCount: merged.length, markerCount: markers.length });
   if (opts?.fit) {
     try {
       EXEC_TV_CHART?.timeScale?.().fitContent?.();
@@ -13911,8 +15535,11 @@ function updateExecChartSeries(snapshot, opts) {
 
 function clearExecLiveBars(opts) {
   EXEC_TV_LIVE_BARS.clear();
+  recomputeExecMergedCount();
   if (opts?.refresh && EXEC_TV_SERIES) {
     updateExecChartSeries(EXEC_LAST_SNAPSHOT, { fit: false });
+  } else {
+    updateExecChartMeta(EXEC_LAST_SNAPSHOT);
   }
 }
 
@@ -13938,8 +15565,24 @@ function onExecLiveBarEvent(payload) {
 
   const candle = execCandleFromLivePayload(p);
   if (!candle) return;
-  EXEC_TV_LIVE_BARS.set(Number(candle.time), candle);
-  if (EXEC_TV_SERIES) updateExecChartSeries(EXEC_LAST_SNAPSHOT, { fit: false });
+  const t = Number(candle.time);
+  const hadLive = EXEC_TV_LIVE_BARS.has(t);
+  const hadBase = EXEC_TV_BASE_TIME_SET.has(t);
+  EXEC_TV_LIVE_BARS.set(t, candle);
+  if (!hadLive && !hadBase) {
+    EXEC_TV_MERGED_COUNT = Math.max(0, Number(EXEC_TV_MERGED_COUNT || 0) + 1);
+  }
+  if (EXEC_TV_SERIES) {
+    // Fast path for realtime bars; fall back to full merge on out-of-order updates.
+    const updated = tryExecSeriesIncrementalUpdate(candle);
+    if (!updated) {
+      updateExecChartSeries(EXEC_LAST_SNAPSHOT, { fit: false });
+    } else {
+      updateExecChartMeta(EXEC_LAST_SNAPSHOT);
+    }
+  } else {
+    updateExecChartMeta(EXEC_LAST_SNAPSHOT);
+  }
   const when = formatUtcTimeShortFromSec(Number(candle.time));
   const delayed = !!p.delayed;
   setExecLiveStatus(`Live candle: ${String(p.symbol || "-")} @ ${when}${delayed ? " (delayed)" : ""}`, "ok");
@@ -13968,6 +15611,63 @@ function onExecLiveStatusEvent(payload) {
   setExecLiveStatus(`Live candles: ${status || "status"}${message ? ` (${message})` : ""}`, "muted");
 }
 
+function onExecRunnerEvent(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const status = String(p.status || "").trim().toLowerCase();
+  const message = String(p.message || "").trim();
+  const symbol = String(p.symbol || "").trim() || String($("execSymbol")?.value || "").trim().toUpperCase();
+  const execution = p.execution && typeof p.execution === "object" ? p.execution : null;
+
+  if (status === "started") EXEC_RUNNER_ACTIVE = true;
+  else if (status === "stopped") EXEC_RUNNER_ACTIVE = false;
+
+  if (execution) {
+    setExecOutput(execution);
+    if (execution.order_submitted) {
+      refreshExecutionSnapshotUi({ showOutput: false, silentStatus: true }).catch(() => {});
+    }
+  }
+
+  if (status === "error") {
+    setExecRunnerStatus(`Auto-runner error (${symbol || "-"})${message ? `: ${message}` : ""}`, "danger");
+    setExecStatus(`Auto-runner error: ${message || "execution failed"}`, "danger");
+    return;
+  }
+
+  if (status === "order_submitted") {
+    setExecRunnerStatus(`Auto-runner submitted order (${symbol || "-"})${message ? `: ${message}` : ""}`, "ok");
+    setExecStatus(`Auto-runner submitted order for ${symbol || "-"}.`, "ok");
+    return;
+  }
+
+  if (status === "triggered") {
+    setExecRunnerStatus(`Auto-runner triggered (${symbol || "-"})${message ? `: ${message}` : ""}`, "muted");
+    return;
+  }
+
+  if (status === "signal_processed") {
+    setExecRunnerStatus(`Auto-runner processed signal (${symbol || "-"})${message ? `: ${message}` : ""}`, "muted");
+    return;
+  }
+
+  if (status === "started") {
+    setExecRunnerStatus(`Auto-runner active (${symbol || "-"})${message ? `: ${message}` : ""}`, "ok");
+    return;
+  }
+
+  if (status === "stopped") {
+    setExecRunnerStatus(`Auto-runner stopped${message ? `: ${message}` : ""}`, "muted");
+    return;
+  }
+
+  if (status === "skipped_busy") {
+    setExecRunnerStatus(`Auto-runner waiting (${symbol || "-"})`, "muted");
+    return;
+  }
+
+  setExecRunnerStatus(`Auto-runner: ${status || "status"}${message ? ` (${message})` : ""}`, "muted");
+}
+
 async function initExecLiveStreamListeners() {
   if (EXEC_LIVE_LISTENERS_READY) return;
   const listen = tauriListen();
@@ -13984,6 +15684,13 @@ async function initExecLiveStreamListeners() {
     await listen("polygon_live_status", (event) => {
       try {
         onExecLiveStatusEvent(event?.payload);
+      } catch {}
+    });
+  } catch {}
+  try {
+    await listen("live_execution_runner_event", (event) => {
+      try {
+        onExecRunnerEvent(event?.payload);
       } catch {}
     });
   } catch {}
@@ -14044,7 +15751,10 @@ function clearExecTvChart(msg) {
   const meta = $("execTvChartMeta");
   if (meta && msg != null) meta.textContent = String(msg);
   EXEC_TV_BASE_BARS = [];
+  EXEC_TV_BASE_TIME_SET = new Set();
   EXEC_TV_LIVE_BARS.clear();
+  EXEC_TV_MARKER_COUNT = 0;
+  EXEC_TV_MERGED_COUNT = 0;
   if (EXEC_TV_SERIES) EXEC_TV_SERIES.setData([]);
   if (EXEC_TV_MARKERS && typeof EXEC_TV_MARKERS.setMarkers === "function") {
     EXEC_TV_MARKERS.setMarkers([]);
@@ -14175,6 +15885,8 @@ async function renderExecSnapshotChart(snapshot) {
     close: b.close,
   }));
   EXEC_TV_BASE_BARS = candleData;
+  rebuildExecBaseTimeSet();
+  recomputeExecMergedCount();
   updateExecChartSeries(snapshot, { fit: true });
 }
 
@@ -14314,6 +16026,87 @@ async function refreshExecLiveCandleStreamStatusUi(opts) {
   }
 }
 
+function summarizeExecRunnerStatus(st) {
+  const s = st && typeof st === "object" ? st : {};
+  const active = !!s.active;
+  const cfg = s.config && typeof s.config === "object" ? s.config : null;
+  if (!active || !cfg) return "Auto-runner: off";
+  const mode = String(cfg.mode || "paper").toLowerCase();
+  const dry = cfg.dry_run ? "dry-run" : "broker";
+  const sym = String(cfg.symbol || "-").trim() || "-";
+  const runs = Number(s.run_count || 0);
+  const errs = Number(s.error_count || 0);
+  const skips = Number(s.skip_count || 0);
+  const inflight = !!s.inflight;
+  return `Auto-runner: on (${sym}, ${mode}, ${dry}) runs=${runs} skips=${skips} errs=${errs}${inflight ? " [in-flight]" : ""}`;
+}
+
+async function refreshExecRunnerStatusUi(opts) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  try {
+    const st = await invoke("live_execution_runner_status");
+    EXEC_RUNNER_STATUS = st;
+    EXEC_RUNNER_ACTIVE = !!st?.active;
+    if (!opts?.silent) {
+      setExecRunnerStatus(summarizeExecRunnerStatus(st), EXEC_RUNNER_ACTIVE ? "ok" : "muted");
+    }
+  } catch (e) {
+    if (!opts?.silent) setExecRunnerStatus(`Auto-runner status unavailable: ${String(e)}`, "danger");
+  }
+}
+
+async function startExecLiveRunner() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  let payload = null;
+  try {
+    payload = buildExecutionInvokePayload();
+  } catch (e) {
+    throw new Error(String(e));
+  }
+
+  const req = payload.req;
+  if (!req.dry_run && (!req.alpaca_api_key || !req.alpaca_api_secret)) {
+    throw new Error("API key + secret are required unless dry-run is enabled.");
+  }
+  if (!EXEC_LIVE_STREAM_ACTIVE) {
+    throw new Error("Start live candles first. Auto-runner triggers on Polygon live bars.");
+  }
+
+  if (!req.dry_run) {
+    const modeLabel = req.mode === "live" ? "LIVE" : "PAPER";
+    const confirmText =
+      `Start auto-runner in ${modeLabel} mode?\n` +
+      `Symbol: ${req.symbol}\n` +
+      `Qty: ${req.qty}\n` +
+      `This will place orders on each new live bar when signal changes.`;
+    if (!confirm(confirmText)) {
+      setExecRunnerStatus("Auto-runner start cancelled.", "muted");
+      return;
+    }
+  }
+
+  setExecRunnerStatus("Starting auto-runner...", "muted");
+  const st = await invoke("start_live_execution_runner", { req });
+  EXEC_RUNNER_STATUS = st;
+  EXEC_RUNNER_ACTIVE = !!st?.active;
+  setExecRunnerStatus(summarizeExecRunnerStatus(st), EXEC_RUNNER_ACTIVE ? "ok" : "muted");
+  setExecStatus(`Auto-runner started for ${String(req.symbol || "-")}.`, "ok");
+  saveExecutionApiKeysToStorage();
+}
+
+async function stopExecLiveRunner() {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
+  const resp = await invoke("stop_live_execution_runner");
+  EXEC_RUNNER_STATUS = resp?.status || null;
+  EXEC_RUNNER_ACTIVE = !!resp?.status?.active;
+  setExecRunnerStatus(summarizeExecRunnerStatus(resp?.status), EXEC_RUNNER_ACTIVE ? "ok" : "muted");
+  if (resp?.stopped) setExecStatus("Auto-runner stopped.", "muted");
+  else setExecStatus("Auto-runner was already off.", "muted");
+}
+
 function updateExecParamSourceUi() {
   const src = String($("execParamSource")?.value || "selected").trim().toLowerCase();
   const manual = src === "manual";
@@ -14327,7 +16120,7 @@ function updateExecParamSourceUi() {
 function setExecBusy(busy) {
   EXEC_BUSY = !!busy;
   const disabled = RUNNING || EXEC_BUSY;
-  for (const id of ["btnExecTestConnection", "btnExecRunOnce", "btnExecClearKeys", "btnExecRefresh", "btnExecLiveStart", "btnExecLiveStop"]) {
+  for (const id of ["btnExecTestConnection", "btnExecRunOnce", "btnExecClearKeys", "btnExecRefresh", "btnExecLiveStart", "btnExecLiveStop", "btnExecRunnerStart", "btnExecRunnerStop"]) {
     const el = $(id);
     if (el) el.disabled = disabled;
   }
@@ -14381,16 +16174,17 @@ function buildManualExecutionStrategySpec() {
   const fast_ma_params = resolvedMaParams("fast", fast_ma_type);
   const slow_ma_params = resolvedMaParams("slow", slow_ma_type);
   const strategy = readStrategyCfgFromUi();
+  const signal_mode = readCompositeSignalMode();
   const bins = desiredDrillBins();
   const params = { fast_len, slow_len, fast_ma_type, slow_ma_type };
   const uiKind = strategyKind();
 
-  if (uiKind === "DoubleMa") {
+  if (isDoubleLikeKind(uiKind)) {
     if (!maSupportsCpu(fast_ma_type) || !maSupportsCpu(slow_ma_type)) {
       throw new Error("Execution currently requires CPU-supporting MA types for manual Double MA mode.");
     }
     return {
-      strategy_kind: "DoubleMa",
+      strategy_kind: uiKind,
       strategy: {
         kind: "double_ma",
         req: {
@@ -14476,6 +16270,7 @@ function buildManualExecutionStrategySpec() {
         fast_ma_params,
         slow_ma_params,
         strategy,
+        signal_mode,
         halftrend,
         macz,
         ott,
@@ -14568,7 +16363,7 @@ function buildExecutionInvokePayload() {
 
     const drill = buildDrilldownInvocation(params, CURRENT_RUN.req);
     if (!drill?.req) throw new Error("Unable to build strategy request from selected parameters.");
-    strategy = drill.kind === "DoubleMa"
+    strategy = isDoubleLikeKind(drill.kind)
       ? { kind: "double_ma", req: drill.req }
       : { kind: "composite_cpu", req: drill.req };
     strategy_kind = drill.kind;
@@ -14639,7 +16434,7 @@ function getValidationRequest(opts) {
     const fast_len = Math.max(0, Math.floor(Number(p.fast_len || 0)));
     const slow_len = Math.max(0, Math.floor(Number(p.slow_len || 0)));
 
-    if (kind === "DoubleMa") {
+    if (isDoubleLikeKind(kind)) {
       const fast_ma_params = (p.fast_ma_params && typeof p.fast_ma_params === "object") ? p.fast_ma_params : null;
       const slow_ma_params = (p.slow_ma_params && typeof p.slow_ma_params === "object") ? p.slow_ma_params : null;
       const strategy = CURRENT_RUN.req.strategy || CURRENT_RUN.req.base_strategy || {};
@@ -14659,6 +16454,9 @@ function getValidationRequest(opts) {
     const halftrend = kind === "CompositeMo"
       ? (p.halftrend && typeof p.halftrend === "object" ? p.halftrend : null)
       : (CURRENT_RUN.req.halftrend && typeof CURRENT_RUN.req.halftrend === "object" ? CURRENT_RUN.req.halftrend : null);
+    const signal_mode = kind === "CompositeMo"
+      ? String(p.signal_mode || p.signalMode || CURRENT_RUN.req.signal_mode || CURRENT_RUN.req.signalMode || "hard_gate")
+      : String(CURRENT_RUN.req.signal_mode || CURRENT_RUN.req.signalMode || "hard_gate");
 
     return {
       fast_ma_type,
@@ -14668,11 +16466,12 @@ function getValidationRequest(opts) {
       halftrend: halftrend || undefined,
       macz: kind === "CompositeMo" ? (p.macz || {}) : (CURRENT_RUN.req.macz || {}),
       ott: kind === "CompositeMo" ? (p.ott || {}) : (CURRENT_RUN.req.ott || {}),
+      signal_mode,
       strategy: kind === "CompositeMo" ? (p.strategy || CURRENT_RUN.req.strategy || {}) : (CURRENT_RUN.req.strategy || {}),
     };
   }).filter((c) => {
     if (!c.fast_ma_type || !c.slow_ma_type || c.fast_len <= 0 || c.slow_len <= 0) return false;
-    if (kind === "DoubleMa") return true;
+    if (isDoubleLikeKind(kind)) return true;
     return !!c.halftrend;
   });
 
@@ -15092,43 +16891,18 @@ function exportReportJson() {
 async function exportReportXlsx() {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error("Tauri invoke not available (window.__TAURI__ missing).");
-  if (!CURRENT_VALIDATION?.res) {
-    setStatus("Run validation first (no validation result yet).", "muted");
+  const path = String(LAST_META_RUN?.report_xlsx_path || "").trim();
+  if (!path) {
+    setStatus("Run Meta Analysis first. XLSX generation is consolidated in Stage 3.", "muted");
     return;
   }
 
   const wasRunning = RUNNING;
-  const ts = CURRENT_RUN?.ts || new Date().toISOString();
-  const payload = {
-    version: 1,
-    kind: "vectorbt_report",
-    ts,
-    data: {
-      meta: (CURRENT_DATA_META && typeof CURRENT_DATA_META === "object") ? CURRENT_DATA_META : null,
-      ctx: (CURRENT_DATASET_CTX && typeof CURRENT_DATASET_CTX === "object") ? CURRENT_DATASET_CTX : null,
-    },
-    run: { req: CURRENT_RUN?.req || null, res: CURRENT_RUN?.res || null },
-    validation: CURRENT_VALIDATION ? { req: CURRENT_VALIDATION.req || null, res: CURRENT_VALIDATION.res || null } : null,
-  };
-
-  const maxRows = Math.max(0, Math.floor(num($("valAutoExportTopN")?.value, 20)));
-  const max_rows = maxRows > 0 ? maxRows : null;
   setProgressUi(0, 1, "export_xlsx", "");
-  setStatus("Saving XLSX report...", "muted");
-  const t0 = performance.now();
-  const resp = await invoke("save_report_xlsx", { report: payload, max_rows });
-  const dtMs = performance.now() - t0;
-  const path = String(resp?.path || "").trim();
-  const bytes = Number(resp?.bytes || 0);
-  const candidatesN = Array.isArray(CURRENT_VALIDATION?.res?.candidates) ? CURRENT_VALIDATION.res.candidates.length : 0;
-  const rowsN = Math.max(0, Math.min(max_rows || candidatesN, candidatesN));
-  const dtSec = dtMs > 0 ? dtMs / 1000 : 0;
-  const rowsPerSec = dtSec > 0 ? rowsN / dtSec : 0;
-  const exportSuffix = rowsPerSec > 0 ? formatPerSecond(rowsPerSec, "rows") : "";
-  setProgressUi(1, 1, "export_xlsx", exportSuffix);
-  setStatus(path ? `Saved XLSX report (${bytes} bytes): ${path}` : "Saved XLSX report.", "ok");
-  if (path && CURRENT_RUN) CURRENT_RUN.report_xlsx_path = path;
-  await persistCurrentRunArtifact({ report_xlsx_path: path });
+  setStatus("Opening Stage 3 XLSX report...", "muted");
+  await invoke("open_path", { path });
+  setProgressUi(1, 1, "export_xlsx", "");
+  setStatus(`Opened Stage 3 XLSX report: ${path}`, "ok");
   updateQuickActionsUi();
   if (path && !!$("valAutoRevealReport")?.checked) {
     try {
@@ -15148,11 +16922,11 @@ async function runValidation(opts) {
 
   const req = getValidationRequest(opts);
   const runKind = kindFromReq(CURRENT_RUN?.req);
-  const cmd = runKind === "DoubleMa" ? "run_double_ma_validation" : "run_composite_validation";
+  const cmd = isDoubleLikeKind(runKind) ? "run_double_ma_validation" : "run_composite_validation";
   setActiveProgressContext(buildValidationProgressContext(req, runKind));
   setRunning(true);
   try {
-    setProgressUi(0, 1, runKind === "DoubleMa" ? "double_ma_validate" : "composite_validate", "");
+    setProgressUi(0, 1, isDoubleLikeKind(runKind) ? "double_ma_validate" : "composite_validate", "");
     setStatus("Running validation...", "muted");
     const t0 = performance.now();
     const res = await invoke(cmd, { req });
@@ -15177,14 +16951,6 @@ async function runValidation(opts) {
     updateValidationExportButtons();
     // Persist validation into the run artifact so Meta selection can aggregate without requiring XLSX export.
     await persistCurrentRunArtifact();
-    if (!!$("valAutoExportXlsx")?.checked) {
-      try {
-        await exportReportXlsx();
-      } catch (e) {
-        if (isCancelledError(e)) setStatus("Auto-export cancelled.", "muted");
-        else setStatus(`Auto-export XLSX failed: ${String(e)}`, "danger");
-      }
-    }
     if (opts?.switchTab !== false) {
       RESULTS_TABS?.set("validate", { save: true, focus: false });
     }
@@ -15252,7 +17018,7 @@ async function runOptimization(opts) {
     startOptimizationProgressHeartbeat(req);
     const t0 = performance.now();
     const kindRaw = String(req.strategy_kind || req.strategyKind || "DoubleMa");
-    const kind = kindRaw === "CompositeCpu" ? "CompositeCpu" : (kindRaw === "CompositeMo" ? "CompositeMo" : "DoubleMa");
+    const kind = normalizeStrategyKindRaw(kindRaw);
     const cmd = kind === "CompositeCpu"
       ? "run_composite_cpu_optimization"
       : (kind === "CompositeMo" ? "run_composite_mo_optimization" : "run_double_ma_optimization");
@@ -15493,11 +17259,13 @@ function getCompositeRequestForFingerprint() {
   if (heatmapBins > 512) throw new Error("heatmapBins must be <= 512.");
 
   const strategy = readStrategyCfgFromUi();
+  const signal_mode = readCompositeSignalMode();
 
   return {
     strategy_kind: "CompositeCpu",
     backend: { backend: "CpuOnly" },
     data_id: "__cfg__",
+    starting_equity: readStartingEquityFromUi(),
     fast_range: fast,
     slow_range: slow,
     fast_ma_types: [fastMaType],
@@ -15506,6 +17274,7 @@ function getCompositeRequestForFingerprint() {
     fast_ma_params: resolvedMaParams("fast", fastMaType),
     slow_ma_params: resolvedMaParams("slow", slowMaType),
     strategy,
+    signal_mode,
     halftrend,
     macz,
     ott,
@@ -15546,6 +17315,7 @@ function getCompositeMoRequestForFingerprint() {
   const maSource = String($("maSource")?.value || "close");
 
   const baseStrategy = readStrategyCfgFromUi();
+  const signal_mode = readCompositeSignalMode();
 
   const maximize = String($("objective")?.value || "Sharpe");
   const minimize = String($("moObjectiveMin")?.value || "MaxDrawdown");
@@ -15632,12 +17402,14 @@ function getCompositeMoRequestForFingerprint() {
   return {
     strategy_kind: "CompositeMo",
     data_id: "__cfg__",
+    starting_equity: readStartingEquityFromUi(),
     fast_ma_type: fastMaType,
     slow_ma_type: slowMaType,
     ma_source: maSource,
     fast_ma_params: resolvedMaParams("fast", fastMaType),
     slow_ma_params: resolvedMaParams("slow", slowMaType),
     base_strategy: baseStrategy,
+    signal_mode,
     strategy: baseStrategy,
     search_space,
     objective: maximize,
@@ -15774,10 +17546,10 @@ async function runBatchWorkflow() {
   if ($("btnBatchStop")) $("btnBatchStop").disabled = false;
   try {
     setBatchSummaryUi(null, "");
-    // Hands-off defaults for batch: validate, but don't pop open files for every dataset. XLSX export respects the toggle.
+    // Hands-off defaults for batch: validate, but don't pop open files for every dataset.
     if ($("valAutoRun")) $("valAutoRun").checked = true;
     if ($("valAutoRevealReport")) $("valAutoRevealReport").checked = false;
-    const requireXlsx = !!$("valAutoExportXlsx")?.checked;
+    const requireXlsx = false;
 
     let baseTags = parseTagsInput($("batchTags")?.value || "");
     if (!baseTags.length) {
@@ -16072,7 +17844,15 @@ async function runBatchWorkflow() {
       try {
         // Ensure meta defaults match this batch.
         const kind = strategyKind();
-        if ($("metaStrategyKind")) $("metaStrategyKind").value = kind === "CompositeCpu" ? "CompositeCpu" : "CompositeMo";
+        if ($("metaStrategyKind")) {
+          $("metaStrategyKind").value = kind === "CompositeCpu"
+            ? "CompositeCpu"
+            : (kind === "CompositeTrend"
+              ? "CompositeTrend"
+              : (kind === "RegimeHybrid"
+                ? "RegimeHybrid"
+                : (kind === "BreakoutMomentum" ? "BreakoutMomentum" : "CompositeMo")));
+        }
         const tf = batchTimeframes.size === 1 ? String([...batchTimeframes][0] || "").trim() : "";
         if (tf && $("metaTimeframe") && !String($("metaTimeframe")?.value || "").trim()) $("metaTimeframe").value = tf;
         if ($("metaRequiredTag")) $("metaRequiredTag").value = primary_tag || String($("metaRequiredTag")?.value || "").trim();
@@ -16261,6 +18041,34 @@ $("btnExecLiveStop")?.addEventListener("click", async () => {
   }
 });
 
+$("btnExecRunnerStart")?.addEventListener("click", async () => {
+  if (RUNNING || EXEC_BUSY) return;
+  setExecBusy(true);
+  try {
+    await startExecLiveRunner();
+  } catch (e) {
+    const msg = String(e);
+    setExecRunnerStatus(`Auto-runner start failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+});
+
+$("btnExecRunnerStop")?.addEventListener("click", async () => {
+  if (RUNNING || EXEC_BUSY) return;
+  setExecBusy(true);
+  try {
+    await stopExecLiveRunner();
+  } catch (e) {
+    const msg = String(e);
+    setExecRunnerStatus(`Auto-runner stop failed: ${msg}`, "danger");
+    setStatus(msg, "danger");
+  } finally {
+    setExecBusy(false);
+  }
+});
+
 $("btnExecTestConnection")?.addEventListener("click", async () => {
   const invoke = tauriInvoke();
   if (!invoke) {
@@ -16329,7 +18137,7 @@ $("btnExecRunOnce")?.addEventListener("click", async () => {
 
   if (!req.dry_run) {
     const modeLabel = req.mode === "live" ? "LIVE" : "PAPER";
-    const strategyLabel = meta.strategy_kind === "DoubleMa" ? "Double MA" : "Composite";
+    const strategyLabel = strategyKindLabel(meta.strategy_kind);
     const confirmText =
       `Submit ${modeLabel} order now?\n` +
       `Symbol: ${req.symbol}\n` +
@@ -16705,6 +18513,26 @@ $("strategyKind")?.addEventListener("change", () => {
   saveSettingsSoon();
 });
 
+$("compositeSignalMode")?.addEventListener("change", () => {
+  updateStrategyUi();
+  updateRunPlanUi();
+  renderContextChips();
+});
+
+$("trendUseAdx")?.addEventListener("change", () => {
+  updateStrategyUi();
+  updateRunPlanUi();
+  renderContextChips();
+  saveSettingsSoon();
+});
+
+$("breakoutUseAdx")?.addEventListener("change", () => {
+  updateStrategyUi();
+  updateRunPlanUi();
+  renderContextChips();
+  saveSettingsSoon();
+});
+
 $("btnApplyPreset")?.addEventListener("click", () => {
   if (RUNNING) return;
   applyPresetProfile($("presetProfile")?.value || "Balanced");
@@ -16767,6 +18595,8 @@ for (const id of ["csvPath", "objective", "moObjectiveMin", "mode", "maSource"])
 
 for (const id of [
   "csvPath",
+  "dataTimeframe",
+  "autoRestoreDataset",
   "polygonMarket",
   "polygonStocksAdjusted",
   "polygonSymbol",
@@ -16787,6 +18617,18 @@ for (const id of [
   "maSource",
   "objective",
   "mode",
+  "vdpsEta",
+  "vdpsRungs",
+  "vdpsMinInitialPairs",
+  "vdpsMaxSurvivorSeeds",
+  "vdpsMaxPeriodCandidates",
+  "vdpsRandomInjectionRatio",
+  "vdpsEliteMutationRatio",
+  "vdpsDifferentialRatio",
+  "vdpsDeterministic",
+  "vdpsSeed",
+  "vdpsQualityCheckMaxPairs",
+  "vdpsQualityCheckTopK",
   "topK",
   "includeAll",
   "exportAllCsvPath",
@@ -16797,8 +18639,46 @@ for (const id of [
   "spreadBps",
   "slippageBps",
   "epsRel",
+  "startingEquity",
   "stopLossPct",
   "takeProfitPct",
+  "trailingStopPct",
+  "cooldownBars",
+  "signalPersistenceBars",
+  "dmConstraintMinTrades",
+  "dmConstraintMaxDd",
+  "exitMode",
+  "kaufmanStopPeriod",
+  "kaufmanStopMult",
+  "kaufmanStopMaType",
+  "trendLrPeriod",
+  "trendLrMinDeg",
+  "trendBbwPeriod",
+  "trendBbwMult",
+  "trendBbwMin",
+  "trendRocPeriod",
+  "trendUseRoc",
+  "trendUseAdx",
+  "trendAdxPeriod",
+  "trendAdxMin",
+  "regimeAdxPeriod",
+  "regimeAdxEnter",
+  "regimeAdxExit",
+  "regimeRevEntryRel",
+  "regimeRevExitRel",
+  "breakoutBbPeriod",
+  "breakoutBbMult",
+  "breakoutConfirmBars",
+  "breakoutMacdFast",
+  "breakoutMacdSlow",
+  "breakoutMacdSignal",
+  "breakoutCmoPeriod",
+  "breakoutCmoMinAbs",
+  "breakoutAdoscShort",
+  "breakoutAdoscLong",
+  "breakoutUseAdx",
+  "breakoutAdxPeriod",
+  "breakoutAdxMin",
   "execMode",
   "execSymbol",
   "execQty",
@@ -16810,10 +18690,11 @@ for (const id of [
   "execDryRun",
   "execRememberKeys",
   "execLiveUseDelayed",
-  "longOnly",
-  "allowFlip",
-  "tradeOnNext",
-  "halfTrendAmplitude",
+    "longOnly",
+    "allowFlip",
+    "tradeOnNext",
+    "compositeSignalMode",
+    "halfTrendAmplitude",
   "halfTrendAtrPeriod",
   "halfTrendChannelDev",
   "maczFastLength",
@@ -16943,6 +18824,19 @@ for (const id of [
   "metaGroupingMode",
   "metaClusterIntBucket",
   "metaClusterFloatBucket",
+  "metaStage4TopK",
+  "metaStage4MinConf",
+  "metaStage4MetaWeight",
+  "metaStage4MlWeight",
+  "metaStage4UncertaintyWeight",
+  "metaStage4AcceptConf",
+  "metaStage4ReviewConf",
+  "metaStage4MaxAcceptUncertainty",
+  "metaStage4AutoTrain",
+  "metaStage4RequireHealthy",
+  "metaStage4FallbackToMeta",
+  "metaSavedSearch",
+  "stage4SavedSearch",
   "metaCompareSelect",
 ]) {
   const el = $(id);
@@ -16992,9 +18886,59 @@ for (const id of [
   "objective",
   "moObjectiveMin",
   "mode",
+  "vdpsEta",
+  "vdpsRungs",
+  "vdpsMinInitialPairs",
+  "vdpsMaxSurvivorSeeds",
+  "vdpsMaxPeriodCandidates",
+  "vdpsRandomInjectionRatio",
+  "vdpsEliteMutationRatio",
+  "vdpsDifferentialRatio",
+  "vdpsDeterministic",
+  "vdpsSeed",
+  "vdpsQualityCheckMaxPairs",
+  "vdpsQualityCheckTopK",
   "includeAll",
+  "startingEquity",
   "stopLossPct",
   "takeProfitPct",
+  "trailingStopPct",
+  "cooldownBars",
+  "signalPersistenceBars",
+  "dmConstraintMinTrades",
+  "dmConstraintMaxDd",
+  "exitMode",
+  "kaufmanStopPeriod",
+  "kaufmanStopMult",
+  "kaufmanStopMaType",
+  "trendLrPeriod",
+  "trendLrMinDeg",
+  "trendBbwPeriod",
+  "trendBbwMult",
+  "trendBbwMin",
+  "trendRocPeriod",
+  "trendUseRoc",
+  "trendUseAdx",
+  "trendAdxPeriod",
+  "trendAdxMin",
+  "regimeAdxPeriod",
+  "regimeAdxEnter",
+  "regimeAdxExit",
+  "regimeRevEntryRel",
+  "regimeRevExitRel",
+  "breakoutBbPeriod",
+  "breakoutBbMult",
+  "breakoutConfirmBars",
+  "breakoutMacdFast",
+  "breakoutMacdSlow",
+  "breakoutMacdSignal",
+  "breakoutCmoPeriod",
+  "breakoutCmoMinAbs",
+  "breakoutAdoscShort",
+  "breakoutAdoscLong",
+  "breakoutUseAdx",
+  "breakoutAdxPeriod",
+  "breakoutAdxMin",
   "moSampler",
   "moPrescanEnable",
   "moPrescanRequireGpu",
@@ -17081,13 +19025,16 @@ $("btnExportCsv")?.addEventListener("click", () => {
   }
 
   const obj = CURRENT_RUN.req?.objective || "Sharpe";
+  const startEq = startingEquityFromReq(CURRENT_RUN?.req);
   const baseRows = Array.isArray(TOP_ROWS_FILTERED) ? TOP_ROWS_FILTERED : TOP_ROWS;
   const sorted = sortRows(baseRows, TOP_SORT.key, TOP_SORT.dir, obj);
-  const lines = ["rank,fast_ma,fast_len,slow_ma,slow_len,pnl,sharpe,max_dd,trades,exposure,net_exposure,score,params_json"];
+  const lines = ["rank,fast_ma,fast_len,slow_ma,slow_len,pnl,pnl_pct,final_equity,sharpe,max_dd,trades,exposure,net_exposure,score,params_json"];
   for (const row of sorted) {
     const p = row.params || {};
     const m = row.metrics || {};
     const score = scoreOf(m, obj);
+    const pnl = Number(m.pnl || 0);
+    const finalEq = finalEquityFromPnl(pnl, startEq);
     const paramsJson = (() => {
       try { return JSON.stringify(p); } catch { return "{}"; }
     })();
@@ -17097,7 +19044,9 @@ $("btnExportCsv")?.addEventListener("click", () => {
       p.fast_len || 0,
       csvEscape(p.slow_ma_type || ""),
       p.slow_len || 0,
-      Number(m.pnl || 0),
+      pnl,
+      pnl * 100,
+      Number(finalEq || 0),
       Number(m.sharpe || 0),
       Number(m.max_dd || 0),
       Number(m.trades || 0),
@@ -17546,6 +19495,33 @@ $("btnMetaMlDelete")?.addEventListener("click", async () => {
   }
 });
 
+$("btnRunMetaStage4")?.addEventListener("click", async () => {
+  if (RUNNING) return;
+  try {
+    await runMetaStage4Experimental();
+  } catch (e) {
+    if (isCancelledError(e)) setStatus("Stage 4 cancelled.", "muted");
+    else setStatus(String(e), "danger");
+  }
+});
+
+$("btnRevealMetaStage4")?.addEventListener("click", async () => {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (RUNNING) return;
+  const path = String(LAST_META_STAGE4_RUN?.stage4_json_path || "").trim();
+  if (!path) {
+    setStatus("No Stage 4 artifact saved yet.", "muted");
+    return;
+  }
+  try {
+    await invoke("reveal_path", { path });
+    setStatus("Revealed Stage 4 artifact.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
 $("metaUseMlConfidence")?.addEventListener("change", async () => {
   saveSettingsSoon();
   updateMetaMlButtons();
@@ -17575,6 +19551,7 @@ $("metaSavedSelect")?.addEventListener("change", () => {
 
 $("metaSavedSearch")?.addEventListener("input", () => {
   renderMetaSavedSelect();
+  saveSettingsSoon();
 });
 
 $("btnSaveMetaSavedTags")?.addEventListener("click", async () => {
@@ -17640,6 +19617,70 @@ $("btnDeleteMetaSaved")?.addEventListener("click", async () => {
   }
 });
 
+$("stage4SavedSelect")?.addEventListener("change", () => {
+  syncStage4SavedSelectionUi();
+});
+
+$("stage4SavedSearch")?.addEventListener("input", () => {
+  renderStage4SavedSelect();
+  saveSettingsSoon();
+});
+
+$("btnSaveStage4SavedTags")?.addEventListener("click", async () => {
+  const path = String($("stage4SavedSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved Stage 4 run first.", "muted");
+    return;
+  }
+  try {
+    const tags = parseTagsInput($("stage4SavedTags")?.value || "");
+    await saveStage4SavedTags(path, tags);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRefreshStage4Saved")?.addEventListener("click", async () => {
+  await refreshStage4Saved();
+  setStatus("Refreshed saved Stage 4 runs.", "muted");
+});
+
+$("btnLoadStage4Saved")?.addEventListener("click", async () => {
+  const path = String($("stage4SavedSelect")?.value || "").trim();
+  if (!path) {
+    setStatus("Select a saved Stage 4 run first.", "muted");
+    return;
+  }
+  try {
+    await loadStage4Saved(path);
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnRevealStage4Saved")?.addEventListener("click", async () => {
+  try {
+    await revealSelectedStage4Saved();
+    setStatus("Revealed Stage 4 run.", "ok");
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
+$("btnDeleteStage4Saved")?.addEventListener("click", async () => {
+  const entry = selectedStage4SavedEntry();
+  if (!entry) {
+    setStatus("Select a saved Stage 4 run first.", "muted");
+    return;
+  }
+  if (!confirm("Delete this saved Stage 4 artifact file?")) return;
+  try {
+    await deleteSelectedStage4Saved();
+  } catch (e) {
+    setStatus(String(e), "danger");
+  }
+});
+
 $("metaCompareSelect")?.addEventListener("change", () => {
   renderMetaCompare();
 });
@@ -17672,6 +19713,7 @@ $("btnClearBaseline")?.addEventListener("click", () => {
 
 initThemeUi();
 initWindowEffectUi();
+initUiMotionPrefs();
 initSettingsWorkspaceUi();
 
 CONTROLS_TABS = initTabSystem({
@@ -17719,6 +19761,7 @@ populateCompareSelect(hist0, $("compareSelect")?.value || "");
 updateAggregateSummaryCards();
 refreshSavedRuns();
 refreshMetaSaved();
+refreshStage4Saved();
 updateDeviceIdEnabled();
 updateStrategyUi();
 updateExecParamSourceUi();
@@ -17726,6 +19769,7 @@ renderExecOrdersTable(null);
 renderExecPositionMeta(null);
 clearExecTvChart("Load a dataset and refresh orders to overlay broker events.");
 setExecLiveStatus("Live candles: off", "muted");
+setExecRunnerStatus("Auto-runner: off", "muted");
 
 initMaSelects();
 initProgressListener();
@@ -17739,3 +19783,9 @@ initBatchDatasetList();
 initDistributedUi();
 loadLastBatchSummaryFromDisk();
 refreshExecLiveCandleStreamStatusUi({ silent: false });
+refreshExecRunnerStatusUi({ silent: false });
+setTimeout(() => {
+  restoreLastDatasetOnStartup().catch((e) => {
+    setStatus(`Startup restore skipped: ${String(e)}`, "muted");
+  });
+}, 0);
