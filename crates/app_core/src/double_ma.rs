@@ -10,6 +10,7 @@ use ta_strategies::double_ma::{
     DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig, Trade, TradeStats,
 };
 
+use crate::alloc_policy::alloc_f64_with_prefix_uninit_tail;
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
 
@@ -5563,7 +5564,7 @@ pub(crate) fn first_finite_idx(series: &[f64]) -> Option<usize> {
 
 pub(crate) fn compute_log_returns_f64(prices: &[f64]) -> Vec<f64> {
     let n = prices.len();
-    let mut out = vec![0.0_f64; n];
+    let mut out = alloc_f64_with_prefix_uninit_tail(n, 1, 0.0);
     if n < 2 {
         return out;
     }
@@ -7102,9 +7103,13 @@ mod tests {
                 }),
             };
 
-            let a =
-                run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
-                    .unwrap_or_else(|e| panic!("first deterministic vdps run ({label}) failed: {e}"));
+            let a = run_double_ma_optimization_blocking_with_candles(
+                req.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("first deterministic vdps run ({label}) failed: {e}"));
             let b = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
                 .unwrap_or_else(|e| panic!("second deterministic vdps run ({label}) failed: {e}"));
 
@@ -7191,10 +7196,12 @@ mod tests {
                 ..req_cpu.clone()
             };
 
-            let cpu = run_double_ma_optimization_blocking_with_candles(req_cpu, &candles, &cancel, None)
-                .unwrap_or_else(|e| panic!("cpu run failed for {label}: {e}"));
-            let gpu = run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
-                .unwrap_or_else(|e| panic!("gpu-kernel run failed for {label}: {e}"));
+            let cpu =
+                run_double_ma_optimization_blocking_with_candles(req_cpu, &candles, &cancel, None)
+                    .unwrap_or_else(|e| panic!("cpu run failed for {label}: {e}"));
+            let gpu =
+                run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
+                    .unwrap_or_else(|e| panic!("gpu-kernel run failed for {label}: {e}"));
 
             assert_eq!(
                 (cpu.best_params.fast_len, cpu.best_params.slow_len),
@@ -7208,12 +7215,18 @@ mod tests {
             let trades_delta =
                 (cpu.best_metrics.trades as i64 - gpu.best_metrics.trades as i64).abs();
 
-            assert!(pnl_delta <= 1e-3, "pnl delta too large for {label}: {pnl_delta}");
+            assert!(
+                pnl_delta <= 1e-3,
+                "pnl delta too large for {label}: {pnl_delta}"
+            );
             assert!(
                 sharpe_delta <= 1e-3,
                 "sharpe delta too large for {label}: {sharpe_delta}"
             );
-            assert!(dd_delta <= 1e-3, "max_dd delta too large for {label}: {dd_delta}");
+            assert!(
+                dd_delta <= 1e-3,
+                "max_dd delta too large for {label}: {dd_delta}"
+            );
             assert!(
                 trades_delta <= 1,
                 "trades delta too large for {label}: {trades_delta}"
@@ -8134,8 +8147,9 @@ mod tests {
                 vdps: None,
             };
 
-            let out = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
-                .unwrap_or_else(|e| panic!("gpu kernel strategy '{label}' failed: {e}"));
+            let out =
+                run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                    .unwrap_or_else(|e| panic!("gpu kernel strategy '{label}' failed: {e}"));
             assert!(
                 out.best_metrics.pnl.is_finite(),
                 "non-finite pnl for strategy '{label}'"

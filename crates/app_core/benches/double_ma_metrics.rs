@@ -85,6 +85,26 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
     total
 }
 
+fn bench_ma_profile() -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<HashMap<String, f64>>,
+) {
+    let profile = std::env::var("VECTORBT_BENCH_KERNEL_MA")
+        .unwrap_or_else(|_| "sma".to_string())
+        .to_ascii_lowercase();
+    match profile.as_str() {
+        "alma" => {
+            let mut alma_p: HashMap<String, f64> = HashMap::new();
+            alma_p.insert("offset".to_string(), 0.85);
+            alma_p.insert("sigma".to_string(), 6.0);
+            ("alma_alma", "alma", "alma", Some(alma_p))
+        }
+        _ => ("sma_sma", "sma", "sma", None),
+    }
+}
+
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
@@ -99,13 +119,7 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
     let prev_skip = std::env::var("VECTORBT_KERNEL_SKIP_RECOMPUTE").ok();
     std::env::set_var("VECTORBT_KERNEL_SKIP_RECOMPUTE", "1");
 
-    let ma_label = "alma_alma";
-    let fast_ma = "alma";
-    let slow_ma = "alma";
-
-    let mut alma_p: HashMap<String, f64> = HashMap::new();
-    alma_p.insert("offset".to_string(), 0.85);
-    alma_p.insert("sigma".to_string(), 6.0);
+    let (ma_label, fast_ma, slow_ma, ma_params) = bench_ma_profile();
 
     let cases: &[(&str, (u32, u32, u32), (u32, u32, u32), Option<&'static str>)] = &[
         ("small", (5, 50, 1), (20, 200, 5), None),
@@ -142,8 +156,8 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
                 slow_ma_types: vec![slow_ma.to_string()],
                 ma_source: "close".to_string(),
                 export_all_csv_path: None,
-                fast_ma_params: Some(alma_p.clone()),
-                slow_ma_params: Some(alma_p.clone()),
+                fast_ma_params: ma_params.clone(),
+                slow_ma_params: ma_params.clone(),
                 fast_ma_param_sweeps: None,
                 slow_ma_param_sweeps: None,
                 strategy: StrategyConfig::default(),

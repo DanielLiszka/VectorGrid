@@ -35,6 +35,15 @@ Instructions for AI coding agents working in this repository.
 - Prefer small, surgical changes; avoid unrelated refactors.
 - Keep CPU-only builds working without any CUDA toolchain installed.
 - Add/adjust tests close to the crate being changed (usually under `crates/*`).
+- For performance-sensitive changes, run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` before handoff (or `scripts/run_workflow_gate.ps1 -Mode candidate` at minimum).
+- For CUDA backtest-kernel changes, run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (when GPU is available).
+
+## Allocation policy (performance-critical)
+
+- Default to malloc-like allocation (`Vec::with_capacity` + `set_len` / `MaybeUninit`) only when every element is guaranteed to be written before any read.
+- For warmup-prefix semantics (for example a leading `0` or `NaN` region), initialize only the required prefix and leave the tail uninitialized when downstream code fully overwrites it.
+- Keep full-fill allocation (`vec![0; n]`, `vec![f64::NAN; n]`, etc.) when the fill value is part of behavior and may be observed without guaranteed overwrite.
+- Limit uninitialized-allocation usage to plain data types (`Copy` types) and keep the safety assumptions next to the code path.
 
 ## Skills (Codex CLI)
 
@@ -45,4 +54,3 @@ corresponding `SKILL.md` and follow its workflow for that turn.
 
 - `skill-creator`: Guide for creating effective skills. (file: `C:/Users/dlisz/.codex/skills/.system/skill-creator/SKILL.md`)
 - `skill-installer`: Install Codex skills into `$CODEX_HOME/skills` from a curated list or a GitHub repo path. (file: `C:/Users/dlisz/.codex/skills/.system/skill-installer/SKILL.md`)
-

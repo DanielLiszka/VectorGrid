@@ -2,13 +2,15 @@
 name = "ta_desktop_demo_app"
 version = "0.1.0"
 edition = "2021"
+default-run = "ta_desktop_demo_app"
 
 [lib]
 test = false
 doctest = false
 
 [features]
-default = []
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
 cuda = ["ta_app_core/cuda", "vector-ta/cuda", "cust"]
 cuda-backtest-kernel = ["cuda", "ta_app_core/cuda-backtest-kernel"]
 

@@ -1,0 +1,13 @@
+﻿{
+    "generated_at_utc":  "2026-02-21T16:37:03.2396874Z",
+    "mode":  "baseline",
+    "workflow_runtime_ms":  374,
+    "criterion":  {
+                      "bench_filter":  "double_ma/cpu/sma_sma/200k/small",
+                      "estimates_json":  "target/criterion/double_ma_cpu_sma_sma_200k/small_1590pairs/new/estimates.json",
+                      "mean_ms":  130.125866,
+                      "mean_ci_lower_ms":  128.081669,
+                      "mean_ci_upper_ms":  132.195746,
+                      "median_ms":  128.884875
+                  }
+}

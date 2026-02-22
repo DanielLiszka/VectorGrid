@@ -1,0 +1,94 @@
+import {
+  AGGREGATE_TAB_KEY,
+  CONTROLS_TAB_KEY,
+  RESULTS_TAB_KEY,
+  WORKFLOW_STEP_KEY,
+  WORKFLOW_TAB_KEY,
+  WORKSPACE_TAB_KEY,
+} from '../legacy/core/storageKeys.js'
+import { useWorkflowStore } from '../stores/workflowStore'
+
+const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
+const WORKFLOW_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'history', 'settings'])
+const WORKFLOW_STEP_KEYS = new Set(['data', 'optimize', 'validate', 'analyze'])
+const CONTROLS_TAB_KEYS = new Set(['data', 'opt', 'strategy', 'advanced', 'distributed'])
+const RESULTS_TAB_KEYS = new Set(['overview', 'top', 'pareto', 'validate', 'drill', 'heatmap', 'history', 'meta', 'debug'])
+const AGGREGATE_TAB_KEYS = new Set(['meta', 'batch', 'saved', 'compare'])
+
+export interface WorkflowBootstrapState {
+  workspace: string
+  workflow: string
+  workflowStep: string
+  controlsTab: string
+  resultsTab: string
+  aggregateTab: string
+}
+
+function normalize(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function normalizeFromSet(value: unknown, allowed: Set<string>): string {
+  const next = normalize(value)
+  return allowed.has(next) ? next : ''
+}
+
+function readStorageValue(key: string): string {
+  try {
+    return normalize(localStorage.getItem(key))
+  } catch {
+    return ''
+  }
+}
+
+export function readWorkflowBootstrapState(): WorkflowBootstrapState {
+  return {
+    workspace: normalizeFromSet(readStorageValue(WORKSPACE_TAB_KEY), WORKSPACE_KEYS),
+    workflow: normalizeFromSet(readStorageValue(WORKFLOW_TAB_KEY), WORKFLOW_KEYS),
+    workflowStep: normalizeFromSet(readStorageValue(WORKFLOW_STEP_KEY), WORKFLOW_STEP_KEYS),
+    controlsTab: normalizeFromSet(readStorageValue(CONTROLS_TAB_KEY), CONTROLS_TAB_KEYS),
+    resultsTab: normalizeFromSet(readStorageValue(RESULTS_TAB_KEY), RESULTS_TAB_KEYS),
+    aggregateTab: normalizeFromSet(readStorageValue(AGGREGATE_TAB_KEY), AGGREGATE_TAB_KEYS),
+  }
+}
+
+export function applyWorkflowBootstrapFromStorage(): void {
+  const state = readWorkflowBootstrapState()
+  if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab) return
+
+  const store = useWorkflowStore()
+
+  if (state.workflow) {
+    store.selectWorkflow(state.workflow)
+  }
+
+  if (state.workspace) {
+    if (state.workspace === 'workflow') {
+      const candidateStep = state.workflowStep || (WORKFLOW_STEP_KEYS.has(state.workflow) ? state.workflow : '')
+      store.selectWorkspace(state.workspace, candidateStep || undefined)
+    } else {
+      store.selectWorkspace(state.workspace)
+    }
+  }
+
+  if ((state.workspace === 'workflow' || (!state.workspace && store.workspace === 'workflow')) && state.workflowStep) {
+    store.selectWorkflowStep(state.workflowStep)
+  }
+
+  if (state.controlsTab) {
+    store.selectControlsTab(state.controlsTab)
+  }
+
+  if (state.resultsTab) {
+    store.selectResultsTab(state.resultsTab)
+  }
+
+  if (state.aggregateTab) {
+    const activeWorkspace = state.workspace || String(store.workspace || '').trim()
+    if (activeWorkspace === 'aggregate') {
+      store.selectAggregateTab(state.aggregateTab)
+    } else {
+      store.primeAggregateTab(state.aggregateTab)
+    }
+  }
+}

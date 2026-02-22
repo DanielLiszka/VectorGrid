@@ -1,0 +1,488 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useStrategyStore, type StrategyOption } from '../stores/strategyStore'
+import { useWorkflowStore } from '../stores/workflowStore'
+
+const strategyStore = useStrategyStore()
+const workflowStore = useWorkflowStore()
+const {
+  costPreset,
+  costPresetOptions,
+  feeBps,
+  spreadBps,
+  slippageBps,
+  commission,
+  epsRel,
+  costHint,
+  startingEquity,
+  stopLossPct,
+  takeProfitPct,
+  cooldownBars,
+  signalPersistenceBars,
+  trailingStopPct,
+  dmConstraintMinTrades,
+  dmConstraintMaxDd,
+  dmConstraintsVisible,
+  exitMode,
+  exitModeOptions,
+  kaufmanStopPeriod,
+  kaufmanStopMult,
+  kaufmanStopMaType,
+  kaufmanStopPeriodVisible,
+  kaufmanStopMultVisible,
+  kaufmanStopMaTypeVisible,
+  statusLine,
+  updatedAtUnixMs,
+} = storeToRefs(strategyStore)
+const { controlsTab } = storeToRefs(workflowStore)
+
+const mountReady = ref(false)
+const panelRoot = ref<HTMLElement | null>(null)
+const adoptedNodes: { node: HTMLElement; parent: Node; next: ChildNode | null }[] = []
+
+const costPresetDraft = ref('custom')
+const feeDraft = ref('0')
+const spreadDraft = ref('0')
+const slippageDraft = ref('0')
+const epsDraft = ref('0')
+const equityDraft = ref('10000')
+const slDraft = ref('')
+const tpDraft = ref('')
+const cooldownDraft = ref('0')
+const persistenceDraft = ref('1')
+const trailingDraft = ref('')
+const minTradesDraft = ref('')
+const maxDdDraft = ref('')
+const exitModeDraft = ref('cross')
+const kaufmanPeriodDraft = ref('22')
+const kaufmanMultDraft = ref('2.0')
+const kaufmanTypeDraft = ref('sma')
+
+const visible = computed(() => String(controlsTab.value || '').trim() === 'strategy')
+
+const stamp = computed(() => {
+  const ms = Number(updatedAtUnixMs.value || 0)
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  return new Date(ms).toLocaleTimeString([], { hour12: false })
+})
+
+function resolvedOptions(options: StrategyOption[], fallbackValue: string, fallbackLabel: string): StrategyOption[] {
+  if (options.length > 0) return options
+  const value = String(fallbackValue || '').trim()
+  if (!value) return []
+  return [{ value, label: String(fallbackLabel || value).trim() || value, disabled: false }]
+}
+
+const costPresetOptionItems = computed(() => resolvedOptions(costPresetOptions.value, costPreset.value, costPreset.value || 'custom'))
+const exitModeOptionItems = computed(() => resolvedOptions(exitModeOptions.value, exitMode.value, exitMode.value || 'cross'))
+
+watch(costPreset, (v) => { const next = String(v || 'custom'); if (costPresetDraft.value !== next) costPresetDraft.value = next }, { immediate: true })
+watch(feeBps, (v) => { const next = String(v || '0'); if (feeDraft.value !== next) feeDraft.value = next }, { immediate: true })
+watch(spreadBps, (v) => { const next = String(v || '0'); if (spreadDraft.value !== next) spreadDraft.value = next }, { immediate: true })
+watch(slippageBps, (v) => { const next = String(v || '0'); if (slippageDraft.value !== next) slippageDraft.value = next }, { immediate: true })
+watch(epsRel, (v) => { const next = String(v || '0'); if (epsDraft.value !== next) epsDraft.value = next }, { immediate: true })
+watch(startingEquity, (v) => { const next = String(v || '10000'); if (equityDraft.value !== next) equityDraft.value = next }, { immediate: true })
+watch(stopLossPct, (v) => { const next = String(v || ''); if (slDraft.value !== next) slDraft.value = next }, { immediate: true })
+watch(takeProfitPct, (v) => { const next = String(v || ''); if (tpDraft.value !== next) tpDraft.value = next }, { immediate: true })
+watch(cooldownBars, (v) => { const next = String(v || '0'); if (cooldownDraft.value !== next) cooldownDraft.value = next }, { immediate: true })
+watch(signalPersistenceBars, (v) => { const next = String(v || '1'); if (persistenceDraft.value !== next) persistenceDraft.value = next }, { immediate: true })
+watch(trailingStopPct, (v) => { const next = String(v || ''); if (trailingDraft.value !== next) trailingDraft.value = next }, { immediate: true })
+watch(dmConstraintMinTrades, (v) => { const next = String(v || ''); if (minTradesDraft.value !== next) minTradesDraft.value = next }, { immediate: true })
+watch(dmConstraintMaxDd, (v) => { const next = String(v || ''); if (maxDdDraft.value !== next) maxDdDraft.value = next }, { immediate: true })
+watch(exitMode, (v) => { const next = String(v || 'cross'); if (exitModeDraft.value !== next) exitModeDraft.value = next }, { immediate: true })
+watch(kaufmanStopPeriod, (v) => { const next = String(v || '22'); if (kaufmanPeriodDraft.value !== next) kaufmanPeriodDraft.value = next }, { immediate: true })
+watch(kaufmanStopMult, (v) => { const next = String(v || '2.0'); if (kaufmanMultDraft.value !== next) kaufmanMultDraft.value = next }, { immediate: true })
+watch(kaufmanStopMaType, (v) => { const next = String(v || 'sma'); if (kaufmanTypeDraft.value !== next) kaufmanTypeDraft.value = next }, { immediate: true })
+
+function setInputValue(id: string, nextValue: string): void {
+  strategyStore.setInputField(id, nextValue)
+}
+
+function setSelectValue(id: string, nextValue: string): void {
+  strategyStore.setSelectField(id, nextValue)
+}
+
+function resolveMount(): void {
+  const panel = document.querySelector('[data-vue-panel="strategy"]') as HTMLElement | null
+  const mount = document.getElementById('strategyVueShellMount')
+  if (!panel || !mount) return
+  panelRoot.value = panel
+  panel.dataset.vueStrategy = '1'
+  mountReady.value = true
+}
+
+function adoptLegacyStrategyBlocks(): void {
+  const panel = panelRoot.value ?? (document.querySelector('[data-vue-panel="strategy"]') as HTMLElement | null)
+  const host = document.getElementById('strategyCompatHostVue')
+  if (!panel || !host) return
+  const nodes = Array.from(panel.querySelectorAll('.strategyLegacyPassthrough')) as HTMLElement[]
+  for (const node of nodes) {
+    if (node.parentElement === host) continue
+    const parent = node.parentNode
+    if (!parent) continue
+    adoptedNodes.push({ node, parent, next: node.nextSibling })
+    host.appendChild(node)
+  }
+}
+
+function restoreLegacyStrategyBlocks(): void {
+  while (adoptedNodes.length > 0) {
+    const entry = adoptedNodes.pop()
+    if (!entry) continue
+    if (entry.next && entry.next.parentNode === entry.parent) {
+      entry.parent.insertBefore(entry.node, entry.next)
+    } else {
+      entry.parent.appendChild(entry.node)
+    }
+  }
+}
+
+onMounted(async () => {
+  await nextTick()
+  resolveMount()
+  window.setTimeout(() => {
+    adoptLegacyStrategyBlocks()
+  }, 0)
+})
+
+onBeforeUnmount(() => {
+  if (panelRoot.value) {
+    delete panelRoot.value.dataset.vueStrategy
+    panelRoot.value = null
+  }
+  restoreLegacyStrategyBlocks()
+})
+</script>
+
+<template>
+  <Teleport v-if="mountReady" to="#strategyVueShellMount">
+    <section class="strategyPanelVueRoot strategyVueShellMountHost" v-show="visible">
+      <header class="head">
+        <div class="title">Strategy Controls</div>
+        <div class="meta mono">{{ stamp }}</div>
+      </header>
+
+      <section class="pane">
+        <h3>Execution cost model</h3>
+        <label for="vueCostPreset">Cost preset</label>
+        <select
+          id="vueCostPreset"
+          :value="costPresetDraft"
+          @change="costPresetDraft = String(($event.target as HTMLSelectElement).value || 'custom'); setSelectValue('costPreset', costPresetDraft)"
+        >
+          <option
+            v-for="option in costPresetOptionItems"
+            :key="`cost_${option.value}_${option.label}`"
+            :value="option.value"
+            :disabled="option.disabled"
+          >
+            {{ option.label }}
+          </option>
+        </select>
+
+        <div class="rowThree">
+          <div>
+            <label for="vueFeeBps">Fee (bps/side)</label>
+            <input
+              id="vueFeeBps"
+              type="number"
+              min="0"
+              step="0.01"
+              :value="feeDraft"
+              @input="feeDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('feeBps', feeDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueSpreadBps">Spread (bps full)</label>
+            <input
+              id="vueSpreadBps"
+              type="number"
+              min="0"
+              step="0.01"
+              :value="spreadDraft"
+              @input="spreadDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('spreadBps', spreadDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueSlippageBps">Slippage (bps/side)</label>
+            <input
+              id="vueSlippageBps"
+              type="number"
+              min="0"
+              step="0.01"
+              :value="slippageDraft"
+              @input="slippageDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('slippageBps', slippageDraft)"
+            />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueCommission">Total cost (fraction/side)</label>
+            <input id="vueCommission" type="text" :value="commission" readonly />
+          </div>
+          <div>
+            <label for="vueEpsRel">Epsilon band (eps_rel)</label>
+            <input
+              id="vueEpsRel"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="epsDraft"
+              @input="epsDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('epsRel', epsDraft)"
+            />
+          </div>
+          <div class="muted inlineMeta mono">{{ costHint }}</div>
+        </div>
+      </section>
+
+      <section class="pane">
+        <h3>Risk and sizing</h3>
+        <div>
+          <label for="vueStartingEquity">Starting equity</label>
+          <input
+            id="vueStartingEquity"
+            type="number"
+            min="0.01"
+            step="1"
+            :value="equityDraft"
+            @input="equityDraft = String(($event.target as HTMLInputElement).value || '10000'); setInputValue('startingEquity', equityDraft)"
+          />
+        </div>
+
+        <div class="rowThree">
+          <div>
+            <label for="vueStopLossPct">Stop-loss (optional)</label>
+            <input
+              id="vueStopLossPct"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="slDraft"
+              @input="slDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('stopLossPct', slDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueTakeProfitPct">Take-profit (optional)</label>
+            <input
+              id="vueTakeProfitPct"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="tpDraft"
+              @input="tpDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('takeProfitPct', tpDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueTrailingStopPct">Trailing stop (optional)</label>
+            <input
+              id="vueTrailingStopPct"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="trailingDraft"
+              @input="trailingDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('trailingStopPct', trailingDraft)"
+            />
+          </div>
+        </div>
+
+        <div class="rowThree">
+          <div>
+            <label for="vueCooldownBars">Cooldown bars</label>
+            <input
+              id="vueCooldownBars"
+              type="number"
+              min="0"
+              step="1"
+              :value="cooldownDraft"
+              @input="cooldownDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('cooldownBars', cooldownDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueSignalPersistenceBars">Signal persistence bars</label>
+            <input
+              id="vueSignalPersistenceBars"
+              type="number"
+              min="1"
+              step="1"
+              :value="persistenceDraft"
+              @input="persistenceDraft = String(($event.target as HTMLInputElement).value || '1'); setInputValue('signalPersistenceBars', persistenceDraft)"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane">
+        <h3>Constraints and exits</h3>
+        <div class="rowTwo" v-if="dmConstraintsVisible">
+          <div>
+            <label for="vueDmMinTrades">Min trades (optional)</label>
+            <input
+              id="vueDmMinTrades"
+              type="number"
+              min="0"
+              step="1"
+              :value="minTradesDraft"
+              @input="minTradesDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('dmConstraintMinTrades', minTradesDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueDmMaxDd">Max drawdown (optional)</label>
+            <input
+              id="vueDmMaxDd"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="maxDdDraft"
+              @input="maxDdDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('dmConstraintMaxDd', maxDdDraft)"
+            />
+          </div>
+        </div>
+
+        <div class="rowTwo">
+          <div>
+            <label for="vueExitMode">Exit mode</label>
+            <select
+              id="vueExitMode"
+              :value="exitModeDraft"
+              @change="exitModeDraft = String(($event.target as HTMLSelectElement).value || 'cross'); setSelectValue('exitMode', exitModeDraft)"
+            >
+              <option
+                v-for="option in exitModeOptionItems"
+                :key="`exit_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div class="rowThree">
+          <div v-if="kaufmanStopPeriodVisible">
+            <label for="vueKaufmanPeriod">Kaufman period</label>
+            <input
+              id="vueKaufmanPeriod"
+              type="number"
+              min="1"
+              step="1"
+              :value="kaufmanPeriodDraft"
+              @input="kaufmanPeriodDraft = String(($event.target as HTMLInputElement).value || '22'); setInputValue('kaufmanStopPeriod', kaufmanPeriodDraft)"
+            />
+          </div>
+          <div v-if="kaufmanStopMultVisible">
+            <label for="vueKaufmanMult">Kaufman multiplier</label>
+            <input
+              id="vueKaufmanMult"
+              type="number"
+              min="0.0001"
+              step="0.01"
+              :value="kaufmanMultDraft"
+              @input="kaufmanMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); setInputValue('kaufmanStopMult', kaufmanMultDraft)"
+            />
+          </div>
+          <div v-if="kaufmanStopMaTypeVisible">
+            <label for="vueKaufmanType">Kaufman MA type</label>
+            <input
+              id="vueKaufmanType"
+              type="text"
+              :value="kaufmanTypeDraft"
+              @input="kaufmanTypeDraft = String(($event.target as HTMLInputElement).value || 'sma'); setInputValue('kaufmanStopMaType', kaufmanTypeDraft)"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane">
+        <h3>Strategy-specific filters</h3>
+        <div id="strategyCompatHostVue"></div>
+      </section>
+
+      <div class="status mono">{{ statusLine }}</div>
+    </section>
+  </Teleport>
+</template>
+
+<style scoped>
+.strategyPanelVueRoot {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.title {
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.meta {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.pane {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-footer);
+  padding: 0.75rem 0.8rem;
+  min-width: 0;
+}
+
+.pane h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.86rem;
+}
+
+.rowThree {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.rowTwo {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.inlineMeta {
+  align-self: end;
+}
+
+.status {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+@media (max-width: 980px) {
+  .rowThree,
+  .rowTwo {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+
+<style>
+[data-vue-panel='strategy'][data-vue-strategy='1'] > :not(#strategyVueShellMount) {
+  display: none !important;
+}
+</style>
+

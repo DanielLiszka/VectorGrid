@@ -1,0 +1,171 @@
+{
+  "generated_at": "2026-02-20T03:12:42.744Z",
+  "status": "pass",
+  "summary": {
+    "total_checks": 17,
+    "passed_checks": 17,
+    "failed_checks": 0
+  },
+  "checks": [
+    {
+      "name": "workflow_runtime_not_regressed_50pct",
+      "ok": true,
+      "severity": "error",
+      "detail": "runtime_ms=364 baseline=345",
+      "observed": 364,
+      "baseline": 345,
+      "threshold": 517.5
+    },
+    {
+      "name": "robust_score_p10_non_decreasing",
+      "ok": true,
+      "severity": "error",
+      "detail": "robust_score_p10 observed=0 baseline=0",
+      "observed": 0,
+      "baseline": 0,
+      "threshold": "gte"
+    },
+    {
+      "name": "holdout_score_p10_non_decreasing",
+      "ok": true,
+      "severity": "error",
+      "detail": "holdout_score_p10 observed=0 baseline=0",
+      "observed": 0,
+      "baseline": 0,
+      "threshold": "gte"
+    },
+    {
+      "name": "max_dd_p90_non_increasing",
+      "ok": true,
+      "severity": "error",
+      "detail": "max_dd_p90 observed=0 baseline=0",
+      "observed": 0,
+      "baseline": 0,
+      "threshold": "lte"
+    },
+    {
+      "name": "holdout_max_dd_p90_non_increasing",
+      "ok": true,
+      "severity": "error",
+      "detail": "holdout_max_dd_p90 observed=0 baseline=0",
+      "observed": 0,
+      "baseline": 0,
+      "threshold": "lte"
+    },
+    {
+      "name": "ui_cold_start_under_3000ms",
+      "ok": true,
+      "severity": "error",
+      "detail": "app_cold_start_ms=40",
+      "observed": 40,
+      "baseline": null,
+      "threshold": 3000
+    },
+    {
+      "name": "ui_tti_under_10000ms",
+      "ok": true,
+      "severity": "error",
+      "detail": "time_to_interactive_ms=578",
+      "observed": 578,
+      "baseline": null,
+      "threshold": 10000
+    },
+    {
+      "name": "ui_live_bar_avg_under_2ms",
+      "ok": true,
+      "severity": "error",
+      "detail": "avg_ms_per_event=0.002 events=200",
+      "observed": 0.002,
+      "baseline": null,
+      "threshold": 2
+    },
+    {
+      "name": "ui_live_bar_sample_size_at_least_100",
+      "ok": true,
+      "severity": "error",
+      "detail": "events=200",
+      "observed": 200,
+      "baseline": null,
+      "threshold": 100
+    },
+    {
+      "name": "optimization_peak_working_set_under_1024mb",
+      "ok": true,
+      "severity": "error",
+      "detail": "peak_working_set_mb=39.38",
+      "observed": 39.38,
+      "baseline": null,
+      "threshold": 1024
+    },
+    {
+      "name": "optimization_peak_private_under_1024mb",
+      "ok": true,
+      "severity": "error",
+      "detail": "peak_private_mb=33.55",
+      "observed": 33.55,
+      "baseline": null,
+      "threshold": 1024
+    },
+    {
+      "name": "samples_output_present:top_rows_csv",
+      "ok": true,
+      "severity": "error",
+      "detail": "top_rows_csv=scripts/baselines/samples/top_rows.csv",
+      "observed": "scripts/baselines/samples/top_rows.csv",
+      "baseline": null,
+      "threshold": null
+    },
+    {
+      "name": "samples_output_present:validation_shortlist_csv",
+      "ok": true,
+      "severity": "error",
+      "detail": "validation_shortlist_csv=scripts/baselines/samples/validation_shortlist.csv",
+      "observed": "scripts/baselines/samples/validation_shortlist.csv",
+      "baseline": null,
+      "threshold": null
+    },
+    {
+      "name": "samples_output_present:run_artifact_json",
+      "ok": true,
+      "severity": "error",
+      "detail": "run_artifact_json=scripts/baselines/samples/run_artifact.json",
+      "observed": "scripts/baselines/samples/run_artifact.json",
+      "baseline": null,
+      "threshold": null
+    },
+    {
+      "name": "samples_output_present:batch_summary_json",
+      "ok": true,
+      "severity": "error",
+      "detail": "batch_summary_json=scripts/baselines/samples/batch_summary.json",
+      "observed": "scripts/baselines/samples/batch_summary.json",
+      "baseline": null,
+      "threshold": null
+    },
+    {
+      "name": "samples_output_present:report_json",
+      "ok": true,
+      "severity": "error",
+      "detail": "report_json=scripts/baselines/samples/report.json",
+      "observed": "scripts/baselines/samples/report.json",
+      "baseline": null,
+      "threshold": null
+    },
+    {
+      "name": "samples_output_present:report_xlsx",
+      "ok": true,
+      "severity": "error",
+      "detail": "report_xlsx=scripts/baselines/samples/report.xlsx",
+      "observed": "scripts/baselines/samples/report.xlsx",
+      "baseline": null,
+      "threshold": null
+    }
+  ],
+  "sources": {
+    "baseline": "scripts/baselines/workflow_regression_baseline.json",
+    "summary": "target/workflow_regression_summary.json",
+    "ui_metrics": "scripts/baselines/ui_capture/perf_metrics.json",
+    "memory_metrics": "scripts/baselines/ui_capture/optimization_memory_metrics.json",
+    "samples_manifest": "scripts/baselines/samples/manifest.json"
+  }
+}

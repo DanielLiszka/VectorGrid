@@ -1,6 +1,8 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
 use cust::context::CurrentContext;
+use cust::device::DeviceAttribute;
+use cust::function::{Function, FunctionAttribute};
 use cust::memory::{mem_get_info, DeviceBuffer};
 use cust::module::Module;
 use cust::module::{ModuleJitOption, OptLevel};
@@ -18,6 +20,7 @@ use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::{source_type, Candles};
 
+use crate::alloc_policy::alloc_uninit_copy;
 use crate::double_ma::{metrics_pass_constraints, DoubleMaConstraints};
 use crate::progress::ProgressSink;
 use crate::vram_ma::{supports_vram_kernel_ma, VramMaComputer, VramMaInputs};
@@ -34,6 +37,271 @@ const STRAT_TAKE_PROFIT: u32 = 1u32 << 6;
 
 const METRICS_COUNT: usize = 7;
 const TOPK_BLOCK_ITEMS: usize = 512;
+
+#[derive(Clone, Copy, Debug)]
+struct DeviceLaunchCaps {
+    sm_count: u32,
+    warp_size: u32,
+    max_threads_per_block: u32,
+    max_threads_per_sm: u32,
+    max_registers_per_sm: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KernelLaunchCaps {
+    max_threads_per_block: u32,
+    regs_per_thread: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LaunchShape1d {
+    grid_x: u32,
+    block_x: u32,
+}
+
+#[inline]
+fn device_attr_u32(device: Device, attr: DeviceAttribute, fallback: u32) -> u32 {
+    device
+        .get_attribute(attr)
+        .ok()
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(fallback)
+}
+
+#[inline]
+fn detect_device_launch_caps(device: Device) -> DeviceLaunchCaps {
+    let warp_size = device_attr_u32(device, DeviceAttribute::WarpSize, 32).max(1);
+    let max_threads_per_block = device_attr_u32(
+        device,
+        DeviceAttribute::MaxThreadsPerBlock,
+        warp_size.saturating_mul(8),
+    )
+    .max(warp_size);
+    let max_threads_per_sm = device_attr_u32(
+        device,
+        DeviceAttribute::MaxThreadsPerMultiprocessor,
+        warp_size.saturating_mul(16),
+    )
+    .max(warp_size);
+    let max_registers_per_sm =
+        device_attr_u32(device, DeviceAttribute::MaxRegistersPerMultiprocessor, 65_536);
+
+    DeviceLaunchCaps {
+        sm_count: device_attr_u32(device, DeviceAttribute::MultiprocessorCount, 1).max(1),
+        warp_size,
+        max_threads_per_block,
+        max_threads_per_sm,
+        max_registers_per_sm,
+    }
+}
+
+#[inline]
+fn detect_kernel_launch_caps(func: &Function<'_>, device_caps: DeviceLaunchCaps) -> KernelLaunchCaps {
+    let max_threads_per_block = func
+        .get_attribute(FunctionAttribute::MaxThreadsPerBlock)
+        .ok()
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(device_caps.max_threads_per_block)
+        .min(device_caps.max_threads_per_block)
+        .max(device_caps.warp_size);
+    let regs_per_thread = func
+        .get_attribute(FunctionAttribute::NumRegisters)
+        .ok()
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(0);
+    KernelLaunchCaps {
+        max_threads_per_block,
+        regs_per_thread,
+    }
+}
+
+#[inline]
+fn kernel_target_waves() -> f32 {
+    std::env::var("VECTORBT_KERNEL_TARGET_WAVES")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(|v| v.clamp(0.5, 8.0))
+        .unwrap_or(1.5)
+}
+
+#[inline]
+fn fixed_block_override() -> Option<u32> {
+    std::env::var("VECTORBT_KERNEL_BLOCK_X")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&v| v > 0)
+}
+
+#[inline]
+fn div_ceil_u32(n: u32, d: u32) -> u32 {
+    (n + d - 1) / d
+}
+
+#[inline]
+fn align_tm_stride(rows: usize) -> usize {
+    const WARP: usize = 32;
+    if rows == 0 {
+        0
+    } else {
+        ((rows + (WARP - 1)) / WARP) * WARP
+    }
+}
+
+#[inline]
+fn normalize_block_x(raw: u32, warp: u32, max_block: u32) -> u32 {
+    let warp = warp.max(1);
+    let max_block = max_block.max(warp);
+    let mut block = raw.clamp(warp, max_block);
+    block -= block % warp;
+    if block == 0 {
+        warp
+    } else {
+        block
+    }
+}
+
+#[inline]
+fn estimated_active_blocks_per_sm(
+    device_caps: DeviceLaunchCaps,
+    kernel_caps: KernelLaunchCaps,
+    block_x: u32,
+) -> u32 {
+    if block_x == 0 {
+        return 1;
+    }
+    let by_threads = (device_caps.max_threads_per_sm / block_x).max(1);
+    let by_regs = if kernel_caps.regs_per_thread > 0 && device_caps.max_registers_per_sm > 0 {
+        let regs_per_block = kernel_caps.regs_per_thread.saturating_mul(block_x);
+        if regs_per_block > 0 {
+            (device_caps.max_registers_per_sm / regs_per_block).max(1)
+        } else {
+            by_threads
+        }
+    } else {
+        by_threads
+    };
+    by_threads.min(by_regs).max(1)
+}
+
+#[inline]
+fn choose_launch_shape_1d(
+    total_items: usize,
+    device_caps: DeviceLaunchCaps,
+    kernel_caps: KernelLaunchCaps,
+) -> LaunchShape1d {
+    if total_items == 0 {
+        return LaunchShape1d {
+            grid_x: 1,
+            block_x: device_caps.warp_size.max(1),
+        };
+    }
+
+    let total_u32 = total_items.min(u32::MAX as usize) as u32;
+    let warp = device_caps.warp_size.max(1);
+    let max_block = device_caps
+        .max_threads_per_block
+        .min(kernel_caps.max_threads_per_block)
+        .max(warp);
+
+    if let Some(raw) = fixed_block_override() {
+        let block_x = normalize_block_x(raw, warp, max_block);
+        return LaunchShape1d {
+            grid_x: div_ceil_u32(total_u32, block_x),
+            block_x,
+        };
+    }
+
+    let mut candidates: Vec<u32> = [64u32, 128, 256, 512]
+        .iter()
+        .copied()
+        .filter(|&b| b >= warp && b <= max_block)
+        .collect();
+    if candidates.is_empty() {
+        candidates.push(normalize_block_x(max_block, warp, max_block));
+    }
+
+    let target_waves = kernel_target_waves();
+    let tiny_work_items = device_caps
+        .sm_count
+        .saturating_mul(warp)
+        .saturating_mul(32);
+    let large_work_items = device_caps.sm_count.saturating_mul(2048);
+    let mut best: Option<(f32, u32)> = None;
+    for block_x in candidates {
+        let grid_x = div_ceil_u32(total_u32, block_x);
+        let active_blocks = estimated_active_blocks_per_sm(device_caps, kernel_caps, block_x);
+        let launch_capacity = device_caps
+            .sm_count
+            .max(1)
+            .saturating_mul(active_blocks.max(1));
+        let waves = (grid_x as f32) / (launch_capacity.max(1) as f32);
+        let occ = ((active_blocks.saturating_mul(block_x)) as f32
+            / (device_caps.max_threads_per_sm.max(1) as f32))
+            .clamp(0.0, 1.0);
+        let waves_score = (waves / target_waves).clamp(0.0, 1.0);
+        let mut score = (waves_score * 0.70) + (occ * 0.30);
+        if waves >= target_waves {
+            let over = ((waves / target_waves) - 1.0).clamp(0.0, 1.0);
+            score += (block_x as f32 / max_block as f32) * (0.05 * over);
+        } else if total_u32 <= tiny_work_items {
+            score += ((max_block - block_x) as f32 / max_block as f32) * 0.02;
+        }
+        if total_u32 >= large_work_items {
+            score += (block_x as f32 / max_block as f32) * 0.05;
+        }
+
+        match best {
+            Some((best_score, best_block)) => {
+                if score > best_score || (score == best_score && block_x > best_block) {
+                    best = Some((score, block_x));
+                }
+            }
+            None => best = Some((score, block_x)),
+        }
+    }
+
+    let block_x = best.map(|(_, b)| b).unwrap_or(warp);
+    LaunchShape1d {
+        grid_x: div_ceil_u32(total_u32, block_x),
+        block_x,
+    }
+}
+
+#[inline]
+fn choose_backtest_launch_shape_1d(
+    total_items: usize,
+    device_caps: DeviceLaunchCaps,
+    kernel_caps: KernelLaunchCaps,
+) -> LaunchShape1d {
+    let mut launch = choose_launch_shape_1d(total_items, device_caps, kernel_caps);
+    if fixed_block_override().is_some() || total_items == 0 {
+        return launch;
+    }
+
+    let total_u32 = total_items.min(u32::MAX as usize) as u32;
+    let warp = device_caps.warp_size.max(1);
+    let max_block = device_caps
+        .max_threads_per_block
+        .min(kernel_caps.max_threads_per_block)
+        .max(warp);
+    let pairs_per_sm = (total_u32 / device_caps.sm_count.max(1)).max(1);
+
+    let mut min_block = warp;
+    if pairs_per_sm >= 1024 {
+        min_block = 512;
+    } else if pairs_per_sm >= 192 {
+        min_block = 256;
+    }
+    min_block = normalize_block_x(min_block, warp, max_block);
+
+    if launch.block_x < min_block {
+        launch.block_x = min_block;
+        launch.grid_x = div_ceil_u32(total_u32, launch.block_x);
+    }
+    launch
+}
 
 #[derive(Debug)]
 struct CudaGraphExecHandle {
@@ -187,6 +455,7 @@ struct KernelScratch {
     d_top_fast: Option<DeviceBuffer<i32>>,
     d_top_slow: Option<DeviceBuffer<i32>>,
     d_top_metrics: Option<DeviceBuffer<f32>>,
+    d_valid_pair_index: Option<DeviceBuffer<i32>>,
 }
 
 impl KernelScratch {
@@ -252,6 +521,7 @@ impl KernelScratch {
         Self::drop_opt_async(&mut self.d_top_fast, stream)?;
         Self::drop_opt_async(&mut self.d_top_slow, stream)?;
         Self::drop_opt_async(&mut self.d_top_metrics, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_index, stream)?;
         Ok(())
     }
 }
@@ -262,12 +532,14 @@ struct CudaKernelRuntime {
     stream: Stream,
     ma: VramMaComputer,
     scratch: KernelScratch,
+    launch_caps: DeviceLaunchCaps,
 }
 
 impl CudaKernelRuntime {
     fn new(device_id: u32) -> Result<Self, String> {
         cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
+        let launch_caps = detect_device_launch_caps(device);
         let context = std::sync::Arc::new(Context::new(device).map_err(|e| e.to_string())?);
 
         let ptx: &str = include_str!(concat!(env!("OUT_DIR"), "/double_crossover.ptx"));
@@ -294,6 +566,7 @@ impl CudaKernelRuntime {
             stream,
             ma: VramMaComputer::new(device_id),
             scratch: KernelScratch::default(),
+            launch_caps,
         })
     }
 
@@ -380,6 +653,32 @@ fn expand_u16_range((start, end, step): (u32, u32, u32)) -> Result<Vec<u16>, Str
     }
     if out.is_empty() {
         return Err("empty period range".to_string());
+    }
+    Ok(out)
+}
+
+#[inline]
+fn build_valid_pair_index_map_i32(
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+) -> Result<Vec<i32>, String> {
+    let ps = slow_periods.len();
+    if ps == 0 || fast_periods.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<i32> = Vec::with_capacity(fast_periods.len().saturating_mul(ps));
+    for (fi, &f) in fast_periods.iter().enumerate() {
+        let j0 = slow_periods.partition_point(|&s| s <= f);
+        for sj in j0..ps {
+            let idx = fi
+                .checked_mul(ps)
+                .and_then(|v| v.checked_add(sj))
+                .ok_or_else(|| "valid pair index overflow".to_string())?;
+            if idx > i32::MAX as usize {
+                return Err("valid pair index exceeds i32::MAX".to_string());
+            }
+            out.push(idx as i32);
+        }
     }
     Ok(out)
 }
@@ -611,7 +910,28 @@ fn kernel_force_legacy_topk_enabled() -> bool {
 
 #[inline]
 fn kernel_global_topk_enabled() -> bool {
-    env_flag_enabled("VECTORBT_KERNEL_GLOBAL_TOPK", false)
+    // Keep top-k reductions on device by default to avoid per-tile D2H traffic.
+    env_flag_enabled("VECTORBT_KERNEL_GLOBAL_TOPK", true)
+}
+
+#[inline]
+fn kernel_valid_pair_map_enabled() -> bool {
+    // Compact dense Pf*Ps launch space into valid fast<slow pairs only.
+    env_flag_enabled("VECTORBT_KERNEL_VALID_PAIR_MAP", true)
+}
+
+#[inline]
+fn kernel_valid_pair_map_max_pairs() -> usize {
+    std::env::var("VECTORBT_KERNEL_VALID_PAIR_MAP_MAX_PAIRS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(150_000)
+}
+
+#[inline]
+fn kernel_tm_padding_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_TM_PAD", false)
 }
 
 #[inline]
@@ -765,8 +1085,8 @@ pub fn vdps_generate_seed_pairs_gpu_kernel(
         }
         stream.synchronize().map_err(|e| e.to_string())?;
 
-        let mut out_fast_h = vec![0i32; sample_total];
-        let mut out_slow_h = vec![0i32; sample_total];
+        let mut out_fast_h: Vec<i32> = alloc_uninit_copy(sample_total);
+        let mut out_slow_h: Vec<i32> = alloc_uninit_copy(sample_total);
         d_out_fast
             .copy_to(&mut out_fast_h)
             .map_err(|e| e.to_string())?;
@@ -1480,8 +1800,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         start_at = start_at.max(fv_low);
     }
     if let Some(regime) = regime_f64.as_ref() {
-        let fv_regime =
-            first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        let fv_regime = first_finite_idx(regime)
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         start_at = start_at.max(fv_regime);
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
@@ -1686,6 +2006,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let bt_module = &rt.module;
     let bt_stream = &rt.stream;
     let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
+    let use_valid_pair_map = kernel_valid_pair_map_enabled();
+    let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
 
     let compute_lr = bt_module
         .get_function("compute_log_returns_f32")
@@ -1696,6 +2018,13 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest = bt_module
         .get_function("double_cross_backtest_tm_flex_f32")
         .map_err(|e| e.to_string())?;
+    let fill_f32 = bt_module
+        .get_function("fill_f32")
+        .map_err(|e| e.to_string())?;
+    let device_launch_caps = rt.launch_caps;
+    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
+    let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
+    let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
@@ -1703,8 +2032,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         let mut prices_ptr = d_close.as_device_ptr().as_raw();
         let mut t_i = n as i32;
         let mut out_ptr = d_lr_ptr;
-        let block_x: u32 = 256;
-        let grid_x: u32 = ((n as u32) + block_x - 1) / block_x;
+        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_lr_launch_caps);
+        let block_x: u32 = launch.block_x;
+        let grid_x: u32 = launch.grid_x;
         let args: &mut [*mut c_void] = &mut [
             &mut prices_ptr as *mut _ as *mut c_void,
             &mut t_i as *mut _ as *mut c_void,
@@ -1730,10 +2060,22 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         0,
     );
 
-    let fast_ma_cap = pf_tile
+    let pad_tm = kernel_tm_padding_enabled();
+    let pf_tile_tm = if pad_tm {
+        align_tm_stride(pf_tile.max(1))
+    } else {
+        pf_tile.max(1)
+    };
+    let ps_tile_tm = if pad_tm {
+        align_tm_stride(ps_tile.max(1))
+    } else {
+        ps_tile.max(1)
+    };
+
+    let fast_ma_cap = pf_tile_tm
         .checked_mul(n)
         .ok_or_else(|| "pf_tile*n overflow".to_string())?;
-    let slow_ma_cap = ps_tile
+    let slow_ma_cap = ps_tile_tm
         .checked_mul(n)
         .ok_or_else(|| "ps_tile*n overflow".to_string())?;
     let tile_out_cap = pf_tile
@@ -1741,14 +2083,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .and_then(|v| v.checked_mul(METRICS_COUNT))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
 
-    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile_tm, bt_stream)?;
     if use_fast_path {
         scratch.d_fast_ma = None;
     } else {
         KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma, fast_ma_cap, bt_stream)?;
     }
     KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma_tm, fast_ma_cap, bt_stream)?;
-    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile_tm, bt_stream)?;
     if use_fast_path {
         scratch.d_slow_ma = None;
     } else {
@@ -1757,10 +2099,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
-    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile.max(1));
-    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile.max(1));
-    let mut tile_host_buf: Vec<f32> = Vec::new();
-    tile_host_buf.resize(tile_out_cap, 0.0);
+    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
+    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
+    let mut tile_host_buf: Vec<f32> = alloc_uninit_copy(tile_out_cap);
 
     let strategy_kernel = kernel_strategy_params(strategy);
     let flags = strategy_kernel.flags;
@@ -1788,6 +2129,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let mut f_start = 0usize;
     while f_start < f_total {
         let pf = pf_tile.min(f_total - f_start);
+        let fast_tm_rows = if pad_tm {
+            align_tm_stride(pf.max(1))
+        } else {
+            pf.max(1)
+        };
 
         host_p_fast.clear();
         host_p_fast.extend(
@@ -1796,7 +2142,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 .map(|&x| x as i32),
         );
         let f_pad = host_p_fast.last().copied().unwrap_or(2);
-        host_p_fast.resize(pf_tile, f_pad);
+        host_p_fast.resize(pf_tile_tm, f_pad);
         // Host period vectors are pageable and mutated per tile; keep this copy
         // synchronous to avoid host-data races with async H2D semantics.
         scratch
@@ -1812,7 +2158,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 &vram_inputs,
                 n,
                 first_valid,
-                &host_p_fast[..pf],
+                &host_p_fast[..fast_tm_rows],
                 scratch.d_fast_p.as_ref().unwrap(),
                 scratch.d_fast_ma_tm.as_mut().unwrap(),
             )?;
@@ -1832,19 +2178,22 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 let mut in_ptr = scratch.d_fast_ma.as_ref().unwrap().as_device_ptr().as_raw();
                 let mut rows = pf as i32;
                 let mut cols = n as i32;
+                let mut out_rows = fast_tm_rows as i32;
                 let mut out_ptr = scratch
                     .d_fast_ma_tm
                     .as_ref()
                     .unwrap()
                     .as_device_ptr()
                     .as_raw();
-                let block_x: u32 = 256;
-                let total = (pf * n) as u32;
-                let grid_x: u32 = (total + block_x - 1) / block_x;
+                let total = pf.saturating_mul(n);
+                let launch = choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                let block_x: u32 = launch.block_x;
+                let grid_x: u32 = launch.grid_x;
                 let args: &mut [*mut c_void] = &mut [
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut rows as *mut _ as *mut c_void,
                     &mut cols as *mut _ as *mut c_void,
+                    &mut out_rows as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
                 bt_stream
@@ -1856,6 +2205,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         let mut s_start = 0usize;
         while s_start < s_total {
             let ps = ps_tile.min(s_total - s_start);
+            let slow_tm_rows = if pad_tm {
+                align_tm_stride(ps.max(1))
+            } else {
+                ps.max(1)
+            };
 
             host_p_slow.clear();
             host_p_slow.extend(
@@ -1864,7 +2218,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     .map(|&x| x as i32),
             );
             let s_pad = host_p_slow.last().copied().unwrap_or(2);
-            host_p_slow.resize(ps_tile, s_pad);
+            host_p_slow.resize(ps_tile_tm, s_pad);
             // Host period vectors are pageable and mutated per tile; keep this copy
             // synchronous to avoid host-data races with async H2D semantics.
             scratch
@@ -1880,7 +2234,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &vram_inputs,
                     n,
                     first_valid,
-                    &host_p_slow[..ps],
+                    &host_p_slow[..slow_tm_rows],
                     scratch.d_slow_p.as_ref().unwrap(),
                     scratch.d_slow_ma_tm.as_mut().unwrap(),
                 )?;
@@ -1900,19 +2254,23 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let mut in_ptr = scratch.d_slow_ma.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut rows = ps as i32;
                     let mut cols = n as i32;
+                    let mut out_rows = slow_tm_rows as i32;
                     let mut out_ptr = scratch
                         .d_slow_ma_tm
                         .as_ref()
                         .unwrap()
                         .as_device_ptr()
                         .as_raw();
-                    let block_x: u32 = 256;
-                    let total = (ps * n) as u32;
-                    let grid_x: u32 = (total + block_x - 1) / block_x;
+                    let total = ps.saturating_mul(n);
+                    let launch =
+                        choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
                     let args: &mut [*mut c_void] = &mut [
                         &mut in_ptr as *mut _ as *mut c_void,
                         &mut rows as *mut _ as *mut c_void,
                         &mut cols as *mut _ as *mut c_void,
+                        &mut out_rows as *mut _ as *mut c_void,
                         &mut out_ptr as *mut _ as *mut c_void,
                     ];
                     bt_stream
@@ -1934,7 +2292,55 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 ));
             }
 
-            unsafe {
+            let mut launch_pairs = pairs;
+            let mut pair_index_map_ptr: u64 = 0;
+            if use_valid_pair_map && pairs <= valid_pair_map_max_pairs {
+                let valid_map = build_valid_pair_index_map_i32(
+                    &fast_periods[f_start..f_start + pf],
+                    &slow_periods[s_start..s_start + ps],
+                )?;
+                launch_pairs = valid_map.len();
+                if launch_pairs > 0 {
+                    KernelScratch::ensure_len_i32(
+                        &mut scratch.d_valid_pair_index,
+                        launch_pairs,
+                        bt_stream,
+                    )?;
+                    scratch
+                        .d_valid_pair_index
+                        .as_mut()
+                        .unwrap()
+                        .copy_from(&valid_map)
+                        .map_err(|e| e.to_string())?;
+                    pair_index_map_ptr = scratch
+                        .d_valid_pair_index
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                }
+
+                unsafe {
+                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut n_i = out_len as i32;
+                    let mut v = 0.0f32;
+                    let launch =
+                        choose_launch_shape_1d(out_len, device_launch_caps, compute_lr_launch_caps);
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut out_ptr as *mut _ as *mut c_void,
+                        &mut n_i as *mut _ as *mut c_void,
+                        &mut v as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            if launch_pairs > 0 {
+                unsafe {
                 let mut f_ma_tm = scratch
                     .d_fast_ma_tm
                     .as_ref()
@@ -1951,6 +2357,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 let mut t_i = n as i32;
                 let mut pf_tile_i = pf as i32;
                 let mut ps_tile_i = ps as i32;
+                let mut fast_tm_stride_i = fast_tm_rows as i32;
+                let mut slow_tm_stride_i = slow_tm_rows as i32;
                 let mut pf_total_i = pf as i32;
                 let mut ps_total_i = ps as i32;
                 let mut f_off = 0i32;
@@ -1972,10 +2380,17 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 let mut take_log = take_log;
                 let mut flags_u = flags;
                 let mut m_i = METRICS_COUNT as i32;
+                let mut pair_map_ptr = pair_index_map_ptr;
+                let mut pair_count_i = launch_pairs as i32;
                 let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
 
-                let block_x: u32 = 256;
-                let grid_x: u32 = ((pairs as u32) + block_x - 1) / block_x;
+                let launch = choose_backtest_launch_shape_1d(
+                    launch_pairs,
+                    device_launch_caps,
+                    backtest_launch_caps,
+                );
+                let block_x: u32 = launch.block_x;
+                let grid_x: u32 = launch.grid_x;
                 let args: &mut [*mut c_void] = &mut [
                     &mut f_ma_tm as *mut _ as *mut c_void,
                     &mut s_ma_tm as *mut _ as *mut c_void,
@@ -1983,6 +2398,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &mut t_i as *mut _ as *mut c_void,
                     &mut pf_tile_i as *mut _ as *mut c_void,
                     &mut ps_tile_i as *mut _ as *mut c_void,
+                    &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                    &mut slow_tm_stride_i as *mut _ as *mut c_void,
                     &mut pf_total_i as *mut _ as *mut c_void,
                     &mut ps_total_i as *mut _ as *mut c_void,
                     &mut f_off as *mut _ as *mut c_void,
@@ -2001,11 +2418,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &mut take_log as *mut _ as *mut c_void,
                     &mut flags_u as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
+                    &mut pair_map_ptr as *mut _ as *mut c_void,
+                    &mut pair_count_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
                 bt_stream
                     .launch(&backtest, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                     .map_err(|e| e.to_string())?;
+            }
             }
             bt_stream.synchronize().map_err(|e| e.to_string())?;
 
@@ -2265,8 +2685,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         start_at = start_at.max(fv_low);
     }
     if let Some(regime) = regime_filter {
-        let fv_regime =
-            first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        let fv_regime = first_finite_idx(regime)
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         start_at = start_at.max(fv_regime);
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
@@ -2490,6 +2910,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     let bt_module = &rt.module;
     let bt_stream = &rt.stream;
     let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
+    let use_valid_pair_map = kernel_valid_pair_map_enabled();
+    let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
 
     let compute_lr = bt_module
         .get_function("compute_log_returns_f32")
@@ -2535,6 +2957,11 @@ fn optimize_double_ma_gpu_kernel_impl(
         .get_function("select_topk_metric_rows_from_candidates_f32_v2")
         .ok();
     let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
+    let device_launch_caps = rt.launch_caps;
+    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
+    let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
+    let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
+    let heatmap_launch_caps = detect_kernel_launch_caps(&heatmap_update, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
@@ -2542,8 +2969,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         let mut prices_ptr = d_close.as_device_ptr().as_raw();
         let mut t_i = n as i32;
         let mut out_ptr = d_lr_ptr;
-        let block_x: u32 = 256;
-        let grid_x: u32 = ((n as u32) + block_x - 1) / block_x;
+        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_lr_launch_caps);
+        let block_x: u32 = launch.block_x;
+        let grid_x: u32 = launch.grid_x;
         let args: &mut [*mut c_void] = &mut [
             &mut prices_ptr as *mut _ as *mut c_void,
             &mut t_i as *mut _ as *mut c_void,
@@ -2569,10 +2997,22 @@ fn optimize_double_ma_gpu_kernel_impl(
         heatmap_bins,
     );
 
-    let fast_ma_cap = pf_tile
+    let pad_tm = kernel_tm_padding_enabled();
+    let pf_tile_tm = if pad_tm {
+        align_tm_stride(pf_tile.max(1))
+    } else {
+        pf_tile.max(1)
+    };
+    let ps_tile_tm = if pad_tm {
+        align_tm_stride(ps_tile.max(1))
+    } else {
+        ps_tile.max(1)
+    };
+
+    let fast_ma_cap = pf_tile_tm
         .checked_mul(n)
         .ok_or_else(|| "pf_tile*n overflow".to_string())?;
-    let slow_ma_cap = ps_tile
+    let slow_ma_cap = ps_tile_tm
         .checked_mul(n)
         .ok_or_else(|| "ps_tile*n overflow".to_string())?;
     let tile_out_cap = pf_tile
@@ -2580,14 +3020,14 @@ fn optimize_double_ma_gpu_kernel_impl(
         .and_then(|v| v.checked_mul(metrics_count))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
 
-    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile_tm, bt_stream)?;
     if use_fast_path {
         scratch.d_fast_ma = None;
     } else {
         KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma, fast_ma_cap, bt_stream)?;
     }
     KernelScratch::ensure_len_f32(&mut scratch.d_fast_ma_tm, fast_ma_cap, bt_stream)?;
-    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_slow_p, ps_tile_tm, bt_stream)?;
     if use_fast_path {
         scratch.d_slow_ma = None;
     } else {
@@ -2596,8 +3036,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
-    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile.max(1));
-    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile.max(1));
+    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
+    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
 
     let constraints_on_device = constraints.is_some() && !include_all && select_v2_supported;
     let host_filter_mode = constraints.is_some() && !include_all && !constraints_on_device;
@@ -2624,10 +3064,11 @@ fn optimize_double_ma_gpu_kernel_impl(
         Some(v) => (1i32, v as f32),
         None => (0i32, f32::INFINITY),
     };
-    let mut tile_host_buf: Vec<f32> = Vec::new();
-    if include_all || export_enabled || host_filter_mode {
-        tile_host_buf.resize(tile_out_cap, 0.0);
-    }
+    let mut tile_host_buf: Vec<f32> = if include_all || export_enabled || host_filter_mode {
+        alloc_uninit_copy(tile_out_cap)
+    } else {
+        Vec::new()
+    };
 
     let mut global_fast_rows: Option<DeviceBuffer<i32>> = None;
     let mut global_slow_rows: Option<DeviceBuffer<i32>> = None;
@@ -2659,9 +3100,9 @@ fn optimize_double_ma_gpu_kernel_impl(
             topk_select * metrics_count,
             bt_stream,
         )?;
-        top_fast_host.resize(topk_select, 0);
-        top_slow_host.resize(topk_select, 0);
-        top_metrics_host.resize(topk_select * metrics_count, f32::NAN);
+        top_fast_host = alloc_uninit_copy(topk_select);
+        top_slow_host = alloc_uninit_copy(topk_select);
+        top_metrics_host = alloc_uninit_copy(topk_select * metrics_count);
         if global_topk_mode {
             KernelScratch::ensure_len_i32(&mut global_fast_rows, global_rows_cap, bt_stream)?;
             KernelScratch::ensure_len_i32(&mut global_slow_rows, global_rows_cap, bt_stream)?;
@@ -2722,12 +3163,17 @@ fn optimize_double_ma_gpu_kernel_impl(
     let use_cuda_graphs =
         kernel_cuda_graphs_enabled() && !include_all && !host_filter_mode && heatmap_cfg.is_none();
     let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
-    let mut tile_graph_shape: Option<(usize, usize, usize, bool)> = None;
+    let mut tile_graph_shape: Option<(usize, usize, usize, usize, bool)> = None;
     let mut graph_capture_disabled = false;
 
     let mut f_start = 0usize;
     while f_start < f_total {
         let pf = pf_tile.min(f_total - f_start);
+        let fast_tm_rows = if pad_tm {
+            align_tm_stride(pf.max(1))
+        } else {
+            pf.max(1)
+        };
 
         host_p_fast.clear();
         host_p_fast.extend(
@@ -2736,7 +3182,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .map(|&x| x as i32),
         );
         let f_pad = host_p_fast.last().copied().unwrap_or(2);
-        host_p_fast.resize(pf_tile, f_pad);
+        host_p_fast.resize(pf_tile_tm, f_pad);
         // Host period vectors are pageable and mutated per tile; keep this copy
         // synchronous to avoid host-data races with async H2D semantics.
         scratch
@@ -2752,7 +3198,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 &vram_inputs,
                 n,
                 first_valid,
-                &host_p_fast[..pf],
+                &host_p_fast[..fast_tm_rows],
                 scratch.d_fast_p.as_ref().unwrap(),
                 scratch.d_fast_ma_tm.as_mut().unwrap(),
             )?;
@@ -2772,19 +3218,22 @@ fn optimize_double_ma_gpu_kernel_impl(
                 let mut in_ptr = scratch.d_fast_ma.as_ref().unwrap().as_device_ptr().as_raw();
                 let mut rows = pf as i32;
                 let mut cols = n as i32;
+                let mut out_rows = fast_tm_rows as i32;
                 let mut out_ptr = scratch
                     .d_fast_ma_tm
                     .as_ref()
                     .unwrap()
                     .as_device_ptr()
                     .as_raw();
-                let block_x: u32 = 256;
-                let total = (pf * n) as u32;
-                let grid_x: u32 = (total + block_x - 1) / block_x;
+                let total = pf.saturating_mul(n);
+                let launch = choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                let block_x: u32 = launch.block_x;
+                let grid_x: u32 = launch.grid_x;
                 let args: &mut [*mut c_void] = &mut [
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut rows as *mut _ as *mut c_void,
                     &mut cols as *mut _ as *mut c_void,
+                    &mut out_rows as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
                 bt_stream
@@ -2796,6 +3245,11 @@ fn optimize_double_ma_gpu_kernel_impl(
         let mut s_start = 0usize;
         while s_start < s_total {
             let ps = ps_tile.min(s_total - s_start);
+            let slow_tm_rows = if pad_tm {
+                align_tm_stride(ps.max(1))
+            } else {
+                ps.max(1)
+            };
 
             host_p_slow.clear();
             host_p_slow.extend(
@@ -2804,7 +3258,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     .map(|&x| x as i32),
             );
             let s_pad = host_p_slow.last().copied().unwrap_or(2);
-            host_p_slow.resize(ps_tile, s_pad);
+            host_p_slow.resize(ps_tile_tm, s_pad);
             // Host period vectors are pageable and mutated per tile; keep this copy
             // synchronous to avoid host-data races with async H2D semantics.
             scratch
@@ -2820,7 +3274,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     &vram_inputs,
                     n,
                     first_valid,
-                    &host_p_slow[..ps],
+                    &host_p_slow[..slow_tm_rows],
                     scratch.d_slow_p.as_ref().unwrap(),
                     scratch.d_slow_ma_tm.as_mut().unwrap(),
                 )?;
@@ -2840,19 +3294,23 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut in_ptr = scratch.d_slow_ma.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut rows = ps as i32;
                     let mut cols = n as i32;
+                    let mut out_rows = slow_tm_rows as i32;
                     let mut out_ptr = scratch
                         .d_slow_ma_tm
                         .as_ref()
                         .unwrap()
                         .as_device_ptr()
                         .as_raw();
-                    let block_x: u32 = 256;
-                    let total = (ps * n) as u32;
-                    let grid_x: u32 = (total + block_x - 1) / block_x;
+                    let total = ps.saturating_mul(n);
+                    let launch =
+                        choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
                     let args: &mut [*mut c_void] = &mut [
                         &mut in_ptr as *mut _ as *mut c_void,
                         &mut rows as *mut _ as *mut c_void,
                         &mut cols as *mut _ as *mut c_void,
+                        &mut out_rows as *mut _ as *mut c_void,
                         &mut out_ptr as *mut _ as *mut c_void,
                     ];
                     bt_stream
@@ -2874,8 +3332,58 @@ fn optimize_double_ma_gpu_kernel_impl(
                 ));
             }
 
-            let launch_score_stage = || -> Result<(), String> {
+            let mut launch_pairs = pairs;
+            let mut pair_index_map_ptr: u64 = 0;
+            if use_valid_pair_map && pairs <= valid_pair_map_max_pairs {
+                let valid_map = build_valid_pair_index_map_i32(
+                    &fast_periods[f_start..f_start + pf],
+                    &slow_periods[s_start..s_start + ps],
+                )?;
+                launch_pairs = valid_map.len();
+                if launch_pairs > 0 {
+                    KernelScratch::ensure_len_i32(
+                        &mut scratch.d_valid_pair_index,
+                        launch_pairs,
+                        bt_stream,
+                    )?;
+                    scratch
+                        .d_valid_pair_index
+                        .as_mut()
+                        .unwrap()
+                        .copy_from(&valid_map)
+                        .map_err(|e| e.to_string())?;
+                    pair_index_map_ptr = scratch
+                        .d_valid_pair_index
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                }
+
+                // Keep output dense (Pf*Ps*M) for downstream kernels by zero-filling
+                // and only computing valid fast<slow pairs.
                 unsafe {
+                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut n_i = out_len as i32;
+                    let mut v = 0.0f32;
+                    let launch =
+                        choose_launch_shape_1d(out_len, device_launch_caps, compute_lr_launch_caps);
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut out_ptr as *mut _ as *mut c_void,
+                        &mut n_i as *mut _ as *mut c_void,
+                        &mut v as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            let launch_score_stage = || -> Result<(), String> {
+                if launch_pairs > 0 {
+                    unsafe {
                     let mut f_ma_tm = scratch
                         .d_fast_ma_tm
                         .as_ref()
@@ -2892,6 +3400,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut t_i = n as i32;
                     let mut pf_tile_i = pf as i32;
                     let mut ps_tile_i = ps as i32;
+                    let mut fast_tm_stride_i = fast_tm_rows as i32;
+                    let mut slow_tm_stride_i = slow_tm_rows as i32;
                     let mut pf_total_i = pf as i32;
                     let mut ps_total_i = ps as i32;
                     let mut f_off = 0i32;
@@ -2913,10 +3423,17 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut take_log = take_log;
                     let mut flags_u = flags;
                     let mut m_i = metrics_count as i32;
+                    let mut pair_map_ptr = pair_index_map_ptr;
+                    let mut pair_count_i = launch_pairs as i32;
                     let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
 
-                    let block_x: u32 = 256;
-                    let grid_x: u32 = ((pairs as u32) + block_x - 1) / block_x;
+                    let launch = choose_backtest_launch_shape_1d(
+                        launch_pairs,
+                        device_launch_caps,
+                        backtest_launch_caps,
+                    );
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
                     let args: &mut [*mut c_void] = &mut [
                         &mut f_ma_tm as *mut _ as *mut c_void,
                         &mut s_ma_tm as *mut _ as *mut c_void,
@@ -2924,6 +3441,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut t_i as *mut _ as *mut c_void,
                         &mut pf_tile_i as *mut _ as *mut c_void,
                         &mut ps_tile_i as *mut _ as *mut c_void,
+                        &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                        &mut slow_tm_stride_i as *mut _ as *mut c_void,
                         &mut pf_total_i as *mut _ as *mut c_void,
                         &mut ps_total_i as *mut _ as *mut c_void,
                         &mut f_off as *mut _ as *mut c_void,
@@ -2942,11 +3461,14 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut take_log as *mut _ as *mut c_void,
                         &mut flags_u as *mut _ as *mut c_void,
                         &mut m_i as *mut _ as *mut c_void,
+                        &mut pair_map_ptr as *mut _ as *mut c_void,
+                        &mut pair_count_i as *mut _ as *mut c_void,
                         &mut out_ptr as *mut _ as *mut c_void,
                     ];
                     bt_stream
                         .launch(&backtest, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                         .map_err(|e| e.to_string())?;
+                }
                 }
 
                 if let (Some(h), Some((f_min, f_max, s_min, s_max))) =
@@ -2970,8 +3492,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut s_max_i = s_max as i32;
                         let mut out_ptr = h.as_device_ptr().as_raw();
 
-                        let block_x: u32 = 256;
-                        let grid_x: u32 = ((pairs as u32) + block_x - 1) / block_x;
+                        let launch = choose_launch_shape_1d(
+                            pairs,
+                            device_launch_caps,
+                            heatmap_launch_caps,
+                        );
+                        let block_x: u32 = launch.block_x;
+                        let grid_x: u32 = launch.grid_x;
                         let args: &mut [*mut c_void] = &mut [
                             &mut metrics_ptr as *mut _ as *mut c_void,
                             &mut pairs_i as *mut _ as *mut c_void,
@@ -3003,7 +3530,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 && ps == ps_tile
                 && !host_filter_mode;
             if can_graph_tile {
-                let shape = (pf, ps, pairs, heatmap_cfg.is_some());
+                let shape = (pf, ps, pairs, launch_pairs, heatmap_cfg.is_some());
                 let reusable = tile_graph_shape.map_or(false, |s| s == shape);
                 if !reusable {
                     tile_graph_exec = None;
@@ -3955,7 +4482,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             if heatmap_len == 0 {
                 None
             } else {
-                let mut host = vec![f32::NEG_INFINITY; heatmap_len];
+                let mut host: Vec<f32> = alloc_uninit_copy(heatmap_len);
                 h.copy_to(&mut host).map_err(|e| e.to_string())?;
                 let values: Vec<Option<f64>> = host
                     .into_iter()

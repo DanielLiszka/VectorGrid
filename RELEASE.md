@@ -68,3 +68,30 @@ Environment toggles:
 
 - `VECTORBT_USE_PREBUILT_PTX=1` forces using the prebuilt PTX (recommended for CI/packaging).
 - `VECTORBT_REQUIRE_NVCC=1` fails the build if `nvcc` is missing or compilation fails.
+
+## Vue + Vite Migration Notes (2026-02-20)
+
+This release line includes the frontend migration from the legacy static bundle to a Vue + Vite workspace while preserving Tauri command/event contracts and storage compatibility.
+
+### Known deltas
+
+- Frontend source/build now lives under `web/` and is built into `web/dist`.
+- Tauri config points to `web/dist` (`src-tauri/tauri.conf.json` and root `tauri.conf.json`).
+- UI is Vue-first, but legacy runtime logic remains authoritative during cutover via bridge/mount hosts.
+- Task feedback has been expanded with a global task center (progress, cancellation, timeline, completion/failure toasts).
+- Large result surfaces use lazy mounting and row-window virtualization to reduce render overhead.
+
+### Migration validation gates
+
+- `npm --prefix web run typecheck`
+- `npm --prefix web run test`
+- `npm --prefix web run lint`
+- `npm --prefix web run parity`
+- `npm --prefix web run parity:outputs`
+- `powershell -ExecutionPolicy Bypass -File scripts/run_workflow_gate.ps1 -Mode candidate`
+
+### Compatibility notes
+
+- No Tauri command contract changes (68 commands parity-checked).
+- Existing storage keys remain backward compatible (schema migration adapter in `web/src/utils/storage.ts`).
+- Existing artifact/report structures are parity-checked with representative baseline/candidate pairs.

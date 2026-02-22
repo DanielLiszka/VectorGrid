@@ -1,0 +1,50 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "npm@11.6.4",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "gen:commands": "node ./scripts/generate-tauri-commands.mjs",
+    "check:commands": "node ./scripts/generate-tauri-commands.mjs --check",
+    "lint": "eslint . --max-warnings=0 && npm run check:commands && node ./scripts/check-known-tauri-commands.mjs",
+    "parity:outputs": "node ../scripts/check_output_parity.mjs --pairs ../scripts/output_parity_pairs.json",
+    "baseline:ui": "node ./scripts/capture-baseline-ui.mjs",
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json",
+    "parity": "node ./scripts/check-tauri-parity.mjs",
+    "test": "vitest run",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "@vueuse/core": "14.2.1",
+    "lightweight-charts": "5.1.0",
+    "pinia": "3.0.4",
+    "vue": "3.5.28",
+    "vue-router": "5.0.2",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@tauri-apps/cli": "2.10.0",
+    "@types/node": "24.10.1",
+    "@typescript-eslint/eslint-plugin": "8.56.0",
+    "@typescript-eslint/parser": "8.56.0",
+    "@vitejs/plugin-vue": "6.0.4",
+    "@vue/test-utils": "2.4.6",
+    "@vue/tsconfig": "^0.8.1",
+    "eslint": "10.0.0",
+    "eslint-plugin-vue": "10.8.0",
+    "prettier": "3.8.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.1",
+    "vite-plugin-checker": "0.12.0",
+    "vitest": "4.0.18",
+    "vue-tsc": "3.1.5"
+  }
+}

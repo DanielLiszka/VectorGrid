@@ -82,6 +82,7 @@ static __device__ __forceinline__ float ld_tm(const float* __restrict__ a, int d
 extern "C" __global__
 void transpose_row_to_tm(const float* __restrict__ in,
                          int rows, int cols,
+                         int out_rows,
                          float* __restrict__ out)
 {
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -89,7 +90,8 @@ void transpose_row_to_tm(const float* __restrict__ in,
     for (int k = tid; k < total; k += blockDim.x * gridDim.x) {
         const int r = k / cols;
         const int c = k % cols;
-        out[(size_t)c * (size_t)rows + (size_t)r] = in[(size_t)r * (size_t)cols + (size_t)c];
+        out[(size_t)c * (size_t)out_rows + (size_t)r] =
+            in[(size_t)r * (size_t)cols + (size_t)c];
     }
 }
 
@@ -133,6 +135,7 @@ void double_cross_backtest_tm_flex_f32(
 
     int T,
     int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
     int Pf_total, int Ps_total,
     int f_offset, int s_offset,
 
@@ -151,6 +154,8 @@ void double_cross_backtest_tm_flex_f32(
     float take_log,
     unsigned int flags,
     int M,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
     float* __restrict__ metrics_out
 ){
     const float log_comm = (commission > 0.0f) ? log1pf(-commission) : 0.0f;
@@ -162,14 +167,23 @@ void double_cross_backtest_tm_flex_f32(
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk    = use_stop || use_take;
+    const int fast_stride = (fast_tm_stride > 0) ? fast_tm_stride : Pf_tile;
+    const int slow_stride = (slow_tm_stride > 0) ? slow_tm_stride : Ps_tile;
 
-    const int total_pairs = Pf_tile * Ps_tile;
+    const int total_pairs = (pair_count > 0) ? pair_count : (Pf_tile * Ps_tile);
+    const int dense_pairs = Pf_tile * Ps_tile;
     for (int pair_local = blockIdx.x * blockDim.x + threadIdx.x;
          pair_local < total_pairs;
          pair_local += blockDim.x * gridDim.x)
     {
-        const int pf_local  = pair_local / Ps_tile;
-        const int ps_local  = pair_local % Ps_tile;
+        const int dense_pair =
+            (pair_index_map != nullptr) ? pair_index_map[pair_local] : pair_local;
+        if (dense_pair < 0 || dense_pair >= dense_pairs) {
+            continue;
+        }
+
+        const int pf_local  = dense_pair / Ps_tile;
+        const int ps_local  = dense_pair % Ps_tile;
         const int pf_global = f_offset + pf_local;
         const int ps_global = s_offset + ps_local;
 
@@ -219,8 +233,8 @@ void double_cross_backtest_tm_flex_f32(
             for (int t = start_t; t < T; ++t) {
                 const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
 
-                const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
-                const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
+                const float f = ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
+                const float s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
                 const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
                 int sign = desired_sign_with_regime_f32(
                     f,
@@ -280,8 +294,8 @@ void double_cross_backtest_tm_flex_f32(
             for (int t = start_t; t < T; ++t) {
                 const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
 
-                const float f = ld_tm(fast_ma_T, Pf_tile, t_sig, pf_local);
-                const float s = ld_tm(slow_ma_T, Ps_tile, t_sig, ps_local);
+                const float f = ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
+                const float s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
                 const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
                 int sign = desired_sign_with_regime_f32(
                     f,

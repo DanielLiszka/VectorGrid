@@ -1,6 +1,7 @@
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::mem::{self, MaybeUninit};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -223,9 +224,17 @@ fn write_le_slice_f64(w: &mut dyn Write, v: &[f64]) -> Result<(), String> {
 }
 
 fn read_le_vec_i64(r: &mut dyn Read, len: usize) -> Result<Vec<i64>, String> {
-    let mut out = vec![0i64; len];
-    let buf = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, len * 8) };
+    let mut out_uninit: Vec<MaybeUninit<i64>> = Vec::with_capacity(len);
+    unsafe {
+        out_uninit.set_len(len);
+    }
+    let buf =
+        unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, len * 8) };
     r.read_exact(buf).map_err(|e| e.to_string())?;
+    let ptr = out_uninit.as_mut_ptr() as *mut i64;
+    let cap = out_uninit.capacity();
+    mem::forget(out_uninit);
+    let out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
 
     #[cfg(target_endian = "big")]
     {
@@ -237,9 +246,17 @@ fn read_le_vec_i64(r: &mut dyn Read, len: usize) -> Result<Vec<i64>, String> {
 }
 
 fn read_le_vec_f64(r: &mut dyn Read, len: usize) -> Result<Vec<f64>, String> {
-    let mut out = vec![0f64; len];
-    let buf = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, len * 8) };
+    let mut out_uninit: Vec<MaybeUninit<f64>> = Vec::with_capacity(len);
+    unsafe {
+        out_uninit.set_len(len);
+    }
+    let buf =
+        unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, len * 8) };
     r.read_exact(buf).map_err(|e| e.to_string())?;
+    let ptr = out_uninit.as_mut_ptr() as *mut f64;
+    let cap = out_uninit.capacity();
+    mem::forget(out_uninit);
+    let out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
 
     #[cfg(target_endian = "big")]
     {

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VectorTA Optimizer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      (() => {
+        const KEY_CONTROLS_W = "vta_controls_width_v1";
+        const KEY_CONTROLS_COLLAPSED = "vta_controls_collapsed_v1";
+        const KEY_WINDOW_EFFECT = "vta_window_effect_v1";
+        const KEY_WORKFLOW = "vta_workflow_tab_v1";
+        const KEY_WORKSPACE = "vta_workspace_tab_v1";
+        const KEY_THEME = "vta_theme_pref_v1";
+
+        const root = document.documentElement;
+
+        try {
+          const valid = new Set(["light", "dark", "system"]);
+          const raw = String(localStorage.getItem(KEY_THEME) || "").trim();
+          const pref = valid.has(raw) ? raw : "light";
+          root.dataset.themePref = pref;
+          const mql = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+          root.dataset.theme = pref === "system" ? (mql && mql.matches ? "dark" : "light") : pref;
+        } catch {}
+
+        try {
+          const rawW = localStorage.getItem(KEY_CONTROLS_W);
+          const w = Number(rawW);
+          if (Number.isFinite(w) && w >= 280 && w <= 820) {
+            root.style.setProperty("--controls-w", `${Math.round(w)}px`);
+          }
+        } catch {}
+
+        try {
+          if (String(localStorage.getItem(KEY_CONTROLS_COLLAPSED) || "").trim() === "1") {
+            root.dataset.controlsCollapsed = "1";
+          }
+        } catch {}
+
+        try {
+          const eff = String(localStorage.getItem(KEY_WINDOW_EFFECT) || "").trim().toLowerCase();
+          if (eff) {
+            const ua = String(navigator.userAgent || "").toLowerCase();
+            let allow = new Set(["none"]);
+            if (ua.includes("windows")) allow = new Set(["none", "mica", "acrylic", "blur"]);
+            else if (ua.includes("mac")) allow = new Set(["none", "vibrancy"]);
+            if (allow.has(eff) && eff !== "none") root.dataset.windowEffect = eff;
+          }
+        } catch {}
+
+        try {
+          const wfValid = new Set(["data", "optimize", "validate", "analyze", "history", "settings"]);
+          const wf = String(localStorage.getItem(KEY_WORKFLOW) || "").trim().toLowerCase();
+          if (wfValid.has(wf)) root.dataset.workflow = wf;
+        } catch {}
+
+        try {
+          const wsValid = new Set(["workflow", "library", "aggregate", "pro", "settings"]);
+          const ws = String(localStorage.getItem(KEY_WORKSPACE) || "").trim().toLowerCase();
+          if (wsValid.has(ws)) root.dataset.workspace = ws;
+        } catch {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

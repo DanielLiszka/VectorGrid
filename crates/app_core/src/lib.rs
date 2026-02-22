@@ -3,6 +3,7 @@ pub mod composite_mo;
 pub mod composite_validate;
 pub mod cscv_pbo;
 pub mod csv_compat;
+pub(crate) mod alloc_policy;
 pub mod double_ma;
 pub mod double_ma_validate;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

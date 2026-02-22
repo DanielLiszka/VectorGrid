@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "dev.vectoralpha.vectorta.optimizer",
   "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
-    "frontendDist": "../dist",
-    "devUrl": null
+    "beforeDevCommand": "npm --prefix ./web run dev -- --host 127.0.0.1 --port 1420",
+    "beforeBuildCommand": "npm --prefix ./web run build",
+    "frontendDist": "../web/dist",
+    "devUrl": "http://127.0.0.1:1420"
   },
   "app": {
     "withGlobalTauri": true,
