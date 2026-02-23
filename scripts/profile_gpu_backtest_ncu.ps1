@@ -2,7 +2,7 @@ param(
   [string]$BenchFilter = "double_ma/gpu_kernel/sma_sma/200k/small",
   [string]$OutputPrefix = "target/nsight/gpu_kernel_small",
   [int]$LaunchCount = 200,
-  [string]$KernelName = "double_cross_backtest_tm_flex_f32"
+  [string]$KernelName = "regex:^double_cross_backtest_tm_flex_f32"
 )
 
 $ErrorActionPreference = "Stop"

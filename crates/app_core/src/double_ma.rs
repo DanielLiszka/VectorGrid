@@ -2215,6 +2215,8 @@ pub(crate) fn eval_metrics_f64_with_exit_mode(
     kaufman: Option<&KaufmanStopSeries>,
     compute_sharpe: bool,
 ) -> Metrics {
+    let needs_custom_regime_filter_eval =
+        strategy.uses_regime_hybrid_filter() && halftrend.is_some();
     if strategy_uses_kaufman_stop_exit(strategy) {
         let Some(ks) = kaufman else {
             return Metrics::default();
@@ -2242,7 +2244,7 @@ pub(crate) fn eval_metrics_f64_with_exit_mode(
                 |i| slow[i],
             )
         }
-    } else if strategy.uses_execution_overlays() {
+    } else if strategy.uses_execution_overlays() || needs_custom_regime_filter_eval {
         if compute_sharpe {
             eval_double_ma_metrics_cross_overlay_impl::<true, _, _>(
                 lr,
@@ -2296,6 +2298,8 @@ fn eval_metrics_f32_with_exit_mode(
     kaufman: Option<&KaufmanStopSeries>,
     compute_sharpe: bool,
 ) -> Metrics {
+    let needs_custom_regime_filter_eval =
+        strategy.uses_regime_hybrid_filter() && halftrend.is_some();
     if strategy_uses_kaufman_stop_exit(strategy) {
         let Some(ks) = kaufman else {
             return Metrics::default();
@@ -2323,7 +2327,7 @@ fn eval_metrics_f32_with_exit_mode(
                 |i| slow[i] as f64,
             )
         }
-    } else if strategy.uses_execution_overlays() {
+    } else if strategy.uses_execution_overlays() || needs_custom_regime_filter_eval {
         if compute_sharpe {
             eval_double_ma_metrics_cross_overlay_impl::<true, _, _>(
                 lr,
@@ -2377,6 +2381,8 @@ pub(crate) fn eval_curves_f64_with_exit_mode(
     bins: usize,
     kaufman: Option<&KaufmanStopSeries>,
 ) -> DoubleMaCurves {
+    let needs_custom_regime_filter_eval =
+        strategy.uses_regime_hybrid_filter() && halftrend.is_some();
     if strategy_uses_kaufman_stop_exit(strategy) {
         let Some(ks) = kaufman else {
             return DoubleMaCurves {
@@ -2400,7 +2406,7 @@ pub(crate) fn eval_curves_f64_with_exit_mode(
         eval_double_ma_curves_kaufman_f64(
             lr, close, fast, slow, halftrend, start_t, strategy, bins, ks,
         )
-    } else if strategy.uses_execution_overlays() {
+    } else if strategy.uses_execution_overlays() || needs_custom_regime_filter_eval {
         eval_double_ma_curves_cross_overlay_f64(
             lr, close, fast, slow, halftrend, start_t, strategy, bins,
         )

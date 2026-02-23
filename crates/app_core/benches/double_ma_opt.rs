@@ -42,6 +42,70 @@ fn make_synth_candles(len: usize) -> Candles {
     Candles::new(ts, open, high, low, close, vol)
 }
 
+fn make_trending_candles(len: usize) -> Candles {
+    let mut ts = Vec::with_capacity(len);
+    let mut open = Vec::with_capacity(len);
+    let mut high = Vec::with_capacity(len);
+    let mut low = Vec::with_capacity(len);
+    let mut close = Vec::with_capacity(len);
+    let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        ts.push(i as i64);
+        let base = 100.0 + i as f64;
+        open.push(base);
+        high.push(base + 1.0);
+        low.push(base - 1.0);
+        close.push(base + 0.5);
+        vol.push(1_000.0);
+    }
+
+    Candles::new(ts, open, high, low, close, vol)
+}
+
+fn make_breakout_candles(len: usize) -> Candles {
+    let mut ts = Vec::with_capacity(len);
+    let mut open = Vec::with_capacity(len);
+    let mut high = Vec::with_capacity(len);
+    let mut low = Vec::with_capacity(len);
+    let mut close = Vec::with_capacity(len);
+    let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+    let up_start = len / 3;
+    let down_start = (len * 2) / 3;
+    for i in 0..len {
+        ts.push(i as i64);
+        let base = if i < up_start {
+            100.0 + i as f64 * 0.02
+        } else if i < down_start {
+            102.0 + (i - up_start) as f64 * 0.35
+        } else {
+            102.0 + (down_start - up_start) as f64 * 0.35 - (i - down_start) as f64 * 0.38
+        };
+        let n = ((i as f64) / 7.0).sin() * 0.08;
+        let o = base + n;
+        let c = if i < down_start {
+            base + 0.30 + n
+        } else {
+            base - 0.30 + n
+        };
+        open.push(o);
+        close.push(c);
+        high.push(o.max(c) + 0.22);
+        low.push(o.min(c) - 0.22);
+        let burst = if i < up_start {
+            950.0
+        } else if i < down_start {
+            2_200.0
+        } else {
+            2_450.0
+        };
+        vol.push(burst + ((i % 11) as f64) * 35.0);
+    }
+
+    Candles::new(ts, open, high, low, close, vol)
+}
+
 fn alma_params_default() -> HashMap<String, f64> {
     let mut p: HashMap<String, f64> = HashMap::new();
     p.insert("offset".to_string(), 0.85);
@@ -53,6 +117,35 @@ fn epma_params_default() -> HashMap<String, f64> {
     let mut p: HashMap<String, f64> = HashMap::new();
     p.insert("offset".to_string(), 3.0);
     p
+}
+
+fn trend_quality_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.trend_quality_enable = true;
+    s.trend_quality_use_adx = false;
+    s
+}
+
+fn regime_hybrid_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.long_only = false;
+    s.regime_hybrid_enable = true;
+    s
+}
+
+fn breakout_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.long_only = false;
+    s.breakout_momentum_enable = true;
+    s.breakout_use_adx = false;
+    s.breakout_bbands_mult = 0.8;
+    s.breakout_cmo_min_abs = 0.0;
+    s.breakout_macd_fast_period = 5;
+    s.breakout_macd_slow_period = 13;
+    s.breakout_macd_signal_period = 4;
+    s.breakout_adosc_short_period = 2;
+    s.breakout_adosc_long_period = 4;
+    s
 }
 
 fn expand_range_u16((start, end, step): (u32, u32, u32)) -> Vec<u16> {
@@ -576,6 +669,115 @@ fn bench_double_ma_gpu_kernel_extra_ma(c: &mut Criterion) {
 fn bench_double_ma_gpu_kernel_extra_ma(_c: &mut Criterion) {}
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+    let trend_candles = make_trending_candles(200_000);
+    let breakout_candles = make_breakout_candles(200_000);
+    let cancel = AtomicBool::new(false);
+
+    let ma_cases: &[MaBenchCase] = &[
+        MaBenchCase {
+            label: "sma_sma",
+            fast_ma: "sma",
+            slow_ma: "sma",
+        },
+        MaBenchCase {
+            label: "alma_alma",
+            fast_ma: "alma",
+            slow_ma: "alma",
+        },
+    ];
+
+    let strategy_cases: &[(&str, fn() -> StrategyConfig)] = &[
+        ("trend_quality", trend_quality_strategy_for_kernel),
+        ("regime_hybrid", regime_hybrid_strategy_for_kernel),
+        ("breakout_momentum", breakout_strategy_for_kernel),
+    ];
+
+    let workloads: &[(&str, (u32, u32, u32), (u32, u32, u32))] = &[
+        ("large", (5, 200, 1), (10, 400, 1)),
+        ("xlarge", (5, 500, 1), (10, 1000, 1)),
+    ];
+
+    for ma in ma_cases {
+        let mut group =
+            c.benchmark_group(format!("double_ma/gpu_kernel_strategy/{}/200k", ma.label));
+        group.measurement_time(Duration::from_secs(8));
+        group.sample_size(if ma.fast_ma == "alma" || ma.slow_ma == "alma" {
+            10
+        } else {
+            20
+        });
+
+        for (strategy_label, make_strategy) in strategy_cases.iter().copied() {
+            for (workload_label, fast_range, slow_range) in workloads.iter().copied() {
+                let fast_periods = expand_range_u16(fast_range);
+                let slow_periods = expand_range_u16(slow_range);
+                let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+                let name = format!("{strategy_label}/{workload_label}/{pairs}pairs");
+
+                let fast_ma_params = if ma.fast_ma == "alma" {
+                    Some(alma_params_default())
+                } else {
+                    None
+                };
+                let slow_ma_params = if ma.slow_ma == "alma" {
+                    Some(alma_params_default())
+                } else {
+                    None
+                };
+
+                let req = DoubleMaRequest {
+                    backend: Backend::GpuKernel { device_id: 0 },
+                    data_id: "bench".to_string(),
+                    fast_range,
+                    slow_range,
+                    fast_ma_types: vec![ma.fast_ma.to_string()],
+                    slow_ma_types: vec![ma.slow_ma.to_string()],
+                    ma_source: "close".to_string(),
+                    export_all_csv_path: None,
+                    fast_ma_params,
+                    slow_ma_params,
+                    fast_ma_param_sweeps: None,
+                    slow_ma_param_sweeps: None,
+                    strategy: make_strategy(),
+                    halftrend_filter: None,
+                    objective: ObjectiveKind::Sharpe,
+                    mode: OptimizationMode::Grid,
+                    top_k: Some(50),
+                    include_all: Some(false),
+                    heatmap_bins: Some(64),
+                    constraints: None,
+                    vdps: None,
+                };
+
+                group.bench_function(&name, |b| {
+                    b.iter(|| {
+                        let req2 = req.clone();
+                        let candles = if strategy_label == "breakout_momentum" {
+                            &breakout_candles
+                        } else {
+                            &trend_candles
+                        };
+                        let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                            req2, candles, &cancel, None,
+                        )
+                        .expect("gpu kernel strategy profile run");
+                    })
+                });
+            }
+        }
+
+        group.finish();
+    }
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_gpu_kernel_strategy_profiles(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
@@ -711,6 +913,7 @@ criterion_group!(
     bench_double_ma_gpu_sweep,
     bench_double_ma_gpu_kernel,
     bench_double_ma_gpu_kernel_extra_ma,
+    bench_double_ma_gpu_kernel_strategy_profiles,
     bench_double_ma_gpu_kernel_vdps
 );
 criterion_main!(benches);

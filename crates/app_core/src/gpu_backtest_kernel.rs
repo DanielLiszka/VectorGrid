@@ -9,12 +9,13 @@ use cust::module::{ModuleJitOption, OptLevel};
 use cust::prelude::*;
 use cust::stream::{Stream, StreamFlags};
 use cust::sys as cuda_sys;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
@@ -59,6 +60,96 @@ struct LaunchShape1d {
     block_x: u32,
 }
 
+#[derive(Default, Debug)]
+struct PipelineTimingProfile {
+    host_prep: Duration,
+    tile_prepare: Duration,
+    tile_score: Duration,
+    tile_backtest: Duration,
+    tile_heatmap: Duration,
+    tile_finalize: Duration,
+    final_finalize: Duration,
+    tile_count: usize,
+}
+
+impl PipelineTimingProfile {
+    fn total(&self) -> Duration {
+        self.host_prep
+            .saturating_add(self.tile_prepare)
+            .saturating_add(self.tile_score)
+            .saturating_add(self.tile_finalize)
+            .saturating_add(self.final_finalize)
+    }
+
+    fn pct_str(part: Duration, total: Duration) -> String {
+        let t = total.as_secs_f64();
+        if t <= 0.0 {
+            return "0.0%".to_string();
+        }
+        format!("{:.1}%", (part.as_secs_f64() / t) * 100.0)
+    }
+
+    fn emit(
+        &self,
+        fast_ma: &str,
+        slow_ma: &str,
+        include_all: bool,
+        topk: usize,
+        heatmap_bins: usize,
+    ) {
+        let total = self.total();
+        eprintln!(
+            "VECTORBT_KERNEL_PIPELINE_PROFILE: pair={fast_ma}/{slow_ma} include_all={include_all} topk={topk} heatmap_bins={heatmap_bins} tiles={} total_ms={:.3}",
+            self.tile_count,
+            total.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "  host_prep     {:>10.3} ms  ({})",
+            self.host_prep.as_secs_f64() * 1000.0,
+            Self::pct_str(self.host_prep, total)
+        );
+        eprintln!(
+            "  tile_prepare  {:>10.3} ms  ({})",
+            self.tile_prepare.as_secs_f64() * 1000.0,
+            Self::pct_str(self.tile_prepare, total)
+        );
+        eprintln!(
+            "  tile_score    {:>10.3} ms  ({})",
+            self.tile_score.as_secs_f64() * 1000.0,
+            Self::pct_str(self.tile_score, total)
+        );
+        let tile_score_other = self
+            .tile_score
+            .saturating_sub(self.tile_backtest)
+            .saturating_sub(self.tile_heatmap);
+        eprintln!(
+            "    backtest    {:>10.3} ms  ({})",
+            self.tile_backtest.as_secs_f64() * 1000.0,
+            Self::pct_str(self.tile_backtest, self.tile_score)
+        );
+        eprintln!(
+            "    heatmap     {:>10.3} ms  ({})",
+            self.tile_heatmap.as_secs_f64() * 1000.0,
+            Self::pct_str(self.tile_heatmap, self.tile_score)
+        );
+        eprintln!(
+            "    score_other {:>10.3} ms  ({})",
+            tile_score_other.as_secs_f64() * 1000.0,
+            Self::pct_str(tile_score_other, self.tile_score)
+        );
+        eprintln!(
+            "  tile_finalize {:>10.3} ms  ({})",
+            self.tile_finalize.as_secs_f64() * 1000.0,
+            Self::pct_str(self.tile_finalize, total)
+        );
+        eprintln!(
+            "  final_finalize{:>10.3} ms  ({})",
+            self.final_finalize.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_finalize, total)
+        );
+    }
+}
+
 #[inline]
 fn device_attr_u32(device: Device, attr: DeviceAttribute, fallback: u32) -> u32 {
     device
@@ -84,8 +175,11 @@ fn detect_device_launch_caps(device: Device) -> DeviceLaunchCaps {
         warp_size.saturating_mul(16),
     )
     .max(warp_size);
-    let max_registers_per_sm =
-        device_attr_u32(device, DeviceAttribute::MaxRegistersPerMultiprocessor, 65_536);
+    let max_registers_per_sm = device_attr_u32(
+        device,
+        DeviceAttribute::MaxRegistersPerMultiprocessor,
+        65_536,
+    );
 
     DeviceLaunchCaps {
         sm_count: device_attr_u32(device, DeviceAttribute::MultiprocessorCount, 1).max(1),
@@ -97,7 +191,10 @@ fn detect_device_launch_caps(device: Device) -> DeviceLaunchCaps {
 }
 
 #[inline]
-fn detect_kernel_launch_caps(func: &Function<'_>, device_caps: DeviceLaunchCaps) -> KernelLaunchCaps {
+fn detect_kernel_launch_caps(
+    func: &Function<'_>,
+    device_caps: DeviceLaunchCaps,
+) -> KernelLaunchCaps {
     let max_threads_per_block = func
         .get_attribute(FunctionAttribute::MaxThreadsPerBlock)
         .ok()
@@ -223,10 +320,7 @@ fn choose_launch_shape_1d(
     }
 
     let target_waves = kernel_target_waves();
-    let tiny_work_items = device_caps
-        .sm_count
-        .saturating_mul(warp)
-        .saturating_mul(32);
+    let tiny_work_items = device_caps.sm_count.saturating_mul(warp).saturating_mul(32);
     let large_work_items = device_caps.sm_count.saturating_mul(2048);
     let mut best: Option<(f32, u32)> = None;
     for block_x in candidates {
@@ -894,6 +988,14 @@ fn env_flag_enabled(name: &str, default_enabled: bool) -> bool {
 }
 
 #[inline]
+fn env_flag_override(name: &str) -> Option<bool> {
+    std::env::var(name).ok().map(|v| {
+        let v = v.trim();
+        !(v == "0" || v.eq_ignore_ascii_case("false"))
+    })
+}
+
+#[inline]
 fn kernel_async_alloc_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_ASYNC_ALLOC", true)
 }
@@ -901,6 +1003,11 @@ fn kernel_async_alloc_enabled() -> bool {
 #[inline]
 fn kernel_cuda_graphs_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_USE_CUDA_GRAPHS", false)
+}
+
+#[inline]
+fn kernel_pipeline_profile_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_PROFILE_PIPELINE", false)
 }
 
 #[inline]
@@ -932,6 +1039,113 @@ fn kernel_valid_pair_map_max_pairs() -> usize {
 #[inline]
 fn kernel_tm_padding_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_TM_PAD", false)
+}
+
+#[inline]
+fn kernel_fast_warp_dedup_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_FAST_WARP_DEDUP", false)
+}
+
+#[inline]
+fn kernel_fast_warp_dedup_min_pairs() -> usize {
+    std::env::var("VECTORBT_KERNEL_FAST_WARP_DEDUP_MIN_PAIRS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(150_000)
+}
+
+#[inline]
+fn kernel_lockstep_time_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_LOCKSTEP_TIME", true)
+}
+
+#[inline]
+fn kernel_lockstep_time_min_pairs() -> usize {
+    std::env::var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIRS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(150_000)
+}
+
+#[inline]
+fn kernel_m7_specialize_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_M7_SPECIALIZE", true)
+}
+
+#[inline]
+fn kernel_m7_specialize_min_pairs() -> usize {
+    std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIRS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(300_000)
+}
+
+#[inline]
+fn kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
+    fast_ma: &str,
+    slow_ma: &str,
+) -> bool {
+    if let Some(v) = env_flag_override("VECTORBT_KERNEL_LOCKSTEP_M7_REGIME_MODE_SPECIALIZE") {
+        return v;
+    }
+    fast_ma == "alma" && slow_ma == "alma"
+}
+
+#[inline]
+fn kernel_lockstep_m7_norisk_specialize_enabled_for_pair(_fast_ma: &str, _slow_ma: &str) -> bool {
+    if let Some(v) = env_flag_override("VECTORBT_KERNEL_LOCKSTEP_M7_NORISK_SPECIALIZE") {
+        return v;
+    }
+    true
+}
+
+#[inline]
+fn kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma: &str, slow_ma: &str) -> bool {
+    if let Some(v) = env_flag_override("VECTORBT_KERNEL_LOCKSTEP_M7_EPS0_SPECIALIZE") {
+        return v;
+    }
+    fast_ma == "alma" && slow_ma == "alma"
+}
+
+fn kernel_metrics_pad8_enabled_for_pair(fast_ma: &str, slow_ma: &str) -> bool {
+    // Pad full M=7 metric rows to 8 floats to improve alignment/coalescing in tile buffers.
+    // Default only for ALMA/ALMA (current proven win); env override still wins.
+    if let Some(v) = env_flag_override("VECTORBT_KERNEL_METRICS_PAD8") {
+        return v;
+    }
+    fast_ma == "alma" && slow_ma == "alma"
+}
+
+#[inline]
+fn kernel_metrics_full_stride_override() -> Option<usize> {
+    std::env::var("VECTORBT_KERNEL_METRICS_FULL_STRIDE")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v >= METRICS_COUNT)
+}
+
+#[inline]
+fn effective_metrics_stride(
+    metrics_count: usize,
+    pad8_enabled: bool,
+    full_stride_override: Option<usize>,
+) -> usize {
+    if metrics_count == METRICS_COUNT {
+        if let Some(v) = kernel_metrics_full_stride_override() {
+            return v;
+        }
+        if let Some(v) = full_stride_override {
+            return v;
+        }
+    }
+    if pad8_enabled && metrics_count == METRICS_COUNT {
+        8
+    } else {
+        metrics_count
+    }
 }
 
 #[inline]
@@ -1281,9 +1495,14 @@ fn estimate_tile_bytes(
         bytes = bytes.saturating_add(bytes_i32(ps).saturating_mul(2)); // scs + fcs
     }
 
-    // Per-pair metrics tile.
+    // Per-pair metrics tile (optionally padded to improve store/read coalescing).
     let pairs = pf.saturating_mul(ps);
-    bytes = bytes.saturating_add(bytes_f32(pairs.saturating_mul(metrics_count)));
+    let tile_metrics_stride = effective_metrics_stride(
+        metrics_count,
+        kernel_metrics_pad8_enabled_for_pair(fast_ma, slow_ma),
+        None,
+    );
+    bytes = bytes.saturating_add(bytes_f32(pairs.saturating_mul(tile_metrics_stride)));
 
     // Optional reductions (used only when include_all=false).
     if !include_all {
@@ -2018,13 +2237,76 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest = bt_module
         .get_function("double_cross_backtest_tm_flex_f32")
         .map_err(|e| e.to_string())?;
+    let backtest_m7 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m7")
+        .ok();
+    let backtest_lockstep = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
+        .ok();
+    let backtest_lockstep_m7 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
+        .ok();
+    let backtest_lockstep_m7_regime_off = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
+        .ok();
+    let backtest_lockstep_m7_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m7_regime_on = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on")
+        .ok();
+    let backtest_lockstep_m7_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0")
+        .ok();
+    let backtest_fast_warp = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
+        .ok();
     let fill_f32 = bt_module
         .get_function("fill_f32")
         .map_err(|e| e.to_string())?;
+    let lockstep_time_enabled = kernel_lockstep_time_enabled();
+    let lockstep_time_min_pairs = kernel_lockstep_time_min_pairs();
+    let m7_specialize_enabled = kernel_m7_specialize_enabled();
+    let m7_specialize_min_pairs = kernel_m7_specialize_min_pairs();
+    let lockstep_m7_regime_mode_specialize_enabled =
+        kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+        );
+    let lockstep_m7_norisk_specialize_enabled =
+        kernel_lockstep_m7_norisk_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
+    let lockstep_m7_eps0_specialize_enabled =
+        kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
+    let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
+    let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
     let device_launch_caps = rt.launch_caps;
     let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
     let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
     let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
+    let backtest_m7_launch_caps = backtest_m7
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let backtest_lockstep_launch_caps = backtest_lockstep
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let backtest_fast_launch_caps = backtest_fast_warp
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
@@ -2059,6 +2341,15 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         true,
         0,
     );
+    let is_multi_tile_workload = pf_tile < f_total || ps_tile < s_total;
+    let _ = is_multi_tile_workload;
+    let metrics_pad8_enabled =
+        kernel_metrics_pad8_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
+    let tile_metrics_stride = effective_metrics_stride(
+        METRICS_COUNT,
+        metrics_pad8_enabled,
+        None,
+    );
 
     let pad_tm = kernel_tm_padding_enabled();
     let pf_tile_tm = if pad_tm {
@@ -2080,7 +2371,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .ok_or_else(|| "ps_tile*n overflow".to_string())?;
     let tile_out_cap = pf_tile
         .checked_mul(ps_tile)
-        .and_then(|v| v.checked_mul(METRICS_COUNT))
+        .and_then(|v| v.checked_mul(tile_metrics_stride))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
 
     KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile_tm, bt_stream)?;
@@ -2186,7 +2477,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     .as_device_ptr()
                     .as_raw();
                 let total = pf.saturating_mul(n);
-                let launch = choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                let launch =
+                    choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
                 let block_x: u32 = launch.block_x;
                 let grid_x: u32 = launch.grid_x;
                 let args: &mut [*mut c_void] = &mut [
@@ -2283,7 +2575,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 .checked_mul(ps)
                 .ok_or_else(|| "pf*ps overflow".to_string())?;
             let out_len = pairs
-                .checked_mul(METRICS_COUNT)
+                .checked_mul(tile_metrics_stride)
                 .ok_or_else(|| "pairs*metrics overflow".to_string())?;
 
             if out_len > tile_out_cap {
@@ -2341,91 +2633,206 @@ fn eval_double_ma_batch_gpu_kernel_impl(
 
             if launch_pairs > 0 {
                 unsafe {
-                let mut f_ma_tm = scratch
-                    .d_fast_ma_tm
-                    .as_ref()
-                    .unwrap()
-                    .as_device_ptr()
-                    .as_raw();
-                let mut s_ma_tm = scratch
-                    .d_slow_ma_tm
-                    .as_ref()
-                    .unwrap()
-                    .as_device_ptr()
-                    .as_raw();
-                let mut lr = d_lr_ptr;
-                let mut t_i = n as i32;
-                let mut pf_tile_i = pf as i32;
-                let mut ps_tile_i = ps as i32;
-                let mut fast_tm_stride_i = fast_tm_rows as i32;
-                let mut slow_tm_stride_i = slow_tm_rows as i32;
-                let mut pf_total_i = pf as i32;
-                let mut ps_total_i = ps as i32;
-                let mut f_off = 0i32;
-                let mut s_off = 0i32;
-                let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
-                let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                let mut regime_ptr = d_regime
-                    .as_ref()
-                    .map(|d| d.as_device_ptr().as_raw())
-                    .unwrap_or(0);
-                let mut use_regime_i = regime_use;
-                let mut use_regime_hybrid_i = regime_use_hybrid;
-                let mut regime_entry = regime_entry_rel;
-                let mut regime_exit = regime_exit_rel;
-                let mut fv = first_valid as i32;
-                let mut commission = commission;
-                let mut eps_rel = eps_rel;
-                let mut stop_log = stop_log;
-                let mut take_log = take_log;
-                let mut flags_u = flags;
-                let mut m_i = METRICS_COUNT as i32;
-                let mut pair_map_ptr = pair_index_map_ptr;
-                let mut pair_count_i = launch_pairs as i32;
-                let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut f_ma_tm = scratch
+                        .d_fast_ma_tm
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let mut s_ma_tm = scratch
+                        .d_slow_ma_tm
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let mut lr = d_lr_ptr;
+                    let mut t_i = n as i32;
+                    let mut pf_tile_i = pf as i32;
+                    let mut ps_tile_i = ps as i32;
+                    let mut fast_tm_stride_i = fast_tm_rows as i32;
+                    let mut slow_tm_stride_i = slow_tm_rows as i32;
+                    let mut pf_total_i = pf as i32;
+                    let mut ps_total_i = ps as i32;
+                    let mut f_off = 0i32;
+                    let mut s_off = 0i32;
+                    let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut regime_ptr = d_regime
+                        .as_ref()
+                        .map(|d| d.as_device_ptr().as_raw())
+                        .unwrap_or(0);
+                    let mut use_regime_i = regime_use;
+                    let mut use_regime_hybrid_i = regime_use_hybrid;
+                    let mut regime_entry = regime_entry_rel;
+                    let mut regime_exit = regime_exit_rel;
+                    let mut fv = first_valid as i32;
+                    let mut commission = commission;
+                    let mut eps_rel = eps_rel;
+                    let mut stop_log = stop_log;
+                    let mut take_log = take_log;
+                    let mut flags_u = flags;
+                    let mut m_i = METRICS_COUNT as i32;
+                    let mut metrics_stride_i = tile_metrics_stride as i32;
+                    let mut pair_map_ptr = pair_index_map_ptr;
+                    let mut pair_count_i = launch_pairs as i32;
+                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
 
-                let launch = choose_backtest_launch_shape_1d(
-                    launch_pairs,
-                    device_launch_caps,
-                    backtest_launch_caps,
-                );
-                let block_x: u32 = launch.block_x;
-                let grid_x: u32 = launch.grid_x;
-                let args: &mut [*mut c_void] = &mut [
-                    &mut f_ma_tm as *mut _ as *mut c_void,
-                    &mut s_ma_tm as *mut _ as *mut c_void,
-                    &mut lr as *mut _ as *mut c_void,
-                    &mut t_i as *mut _ as *mut c_void,
-                    &mut pf_tile_i as *mut _ as *mut c_void,
-                    &mut ps_tile_i as *mut _ as *mut c_void,
-                    &mut fast_tm_stride_i as *mut _ as *mut c_void,
-                    &mut slow_tm_stride_i as *mut _ as *mut c_void,
-                    &mut pf_total_i as *mut _ as *mut c_void,
-                    &mut ps_total_i as *mut _ as *mut c_void,
-                    &mut f_off as *mut _ as *mut c_void,
-                    &mut s_off as *mut _ as *mut c_void,
-                    &mut f_per as *mut _ as *mut c_void,
-                    &mut s_per as *mut _ as *mut c_void,
-                    &mut regime_ptr as *mut _ as *mut c_void,
-                    &mut use_regime_i as *mut _ as *mut c_void,
-                    &mut use_regime_hybrid_i as *mut _ as *mut c_void,
-                    &mut regime_entry as *mut _ as *mut c_void,
-                    &mut regime_exit as *mut _ as *mut c_void,
-                    &mut fv as *mut _ as *mut c_void,
-                    &mut commission as *mut _ as *mut c_void,
-                    &mut eps_rel as *mut _ as *mut c_void,
-                    &mut stop_log as *mut _ as *mut c_void,
-                    &mut take_log as *mut _ as *mut c_void,
-                    &mut flags_u as *mut _ as *mut c_void,
-                    &mut m_i as *mut _ as *mut c_void,
-                    &mut pair_map_ptr as *mut _ as *mut c_void,
-                    &mut pair_count_i as *mut _ as *mut c_void,
-                    &mut out_ptr as *mut _ as *mut c_void,
-                ];
-                bt_stream
-                    .launch(&backtest, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                    .map_err(|e| e.to_string())?;
-            }
+                    let use_lockstep_time = lockstep_time_enabled
+                        && launch_pairs >= lockstep_time_min_pairs
+                        && backtest_lockstep.is_some();
+                    let use_m7 = m7_specialize_enabled
+                        && launch_pairs >= m7_specialize_min_pairs
+                        && !is_multi_tile_workload
+                        && (METRICS_COUNT == 7)
+                        && backtest_m7.is_some();
+                    let use_lockstep_m7 = use_lockstep_time
+                        && m7_specialize_enabled
+                        && launch_pairs >= m7_specialize_min_pairs
+                        && !is_multi_tile_workload
+                        && (METRICS_COUNT == 7)
+                        && backtest_lockstep_m7.is_some();
+                    let use_fast_warp_dedup = !use_lockstep_time
+                        && fast_warp_dedup_enabled
+                        && launch_pairs >= fast_warp_dedup_min_pairs
+                        && backtest_fast_warp.is_some();
+                    let launch_caps = if use_lockstep_m7 {
+                        backtest_lockstep_m7_launch_caps
+                            .or(backtest_lockstep_launch_caps)
+                            .unwrap_or(backtest_launch_caps)
+                    } else if use_lockstep_time {
+                        backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
+                    } else if use_fast_warp_dedup {
+                        backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                    } else if use_m7 {
+                        backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
+                    } else {
+                        backtest_launch_caps
+                    };
+                    let launch = choose_backtest_launch_shape_1d(
+                        launch_pairs,
+                        device_launch_caps,
+                        launch_caps,
+                    );
+                    let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
+                    let eps_zero_mode = eps_rel <= 0.0f32;
+                    let backtest_fn = if use_lockstep_m7 {
+                        if lockstep_m7_norisk_specialize_enabled && no_risk_mode {
+                            if lockstep_m7_eps0_specialize_enabled && eps_zero_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    backtest_lockstep_m7_regime_hybrid_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7_regime_hybrid_norisk.as_ref())
+                                        .or(backtest_lockstep_m7_regime_hybrid.as_ref())
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                } else if use_regime_i != 0 {
+                                    backtest_lockstep_m7_regime_on_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7_regime_on.as_ref())
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                } else {
+                                    backtest_lockstep_m7_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m7_regime_off.as_ref())
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                }
+                            } else if use_regime_hybrid_i != 0 {
+                                backtest_lockstep_m7_regime_hybrid_norisk
+                                    .as_ref()
+                                    .or(backtest_lockstep_m7_regime_hybrid.as_ref())
+                                    .or(backtest_lockstep_m7.as_ref())
+                                    .expect("checked lockstep m7 kernel availability")
+                            } else if use_regime_i != 0 {
+                                backtest_lockstep_m7_regime_on_norisk
+                                    .as_ref()
+                                    .or(backtest_lockstep_m7_regime_on.as_ref())
+                                    .or(backtest_lockstep_m7.as_ref())
+                                    .expect("checked lockstep m7 kernel availability")
+                            } else {
+                                backtest_lockstep_m7_regime_off_norisk
+                                    .as_ref()
+                                    .or(backtest_lockstep_m7_regime_off.as_ref())
+                                    .or(backtest_lockstep_m7.as_ref())
+                                    .expect("checked lockstep m7 kernel availability")
+                            }
+                        } else if lockstep_m7_regime_mode_specialize_enabled {
+                            if use_regime_hybrid_i != 0 {
+                                backtest_lockstep_m7_regime_hybrid
+                                    .as_ref()
+                                    .or(backtest_lockstep_m7.as_ref())
+                                    .expect("checked lockstep m7 kernel availability")
+                            } else if use_regime_i != 0 {
+                                backtest_lockstep_m7_regime_on
+                                    .as_ref()
+                                    .or(backtest_lockstep_m7.as_ref())
+                                    .expect("checked lockstep m7 kernel availability")
+                            } else {
+                                backtest_lockstep_m7_regime_off
+                                    .as_ref()
+                                    .or(backtest_lockstep_m7.as_ref())
+                                    .expect("checked lockstep m7 kernel availability")
+                            }
+                        } else {
+                            backtest_lockstep_m7
+                                .as_ref()
+                                .expect("checked lockstep m7 kernel availability")
+                        }
+                    } else if use_lockstep_time {
+                        backtest_lockstep
+                            .as_ref()
+                            .expect("checked lockstep kernel availability")
+                    } else if use_fast_warp_dedup {
+                        backtest_fast_warp
+                            .as_ref()
+                            .expect("checked fast dedup kernel availability")
+                    } else if use_m7 {
+                        backtest_m7
+                            .as_ref()
+                            .expect("checked m7 kernel availability")
+                    } else {
+                        &backtest
+                    };
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut f_ma_tm as *mut _ as *mut c_void,
+                        &mut s_ma_tm as *mut _ as *mut c_void,
+                        &mut lr as *mut _ as *mut c_void,
+                        &mut t_i as *mut _ as *mut c_void,
+                        &mut pf_tile_i as *mut _ as *mut c_void,
+                        &mut ps_tile_i as *mut _ as *mut c_void,
+                        &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                        &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                        &mut pf_total_i as *mut _ as *mut c_void,
+                        &mut ps_total_i as *mut _ as *mut c_void,
+                        &mut f_off as *mut _ as *mut c_void,
+                        &mut s_off as *mut _ as *mut c_void,
+                        &mut f_per as *mut _ as *mut c_void,
+                        &mut s_per as *mut _ as *mut c_void,
+                        &mut regime_ptr as *mut _ as *mut c_void,
+                        &mut use_regime_i as *mut _ as *mut c_void,
+                        &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                        &mut regime_entry as *mut _ as *mut c_void,
+                        &mut regime_exit as *mut _ as *mut c_void,
+                        &mut fv as *mut _ as *mut c_void,
+                        &mut commission as *mut _ as *mut c_void,
+                        &mut eps_rel as *mut _ as *mut c_void,
+                        &mut stop_log as *mut _ as *mut c_void,
+                        &mut take_log as *mut _ as *mut c_void,
+                        &mut flags_u as *mut _ as *mut c_void,
+                        &mut m_i as *mut _ as *mut c_void,
+                        &mut metrics_stride_i as *mut _ as *mut c_void,
+                        &mut pair_map_ptr as *mut _ as *mut c_void,
+                        &mut pair_count_i as *mut _ as *mut c_void,
+                        &mut out_ptr as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
             }
             bt_stream.synchronize().map_err(|e| e.to_string())?;
 
@@ -2441,7 +2848,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let global_f = f_start + i;
                     let global_s = s_start + j;
                     if let Some(combo_idx) = pair_to_combo[global_f * s_total + global_s] {
-                        let src_base = (i * ps + j) * METRICS_COUNT;
+                        let src_base = (i * ps + j) * tile_metrics_stride;
                         let pnl = tile_host_buf[src_base + 0] as f64;
                         let trades = tile_host_buf[src_base + 1];
                         let max_dd = tile_host_buf[src_base + 2] as f64;
@@ -2568,6 +2975,17 @@ fn optimize_double_ma_gpu_kernel_impl(
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
+    let pipeline_profile_enabled = kernel_pipeline_profile_enabled();
+    let mut pipeline_profile = if pipeline_profile_enabled {
+        Some(PipelineTimingProfile::default())
+    } else {
+        None
+    };
+    let host_prep_t0 = if pipeline_profile_enabled {
+        Some(Instant::now())
+    } else {
+        None
+    };
 
     let export_path = export_all_csv_path.map(str::trim).filter(|s| !s.is_empty());
     if export_path.is_some() && include_all {
@@ -2697,6 +3115,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         return Err(format!(
             "GPU kernel backend does not support fast='{fast_ma_type}', slow='{slow_ma_type}'"
         ));
+    }
+    if let (Some(t0), Some(p)) = (host_prep_t0, pipeline_profile.as_mut()) {
+        p.host_prep = p.host_prep.saturating_add(t0.elapsed());
     }
 
     let f_total = fast_periods.len();
@@ -2922,6 +3343,42 @@ fn optimize_double_ma_gpu_kernel_impl(
     let backtest = bt_module
         .get_function("double_cross_backtest_tm_flex_f32")
         .map_err(|e| e.to_string())?;
+    let backtest_m7 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m7")
+        .ok();
+    let backtest_lockstep = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
+        .ok();
+    let backtest_lockstep_m7 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
+        .ok();
+    let backtest_lockstep_m7_regime_off = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
+        .ok();
+    let backtest_lockstep_m7_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m7_regime_on = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on")
+        .ok();
+    let backtest_lockstep_m7_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0")
+        .ok();
+    let backtest_fast_warp = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
+        .ok();
     let fill_f32 = bt_module
         .get_function("fill_f32")
         .map_err(|e| e.to_string())?;
@@ -2958,9 +3415,36 @@ fn optimize_double_ma_gpu_kernel_impl(
         .ok();
     let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
     let device_launch_caps = rt.launch_caps;
+    let lockstep_time_enabled = kernel_lockstep_time_enabled();
+    let lockstep_time_min_pairs = kernel_lockstep_time_min_pairs();
+    let m7_specialize_enabled = kernel_m7_specialize_enabled();
+    let m7_specialize_min_pairs = kernel_m7_specialize_min_pairs();
+    let lockstep_m7_regime_mode_specialize_enabled =
+        kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+        );
+    let lockstep_m7_norisk_specialize_enabled =
+        kernel_lockstep_m7_norisk_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
+    let lockstep_m7_eps0_specialize_enabled =
+        kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
+    let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
+    let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
     let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
     let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
     let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
+    let backtest_m7_launch_caps = backtest_m7
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let backtest_lockstep_launch_caps = backtest_lockstep
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let backtest_fast_launch_caps = backtest_fast_warp
+        .as_ref()
+        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
     let heatmap_launch_caps = detect_kernel_launch_caps(&heatmap_update, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
@@ -2996,6 +3480,14 @@ fn optimize_double_ma_gpu_kernel_impl(
         include_all,
         heatmap_bins,
     );
+    let is_multi_tile_workload = pf_tile < f_total || ps_tile < s_total;
+    let metrics_pad8_enabled =
+        kernel_metrics_pad8_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
+    let tile_metrics_stride = effective_metrics_stride(
+        metrics_count,
+        metrics_pad8_enabled,
+        None,
+    );
 
     let pad_tm = kernel_tm_padding_enabled();
     let pf_tile_tm = if pad_tm {
@@ -3017,7 +3509,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         .ok_or_else(|| "ps_tile*n overflow".to_string())?;
     let tile_out_cap = pf_tile
         .checked_mul(ps_tile)
-        .and_then(|v| v.checked_mul(metrics_count))
+        .and_then(|v| v.checked_mul(tile_metrics_stride))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
 
     KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile_tm, bt_stream)?;
@@ -3160,8 +3652,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     };
     // Graph replay is currently limited to non-heatmap runs; heatmap parity can diverge
     // between batched/unbatched when score+heatmap nodes are captured and reused.
-    let use_cuda_graphs =
-        kernel_cuda_graphs_enabled() && !include_all && !host_filter_mode && heatmap_cfg.is_none();
+    let use_cuda_graphs = !pipeline_profile_enabled
+        && kernel_cuda_graphs_enabled()
+        && !include_all
+        && !host_filter_mode
+        && heatmap_cfg.is_none();
     let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
     let mut tile_graph_shape: Option<(usize, usize, usize, usize, bool)> = None;
     let mut graph_capture_disabled = false;
@@ -3226,7 +3721,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                     .as_device_ptr()
                     .as_raw();
                 let total = pf.saturating_mul(n);
-                let launch = choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                let launch =
+                    choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
                 let block_x: u32 = launch.block_x;
                 let grid_x: u32 = launch.grid_x;
                 let args: &mut [*mut c_void] = &mut [
@@ -3244,6 +3740,15 @@ fn optimize_double_ma_gpu_kernel_impl(
 
         let mut s_start = 0usize;
         while s_start < s_total {
+            let tile_total_t0 = if pipeline_profile_enabled {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let mut tile_prepare_elapsed = Duration::ZERO;
+            let mut tile_score_elapsed = Duration::ZERO;
+            let tile_backtest_elapsed = Cell::new(Duration::ZERO);
+            let tile_heatmap_elapsed = Cell::new(Duration::ZERO);
             let ps = ps_tile.min(s_total - s_start);
             let slow_tm_rows = if pad_tm {
                 align_tm_stride(ps.max(1))
@@ -3323,7 +3828,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .checked_mul(ps)
                 .ok_or_else(|| "pf*ps overflow".to_string())?;
             let out_len = pairs
-                .checked_mul(metrics_count)
+                .checked_mul(tile_metrics_stride)
                 .ok_or_else(|| "pairs*metrics overflow".to_string())?;
 
             if out_len > tile_out_cap {
@@ -3381,104 +3886,239 @@ fn optimize_double_ma_gpu_kernel_impl(
                 }
             }
 
+            if let Some(t0) = tile_total_t0 {
+                tile_prepare_elapsed = t0.elapsed();
+            }
+
             let launch_score_stage = || -> Result<(), String> {
                 if launch_pairs > 0 {
+                    let backtest_t0 = if pipeline_profile_enabled {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
                     unsafe {
-                    let mut f_ma_tm = scratch
-                        .d_fast_ma_tm
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
-                    let mut s_ma_tm = scratch
-                        .d_slow_ma_tm
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
-                    let mut lr = d_lr_ptr;
-                    let mut t_i = n as i32;
-                    let mut pf_tile_i = pf as i32;
-                    let mut ps_tile_i = ps as i32;
-                    let mut fast_tm_stride_i = fast_tm_rows as i32;
-                    let mut slow_tm_stride_i = slow_tm_rows as i32;
-                    let mut pf_total_i = pf as i32;
-                    let mut ps_total_i = ps as i32;
-                    let mut f_off = 0i32;
-                    let mut s_off = 0i32;
-                    let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut regime_ptr = d_regime
-                        .as_ref()
-                        .map(|d| d.as_device_ptr().as_raw())
-                        .unwrap_or(0);
-                    let mut use_regime_i = regime_use;
-                    let mut use_regime_hybrid_i = regime_use_hybrid;
-                    let mut regime_entry = regime_entry_rel;
-                    let mut regime_exit = regime_exit_rel;
-                    let mut fv = first_valid as i32;
-                    let mut commission = commission;
-                    let mut eps_rel = eps_rel;
-                    let mut stop_log = stop_log;
-                    let mut take_log = take_log;
-                    let mut flags_u = flags;
-                    let mut m_i = metrics_count as i32;
-                    let mut pair_map_ptr = pair_index_map_ptr;
-                    let mut pair_count_i = launch_pairs as i32;
-                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut f_ma_tm = scratch
+                            .d_fast_ma_tm
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw();
+                        let mut s_ma_tm = scratch
+                            .d_slow_ma_tm
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw();
+                        let mut lr = d_lr_ptr;
+                        let mut t_i = n as i32;
+                        let mut pf_tile_i = pf as i32;
+                        let mut ps_tile_i = ps as i32;
+                        let mut fast_tm_stride_i = fast_tm_rows as i32;
+                        let mut slow_tm_stride_i = slow_tm_rows as i32;
+                        let mut pf_total_i = pf as i32;
+                        let mut ps_total_i = ps as i32;
+                        let mut f_off = 0i32;
+                        let mut s_off = 0i32;
+                        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut regime_ptr = d_regime
+                            .as_ref()
+                            .map(|d| d.as_device_ptr().as_raw())
+                            .unwrap_or(0);
+                        let mut use_regime_i = regime_use;
+                        let mut use_regime_hybrid_i = regime_use_hybrid;
+                        let mut regime_entry = regime_entry_rel;
+                        let mut regime_exit = regime_exit_rel;
+                        let mut fv = first_valid as i32;
+                        let mut commission = commission;
+                        let mut eps_rel = eps_rel;
+                        let mut stop_log = stop_log;
+                        let mut take_log = take_log;
+                        let mut flags_u = flags;
+                        let mut m_i = metrics_count as i32;
+                        let mut metrics_stride_i = tile_metrics_stride as i32;
+                        let mut pair_map_ptr = pair_index_map_ptr;
+                        let mut pair_count_i = launch_pairs as i32;
+                        let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
 
-                    let launch = choose_backtest_launch_shape_1d(
-                        launch_pairs,
-                        device_launch_caps,
-                        backtest_launch_caps,
-                    );
-                    let block_x: u32 = launch.block_x;
-                    let grid_x: u32 = launch.grid_x;
-                    let args: &mut [*mut c_void] = &mut [
-                        &mut f_ma_tm as *mut _ as *mut c_void,
-                        &mut s_ma_tm as *mut _ as *mut c_void,
-                        &mut lr as *mut _ as *mut c_void,
-                        &mut t_i as *mut _ as *mut c_void,
-                        &mut pf_tile_i as *mut _ as *mut c_void,
-                        &mut ps_tile_i as *mut _ as *mut c_void,
-                        &mut fast_tm_stride_i as *mut _ as *mut c_void,
-                        &mut slow_tm_stride_i as *mut _ as *mut c_void,
-                        &mut pf_total_i as *mut _ as *mut c_void,
-                        &mut ps_total_i as *mut _ as *mut c_void,
-                        &mut f_off as *mut _ as *mut c_void,
-                        &mut s_off as *mut _ as *mut c_void,
-                        &mut f_per as *mut _ as *mut c_void,
-                        &mut s_per as *mut _ as *mut c_void,
-                        &mut regime_ptr as *mut _ as *mut c_void,
-                        &mut use_regime_i as *mut _ as *mut c_void,
-                        &mut use_regime_hybrid_i as *mut _ as *mut c_void,
-                        &mut regime_entry as *mut _ as *mut c_void,
-                        &mut regime_exit as *mut _ as *mut c_void,
-                        &mut fv as *mut _ as *mut c_void,
-                        &mut commission as *mut _ as *mut c_void,
-                        &mut eps_rel as *mut _ as *mut c_void,
-                        &mut stop_log as *mut _ as *mut c_void,
-                        &mut take_log as *mut _ as *mut c_void,
-                        &mut flags_u as *mut _ as *mut c_void,
-                        &mut m_i as *mut _ as *mut c_void,
-                        &mut pair_map_ptr as *mut _ as *mut c_void,
-                        &mut pair_count_i as *mut _ as *mut c_void,
-                        &mut out_ptr as *mut _ as *mut c_void,
-                    ];
-                    bt_stream
-                        .launch(&backtest, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
-                }
+                        let use_lockstep_time = lockstep_time_enabled
+                            && launch_pairs >= lockstep_time_min_pairs
+                            && backtest_lockstep.is_some();
+                        let use_m7 = m7_specialize_enabled
+                            && launch_pairs >= m7_specialize_min_pairs
+                            && !is_multi_tile_workload
+                            && (metrics_count == 7)
+                            && backtest_m7.is_some();
+                        let use_lockstep_m7 = use_lockstep_time
+                            && m7_specialize_enabled
+                            && launch_pairs >= m7_specialize_min_pairs
+                            && !is_multi_tile_workload
+                            && (metrics_count == 7)
+                            && backtest_lockstep_m7.is_some();
+                        let use_fast_warp_dedup = !use_lockstep_time
+                            && fast_warp_dedup_enabled
+                            && launch_pairs >= fast_warp_dedup_min_pairs
+                            && backtest_fast_warp.is_some();
+                        let launch_caps = if use_lockstep_m7 {
+                            backtest_lockstep_m7_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_time {
+                            backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_fast_warp_dedup {
+                            backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m7 {
+                            backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else {
+                            backtest_launch_caps
+                        };
+                        let launch = choose_backtest_launch_shape_1d(
+                            launch_pairs,
+                            device_launch_caps,
+                            launch_caps,
+                        );
+                        let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
+                        let eps_zero_mode = eps_rel <= 0.0f32;
+                        let backtest_fn = if use_lockstep_m7 {
+                            if lockstep_m7_norisk_specialize_enabled && no_risk_mode {
+                                if lockstep_m7_eps0_specialize_enabled && eps_zero_mode {
+                                    if use_regime_hybrid_i != 0 {
+                                        backtest_lockstep_m7_regime_hybrid_norisk_eps0
+                                            .as_ref()
+                                            .or(backtest_lockstep_m7_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_lockstep_m7_regime_hybrid.as_ref())
+                                            .or(backtest_lockstep_m7.as_ref())
+                                            .expect("checked lockstep m7 kernel availability")
+                                    } else if use_regime_i != 0 {
+                                        backtest_lockstep_m7_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m7_regime_on.as_ref())
+                                            .or(backtest_lockstep_m7.as_ref())
+                                            .expect("checked lockstep m7 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m7_regime_off_norisk_eps0
+                                            .as_ref()
+                                            .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m7_regime_off.as_ref())
+                                            .or(backtest_lockstep_m7.as_ref())
+                                            .expect("checked lockstep m7 kernel availability")
+                                    }
+                                } else if use_regime_hybrid_i != 0 {
+                                    backtest_lockstep_m7_regime_hybrid_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7_regime_hybrid.as_ref())
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                } else if use_regime_i != 0 {
+                                    backtest_lockstep_m7_regime_on_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7_regime_on.as_ref())
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                } else {
+                                    backtest_lockstep_m7_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7_regime_off.as_ref())
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                }
+                            } else if lockstep_m7_regime_mode_specialize_enabled {
+                                if use_regime_hybrid_i != 0 {
+                                    backtest_lockstep_m7_regime_hybrid
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                } else if use_regime_i != 0 {
+                                    backtest_lockstep_m7_regime_on
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                } else {
+                                    backtest_lockstep_m7_regime_off
+                                        .as_ref()
+                                        .or(backtest_lockstep_m7.as_ref())
+                                        .expect("checked lockstep m7 kernel availability")
+                                }
+                            } else {
+                                backtest_lockstep_m7
+                                    .as_ref()
+                                    .expect("checked lockstep m7 kernel availability")
+                            }
+                        } else if use_lockstep_time {
+                            backtest_lockstep
+                                .as_ref()
+                                .expect("checked lockstep kernel availability")
+                        } else if use_fast_warp_dedup {
+                            backtest_fast_warp
+                                .as_ref()
+                                .expect("checked fast dedup kernel availability")
+                        } else if use_m7 {
+                            backtest_m7
+                                .as_ref()
+                                .expect("checked m7 kernel availability")
+                        } else {
+                            &backtest
+                        };
+                        let block_x: u32 = launch.block_x;
+                        let grid_x: u32 = launch.grid_x;
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut f_ma_tm as *mut _ as *mut c_void,
+                            &mut s_ma_tm as *mut _ as *mut c_void,
+                            &mut lr as *mut _ as *mut c_void,
+                            &mut t_i as *mut _ as *mut c_void,
+                            &mut pf_tile_i as *mut _ as *mut c_void,
+                            &mut ps_tile_i as *mut _ as *mut c_void,
+                            &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                            &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                            &mut pf_total_i as *mut _ as *mut c_void,
+                            &mut ps_total_i as *mut _ as *mut c_void,
+                            &mut f_off as *mut _ as *mut c_void,
+                            &mut s_off as *mut _ as *mut c_void,
+                            &mut f_per as *mut _ as *mut c_void,
+                            &mut s_per as *mut _ as *mut c_void,
+                            &mut regime_ptr as *mut _ as *mut c_void,
+                            &mut use_regime_i as *mut _ as *mut c_void,
+                            &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                            &mut regime_entry as *mut _ as *mut c_void,
+                            &mut regime_exit as *mut _ as *mut c_void,
+                            &mut fv as *mut _ as *mut c_void,
+                            &mut commission as *mut _ as *mut c_void,
+                            &mut eps_rel as *mut _ as *mut c_void,
+                            &mut stop_log as *mut _ as *mut c_void,
+                            &mut take_log as *mut _ as *mut c_void,
+                            &mut flags_u as *mut _ as *mut c_void,
+                            &mut m_i as *mut _ as *mut c_void,
+                            &mut metrics_stride_i as *mut _ as *mut c_void,
+                            &mut pair_map_ptr as *mut _ as *mut c_void,
+                            &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut out_ptr as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    if let Some(t0) = backtest_t0 {
+                        bt_stream.synchronize().map_err(|e| e.to_string())?;
+                        tile_backtest_elapsed
+                            .set(tile_backtest_elapsed.get().saturating_add(t0.elapsed()));
+                    }
                 }
 
                 if let (Some(h), Some((f_min, f_max, s_min, s_max))) =
                     (scratch.d_heatmap.as_ref(), heatmap_cfg)
                 {
+                    let heatmap_t0 = if pipeline_profile_enabled {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
                     unsafe {
                         let mut metrics_ptr =
                             scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut pairs_i = pairs as i32;
                         let mut m_i = metrics_count as i32;
+                        let mut metrics_stride_i = tile_metrics_stride as i32;
                         let mut pf_i = pf as i32;
                         let mut ps_i = ps as i32;
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
@@ -3492,17 +4132,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut s_max_i = s_max as i32;
                         let mut out_ptr = h.as_device_ptr().as_raw();
 
-                        let launch = choose_launch_shape_1d(
-                            pairs,
-                            device_launch_caps,
-                            heatmap_launch_caps,
-                        );
+                        let launch =
+                            choose_launch_shape_1d(pairs, device_launch_caps, heatmap_launch_caps);
                         let block_x: u32 = launch.block_x;
                         let grid_x: u32 = launch.grid_x;
                         let args: &mut [*mut c_void] = &mut [
                             &mut metrics_ptr as *mut _ as *mut c_void,
                             &mut pairs_i as *mut _ as *mut c_void,
                             &mut m_i as *mut _ as *mut c_void,
+                            &mut metrics_stride_i as *mut _ as *mut c_void,
                             &mut pf_i as *mut _ as *mut c_void,
                             &mut ps_i as *mut _ as *mut c_void,
                             &mut f_per as *mut _ as *mut c_void,
@@ -3520,10 +4158,20 @@ fn optimize_double_ma_gpu_kernel_impl(
                             .launch(&heatmap_update, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                             .map_err(|e| e.to_string())?;
                     }
+                    if let Some(t0) = heatmap_t0 {
+                        bt_stream.synchronize().map_err(|e| e.to_string())?;
+                        tile_heatmap_elapsed
+                            .set(tile_heatmap_elapsed.get().saturating_add(t0.elapsed()));
+                    }
                 }
                 Ok(())
             };
 
+            let tile_score_t0 = if pipeline_profile_enabled {
+                Some(Instant::now())
+            } else {
+                None
+            };
             let can_graph_tile = use_cuda_graphs
                 && !graph_capture_disabled
                 && pf == pf_tile
@@ -3554,6 +4202,10 @@ fn optimize_double_ma_gpu_kernel_impl(
             } else {
                 launch_score_stage()?;
             }
+            if let Some(t0) = tile_score_t0 {
+                bt_stream.synchronize().map_err(|e| e.to_string())?;
+                tile_score_elapsed = t0.elapsed();
+            }
 
             if include_all {
                 bt_stream.synchronize().map_err(|e| e.to_string())?;
@@ -3572,7 +4224,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         if fast_len >= slow_len {
                             continue;
                         }
-                        let src_base = (i * ps + j) * metrics_count;
+                        let src_base = (i * ps + j) * tile_metrics_stride;
                         let pnl = tile_host_buf[src_base + 0] as f64;
                         let trades = if metrics_count > 1 {
                             tile_host_buf[src_base + 1]
@@ -3665,7 +4317,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 continue;
                             }
 
-                            let src_base = (i * ps + j) * metrics_count;
+                            let src_base = (i * ps + j) * tile_metrics_stride;
                             if src_base + metrics_count > tile_host_buf.len() {
                                 continue;
                             }
@@ -3770,6 +4422,22 @@ fn optimize_double_ma_gpu_kernel_impl(
                         return Err("cancelled".to_string());
                     }
                     emit_progress(progress, processed, total_pairs, "gpu-kernel");
+                    if pipeline_profile_enabled {
+                        bt_stream.synchronize().map_err(|e| e.to_string())?;
+                    }
+                    if let (Some(t0), Some(p)) = (tile_total_t0, pipeline_profile.as_mut()) {
+                        let total_elapsed = t0.elapsed();
+                        let finalize_elapsed = total_elapsed
+                            .saturating_sub(tile_prepare_elapsed)
+                            .saturating_sub(tile_score_elapsed);
+                        p.tile_prepare = p.tile_prepare.saturating_add(tile_prepare_elapsed);
+                        p.tile_score = p.tile_score.saturating_add(tile_score_elapsed);
+                        p.tile_backtest =
+                            p.tile_backtest.saturating_add(tile_backtest_elapsed.get());
+                        p.tile_heatmap = p.tile_heatmap.saturating_add(tile_heatmap_elapsed.get());
+                        p.tile_finalize = p.tile_finalize.saturating_add(finalize_elapsed);
+                        p.tile_count = p.tile_count.saturating_add(1);
+                    }
                     s_start += ps;
                     continue;
                 }
@@ -3783,6 +4451,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut pairs_i = pairs as i32;
                     let mut m_i = metrics_count as i32;
+                    let mut metrics_stride_i = tile_metrics_stride as i32;
                     let mut pf_i = pf as i32;
                     let mut ps_i = ps as i32;
                     let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
@@ -3802,6 +4471,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut metrics_ptr as *mut _ as *mut c_void,
                             &mut pairs_i as *mut _ as *mut c_void,
                             &mut m_i as *mut _ as *mut c_void,
+                            &mut metrics_stride_i as *mut _ as *mut c_void,
                             &mut pf_i as *mut _ as *mut c_void,
                             &mut ps_i as *mut _ as *mut c_void,
                             &mut f_per as *mut _ as *mut c_void,
@@ -3830,6 +4500,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut metrics_ptr as *mut _ as *mut c_void,
                             &mut pairs_i as *mut _ as *mut c_void,
                             &mut m_i as *mut _ as *mut c_void,
+                            &mut metrics_stride_i as *mut _ as *mut c_void,
                             &mut pf_i as *mut _ as *mut c_void,
                             &mut ps_i as *mut _ as *mut c_void,
                             &mut f_per as *mut _ as *mut c_void,
@@ -3861,6 +4532,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut pairs_i = pairs as i32;
                         let mut m_i = metrics_count as i32;
+                        let mut metrics_stride_i = tile_metrics_stride as i32;
                         let mut pf_i = pf as i32;
                         let mut ps_i = ps as i32;
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
@@ -3890,6 +4562,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut metrics_ptr as *mut _ as *mut c_void,
                                 &mut pairs_i as *mut _ as *mut c_void,
                                 &mut m_i as *mut _ as *mut c_void,
+                                &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pf_i as *mut _ as *mut c_void,
                                 &mut ps_i as *mut _ as *mut c_void,
                                 &mut f_per as *mut _ as *mut c_void,
@@ -3920,6 +4593,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut metrics_ptr as *mut _ as *mut c_void,
                                 &mut pairs_i as *mut _ as *mut c_void,
                                 &mut m_i as *mut _ as *mut c_void,
+                                &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pf_i as *mut _ as *mut c_void,
                                 &mut ps_i as *mut _ as *mut c_void,
                                 &mut f_per as *mut _ as *mut c_void,
@@ -3950,6 +4624,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut pairs_i = pairs as i32;
                     let mut m_i = metrics_count as i32;
+                    let mut metrics_stride_i = tile_metrics_stride as i32;
                     let mut pf_i = pf as i32;
                     let mut ps_i = ps as i32;
                     let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
@@ -3985,6 +4660,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut metrics_ptr as *mut _ as *mut c_void,
                         &mut pairs_i as *mut _ as *mut c_void,
                         &mut m_i as *mut _ as *mut c_void,
+                        &mut metrics_stride_i as *mut _ as *mut c_void,
                         &mut pf_i as *mut _ as *mut c_void,
                         &mut ps_i as *mut _ as *mut c_void,
                         &mut f_per as *mut _ as *mut c_void,
@@ -4151,7 +4827,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     continue;
                                 }
 
-                                let src_base = (i * ps + j) * metrics_count;
+                                let src_base = (i * ps + j) * tile_metrics_stride;
                                 if src_base + metrics_count > tile_host_buf.len() {
                                     continue;
                                 }
@@ -4332,12 +5008,33 @@ fn optimize_double_ma_gpu_kernel_impl(
             }
 
             emit_progress(progress, processed, total_pairs, "gpu-kernel");
+            if pipeline_profile_enabled {
+                bt_stream.synchronize().map_err(|e| e.to_string())?;
+            }
+            if let (Some(t0), Some(p)) = (tile_total_t0, pipeline_profile.as_mut()) {
+                let total_elapsed = t0.elapsed();
+                let finalize_elapsed = total_elapsed
+                    .saturating_sub(tile_prepare_elapsed)
+                    .saturating_sub(tile_score_elapsed);
+                p.tile_prepare = p.tile_prepare.saturating_add(tile_prepare_elapsed);
+                p.tile_score = p.tile_score.saturating_add(tile_score_elapsed);
+                p.tile_backtest = p.tile_backtest.saturating_add(tile_backtest_elapsed.get());
+                p.tile_heatmap = p.tile_heatmap.saturating_add(tile_heatmap_elapsed.get());
+                p.tile_finalize = p.tile_finalize.saturating_add(finalize_elapsed);
+                p.tile_count = p.tile_count.saturating_add(1);
+            }
 
             s_start += ps;
         }
 
         f_start += pf;
     }
+
+    let final_finalize_t0 = if pipeline_profile_enabled {
+        Some(Instant::now())
+    } else {
+        None
+    };
 
     if global_topk_mode && !include_all && global_rows_len > 0 {
         let global_fast = global_fast_rows
@@ -4596,6 +5293,17 @@ fn optimize_double_ma_gpu_kernel_impl(
     if !kernel_persist_buffers_enabled() {
         rt.ma.clear_cached_constants();
         rt.scratch.clear_async(&rt.stream)?;
+    }
+
+    if let (Some(t0), Some(p)) = (final_finalize_t0, pipeline_profile.as_mut()) {
+        p.final_finalize = p.final_finalize.saturating_add(t0.elapsed());
+        p.emit(
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+            include_all,
+            topk_select,
+            heatmap_bins,
+        );
     }
 
     Ok(result)

@@ -238,7 +238,10 @@ fn run_backend(
     candles: &Candles,
     strategy: StrategyConfig,
     cancel: &AtomicBool,
-) -> (BackendRunReport, Option<ta_app_core::BackendOptimizationResult>) {
+) -> (
+    BackendRunReport,
+    Option<ta_app_core::BackendOptimizationResult>,
+) {
     let req = make_request(backend, strategy);
     let start = Instant::now();
     match run_double_ma_optimization_blocking_with_candles(req, candles, cancel, None) {
