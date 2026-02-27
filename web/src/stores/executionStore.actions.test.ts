@@ -1,141 +1,137 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
-  invokeLegacyExecutionClearKeysRuntime,
-  invokeLegacyExecutionLiveStartRuntime,
-  invokeLegacyExecutionLiveStopRuntime,
-  invokeLegacyExecutionRefreshRuntime,
-  invokeLegacyExecutionRunOnceRuntime,
-  invokeLegacyExecutionRunnerStartRuntime,
-  invokeLegacyExecutionRunnerStopRuntime,
-  invokeLegacyExecutionTestConnectionRuntime,
-} from '../legacy/actions'
+  clearKeys,
+  refreshOrders,
+  refreshStatuses,
+  runOnce,
+  startLive,
+  startRunner,
+  stopLive,
+  stopRunner,
+  testConnection,
+} from '../services/executionService'
 import { useExecutionStore } from './executionStore'
 
-vi.mock('../legacy/actions', () => ({
-  invokeLegacyExecutionTestConnectionRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionRunOnceRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionRefreshRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionLiveStartRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionLiveStopRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionRunnerStartRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionRunnerStopRuntime: vi.fn(async () => true),
-  invokeLegacyExecutionClearKeysRuntime: vi.fn(async () => true),
+vi.mock('../services/executionService', () => ({
+  clearKeys: vi.fn(async () => ({ statusLine: 'Cleared execution API keys.' })),
+  loadPersistedExecutionKeys: vi.fn(() => ({ apiKey: '', apiSecret: '' })),
+  refreshOrders: vi.fn(async () => ({ statusLine: 'Loaded 0 orders.' })),
+  refreshStatuses: vi.fn(async () => ({ statusLine: 'Execution status refreshed.' })),
+  runOnce: vi.fn(async () => ({ statusLine: 'Signal processed.' })),
+  startLive: vi.fn(async () => ({ statusLine: 'Live candles started.', liveActive: true })),
+  startRunner: vi.fn(async () => ({ statusLine: 'Auto-runner started.', runnerActive: true })),
+  stopLive: vi.fn(async () => ({ statusLine: 'Live candles stopped.', liveActive: false })),
+  stopRunner: vi.fn(async () => ({ statusLine: 'Auto-runner stopped.', runnerActive: false })),
+  testConnection: vi.fn(async () => ({ statusLine: 'Connection OK.' })),
 }))
 
-const invokeLegacyExecutionTestConnectionRuntimeMock = vi.mocked(invokeLegacyExecutionTestConnectionRuntime)
-const invokeLegacyExecutionRunOnceRuntimeMock = vi.mocked(invokeLegacyExecutionRunOnceRuntime)
-const invokeLegacyExecutionRefreshRuntimeMock = vi.mocked(invokeLegacyExecutionRefreshRuntime)
-const invokeLegacyExecutionLiveStartRuntimeMock = vi.mocked(invokeLegacyExecutionLiveStartRuntime)
-const invokeLegacyExecutionLiveStopRuntimeMock = vi.mocked(invokeLegacyExecutionLiveStopRuntime)
-const invokeLegacyExecutionRunnerStartRuntimeMock = vi.mocked(invokeLegacyExecutionRunnerStartRuntime)
-const invokeLegacyExecutionRunnerStopRuntimeMock = vi.mocked(invokeLegacyExecutionRunnerStopRuntime)
-const invokeLegacyExecutionClearKeysRuntimeMock = vi.mocked(invokeLegacyExecutionClearKeysRuntime)
+const testConnectionMock = vi.mocked(testConnection)
+const runOnceMock = vi.mocked(runOnce)
+const refreshOrdersMock = vi.mocked(refreshOrders)
+const refreshStatusesMock = vi.mocked(refreshStatuses)
+const startLiveMock = vi.mocked(startLive)
+const stopLiveMock = vi.mocked(stopLive)
+const startRunnerMock = vi.mocked(startRunner)
+const stopRunnerMock = vi.mocked(stopRunner)
+const clearKeysMock = vi.mocked(clearKeys)
 
-interface LegacyTextField {
-  value: string
-  disabled?: boolean
-  type?: string
-  dispatchEvent: (event: Event) => boolean
-}
-
-interface LegacyCheckboxField {
-  checked: boolean
-  disabled?: boolean
-  type: 'checkbox'
-  dispatchEvent: (event: Event) => boolean
-}
-
-interface DocumentHarness {
-  fields: Record<string, LegacyTextField | LegacyCheckboxField>
-  eventsById: Record<string, string[]>
-}
-
-function installDocumentHarness(): DocumentHarness {
-  const eventsById: Record<string, string[]> = {}
-  const trackEvent = (id: string, event: Event): boolean => {
-    if (!eventsById[id]) eventsById[id] = []
-    eventsById[id].push(String(event.type || '').trim())
-    return true
-  }
-  const fields: Record<string, LegacyTextField | LegacyCheckboxField> = {
-    execSymbol: {
-      value: '',
-      dispatchEvent: (event: Event) => trackEvent('execSymbol', event),
-    },
-    execMode: {
-      value: 'paper',
-      dispatchEvent: (event: Event) => trackEvent('execMode', event),
-    },
-    execDryRun: {
-      checked: false,
-      type: 'checkbox',
-      dispatchEvent: (event: Event) => trackEvent('execDryRun', event),
-    },
-  }
-  vi.stubGlobal('document', {
-    getElementById: (id: string) => fields[id] ?? null,
-  })
-  return { fields, eventsById }
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
 }
 
 describe('execution store actions', () => {
-  let harness: DocumentHarness
-
   beforeEach(() => {
     setActivePinia(createPinia())
-    harness = installDocumentHarness()
-    invokeLegacyExecutionTestConnectionRuntimeMock.mockClear()
-    invokeLegacyExecutionTestConnectionRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionRunOnceRuntimeMock.mockClear()
-    invokeLegacyExecutionRunOnceRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionRefreshRuntimeMock.mockClear()
-    invokeLegacyExecutionRefreshRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionLiveStartRuntimeMock.mockClear()
-    invokeLegacyExecutionLiveStartRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionLiveStopRuntimeMock.mockClear()
-    invokeLegacyExecutionLiveStopRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionRunnerStartRuntimeMock.mockClear()
-    invokeLegacyExecutionRunnerStartRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionRunnerStopRuntimeMock.mockClear()
-    invokeLegacyExecutionRunnerStopRuntimeMock.mockResolvedValue(true)
-    invokeLegacyExecutionClearKeysRuntimeMock.mockClear()
-    invokeLegacyExecutionClearKeysRuntimeMock.mockResolvedValue(true)
+    testConnectionMock.mockClear()
+    testConnectionMock.mockResolvedValue({ statusLine: 'Connection OK.' })
+    runOnceMock.mockClear()
+    runOnceMock.mockResolvedValue({ statusLine: 'Signal processed.' })
+    refreshOrdersMock.mockClear()
+    refreshOrdersMock.mockResolvedValue({ statusLine: 'Loaded 0 orders.' })
+    refreshStatusesMock.mockClear()
+    refreshStatusesMock.mockResolvedValue({ statusLine: 'Execution status refreshed.' })
+    startLiveMock.mockClear()
+    startLiveMock.mockResolvedValue({ statusLine: 'Live candles started.', liveActive: true })
+    stopLiveMock.mockClear()
+    stopLiveMock.mockResolvedValue({ statusLine: 'Live candles stopped.', liveActive: false })
+    startRunnerMock.mockClear()
+    startRunnerMock.mockResolvedValue({ statusLine: 'Auto-runner started.', runnerActive: true })
+    stopRunnerMock.mockClear()
+    stopRunnerMock.mockResolvedValue({ statusLine: 'Auto-runner stopped.', runnerActive: false })
+    clearKeysMock.mockClear()
+    clearKeysMock.mockResolvedValue({ statusLine: 'Cleared execution API keys.' })
   })
 
-  it('dispatches execution field updates via legacy DOM events', () => {
+  it('updates Vue execution state without legacy DOM mirroring', () => {
     const store = useExecutionStore()
     store.setInputField('execSymbol', 'AAPL')
+    store.setInputField('execApiKey', 'key_1')
+    store.setInputField('execApiSecret', 'secret_1')
     store.setSelectField('execMode', 'paper')
     store.setCheckboxField('execDryRun', true)
 
-    const dryRun = harness.fields.execDryRun as LegacyCheckboxField
-    expect((harness.fields.execSymbol as LegacyTextField).value).toBe('AAPL')
-    expect((harness.fields.execMode as LegacyTextField).value).toBe('paper')
-    expect(dryRun.checked).toBe(true)
-    expect(harness.eventsById.execSymbol).toEqual(['input'])
-    expect(harness.eventsById.execMode).toEqual(['change'])
-    expect(harness.eventsById.execDryRun).toEqual(['change'])
+    expect(store.symbol).toBe('AAPL')
+    expect(store.apiKey).toBe('key_1')
+    expect(store.apiSecret).toBe('secret_1')
+    expect(store.mode).toBe('paper')
+    expect(store.dryRun).toBe(true)
+    expect(store.source).toBe('vue')
   })
 
-  it('dispatches direct execution runtime wrappers for run/control actions', () => {
+  it('dispatches execution actions through execution service', async () => {
     const store = useExecutionStore()
-    store.testConnection()
-    store.runOnce()
-    store.refreshOrders()
-    store.startLive()
-    store.stopLive()
-    store.startRunner()
-    store.stopRunner()
-    store.clearKeys()
 
-    expect(invokeLegacyExecutionTestConnectionRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionRunOnceRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionRefreshRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionLiveStartRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionLiveStopRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionRunnerStartRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionRunnerStopRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyExecutionClearKeysRuntimeMock).toHaveBeenCalled()
+    store.setInputField('execApiKey', 'key_1')
+    store.setInputField('execApiSecret', 'secret_1')
+    store.setInputField('execSymbol', 'AAPL')
+
+    store.testConnection()
+    await flushMicrotasks()
+    store.runOnce()
+    await flushMicrotasks()
+    store.refreshOrders()
+    await flushMicrotasks()
+    store.startLive()
+    await flushMicrotasks()
+    store.stopLive()
+    await flushMicrotasks()
+    store.startRunner()
+    await flushMicrotasks()
+    store.stopRunner()
+    await flushMicrotasks()
+    store.refreshStatuses()
+    await flushMicrotasks()
+    store.clearKeys()
+    await flushMicrotasks()
+
+    expect(testConnectionMock).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'paper',
+      symbol: 'AAPL',
+      apiKey: 'key_1',
+      apiSecret: 'secret_1',
+    }))
+    expect(runOnceMock).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'paper',
+      paramSource: 'selected',
+      symbol: 'AAPL',
+    }))
+    expect(refreshOrdersMock).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'paper',
+      symbol: 'AAPL',
+    }))
+    expect(startLiveMock).toHaveBeenCalledWith(expect.objectContaining({
+      symbol: 'AAPL',
+      liveUseDelayed: true,
+    }))
+    expect(stopLiveMock).toHaveBeenCalled()
+    expect(startRunnerMock).toHaveBeenCalledWith(expect.objectContaining({
+      symbol: 'AAPL',
+      dryRun: true,
+    }))
+    expect(stopRunnerMock).toHaveBeenCalled()
+    expect(refreshStatusesMock).toHaveBeenCalled()
+    expect(clearKeysMock).toHaveBeenCalled()
   })
 })

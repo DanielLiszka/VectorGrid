@@ -38,7 +38,7 @@ function closeCommandPalette(): void {
 
 function isPolygonModalOpen(): boolean {
   if (typeof document === 'undefined') return false
-  const modal = document.getElementById('polygonModal')
+  const modal = document.querySelector('#polygonModal') as HTMLElement | null
   if (!(modal instanceof HTMLElement)) return false
   return modal.classList.contains('open')
 }
@@ -164,3 +164,4 @@ onBeforeUnmount(() => {
 </script>
 
 <template></template>
+

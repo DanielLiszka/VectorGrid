@@ -1,8 +1,28 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useOptimizeStore, type OptimizeOption } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  listMovingAverageCatalog,
+  type MaParamDescriptor,
+  type MaParamKind,
+} from '../services/movingAverageCatalogService'
+
+type MaSide = 'fast' | 'slow'
+interface MaParamUiState {
+  value: string
+  sweepEnabled: boolean
+  sweepStart: string
+  sweepEnd: string
+  sweepStep: string
+}
+type MaParamUiStateByKey = Record<string, MaParamUiState>
+type MaParamUiStateByMa = Record<string, MaParamUiStateByKey>
+interface RenderedMaParam {
+  schema: MaParamDescriptor
+  state: MaParamUiState
+}
 
 const optimizeStore = useOptimizeStore()
 const workflowStore = useWorkflowStore()
@@ -45,6 +65,7 @@ const { controlsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
+let panelDisposed = false
 
 const strategyDraft = ref('')
 const presetDraft = ref('')
@@ -60,8 +81,29 @@ const slowEndDraft = ref('')
 const slowStepDraft = ref('')
 const fastTypeDraft = ref('')
 const slowTypeDraft = ref('')
+const maParamCatalogLoaded = ref(false)
+const maParamSchemasByMaId = shallowRef<Record<string, MaParamDescriptor[]>>({})
+const maCatalogOptions = shallowRef<OptimizeOption[]>([])
+const maParamUiStateBySide = ref<{ fast: MaParamUiStateByMa; slow: MaParamUiStateByMa }>({ fast: {}, slow: {} })
+const maParamTouchedBySide = ref<{ fast: Record<string, boolean>; slow: Record<string, boolean> }>({ fast: {}, slow: {} })
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'opt')
+const selectedFastMaType = computed(() => String(fastTypeDraft.value || fastMaType.value || '').trim())
+const selectedSlowMaType = computed(() => String(slowTypeDraft.value || slowMaType.value || '').trim())
+const fastMaParamSchema = computed(() => maParamSchemasByMaId.value[selectedFastMaType.value] || [])
+const slowMaParamSchema = computed(() => maParamSchemasByMaId.value[selectedSlowMaType.value] || [])
+const fastRenderedMaParams = computed<RenderedMaParam[]>(() =>
+  fastMaParamSchema.value.map((schema) => ({
+    schema,
+    state: resolveMaParamUiState('fast', selectedFastMaType.value, schema),
+  })),
+)
+const slowRenderedMaParams = computed<RenderedMaParam[]>(() =>
+  slowMaParamSchema.value.map((schema) => ({
+    schema,
+    state: resolveMaParamUiState('slow', selectedSlowMaType.value, schema),
+  })),
+)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -69,8 +111,14 @@ const stamp = computed(() => {
   return new Date(ms).toLocaleTimeString([], { hour12: false })
 })
 
-function resolvedOptions(options: OptimizeOption[], fallbackValue: string, fallbackLabel: string): OptimizeOption[] {
+function resolvedOptions(
+  options: OptimizeOption[],
+  fallbackValue: string,
+  fallbackLabel: string,
+  fallbackOptions: OptimizeOption[] = [],
+): OptimizeOption[] {
   if (options.length > 0) return options
+  if (fallbackOptions.length > 0) return fallbackOptions
   const value = String(fallbackValue || '').trim()
   if (!value) return []
   return [{ value, label: String(fallbackLabel || value).trim() || value, disabled: false }]
@@ -80,8 +128,12 @@ const strategyOptionItems = computed(() => resolvedOptions(strategyOptions.value
 const presetOptionItems = computed(() => resolvedOptions(presetOptions.value, presetProfile.value, presetProfile.value || 'Preset'))
 const backendOptionItems = computed(() => resolvedOptions(backendOptions.value, backend.value, backend.value || 'Backend'))
 const deviceOptionItems = computed(() => resolvedOptions(deviceOptions.value, deviceId.value || '0', deviceId.value || 'Auto'))
-const fastTypeOptionItems = computed(() => resolvedOptions(fastMaTypeOptions.value, fastMaType.value, fastMaType.value || 'MA type'))
-const slowTypeOptionItems = computed(() => resolvedOptions(slowMaTypeOptions.value, slowMaType.value, slowMaType.value || 'MA type'))
+const fastTypeOptionItems = computed(() =>
+  resolvedOptions(fastMaTypeOptions.value, fastMaType.value, fastMaType.value || 'MA type', maCatalogOptions.value),
+)
+const slowTypeOptionItems = computed(() =>
+  resolvedOptions(slowMaTypeOptions.value, slowMaType.value, slowMaType.value || 'MA type', maCatalogOptions.value),
+)
 
 watch(strategyKind, (v) => { const next = String(v || ''); if (strategyDraft.value !== next) strategyDraft.value = next }, { immediate: true })
 watch(presetProfile, (v) => { const next = String(v || ''); if (presetDraft.value !== next) presetDraft.value = next }, { immediate: true })
@@ -114,26 +166,283 @@ function runValidationAction(): void {
   optimizeStore.runValidation()
 }
 
+function normalizeFinite(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function serializeNumber(value: number): string {
+  return Number.isFinite(value) ? String(value) : ''
+}
+
+function defaultSweepStep(schema: MaParamDescriptor): number {
+  if (schema.step != null && Number.isFinite(schema.step) && schema.step > 0) return schema.step
+  return schema.kind === 'int' ? 1 : 0.1
+}
+
+function resolveInputStep(step: number | null, kind: MaParamKind): string {
+  if (step != null && Number.isFinite(step) && step > 0) return String(step)
+  return kind === 'int' ? '1' : 'any'
+}
+
+function createMaParamUiState(
+  schema: MaParamDescriptor,
+  seededValue: unknown,
+  seededSweep: unknown,
+): MaParamUiState {
+  const defaultValue = normalizeFinite(seededValue) ?? schema.defaultValue
+  const sweepRow = Array.isArray(seededSweep) ? seededSweep : null
+  const sweepStart = sweepRow ? normalizeFinite(sweepRow[0]) : null
+  const sweepEnd = sweepRow ? normalizeFinite(sweepRow[1]) : null
+  const sweepStep = sweepRow ? normalizeFinite(sweepRow[2]) : null
+  const sweepEnabled =
+    sweepStart != null &&
+    sweepEnd != null &&
+    sweepStep != null &&
+    sweepStep > 0
+
+  const resolvedSweepStep = sweepEnabled ? (sweepStep as number) : defaultSweepStep(schema)
+
+  return {
+    value: serializeNumber(defaultValue),
+    sweepEnabled,
+    sweepStart: serializeNumber(sweepEnabled ? (sweepStart as number) : defaultValue),
+    sweepEnd: serializeNumber(sweepEnabled ? (sweepEnd as number) : defaultValue),
+    sweepStep: serializeNumber(resolvedSweepStep),
+  }
+}
+
+function resolveSideTypeState(side: MaSide, maId: string): MaParamUiStateByKey {
+  if (!maId) return {}
+  const sideState = maParamUiStateBySide.value[side]
+  const row = sideState[maId]
+  return row && typeof row === 'object' ? row : {}
+}
+
+function resolveMaParamUiState(side: MaSide, maId: string, schema: MaParamDescriptor): MaParamUiState {
+  const state = resolveSideTypeState(side, maId)[schema.key]
+  return state || createMaParamUiState(schema, schema.defaultValue, null)
+}
+
+function ensureSideTypeSchemaState(
+  side: MaSide,
+  maId: string,
+  schema: MaParamDescriptor[],
+  seedParams: unknown,
+  seedSweeps: unknown,
+  overwrite = false,
+): void {
+  if (!maId || schema.length === 0) return
+  const sideState = maParamUiStateBySide.value[side]
+  const paramsRow = seedParams && typeof seedParams === 'object' ? seedParams as Record<string, unknown> : {}
+  const sweepsRow = seedSweeps && typeof seedSweeps === 'object' ? seedSweeps as Record<string, unknown> : {}
+  let typeState = sideState[maId]
+  if (!typeState || typeof typeState !== 'object') {
+    typeState = {}
+    sideState[maId] = typeState
+  }
+
+  const allowed = new Set<string>()
+  for (const item of schema) {
+    allowed.add(item.key)
+    if (!overwrite && typeState[item.key]) continue
+    typeState[item.key] = createMaParamUiState(item, paramsRow[item.key], sweepsRow[item.key])
+  }
+
+  for (const key of Object.keys(typeState)) {
+    if (!allowed.has(key)) delete typeState[key]
+  }
+}
+
+function buildSideMaParamsAndSweeps(side: MaSide): { params: Record<string, number> | null; sweeps: Record<string, [number, number, number]> | null } {
+  const maId = side === 'fast' ? selectedFastMaType.value : selectedSlowMaType.value
+  const schema = side === 'fast' ? fastMaParamSchema.value : slowMaParamSchema.value
+  if (!maId || schema.length === 0) return { params: null, sweeps: null }
+
+  const stateByKey = resolveSideTypeState(side, maId)
+  const params: Record<string, number> = {}
+  const sweeps: Record<string, [number, number, number]> = {}
+  for (const item of schema) {
+    const state = stateByKey[item.key] || createMaParamUiState(item, item.defaultValue, null)
+    const rawValue = normalizeFinite(state.value)
+    params[item.key] = rawValue ?? item.defaultValue
+    if (!state.sweepEnabled) continue
+    const start = normalizeFinite(state.sweepStart)
+    const end = normalizeFinite(state.sweepEnd)
+    const step = normalizeFinite(state.sweepStep)
+    if (start == null || end == null || step == null || step <= 0) continue
+    sweeps[item.key] = [start, end, step]
+  }
+
+  return {
+    params: Object.keys(params).length > 0 ? params : null,
+    sweeps: Object.keys(sweeps).length > 0 ? sweeps : null,
+  }
+}
+
+function syncMaParamStateFromVue(): void {
+  optimizeStore.syncMaParamState({
+    fast: buildSideMaParamsAndSweeps('fast'),
+    slow: buildSideMaParamsAndSweeps('slow'),
+  })
+}
+
+function markSelectedTypeTouched(side: MaSide): void {
+  const maId = side === 'fast' ? selectedFastMaType.value : selectedSlowMaType.value
+  if (!maId) return
+  maParamTouchedBySide.value[side][maId] = true
+}
+
+function updateMaParamValue(side: MaSide, key: string, raw: string): void {
+  const maId = side === 'fast' ? selectedFastMaType.value : selectedSlowMaType.value
+  const schema = side === 'fast' ? fastMaParamSchema.value : slowMaParamSchema.value
+  const item = schema.find((row) => row.key === key)
+  if (!maId || !item) return
+  ensureSideTypeSchemaState(
+    side,
+    maId,
+    schema,
+    side === 'fast' ? optimizeStore.fastMaParams : optimizeStore.slowMaParams,
+    side === 'fast' ? optimizeStore.fastMaParamSweeps : optimizeStore.slowMaParamSweeps,
+    false,
+  )
+  const stateByKey = resolveSideTypeState(side, maId)
+  const state = stateByKey[key]
+  if (!state) return
+  state.value = raw
+  markSelectedTypeTouched(side)
+  syncMaParamStateFromVue()
+}
+
+function updateMaParamSweepEnabled(side: MaSide, key: string, enabled: boolean): void {
+  const maId = side === 'fast' ? selectedFastMaType.value : selectedSlowMaType.value
+  const schema = side === 'fast' ? fastMaParamSchema.value : slowMaParamSchema.value
+  const item = schema.find((row) => row.key === key)
+  if (!maId || !item) return
+  const stateByKey = resolveSideTypeState(side, maId)
+  const state = stateByKey[key]
+  if (!state) return
+  state.sweepEnabled = enabled
+  if (enabled) {
+    if (!String(state.sweepStart || '').trim()) state.sweepStart = String(state.value || item.defaultValue)
+    if (!String(state.sweepEnd || '').trim()) state.sweepEnd = String(state.value || item.defaultValue)
+    if (!String(state.sweepStep || '').trim()) state.sweepStep = serializeNumber(defaultSweepStep(item))
+  }
+  markSelectedTypeTouched(side)
+  syncMaParamStateFromVue()
+}
+
+function updateMaParamSweepField(side: MaSide, key: string, field: 'sweepStart' | 'sweepEnd' | 'sweepStep', raw: string): void {
+  const maId = side === 'fast' ? selectedFastMaType.value : selectedSlowMaType.value
+  if (!maId) return
+  const stateByKey = resolveSideTypeState(side, maId)
+  const state = stateByKey[key]
+  if (!state) return
+  state[field] = raw
+  markSelectedTypeTouched(side)
+  syncMaParamStateFromVue()
+}
+
+function maParamInputId(side: MaSide, key: string): string {
+  const maId = side === 'fast' ? selectedFastMaType.value : selectedSlowMaType.value
+  return `vue_${side}_${maId || 'ma'}_param_${key}`
+}
+
+async function loadMaParamCatalog(): Promise<void> {
+  try {
+    const catalog = await listMovingAverageCatalog()
+    if (panelDisposed) return
+    const nextMap: Record<string, MaParamDescriptor[]> = {}
+    const nextOptions: OptimizeOption[] = []
+    for (const item of catalog) {
+      nextMap[item.id] = item.params
+      nextOptions.push({
+        value: String(item.id || '').trim(),
+        label: String(item.label || item.id || '').trim() || String(item.id || '').trim(),
+        disabled: false,
+      })
+    }
+    maParamSchemasByMaId.value = nextMap
+    maCatalogOptions.value = nextOptions
+  } catch {
+    if (panelDisposed) return
+    maParamSchemasByMaId.value = {}
+    maCatalogOptions.value = []
+  } finally {
+    if (!panelDisposed) maParamCatalogLoaded.value = true
+  }
+}
+
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="opt"]') as HTMLElement | null
-  const mount = document.getElementById('optVueShellMount')
+  const mount = document.querySelector('#optVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueOpt = '1'
   mountReady.value = true
 }
 
+watch([maParamCatalogLoaded, selectedFastMaType, fastMaParamSchema], () => {
+  if (!maParamCatalogLoaded.value) return
+  ensureSideTypeSchemaState(
+    'fast',
+    selectedFastMaType.value,
+    fastMaParamSchema.value,
+    optimizeStore.fastMaParams,
+    optimizeStore.fastMaParamSweeps,
+  )
+  syncMaParamStateFromVue()
+}, { immediate: true })
+
+watch([maParamCatalogLoaded, selectedSlowMaType, slowMaParamSchema], () => {
+  if (!maParamCatalogLoaded.value) return
+  ensureSideTypeSchemaState(
+    'slow',
+    selectedSlowMaType.value,
+    slowMaParamSchema.value,
+    optimizeStore.slowMaParams,
+    optimizeStore.slowMaParamSweeps,
+  )
+  syncMaParamStateFromVue()
+}, { immediate: true })
+
+watch([() => optimizeStore.fastMaParams, () => optimizeStore.fastMaParamSweeps], () => {
+  if (!maParamCatalogLoaded.value) return
+  const maId = selectedFastMaType.value
+  if (!maId || maParamTouchedBySide.value.fast[maId]) return
+  ensureSideTypeSchemaState(
+    'fast',
+    maId,
+    fastMaParamSchema.value,
+    optimizeStore.fastMaParams,
+    optimizeStore.fastMaParamSweeps,
+    true,
+  )
+}, { deep: true, immediate: true })
+
+watch([() => optimizeStore.slowMaParams, () => optimizeStore.slowMaParamSweeps], () => {
+  if (!maParamCatalogLoaded.value) return
+  const maId = selectedSlowMaType.value
+  if (!maId || maParamTouchedBySide.value.slow[maId]) return
+  ensureSideTypeSchemaState(
+    'slow',
+    maId,
+    slowMaParamSchema.value,
+    optimizeStore.slowMaParams,
+    optimizeStore.slowMaParamSweeps,
+    true,
+  )
+}, { deep: true, immediate: true })
+
 onMounted(async () => {
   await nextTick()
   resolveMount()
-  // Ask legacy MA-params renderer to repaint once Vue hosts are mounted.
-  window.setTimeout(() => {
-    const currentType = String(fastTypeDraft.value || fastMaType.value || '').trim()
-    if (currentType) setSelectValue('fastMaType', currentType)
-  }, 0)
+  await loadMaParamCatalog()
+  syncMaParamStateFromVue()
 })
 
 onBeforeUnmount(() => {
+  panelDisposed = true
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueOpt
     panelRoot.value = null
@@ -396,13 +705,137 @@ onBeforeUnmount(() => {
       <section class="pane">
         <h3>MA parameters</h3>
         <div class="split">
-          <div id="fastMaParamsWrapVue" style="display: none;">
-            <div class="muted" style="margin-bottom: 0.35rem;">Fast MA parameters</div>
-            <div id="fastMaParamsBodyVue"></div>
+          <div class="maParamSide">
+            <div class="muted maParamTitle">Fast MA parameters</div>
+            <div v-if="fastRenderedMaParams.length === 0" class="muted mono">No extra params for the selected MA.</div>
+            <div
+              v-for="entry in fastRenderedMaParams"
+              :key="`fast_ma_param_${entry.schema.key}`"
+              class="maParamBlock"
+            >
+              <label :for="maParamInputId('fast', entry.schema.key)">{{ entry.schema.label }}</label>
+              <input
+                :id="maParamInputId('fast', entry.schema.key)"
+                type="number"
+                :min="entry.schema.min ?? undefined"
+                :max="entry.schema.max ?? undefined"
+                :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                :value="entry.state.value"
+                @input="updateMaParamValue('fast', entry.schema.key, String(($event.target as HTMLInputElement).value || ''))"
+              />
+              <label class="maParamSweepToggle">
+                <input
+                  type="checkbox"
+                  :checked="entry.state.sweepEnabled"
+                  @change="updateMaParamSweepEnabled('fast', entry.schema.key, !!(($event.target as HTMLInputElement).checked))"
+                />
+                Optimize (sweep)
+              </label>
+              <div class="rowThree maParamSweepRow" v-show="entry.state.sweepEnabled">
+                <div>
+                  <label :for="`${maParamInputId('fast', entry.schema.key)}_sweep_start`">Start</label>
+                  <input
+                    :id="`${maParamInputId('fast', entry.schema.key)}_sweep_start`"
+                    type="number"
+                    :min="entry.schema.min ?? undefined"
+                    :max="entry.schema.max ?? undefined"
+                    :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                    :value="entry.state.sweepStart"
+                    @input="updateMaParamSweepField('fast', entry.schema.key, 'sweepStart', String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+                <div>
+                  <label :for="`${maParamInputId('fast', entry.schema.key)}_sweep_end`">End</label>
+                  <input
+                    :id="`${maParamInputId('fast', entry.schema.key)}_sweep_end`"
+                    type="number"
+                    :min="entry.schema.min ?? undefined"
+                    :max="entry.schema.max ?? undefined"
+                    :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                    :value="entry.state.sweepEnd"
+                    @input="updateMaParamSweepField('fast', entry.schema.key, 'sweepEnd', String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+                <div>
+                  <label :for="`${maParamInputId('fast', entry.schema.key)}_sweep_step`">Step</label>
+                  <input
+                    :id="`${maParamInputId('fast', entry.schema.key)}_sweep_step`"
+                    type="number"
+                    min="0"
+                    :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                    :value="entry.state.sweepStep"
+                    @input="updateMaParamSweepField('fast', entry.schema.key, 'sweepStep', String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+              </div>
+              <div v-if="entry.schema.notes" class="muted maParamNote">{{ entry.schema.notes }}</div>
+            </div>
           </div>
-          <div id="slowMaParamsWrapVue" style="display: none;">
-            <div class="muted" style="margin-bottom: 0.35rem;">Slow MA parameters</div>
-            <div id="slowMaParamsBodyVue"></div>
+          <div class="maParamSide">
+            <div class="muted maParamTitle">Slow MA parameters</div>
+            <div v-if="slowRenderedMaParams.length === 0" class="muted mono">No extra params for the selected MA.</div>
+            <div
+              v-for="entry in slowRenderedMaParams"
+              :key="`slow_ma_param_${entry.schema.key}`"
+              class="maParamBlock"
+            >
+              <label :for="maParamInputId('slow', entry.schema.key)">{{ entry.schema.label }}</label>
+              <input
+                :id="maParamInputId('slow', entry.schema.key)"
+                type="number"
+                :min="entry.schema.min ?? undefined"
+                :max="entry.schema.max ?? undefined"
+                :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                :value="entry.state.value"
+                @input="updateMaParamValue('slow', entry.schema.key, String(($event.target as HTMLInputElement).value || ''))"
+              />
+              <label class="maParamSweepToggle">
+                <input
+                  type="checkbox"
+                  :checked="entry.state.sweepEnabled"
+                  @change="updateMaParamSweepEnabled('slow', entry.schema.key, !!(($event.target as HTMLInputElement).checked))"
+                />
+                Optimize (sweep)
+              </label>
+              <div class="rowThree maParamSweepRow" v-show="entry.state.sweepEnabled">
+                <div>
+                  <label :for="`${maParamInputId('slow', entry.schema.key)}_sweep_start`">Start</label>
+                  <input
+                    :id="`${maParamInputId('slow', entry.schema.key)}_sweep_start`"
+                    type="number"
+                    :min="entry.schema.min ?? undefined"
+                    :max="entry.schema.max ?? undefined"
+                    :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                    :value="entry.state.sweepStart"
+                    @input="updateMaParamSweepField('slow', entry.schema.key, 'sweepStart', String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+                <div>
+                  <label :for="`${maParamInputId('slow', entry.schema.key)}_sweep_end`">End</label>
+                  <input
+                    :id="`${maParamInputId('slow', entry.schema.key)}_sweep_end`"
+                    type="number"
+                    :min="entry.schema.min ?? undefined"
+                    :max="entry.schema.max ?? undefined"
+                    :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                    :value="entry.state.sweepEnd"
+                    @input="updateMaParamSweepField('slow', entry.schema.key, 'sweepEnd', String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+                <div>
+                  <label :for="`${maParamInputId('slow', entry.schema.key)}_sweep_step`">Step</label>
+                  <input
+                    :id="`${maParamInputId('slow', entry.schema.key)}_sweep_step`"
+                    type="number"
+                    min="0"
+                    :step="resolveInputStep(entry.schema.step, entry.schema.kind)"
+                    :value="entry.state.sweepStep"
+                    @input="updateMaParamSweepField('slow', entry.schema.key, 'sweepStep', String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+              </div>
+              <div v-if="entry.schema.notes" class="muted maParamNote">{{ entry.schema.notes }}</div>
+            </div>
           </div>
         </div>
       </section>
@@ -490,6 +923,34 @@ onBeforeUnmount(() => {
   border-color: color-mix(in oklab, var(--accent) 70%, var(--border));
 }
 
+.maParamSide {
+  min-width: 0;
+}
+
+.maParamTitle {
+  margin-bottom: 0.35rem;
+}
+
+.maParamBlock {
+  margin-top: 0.6rem;
+}
+
+.maParamSweepToggle {
+  margin-top: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.maParamSweepRow {
+  margin-top: 0.35rem;
+}
+
+.maParamNote {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.8rem;
@@ -515,6 +976,7 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 
 

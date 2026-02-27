@@ -18,7 +18,7 @@ import {
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
-} from '../legacy/core/storageKeys.js'
+} from './core/storageKeys'
 import {
   LEGACY_STORAGE_KEYS,
   STORAGE_SCHEMA_VERSION_KEY,

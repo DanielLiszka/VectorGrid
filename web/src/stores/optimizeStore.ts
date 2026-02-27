@@ -1,13 +1,13 @@
 import { defineStore } from 'pinia'
 import {
-  invokeLegacyOptimizeApplyPresetRuntime,
-  invokeLegacyOptimizeCancelRuntime,
-  invokeLegacyOptimizeGpuParityCheckRuntime,
-  invokeLegacyOptimizePresetKernelRuntime,
-  invokeLegacyOptimizeRefreshGpuStatusRuntime,
-  invokeLegacyOptimizeRunRuntime,
-  invokeLegacyOptimizeValidateRuntime,
-} from '../legacy/actions'
+  applyPreset as applyPresetAction,
+  cancelOptimization as cancelOptimizationAction,
+  presetKernel as presetKernelAction,
+  refreshGpuStatus as refreshGpuStatusAction,
+  runGpuParityCheck as runGpuParityCheckAction,
+  runOptimization as runOptimizationAction,
+  runValidation as runValidationAction,
+} from '../services/optimizeService'
 
 export interface OptimizeOption {
   value: string
@@ -15,14 +15,11 @@ export interface OptimizeOption {
   disabled: boolean
 }
 
-function updateLegacyTextField(field: string, value: string, eventType: 'input' | 'change'): void {
-  if (typeof document === 'undefined') return
-  const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el || el.disabled) return
-  if (String(el.value ?? '') !== value) el.value = value
-  el.dispatchEvent(new Event(eventType, { bubbles: true }))
+type MaParamMap = Record<string, number>
+type MaParamSweepMap = Record<string, [number, number, number]>
+interface MaParamStateInput {
+  params?: unknown
+  sweeps?: unknown
 }
 
 function normalizedOptions(values: unknown): OptimizeOption[] {
@@ -41,6 +38,97 @@ function normalizedOptions(values: unknown): OptimizeOption[] {
     })
   }
   return entries
+}
+
+function normalizeMaParams(value: unknown, fallback: MaParamMap | null = null): MaParamMap | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback
+  const out: MaParamMap = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const name = String(key || '').trim()
+    if (!name) continue
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) continue
+    out[name] = parsed
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
+
+function normalizeMaParamSweeps(value: unknown, fallback: MaParamSweepMap | null = null): MaParamSweepMap | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback
+  const out: MaParamSweepMap = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const name = String(key || '').trim()
+    if (!name) continue
+    const row = raw as unknown
+    let start = Number.NaN
+    let end = Number.NaN
+    let step = Number.NaN
+    if (Array.isArray(row)) {
+      start = Number(row[0])
+      end = Number(row[1])
+      step = Number(row[2])
+    } else if (row && typeof row === 'object') {
+      const typed = row as Record<string, unknown>
+      start = Number(typed.start)
+      end = Number(typed.end)
+      step = Number(typed.step)
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(step) || step <= 0) continue
+    out[name] = [start, end, step]
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
+
+function applyVueFieldUpdate(state: OptimizeState, field: string, value: string): boolean {
+  const key = String(field || '').trim()
+  const next = String(value || '').trim()
+  if (!key) return false
+  switch (key) {
+    case 'strategyKind':
+      state.strategyKind = next
+      return true
+    case 'presetProfile':
+      state.presetProfile = next || 'Balanced'
+      return true
+    case 'backend':
+      state.backend = next
+      return true
+    case 'deviceId':
+      state.deviceId = next || '0'
+      return true
+    case 'objective':
+      state.objective = next
+      return true
+    case 'mode':
+      state.mode = next
+      return true
+    case 'fastStart':
+      state.fastStart = next
+      return true
+    case 'fastEnd':
+      state.fastEnd = next
+      return true
+    case 'fastStep':
+      state.fastStep = next
+      return true
+    case 'slowStart':
+      state.slowStart = next
+      return true
+    case 'slowEnd':
+      state.slowEnd = next
+      return true
+    case 'slowStep':
+      state.slowStep = next
+      return true
+    case 'fastMaType':
+      state.fastMaType = next
+      return true
+    case 'slowMaType':
+      state.slowMaType = next
+      return true
+    default:
+      return false
+  }
 }
 
 interface OptimizeState {
@@ -66,6 +154,10 @@ interface OptimizeState {
   fastMaTypeOptions: OptimizeOption[]
   slowMaType: string
   slowMaTypeOptions: OptimizeOption[]
+  fastMaParams: MaParamMap | null
+  slowMaParams: MaParamMap | null
+  fastMaParamSweeps: MaParamSweepMap | null
+  slowMaParamSweeps: MaParamSweepMap | null
   pairsPreview: string
   gpuStatus: string
   gpuParityMeta: string
@@ -81,40 +173,63 @@ interface OptimizeState {
   canPresetKernel: boolean
   canRefreshGpuStatus: boolean
   canParityCheck: boolean
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
 
 export const useOptimizeStore = defineStore('optimize', {
   state: (): OptimizeState => ({
     activeControlsTab: 'data',
-    strategyKind: '',
-    strategyHint: '—',
-    strategyOptions: [],
+    strategyKind: 'DoubleMa',
+    strategyHint: 'Double MA crossover strategy.',
+    strategyOptions: [
+      { value: 'DoubleMa', label: 'Double MA', disabled: false },
+      { value: 'CompositeCpu', label: 'Composite CPU', disabled: false },
+      { value: 'CompositeMo', label: 'Composite MO', disabled: false },
+    ],
     presetProfile: 'Balanced',
-    presetOptions: [],
-    backend: '',
-    backendOptions: [],
+    presetOptions: [
+      { value: 'Quick', label: 'Quick', disabled: false },
+      { value: 'Balanced', label: 'Balanced', disabled: false },
+      { value: 'Deep', label: 'Deep', disabled: false },
+    ],
+    backend: 'Auto',
+    backendOptions: [
+      { value: 'Auto', label: 'Auto', disabled: false },
+      { value: 'CpuOnly', label: 'CPU only', disabled: false },
+      { value: 'GpuOnly', label: 'GPU only', disabled: false },
+      { value: 'GpuKernel', label: 'GPU kernel', disabled: false },
+    ],
     deviceId: '0',
-    deviceOptions: [],
-    objective: '',
-    mode: '',
-    fastStart: '',
-    fastEnd: '',
-    fastStep: '',
-    slowStart: '',
-    slowEnd: '',
-    slowStep: '',
-    fastMaType: '',
-    fastMaTypeOptions: [],
-    slowMaType: '',
-    slowMaTypeOptions: [],
+    deviceOptions: [{ value: '0', label: '0 (Auto)', disabled: false }],
+    objective: 'Sharpe',
+    mode: 'Grid',
+    fastStart: '5',
+    fastEnd: '20',
+    fastStep: '1',
+    slowStart: '20',
+    slowEnd: '80',
+    slowStep: '1',
+    fastMaType: 'sma',
+    fastMaTypeOptions: [
+      { value: 'sma', label: 'sma', disabled: false },
+      { value: 'alma', label: 'alma', disabled: false },
+    ],
+    slowMaType: 'alma',
+    slowMaTypeOptions: [
+      { value: 'sma', label: 'sma', disabled: false },
+      { value: 'alma', label: 'alma', disabled: false },
+    ],
+    fastMaParams: null,
+    slowMaParams: null,
+    fastMaParamSweeps: null,
+    slowMaParamSweeps: null,
     pairsPreview: 'Pairs: —',
     gpuStatus: 'GPU: —',
     gpuParityMeta: 'Parity: —',
     progressMeta: '',
     runPlanMeta: 'Plan: —',
-    runReadinessHint: 'Readiness: —',
+    runReadinessHint: 'Readiness: Load data first.',
     runReadinessBadges: [],
     statusLine: 'Ready.',
     runDisabled: false,
@@ -152,6 +267,10 @@ export const useOptimizeStore = defineStore('optimize', {
       this.fastMaTypeOptions = normalizedOptions(snapshot.fastMaTypeOptions ?? this.fastMaTypeOptions ?? [])
       this.slowMaType = String(snapshot.slowMaType ?? this.slowMaType ?? '').trim()
       this.slowMaTypeOptions = normalizedOptions(snapshot.slowMaTypeOptions ?? this.slowMaTypeOptions ?? [])
+      this.fastMaParams = normalizeMaParams(snapshot.fastMaParams, this.fastMaParams)
+      this.slowMaParams = normalizeMaParams(snapshot.slowMaParams, this.slowMaParams)
+      this.fastMaParamSweeps = normalizeMaParamSweeps(snapshot.fastMaParamSweeps, this.fastMaParamSweeps)
+      this.slowMaParamSweeps = normalizeMaParamSweeps(snapshot.slowMaParamSweeps, this.slowMaParamSweeps)
       this.pairsPreview = String(snapshot.pairsPreview ?? this.pairsPreview ?? 'Pairs: —').trim() || 'Pairs: —'
       this.gpuStatus = String(snapshot.gpuStatus ?? this.gpuStatus ?? 'GPU: —').trim() || 'GPU: —'
       this.gpuParityMeta = String(snapshot.gpuParityMeta ?? this.gpuParityMeta ?? 'Parity: —').trim() || 'Parity: —'
@@ -171,44 +290,84 @@ export const useOptimizeStore = defineStore('optimize', {
       this.canPresetKernel = Boolean(snapshot.canPresetKernel ?? this.canPresetKernel)
       this.canRefreshGpuStatus = Boolean(snapshot.canRefreshGpuStatus ?? this.canRefreshGpuStatus)
       this.canParityCheck = Boolean(snapshot.canParityCheck ?? this.canParityCheck)
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
     setInputField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'input')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     setSelectField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'change')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
+    },
+
+    syncMaParamState(state: { fast?: MaParamStateInput | null; slow?: MaParamStateInput | null }): void {
+      const fastState = state?.fast ?? null
+      const slowState = state?.slow ?? null
+      this.fastMaParams = normalizeMaParams(fastState?.params, null)
+      this.slowMaParams = normalizeMaParams(slowState?.params, null)
+      this.fastMaParamSweeps = normalizeMaParamSweeps(fastState?.sweeps, null)
+      this.slowMaParamSweeps = normalizeMaParamSweeps(slowState?.sweeps, null)
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
     },
 
     applyPreset(): void {
-      void invokeLegacyOptimizeApplyPresetRuntime()
+      void applyPresetAction()
     },
 
     presetKernel(): void {
-      void invokeLegacyOptimizePresetKernelRuntime()
+      void presetKernelAction()
     },
 
     refreshGpuStatus(): void {
-      void invokeLegacyOptimizeRefreshGpuStatusRuntime()
+      void refreshGpuStatusAction()
+        .then((summary) => {
+          this.gpuStatus = String(summary?.text || this.gpuStatus || 'GPU: —').trim() || 'GPU: —'
+          this.statusLine = 'GPU status refreshed.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `GPU status refresh failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     runGpuParityCheck(): void {
-      void invokeLegacyOptimizeGpuParityCheckRuntime()
+      void runGpuParityCheckAction()
     },
 
     runOptimization(): void {
-      void invokeLegacyOptimizeRunRuntime()
+      void runOptimizationAction()
     },
 
     cancelOptimization(): void {
-      void invokeLegacyOptimizeCancelRuntime()
+      this.statusLine = 'Cancel requested...'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+      void cancelOptimizationAction().catch((error: unknown) => {
+        this.statusLine = `Cancel failed: ${String(error || '')}`.trim()
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      })
     },
 
     runValidation(): void {
-      void invokeLegacyOptimizeValidateRuntime()
+      void runValidationAction()
     },
   },
 })
+

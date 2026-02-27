@@ -5,7 +5,7 @@ import {
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
-} from '../legacy/core/storageKeys.js'
+} from '../utils/core/storageKeys'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])

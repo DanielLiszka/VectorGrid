@@ -36,7 +36,7 @@ export const useRuntimeStore = defineStore('runtime', {
       this.legacyMounted = mounted
     },
 
-    markBooting(stage = 'Starting legacy compatibility runtime'): void {
+    markBooting(stage = 'Starting frontend runtime'): void {
       this.bootPhase = 'booting'
       this.bootStage = String(stage || '').trim() || 'Booting'
       this.bootError = null
@@ -55,7 +55,7 @@ export const useRuntimeStore = defineStore('runtime', {
     markReady(): void {
       if (!this.bootStartedAt) this.bootStartedAt = Date.now()
       this.bootPhase = 'ready'
-      this.bootStage = 'Legacy compatibility runtime ready'
+      this.bootStage = 'Frontend runtime ready'
       this.bootReadyAt = Date.now()
       this.bootError = null
       this.bootErrorDetail = null
@@ -65,7 +65,7 @@ export const useRuntimeStore = defineStore('runtime', {
       if (!this.bootStartedAt) this.bootStartedAt = Date.now()
       this.bootPhase = 'error'
       this.bootReadyAt = null
-      this.bootStage = 'Legacy compatibility runtime failed'
+      this.bootStage = 'Frontend runtime failed'
       this.bootError = String(err instanceof Error ? err.message : err ?? 'Unknown error')
       const stack = err instanceof Error ? String(err.stack || '').trim() : ''
       if (stack) {

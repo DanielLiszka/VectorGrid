@@ -1,54 +1,73 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import {
-  invokeLegacyAnalysisDrillClearTradeSelectionRuntime,
-  invokeLegacyAnalysisDrillNextTradeRuntime,
-  invokeLegacyAnalysisDrillPrevTradeRuntime,
-  invokeLegacyAnalysisExportTopCsvRuntime,
-  invokeLegacyAnalysisExportTopJsonRuntime,
-  invokeLegacyDataBrowseCsvRuntime,
-  invokeLegacyDataLoadRuntime,
-  invokeLegacyDataOpenPolygonRuntime,
-  invokeLegacyOptimizeCancelRuntime,
-  invokeLegacyOptimizeRunRuntime,
-  invokeLegacyOptimizeValidateRuntime,
-  invokeLegacyValidationExportShortlistCsvRuntime,
-} from '../legacy/actions'
+import * as analysisService from '../services/analysisService'
+import * as dataService from '../services/dataService'
+import * as optimizeService from '../services/optimizeService'
+import * as validationService from '../services/validationService'
 import { invokeCommand } from '../tauri/invoke'
 import { useCommandActionStore } from './commandActionStore'
+import { useDataStore } from './dataStore'
 import { useSettingsStore } from './settingsStore'
+import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
 
-vi.mock('../legacy/actions', () => ({
-  invokeLegacyAnalysisDrillClearTradeSelectionRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisDrillNextTradeRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisDrillPrevTradeRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisExportTopCsvRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisExportTopJsonRuntime: vi.fn(async () => true),
-  invokeLegacyDataBrowseCsvRuntime: vi.fn(async () => true),
-  invokeLegacyDataLoadRuntime: vi.fn(async () => true),
-  invokeLegacyDataOpenPolygonRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeRunRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeCancelRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeValidateRuntime: vi.fn(async () => true),
-  invokeLegacyValidationExportShortlistCsvRuntime: vi.fn(async () => true),
+vi.mock('../services/analysisService', () => ({
+  drillClearTradeSelection: vi.fn(async () => undefined),
+  drillNextTrade: vi.fn(async () => undefined),
+  drillPrevTrade: vi.fn(async () => undefined),
+  exportTopCsv: vi.fn(async () => undefined),
+  exportTopJson: vi.fn(async () => undefined),
+}))
+
+vi.mock('../services/dataService', () => ({
+  browseCsv: vi.fn(async () => null),
+  loadCsv: vi.fn(async () => ({
+    path: 'C:/tmp/aapl.csv',
+    dataId: 'data-1',
+    cacheHit: false,
+    cachePath: '',
+    meta: {
+      len: 1,
+      hasOpen: true,
+      hasHigh: true,
+      hasLow: true,
+      hasClose: true,
+      hasVolume: true,
+      minTs: 1,
+      maxTs: 1,
+      timeframe: '1m',
+      sourceSizeBytes: null,
+      sourceMtimeUtcMs: null,
+    },
+  })),
+  openPolygon: vi.fn(async () => undefined),
+}))
+
+vi.mock('../services/optimizeService', () => ({
+  cancelOptimization: vi.fn(async () => undefined),
+  runOptimization: vi.fn(async () => undefined),
+  runValidation: vi.fn(async () => undefined),
+}))
+
+vi.mock('../services/validationService', () => ({
+  exportShortlistCsv: vi.fn(async () => undefined),
 }))
 
 vi.mock('../tauri/invoke', () => ({
   invokeCommand: vi.fn(async () => undefined),
 }))
 
-const invokeLegacyAnalysisDrillClearTradeSelectionRuntimeMock = vi.mocked(invokeLegacyAnalysisDrillClearTradeSelectionRuntime)
-const invokeLegacyAnalysisDrillNextTradeRuntimeMock = vi.mocked(invokeLegacyAnalysisDrillNextTradeRuntime)
-const invokeLegacyAnalysisDrillPrevTradeRuntimeMock = vi.mocked(invokeLegacyAnalysisDrillPrevTradeRuntime)
-const invokeLegacyAnalysisExportTopCsvRuntimeMock = vi.mocked(invokeLegacyAnalysisExportTopCsvRuntime)
-const invokeLegacyAnalysisExportTopJsonRuntimeMock = vi.mocked(invokeLegacyAnalysisExportTopJsonRuntime)
-const invokeLegacyDataBrowseCsvRuntimeMock = vi.mocked(invokeLegacyDataBrowseCsvRuntime)
-const invokeLegacyDataLoadRuntimeMock = vi.mocked(invokeLegacyDataLoadRuntime)
-const invokeLegacyDataOpenPolygonRuntimeMock = vi.mocked(invokeLegacyDataOpenPolygonRuntime)
-const invokeLegacyOptimizeRunRuntimeMock = vi.mocked(invokeLegacyOptimizeRunRuntime)
-const invokeLegacyOptimizeCancelRuntimeMock = vi.mocked(invokeLegacyOptimizeCancelRuntime)
-const invokeLegacyOptimizeValidateRuntimeMock = vi.mocked(invokeLegacyOptimizeValidateRuntime)
-const invokeLegacyValidationExportShortlistCsvRuntimeMock = vi.mocked(invokeLegacyValidationExportShortlistCsvRuntime)
+const drillClearTradeSelectionMock = vi.mocked(analysisService.drillClearTradeSelection)
+const drillNextTradeMock = vi.mocked(analysisService.drillNextTrade)
+const drillPrevTradeMock = vi.mocked(analysisService.drillPrevTrade)
+const exportTopCsvMock = vi.mocked(analysisService.exportTopCsv)
+const exportTopJsonMock = vi.mocked(analysisService.exportTopJson)
+const browseCsvMock = vi.mocked(dataService.browseCsv)
+const loadCsvMock = vi.mocked(dataService.loadCsv)
+const openPolygonMock = vi.mocked(dataService.openPolygon)
+const cancelOptimizationMock = vi.mocked(optimizeService.cancelOptimization)
+const runOptimizationMock = vi.mocked(optimizeService.runOptimization)
+const runValidationMock = vi.mocked(optimizeService.runValidation)
+const exportShortlistCsvMock = vi.mocked(validationService.exportShortlistCsv)
 const invokeCommandMock = vi.mocked(invokeCommand)
 
 function ensureDocumentDataset(): Record<string, string> {
@@ -62,32 +81,7 @@ function ensureDocumentDataset(): Record<string, string> {
 describe('command action store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    invokeLegacyAnalysisDrillClearTradeSelectionRuntimeMock.mockClear()
-    invokeLegacyAnalysisDrillClearTradeSelectionRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisDrillNextTradeRuntimeMock.mockClear()
-    invokeLegacyAnalysisDrillNextTradeRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisDrillPrevTradeRuntimeMock.mockClear()
-    invokeLegacyAnalysisDrillPrevTradeRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisExportTopCsvRuntimeMock.mockClear()
-    invokeLegacyAnalysisExportTopCsvRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisExportTopJsonRuntimeMock.mockClear()
-    invokeLegacyAnalysisExportTopJsonRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataBrowseCsvRuntimeMock.mockClear()
-    invokeLegacyDataBrowseCsvRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataLoadRuntimeMock.mockClear()
-    invokeLegacyDataLoadRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataOpenPolygonRuntimeMock.mockClear()
-    invokeLegacyDataOpenPolygonRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeRunRuntimeMock.mockClear()
-    invokeLegacyOptimizeRunRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeCancelRuntimeMock.mockClear()
-    invokeLegacyOptimizeCancelRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeValidateRuntimeMock.mockClear()
-    invokeLegacyOptimizeValidateRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationExportShortlistCsvRuntimeMock.mockClear()
-    invokeLegacyValidationExportShortlistCsvRuntimeMock.mockResolvedValue(true)
-    invokeCommandMock.mockClear()
-    invokeCommandMock.mockResolvedValue(undefined)
+    vi.clearAllMocks()
     const dataset = ensureDocumentDataset()
     for (const key of Object.keys(dataset)) delete dataset[key]
   })
@@ -98,14 +92,16 @@ describe('command action store', () => {
     store.cancelOptimization()
     store.validateOptimization()
 
-    expect(invokeLegacyOptimizeRunRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizeCancelRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizeValidateRuntimeMock).toHaveBeenCalled()
+    expect(runOptimizationMock).toHaveBeenCalled()
+    expect(cancelOptimizationMock).toHaveBeenCalled()
+    expect(runValidationMock).toHaveBeenCalled()
   })
 
   it('dispatches shared data/export/report actions', () => {
     const dataset = ensureDocumentDataset()
     const store = useCommandActionStore()
+    const dataStore = useDataStore()
+    dataStore.csvPath = 'C:/tmp/aapl.csv'
     store.applyLegacyQuickActionsSnapshot({
       latestReportPath: 'C:/reports/latest.xlsx',
       latestMetaReportPath: 'C:/reports/meta_latest.xlsx',
@@ -121,12 +117,12 @@ describe('command action store', () => {
     store.openLatestMetaReport()
     store.toggleControls()
 
-    expect(invokeLegacyDataBrowseCsvRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyDataLoadRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyDataOpenPolygonRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyAnalysisExportTopCsvRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationExportShortlistCsvRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyAnalysisExportTopJsonRuntimeMock).toHaveBeenCalled()
+    expect(browseCsvMock).toHaveBeenCalled()
+    expect(loadCsvMock).toHaveBeenCalled()
+    expect(openPolygonMock).toHaveBeenCalled()
+    expect(exportTopCsvMock).toHaveBeenCalled()
+    expect(exportShortlistCsvMock).toHaveBeenCalled()
+    expect(exportTopJsonMock).toHaveBeenCalled()
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/latest.xlsx' })
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/meta_latest.xlsx' })
     expect(settingsStore.controlsCollapsed).toBe(true)
@@ -135,15 +131,32 @@ describe('command action store', () => {
     expect(store.canOpenLatestMetaReport).toBe(true)
   })
 
+  it('falls back to workflow artifacts store for latest report path', () => {
+    const store = useCommandActionStore()
+    const artifactsStore = useWorkflowArtifactsStore()
+    artifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        report_xlsx_path: 'C:/reports/from_artifacts.xlsx',
+        req: {},
+        res: {},
+      },
+    })
+
+    store.openLatestReport()
+
+    expect(store.canOpenLatestReport).toBe(true)
+    expect(store.source).toBe('vue-artifacts')
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/from_artifacts.xlsx' })
+  })
+
   it('dispatches drill-trade navigation and clear actions', () => {
     const store = useCommandActionStore()
     store.clearDrillTradeSelection()
     store.drillPrevTrade()
     store.drillNextTrade()
 
-    expect(invokeLegacyAnalysisDrillClearTradeSelectionRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyAnalysisDrillPrevTradeRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyAnalysisDrillNextTradeRuntimeMock).toHaveBeenCalled()
+    expect(drillClearTradeSelectionMock).toHaveBeenCalled()
+    expect(drillPrevTradeMock).toHaveBeenCalled()
+    expect(drillNextTradeMock).toHaveBeenCalled()
   })
-
 })

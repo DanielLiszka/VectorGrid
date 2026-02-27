@@ -63,7 +63,7 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="overview"]') as HTMLElement | null
-  const mount = document.getElementById('overviewVueShellMount')
+  const mount = document.querySelector('#overviewVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueOverview = '1'
@@ -268,5 +268,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

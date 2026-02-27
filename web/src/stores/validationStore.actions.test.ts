@@ -1,48 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
-  invokeLegacyOptimizeValidateRuntime,
-  invokeLegacyValidationCrossRefreshRuntime,
-  invokeLegacyValidationCrossSelectAllRuntime,
-  invokeLegacyValidationCrossSelectMatchRuntime,
-  invokeLegacyValidationCrossSelectNoneRuntime,
-  invokeLegacyValidationExportReportJsonRuntime,
-  invokeLegacyValidationExportReportXlsxRuntime,
-  invokeLegacyValidationExportShortlistCsvRuntime,
-  invokeLegacyValidationExportValidationJsonRuntime,
-  invokeLegacyValidationToggleCrossDatasetRuntime,
-} from '../legacy/actions'
-import { invokeCommand } from '../tauri/invoke'
+  crossRefresh,
+  exportReportJson,
+  exportReportXlsx,
+  exportShortlistCsv,
+  exportValidationJson,
+  openReportsDir,
+  runValidation,
+  toggleCrossDataset,
+} from '../services/validationService'
+import { useDataStore } from './dataStore'
 import { useValidationStore } from './validationStore'
 
-vi.mock('../legacy/actions', () => ({
-  invokeLegacyOptimizeValidateRuntime: vi.fn(async () => true),
-  invokeLegacyValidationExportShortlistCsvRuntime: vi.fn(async () => true),
-  invokeLegacyValidationExportValidationJsonRuntime: vi.fn(async () => true),
-  invokeLegacyValidationExportReportJsonRuntime: vi.fn(async () => true),
-  invokeLegacyValidationExportReportXlsxRuntime: vi.fn(async () => true),
-  invokeLegacyValidationCrossRefreshRuntime: vi.fn(async () => true),
-  invokeLegacyValidationCrossSelectAllRuntime: vi.fn(async () => true),
-  invokeLegacyValidationCrossSelectNoneRuntime: vi.fn(async () => true),
-  invokeLegacyValidationCrossSelectMatchRuntime: vi.fn(async () => true),
-  invokeLegacyValidationToggleCrossDatasetRuntime: vi.fn(async () => true),
+vi.mock('../services/validationService', () => ({
+  crossRefresh: vi.fn(async () => ({ datasets: [] })),
+  exportReportJson: vi.fn(async () => undefined),
+  exportReportXlsx: vi.fn(async () => undefined),
+  exportShortlistCsv: vi.fn(async () => undefined),
+  exportValidationJson: vi.fn(async () => undefined),
+  openReportsDir: vi.fn(async () => undefined),
+  runValidation: vi.fn(async () => undefined),
+  toggleCrossDataset: vi.fn(async () => undefined),
 }))
 
-vi.mock('../tauri/invoke', () => ({
-  invokeCommand: vi.fn(async () => undefined),
-}))
-
-const invokeLegacyOptimizeValidateRuntimeMock = vi.mocked(invokeLegacyOptimizeValidateRuntime)
-const invokeLegacyValidationExportShortlistCsvRuntimeMock = vi.mocked(invokeLegacyValidationExportShortlistCsvRuntime)
-const invokeLegacyValidationExportValidationJsonRuntimeMock = vi.mocked(invokeLegacyValidationExportValidationJsonRuntime)
-const invokeLegacyValidationExportReportJsonRuntimeMock = vi.mocked(invokeLegacyValidationExportReportJsonRuntime)
-const invokeLegacyValidationExportReportXlsxRuntimeMock = vi.mocked(invokeLegacyValidationExportReportXlsxRuntime)
-const invokeLegacyValidationCrossRefreshRuntimeMock = vi.mocked(invokeLegacyValidationCrossRefreshRuntime)
-const invokeLegacyValidationCrossSelectAllRuntimeMock = vi.mocked(invokeLegacyValidationCrossSelectAllRuntime)
-const invokeLegacyValidationCrossSelectNoneRuntimeMock = vi.mocked(invokeLegacyValidationCrossSelectNoneRuntime)
-const invokeLegacyValidationCrossSelectMatchRuntimeMock = vi.mocked(invokeLegacyValidationCrossSelectMatchRuntime)
-const invokeLegacyValidationToggleCrossDatasetRuntimeMock = vi.mocked(invokeLegacyValidationToggleCrossDatasetRuntime)
-const invokeCommandMock = vi.mocked(invokeCommand)
+const runValidationMock = vi.mocked(runValidation)
+const exportShortlistCsvMock = vi.mocked(exportShortlistCsv)
+const exportValidationJsonMock = vi.mocked(exportValidationJson)
+const exportReportJsonMock = vi.mocked(exportReportJson)
+const exportReportXlsxMock = vi.mocked(exportReportXlsx)
+const crossRefreshMock = vi.mocked(crossRefresh)
+const toggleCrossDatasetMock = vi.mocked(toggleCrossDataset)
+const openReportsDirMock = vi.mocked(openReportsDir)
 
 interface LegacyTextField {
   value: string
@@ -93,40 +82,38 @@ describe('validation store actions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     harness = installDocumentHarness()
-    invokeLegacyOptimizeValidateRuntimeMock.mockClear()
-    invokeLegacyOptimizeValidateRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationExportShortlistCsvRuntimeMock.mockClear()
-    invokeLegacyValidationExportShortlistCsvRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationExportValidationJsonRuntimeMock.mockClear()
-    invokeLegacyValidationExportValidationJsonRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationExportReportJsonRuntimeMock.mockClear()
-    invokeLegacyValidationExportReportJsonRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationExportReportXlsxRuntimeMock.mockClear()
-    invokeLegacyValidationExportReportXlsxRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationCrossRefreshRuntimeMock.mockClear()
-    invokeLegacyValidationCrossRefreshRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationCrossSelectAllRuntimeMock.mockClear()
-    invokeLegacyValidationCrossSelectAllRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationCrossSelectNoneRuntimeMock.mockClear()
-    invokeLegacyValidationCrossSelectNoneRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationCrossSelectMatchRuntimeMock.mockClear()
-    invokeLegacyValidationCrossSelectMatchRuntimeMock.mockResolvedValue(true)
-    invokeLegacyValidationToggleCrossDatasetRuntimeMock.mockClear()
-    invokeLegacyValidationToggleCrossDatasetRuntimeMock.mockResolvedValue(true)
-    invokeCommandMock.mockClear()
-    invokeCommandMock.mockResolvedValue(undefined)
+    runValidationMock.mockClear()
+    runValidationMock.mockResolvedValue(undefined)
+    exportShortlistCsvMock.mockClear()
+    exportShortlistCsvMock.mockResolvedValue(undefined)
+    exportValidationJsonMock.mockClear()
+    exportValidationJsonMock.mockResolvedValue(undefined)
+    exportReportJsonMock.mockClear()
+    exportReportJsonMock.mockResolvedValue(undefined)
+    exportReportXlsxMock.mockClear()
+    exportReportXlsxMock.mockResolvedValue(undefined)
+    crossRefreshMock.mockClear()
+    crossRefreshMock.mockResolvedValue({ datasets: [] })
+    toggleCrossDatasetMock.mockClear()
+    toggleCrossDatasetMock.mockResolvedValue(undefined)
+    openReportsDirMock.mockClear()
+    openReportsDirMock.mockResolvedValue(undefined)
   })
 
-  it('dispatches validation field updates via legacy DOM events', () => {
+  it('updates Vue validation state without requiring legacy DOM mirroring', () => {
     const store = useValidationStore()
     store.setInputField('valCandidates', '64')
     store.setCheckboxField('valAutoRun', true)
 
     const autoRun = harness.fields.valAutoRun as LegacyCheckboxField
-    expect((harness.fields.valCandidates as LegacyTextField).value).toBe('64')
-    expect(autoRun.checked).toBe(true)
-    expect(harness.eventsById.valCandidates).toEqual(['input'])
-    expect(harness.eventsById.valAutoRun).toEqual(['change'])
+    expect((harness.fields.valCandidates as LegacyTextField).value).toBe('32')
+    expect(autoRun.checked).toBe(false)
+    expect(harness.eventsById.valCandidates).toBeUndefined()
+    expect(harness.eventsById.valAutoRun).toBeUndefined()
+    expect(store.candidates).toBe('64')
+    expect(store.autoRun).toBe(true)
+    expect(store.source).toBe('vue')
+    expect(store.updatedAtUnixMs).toBeGreaterThan(0)
   })
 
   it('dispatches validate and export actions', () => {
@@ -138,34 +125,199 @@ describe('validation store actions', () => {
     store.exportReportXlsx()
     store.openReportsDir()
 
-    expect(invokeLegacyOptimizeValidateRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationExportShortlistCsvRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationExportValidationJsonRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationExportReportJsonRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationExportReportXlsxRuntimeMock).toHaveBeenCalled()
-    expect(invokeCommandMock).toHaveBeenCalledWith('open_reports_dir')
+    expect(runValidationMock).toHaveBeenCalled()
+    expect(exportShortlistCsvMock).toHaveBeenCalled()
+    expect(exportValidationJsonMock).toHaveBeenCalled()
+    expect(exportReportJsonMock).toHaveBeenCalled()
+    expect(exportReportXlsxMock).toHaveBeenCalled()
+    expect(openReportsDirMock).toHaveBeenCalled()
   })
 
   it('dispatches cross-dataset actions', () => {
     const store = useValidationStore()
-    store.crossRefresh()
+    store.crossSearch = 'stocks'
+    store.crossDatasets = [
+      { path: 'C:/data/aapl.csv', label: 'AAPL', meta: 'stocks (adj) • tf=1m', checked: false, disabled: false },
+      { path: 'C:/data/msft.csv', label: 'MSFT', meta: 'stocks (adj) • tf=1m', checked: true, disabled: false },
+      { path: 'C:/data/btc.csv', label: 'BTCUSD', meta: 'crypto • tf=1m', checked: false, disabled: false },
+    ]
     store.crossSelectAll()
     store.crossSelectNone()
-    store.crossSelectMatch()
     store.toggleCrossDataset(' C:/data/aapl.csv ', true)
     store.toggleCrossDataset('', false)
 
-    expect(invokeLegacyValidationCrossRefreshRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationCrossSelectAllRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationCrossSelectNoneRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationCrossSelectMatchRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyValidationToggleCrossDatasetRuntimeMock).toHaveBeenCalledWith({
-      path: 'C:/data/aapl.csv',
-      checked: true,
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(1, 'C:/data/aapl.csv', true)
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(2, 'C:/data/aapl.csv', false)
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(3, 'C:/data/msft.csv', false)
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(4, 'C:/data/aapl.csv', true)
+  })
+
+  it('hydrates cross datasets from refresh and clears stale legacy selections', async () => {
+    const store = useValidationStore()
+    store.crossSearch = 'stocks'
+    store.crossDatasets = [
+      { path: 'C:/data/aapl.csv', label: 'AAPL', meta: 'stocks (adj) • tf=1m', checked: true, disabled: false },
+      { path: 'C:/data/stale.csv', label: 'STALE', meta: 'stocks (adj) • tf=1m', checked: true, disabled: false },
+    ]
+    crossRefreshMock.mockResolvedValue({
+      datasets: [
+        {
+          path: 'C:/data/aapl.csv',
+          label: 'AAPL',
+          meta: 'stocks (adj) • tf=1m • 2025-01-01 → 2025-01-31 • rows=10,000 • updated=2025-01-31',
+          market: 'stocks',
+          timeframe: '1m',
+          adjusted: true,
+        },
+        {
+          path: 'C:/data/msft.csv',
+          label: 'MSFT',
+          meta: 'stocks (adj) • tf=1m • 2025-01-01 → 2025-01-31 • rows=9,500 • updated=2025-01-31',
+          market: 'stocks',
+          timeframe: '1m',
+          adjusted: true,
+        },
+      ],
     })
-    expect(invokeLegacyValidationToggleCrossDatasetRuntimeMock).not.toHaveBeenCalledWith({
-      path: '',
-      checked: false,
-    })
+
+    store.crossRefresh()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(crossRefreshMock).toHaveBeenCalled()
+    expect(store.crossDatasets).toEqual([
+      {
+        path: 'C:/data/aapl.csv',
+        label: 'AAPL',
+        meta: 'stocks (adj) • tf=1m • 2025-01-01 → 2025-01-31 • rows=10,000 • updated=2025-01-31',
+        checked: true,
+        disabled: false,
+        market: 'stocks',
+        timeframe: '1m',
+        adjusted: true,
+      },
+      {
+        path: 'C:/data/msft.csv',
+        label: 'MSFT',
+        meta: 'stocks (adj) • tf=1m • 2025-01-01 → 2025-01-31 • rows=9,500 • updated=2025-01-31',
+        checked: false,
+        disabled: false,
+        market: 'stocks',
+        timeframe: '1m',
+        adjusted: true,
+      },
+    ])
+    expect(store.crossSelectedCount).toBe(1)
+    expect(store.crossTotalCount).toBe(2)
+    expect(store.crossMeta).toContain('selected 1/2')
+    expect(store.statusLine).toBe('Refreshed cross-ticker list.')
+    expect(toggleCrossDatasetMock).toHaveBeenCalledWith('C:/data/stale.csv', false)
+  })
+
+  it('selects matching cross datasets in Vue path when current dataset context is known', async () => {
+    const dataStore = useDataStore()
+    dataStore.csvPath = 'C:/data/aapl.csv'
+    dataStore.dataTimeframe = '1m'
+    dataStore.datasetContext = 'source=polygon • market=stocks (adj) • symbol=AAPL • file=aapl.csv'
+
+    const store = useValidationStore()
+    store.crossDatasets = [
+      {
+        path: 'C:/data/aapl.csv',
+        label: 'AAPL',
+        meta: 'stocks (adj) • tf=1m',
+        checked: true,
+        disabled: false,
+        market: 'stocks',
+        timeframe: '1m',
+        adjusted: true,
+      },
+      {
+        path: 'C:/data/msft.csv',
+        label: 'MSFT',
+        meta: 'stocks (adj) • tf=1m',
+        checked: false,
+        disabled: false,
+        market: 'stocks',
+        timeframe: '1m',
+        adjusted: true,
+      },
+      {
+        path: 'C:/data/spy.csv',
+        label: 'SPY',
+        meta: 'stocks (raw) • tf=1m',
+        checked: true,
+        disabled: false,
+        market: 'stocks',
+        timeframe: '1m',
+        adjusted: false,
+      },
+      {
+        path: 'C:/data/btc.csv',
+        label: 'BTCUSD',
+        meta: 'crypto • tf=1m',
+        checked: true,
+        disabled: false,
+        market: 'crypto',
+        timeframe: '1m',
+        adjusted: null,
+      },
+    ]
+
+    store.crossSelectMatch()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.crossDatasets.map((entry) => [entry.path, entry.checked])).toEqual([
+      ['C:/data/aapl.csv', false],
+      ['C:/data/msft.csv', true],
+      ['C:/data/spy.csv', false],
+      ['C:/data/btc.csv', false],
+    ])
+    expect(store.crossSelectedCount).toBe(1)
+    expect(store.crossTotalCount).toBe(4)
+    expect(store.statusLine).toBe('Cross-ticker: selected datasets matching current dataset.')
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(1, 'C:/data/aapl.csv', false)
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(2, 'C:/data/msft.csv', true)
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(3, 'C:/data/spy.csv', false)
+    expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(4, 'C:/data/btc.csv', false)
+  })
+
+  it('skips match-current when dataset context is unavailable', async () => {
+    const store = useValidationStore()
+    store.crossDatasets = [
+      {
+        path: 'C:/data/msft.csv',
+        label: 'MSFT',
+        meta: 'stocks (adj) • tf=1m',
+        checked: false,
+        disabled: false,
+        market: 'stocks',
+        timeframe: '1m',
+        adjusted: true,
+      },
+    ]
+
+    store.crossSelectMatch()
+    await Promise.resolve()
+
+    expect(store.statusLine).toBe('Cross-ticker: unable to match current dataset (load data + timeframe first).')
+    expect(toggleCrossDatasetMock).not.toHaveBeenCalled()
+  })
+
+  it('recomputes cross meta immediately when Vue cross search input changes', () => {
+    const store = useValidationStore()
+    store.crossDatasets = [
+      { path: 'C:/data/aapl.csv', label: 'AAPL', meta: 'stocks (adj) • tf=1m', checked: true, disabled: false },
+      { path: 'C:/data/msft.csv', label: 'MSFT', meta: 'stocks (adj) • tf=1m', checked: false, disabled: false },
+      { path: 'C:/data/btc.csv', label: 'BTCUSD', meta: 'crypto • tf=1m', checked: true, disabled: false },
+    ]
+
+    store.setInputField('valCrossSearch', 'stocks')
+
+    expect(store.crossSearch).toBe('stocks')
+    expect(store.crossMeta).toContain('selected 2/3 (showing 2)')
+    expect(store.crossMeta).toContain('filter=stocks')
+    expect(store.source).toBe('vue')
   })
 })

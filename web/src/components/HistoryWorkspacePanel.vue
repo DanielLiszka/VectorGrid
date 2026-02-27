@@ -98,10 +98,6 @@ watch(
   { immediate: true },
 )
 
-function setInputValue(id: string, nextValue: string): void {
-  historyStore.setInputField(id, nextValue)
-}
-
 function setSelectValue(id: string, nextValue: string): void {
   historyStore.setSelectField(id, nextValue)
 }
@@ -141,22 +137,22 @@ function onSessionSelect(value: string): void {
 
 function onSavedSelect(value: string): void {
   savedValue.value = value
-  setSelectValue('savedRunsSelect', value)
+  historyStore.selectSavedRun(value)
 }
 
 function onSavedSearch(value: string): void {
   searchDraft.value = value
-  setInputValue('savedRunsSearch', value)
+  historyStore.setSavedRunsSearch(value)
 }
 
 function onSavedTags(value: string): void {
   tagsDraft.value = value
-  setInputValue('savedRunsTags', value)
+  historyStore.setSavedRunsTagsDraft(value)
 }
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="history"]') as HTMLElement | null
-  const mount = document.getElementById('historyVueShellMount')
+  const mount = document.querySelector('#historyVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueHistory = '1'
@@ -166,6 +162,7 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
+  historyStore.refreshSessionHistory()
 })
 
 onBeforeUnmount(() => {
@@ -430,5 +427,6 @@ pre {
   display: none !important;
 }
 </style>
+
 
 

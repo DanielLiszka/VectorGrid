@@ -18,10 +18,7 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           const normalized = id.replace(/\\/g, '/')
-          if (normalized.includes('/src/legacy/template.html')) return 'legacy-template'
-          if (normalized.includes('lightweight-charts.standalone.production.mjs')) return 'vendor-charts'
-          if (normalized.includes('/src/legacy/core/')) return 'legacy-core'
-          if (normalized.includes('/src/legacy/')) return 'legacy-app'
+          if (normalized.includes('lightweight-charts.production')) return 'vendor-charts'
           return undefined
         },
       },

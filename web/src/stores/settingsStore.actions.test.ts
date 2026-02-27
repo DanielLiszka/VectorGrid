@@ -1,39 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import {
-  invokeLegacyDataBrowseMarketDataDirRuntime,
-  invokeLegacyDataOpenMarketDataDirRuntime,
-  invokeLegacyDataOpenPolygonRuntime,
-  invokeLegacyDataResetMarketDataDirRuntime,
-  invokeLegacyDataSetMarketDataDirRuntime,
-} from '../legacy/actions'
-import { invokeCommand } from '../tauri/invoke'
+import * as dataService from '../services/dataService'
+import * as settingsService from '../services/settingsService'
+import { useDataStore } from './dataStore'
 import { useSettingsStore } from './settingsStore'
 import { useWorkflowStore } from './workflowStore'
 
-vi.mock('../legacy/actions', () => ({
-  invokeLegacyDataBrowseMarketDataDirRuntime: vi.fn(async () => true),
-  invokeLegacyDataSetMarketDataDirRuntime: vi.fn(async () => true),
-  invokeLegacyDataResetMarketDataDirRuntime: vi.fn(async () => true),
-  invokeLegacyDataOpenMarketDataDirRuntime: vi.fn(async () => true),
-  invokeLegacyDataOpenPolygonRuntime: vi.fn(async () => true),
+vi.mock('../services/dataService', () => ({
+  browseMarketDataDir: vi.fn(async () => ''),
+  openMarketDataDir: vi.fn(async () => ({ path: 'C:/default/polygon-cache', openedWith: 'open_path' })),
+  openPolygon: vi.fn(async () => undefined),
+  resetMarketDataDir: vi.fn(async () => ({
+    defaultRootDir: 'C:/default',
+    configuredRootDir: '',
+    effectiveRootDir: 'C:/default',
+    polygonCacheDir: 'C:/default/polygon-cache',
+    hint: 'Using default root: C:/default · Polygon cache: C:/default/polygon-cache',
+  })),
+  setMarketDataDir: vi.fn(async () => ({
+    defaultRootDir: 'C:/default',
+    configuredRootDir: 'C:/custom',
+    effectiveRootDir: 'C:/custom',
+    polygonCacheDir: 'C:/custom/polygon-cache',
+    hint: 'Using custom root: C:/custom · Polygon cache: C:/custom/polygon-cache',
+  })),
 }))
 
-vi.mock('../tauri/invoke', () => ({
-  invokeCommand: vi.fn(async () => undefined),
+vi.mock('../services/settingsService', () => ({
+  openReportsDir: vi.fn(async () => undefined),
+  openRunsDir: vi.fn(async () => undefined),
+  setWindowEffect: vi.fn(async () => undefined),
 }))
 
-const invokeLegacyDataBrowseMarketDataDirRuntimeMock = vi.mocked(invokeLegacyDataBrowseMarketDataDirRuntime)
-const invokeLegacyDataSetMarketDataDirRuntimeMock = vi.mocked(invokeLegacyDataSetMarketDataDirRuntime)
-const invokeLegacyDataResetMarketDataDirRuntimeMock = vi.mocked(invokeLegacyDataResetMarketDataDirRuntime)
-const invokeLegacyDataOpenMarketDataDirRuntimeMock = vi.mocked(invokeLegacyDataOpenMarketDataDirRuntime)
-const invokeLegacyDataOpenPolygonRuntimeMock = vi.mocked(invokeLegacyDataOpenPolygonRuntime)
-const invokeCommandMock = vi.mocked(invokeCommand)
+const browseMarketDataDirMock = vi.mocked(dataService.browseMarketDataDir)
+const openMarketDataDirMock = vi.mocked(dataService.openMarketDataDir)
+const openPolygonMock = vi.mocked(dataService.openPolygon)
+const resetMarketDataDirMock = vi.mocked(dataService.resetMarketDataDir)
+const setMarketDataDirMock = vi.mocked(dataService.setMarketDataDir)
+
+const openReportsDirMock = vi.mocked(settingsService.openReportsDir)
+const openRunsDirMock = vi.mocked(settingsService.openRunsDir)
+const setWindowEffectMock = vi.mocked(settingsService.setWindowEffect)
 
 interface LegacyField {
   value?: string
   checked?: boolean
   type?: string
+  dispatchEvent?: (event: Event) => boolean
 }
 
 interface DocumentHarness {
@@ -44,8 +57,15 @@ interface DocumentHarness {
 function installDocumentHarness(): DocumentHarness {
   const dataset: Record<string, string> = {}
   const fields: Record<string, LegacyField> = {
-    marketDataDir: { value: '' },
-    marketDataMoveExisting: { type: 'checkbox', checked: true },
+    marketDataDir: {
+      value: '',
+      dispatchEvent: () => true,
+    },
+    marketDataMoveExisting: {
+      type: 'checkbox',
+      checked: true,
+      dispatchEvent: () => true,
+    },
   }
   vi.stubGlobal('document', {
     documentElement: { dataset },
@@ -54,23 +74,24 @@ function installDocumentHarness(): DocumentHarness {
   return { dataset, fields }
 }
 
+const defaultMarketDataDirInfo = {
+  defaultRootDir: 'C:/default',
+  configuredRootDir: '',
+  effectiveRootDir: 'C:/default',
+  polygonCacheDir: 'C:/default/polygon-cache',
+  hint: 'Using default root: C:/default · Polygon cache: C:/default/polygon-cache',
+}
+
 describe('settings store actions', () => {
   let harness: DocumentHarness
 
   beforeEach(() => {
     setActivePinia(createPinia())
-    invokeLegacyDataBrowseMarketDataDirRuntimeMock.mockClear()
-    invokeLegacyDataBrowseMarketDataDirRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataSetMarketDataDirRuntimeMock.mockClear()
-    invokeLegacyDataSetMarketDataDirRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataResetMarketDataDirRuntimeMock.mockClear()
-    invokeLegacyDataResetMarketDataDirRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataOpenMarketDataDirRuntimeMock.mockClear()
-    invokeLegacyDataOpenMarketDataDirRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataOpenPolygonRuntimeMock.mockClear()
-    invokeLegacyDataOpenPolygonRuntimeMock.mockResolvedValue(true)
-    invokeCommandMock.mockClear()
-    invokeCommandMock.mockResolvedValue(undefined)
+    vi.clearAllMocks()
+    browseMarketDataDirMock.mockResolvedValue('')
+    setMarketDataDirMock.mockResolvedValue(defaultMarketDataDirInfo)
+    resetMarketDataDirMock.mockResolvedValue(defaultMarketDataDirInfo)
+    openMarketDataDirMock.mockResolvedValue({ path: 'C:/default/polygon-cache', openedWith: 'open_path' })
     harness = installDocumentHarness()
   })
 
@@ -78,12 +99,13 @@ describe('settings store actions', () => {
     const store = useSettingsStore()
     store.setInputField('settingsMarketDataDir', ' C:/cache ')
     store.setSelectField('settingsThemeSelect', 'dark')
+    store.setSelectField('settingsEffectSelect', 'mica')
     store.setCheckboxField('settingsWorkflowAdvanced', true)
     store.setCheckboxField('settingsControlsCollapsed', true)
     store.setCheckboxField('settingsMoveExisting', false)
 
     expect(store.marketDataDir).toBe('C:/cache')
-    expect(harness.fields.marketDataDir?.value).toBe('C:/cache')
+    expect(harness.fields.marketDataDir?.value).toBe('')
     expect(store.theme).toBe('dark')
     expect(harness.dataset.themePref).toBe('dark')
     expect(store.workflowAdvanced).toBe(true)
@@ -91,24 +113,21 @@ describe('settings store actions', () => {
     expect(store.controlsCollapsed).toBe(true)
     expect(harness.dataset.controlsCollapsed).toBe('1')
     expect(store.moveExisting).toBe(false)
-    expect(harness.fields.marketDataMoveExisting?.checked).toBe(false)
-    expect(invokeCommandMock).toHaveBeenCalled()
+    expect(harness.fields.marketDataMoveExisting?.checked).toBe(true)
+    expect(setWindowEffectMock).toHaveBeenCalledWith('mica', true)
   })
 
-  it('dispatches market-data directory actions', () => {
+  it('dispatches market-data directory actions via data service', () => {
     const store = useSettingsStore()
     store.browseMarketDataDir()
     store.setMarketDataDir(' C:/md ', true)
     store.resetMarketDataDir()
     store.openMarketDataDir()
 
-    expect(invokeLegacyDataBrowseMarketDataDirRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyDataSetMarketDataDirRuntimeMock).toHaveBeenCalledWith({
-      dir: 'C:/md',
-      moveExisting: true,
-    })
-    expect(invokeLegacyDataResetMarketDataDirRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyDataOpenMarketDataDirRuntimeMock).toHaveBeenCalled()
+    expect(browseMarketDataDirMock).toHaveBeenCalled()
+    expect(setMarketDataDirMock).toHaveBeenCalledWith('C:/md', true)
+    expect(resetMarketDataDirMock).toHaveBeenCalled()
+    expect(openMarketDataDirMock).toHaveBeenCalled()
   })
 
   it('dispatches utility and navigation actions', () => {
@@ -130,8 +149,41 @@ describe('settings store actions', () => {
     expect(workflowStore.workspace).toBe('aggregate')
     expect(workflowStore.workflow).toBe('settings')
 
-    expect(invokeLegacyDataOpenPolygonRuntimeMock).toHaveBeenCalled()
-    expect(invokeCommandMock).toHaveBeenCalledWith('open_runs_dir')
-    expect(invokeCommandMock).toHaveBeenCalledWith('open_reports_dir')
+    expect(openPolygonMock).toHaveBeenCalled()
+    expect(openRunsDirMock).toHaveBeenCalled()
+    expect(openReportsDirMock).toHaveBeenCalled()
+  })
+
+  it('syncs market-data fields from data store and applies runtime mutability flags', () => {
+    const settingsStore = useSettingsStore()
+    const dataStore = useDataStore()
+
+    dataStore.applyLegacySnapshot({
+      marketDataDir: 'C:/market-root',
+      marketDataMoveExisting: false,
+      marketDataDirHint: 'Using custom root: C:/market-root',
+      canBrowseMarketDataDir: true,
+      canSetMarketDataDir: true,
+      canResetMarketDataDir: true,
+      canOpenMarketDataDir: true,
+    })
+
+    harness.dataset.running = '1'
+    settingsStore.syncFromDataStore()
+    expect(settingsStore.marketDataDir).toBe('C:/market-root')
+    expect(settingsStore.moveExisting).toBe(false)
+    expect(settingsStore.marketDataDirHint).toBe('Using custom root: C:/market-root')
+    expect(settingsStore.canBrowseMarketDataDir).toBe(false)
+    expect(settingsStore.canOpenRunsDir).toBe(false)
+    expect(settingsStore.canOpenReportsDir).toBe(false)
+
+    harness.dataset.running = ''
+    settingsStore.syncFromDataStore()
+    expect(settingsStore.canBrowseMarketDataDir).toBe(true)
+    expect(settingsStore.canSetMarketDataDir).toBe(true)
+    expect(settingsStore.canResetMarketDataDir).toBe(true)
+    expect(settingsStore.canOpenMarketDataDir).toBe(true)
+    expect(settingsStore.canOpenRunsDir).toBe(true)
+    expect(settingsStore.canOpenReportsDir).toBe(true)
   })
 })

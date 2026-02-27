@@ -19,7 +19,10 @@ pub struct CrossTickerAcc {
 pub trait CrossTickerCandidate {
     type Params: Serialize;
 
+    fn params(&self) -> &Self::Params;
+    fn in_sample_metrics(&self) -> &Metrics;
     fn cross_ticker(&self) -> Option<&CrossTickerStats>;
+    fn cross_ticker_pareto(&self) -> Option<bool>;
     fn set_cross_ticker(&mut self, stats: CrossTickerStats);
     fn set_cross_ticker_pareto(&mut self, is_pareto: bool);
     fn robust_score(&self) -> f64;
@@ -29,8 +32,20 @@ pub trait CrossTickerCandidate {
 impl CrossTickerCandidate for CompositeValidationCandidateResult {
     type Params = ta_app_core::CompositeParams;
 
+    fn params(&self) -> &Self::Params {
+        &self.params
+    }
+
+    fn in_sample_metrics(&self) -> &Metrics {
+        &self.in_sample
+    }
+
     fn cross_ticker(&self) -> Option<&CrossTickerStats> {
         self.cross_ticker.as_ref()
+    }
+
+    fn cross_ticker_pareto(&self) -> Option<bool> {
+        self.cross_ticker_pareto
     }
 
     fn set_cross_ticker(&mut self, stats: CrossTickerStats) {
@@ -53,8 +68,20 @@ impl CrossTickerCandidate for CompositeValidationCandidateResult {
 impl CrossTickerCandidate for DoubleMaValidationCandidateResult {
     type Params = ta_app_core::DoubleMaValidationParams;
 
+    fn params(&self) -> &Self::Params {
+        &self.params
+    }
+
+    fn in_sample_metrics(&self) -> &Metrics {
+        &self.in_sample
+    }
+
     fn cross_ticker(&self) -> Option<&CrossTickerStats> {
         self.cross_ticker.as_ref()
+    }
+
+    fn cross_ticker_pareto(&self) -> Option<bool> {
+        self.cross_ticker_pareto
     }
 
     fn set_cross_ticker(&mut self, stats: CrossTickerStats) {
@@ -316,6 +343,9 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
+    use ta_app_core::CrossTickerStats;
+    use ta_strategies::double_ma::Metrics;
 
     #[test]
     fn sanitize_cross_ticker_config_clamps_gate_values() {
@@ -366,5 +396,103 @@ mod tests {
         let mut gate_tight = gate.clone();
         gate_tight.min_score = 0.2;
         assert!(!cross_ticker_passes_gate(&stats, Some(true), &gate_tight));
+    }
+
+    #[derive(Clone, Serialize)]
+    struct TestParams {
+        id: u32,
+    }
+
+    #[derive(Clone)]
+    struct TestCandidate {
+        params: TestParams,
+        in_sample: Metrics,
+        cross_ticker: Option<CrossTickerStats>,
+        cross_ticker_pareto: Option<bool>,
+        robust_score: f64,
+    }
+
+    impl CrossTickerCandidate for TestCandidate {
+        type Params = TestParams;
+
+        fn params(&self) -> &Self::Params {
+            &self.params
+        }
+
+        fn in_sample_metrics(&self) -> &Metrics {
+            &self.in_sample
+        }
+
+        fn cross_ticker(&self) -> Option<&CrossTickerStats> {
+            self.cross_ticker.as_ref()
+        }
+
+        fn cross_ticker_pareto(&self) -> Option<bool> {
+            self.cross_ticker_pareto
+        }
+
+        fn set_cross_ticker(&mut self, stats: CrossTickerStats) {
+            self.cross_ticker = Some(stats);
+        }
+
+        fn set_cross_ticker_pareto(&mut self, is_pareto: bool) {
+            self.cross_ticker_pareto = Some(is_pareto);
+        }
+
+        fn robust_score(&self) -> f64 {
+            self.robust_score
+        }
+
+        fn set_robust_score(&mut self, score: f64) {
+            self.robust_score = score;
+        }
+    }
+
+    #[test]
+    fn finalize_cross_ticker_folds_robust_score_and_sorts_descending() {
+        let mut candidates = vec![
+            TestCandidate {
+                params: TestParams { id: 1 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 1.0,
+            },
+            TestCandidate {
+                params: TestParams { id: 2 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 0.5,
+            },
+        ];
+        let accs = vec![
+            CrossTickerAcc {
+                sharpes: vec![0.4, 0.4],
+                dds: vec![0.1, 0.1],
+                pnls: vec![0.1, 0.1],
+                trades: vec![10, 10],
+                pnl_pos: 2,
+            },
+            CrossTickerAcc {
+                sharpes: vec![1.2, 1.2],
+                dds: vec![0.2, 0.2],
+                pnls: vec![0.1, 0.1],
+                trades: vec![10, 10],
+                pnl_pos: 2,
+            },
+        ];
+
+        finalize_cross_ticker_candidates(&mut candidates, accs);
+
+        // id=1 gets folded to 0.2 (min(1.0, 0.4 - 2*0.1)),
+        // id=2 remains 0.5 (min(0.5, 1.2 - 2*0.2) = 0.5),
+        // so descending sort should place id=2 first.
+        assert_eq!(candidates[0].params.id, 2);
+        assert_eq!(candidates[1].params.id, 1);
+        assert!((candidates[0].robust_score - 0.5).abs() < 1e-12);
+        assert!((candidates[1].robust_score - 0.2).abs() < 1e-12);
+        assert!(candidates[0].cross_ticker_pareto.is_some());
+        assert!(candidates[1].cross_ticker_pareto.is_some());
     }
 }

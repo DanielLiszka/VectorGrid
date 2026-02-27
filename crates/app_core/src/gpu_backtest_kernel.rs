@@ -2268,7 +2268,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk")
         .ok();
     let backtest_lockstep_m7_regime_hybrid_norisk_eps0 = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0")
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0",
+        )
         .ok();
     let backtest_fast_warp = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
@@ -2345,11 +2347,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let _ = is_multi_tile_workload;
     let metrics_pad8_enabled =
         kernel_metrics_pad8_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
-    let tile_metrics_stride = effective_metrics_stride(
-        METRICS_COUNT,
-        metrics_pad8_enabled,
-        None,
-    );
+    let tile_metrics_stride = effective_metrics_stride(METRICS_COUNT, metrics_pad8_enabled, None);
 
     let pad_tm = kernel_tm_padding_enabled();
     let pf_tile_tm = if pad_tm {
@@ -3374,7 +3372,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk")
         .ok();
     let backtest_lockstep_m7_regime_hybrid_norisk_eps0 = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0")
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0",
+        )
         .ok();
     let backtest_fast_warp = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
@@ -3483,11 +3483,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let is_multi_tile_workload = pf_tile < f_total || ps_tile < s_total;
     let metrics_pad8_enabled =
         kernel_metrics_pad8_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
-    let tile_metrics_stride = effective_metrics_stride(
-        metrics_count,
-        metrics_pad8_enabled,
-        None,
-    );
+    let tile_metrics_stride = effective_metrics_stride(metrics_count, metrics_pad8_enabled, None);
 
     let pad_tm = kernel_tm_padding_enabled();
     let pf_tile_tm = if pad_tm {

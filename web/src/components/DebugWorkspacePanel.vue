@@ -26,7 +26,7 @@ const stamp = computed(() => {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="debug"]') as HTMLElement | null
-  const mount = document.getElementById('debugVueShellMount')
+  const mount = document.querySelector('#debugVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueDebug = '1'
@@ -116,4 +116,5 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 

@@ -1,24 +1,65 @@
 import { defineStore } from 'pinia'
 import {
-  invokeLegacyDistributedCancelRuntime,
-  invokeLegacyDistributedFillFromPolygonRuntime,
-  invokeLegacyDistributedGenerateTokenRuntime,
-  invokeLegacyDistributedRunAssetsRuntime,
-  invokeLegacyDistributedRunTilesRuntime,
-  invokeLegacyDistributedStartWorkerRuntime,
-  invokeLegacyDistributedStopWorkerRuntime,
-  invokeLegacyDistributedUseCurrentCsvRuntime,
-  invokeLegacyDistributedWorkerStatusRuntime,
-} from '../legacy/actions'
+  cancel as cancelAction,
+  fillFromPolygon as fillFromPolygonAction,
+  generateToken as generateTokenAction,
+  refreshWorkerStatus as refreshWorkerStatusAction,
+  runAssets as runAssetsAction,
+  runTiles as runTilesAction,
+  startWorker as startWorkerAction,
+  stopWorker as stopWorkerAction,
+  useCurrentCsv as useCurrentCsvAction,
+} from '../services/distributedService'
+import { useDataStore } from './dataStore'
 
-function updateLegacyField(field: string, value: string, eventType: 'input' | 'change'): void {
-  if (typeof document === 'undefined') return
+function countNonEmptyLines(value: string): number {
+  return String(value || '')
+    .split(/\r?\n/g)
+    .map((line) => String(line || '').trim())
+    .filter((line) => line.length > 0)
+    .length
+}
+
+function applyVueFieldUpdate(state: DistributedState, field: string, value: string): boolean {
   const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el || el.disabled) return
-  if (String(el.value ?? '') !== value) el.value = value
-  el.dispatchEvent(new Event(eventType, { bubbles: true }))
+  const next = String(value || '').trim()
+  if (!key) return false
+  switch (key) {
+    case 'distLeaderMode':
+      state.leaderMode = next || 'assets'
+      return true
+    case 'distWorkerBindAddr':
+      state.workerBindAddr = next
+      return true
+    case 'distWorkerToken':
+      state.workerToken = next
+      return true
+    case 'distLeaderToken':
+      state.leaderToken = next
+      return true
+    case 'distLeaderWorkers':
+      state.workersText = next
+      state.workersCount = countNonEmptyLines(next)
+      return true
+    case 'distAssetsCsvs':
+      state.assetsCsvText = next
+      state.assetPathCount = countNonEmptyLines(next)
+      return true
+    case 'distPathFrom':
+      state.pathFrom = next
+      return true
+    case 'distPathTo':
+      state.pathTo = next
+      return true
+    case 'distTileCsvPath':
+      state.tileCsvPath = next
+      return true
+    case 'distTilesPerWorker':
+      state.tilesPerWorker = next
+      return true
+    default:
+      return false
+  }
 }
 
 interface DistributedState {
@@ -48,7 +89,7 @@ interface DistributedState {
   canUseCurrentCsv: boolean
   canRunAssets: boolean
   canRunTiles: boolean
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
 
@@ -112,52 +153,207 @@ export const useDistributedStore = defineStore('distributed', {
       this.canUseCurrentCsv = Boolean(snapshot.canUseCurrentCsv ?? this.canUseCurrentCsv)
       this.canRunAssets = Boolean(snapshot.canRunAssets ?? this.canRunAssets)
       this.canRunTiles = Boolean(snapshot.canRunTiles ?? this.canRunTiles)
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
     setInputField(field: string, value: string): void {
-      updateLegacyField(field, String(value || ''), 'input')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     setSelectField(field: string, value: string): void {
-      updateLegacyField(field, String(value || ''), 'change')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     generateToken(): void {
-      void invokeLegacyDistributedGenerateTokenRuntime()
+      void generateTokenAction()
+        .then((token) => {
+          const nextToken = String(token || '').trim()
+          if (!nextToken) return
+          this.workerToken = nextToken
+          this.leaderToken = nextToken
+          this.statusLine = 'Generated distributed auth token.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Token generation failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     startWorker(): void {
-      void invokeLegacyDistributedStartWorkerRuntime()
+      void startWorkerAction(this.workerBindAddr, this.workerToken)
+        .then((status) => {
+          this.workerStatus = String(status?.text || this.workerStatus || 'Worker: —').trim() || 'Worker: —'
+          this.statusLine = 'Worker start requested.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Worker start failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     stopWorker(): void {
-      void invokeLegacyDistributedStopWorkerRuntime()
+      void stopWorkerAction()
+        .then((status) => {
+          this.workerStatus = String(status?.text || this.workerStatus || 'Worker: —').trim() || 'Worker: —'
+          this.statusLine = 'Worker stop requested.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Worker stop failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     refreshWorkerStatus(): void {
-      void invokeLegacyDistributedWorkerStatusRuntime()
+      void refreshWorkerStatusAction()
+        .then((status) => {
+          this.workerStatus = String(status?.text || this.workerStatus || 'Worker: —').trim() || 'Worker: —'
+          this.statusLine = 'Worker status refreshed.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Worker status failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     fillFromPolygon(): void {
-      void invokeLegacyDistributedFillFromPolygonRuntime()
+      void fillFromPolygonAction()
+        .then((summary) => {
+          const paths = Array.isArray(summary?.paths) ? summary.paths.map((path) => String(path || '').trim()).filter((path) => !!path) : []
+          const text = paths.join('\n')
+          this.assetsCsvText = text
+          this.assetPathCount = paths.length
+          this.statusLine = `Loaded ${paths.length} Polygon CSV path${paths.length === 1 ? '' : 's'}.`
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Fill from Polygon failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     useCurrentCsv(): void {
-      void invokeLegacyDistributedUseCurrentCsvRuntime()
+      const dataStore = useDataStore()
+      void useCurrentCsvAction(dataStore.csvPath)
+        .then((summary) => {
+          const path = String(summary?.path || '').trim()
+          this.tileCsvPath = path
+          this.statusLine = path ? 'Loaded current CSV path for tiles mode.' : 'Current CSV path is empty.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Use current CSV failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     runAssets(): void {
-      void invokeLegacyDistributedRunAssetsRuntime()
+      this.isRunning = true
+      this.canCancel = true
+      this.statusLine = 'Distributed assets: starting...'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+      void runAssetsAction({
+        workerUrlsText: this.workersText,
+        authToken: this.leaderToken || this.workerToken,
+        assetsCsvText: this.assetsCsvText,
+        rewriteFrom: this.pathFrom,
+        rewriteTo: this.pathTo,
+      })
+        .then((summary) => {
+          this.outputPreview = String(summary?.outputPreview || this.outputPreview || '—').trim() || '—'
+          this.statusLine = String(summary?.statusLine || 'Distributed assets: done.').trim() || 'Distributed assets: done.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Distributed assets run failed.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .finally(() => {
+          this.isRunning = false
+          this.canCancel = false
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     runTiles(): void {
-      void invokeLegacyDistributedRunTilesRuntime()
+      this.isRunning = true
+      this.canCancel = true
+      this.statusLine = 'Distributed tiles: starting...'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+      void runTilesAction({
+        workerUrlsText: this.workersText,
+        authToken: this.leaderToken || this.workerToken,
+        tileCsvPath: this.tileCsvPath,
+        rewriteFrom: this.pathFrom,
+        rewriteTo: this.pathTo,
+        tilesPerWorker: this.tilesPerWorker,
+      })
+        .then((summary) => {
+          this.outputPreview = String(summary?.outputPreview || this.outputPreview || '—').trim() || '—'
+          this.statusLine = String(summary?.statusLine || 'Distributed tiles: done.').trim() || 'Distributed tiles: done.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Distributed tiles run failed.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .finally(() => {
+          this.isRunning = false
+          this.canCancel = false
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     cancel(): void {
-      void invokeLegacyDistributedCancelRuntime()
+      this.statusLine = 'Cancel requested...'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+      void cancelAction()
+        .then(() => {
+          this.statusLine = 'Distributed run cancel requested.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Distributed cancel failed.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
   },
 })
+

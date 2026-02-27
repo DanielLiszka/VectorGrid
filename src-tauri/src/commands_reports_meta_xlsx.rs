@@ -806,6 +806,8 @@ mod tests {
                 params: params.clone(),
                 key: "k1".to_string(),
                 ma_source: "close".to_string(),
+                feature_context: None,
+                run_context: None,
                 fast_ma_params: None,
                 slow_ma_params: None,
                 representatives: vec![params],

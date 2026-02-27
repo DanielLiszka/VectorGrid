@@ -1,42 +1,204 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
 import {
-  invokeLegacyOptimizeValidateRuntime,
-  invokeLegacyValidationCrossRefreshRuntime,
-  invokeLegacyValidationCrossSelectAllRuntime,
-  invokeLegacyValidationCrossSelectMatchRuntime,
-  invokeLegacyValidationCrossSelectNoneRuntime,
-  invokeLegacyValidationExportReportJsonRuntime,
-  invokeLegacyValidationExportReportXlsxRuntime,
-  invokeLegacyValidationExportShortlistCsvRuntime,
-  invokeLegacyValidationExportValidationJsonRuntime,
-  invokeLegacyValidationToggleCrossDatasetRuntime,
-} from '../legacy/actions'
-import { invokeCommand } from '../tauri/invoke'
+  crossRefresh as crossRefreshAction,
+  exportReportJson as exportReportJsonAction,
+  exportReportXlsx as exportReportXlsxAction,
+  exportShortlistCsv as exportShortlistCsvAction,
+  exportValidationJson as exportValidationJsonAction,
+  openReportsDir as openReportsDirAction,
+  runValidation as runValidationAction,
+  toggleCrossDataset as toggleCrossDatasetAction,
+} from '../services/validationService'
+import { useDataStore } from './dataStore'
 
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback
 }
 
-function updateLegacyTextField(field: string, value: string, eventType: 'input' | 'change'): void {
-  if (typeof document === 'undefined') return
-  const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el || el.disabled) return
-  if (String(el.value ?? '') !== value) el.value = value
-  el.dispatchEvent(new Event(eventType, { bubbles: true }))
+interface CrossDatasetEntry {
+  path: string
+  label: string
+  meta: string
+  checked: boolean
+  disabled: boolean
+  market?: string
+  timeframe?: string
+  adjusted?: boolean | null
 }
 
-function updateLegacyCheckboxField(field: string, checked: boolean): void {
-  if (typeof document === 'undefined') return
+function normalizePath(value: string): string {
+  return String(value || '').trim()
+}
+
+function crossFilterTokens(value: string): string[] {
+  const query = String(value || '').trim().toLowerCase()
+  if (!query) return []
+  return query
+    .split(/[\s,]+/g)
+    .map((token) => String(token || '').trim())
+    .filter((token) => token.length > 0)
+}
+
+function crossSearchText(entry: CrossDatasetEntry): string {
+  return `${String(entry.path || '')} ${String(entry.label || '')} ${String(entry.meta || '')}`
+    .trim()
+    .toLowerCase()
+}
+
+function crossVisible(entry: CrossDatasetEntry, tokens: string[]): boolean {
+  if (!tokens.length) return true
+  const haystack = crossSearchText(entry)
+  return tokens.every((token) => haystack.includes(token))
+}
+
+function buildCrossMeta(entries: CrossDatasetEntry[], search: string): string {
+  const total = entries.length
+  const selected = entries.filter((entry) => entry.checked).length
+  const tokens = crossFilterTokens(search)
+  const visible = entries.filter((entry) => crossVisible(entry, tokens)).length
+  const parts: string[] = []
+  parts.push(`selected ${selected}/${total}${visible !== total ? ` (showing ${visible})` : ''}`)
+  if (tokens.length) parts.push(`filter=${tokens.join(' ')}`)
+  return parts.join(' • ')
+}
+
+function parseMarketLabel(value: string): { market: string; adjusted: boolean | null } {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return { market: '', adjusted: null }
+  if (text.startsWith('stocks')) {
+    if (text.includes('(adj)')) return { market: 'stocks', adjusted: true }
+    if (text.includes('(raw)')) return { market: 'stocks', adjusted: false }
+    return { market: 'stocks', adjusted: null }
+  }
+  return { market: text, adjusted: null }
+}
+
+function parseCurrentMarket(datasetContext: string): { market: string; adjusted: boolean | null } {
+  const text = String(datasetContext || '')
+  const match = text.match(/\bmarket=([^•]+)/i)
+  if (!match || !Array.isArray(match) || match.length < 2) return { market: '', adjusted: null }
+  return parseMarketLabel(String(match[1] || ''))
+}
+
+function parseCurrentTimeframe(dataTimeframe: string, datasetRange: string): string {
+  const tf = String(dataTimeframe || '').trim().toLowerCase()
+  if (tf) return tf
+  const head = String(datasetRange || '').split('•')[0]
+  const rangeHead = String(head || '').trim().toLowerCase()
+  if (!rangeHead || rangeHead.includes('→')) return ''
+  return rangeHead
+}
+
+function parseEntryContext(entry: CrossDatasetEntry): { market: string; timeframe: string; adjusted: boolean | null } {
+  const meta = String(entry.meta || '')
+  const metaLead = String(meta.split('•')[0] || '').trim()
+  const parsedMarket = parseMarketLabel(metaLead)
+  const market = String(entry.market || parsedMarket.market || '').trim().toLowerCase()
+
+  const inlineAdjusted = entry.adjusted === true ? true : (entry.adjusted === false ? false : null)
+  const adjusted = inlineAdjusted == null ? parsedMarket.adjusted : inlineAdjusted
+
+  let timeframe = String(entry.timeframe || '').trim().toLowerCase()
+  if (!timeframe) {
+    const match = meta.match(/\btf=([^\s•]+)/i)
+    if (match && Array.isArray(match) && match.length >= 2) {
+      timeframe = String(match[1] || '').trim().toLowerCase()
+    }
+  }
+
+  return {
+    market,
+    timeframe,
+    adjusted,
+  }
+}
+
+function applyVueTextFieldUpdate(state: ValidationState, field: string, value: string): boolean {
   const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | null
-  if (!el || el.disabled) return
-  if (String(el.type || '').trim().toLowerCase() !== 'checkbox') return
-  if (el.checked !== checked) el.checked = checked
-  el.dispatchEvent(new Event('change', { bubbles: true }))
+  const next = String(value || '').trim()
+  if (!key) return false
+  switch (key) {
+    case 'valCandidates':
+      state.candidates = next
+      return true
+    case 'valSeed':
+      state.seed = next
+      return true
+    case 'valMinPsr':
+      state.minPsr = next
+      return true
+    case 'valMinDsr':
+      state.minDsr = next
+      return true
+    case 'valCscvSlices':
+      state.cscvSlices = next
+      return true
+    case 'valAutoExportTopN':
+      state.autoExportTopN = next
+      return true
+    case 'valWfWindow':
+      state.wfWindow = next
+      return true
+    case 'valWfStep':
+      state.wfStep = next
+      return true
+    case 'valPerturbIters':
+      state.perturbIters = next
+      return true
+    case 'valPerturbMin':
+      state.perturbMin = next
+      return true
+    case 'valPerturbMax':
+      state.perturbMax = next
+      return true
+    case 'valMcSims':
+      state.mcSims = next
+      return true
+    case 'valCrossMax':
+      state.crossMax = next
+      return true
+    case 'valCrossSearch':
+      state.crossSearch = next
+      state.crossMeta = buildCrossMeta(state.crossDatasets, next)
+      return true
+    default:
+      return false
+  }
+}
+
+function applyVueCheckboxFieldUpdate(state: ValidationState, field: string, checked: boolean): boolean {
+  const key = String(field || '').trim()
+  const next = !!checked
+  if (!key) return false
+  switch (key) {
+    case 'valAutoRun':
+      state.autoRun = next
+      return true
+    case 'valAutoExportXlsx':
+      state.autoExportXlsx = next
+      return true
+    case 'valAutoRevealReport':
+      state.autoRevealReport = next
+      return true
+    case 'valWfEnable':
+      state.wfEnable = next
+      return true
+    case 'valPerturbEnable':
+      state.perturbEnable = next
+      return true
+    case 'valMcEnable':
+      state.mcEnable = next
+      return true
+    case 'valCscvEnable':
+      state.cscvEnable = next
+      return true
+    case 'valCrossEnable':
+      state.crossEnable = next
+      return true
+    default:
+      return false
+  }
 }
 
 interface ValidationState {
@@ -71,7 +233,7 @@ interface ValidationState {
   crossEnable: boolean
   crossMax: string
   crossSearch: string
-  crossDatasets: { path: string; label: string; meta: string; checked: boolean; disabled: boolean }[]
+  crossDatasets: CrossDatasetEntry[]
   crossSelectedCount: number
   crossTotalCount: number
   tableVisible: boolean
@@ -86,7 +248,7 @@ interface ValidationState {
   canCrossSelectMatch: boolean
   statusLine: string
   validateDisabled: boolean
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
 
@@ -190,63 +352,251 @@ export const useValidationStore = defineStore('validation', {
       this.canCrossSelectMatch = Boolean(snapshot.canCrossSelectMatch ?? this.canCrossSelectMatch)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
       this.validateDisabled = Boolean(snapshot.validateDisabled ?? this.validateDisabled)
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
     setInputField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'input')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueTextFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     setCheckboxField(field: string, checked: boolean): void {
-      updateLegacyCheckboxField(field, !!checked)
+      const key = String(field || '').trim()
+      const next = !!checked
+      if (applyVueCheckboxFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     runValidation(): void {
-      void invokeLegacyOptimizeValidateRuntime()
+      void runValidationAction()
     },
 
     exportShortlistCsv(): void {
-      void invokeLegacyValidationExportShortlistCsvRuntime()
+      void exportShortlistCsvAction()
     },
 
     exportValidationJson(): void {
-      void invokeLegacyValidationExportValidationJsonRuntime()
+      void exportValidationJsonAction()
     },
 
     exportReportJson(): void {
-      void invokeLegacyValidationExportReportJsonRuntime()
+      void exportReportJsonAction()
     },
 
     exportReportXlsx(): void {
-      void invokeLegacyValidationExportReportXlsxRuntime()
+      void exportReportXlsxAction()
     },
 
     openReportsDir(): void {
       if (!this.canOpenReportsDir) return
-      void invokeCommand('open_reports_dir').catch(() => undefined)
+      void openReportsDirAction().catch(() => undefined)
     },
 
     crossRefresh(): void {
-      void invokeLegacyValidationCrossRefreshRuntime()
+      if (!this.canCrossRefresh) return
+      const previousSelected = new Set(
+        this.crossDatasets
+          .filter((entry) => entry.checked)
+          .map((entry) => normalizePath(entry.path))
+          .filter((path) => path.length > 0),
+      )
+
+      void crossRefreshAction()
+        .then((summary) => {
+          const rows = Array.isArray(summary?.datasets) ? summary.datasets : []
+          const activePaths = new Set<string>()
+          const next: CrossDatasetEntry[] = []
+          for (const row of rows) {
+            const path = normalizePath(row.path)
+            if (!path || activePaths.has(path)) continue
+            activePaths.add(path)
+            const label = String(row.label || path).trim() || path
+            const meta = String(row.meta || '—').trim() || '—'
+            next.push({
+              path,
+              label,
+              meta,
+              checked: previousSelected.has(path),
+              disabled: this.validateDisabled,
+              market: String(row.market || '').trim().toLowerCase(),
+              timeframe: String(row.timeframe || '').trim().toLowerCase(),
+              adjusted: row.adjusted === true ? true : (row.adjusted === false ? false : null),
+            })
+          }
+
+          const staleSelections = [...previousSelected].filter((path) => !activePaths.has(path))
+          this.crossDatasets = next
+          this.crossSelectedCount = next.filter((entry) => entry.checked).length
+          this.crossTotalCount = next.length
+          this.crossMeta = buildCrossMeta(next, this.crossSearch)
+          this.statusLine = 'Refreshed cross-ticker list.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+
+          if (!staleSelections.length) return
+          void Promise.all(
+            staleSelections.map((path) => toggleCrossDatasetAction(path, false)),
+          ).catch((error: unknown) => {
+            this.statusLine = `Cross-ticker refresh sync failed: ${String(error || '')}`.trim()
+            this.source = 'vue'
+            this.updatedAtUnixMs = Date.now()
+          })
+        })
+        .catch((error: unknown) => {
+          this.statusLine = `Cross-ticker refresh failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     crossSelectAll(): void {
-      void invokeLegacyValidationCrossSelectAllRuntime()
+      const tokens = crossFilterTokens(this.crossSearch)
+      const next = this.crossDatasets.map((entry) => {
+        if (entry.disabled || !crossVisible(entry, tokens)) return entry
+        return {
+          ...entry,
+          checked: true,
+        }
+      })
+      const changed = next.filter((entry, index) => entry.checked !== this.crossDatasets[index]?.checked)
+
+      this.crossDatasets = next
+      this.crossSelectedCount = next.filter((entry) => entry.checked).length
+      this.crossTotalCount = next.length
+      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.statusLine = 'Cross-ticker: selected all (filtered view).'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+
+      void Promise.all(
+        changed.map((entry) => toggleCrossDatasetAction(entry.path, true)),
+      ).catch((error: unknown) => {
+        this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      })
     },
 
     crossSelectNone(): void {
-      void invokeLegacyValidationCrossSelectNoneRuntime()
+      const tokens = crossFilterTokens(this.crossSearch)
+      const next = this.crossDatasets.map((entry) => {
+        if (entry.disabled || !crossVisible(entry, tokens)) return entry
+        return {
+          ...entry,
+          checked: false,
+        }
+      })
+      const changed = next.filter((entry, index) => entry.checked !== this.crossDatasets[index]?.checked)
+
+      this.crossDatasets = next
+      this.crossSelectedCount = next.filter((entry) => entry.checked).length
+      this.crossTotalCount = next.length
+      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.statusLine = 'Cross-ticker: cleared selection (filtered view).'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+
+      void Promise.all(
+        changed.map((entry) => toggleCrossDatasetAction(entry.path, false)),
+      ).catch((error: unknown) => {
+        this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      })
     },
 
     crossSelectMatch(): void {
-      void invokeLegacyValidationCrossSelectMatchRuntime()
+      if (!this.canCrossSelectMatch) return
+
+      const dataStore = useDataStore()
+      const currentPath = normalizePath(dataStore.csvPath)
+      const currentMarket = parseCurrentMarket(dataStore.datasetContext)
+      const timeframe = parseCurrentTimeframe(
+        dataStore.dataTimeframe,
+        dataStore.datasetRange,
+      )
+
+      if (!currentMarket.market || !timeframe) {
+        this.statusLine = 'Cross-ticker: unable to match current dataset (load data + timeframe first).'
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+        return
+      }
+
+      const tokens = crossFilterTokens(this.crossSearch)
+      const next = this.crossDatasets.map((entry) => {
+        if (entry.disabled || !crossVisible(entry, tokens)) return entry
+
+        const path = normalizePath(entry.path)
+        if (currentPath && path === currentPath) {
+          return {
+            ...entry,
+            checked: false,
+          }
+        }
+
+        const ctx = parseEntryContext(entry)
+        let checked = ctx.market === currentMarket.market && ctx.timeframe === timeframe
+        if (checked && currentMarket.market === 'stocks' && currentMarket.adjusted != null) {
+          checked = ctx.adjusted === currentMarket.adjusted
+        }
+        return {
+          ...entry,
+          checked,
+        }
+      })
+      const changed = next.filter((entry, index) => entry.checked !== this.crossDatasets[index]?.checked)
+
+      this.crossDatasets = next
+      this.crossSelectedCount = next.filter((entry) => entry.checked).length
+      this.crossTotalCount = next.length
+      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.statusLine = 'Cross-ticker: selected datasets matching current dataset.'
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+
+      void Promise.all(
+        changed.map((entry) => toggleCrossDatasetAction(entry.path, entry.checked)),
+      ).catch((error: unknown) => {
+        this.statusLine = `Cross-ticker match selection failed: ${String(error || '')}`.trim()
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      })
     },
 
     toggleCrossDataset(path: string, checked: boolean): void {
       const nextPath = String(path || '').trim()
       if (!nextPath) return
-      void invokeLegacyValidationToggleCrossDatasetRuntime({ path: nextPath, checked: !!checked })
+      const nextChecked = !!checked
+      const next = this.crossDatasets.map((entry) => {
+        if (String(entry.path || '').trim() !== nextPath) return entry
+        if (entry.disabled) return entry
+        return {
+          ...entry,
+          checked: nextChecked,
+        }
+      })
+      this.crossDatasets = next
+      this.crossSelectedCount = next.filter((entry) => entry.checked).length
+      this.crossTotalCount = next.length
+      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.statusLine = `Cross-ticker: ${nextChecked ? 'selected' : 'cleared'} dataset.`
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+
+      void toggleCrossDatasetAction(nextPath, nextChecked).catch((error: unknown) => {
+        this.statusLine = `Cross-ticker update failed: ${String(error || '')}`.trim()
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      })
     },
   },
 })
+

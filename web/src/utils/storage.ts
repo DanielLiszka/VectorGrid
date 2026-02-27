@@ -17,7 +17,7 @@ import {
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
-} from '../legacy/core/storageKeys.js'
+} from './core/storageKeys'
 
 export const LEGACY_STORAGE_KEYS = [
   CONTROLS_TAB_KEY,

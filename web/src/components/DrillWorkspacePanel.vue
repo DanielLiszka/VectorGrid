@@ -29,7 +29,7 @@ function nudgeDrillRerender(): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="drill"]') as HTMLElement | null
-  const mount = document.getElementById('drillVueShellMount')
+  const mount = document.querySelector('#drillVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueDrill = '1'
@@ -192,4 +192,5 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 

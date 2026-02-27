@@ -94,12 +94,13 @@ function selectResultsTab(key: string): void {
         <div class="subtitle mono">{{ shellSubtitle }}</div>
       </div>
 
-      <nav class="tabsRow">
+      <nav id="workspaceBar" class="tabsRow workspaceBar">
         <button
           v-for="item in workspaceItems"
           :key="`ws_${item.key}`"
           type="button"
           class="tabBtn"
+          :data-workspace="item.key"
           :class="{ active: workspace === item.key }"
           @click="selectWorkspace(item.key)"
         >
@@ -107,12 +108,13 @@ function selectResultsTab(key: string): void {
         </button>
       </nav>
 
-      <nav class="tabsRow" v-if="workspace === 'workflow'">
+      <nav id="workflowStepBar" class="tabsRow workflowStepBar" v-if="workspace === 'workflow'">
         <button
           v-for="item in workflowStepItems"
           :key="`step_${item.key}`"
           type="button"
           class="tabBtn"
+          :data-workflow-step="item.key"
           :class="{ active: workflowStep === item.key }"
           @click="selectWorkflowStep(item.key)"
         >
@@ -120,12 +122,13 @@ function selectResultsTab(key: string): void {
         </button>
       </nav>
 
-      <nav class="tabsRow">
+      <nav id="workflowTabBar" class="tabsRow workflowBar">
         <button
           v-for="item in workflowItems"
           :key="`wf_${item.key}`"
           type="button"
           class="tabBtn"
+          :data-workflow="item.key"
           :class="{ active: workflow === item.key }"
           @click="selectWorkflow(item.key)"
         >
@@ -137,12 +140,13 @@ function selectResultsTab(key: string): void {
     <main class="shellMain">
       <section class="workspaceGrid" v-show="!settingsWorkspaceActive">
         <aside class="controlsColumn">
-          <nav class="tabsRow compact">
+          <nav id="controlsTabBar" class="tabsRow compact">
             <button
               v-for="item in controlsItems"
               :key="`controls_${item.key}`"
               type="button"
               class="tabBtn"
+              :data-tab="item.key"
               :class="{ active: effectiveControlsTab === item.key }"
               @click="selectControlsTab(item.key)"
             >
@@ -168,12 +172,13 @@ function selectResultsTab(key: string): void {
         </aside>
 
         <section class="resultsColumn">
-          <nav class="tabsRow compact">
+          <nav id="resultsTabBar" class="tabsRow compact">
             <button
               v-for="item in resultsItems"
               :key="`results_${item.key}`"
               type="button"
               class="tabBtn"
+              :data-tab="item.key"
               :class="{ active: effectiveResultsTab === item.key }"
               @click="selectResultsTab(item.key)"
             >

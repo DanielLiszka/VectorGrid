@@ -4,8 +4,13 @@ import {
   THEME_PREF_KEY,
   WINDOW_EFFECT_KEY,
   WORKFLOW_ADVANCED_KEY,
-} from '../legacy/core/storageKeys.js'
-import { invokeCommand } from '../tauri/invoke'
+} from '../utils/core/storageKeys'
+import {
+  openReportsDir as openReportsDirService,
+  openRunsDir as openRunsDirService,
+  setWindowEffect,
+  type WindowEffect,
+} from '../services/settingsService'
 import { useDataStore } from './dataStore'
 import { useWorkflowStore } from './workflowStore'
 
@@ -32,20 +37,6 @@ function resolveTheme(pref: string): string {
 function setRootDataAttr(name: string, value: string): void {
   if (typeof document === 'undefined') return
   document.documentElement.dataset[name as keyof DOMStringMap] = value
-}
-
-function setLegacyFieldValue(id: string, value: string): void {
-  if (typeof document === 'undefined') return
-  const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el) return
-  if (String(el.value || '') !== value) el.value = value
-}
-
-function setLegacyCheckboxValue(id: string, checked: boolean): void {
-  if (typeof document === 'undefined') return
-  const el = document.getElementById(id) as HTMLInputElement | null
-  if (!el || String(el.type || '').toLowerCase() !== 'checkbox') return
-  if (el.checked !== checked) el.checked = checked
 }
 
 function persistTheme(pref: string): void {
@@ -79,12 +70,12 @@ function applyThemeLocally(pref: string): void {
 }
 
 function applyEffectLocally(effect: string): void {
-  const normalized = normalizeEffect(effect)
+  const normalized = normalizeEffect(effect) as WindowEffect
   setRootDataAttr('windowEffect', normalized)
   persistEffect(normalized)
   if (typeof document === 'undefined') return
   const dark = String(document.documentElement.dataset.theme || 'light').trim() === 'dark'
-  void invokeCommand('set_window_effect', { effect: normalized === 'none' ? null : normalized, dark }).catch(() => undefined)
+  void setWindowEffect(normalized, dark).catch(() => undefined)
 }
 
 function applyWorkflowAdvancedLocally(enabled: boolean): void {
@@ -95,6 +86,13 @@ function applyWorkflowAdvancedLocally(enabled: boolean): void {
 function applyControlsCollapsedLocally(enabled: boolean): void {
   setRootDataAttr('controlsCollapsed', enabled ? '1' : '')
   persistBoolFlag(CONTROLS_COLLAPSED_KEY, enabled)
+}
+
+function runtimeCanMutateSettings(): boolean {
+  if (typeof document === 'undefined') return true
+  const root = document.documentElement as HTMLElement | undefined
+  if (!root || !root.dataset) return true
+  return String(root.dataset.running || '').trim() !== '1'
 }
 
 interface SettingsState {
@@ -116,7 +114,7 @@ interface SettingsState {
   canGotoLibrary: boolean
   canGotoAggregate: boolean
   statusLine: string
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
 
@@ -169,7 +167,7 @@ export const useSettingsStore = defineStore('settings', {
       this.canGotoLibrary = Boolean(snapshot.canGotoLibrary ?? this.canGotoLibrary)
       this.canGotoAggregate = Boolean(snapshot.canGotoAggregate ?? this.canGotoAggregate)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
@@ -179,7 +177,6 @@ export const useSettingsStore = defineStore('settings', {
       if (key === 'settingsMarketDataDir') {
         const normalized = next.trim()
         if (this.marketDataDir !== normalized) this.marketDataDir = normalized
-        setLegacyFieldValue('marketDataDir', normalized)
         this.markVueUpdate()
       }
     },
@@ -215,9 +212,30 @@ export const useSettingsStore = defineStore('settings', {
         this.markVueUpdate()
       } else if (key === 'settingsMoveExisting') {
         this.moveExisting = next
-        setLegacyCheckboxValue('marketDataMoveExisting', next)
         this.markVueUpdate()
       }
+    },
+
+    syncFromDataStore(): void {
+      const dataStore = useDataStore()
+      const canMutate = runtimeCanMutateSettings()
+
+      this.marketDataDir = String(dataStore.marketDataDir || '').trim()
+      this.moveExisting = !!dataStore.marketDataMoveExisting
+      this.marketDataDirHint = String(dataStore.marketDataDirHint || this.marketDataDirHint || '—').trim() || '—'
+
+      this.canBrowseMarketDataDir = canMutate && !!dataStore.canBrowseMarketDataDir
+      this.canSetMarketDataDir = canMutate && !!dataStore.canSetMarketDataDir
+      this.canResetMarketDataDir = canMutate && !!dataStore.canResetMarketDataDir
+      this.canOpenMarketDataDir = canMutate && !!dataStore.canOpenMarketDataDir
+      this.canOpenWorkflowData = canMutate
+      this.canOpenRunsDir = canMutate
+      this.canOpenReportsDir = canMutate
+      this.canOpenPolygonModal = canMutate
+      this.canGotoLibrary = true
+      this.canGotoAggregate = true
+
+      this.markVueUpdate()
     },
 
     browseMarketDataDir(): void {
@@ -242,12 +260,12 @@ export const useSettingsStore = defineStore('settings', {
 
     openRunsDir(): void {
       if (!this.canOpenRunsDir) return
-      void invokeCommand('open_runs_dir').catch(() => undefined)
+      void openRunsDirService().catch(() => undefined)
     },
 
     openReportsDir(): void {
       if (!this.canOpenReportsDir) return
-      void invokeCommand('open_reports_dir').catch(() => undefined)
+      void openReportsDirService().catch(() => undefined)
     },
 
     openPolygonModal(): void {
@@ -263,3 +281,4 @@ export const useSettingsStore = defineStore('settings', {
     },
   },
 })
+

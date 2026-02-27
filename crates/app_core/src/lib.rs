@@ -19,6 +19,7 @@ pub mod progress;
 pub mod sharpe_stats;
 pub mod stats_common;
 pub mod timeframe;
+pub(crate) mod validation_core;
 pub mod validation_pipeline;
 pub mod validation_stats;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

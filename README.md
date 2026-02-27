@@ -7,29 +7,27 @@ Tauri desktop app for brute-force double moving-average optimization (and future
 - Vue 3 + Vite frontend workspace in `web/`
 - Vue-first app shell in `web/src/App.vue` mounted from minimal `web/index.html`
 - `web/src/App.vue` now defers loading heavy migrated workspace panels until their tab/workspace is first activated (async component lazy-load).
-- Legacy compatibility runtime preserved in `web/src/legacy/app.js` and rendered via `web/src/components/LegacyHost.vue` + `web/src/legacy/template.html`
+- Frontend runtime is now fully Vue-owned (legacy `web/src/legacy/*` runtime path removed).
 - Vue task/progress overlay in `web/src/components/TaskCenterOverlay.vue` (wired through Tauri event/invoke instrumentation)
-- Vue-native run/cancel footer panel in `web/src/components/RunFooterPanel.vue` (run plan/readiness/status context synced from legacy DOM bridge)
-- Bridge-backed Vue context overlays for workflow/validation/analysis domains (delegating actions to legacy handlers during migration)
-- Vue-native Data controls tab panel in `web/src/components/DataWorkspacePanel.vue` (legacy Data DOM remains hidden for compatibility during cutover)
-- Vue-native Optimize controls tab panel in `web/src/components/OptimizeWorkspacePanel.vue` (core controls and MA parameter hosts render in Vue; legacy MA-parameter rendering logic now targets the Vue hosts)
-- Vue-native Strategy controls tab panel in `web/src/components/StrategyWorkspacePanel.vue` (strategy-specific legacy blocks are now mounted inside the Vue panel host for compatibility while migration continues)
-- Vue-native Advanced controls tab panel in `web/src/components/AdvancedWorkspacePanel.vue` (VDPS and Composite-MO legacy blocks are now mounted inside the Vue panel host for compatibility while migration continues)
+- Vue-native run/cancel footer panel in `web/src/components/RunFooterPanel.vue`
+- Vue-native controls/workspaces:
+  - Data: `web/src/components/DataWorkspacePanel.vue`
+  - Optimize: `web/src/components/OptimizeWorkspacePanel.vue`
+  - Strategy: `web/src/components/StrategyWorkspacePanel.vue`
+  - Advanced: `web/src/components/AdvancedWorkspacePanel.vue`
 - Vue-native Validation results tab panel in `web/src/components/ValidationWorkspacePanel.vue` (core controls, advanced validation options, cross-ticker dataset controls/list, shortlist table, raw JSON preview, and report XLSX export flow render in Vue)
 - Vue-native Overview results tab panel in `web/src/components/OverviewWorkspacePanel.vue` (empty-state, best card/stats/details, and compare controls render in Vue)
-- Vue-native Top results tab panel in `web/src/components/TopWorkspacePanel.vue` (filters + sortable results table now render in Vue; legacy table remains mounted but hidden for behavior compatibility)
+- Vue-native Top results tab panel in `web/src/components/TopWorkspacePanel.vue`
 - Top/Validation/Meta Vue result tables now use row-window virtualization to avoid rendering entire large result sets at once.
-- Legacy bridge sync now conditionally snapshots heavy Top/Validation/Meta/Batch table payloads only while their tabs are active.
-- Vue-native Pareto results tab panel in `web/src/components/ParetoWorkspacePanel.vue` (axis controls, empty-state, and chart host render in Vue; legacy Pareto drawing logic now targets the Vue host)
-- Vue-native Drilldown results tab panel in `web/src/components/DrillWorkspacePanel.vue` (drill/stability/trades empty-state and visualization hosts render in Vue; legacy drill/stability/trades drawing logic now targets the Vue hosts)
-- Vue-native Heatmap results tab panel in `web/src/components/HeatmapWorkspacePanel.vue` (controls, empty-state, and chart host render in Vue; legacy heatmap drawing logic now targets the Vue host)
+- Vue-native Pareto results tab panel in `web/src/components/ParetoWorkspacePanel.vue`
+- Vue-native Drilldown results tab panel in `web/src/components/DrillWorkspacePanel.vue`
+- Vue-native Heatmap results tab panel in `web/src/components/HeatmapWorkspacePanel.vue`
 - Vue-native Meta results tab panel in `web/src/components/MetaWorkspacePanel.vue` (strategy/filter controls, holdout/grouping tuning, batch controls/list/output, meta table, compare flow, saved-meta manager, saved-stage4 manager, and ML confidence/stage4 run tuning now render in Vue)
-- Validation and Meta tabs now hide all legacy sibling DOM in Vue mode (no remaining passthrough visibility exceptions for these tabs).
 - Vue-native Debug results tab panel in `web/src/components/DebugWorkspacePanel.vue` (debug JSON output now renders via Vue panel state)
-- Vue-native Settings workspace panel in `web/src/components/SettingsWorkspacePanel.vue` (legacy non-execution Settings panes remain hidden while the migrated Execution pane remains mounted)
-- Vue-native History tab panel in `web/src/components/HistoryWorkspacePanel.vue` (legacy History DOM remains hidden for compatibility during cutover)
-- Vue-native Distributed tab panel in `web/src/components/DistributedWorkspacePanel.vue` (legacy Distributed DOM remains hidden for compatibility during cutover)
-- Vue-native Execution settings pane in `web/src/components/ExecutionWorkspacePanel.vue` (includes Vue-rendered broker orders table + Vue chart host with legacy execution chart renderer targeting `execTvChartVue`; legacy Execution DOM remains hidden for compatibility during cutover)
+- Vue-native Settings workspace panel in `web/src/components/SettingsWorkspacePanel.vue`
+- Vue-native History tab panel in `web/src/components/HistoryWorkspacePanel.vue`
+- Vue-native Distributed tab panel in `web/src/components/DistributedWorkspacePanel.vue`
+- Vue-native Execution settings pane in `web/src/components/ExecutionWorkspacePanel.vue` (includes Vue-rendered broker orders table + chart host)
 
 ## First-time setup
 
@@ -53,8 +51,23 @@ cargo run -p ta_desktop_demo_app --release
 Tauri config is wired to build frontend from `web/` automatically via:
 
 - `src-tauri/tauri.conf.json`:
-  - `beforeDevCommand`: `npm --prefix ../web run dev -- --host 127.0.0.1 --port 1420`
-  - `beforeBuildCommand`: `npm --prefix ../web run build`
+  - `beforeDevCommand`: `npm --prefix ./web run dev -- --host 127.0.0.1 --port 1420`
+  - `beforeBuildCommand`: `npm --prefix ./web run build`
+
+## Validation/meta adapter notes
+
+- Validation runner orchestration is shared in `crates/app_core/src/validation_core.rs`.
+- Strategy modules stay adapter-focused:
+  - `crates/app_core/src/double_ma_validate.rs`
+  - `crates/app_core/src/composite_validate.rs`
+- To add a new strategy with validation support:
+  - keep strategy-specific series/evaluation code in its strategy module,
+  - implement `ValidationPostCandidate` for the strategy’s candidate result type,
+  - route candidate execution/finalization through `validation_core::run_validation_candidates(...)`.
+- Meta grouping supports optional strategy-agnostic context fields:
+  - `feature_context`
+  - `run_context`
+  Legacy MA grouping fields are still supported for backward compatibility.
 
 ## Frontend dev/test commands
 

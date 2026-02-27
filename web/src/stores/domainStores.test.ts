@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { useAdvancedStore } from './advancedStore'
 import { useAnalysisStore } from './analysisStore'
 import { useDataStore } from './dataStore'
@@ -11,6 +11,7 @@ import { useRuntimeStore } from './runtimeStore'
 import { useSettingsStore } from './settingsStore'
 import { useStrategyStore } from './strategyStore'
 import { useValidationStore } from './validationStore'
+import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
 import { useWorkflowStore } from './workflowStore'
 
 describe('domain stores', () => {
@@ -57,7 +58,7 @@ describe('domain stores', () => {
     expect(store.dataFields).toContain('close')
     expect(store.canApplyTimeframe).toBe(false)
     expect(store.statusLine).toBe('Loaded.')
-    expect(store.source).toBe('legacy-dom')
+    expect(store.source).toBe('vue')
   })
 
   it('applies optimize snapshot and disabled states', () => {
@@ -181,6 +182,37 @@ describe('domain stores', () => {
     store.markError('oops')
     expect(store.bootPhase).toBe('error')
     expect(store.bootError).toContain('oops')
+  })
+
+  it('applies workflow artifact snapshot from legacy runtime bridge', () => {
+    const pinia = getActivePinia()
+    const store = pinia ? useWorkflowArtifactsStore(pinia) : useWorkflowArtifactsStore()
+    store.applyLegacyRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        artifact_path: 'C:/runs/run.json',
+        report_xlsx_path: 'C:/runs/report.xlsx',
+        csv_path: 'C:/data/aapl.csv',
+        tags: ['batch-a', 'holdout'],
+        req: { strategy_kind: 'DoubleMa' },
+        res: { rows: 10 },
+      },
+      currentValidation: {
+        ts: '2026-02-25T12:00:00Z',
+        req: { candidates: 32 },
+        res: { rows: [] },
+      },
+    })
+
+    expect(store.currentRun?.ts).toBe('2026-02-25T12:00:00Z')
+    expect(store.currentRun?.artifactPath).toContain('run.json')
+    expect(store.currentRun?.reportXlsxPath).toContain('report.xlsx')
+    expect(store.currentRun?.csvPath).toContain('aapl.csv')
+    expect(store.currentRun?.tags).toEqual(['batch-a', 'holdout'])
+    expect(store.hasRun).toBe(true)
+    expect(store.currentValidation?.ts).toBe('2026-02-25T12:00:00Z')
+    expect(store.hasValidation).toBe(true)
+    expect(store.source).toBe('legacy-runtime')
   })
 
   it('applies workflow snapshot from legacy bridge', () => {
@@ -441,7 +473,7 @@ describe('domain stores', () => {
     expect(store.savedSelectedValue).toBe('b')
     expect(store.savedSelectedLabel).toContain('AAPL')
     expect(store.canApplySavedRun).toBe(true)
-    expect(store.source).toBe('legacy-dom')
+    expect(store.source).toBe('vue')
   })
 
   it('applies settings snapshot from legacy bridge', () => {
@@ -533,3 +565,4 @@ describe('domain stores', () => {
     expect(store.liveStatusHint).toContain('AAPL')
   })
 })
+

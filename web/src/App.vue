@@ -1,17 +1,14 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, reactive, watch } from 'vue'
+import { computed, defineAsyncComponent, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import AnalysisContextDock from './components/AnalysisContextDock.vue'
 import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
 import CommandPaletteOverlay from './components/CommandPaletteOverlay.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
-import LegacyCompatibilityRoots from './components/LegacyCompatibilityRoots.vue'
-import LegacyRuntimeBridge from './components/LegacyRuntimeBridge.vue'
 import RunFooterPanel from './components/RunFooterPanel.vue'
 import TaskCenterOverlay from './components/TaskCenterOverlay.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import WorkflowQuickSwitch from './components/WorkflowQuickSwitch.vue'
-import { installWorkflowRuntimeDispatch } from './services/workflowRuntimeDispatch'
 import { useDistributedStore } from './stores/distributedStore'
 import { useWorkflowStore } from './stores/workflowStore'
 
@@ -35,7 +32,6 @@ const ValidationWorkspacePanel = defineAsyncComponent(() => import('./components
 const distributedStore = useDistributedStore()
 const workflowStore = useWorkflowStore()
 workflowStore.syncRuntimeState()
-const detachWorkflowRuntimeDispatch = installWorkflowRuntimeDispatch()
 
 const { isRunning: distributedIsRunning } = storeToRefs(distributedStore)
 const { controlsTab, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
@@ -141,16 +137,10 @@ mountWhenActive('settings', () => settingsWorkspaceActive.value)
 mountWhenActive('strategy', () => strategyPanelActive.value)
 mountWhenActive('top', () => topPanelActive.value)
 mountWhenActive('validation', () => validationPanelActive.value)
-
-onBeforeUnmount(() => {
-  detachWorkflowRuntimeDispatch()
-})
 </script>
 
 <template>
   <VueWorkspaceShell />
-  <LegacyCompatibilityRoots />
-  <LegacyRuntimeBridge />
   <CommandPaletteOverlay />
   <GlobalShortcutBridge />
   <TaskCenterOverlay />

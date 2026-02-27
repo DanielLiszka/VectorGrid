@@ -130,7 +130,7 @@ function loadSampleCsv(path: string, index: number): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="data"]') as HTMLElement | null
-  const mount = document.getElementById('dataVueShellMount')
+  const mount = document.querySelector('#dataVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueData = '1'
@@ -140,6 +140,7 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
+  dataStore.hydrateStartupState()
 })
 
 onBeforeUnmount(() => {
@@ -458,5 +459,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

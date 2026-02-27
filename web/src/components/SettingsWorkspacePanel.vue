@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useDataStore } from '../stores/dataStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const settingsStore = useSettingsStore()
+const dataStore = useDataStore()
 const workflowStore = useWorkflowStore()
 const {
   theme,
@@ -27,10 +29,12 @@ const {
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(settingsStore)
+const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore)
 const { workspace } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const gridRoot = ref<HTMLElement | null>(null)
+let runtimeObserver: MutationObserver | null = null
 
 const themeDraft = ref('system')
 const effectDraft = ref('none')
@@ -71,6 +75,14 @@ watch(
   { immediate: true },
 )
 
+watch(
+  dataUpdatedAtUnixMs,
+  () => {
+    settingsStore.syncFromDataStore()
+  },
+  { immediate: true },
+)
+
 function setMarketDataDirFromDraft(): void {
   settingsStore.setMarketDataDir(String(marketDataDirDraft.value || '').trim(), !!moveExisting.value)
 }
@@ -88,8 +100,8 @@ function setInputValue(id: string, nextValue: string): void {
 }
 
 function resolveMount(): void {
-  const settingsGrid = document.getElementById('settingsShellGrid')
-  const mount = document.getElementById('settingsVueShellMount')
+  const settingsGrid = document.querySelector('#settingsShellGrid') as HTMLElement | null
+  const mount = document.querySelector('#settingsVueShellMount') as HTMLElement | null
   if (!settingsGrid || !mount) return
   gridRoot.value = settingsGrid
   settingsGrid.dataset.vueSettings = '1'
@@ -99,9 +111,21 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
+  settingsStore.syncFromDataStore()
+  if (typeof document !== 'undefined') {
+    runtimeObserver = new MutationObserver(() => settingsStore.syncFromDataStore())
+    runtimeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-running'],
+    })
+  }
 })
 
 onBeforeUnmount(() => {
+  if (runtimeObserver) {
+    runtimeObserver.disconnect()
+    runtimeObserver = null
+  }
   if (gridRoot.value) {
     delete gridRoot.value.dataset.vueSettings
     gridRoot.value = null
@@ -354,5 +378,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

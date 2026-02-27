@@ -1,77 +1,124 @@
 indicator_id,indicator_name,speedup,cpu_ms,cuda_ms
-"linearreg_angle","Linear Regression Angle","547.1147511289228","1981.4275","3.621594"
-"kurtosis","Kurtosis","512.4203017312212","1393.836","2.720103"
-"zscore","Z-Score","487.5323192513155","647.3303","1.327769"
-"kaufmanstop","Kaufman Stop","313.621413700769","729.5615","2.326249"
-"bollinger_bands_width","Bollinger Bands Width","292.5225899838536","437.52165","1.495685"
-"correl_hl","High-Low Correlation","220.05384149218682","754.5545","3.428954"
-"ttm_trend","TTM Trend","143.63190436166414","169.86225","1.182622"
-"coppock","Coppock Curve","126.76094732350947","312.25265","2.463319"
-"acosc","Acceleration Oscillator","111.64511412268189","782.63225","7.01"
-"bollinger_bands","Bollinger Bands","107.71977324192736","361.3365","3.354412"
-"dpo","Detrended Price Oscillator","106.43241675112738","115.933","1.089264"
-"ao","Awesome Oscillator","104.7964590890659","114.22835","1.090002"
-"vosc","Volume Oscillator","104.5999298446428","113.31415","1.08331"
-"var","Variance","93.27197033704293","107.96585","1.157538"
-"kdj","KDJ Indicator","88.90080219023486","4795.615","53.943439"
-"medprice","Median Price","81.2756386105041","269.65225","3.3177499999999998"
-"wclprice","Weighted Close Price","72.71470928550767","251.37474999999998","3.457"
-"mom","Momentum","68.67094804199174","115.73005","1.685284"
-"vwma","Volume Weighted Moving Average","62.12321050511083","319.48675","5.142792"
-"vwap","Volume Weighted Average Price","57.052088689010304","342.216","5.998308"
-"macd","Moving Average Convergence Divergence","50.4144162986802","896.6698","17.78598"
-"roc","Rate of Change","48.761482294830834","113.5081","2.327823"
-"jsa","JSA Moving Average","42.586000144025","108.812","2.555112"
-"deviation","Deviation","34.48842629329853","117.34825","3.40254"
-"ppo","Percentage Price Oscillator","34.45885256826586","276.5305","8.024948"
-"willr","Williams %R","30.079638956939853","213.9482","7.112725"
-"nma","Natural Moving Average","27.66118607393049","205.3806","7.424866"
-"cwma","Centered Weighted Moving Average","23.56677254630656","163.033","6.917918"
-"alma","Arnaud Legoux Moving Average","22.97398876362901","158.25685","6.888523"
-"sqwma","Square Weighted Moving Average","22.641978133786324","112.2023","4.955499"
-"obv","On Balance Volume","19.693123349310376","251.65349999999998","12.77875"
-"highpass","Highpass Filter","19.499767096046007","108.84185","5.5817"
-"smma","Smoothed Moving Average","18.28500130556411","109.52255","5.989748"
-"pwma","Pascal's Weighted Moving Average","17.556296301596706","186.4676","10.621124"
-"mfi","Money Flow Index","16.648528077503897","21.872703","1.313792"
-"srwma","Square Root Weighted Moving Average","16.373250024851075","210.1747","12.836468"
-"fwma","Forward Weighted Moving Average","14.577064675794043","137.4886","9.431844"
-"swma","Symmetrically Weighted Moving Average","14.276972297724917","109.7943","7.690307"
-"adosc","Accumulation/Distribution Oscillator","11.735658223285208","111.50665","9.501525"
-"apo","Absolute Price Oscillator","11.517228385151842","111.55645","9.68605"
-"zlema","Zero Lag Exponential Moving Average","11.144365379831862","114.02285","10.231435"
-"cora_wave","Compound Ratio Moving Average (CoRa Wave)","10.245416279346582","115.6837","11.291264"
-"cmo","Chande Momentum Oscillator","10.020427962712953","114.5327","11.429921"
-"wma","Weighted Moving Average","9.670551375351293","114.3393","11.823452"
-"trima","Triangular Moving Average","9.133420100418892","107.57945","11.77866"
-"supersmoother","SuperSmoother","8.907724311023683","114.3667","12.839048"
-"stddev","Standard Deviation","7.87627572625759","122.05985","15.497153"
-"tema","Triple Exponential Moving Average","7.252556602681451","110.32365","15.211691"
-"decycler","Decycler","7.246111651977443","132.26045","18.25261"
-"sinwma","Sine Weighted Moving Average","6.139392118407444","161.85075","26.362667"
-"cfo","Chaikin Flow Oscillator","5.414075302383582","118.75445","21.934392"
-"epma","Endpoint Moving Average","4.079959124968465","131.3651","32.197651"
-"adxr","Average Directional Movement Index Rating","3.8481676476509428","743.5595000000001","193.2243"
-"dema","Double Exponential Moving Average","3.2295369271149346","109.2591","33.831197"
-"sma","Simple Moving Average","2.9463349958814216","113.24055","38.434377"
-"dec_osc","Detrended Oscillator","2.881671439422483","550.29075","190.96235"
-"vpwma","Volume Price Weighted Moving Average","2.8019744071306305","160.00885","57.10575"
-"msw","Mesa Sine Wave","2.4124294607663628","490.2231","203.2072265625"
-"maaq","Moving Average Adaptive Q","2.4035118179335506","111.1482","46.244083"
-"mean_ad","Mean Absolute Deviation","2.2673288890480667","117.1174","51.65435"
-"adx","Average Directional Index","2.2348315455068155","288.6","129.13725"
-"edcf","Ehlers Distance Coefficient Filter","2.1243109279667856","107.84645","50.767733"
-"mwdx","Modified Weighted Directional Index","2.120641564157858","108.0674","50.959767"
-"wilders","Wilder's Smoothing","2.1038990924923677","110.62475","52.580825"
-"srsi","Stochastic RSI","2.069262804392131","1563.04595","755.363671875"
-"jma","Jurik Moving Average","1.8724857540157236","107.9283","57.63905"
-"ott","Optimized Trend Tracker (OTT)","1.6575301485023826","755.46445","455.7772"
-"rsi","Relative Strength Index","1.5397936948831161","122.82405","79.76656249999999"
-"ehlers_itrend","Ehlers Instantaneous Trendline","1.5229004359524805","478.45595","314.17415"
-"hma","Hull Moving Average","1.466797663506183","118.9889","81.12155"
-"mama","MESA Adaptive Moving Average","1.3114840702628126","255.32785","194.6862"
-"supersmoother_3_pole","SuperSmoother 3-Pole","1.2498498214769405","111.7806","89.435225"
-"lrsi","Laguerre RSI","1.2239769118278312","932.6025","761.94451953125"
-"hwma","Hann Window Moving Average","1.0946515395655194","124.2869","113.54015"
-"dti","Directional Trend Index","1.077982517292396","553.44925","513.4120833333333"
-"ema","Exponential Moving Average","1.0755871841047273","107.00065","99.48115"
+ttm_squeeze,Ttm Squeeze,1744.307453,4633.75275,2.6565
+linearreg_angle,Linear Regression Angle,778.3428919,1981.4275,2.5457
+zscore,Z-Score,510.2311815,647.3303,1.2687
+kurtosis,Kurtosis,507.4399301,1393.836,2.7468
+minmax,Min/Max,400.1428965,2759.6255,6.8966
+mass,Mass Index,396.2789268,467.49025,1.1797
+buff_averages,Buff Averages,313.4974737,694.92985,2.2167
+kaufmanstop,Kaufman Stop,301.9583213,729.5615,2.4161
+bollinger_bands_width,Bollinger Bands Width,273.1096442,437.52165,1.602
+correl_hl,High-Low Correlation,232.8943795,754.5545,3.2399
+kdj,KDJ Indicator,157.4500952,4795.615,30.458
+acosc,Acceleration Oscillator,124.6666428,782.63225,6.2778
+srsi,Stochastic RSI,122.7651547,1563.04595,12.732
+squeeze_momentum,Squeeze Momentum,116.0461581,420.6093,3.6245
+coppock,Coppock Curve,110.629814,312.25265,2.8225
+bollinger_bands,Bollinger Bands,105.0641137,361.3365,3.4392
+dpo,Detrended Price Oscillator,104.0971536,115.933,1.1137
+ttm_trend,TTM Trend,103.9485038,169.86225,1.6341
+ao,Awesome Oscillator,103.2525988,114.22835,1.1063
+rocr,Rate of Change Ratio,102.8770595,114.26555,1.1107
+vosc,Volume Oscillator,102.1124178,113.31415,1.1097
+willr,Williams %R,96.29498605,213.9482,2.2218
+keltner,Keltner Channel,94.51736789,358.0885,3.7886
+er,Efficiency Ratio,92.81813957,109.85955,1.1836
+var,Variance,92.4681826,107.96585,1.1676
+deviation,Deviation,87.0665158,117.34825,1.3478
+bop,Balance of Power,85.23233692,279.99675,3.2851
+medprice,Median Price,81.27563861,269.65225,3.31775
+roc,Rate of Change,80.53646942,113.5081,1.4094
+mom,Momentum,80.02354446,115.73005,1.4462
+jsa,JSA Moving Average,75.54290475,108.812,1.4404
+wclprice,Weighted Close Price,72.71470929,251.37475,3.457
+ehma,Ehma,54.55194566,192.7593,3.5335
+vwma,Volume Weighted Moving Average,51.69772165,319.48675,6.1799
+stochf,Stochastic Fast,50.43801738,268.08815,5.3152
+vwap,Volume Weighted Average Price,49.34692642,342.216,6.9349
+macd,Moving Average Convergence Divergence,43.95224744,896.6698,20.401
+alma,Arnaud Legoux Moving Average,42.91827575,158.25685,3.6874
+uma,Uma,29.46027728,52088.71625,1768.1
+correlation_cycle,Correlation Cycle,28.58024594,613.5893,21.469
+ppo,Percentage Price Oscillator,28.44905455,276.5305,9.7202
+chop,Choppiness Index,27.23401836,6347.705,233.08
+nma,Natural Moving Average,23.25388073,205.3806,8.8321
+srwma,Square Root Weighted Moving Average,22.48819816,210.1747,9.346
+ift_rsi,Inverse Fisher Transform RSI,21.84903815,3378.95375,154.65
+sqwma,Square Weighted Moving Average,21.7564376,112.2023,5.1572
+cwma,Centered Weighted Moving Average,20.36283473,163.033,8.0064
+obv,On Balance Volume,19.69312335,251.6535,12.77875
+lpc,Lpc,18.58903062,13546.0125,728.71
+mama,MESA Adaptive Moving Average,17.90266793,255.32785,14.262
+highpass,Highpass Filter,17.60710646,108.84185,6.1817
+wilders,Wilder's Smoothing,16.90915274,110.62475,6.5423
+smma,Smoothed Moving Average,16.45965585,109.52255,6.654
+sama,Sama,16.33896773,4875.87475,298.42
+ema,Exponential Moving Average,15.57392475,107.00065,6.8705
+pwma,Pascal's Weighted Moving Average,14.78493498,186.4676,12.612
+mfi,Money Flow Index,14.50540686,21.872703,1.5079
+fwma,Forward Weighted Moving Average,14.45164342,137.4886,9.5137
+prb,Prb,13.84203651,467.83315,33.798
+qqe,Qqe,13.50701318,1926.9105,142.66
+efi,Elder Force Index,12.35313704,794.85025,64.344
+swma,Symmetrically Weighted Moving Average,12.03396648,109.7943,9.1237
+vpwma,Volume Price Weighted Moving Average,11.5856093,160.00885,13.811
+trima,Triangular Moving Average,11.5392689,107.57945,9.3229
+apo,Absolute Price Oscillator,10.82862066,111.55645,10.302
+fvg_trailing_stop,Fvg Trailing Stop,10.14936837,7295.0615,718.77
+zlema,Zero Lag Exponential Moving Average,10.00551509,114.02285,11.396
+stddev,Standard Deviation,9.921145249,122.05985,12.303
+cora_wave,Compound Ratio Moving Average (CoRa Wave),9.634688099,115.6837,12.007
+devstop,Deviation Stop,9.627395893,5354.3725,556.16
+dti,Directional Trend Index,9.218469444,553.44925,60.037
+cmo,Chande Momentum Oscillator,8.837399691,114.5327,12.96
+rsi,Relative Strength Index,8.150235567,122.82405,15.07
+wma,Weighted Moving Average,8.03000913,114.3393,14.239
+highpass_2_pole,Highpass Filter 2-Pole,7.912270397,111.13575,14.046
+emd,Empirical Mode Decomposition,7.32803231,1272.36625,173.63
+decycler,Decycler,6.480813897,132.26045,20.408
+tema,Triple Exponential Moving Average,6.298090426,110.32365,17.517
+tilson,Tilson T3,5.913420978,125.0452,21.146
+otto,Optimized Trend Tracker Oscillator (OTTO),5.738783227,3648.6036,635.78
+atr,Average True Range,5.391050362,113.7889,21.107
+sinwma,Sine Weighted Moving Average,5.163362151,161.85075,31.346
+cfo,Chaikin Flow Oscillator,5.106180935,118.75445,23.257
+alligator,Alligator,4.758171089,989.79475,208.02
+ultosc,Ultimate Oscillator,4.535655469,16.579635,3.6554
+qstick,Qstick,4.360852067,4.810892,1.1032
+nadaraya_watson_envelope,Nadaraya Watson Envelope,4.261737427,14439.61875,3388.2
+lrsi,Laguerre RSI,4.120543012,932.6025,226.33
+donchian,Donchian Channel,4.075607305,888.1971,217.93
+vidya,Variable Index Dynamic Average,3.880118449,114.97955,29.633
+mod_god_mode,Mod God Mode,3.688799313,5264.2855,1427.1
+chande,Chande Momentum Oscillator,3.666523164,2963.834,808.35
+halftrend,Halftrend,3.634824077,3246.952,893.29
+adosc,Accumulation/Distribution Oscillator,3.493097237,111.50665,31.922
+epma,Endpoint Moving Average,3.409954833,131.3651,38.524
+di,Directional Indicator (+DI/-DI),3.368383037,253.45735,75.246
+volume_adjusted_ma,Volume Adjusted Ma,3.073918778,3481.8278,1132.7
+macz,Macz,2.822876247,197.5844,69.994
+chandelier_exit,Chandelier Exit,2.631235231,4275.75725,1625
+jma,Jurik Moving Average,2.614795523,107.9283,41.276
+dec_osc,Detrended Oscillator,2.587046918,550.29075,212.71
+msw,Mesa Sine Wave,2.496171394,490.2231,196.39
+adxr,Average Directional Movement Index Rating,2.431204224,743.5595,305.84
+aroonosc,Aroon Oscillator,2.421917438,192.78705,79.601
+supersmoother,SuperSmoother,2.19084901,114.3667,52.202
+edcf,Ehlers Distance Coefficient Filter,2.119290402,107.84645,50.888
+mwdx,Modified Weighted Directional Index,2.112589436,108.0674,51.154
+maaq,Moving Average Adaptive Q,2.108473869,111.1482,52.715
+fisher,Fisher Transform,1.823892807,718.88735,394.15
+dema,Double Exponential Moving Average,1.763182016,109.2591,61.967
+medium_ad,Median Absolute Deviation,1.683521702,6167.0767,3663.2
+ott,Optimized Trend Tracker (OTT),1.657530149,755.46445,455.7772
+mab,Moving Average Bands,1.582533798,1861.218,1176.1
+tsf,Time Series Forecast,1.577150062,383.08975,242.9
+aso,Aso,1.447014557,308.14175,212.95
+stoch,Stochastic Oscillator,1.340773571,6144.6312,4582.9
+hwma,Hann Window Moving Average,1.291440061,124.2869,96.239
+ehlers_itrend,Ehlers Instantaneous Trendline,1.287556378,478.45595,371.6
+hma,Hull Moving Average,1.270380296,118.9889,93.664
+gaussian,Gaussian Filter,1.136964268,115.5042,101.59
+sma,Simple Moving Average,1.10944009,113.24055,102.07
+mean_ad,Mean Absolute Deviation,1.02842817,117.1174,113.88
+supersmoother_3_pole,SuperSmoother 3-Pole,1.007667899,111.7806,110.93

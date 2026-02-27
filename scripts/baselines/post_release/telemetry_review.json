@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-20T03:12:42.744Z",
+  "generated_at": "2026-02-26T07:05:35.226Z",
   "status": "pass",
   "summary": {
     "total_checks": 17,
@@ -11,8 +11,8 @@
       "name": "workflow_runtime_not_regressed_50pct",
       "ok": true,
       "severity": "error",
-      "detail": "runtime_ms=364 baseline=345",
-      "observed": 364,
+      "detail": "runtime_ms=384 baseline=345",
+      "observed": 384,
       "baseline": 345,
       "threshold": 517.5
     },
@@ -65,8 +65,8 @@
       "name": "ui_tti_under_10000ms",
       "ok": true,
       "severity": "error",
-      "detail": "time_to_interactive_ms=578",
-      "observed": 578,
+      "detail": "time_to_interactive_ms=566",
+      "observed": 566,
       "baseline": null,
       "threshold": 10000
     },

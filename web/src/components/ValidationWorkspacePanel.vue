@@ -185,7 +185,7 @@ function onTableScroll(event: Event): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="validate"]') as HTMLElement | null
-  const mount = document.getElementById('validationVueShellMount')
+  const mount = document.querySelector('#validationVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueValidation = '1'
@@ -725,6 +725,7 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 
 

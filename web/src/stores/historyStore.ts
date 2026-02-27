@@ -1,19 +1,23 @@
 import { defineStore } from 'pinia'
 import {
-  invokeLegacyHistoryApplySavedRunRuntime,
-  invokeLegacyHistoryApplySessionRuntime,
-  invokeLegacyHistoryClearSessionRuntime,
-  invokeLegacyHistoryDeleteSavedRunRuntime,
-  invokeLegacyHistoryExportPresetRuntime,
-  invokeLegacyHistoryImportPresetRuntime,
-  invokeLegacyHistoryLoadSavedRunRuntime,
-  invokeLegacyHistoryOpenSavedRunReportRuntime,
-  invokeLegacyHistoryRefreshSavedRunsRuntime,
-  invokeLegacyHistoryRerunSavedRunRuntime,
-  invokeLegacyHistoryRevealSavedRunRuntime,
-  invokeLegacyHistorySaveSavedRunTagsRuntime,
-} from '../legacy/actions'
-import { invokeCommand } from '../tauri/invoke'
+  applySavedRun as applySavedRunAction,
+  applySession as applySessionAction,
+  clearSession as clearSessionAction,
+  deleteSavedRun as deleteSavedRunAction,
+  exportPreset as exportPresetAction,
+  importPreset as importPresetAction,
+  loadSavedRun as loadSavedRunAction,
+  loadSavedRunDetail as loadSavedRunDetailAction,
+  openRunsDir as openRunsDirAction,
+  openSavedRunReport as openSavedRunReportAction,
+  readSessionHistory as readSessionHistoryAction,
+  refreshSavedRuns as refreshSavedRunsAction,
+  rerunSavedRun as rerunSavedRunAction,
+  revealSavedRun as revealSavedRunAction,
+  saveSavedRunTags as saveSavedRunTagsAction,
+  type HistorySavedRunDetail,
+  type HistorySessionSummary,
+} from '../services/historyService'
 
 export interface HistoryOption {
   value: string
@@ -21,14 +25,103 @@ export interface HistoryOption {
   disabled: boolean
 }
 
-function updateLegacyTextField(field: string, value: string, eventType: 'input' | 'change'): void {
-  if (typeof document === 'undefined') return
-  const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el || el.disabled) return
-  if (String(el.value ?? '') !== value) el.value = value
-  el.dispatchEvent(new Event(eventType, { bubbles: true }))
+interface HistorySavedRunEntry {
+  ts: string
+  path: string
+  bytes: number
+  strategyKind: string
+  hasValidation: boolean
+  reportXlsxPath: string
+  csvPath: string
+  tags: string[]
+}
+
+function normalizeText(value: unknown): string {
+  return String(value || '').trim()
+}
+
+function normalizePath(value: string): string {
+  return normalizeText(value)
+}
+
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const item of value) {
+    const next = normalizeText(item)
+    if (!next) continue
+    out.push(next)
+  }
+  return out
+}
+
+function filterTokens(value: string): string[] {
+  const query = normalizeText(value).toLowerCase()
+  if (!query) return []
+  return query.split(/\s+/g).map((token) => normalizeText(token)).filter((token) => token.length > 0)
+}
+
+function fileBasename(path: string): string {
+  const next = normalizePath(path)
+  if (!next) return ''
+  const parts = next.split(/[\\/]+/g)
+  return normalizeText(parts[parts.length - 1] || '')
+}
+
+function formatBytesCompact(bytes: number): string {
+  const value = Number(bytes || 0)
+  if (!Number.isFinite(value) || value <= 0) return ''
+  const gib = value / (1024 ** 3)
+  if (gib >= 1) return `${gib.toFixed(1)} GiB`
+  const mib = value / (1024 ** 2)
+  if (mib >= 1) return `${mib.toFixed(0)} MiB`
+  const kib = value / 1024
+  if (kib >= 1) return `${kib.toFixed(0)} KiB`
+  return `${Math.floor(value)} B`
+}
+
+function runtimeRunning(): boolean {
+  if (typeof document === 'undefined') return false
+  const root = document.documentElement as HTMLElement | undefined
+  if (!root || !root.dataset) return false
+  return String(root.dataset.running || '').trim() === '1'
+}
+
+function normalizeEntry(value: HistorySavedRunEntry): HistorySavedRunEntry {
+  return {
+    ts: normalizeText(value.ts),
+    path: normalizePath(value.path),
+    bytes: Number.isFinite(Number(value.bytes)) && Number(value.bytes) > 0 ? Math.floor(Number(value.bytes)) : 0,
+    strategyKind: normalizeText(value.strategyKind),
+    hasValidation: !!value.hasValidation,
+    reportXlsxPath: normalizePath(value.reportXlsxPath),
+    csvPath: normalizePath(value.csvPath),
+    tags: normalizeTags(value.tags),
+  }
+}
+
+function savedRunLabel(entry: HistorySavedRunEntry): string {
+  const hasVal = entry.hasValidation ? 'val' : '-'
+  const hasXlsx = entry.reportXlsxPath ? 'xlsx' : '-'
+  const tagsHint = entry.tags.length ? ` | tags=${entry.tags.length}` : ''
+  return `${entry.ts || 'unknown'} | ${entry.strategyKind || ''} | ${hasVal}/${hasXlsx}${tagsHint}`
+}
+
+function sessionRunLabel(entry: HistorySessionSummary): string {
+  return `${entry.ts || 'unknown'} | ${entry.backend || ''} | ${Math.max(0, Math.floor(Number(entry.pairs || 0)))} pairs`
+}
+
+function filterSavedRunsEntries(entries: HistorySavedRunEntry[], search: string): HistorySavedRunEntry[] {
+  const tokens = filterTokens(search)
+  if (!tokens.length) return [...entries]
+  const out: HistorySavedRunEntry[] = []
+  for (const entry of entries) {
+    const hay = `${entry.ts} ${entry.strategyKind} ${entry.csvPath} ${entry.tags.join(' ')}`
+      .trim()
+      .toLowerCase()
+    if (tokens.every((token) => hay.includes(token))) out.push(entry)
+  }
+  return out
 }
 
 interface HistoryState {
@@ -37,6 +130,10 @@ interface HistoryState {
   sessionSelectedValue: string
   sessionSelectedLabel: string
   savedRunCount: number
+  savedRunsRaw: HistorySavedRunEntry[]
+  savedRunDetailCache: Record<string, HistorySavedRunDetail>
+  savedRunDetailLoadingPath: string
+  savedRunDetailSeq: number
   savedOptions: HistoryOption[]
   savedSelectedValue: string
   savedSelectedLabel: string
@@ -70,7 +167,7 @@ interface HistoryState {
   canDeleteSavedRun: boolean
   canOpenRunsDir: boolean
   statusLine: string
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
 
@@ -91,6 +188,64 @@ function sanitizeOptionArray(value: unknown): HistoryOption[] {
     .filter((entry): entry is HistoryOption => entry !== null)
 }
 
+function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
+  if (!Array.isArray(value)) return []
+  const out: HistorySavedRunEntry[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const typed = item as Partial<HistorySavedRunEntry>
+    const path = normalizePath(String(typed.path || ''))
+    if (!path) continue
+    const bytes = Number(typed.bytes)
+    out.push({
+      ts: normalizeText(typed.ts),
+      path,
+      bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
+      strategyKind: normalizeText(typed.strategyKind),
+      hasValidation: !!typed.hasValidation,
+      reportXlsxPath: normalizePath(String(typed.reportXlsxPath || '')),
+      csvPath: normalizePath(String(typed.csvPath || '')),
+      tags: normalizeTags(typed.tags),
+    })
+  }
+  return out
+}
+
+function applyVueTextFieldUpdate(state: HistoryState, field: string, value: string): boolean {
+  const key = String(field || '').trim()
+  const next = String(value || '')
+  if (!key) return false
+  switch (key) {
+    case 'savedRunsSearch':
+      state.savedRunsSearch = next
+      return true
+    case 'savedRunsTags':
+      state.savedRunsTagsDraft = next
+      return true
+    default:
+      return false
+  }
+}
+
+function applyVueSelectFieldUpdate(state: HistoryState, field: string, value: string): boolean {
+  const key = String(field || '').trim()
+  const next = String(value || '').trim()
+  if (!key) return false
+  switch (key) {
+    case 'historySelect':
+      state.sessionSelectedValue = next
+      return true
+    case 'savedRunsSelect':
+      state.savedSelectedValue = next
+      return true
+    case 'compareSelect':
+      state.compareSelectedValue = next
+      return true
+    default:
+      return false
+  }
+}
+
 export const useHistoryStore = defineStore('history', {
   state: (): HistoryState => ({
     sessionRunCount: 0,
@@ -98,6 +253,10 @@ export const useHistoryStore = defineStore('history', {
     sessionSelectedValue: '',
     sessionSelectedLabel: 'No runs yet',
     savedRunCount: 0,
+    savedRunsRaw: [],
+    savedRunDetailCache: {},
+    savedRunDetailLoadingPath: '',
+    savedRunDetailSeq: 0,
     savedOptions: [],
     savedSelectedValue: '',
     savedSelectedLabel: 'No saved runs',
@@ -136,12 +295,41 @@ export const useHistoryStore = defineStore('history', {
   }),
 
   actions: {
+    refreshSessionHistory(preferredTs?: string): void {
+      const runs = readSessionHistoryAction()
+      const selectedTs = normalizeText(preferredTs ?? this.sessionSelectedValue)
+      const options: HistoryOption[] = [{
+        value: '',
+        label: runs.length ? 'Select a run...' : 'No runs yet',
+        disabled: false,
+      }]
+      for (const entry of runs) {
+        options.push({
+          value: normalizeText(entry.ts),
+          label: sessionRunLabel(entry),
+          disabled: false,
+        })
+      }
+      const hasSelection = selectedTs && runs.some((entry) => normalizeText(entry.ts) === selectedTs)
+      this.sessionRunCount = runs.length
+      this.sessionOptions = options
+      this.sessionSelectedValue = hasSelection ? selectedTs : ''
+      this.sessionSelectedLabel = hasSelection
+        ? (options.find((entry) => entry.value === selectedTs)?.label || 'No runs yet')
+        : 'No runs yet'
+      this.canApplyHistory = !!hasSelection
+      this.canClearHistory = runs.length > 0
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+    },
+
     applyLegacySnapshot(snapshot: Partial<HistoryState>): void {
       this.sessionRunCount = Math.max(0, Math.floor(Number(snapshot.sessionRunCount ?? this.sessionRunCount ?? 0)))
       this.sessionOptions = sanitizeOptionArray(snapshot.sessionOptions ?? this.sessionOptions)
       this.sessionSelectedValue = String(snapshot.sessionSelectedValue ?? this.sessionSelectedValue ?? '').trim()
       this.sessionSelectedLabel = String(snapshot.sessionSelectedLabel ?? this.sessionSelectedLabel ?? 'No runs yet').trim() || 'No runs yet'
       this.savedRunCount = Math.max(0, Math.floor(Number(snapshot.savedRunCount ?? this.savedRunCount ?? 0)))
+      this.savedRunsRaw = sanitizeSavedRunsArray(snapshot.savedRunsRaw ?? this.savedRunsRaw)
       this.savedOptions = sanitizeOptionArray(snapshot.savedOptions ?? this.savedOptions)
       this.savedSelectedValue = String(snapshot.savedSelectedValue ?? this.savedSelectedValue ?? '').trim()
       this.savedSelectedLabel = String(snapshot.savedSelectedLabel ?? this.savedSelectedLabel ?? 'No saved runs').trim() || 'No saved runs'
@@ -175,72 +363,355 @@ export const useHistoryStore = defineStore('history', {
       this.canDeleteSavedRun = Boolean(snapshot.canDeleteSavedRun ?? this.canDeleteSavedRun)
       this.canOpenRunsDir = Boolean(snapshot.canOpenRunsDir ?? this.canOpenRunsDir)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
     setInputField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'input')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueTextFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     setSelectField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'change')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueSelectFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
+    },
+
+    syncSavedRunsView(preferredPath?: string): void {
+      const filtered = filterSavedRunsEntries(this.savedRunsRaw.map((entry) => normalizeEntry(entry)), this.savedRunsSearch)
+      const options: HistoryOption[] = [{
+        value: '',
+        label: filtered.length ? 'Select a saved run...' : 'No saved runs yet',
+        disabled: false,
+      }]
+      for (const entry of filtered) {
+        options.push({
+          value: entry.path,
+          label: savedRunLabel(entry),
+          disabled: false,
+        })
+      }
+
+      const requestedPath = normalizePath(preferredPath ?? this.savedSelectedValue)
+      const selectedPath = requestedPath && filtered.some((entry) => entry.path === requestedPath)
+        ? requestedPath
+        : ''
+      const selectedEntry = filtered.find((entry) => entry.path === selectedPath) || null
+
+      this.savedOptions = options
+      this.savedRunCount = this.savedRunsRaw.length
+      this.savedSelectedValue = selectedPath
+      this.savedSelectedLabel = selectedEntry ? savedRunLabel(selectedEntry) : 'No saved runs'
+      this.savedRunsTagsDraft = selectedEntry ? selectedEntry.tags.join(', ') : ''
+
+      const selectedDetail = selectedEntry ? this.savedRunDetailCache[selectedEntry.path] : undefined
+
+      if (!selectedEntry) {
+        this.savedRunsMeta = `saved runs: ${filtered.length}/${this.savedRunsRaw.length}`
+        this.savedRunDetailTitle = 'No saved run selected'
+        this.savedRunDetailMeta = 'Select a run to inspect metadata and settings.'
+        this.savedRunDetailStrategy = '—'
+        this.savedRunDetailDataset = '—'
+        this.savedRunDetailTimeframe = '—'
+        this.savedRunDetailValidation = '—'
+        this.savedRunDetailReport = '—'
+        this.savedRunDetailSize = '—'
+        this.savedRunDetailTags = '—'
+        this.savedRunDetailParams = 'Select a saved run to inspect parameters.'
+        this.savedRunDetailLoadingPath = ''
+      } else {
+        const strategyKind = normalizeText(selectedDetail?.strategyKind || selectedEntry.strategyKind)
+        const csvPath = normalizePath(selectedDetail?.csvPath || selectedEntry.csvPath)
+        const timeframe = normalizeText(selectedDetail?.timeframe)
+        const reportPath = normalizePath(selectedDetail?.reportPath || selectedEntry.reportXlsxPath)
+        const hasValidation = selectedDetail ? !!selectedDetail.hasValidation : selectedEntry.hasValidation
+        const tags = selectedDetail ? normalizeTags(selectedDetail.tags) : normalizeTags(selectedEntry.tags)
+
+        const parts: string[] = []
+        if (selectedEntry.ts) parts.push(`ts=${selectedEntry.ts}`)
+        if (strategyKind) parts.push(`strategy=${strategyKind}`)
+        if (hasValidation) parts.push('validation=yes')
+        if (reportPath) parts.push('xlsx=yes')
+        if (csvPath) parts.push(`csv=${csvPath}`)
+        if (tags.length) parts.push(`tags=${tags.join(',')}`)
+        if (selectedEntry.bytes > 0) parts.push(`bytes=${selectedEntry.bytes}`)
+        this.savedRunsMeta = parts.join(' • ')
+        this.savedRunDetailTitle = selectedEntry.ts || 'Selected run'
+        this.savedRunDetailMeta = `artifact: ${fileBasename(selectedEntry.path) || selectedEntry.path || 'unknown'}`
+        this.savedRunDetailStrategy = strategyKind || '—'
+        this.savedRunDetailDataset = fileBasename(csvPath) || csvPath || '—'
+        this.savedRunDetailTimeframe = timeframe || '—'
+        this.savedRunDetailValidation = hasValidation ? 'Available' : 'Not saved'
+        this.savedRunDetailReport = reportPath ? 'XLSX available' : 'Not exported'
+        this.savedRunDetailSize = formatBytesCompact(selectedEntry.bytes) || '—'
+        this.savedRunDetailTags = tags.length ? tags.join(', ') : '—'
+        this.savedRunDetailParams = normalizeText(selectedDetail?.paramsText) || 'Loading parameter snapshot...'
+      }
+
+      const canMutate = !runtimeRunning()
+      const hasSelection = !!selectedEntry
+      this.canSaveSavedRunTags = canMutate && hasSelection
+      this.canRefreshSavedRuns = canMutate
+      this.canLoadSavedRun = canMutate && hasSelection
+      this.canApplySavedRun = canMutate && hasSelection
+      this.canRerunSavedRun = canMutate && hasSelection
+      this.canOpenSavedRunReport = canMutate && !!selectedEntry?.reportXlsxPath
+      this.canRevealSavedRun = canMutate && hasSelection
+      this.canDeleteSavedRun = canMutate && hasSelection
+      this.canOpenRunsDir = canMutate
+
+      if (selectedEntry && !selectedDetail) {
+        this.loadSavedRunDetail(selectedEntry.path)
+      }
+    },
+
+    loadSavedRunDetail(path: string): void {
+      const nextPath = normalizePath(path)
+      if (!nextPath) return
+      if (this.savedRunDetailLoadingPath === nextPath) return
+
+      const seq = Math.max(0, Math.floor(Number(this.savedRunDetailSeq || 0))) + 1
+      this.savedRunDetailSeq = seq
+      this.savedRunDetailLoadingPath = nextPath
+
+      void loadSavedRunDetailAction(nextPath)
+        .then((detail) => {
+          this.savedRunDetailCache = {
+            ...this.savedRunDetailCache,
+            [nextPath]: {
+              strategyKind: normalizeText(detail?.strategyKind),
+              timeframe: normalizeText(detail?.timeframe),
+              csvPath: normalizePath(detail?.csvPath || ''),
+              reportPath: normalizePath(detail?.reportPath || ''),
+              hasValidation: !!detail?.hasValidation,
+              tags: normalizeTags(detail?.tags),
+              paramsText: normalizeText(detail?.paramsText) || 'Request unavailable.',
+            },
+          }
+          if (this.savedRunDetailSeq === seq && this.savedSelectedValue === nextPath) {
+            this.syncSavedRunsView(nextPath)
+            this.source = 'vue'
+            this.updatedAtUnixMs = Date.now()
+          }
+        })
+        .catch((error: unknown) => {
+          if (this.savedRunDetailSeq !== seq || this.savedSelectedValue !== nextPath) return
+          this.savedRunDetailParams = `Failed to load artifact:\n${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .finally(() => {
+          if (this.savedRunDetailLoadingPath === nextPath) {
+            this.savedRunDetailLoadingPath = ''
+          }
+        })
+    },
+
+    setSavedRunsSearch(value: string): void {
+      this.savedRunsSearch = String(value || '')
+      this.syncSavedRunsView(this.savedSelectedValue)
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+    },
+
+    setSavedRunsTagsDraft(value: string): void {
+      this.savedRunsTagsDraft = String(value || '')
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+    },
+
+    selectSavedRun(path: string): void {
+      this.syncSavedRunsView(path)
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
     },
 
     applySession(): void {
-      void invokeLegacyHistoryApplySessionRuntime()
+      const selectedTs = normalizePath(this.sessionSelectedValue)
+      void applySessionAction(selectedTs)
+        .then(() => {
+          this.statusLine = 'Applied history run settings to the form.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to apply history run.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     exportPreset(): void {
-      void invokeLegacyHistoryExportPresetRuntime()
+      void exportPresetAction()
+        .then(() => {
+          this.statusLine = 'Exported preset.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to export preset.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     importPreset(): void {
-      void invokeLegacyHistoryImportPresetRuntime()
+      void importPresetAction()
+        .then(() => {
+          this.statusLine = 'Imported preset.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to import preset.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     clearSession(): void {
-      void invokeLegacyHistoryClearSessionRuntime()
+      void clearSessionAction()
+        .then(() => {
+          this.refreshSessionHistory('')
+          this.compareSelectedValue = ''
+          this.statusLine = 'History cleared.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to clear history.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     saveSavedRunTags(path: string, tags: string): void {
-      void invokeLegacyHistorySaveSavedRunTagsRuntime({
-        path: String(path || '').trim(),
-        tags: String(tags || ''),
-      })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+      const nextTags = String(tags || this.savedRunsTagsDraft || '')
+      this.savedRunsTagsDraft = nextTags
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+
+      void saveSavedRunTagsAction(nextPath, nextTags)
+        .then(() => refreshSavedRunsAction())
+        .then((summary) => {
+          this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs)
+          const allowed = new Set(this.savedRunsRaw.map((entry) => entry.path))
+          const nextCache: Record<string, HistorySavedRunDetail> = {}
+          for (const [path, detail] of Object.entries(this.savedRunDetailCache)) {
+            if (!allowed.has(path)) continue
+            nextCache[path] = detail
+          }
+          this.savedRunDetailCache = nextCache
+          this.syncSavedRunsView(nextPath)
+          this.statusLine = 'Saved tags.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to save tags.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     refreshSavedRuns(): void {
-      void invokeLegacyHistoryRefreshSavedRunsRuntime()
+      if (!this.canRefreshSavedRuns) return
+      const preferredPath = normalizePath(this.savedSelectedValue)
+
+      void refreshSavedRunsAction()
+        .then((summary) => {
+          this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs)
+          const allowed = new Set(this.savedRunsRaw.map((entry) => entry.path))
+          const nextCache: Record<string, HistorySavedRunDetail> = {}
+          for (const [path, detail] of Object.entries(this.savedRunDetailCache)) {
+            if (!allowed.has(path)) continue
+            nextCache[path] = detail
+          }
+          this.savedRunDetailCache = nextCache
+          this.syncSavedRunsView(preferredPath)
+          this.statusLine = 'Refreshed saved runs.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to refresh saved runs.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     openRunsDir(): void {
       if (!this.canOpenRunsDir) return
-      void invokeCommand('open_runs_dir').catch(() => undefined)
+      void openRunsDirAction().catch(() => undefined)
     },
 
     loadSavedRun(path: string): void {
-      void invokeLegacyHistoryLoadSavedRunRuntime({ path: String(path || '').trim() })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+      void loadSavedRunAction(nextPath)
     },
 
     applySavedRun(path: string): void {
-      void invokeLegacyHistoryApplySavedRunRuntime({ path: String(path || '').trim() })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+      void applySavedRunAction(nextPath)
     },
 
     rerunSavedRun(path: string): void {
-      void invokeLegacyHistoryRerunSavedRunRuntime({ path: String(path || '').trim() })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+      void rerunSavedRunAction(nextPath)
     },
 
     openSavedRunReport(path: string): void {
-      void invokeLegacyHistoryOpenSavedRunReportRuntime({ path: String(path || '').trim() })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+      void openSavedRunReportAction(nextPath)
     },
 
     revealSavedRun(path: string): void {
-      void invokeLegacyHistoryRevealSavedRunRuntime({ path: String(path || '').trim() })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+      void revealSavedRunAction(nextPath)
     },
 
     deleteSavedRun(path: string): void {
-      void invokeLegacyHistoryDeleteSavedRunRuntime({ path: String(path || '').trim() })
+      const nextPath = normalizePath(path || this.savedSelectedValue)
+      if (!nextPath) return
+
+      void deleteSavedRunAction(nextPath)
+        .then(() => refreshSavedRunsAction())
+        .then((summary) => {
+          this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs)
+          const allowed = new Set(this.savedRunsRaw.map((entry) => entry.path))
+          const nextCache: Record<string, HistorySavedRunDetail> = {}
+          for (const [path, detail] of Object.entries(this.savedRunDetailCache)) {
+            if (!allowed.has(path)) continue
+            nextCache[path] = detail
+          }
+          this.savedRunDetailCache = nextCache
+          const preferred = this.savedSelectedValue === nextPath ? '' : this.savedSelectedValue
+          this.syncSavedRunsView(preferred)
+          this.statusLine = 'Deleted saved run.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
+        .catch((error: unknown) => {
+          this.statusLine = String(error || '').trim() || 'Failed to delete saved run.'
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
   },
 })
+

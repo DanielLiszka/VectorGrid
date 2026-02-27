@@ -254,6 +254,10 @@ pub struct MetaCandidateAggregate {
     pub key: String,
     pub ma_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_context: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_context: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fast_ma_params: Option<HashMap<String, f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slow_ma_params: Option<HashMap<String, f64>>,
@@ -328,6 +332,8 @@ pub struct MetaSelectionResult {
 struct GroupAcc {
     params: Value,
     ma_source: String,
+    feature_context: Option<Value>,
+    run_context: Option<Value>,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
     robust_scores: Vec<f64>,
@@ -416,16 +422,20 @@ pub fn meta_select_from_artifacts(
         let ma_source = artifact_ma_source(art).unwrap_or_else(|| "close".to_string());
         let fast_ma_params = artifact_ma_params(art, "fast");
         let slow_ma_params = artifact_ma_params(art, "slow");
+        let feature_context = artifact_feature_context(art);
+        let run_context = artifact_run_context(art);
 
         let mut seen_keys: HashSet<String> = HashSet::new();
         for cand in selected {
             let params = cand.get("params").unwrap_or(&Value::Null);
-            let key = meta_group_key_for_request(
+            let key = meta_group_key_for_request_with_context(
                 req,
                 params,
                 &ma_source,
                 &fast_ma_params,
                 &slow_ma_params,
+                feature_context.as_ref(),
+                run_context.as_ref(),
             );
             if !seen_keys.insert(key.clone()) {
                 continue;
@@ -483,6 +493,8 @@ pub fn meta_select_from_artifacts(
             let entry = groups.entry(key.clone()).or_insert_with(|| GroupAcc {
                 params: params.clone(),
                 ma_source: ma_source.clone(),
+                feature_context: feature_context.clone(),
+                run_context: run_context.clone(),
                 fast_ma_params: fast_ma_params.clone(),
                 slow_ma_params: slow_ma_params.clone(),
                 ..GroupAcc::default()
@@ -593,6 +605,8 @@ pub fn meta_select_from_artifacts(
             params: acc.params,
             key,
             ma_source: acc.ma_source,
+            feature_context: acc.feature_context,
+            run_context: acc.run_context,
             fast_ma_params: acc.fast_ma_params,
             slow_ma_params: acc.slow_ma_params,
             representatives,
@@ -784,6 +798,27 @@ fn artifact_ma_params(art: &Value, side: &str) -> Option<HashMap<String, f64>> {
     parse_ma_param_map(v)
 }
 
+fn normalize_optional_json(v: Option<&Value>) -> Option<Value> {
+    match v {
+        Some(Value::Null) | None => None,
+        Some(x) => Some(x.clone()),
+    }
+}
+
+fn artifact_feature_context(art: &Value) -> Option<Value> {
+    normalize_optional_json(
+        art.pointer("/validation/req/feature_context")
+            .or_else(|| art.pointer("/run/req/feature_context")),
+    )
+}
+
+fn artifact_run_context(art: &Value) -> Option<Value> {
+    normalize_optional_json(
+        art.pointer("/validation/req/run_context")
+            .or_else(|| art.pointer("/run/req/run_context")),
+    )
+}
+
 fn artifact_dataset_key(art: &Value, idx: usize) -> String {
     let csv = art
         .pointer("/data/csv_path")
@@ -862,12 +897,39 @@ pub fn meta_group_key(
     fast_ma_params: &Option<HashMap<String, f64>>,
     slow_ma_params: &Option<HashMap<String, f64>>,
 ) -> String {
-    let v = serde_json::json!({
-        "params": params,
-        "ma_source": ma_source,
-        "fast_ma_params": fast_ma_params,
-        "slow_ma_params": slow_ma_params,
-    });
+    meta_group_key_with_context(
+        params,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        None,
+        None,
+    )
+}
+
+pub fn meta_group_key_with_context(
+    params: &Value,
+    ma_source: &str,
+    fast_ma_params: &Option<HashMap<String, f64>>,
+    slow_ma_params: &Option<HashMap<String, f64>>,
+    feature_context: Option<&Value>,
+    run_context: Option<&Value>,
+) -> String {
+    // Prefer strategy-agnostic context when present; otherwise keep legacy MA-based key shape.
+    let v = if feature_context.is_some() || run_context.is_some() {
+        serde_json::json!({
+            "params": params,
+            "feature_context": feature_context,
+            "run_context": run_context,
+        })
+    } else {
+        serde_json::json!({
+            "params": params,
+            "ma_source": ma_source,
+            "fast_ma_params": fast_ma_params,
+            "slow_ma_params": slow_ma_params,
+        })
+    };
     canonical_json(&v)
 }
 
@@ -878,27 +940,67 @@ pub fn meta_group_key_for_request(
     fast_ma_params: &Option<HashMap<String, f64>>,
     slow_ma_params: &Option<HashMap<String, f64>>,
 ) -> String {
+    meta_group_key_for_request_with_context(
+        req,
+        params,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        None,
+        None,
+    )
+}
+
+pub fn meta_group_key_for_request_with_context(
+    req: &MetaSelectionRequest,
+    params: &Value,
+    ma_source: &str,
+    fast_ma_params: &Option<HashMap<String, f64>>,
+    slow_ma_params: &Option<HashMap<String, f64>>,
+    feature_context: Option<&Value>,
+    run_context: Option<&Value>,
+) -> String {
     if req.grouping_mode == MetaGroupingMode::Exact {
-        return meta_group_key(params, ma_source, fast_ma_params, slow_ma_params);
+        return meta_group_key_with_context(
+            params,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            feature_context,
+            run_context,
+        );
     }
 
     let cfg = &req.cluster_config;
     let params_sig = quantize_value(params, cfg);
-    let fast_sig = quantize_value(
-        &serde_json::to_value(fast_ma_params).unwrap_or(Value::Null),
-        cfg,
-    );
-    let slow_sig = quantize_value(
-        &serde_json::to_value(slow_ma_params).unwrap_or(Value::Null),
-        cfg,
-    );
-
-    let v = serde_json::json!({
-        "params": params_sig,
-        "ma_source": ma_source,
-        "fast_ma_params": fast_sig,
-        "slow_ma_params": slow_sig,
-    });
+    let v = if feature_context.is_some() || run_context.is_some() {
+        let feature_sig = feature_context
+            .map(|x| quantize_value(x, cfg))
+            .unwrap_or(Value::Null);
+        let run_sig = run_context
+            .map(|x| quantize_value(x, cfg))
+            .unwrap_or(Value::Null);
+        serde_json::json!({
+            "params": params_sig,
+            "feature_context": feature_sig,
+            "run_context": run_sig,
+        })
+    } else {
+        let fast_sig = quantize_value(
+            &serde_json::to_value(fast_ma_params).unwrap_or(Value::Null),
+            cfg,
+        );
+        let slow_sig = quantize_value(
+            &serde_json::to_value(slow_ma_params).unwrap_or(Value::Null),
+            cfg,
+        );
+        serde_json::json!({
+            "params": params_sig,
+            "ma_source": ma_source,
+            "fast_ma_params": fast_sig,
+            "slow_ma_params": slow_sig,
+        })
+    };
     canonical_json(&v)
 }
 
@@ -1523,5 +1625,114 @@ mod tests {
         assert_eq!(clustered.groups.len(), 1);
         assert_eq!(clustered.groups[0].samples, 2);
         assert!(clustered.groups[0].representatives.len() >= 2);
+    }
+
+    #[test]
+    fn back_compat_old_artifact_without_generic_context_uses_legacy_ma_grouping() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 5,
+            "slow_len": 20
+        });
+        let mk_art = |label: &str, ma_source: &str| {
+            json!({
+                "kind": "vectorbt_run_artifact",
+                "run": { "req": { "strategy_kind": "CompositeMo", "ma_source": ma_source }, "res": {} },
+                "dataset_meta": { "label": label, "timeframe": "1m", "csv_path": format!("{label}.csv") },
+                "validation": {
+                    "req": { "ma_source": ma_source },
+                    "res": { "candidates": [
+                        {
+                            "params": params,
+                            "in_sample": { "pnl": 1.0, "sharpe": 1.8, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                            "robust_score": 1.1,
+                            "robust_pareto": true
+                        }
+                    ]}
+                }
+            })
+        };
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: false,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(
+            &req,
+            &[mk_art("AAPL", "close"), mk_art("MSFT", "hl2")],
+            None,
+        );
+        // Legacy MA context is still part of the grouping key when generic context is absent.
+        assert_eq!(res.groups.len(), 2);
+    }
+
+    #[test]
+    fn forward_compat_generic_context_groups_without_legacy_ma_fields() {
+        let params = json!({
+            "alpha": 7,
+            "beta": 13
+        });
+        let mk_art = |label: &str| {
+            json!({
+                "kind": "vectorbt_run_artifact",
+                "run": { "req": { "strategy_kind": "CompositeMo", "feature_context": { "family": "generic" }, "run_context": { "variant": "v1" } }, "res": {} },
+                "dataset_meta": { "label": label, "timeframe": "1m", "csv_path": format!("{label}.csv") },
+                "validation": {
+                    "req": { "feature_context": { "family": "generic" }, "run_context": { "variant": "v1" } },
+                    "res": { "candidates": [
+                        {
+                            "params": params,
+                            "in_sample": { "pnl": 1.0, "sharpe": 1.8, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                            "robust_score": 1.1,
+                            "robust_pareto": true
+                        }
+                    ]}
+                }
+            })
+        };
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: false,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &[mk_art("AAPL"), mk_art("MSFT")], None);
+        assert_eq!(res.groups.len(), 1);
+        assert!(res.groups[0].feature_context.is_some());
+        assert!(res.groups[0].run_context.is_some());
     }
 }

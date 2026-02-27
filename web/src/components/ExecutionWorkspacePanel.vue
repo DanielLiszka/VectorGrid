@@ -15,6 +15,8 @@ const {
   riskTakeProfitPct,
   manualFastLen,
   manualSlowLen,
+  apiKey,
+  apiSecret,
   dryRun,
   rememberKeys,
   liveUseDelayed,
@@ -48,6 +50,8 @@ const riskSlDraft = ref('')
 const riskTpDraft = ref('')
 const manualFastDraft = ref('')
 const manualSlowDraft = ref('')
+const apiKeyDraft = ref('')
+const apiSecretDraft = ref('')
 const modeDraft = ref('paper')
 const sourceDraft = ref('selected')
 
@@ -65,6 +69,8 @@ watch(riskStopLossPct, (v) => { const next = String(v || ''); if (riskSlDraft.va
 watch(riskTakeProfitPct, (v) => { const next = String(v || ''); if (riskTpDraft.value !== next) riskTpDraft.value = next }, { immediate: true })
 watch(manualFastLen, (v) => { const next = String(v || ''); if (manualFastDraft.value !== next) manualFastDraft.value = next }, { immediate: true })
 watch(manualSlowLen, (v) => { const next = String(v || ''); if (manualSlowDraft.value !== next) manualSlowDraft.value = next }, { immediate: true })
+watch(apiKey, (v) => { const next = String(v || ''); if (apiKeyDraft.value !== next) apiKeyDraft.value = next }, { immediate: true })
+watch(apiSecret, (v) => { const next = String(v || ''); if (apiSecretDraft.value !== next) apiSecretDraft.value = next }, { immediate: true })
 watch(mode, (v) => { const next = String(v || 'paper'); if (modeDraft.value !== next) modeDraft.value = next }, { immediate: true })
 watch(paramSource, (v) => { const next = String(v || 'selected'); if (sourceDraft.value !== next) sourceDraft.value = next }, { immediate: true })
 
@@ -81,8 +87,8 @@ function setCheckboxValue(id: string, checked: boolean): void {
 }
 
 function resolveMount(): void {
-  const pane = document.getElementById('executionShellPane')
-  const mount = document.getElementById('executionVueShellMount')
+  const pane = document.querySelector('#executionShellPane') as HTMLElement | null
+  const mount = document.querySelector('#executionVueShellMount') as HTMLElement | null
   if (!pane || !mount) return
   paneRoot.value = pane
   pane.dataset.vueExecution = '1'
@@ -126,6 +132,14 @@ onBeforeUnmount(() => {
           <div>
             <label for="vueExecQty">Quantity</label>
             <input id="vueExecQty" type="number" min="0.0001" step="0.0001" :value="qtyDraft" @input="qtyDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execQty', qtyDraft)" />
+          </div>
+          <div>
+            <label for="vueExecApiKey">API key</label>
+            <input id="vueExecApiKey" type="text" :value="apiKeyDraft" autocomplete="off" @input="apiKeyDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execApiKey', apiKeyDraft)" />
+          </div>
+          <div>
+            <label for="vueExecApiSecret">API secret</label>
+            <input id="vueExecApiSecret" type="password" :value="apiSecretDraft" autocomplete="off" @input="apiSecretDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execApiSecret', apiSecretDraft)" />
           </div>
           <div>
             <label for="vueExecSource">Parameter source</label>
@@ -395,5 +409,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

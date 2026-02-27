@@ -6,6 +6,29 @@ export interface StrategyOption {
   disabled: boolean
 }
 
+const COST_PRESET_OPTIONS_DEFAULT: StrategyOption[] = [
+  { value: 'custom', label: 'Custom', disabled: false },
+  { value: 'none', label: 'None (0 bps)', disabled: false },
+  { value: 'stocks_liquid', label: 'Stocks (liquid, conservative)', disabled: false },
+  { value: 'fx_majors', label: 'FX (majors, conservative)', disabled: false },
+  { value: 'crypto_spot_maker', label: 'Crypto spot (maker-ish)', disabled: false },
+  { value: 'crypto_spot_taker', label: 'Crypto spot (taker, conservative)', disabled: false },
+]
+
+const EXIT_MODE_OPTIONS_DEFAULT: StrategyOption[] = [
+  { value: 'cross', label: 'Cross signal', disabled: false },
+  { value: 'kaufman_stop', label: 'Kaufman-stop', disabled: false },
+]
+
+const COST_PRESETS_DEFAULT: Record<string, { feeBps: string | null; spreadBps: string | null; slippageBps: string | null }> = {
+  custom: { feeBps: null, spreadBps: null, slippageBps: null },
+  none: { feeBps: '0', spreadBps: '0', slippageBps: '0' },
+  stocks_liquid: { feeBps: '0.10', spreadBps: '1.00', slippageBps: '0.50' },
+  fx_majors: { feeBps: '0.00', spreadBps: '1.00', slippageBps: '0.50' },
+  crypto_spot_maker: { feeBps: '2.00', spreadBps: '5.00', slippageBps: '1.50' },
+  crypto_spot_taker: { feeBps: '7.50', spreadBps: '5.00', slippageBps: '2.50' },
+}
+
 function normalizedOptions(values: unknown): StrategyOption[] {
   if (!Array.isArray(values)) return []
   const entries: StrategyOption[] = []
@@ -24,14 +47,31 @@ function normalizedOptions(values: unknown): StrategyOption[] {
   return entries
 }
 
-function updateLegacyField(field: string, value: string, eventType: 'input' | 'change'): void {
-  if (typeof document === 'undefined') return
-  const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el || el.disabled) return
-  if (String(el.value ?? '') !== value) el.value = value
-  el.dispatchEvent(new Event(eventType, { bubbles: true }))
+function parseNonNegativeNumber(value: string): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return parsed
+}
+
+function syncDerivedCostFields(state: StrategyState): void {
+  const feeBps = parseNonNegativeNumber(state.feeBps)
+  const spreadBps = parseNonNegativeNumber(state.spreadBps)
+  const slippageBps = parseNonNegativeNumber(state.slippageBps)
+  const perSideBps = feeBps + slippageBps + (spreadBps / 2)
+  const roundTripBps = perSideBps * 2
+  const commissionFraction = Math.max(0, Math.min(0.999999, perSideBps / 10_000))
+
+  state.commission = String(commissionFraction)
+  state.costHint = `Total: ${perSideBps.toFixed(2)} bps/side (${roundTripBps.toFixed(2)} bps round-trip)`
+}
+
+function applyCostPresetToState(state: StrategyState, presetId: string): void {
+  const presetKey = String(presetId || 'custom').trim() || 'custom'
+  const preset = COST_PRESETS_DEFAULT[presetKey] ?? COST_PRESETS_DEFAULT.custom ?? { feeBps: null, spreadBps: null, slippageBps: null }
+  if (preset.feeBps != null) state.feeBps = preset.feeBps
+  if (preset.spreadBps != null) state.spreadBps = preset.spreadBps
+  if (preset.slippageBps != null) state.slippageBps = preset.slippageBps
+  syncDerivedCostFields(state)
 }
 
 interface StrategyState {
@@ -50,6 +90,46 @@ interface StrategyState {
   cooldownBars: string
   signalPersistenceBars: string
   trailingStopPct: string
+  compositeSignalMode: string
+  halfTrendAmplitude: string
+  halfTrendAtrPeriod: string
+  halfTrendChannelDev: string
+  maczFastLength: string
+  maczSlowLength: string
+  maczSignalLength: string
+  maczLengthZ: string
+  maczLengthStdev: string
+  maczGamma: string
+  maczA: string
+  maczB: string
+  ottPeriod: string
+  ottPercent: string
+  ottMaType: string
+  trendLrPeriod: string
+  trendLrMinDeg: string
+  trendBbwPeriod: string
+  trendBbwMult: string
+  trendBbwMin: string
+  trendRocPeriod: string
+  trendAdxPeriod: string
+  trendAdxMin: string
+  regimeAdxPeriod: string
+  regimeAdxEnter: string
+  regimeAdxExit: string
+  regimeRevEntryRel: string
+  regimeRevExitRel: string
+  breakoutBbPeriod: string
+  breakoutBbMult: string
+  breakoutConfirmBars: string
+  breakoutMacdFast: string
+  breakoutMacdSlow: string
+  breakoutMacdSignal: string
+  breakoutCmoPeriod: string
+  breakoutCmoMinAbs: string
+  breakoutAdoscShort: string
+  breakoutAdoscLong: string
+  breakoutAdxPeriod: string
+  breakoutAdxMin: string
   dmConstraintMinTrades: string
   dmConstraintMaxDd: string
   dmConstraintsVisible: boolean
@@ -61,39 +141,190 @@ interface StrategyState {
   kaufmanStopPeriodVisible: boolean
   kaufmanStopMultVisible: boolean
   kaufmanStopMaTypeVisible: boolean
+  longOnly: boolean
+  allowFlip: boolean
+  tradeOnNext: boolean
+  trendUseRoc: boolean
+  trendUseAdx: boolean
+  breakoutUseAdx: boolean
+  maczUseVolume: boolean
+  maczUseLag: boolean
   statusLine: string
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
+}
+
+const STRATEGY_TEXT_FIELDS = [
+  'costPreset',
+  'feeBps',
+  'spreadBps',
+  'slippageBps',
+  'commission',
+  'epsRel',
+  'startingEquity',
+  'stopLossPct',
+  'takeProfitPct',
+  'cooldownBars',
+  'signalPersistenceBars',
+  'trailingStopPct',
+  'compositeSignalMode',
+  'halfTrendAmplitude',
+  'halfTrendAtrPeriod',
+  'halfTrendChannelDev',
+  'maczFastLength',
+  'maczSlowLength',
+  'maczSignalLength',
+  'maczLengthZ',
+  'maczLengthStdev',
+  'maczGamma',
+  'maczA',
+  'maczB',
+  'ottPeriod',
+  'ottPercent',
+  'ottMaType',
+  'trendLrPeriod',
+  'trendLrMinDeg',
+  'trendBbwPeriod',
+  'trendBbwMult',
+  'trendBbwMin',
+  'trendRocPeriod',
+  'trendAdxPeriod',
+  'trendAdxMin',
+  'regimeAdxPeriod',
+  'regimeAdxEnter',
+  'regimeAdxExit',
+  'regimeRevEntryRel',
+  'regimeRevExitRel',
+  'breakoutBbPeriod',
+  'breakoutBbMult',
+  'breakoutConfirmBars',
+  'breakoutMacdFast',
+  'breakoutMacdSlow',
+  'breakoutMacdSignal',
+  'breakoutCmoPeriod',
+  'breakoutCmoMinAbs',
+  'breakoutAdoscShort',
+  'breakoutAdoscLong',
+  'breakoutAdxPeriod',
+  'breakoutAdxMin',
+  'dmConstraintMinTrades',
+  'dmConstraintMaxDd',
+  'exitMode',
+  'kaufmanStopPeriod',
+  'kaufmanStopMult',
+  'kaufmanStopMaType',
+] as const
+
+type StrategyTextField = (typeof STRATEGY_TEXT_FIELDS)[number]
+const STRATEGY_TEXT_FIELD_SET: ReadonlySet<string> = new Set(STRATEGY_TEXT_FIELDS)
+
+const STRATEGY_CHECKBOX_FIELDS = [
+  'dmConstraintsVisible',
+  'longOnly',
+  'allowFlip',
+  'tradeOnNext',
+  'trendUseRoc',
+  'trendUseAdx',
+  'breakoutUseAdx',
+  'maczUseVolume',
+  'maczUseLag',
+] as const
+
+type StrategyCheckboxField = (typeof STRATEGY_CHECKBOX_FIELDS)[number]
+const STRATEGY_CHECKBOX_FIELD_SET: ReadonlySet<string> = new Set(STRATEGY_CHECKBOX_FIELDS)
+
+function applyVueTextFieldUpdate(state: StrategyState, field: string, value: string): boolean {
+  const key = String(field || '').trim()
+  if (!STRATEGY_TEXT_FIELD_SET.has(key)) return false
+  const typedKey = key as StrategyTextField
+  ;(state as unknown as Record<StrategyTextField, string>)[typedKey] = String(value || '')
+  return true
+}
+
+function applyVueCheckboxFieldUpdate(state: StrategyState, field: string, checked: boolean): boolean {
+  const key = String(field || '').trim()
+  if (!STRATEGY_CHECKBOX_FIELD_SET.has(key)) return false
+  const typedKey = key as StrategyCheckboxField
+  ;(state as unknown as Record<StrategyCheckboxField, boolean>)[typedKey] = !!checked
+  return true
 }
 
 export const useStrategyStore = defineStore('strategy', {
   state: (): StrategyState => ({
     activeControlsTab: 'data',
     costPreset: 'custom',
-    costPresetOptions: [],
+    costPresetOptions: [...COST_PRESET_OPTIONS_DEFAULT],
     feeBps: '0',
     spreadBps: '0',
     slippageBps: '0',
     commission: '0',
     epsRel: '0',
-    costHint: 'Total: —',
+    costHint: 'Total: 0.00 bps/side (0.00 bps round-trip)',
     startingEquity: '10000',
     stopLossPct: '',
     takeProfitPct: '',
     cooldownBars: '0',
     signalPersistenceBars: '1',
     trailingStopPct: '',
+    compositeSignalMode: '',
+    halfTrendAmplitude: '',
+    halfTrendAtrPeriod: '',
+    halfTrendChannelDev: '',
+    maczFastLength: '',
+    maczSlowLength: '',
+    maczSignalLength: '',
+    maczLengthZ: '',
+    maczLengthStdev: '',
+    maczGamma: '',
+    maczA: '',
+    maczB: '',
+    ottPeriod: '',
+    ottPercent: '',
+    ottMaType: '',
+    trendLrPeriod: '',
+    trendLrMinDeg: '',
+    trendBbwPeriod: '',
+    trendBbwMult: '',
+    trendBbwMin: '',
+    trendRocPeriod: '',
+    trendAdxPeriod: '',
+    trendAdxMin: '',
+    regimeAdxPeriod: '',
+    regimeAdxEnter: '',
+    regimeAdxExit: '',
+    regimeRevEntryRel: '',
+    regimeRevExitRel: '',
+    breakoutBbPeriod: '',
+    breakoutBbMult: '',
+    breakoutConfirmBars: '',
+    breakoutMacdFast: '',
+    breakoutMacdSlow: '',
+    breakoutMacdSignal: '',
+    breakoutCmoPeriod: '',
+    breakoutCmoMinAbs: '',
+    breakoutAdoscShort: '',
+    breakoutAdoscLong: '',
+    breakoutAdxPeriod: '',
+    breakoutAdxMin: '',
     dmConstraintMinTrades: '',
     dmConstraintMaxDd: '',
     dmConstraintsVisible: true,
     exitMode: 'cross',
-    exitModeOptions: [],
+    exitModeOptions: [...EXIT_MODE_OPTIONS_DEFAULT],
     kaufmanStopPeriod: '22',
     kaufmanStopMult: '2.0',
     kaufmanStopMaType: 'sma',
     kaufmanStopPeriodVisible: true,
     kaufmanStopMultVisible: true,
     kaufmanStopMaTypeVisible: true,
+    longOnly: true,
+    allowFlip: true,
+    tradeOnNext: true,
+    trendUseRoc: true,
+    trendUseAdx: false,
+    breakoutUseAdx: false,
+    maczUseVolume: false,
+    maczUseLag: false,
     statusLine: 'Ready.',
     source: 'unknown',
     updatedAtUnixMs: 0,
@@ -121,6 +352,46 @@ export const useStrategyStore = defineStore('strategy', {
       this.cooldownBars = String(snapshot.cooldownBars ?? this.cooldownBars ?? '0').trim() || '0'
       this.signalPersistenceBars = String(snapshot.signalPersistenceBars ?? this.signalPersistenceBars ?? '1').trim() || '1'
       this.trailingStopPct = String(snapshot.trailingStopPct ?? this.trailingStopPct ?? '').trim()
+      this.compositeSignalMode = String(snapshot.compositeSignalMode ?? this.compositeSignalMode ?? '').trim()
+      this.halfTrendAmplitude = String(snapshot.halfTrendAmplitude ?? this.halfTrendAmplitude ?? '').trim()
+      this.halfTrendAtrPeriod = String(snapshot.halfTrendAtrPeriod ?? this.halfTrendAtrPeriod ?? '').trim()
+      this.halfTrendChannelDev = String(snapshot.halfTrendChannelDev ?? this.halfTrendChannelDev ?? '').trim()
+      this.maczFastLength = String(snapshot.maczFastLength ?? this.maczFastLength ?? '').trim()
+      this.maczSlowLength = String(snapshot.maczSlowLength ?? this.maczSlowLength ?? '').trim()
+      this.maczSignalLength = String(snapshot.maczSignalLength ?? this.maczSignalLength ?? '').trim()
+      this.maczLengthZ = String(snapshot.maczLengthZ ?? this.maczLengthZ ?? '').trim()
+      this.maczLengthStdev = String(snapshot.maczLengthStdev ?? this.maczLengthStdev ?? '').trim()
+      this.maczGamma = String(snapshot.maczGamma ?? this.maczGamma ?? '').trim()
+      this.maczA = String(snapshot.maczA ?? this.maczA ?? '').trim()
+      this.maczB = String(snapshot.maczB ?? this.maczB ?? '').trim()
+      this.ottPeriod = String(snapshot.ottPeriod ?? this.ottPeriod ?? '').trim()
+      this.ottPercent = String(snapshot.ottPercent ?? this.ottPercent ?? '').trim()
+      this.ottMaType = String(snapshot.ottMaType ?? this.ottMaType ?? '').trim()
+      this.trendLrPeriod = String(snapshot.trendLrPeriod ?? this.trendLrPeriod ?? '').trim()
+      this.trendLrMinDeg = String(snapshot.trendLrMinDeg ?? this.trendLrMinDeg ?? '').trim()
+      this.trendBbwPeriod = String(snapshot.trendBbwPeriod ?? this.trendBbwPeriod ?? '').trim()
+      this.trendBbwMult = String(snapshot.trendBbwMult ?? this.trendBbwMult ?? '').trim()
+      this.trendBbwMin = String(snapshot.trendBbwMin ?? this.trendBbwMin ?? '').trim()
+      this.trendRocPeriod = String(snapshot.trendRocPeriod ?? this.trendRocPeriod ?? '').trim()
+      this.trendAdxPeriod = String(snapshot.trendAdxPeriod ?? this.trendAdxPeriod ?? '').trim()
+      this.trendAdxMin = String(snapshot.trendAdxMin ?? this.trendAdxMin ?? '').trim()
+      this.regimeAdxPeriod = String(snapshot.regimeAdxPeriod ?? this.regimeAdxPeriod ?? '').trim()
+      this.regimeAdxEnter = String(snapshot.regimeAdxEnter ?? this.regimeAdxEnter ?? '').trim()
+      this.regimeAdxExit = String(snapshot.regimeAdxExit ?? this.regimeAdxExit ?? '').trim()
+      this.regimeRevEntryRel = String(snapshot.regimeRevEntryRel ?? this.regimeRevEntryRel ?? '').trim()
+      this.regimeRevExitRel = String(snapshot.regimeRevExitRel ?? this.regimeRevExitRel ?? '').trim()
+      this.breakoutBbPeriod = String(snapshot.breakoutBbPeriod ?? this.breakoutBbPeriod ?? '').trim()
+      this.breakoutBbMult = String(snapshot.breakoutBbMult ?? this.breakoutBbMult ?? '').trim()
+      this.breakoutConfirmBars = String(snapshot.breakoutConfirmBars ?? this.breakoutConfirmBars ?? '').trim()
+      this.breakoutMacdFast = String(snapshot.breakoutMacdFast ?? this.breakoutMacdFast ?? '').trim()
+      this.breakoutMacdSlow = String(snapshot.breakoutMacdSlow ?? this.breakoutMacdSlow ?? '').trim()
+      this.breakoutMacdSignal = String(snapshot.breakoutMacdSignal ?? this.breakoutMacdSignal ?? '').trim()
+      this.breakoutCmoPeriod = String(snapshot.breakoutCmoPeriod ?? this.breakoutCmoPeriod ?? '').trim()
+      this.breakoutCmoMinAbs = String(snapshot.breakoutCmoMinAbs ?? this.breakoutCmoMinAbs ?? '').trim()
+      this.breakoutAdoscShort = String(snapshot.breakoutAdoscShort ?? this.breakoutAdoscShort ?? '').trim()
+      this.breakoutAdoscLong = String(snapshot.breakoutAdoscLong ?? this.breakoutAdoscLong ?? '').trim()
+      this.breakoutAdxPeriod = String(snapshot.breakoutAdxPeriod ?? this.breakoutAdxPeriod ?? '').trim()
+      this.breakoutAdxMin = String(snapshot.breakoutAdxMin ?? this.breakoutAdxMin ?? '').trim()
       this.dmConstraintMinTrades = String(snapshot.dmConstraintMinTrades ?? this.dmConstraintMinTrades ?? '').trim()
       this.dmConstraintMaxDd = String(snapshot.dmConstraintMaxDd ?? this.dmConstraintMaxDd ?? '').trim()
       this.dmConstraintsVisible = Boolean(snapshot.dmConstraintsVisible ?? this.dmConstraintsVisible)
@@ -132,74 +403,44 @@ export const useStrategyStore = defineStore('strategy', {
       this.kaufmanStopPeriodVisible = Boolean(snapshot.kaufmanStopPeriodVisible ?? this.kaufmanStopPeriodVisible)
       this.kaufmanStopMultVisible = Boolean(snapshot.kaufmanStopMultVisible ?? this.kaufmanStopMultVisible)
       this.kaufmanStopMaTypeVisible = Boolean(snapshot.kaufmanStopMaTypeVisible ?? this.kaufmanStopMaTypeVisible)
+      this.longOnly = Boolean(snapshot.longOnly ?? this.longOnly)
+      this.allowFlip = Boolean(snapshot.allowFlip ?? this.allowFlip)
+      this.tradeOnNext = Boolean(snapshot.tradeOnNext ?? this.tradeOnNext)
+      this.trendUseRoc = Boolean(snapshot.trendUseRoc ?? this.trendUseRoc)
+      this.trendUseAdx = Boolean(snapshot.trendUseAdx ?? this.trendUseAdx)
+      this.breakoutUseAdx = Boolean(snapshot.breakoutUseAdx ?? this.breakoutUseAdx)
+      this.maczUseVolume = Boolean(snapshot.maczUseVolume ?? this.maczUseVolume)
+      this.maczUseLag = Boolean(snapshot.maczUseLag ?? this.maczUseLag)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
     setInputField(field: string, value: string): void {
       const key = String(field || '').trim()
       const next = String(value || '')
-      if (key === 'feeBps') {
-        this.feeBps = next
-        this.markVueUpdate()
-      } else if (key === 'spreadBps') {
-        this.spreadBps = next
-        this.markVueUpdate()
-      } else if (key === 'slippageBps') {
-        this.slippageBps = next
-        this.markVueUpdate()
-      } else if (key === 'epsRel') {
-        this.epsRel = next
-        this.markVueUpdate()
-      } else if (key === 'startingEquity') {
-        this.startingEquity = next
-        this.markVueUpdate()
-      } else if (key === 'stopLossPct') {
-        this.stopLossPct = next
-        this.markVueUpdate()
-      } else if (key === 'takeProfitPct') {
-        this.takeProfitPct = next
-        this.markVueUpdate()
-      } else if (key === 'cooldownBars') {
-        this.cooldownBars = next
-        this.markVueUpdate()
-      } else if (key === 'signalPersistenceBars') {
-        this.signalPersistenceBars = next
-        this.markVueUpdate()
-      } else if (key === 'trailingStopPct') {
-        this.trailingStopPct = next
-        this.markVueUpdate()
-      } else if (key === 'dmConstraintMinTrades') {
-        this.dmConstraintMinTrades = next
-        this.markVueUpdate()
-      } else if (key === 'dmConstraintMaxDd') {
-        this.dmConstraintMaxDd = next
-        this.markVueUpdate()
-      } else if (key === 'kaufmanStopPeriod') {
-        this.kaufmanStopPeriod = next
-        this.markVueUpdate()
-      } else if (key === 'kaufmanStopMult') {
-        this.kaufmanStopMult = next
-        this.markVueUpdate()
-      } else if (key === 'kaufmanStopMaType') {
-        this.kaufmanStopMaType = next
-        this.markVueUpdate()
+      if (!applyVueTextFieldUpdate(this, key, next)) return
+      if (key === 'feeBps' || key === 'spreadBps' || key === 'slippageBps') {
+        syncDerivedCostFields(this)
       }
-      updateLegacyField(key, next, 'input')
+      this.markVueUpdate()
     },
 
     setSelectField(field: string, value: string): void {
       const key = String(field || '').trim()
       const next = String(value || '')
+      if (!applyVueTextFieldUpdate(this, key, next)) return
       if (key === 'costPreset') {
-        this.costPreset = next
-        this.markVueUpdate()
-      } else if (key === 'exitMode') {
-        this.exitMode = next
-        this.markVueUpdate()
+        applyCostPresetToState(this, next)
       }
-      updateLegacyField(key, next, 'change')
+      this.markVueUpdate()
+    },
+
+    setCheckboxField(field: string, checked: boolean): void {
+      const key = String(field || '').trim()
+      const next = !!checked
+      if (applyVueCheckboxFieldUpdate(this, key, next)) this.markVueUpdate()
     },
   },
 })
+

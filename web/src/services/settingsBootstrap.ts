@@ -3,7 +3,7 @@ import {
   THEME_PREF_KEY,
   WINDOW_EFFECT_KEY,
   WORKFLOW_ADVANCED_KEY,
-} from '../legacy/core/storageKeys.js'
+} from '../utils/core/storageKeys'
 import { useSettingsStore } from '../stores/settingsStore'
 
 const THEME_KEYS = new Set(['light', 'dark', 'system'])

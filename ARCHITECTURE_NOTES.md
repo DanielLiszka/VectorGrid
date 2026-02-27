@@ -1,6 +1,6 @@
 # Architecture Notes
 
-Last updated: 2026-02-12
+Last updated: 2026-02-26
 
 ## Product invariants
 
@@ -10,6 +10,17 @@ Last updated: 2026-02-12
 - No removal of existing workflows:
   - optimize, validate, meta selection, holdout, reports, run artifacts.
 - CPU-only builds must continue to work without CUDA.
+
+## Frontend runtime ownership (Vue + Vite)
+
+- Frontend runtime ownership is now fully in `web/src` Vue + Pinia services/stores.
+- Legacy frontend runtime path (`web/src/legacy/*`, legacy bridge mounts, and template host bootstrapping) has been retired.
+- Tauri command contracts remain stable and are enforced by:
+  - generated command registry checks (`web/src/tauri/commands.ts`),
+  - lint command-name validation (`web/scripts/check-known-tauri-commands.mjs`),
+  - parity check (`web/scripts/check-tauri-parity.mjs`).
+- Large table surfaces (Top/Validation/Meta) are virtualized at the component layer to keep UI render cost bounded.
+- Task/progress updates are throttled/debounced in `web/src/stores/taskStore.ts` to prevent high-frequency UI churn.
 
 ## Current module boundaries (incremental refactor)
 
@@ -61,6 +72,8 @@ Last updated: 2026-02-12
   - Includes shared validation statistics helpers in `validation_stats.rs` for PSR/DSR and probability gates.
   - Includes shared statistical primitives in `stats_common.rs` to avoid repeated helper logic across validators.
   - Includes trait-based validation post-processing in `validation_pipeline.rs` (probability scoring/gates, pareto tagging, CSCV fold, final sort).
+  - Includes shared validation orchestration in `validation_core.rs`; strategy modules (`double_ma_validate.rs`, `composite_validate.rs`) act as thin adapters that keep strategy-specific build/eval logic local.
+  - Meta grouping now supports strategy-agnostic context (`feature_context`/`run_context`) with legacy MA-based fallback for backward compatibility.
 - `crates/strategies/`
   - Strategy execution logic and metrics.
 

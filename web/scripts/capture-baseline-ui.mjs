@@ -80,6 +80,14 @@ async function dispatchClick(page, selector) {
   }
 }
 
+async function dispatchClickIfPresent(page, selector) {
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel)
+    if (!el) return
+    ;(el instanceof HTMLElement ? el : null)?.click?.()
+  }, selector)
+}
+
 async function main() {
   if (!fs.existsSync(path.resolve(DIST_DIR, 'index.html'))) {
     throw new Error('Missing web/dist/index.html. Run `npm --prefix web run build` first.')
@@ -138,7 +146,7 @@ async function main() {
   }
   await dispatchClick(page, '#workspaceBar button[data-workspace="workflow"]')
   await page.waitForTimeout(150)
-  await dispatchClick(page, '#btnToggleWorkflowAdvanced')
+  await dispatchClickIfPresent(page, '#btnToggleWorkflowAdvanced')
   await page.waitForTimeout(150)
   for (const step of WORKFLOW_STEPS) {
     await clickAndCapture(page, `#workflowStepBar button[data-workflow-step="${step}"]`, `workflow_step_${step}.png`)

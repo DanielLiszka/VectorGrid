@@ -20,7 +20,7 @@ There are three practical Windows variants:
 
 ## Local Dev Run (no bundler)
 
-Runs directly via Cargo using the static frontend in `ta_desktop_demo/dist`:
+Runs directly via Cargo with the Vue + Vite frontend in `web/` (built to `web/dist` by Tauri config):
 
 ```powershell
 cd ta_desktop_demo
@@ -69,15 +69,15 @@ Environment toggles:
 - `VECTORBT_USE_PREBUILT_PTX=1` forces using the prebuilt PTX (recommended for CI/packaging).
 - `VECTORBT_REQUIRE_NVCC=1` fails the build if `nvcc` is missing or compilation fails.
 
-## Vue + Vite Migration Notes (2026-02-20)
+## Vue + Vite Migration Notes (2026-02-26)
 
-This release line includes the frontend migration from the legacy static bundle to a Vue + Vite workspace while preserving Tauri command/event contracts and storage compatibility.
+This release line includes the completed frontend migration from the legacy static bundle to Vue + Vite while preserving Tauri command/event contracts and storage compatibility.
 
 ### Known deltas
 
 - Frontend source/build now lives under `web/` and is built into `web/dist`.
 - Tauri config points to `web/dist` (`src-tauri/tauri.conf.json` and root `tauri.conf.json`).
-- UI is Vue-first, but legacy runtime logic remains authoritative during cutover via bridge/mount hosts.
+- UI runtime is now Vue-owned; legacy frontend runtime files under `web/src/legacy/*` have been retired.
 - Task feedback has been expanded with a global task center (progress, cancellation, timeline, completion/failure toasts).
 - Large result surfaces use lazy mounting and row-window virtualization to reduce render overhead.
 

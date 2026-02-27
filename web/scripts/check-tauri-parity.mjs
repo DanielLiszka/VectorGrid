@@ -43,11 +43,9 @@ function main() {
   const repoRoot = path.resolve(webRoot, '..')
   const libRsPath = path.join(repoRoot, 'src-tauri', 'src', 'lib.rs')
   const registryPath = path.join(webRoot, 'src', 'tauri', 'commands.ts')
-  const legacyAppPath = path.join(webRoot, 'src', 'legacy', 'app.js')
 
   const libRs = readText(libRsPath)
   const registryTs = readText(registryPath)
-  const legacyApp = readText(legacyAppPath)
 
   const backend = parseHandlerCommands(libRs)
   const frontend = parseRegistryCommands(registryTs)
@@ -66,12 +64,6 @@ function main() {
     ok = false
     console.error('ERROR: Extra commands in frontend registry not present in backend:')
     for (const c of extraInFrontend) console.error(`  - ${c}`)
-  }
-
-  const notReferencedInLegacy = backend.filter((cmd) => !new RegExp(`\\b${cmd}\\b`).test(legacyApp))
-  if (notReferencedInLegacy.length > 0) {
-    console.warn('WARN: Backend commands not referenced by name in legacy app:')
-    for (const c of notReferencedInLegacy) console.warn(`  - ${c}`)
   }
 
   console.log(`Backend commands: ${backend.length}`)

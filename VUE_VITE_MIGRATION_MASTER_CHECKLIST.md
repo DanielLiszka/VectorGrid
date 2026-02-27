@@ -1,5 +1,7 @@
 # Vue + Vite Migration Master Checklist (Tauri v2)
 
+> Status: Superseded by `VUE_VITE_100_PERCENT_CUTOVER_CHECKLIST.md` for final cutover tracking.
+
 Last updated: 2026-02-21 (US date)
 
 ## Goal

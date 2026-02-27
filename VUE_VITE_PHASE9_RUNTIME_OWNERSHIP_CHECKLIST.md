@@ -1,5 +1,7 @@
 # Vue + Vite Phase 9A Checklist: Legacy Runtime Ownership Cutover
 
+> Status: Superseded by `VUE_VITE_100_PERCENT_CUTOVER_CHECKLIST.md` for final cutover tracking.
+
 Last updated: 2026-02-21 (US date)
 Parent: `VUE_VITE_MIGRATION_MASTER_CHECKLIST.md` (Phase 9)
 

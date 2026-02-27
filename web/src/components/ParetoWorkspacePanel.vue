@@ -57,7 +57,7 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="pareto"]') as HTMLElement | null
-  const mount = document.getElementById('paretoVueShellMount')
+  const mount = document.querySelector('#paretoVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vuePareto = '1'
@@ -220,4 +220,5 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 

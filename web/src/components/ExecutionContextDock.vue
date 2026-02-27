@@ -11,6 +11,8 @@ const {
   symbol,
   qty,
   paramSource,
+  apiKey,
+  apiSecret,
   dryRun,
   rememberKeys,
   liveUseDelayed,
@@ -70,6 +72,8 @@ function setCheckboxValue(id: string, checked: boolean): void {
       </div>
       <div class="row"><span>Symbol</span><input :value="symbol" type="text" @change="setInputValue('execSymbol', String(($event.target as HTMLInputElement).value || ''))" /></div>
       <div class="row"><span>Qty</span><input :value="qty" type="text" @change="setInputValue('execQty', String(($event.target as HTMLInputElement).value || ''))" /></div>
+      <div class="row"><span>API key</span><input :value="apiKey" type="text" @change="setInputValue('execApiKey', String(($event.target as HTMLInputElement).value || ''))" /></div>
+      <div class="row"><span>API secret</span><input :value="apiSecret" type="password" @change="setInputValue('execApiSecret', String(($event.target as HTMLInputElement).value || ''))" /></div>
       <div class="row">
         <span>Source</span>
         <select :value="paramSource" @change="setSelectValue('execParamSource', String(($event.target as HTMLSelectElement).value || 'selected'))">

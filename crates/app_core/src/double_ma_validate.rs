@@ -2,28 +2,20 @@ use crate::composite_validate::{
     CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
     TradeBootstrapConfig, TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
 };
-use crate::cscv_pbo::{
-    compute_cscv_pbo_from_slices, CscvCandidatePboStats, CscvPboConfig, CscvPboResult,
-    SliceReturnStats,
-};
+use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
     compute_combined_regime_filter, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
     resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, HalfTrendRegimeFilter,
 };
-use crate::iterative_sim::{
-    simulate_iterative_from_signals, IterativeMetricsDelta, IterativeSimConfig, OhlcSlice,
-    ValidationEngine,
-};
+use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
-use crate::stats_common::{median, median_u32, quantile, worst_max, worst_min, worst_min_u32};
 use crate::validation_pipeline::ValidationPostCandidate;
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use rayon::prelude::*;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
@@ -160,6 +152,10 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
 
     fn set_robust_pareto(&mut self, v: bool) {
         self.robust_pareto = v;
+    }
+
+    fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>) {
+        self.cscv_pbo = v;
     }
 }
 
@@ -373,15 +369,6 @@ fn desired_positions_for_series(
     out
 }
 
-fn sanitize_cscv_slices(slices: usize) -> usize {
-    let s = slices.clamp(4, 32);
-    if (s & 1) == 0 {
-        s
-    } else {
-        s.saturating_sub(1).max(4)
-    }
-}
-
 fn slice_return_stats_for_series(
     series: &CandidateSeries<'_>,
     start_t: usize,
@@ -461,66 +448,6 @@ fn slice_return_stats_for_series(
     }
 
     out
-}
-
-fn trade_bootstrap_stats(
-    trades: &[Trade],
-    simulations: usize,
-    rng: &mut StdRng,
-) -> TradeBootstrapStats {
-    let closed: Vec<f64> = trades.iter().filter(|t| !t.open).map(|t| t.pnl).collect();
-    let trade_count = closed.len();
-    if simulations == 0 || trade_count == 0 {
-        return TradeBootstrapStats {
-            simulations,
-            trade_count,
-            prob_pnl_positive: 0.0,
-            pnl_p05: 0.0,
-            pnl_p50: 0.0,
-            pnl_p95: 0.0,
-            max_dd_p50: 0.0,
-            max_dd_p95: 0.0,
-        };
-    }
-
-    let mut pnls: Vec<f64> = Vec::with_capacity(simulations);
-    let mut dds: Vec<f64> = Vec::with_capacity(simulations);
-    let mut pos = 0usize;
-    for _ in 0..simulations {
-        let mut eq = 1.0_f64;
-        let mut peak = 1.0_f64;
-        let mut max_dd = 0.0_f64;
-        for _ in 0..trade_count {
-            let idx = rng.gen_range(0..trade_count);
-            let r = (1.0 + closed[idx]).max(0.000_000_1);
-            eq *= r;
-            if eq > peak {
-                peak = eq;
-            }
-            let dd = (peak - eq) / peak.max(0.000_000_1);
-            if dd > max_dd {
-                max_dd = dd;
-            }
-        }
-        let pnl = eq - 1.0;
-        if pnl > 0.0 {
-            pos += 1;
-        }
-        pnls.push(pnl);
-        dds.push(max_dd);
-    }
-    pnls.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    TradeBootstrapStats {
-        simulations,
-        trade_count,
-        prob_pnl_positive: pos as f64 / simulations as f64,
-        pnl_p05: quantile(&pnls, 0.05),
-        pnl_p50: quantile(&pnls, 0.5),
-        pnl_p95: quantile(&pnls, 0.95),
-        max_dd_p50: quantile(&dds, 0.5),
-        max_dd_p95: quantile(&dds, 0.95),
-    }
 }
 
 fn repair_params(p: &mut DoubleMaValidationParams) {
@@ -789,7 +716,6 @@ pub fn run_double_ma_validation_blocking_with_candles(
     let total = req.candidates.len();
     emit_progress(progress, 0, total, "double_ma_validate");
 
-    let processed = AtomicUsize::new(0);
     let seed = req.seed;
     let walk_cfg = req.walk_forward.clone();
     let perturb_cfg = req.perturb.clone();
@@ -803,17 +729,18 @@ pub fn run_double_ma_validation_blocking_with_candles(
     let min_psr = crate::validation_stats::sanitize_probability_gate(req.min_psr);
     let min_dsr = crate::validation_stats::sanitize_probability_gate(req.min_dsr);
 
-    let tmp: Vec<(DoubleMaValidationCandidateResult, usize, usize)> = req
-        .candidates
-        .par_iter()
-        .enumerate()
-        .map(|(i, p)| {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("cancelled".to_string());
-            }
-
-            let mut rng = StdRng::seed_from_u64(seed ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15));
-
+    let (out, cscv_pbo) = crate::validation_core::run_validation_candidates(
+        &req.candidates,
+        seed,
+        cancel,
+        progress,
+        "double_ma_validate",
+        "double_ma_validate_cscv_prep",
+        min_psr,
+        min_dsr,
+        cscv_cfg.as_ref(),
+        candles.close.len(),
+        |_, p, rng| {
             let mut p2 = p.clone();
             repair_params(&mut p2);
 
@@ -831,65 +758,24 @@ pub fn run_double_ma_validation_blocking_with_candles(
             let in_sample = eval_metrics_window(&series, series.start_t, series.n);
 
             let walk_forward = if let Some(cfg) = walk_cfg.as_ref() {
-                let window = cfg.window_bars.max(64);
-                let step = cfg.step_bars.max(1);
-
-                let mut sharpes: Vec<f64> = Vec::new();
-                let mut dds: Vec<f64> = Vec::new();
-                let mut pnls: Vec<f64> = Vec::new();
-                let mut trades: Vec<u32> = Vec::new();
-
-                let mut t0 = series.start_t;
-                while t0 + 2 <= series.n {
-                    let end = t0.saturating_add(window).min(series.n);
-                    if end <= t0 + 1 {
-                        break;
-                    }
-                    let m = eval_metrics_window(&series, t0, end);
-                    sharpes.push(m.sharpe);
-                    dds.push(m.max_dd);
-                    pnls.push(m.pnl);
-                    trades.push(m.trades);
-                    if end == series.n {
-                        break;
-                    }
-                    t0 = t0.saturating_add(step);
-                }
-
-                sharpes.sort_by(|a, b| a.total_cmp(b));
-                dds.sort_by(|a, b| a.total_cmp(b));
-                pnls.sort_by(|a, b| a.total_cmp(b));
-
-                Some(WalkForwardStats {
-                    windows: sharpes.len(),
-                    sharpe_median: median(&sharpes),
-                    sharpe_worst: worst_min(&sharpes),
-                    max_dd_median: median(&dds),
-                    max_dd_worst: worst_max(&dds),
-                    pnl_median: median(&pnls),
-                    pnl_worst: worst_min(&pnls),
-                    trades_median: median_u32(&trades),
-                    trades_worst: worst_min_u32(&trades),
-                })
+                Some(crate::validation_pipeline::compute_walk_forward_stats(
+                    series.n,
+                    series.start_t,
+                    cfg,
+                    |t0, end| eval_metrics_window(&series, t0, end),
+                ))
             } else {
                 None
             };
 
             let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
-                let iters = cfg.iterations.min(1024);
-                if iters == 0 {
-                    None
-                } else {
-                    let mut sharpes: Vec<f64> = Vec::with_capacity(iters);
-                    let mut dds: Vec<f64> = Vec::with_capacity(iters);
-                    let mut pnls: Vec<f64> = Vec::with_capacity(iters);
-                    let mut pnl_pos: usize = 0;
-
-                    for _ in 0..iters {
-                        if cancel.load(Ordering::Relaxed) {
-                            return Err("cancelled".to_string());
-                        }
-                        let pp = perturb_params(&p2, cfg, &mut rng);
+                crate::validation_pipeline::compute_perturb_stats(
+                    &p2,
+                    cfg,
+                    cancel,
+                    rng,
+                    perturb_params,
+                    |pp| {
                         let s2 = build_candidate_series(
                             candles,
                             &lr,
@@ -897,57 +783,11 @@ pub fn run_double_ma_validation_blocking_with_candles(
                             &ma_source,
                             fast_ma_params.as_ref(),
                             slow_ma_params.as_ref(),
-                            &pp,
+                            pp,
                         )?;
-                        let m = eval_metrics_window(&s2, s2.start_t, s2.n);
-                        if m.pnl > 0.0 {
-                            pnl_pos += 1;
-                        }
-                        sharpes.push(m.sharpe);
-                        dds.push(m.max_dd);
-                        pnls.push(m.pnl);
-                    }
-
-                    let mean = |xs: &[f64]| -> f64 {
-                        if xs.is_empty() {
-                            return 0.0;
-                        }
-                        let mut sum = 0.0_f64;
-                        let mut c = 0usize;
-                        for &x in xs {
-                            if x.is_finite() {
-                                sum += x;
-                                c += 1;
-                            }
-                        }
-                        if c > 0 {
-                            sum / c as f64
-                        } else {
-                            0.0
-                        }
-                    };
-
-                    let sharpe_mean = mean(&sharpes);
-                    let dd_mean = mean(&dds);
-                    let pnl_mean = mean(&pnls);
-
-                    let sharpe_worst = worst_min(&sharpes);
-                    let dd_worst = worst_max(&dds);
-                    let pnl_worst = worst_min(&pnls);
-
-                    Some(PerturbStats {
-                        iterations: iters,
-                        pct_min: cfg.pct_min,
-                        pct_max: cfg.pct_max,
-                        sharpe_mean,
-                        sharpe_worst,
-                        max_dd_mean: dd_mean,
-                        max_dd_worst: dd_worst,
-                        pnl_mean,
-                        pnl_worst,
-                        pnl_positive_frac: pnl_pos as f64 / iters as f64,
-                    })
-                }
+                        Ok(eval_metrics_window(&s2, s2.start_t, s2.n))
+                    },
+                )?
             } else {
                 None
             };
@@ -955,32 +795,29 @@ pub fn run_double_ma_validation_blocking_with_candles(
             let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
                 let sims = cfg.simulations.min(50_000);
                 let trades = trades_for_series(&series);
-                Some(trade_bootstrap_stats(&trades, sims, &mut rng))
+                Some(crate::validation_pipeline::compute_trade_bootstrap_stats(
+                    &trades, sims, rng,
+                ))
             } else {
                 None
             };
 
             let (iterative_in_sample, iterative_delta) =
-                if validation_engine == ValidationEngine::Iterative {
-                    let desired = desired_positions_for_series(&series, series.start_t, series.n);
-                    let iterative = simulate_iterative_from_signals(
-                        series.lr,
-                        OhlcSlice {
-                            open: &candles.open,
-                            high: &candles.high,
-                            low: &candles.low,
-                            close: &candles.close,
-                        },
-                        &desired,
-                        series.start_t,
-                        &series.cfg,
-                        &iterative_cfg,
-                    );
-                    let delta = IterativeMetricsDelta::from_pair(&in_sample, &iterative);
-                    (Some(iterative), Some(delta))
-                } else {
-                    (None, None)
-                };
+                crate::validation_pipeline::maybe_run_iterative_validation(
+                    validation_engine,
+                    &in_sample,
+                    series.lr,
+                    crate::iterative_sim::OhlcSlice {
+                        open: &candles.open,
+                        high: &candles.high,
+                        low: &candles.low,
+                        close: &candles.close,
+                    },
+                    series.start_t,
+                    &series.cfg,
+                    &iterative_cfg,
+                    || desired_positions_for_series(&series, series.start_t, series.n),
+                );
 
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
             let robust_score = crate::validation_pipeline::robust_score_from_metrics(
@@ -989,11 +826,6 @@ pub fn run_double_ma_validation_blocking_with_candles(
                     .as_ref()
                     .map(|w| (w.sharpe_median, w.max_dd_worst)),
             );
-
-            let done = processed.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-            if (done & 0x3) == 0 || done == total {
-                emit_progress(progress, done, total, "double_ma_validate");
-            }
 
             Ok((
                 DoubleMaValidationCandidateResult {
@@ -1015,89 +847,25 @@ pub fn run_double_ma_validation_blocking_with_candles(
                 series_start_t,
                 series.n.saturating_sub(series_start_t),
             ))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-
-    let mut out: Vec<DoubleMaValidationCandidateResult> = Vec::with_capacity(tmp.len());
-    let mut start_ts: Vec<usize> = Vec::with_capacity(tmp.len());
-    let mut sample_obs: Vec<usize> = Vec::with_capacity(tmp.len());
-    for (cand, st, obs) in tmp {
-        out.push(cand);
-        start_ts.push(st);
-        sample_obs.push(obs.max(2));
-    }
-    let common_start_t = start_ts.into_iter().max().unwrap_or(0);
-
-    crate::validation_pipeline::compute_probability_metrics_and_gate(
-        &mut out,
-        &sample_obs,
-        min_psr,
-        min_dsr,
-    );
-    crate::validation_pipeline::mark_robust_pareto(&mut out);
-
-    let mut cscv_pbo: Option<CscvPboResult> = None;
-    if let Some(cfg) = cscv_cfg.as_ref() {
-        let slices = sanitize_cscv_slices(cfg.slices);
-        let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
-        if slice_bars >= 2 && out.len() >= 2 {
-            emit_progress(progress, 0, out.len(), "double_ma_validate_cscv_prep");
-            let mut by_cand: Vec<Vec<SliceReturnStats>> = Vec::with_capacity(out.len());
-            for (i, cand) in out.iter().enumerate() {
-                if cancel.load(Ordering::Relaxed) {
-                    return Err("cancelled".to_string());
-                }
-                let series = build_candidate_series(
-                    candles,
-                    &lr,
-                    base_first_valid,
-                    &ma_source,
-                    fast_ma_params.as_ref(),
-                    slow_ma_params.as_ref(),
-                    &cand.params,
-                )?;
-                by_cand.push(slice_return_stats_for_series(
-                    &series,
-                    common_start_t,
-                    slice_bars,
-                    slices,
-                ));
-                let done = i.saturating_add(1);
-                if (done & 0x7) == 0 || done == out.len() {
-                    emit_progress(progress, done, out.len(), "double_ma_validate_cscv_prep");
-                }
-            }
-
-            let (res, cand_stats) =
-                compute_cscv_pbo_from_slices(&by_cand, slice_bars, cfg, seed, cancel, progress)?;
-            for (cand, st) in out.iter_mut().zip(cand_stats.into_iter()) {
-                cand.cscv_pbo = Some(st);
-            }
-            cscv_pbo = Some(res);
-        } else {
-            cscv_pbo = Some(CscvPboResult {
-                slices,
+        },
+        |cand, cscv_start_t, slice_bars, slices| {
+            let series = build_candidate_series(
+                candles,
+                &lr,
+                base_first_valid,
+                &ma_source,
+                fast_ma_params.as_ref(),
+                slow_ma_params.as_ref(),
+                &cand.params,
+            )?;
+            Ok(slice_return_stats_for_series(
+                &series,
+                cscv_start_t,
                 slice_bars,
-                candidates: out.len(),
-                combinations: 0,
-                combinations_possible: 0,
-                pbo: 0.0,
-                lambda_p25: 0.0,
-                lambda_p50: 0.0,
-                lambda_p75: 0.0,
-                degradation_slope: 0.0,
-                degradation_intercept: 0.0,
-                degradation_r2: 0.0,
-                threshold: cfg.threshold,
-                prob_oos_below_threshold: 0.0,
-                skipped_reason: Some(
-                    "CSCV/PBO skipped (not enough bars after warmup).".to_string(),
-                ),
-            });
-        }
-    }
-
-    crate::validation_pipeline::fold_cscv_into_robust_and_sort(&mut out);
+                slices,
+            ))
+        },
+    )?;
 
     let runtime_ms = start.elapsed().as_millis() as u64;
     Ok(DoubleMaValidationResult {

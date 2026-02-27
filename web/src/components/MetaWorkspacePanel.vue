@@ -338,7 +338,7 @@ function onTableScroll(event: Event): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="meta"]') as HTMLElement | null
-  const mount = document.getElementById('metaVueShellMount')
+  const mount = document.querySelector('#metaVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueMeta = '1'
@@ -1280,5 +1280,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

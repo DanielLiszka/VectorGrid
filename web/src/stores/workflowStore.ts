@@ -7,7 +7,7 @@ import {
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
-} from '../legacy/core/storageKeys.js'
+} from '../utils/core/storageKeys'
 import {
   TAB_LABELS,
   WORKFLOW_ALLOWED,
@@ -22,7 +22,7 @@ import {
   normalizeWorkflowTab,
   normalizeWorkspaceTab,
   workflowStepFromWorkflow,
-} from '../legacy/core/workflowModel.js'
+} from '../utils/core/workflowModel'
 
 interface WorkflowState {
   workspace: string
@@ -32,7 +32,7 @@ interface WorkflowState {
   resultsTab: string
   aggregateTab: string
   workflowSubtitle: string
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
 
@@ -134,7 +134,7 @@ function persistWorkflowMemory(): void {
 }
 
 function allowedTabs(workflow: string): { controls: string[]; results: string[] } {
-  const model = (WORKFLOW_ALLOWED as Record<string, { controls?: string[]; results?: string[] }>)[workflow] || {}
+  const model = (WORKFLOW_ALLOWED as Record<string, { controls?: readonly string[]; results?: readonly string[] }>)[workflow] || {}
   const controls = Array.isArray(model.controls)
     ? model.controls.map((entry) => normalizeControls(entry)).filter((entry) => entry.length > 0)
     : []
@@ -265,10 +265,6 @@ function syncRuntimeFromState(state: WorkflowState): void {
   setRootAttr('resultsTab', state.resultsTab)
   setRootAttr('aggregateTab', state.aggregateTab)
   setRootAttr('workflowSubtitle', state.workflowSubtitle)
-
-  if (typeof document === 'undefined') return
-  const subtitleNode = document.getElementById('workflowSubtitle')
-  if (subtitleNode) subtitleNode.textContent = state.workflowSubtitle
 }
 
 function persistRuntimeState(state: WorkflowState): void {
@@ -350,7 +346,7 @@ export const useWorkflowStore = defineStore('workflow', {
 
       const subtitle = String(snapshot.workflowSubtitle ?? '').trim()
       this.workflowSubtitle = subtitle || deriveSubtitle(this)
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
       syncRuntimeFromState(this)
       rememberWorkflowTabs(this.workflow, this.controlsTab, this.resultsTab)
@@ -553,3 +549,4 @@ export const useWorkflowStore = defineStore('workflow', {
     },
   },
 })
+

@@ -35,8 +35,8 @@ function cancelRunAction(): void {
 }
 
 function resolveMount(): void {
-  const panel = document.getElementById('runFooterShell')
-  const mount = document.getElementById('runFooterVueShellMount')
+  const panel = document.querySelector('#runFooterShell') as HTMLElement | null
+  const mount = document.querySelector('#runFooterVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueRunFooter = '1'
@@ -160,4 +160,5 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 

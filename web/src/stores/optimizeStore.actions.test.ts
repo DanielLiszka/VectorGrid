@@ -1,55 +1,53 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
-  invokeLegacyOptimizeApplyPresetRuntime,
-  invokeLegacyOptimizeCancelRuntime,
-  invokeLegacyOptimizeGpuParityCheckRuntime,
-  invokeLegacyOptimizePresetKernelRuntime,
-  invokeLegacyOptimizeRefreshGpuStatusRuntime,
-  invokeLegacyOptimizeRunRuntime,
-  invokeLegacyOptimizeValidateRuntime,
-} from '../legacy/actions'
+  applyPreset,
+  cancelOptimization,
+  type GpuStatusSummary,
+  presetKernel,
+  refreshGpuStatus,
+  runGpuParityCheck,
+  runOptimization,
+  runValidation,
+} from '../services/optimizeService'
 import { useOptimizeStore } from './optimizeStore'
 
-vi.mock('../legacy/actions', () => ({
-  invokeLegacyOptimizeApplyPresetRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeRunRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeCancelRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeValidateRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizePresetKernelRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeRefreshGpuStatusRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeGpuParityCheckRuntime: vi.fn(async () => true),
+vi.mock('../services/optimizeService', () => ({
+  applyPreset: vi.fn(async () => undefined),
+  cancelOptimization: vi.fn(async () => undefined),
+  presetKernel: vi.fn(async () => undefined),
+  refreshGpuStatus: vi.fn(async () => undefined),
+  runGpuParityCheck: vi.fn(async () => undefined),
+  runOptimization: vi.fn(async () => undefined),
+  runValidation: vi.fn(async () => undefined),
 }))
 
-const invokeLegacyOptimizeApplyPresetRuntimeMock = vi.mocked(invokeLegacyOptimizeApplyPresetRuntime)
-const invokeLegacyOptimizeRunRuntimeMock = vi.mocked(invokeLegacyOptimizeRunRuntime)
-const invokeLegacyOptimizeCancelRuntimeMock = vi.mocked(invokeLegacyOptimizeCancelRuntime)
-const invokeLegacyOptimizeValidateRuntimeMock = vi.mocked(invokeLegacyOptimizeValidateRuntime)
-const invokeLegacyOptimizePresetKernelRuntimeMock = vi.mocked(invokeLegacyOptimizePresetKernelRuntime)
-const invokeLegacyOptimizeRefreshGpuStatusRuntimeMock = vi.mocked(invokeLegacyOptimizeRefreshGpuStatusRuntime)
-const invokeLegacyOptimizeGpuParityCheckRuntimeMock = vi.mocked(invokeLegacyOptimizeGpuParityCheckRuntime)
+const applyPresetMock = vi.mocked(applyPreset)
+const runOptimizationMock = vi.mocked(runOptimization)
+const cancelOptimizationMock = vi.mocked(cancelOptimization)
+const runValidationMock = vi.mocked(runValidation)
+const presetKernelMock = vi.mocked(presetKernel)
+const refreshGpuStatusMock = vi.mocked(refreshGpuStatus)
+const runGpuParityCheckMock = vi.mocked(runGpuParityCheck)
+const defaultGpuStatusSummary: GpuStatusSummary = {
+  builtWithCuda: true,
+  builtWithCudaBacktestKernel: true,
+  cudaAvailable: true,
+  lastUsedBackend: 'GpuKernel',
+  lastUsedDeviceId: '0',
+  text: 'GPU: build=cuda | kernel=on | cuda_available=true | last_used=GpuKernel/0',
+}
 
 interface LegacyField {
   value: string
-  disabled?: boolean
-  dispatchEvent: (event: Event) => boolean
 }
 
 interface DocumentHarness {
   fields: Record<string, LegacyField>
-  eventsById: Record<string, string[]>
 }
 
 function installDocumentHarness(): DocumentHarness {
-  const eventsById: Record<string, string[]> = {}
-  const makeField = (id: string, value = ''): LegacyField => ({
-    value,
-    dispatchEvent: (event: Event) => {
-      if (!eventsById[id]) eventsById[id] = []
-      eventsById[id].push(String(event.type || '').trim())
-      return true
-    },
-  })
+  const makeField = (_id: string, value = ''): LegacyField => ({ value })
   const fields: Record<string, LegacyField> = {
     fastStart: makeField('fastStart', '3'),
     backend: makeField('backend', 'Auto'),
@@ -57,7 +55,7 @@ function installDocumentHarness(): DocumentHarness {
   vi.stubGlobal('document', {
     getElementById: (id: string) => fields[id] ?? null,
   })
-  return { fields, eventsById }
+  return { fields }
 }
 
 describe('optimize store actions', () => {
@@ -66,54 +64,75 @@ describe('optimize store actions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     harness = installDocumentHarness()
-    invokeLegacyOptimizeApplyPresetRuntimeMock.mockClear()
-    invokeLegacyOptimizeApplyPresetRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeRunRuntimeMock.mockClear()
-    invokeLegacyOptimizeRunRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeCancelRuntimeMock.mockClear()
-    invokeLegacyOptimizeCancelRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeValidateRuntimeMock.mockClear()
-    invokeLegacyOptimizeValidateRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizePresetKernelRuntimeMock.mockClear()
-    invokeLegacyOptimizePresetKernelRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeRefreshGpuStatusRuntimeMock.mockClear()
-    invokeLegacyOptimizeRefreshGpuStatusRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeGpuParityCheckRuntimeMock.mockClear()
-    invokeLegacyOptimizeGpuParityCheckRuntimeMock.mockResolvedValue(true)
+    applyPresetMock.mockClear()
+    applyPresetMock.mockResolvedValue(undefined)
+    runOptimizationMock.mockClear()
+    runOptimizationMock.mockResolvedValue(undefined)
+    cancelOptimizationMock.mockClear()
+    cancelOptimizationMock.mockResolvedValue(undefined)
+    runValidationMock.mockClear()
+    runValidationMock.mockResolvedValue(undefined)
+    presetKernelMock.mockClear()
+    presetKernelMock.mockResolvedValue(undefined)
+    refreshGpuStatusMock.mockClear()
+    refreshGpuStatusMock.mockResolvedValue(defaultGpuStatusSummary)
+    runGpuParityCheckMock.mockClear()
+    runGpuParityCheckMock.mockResolvedValue(undefined)
   })
 
-  it('dispatches typed optimize field updates via legacy DOM events', () => {
+  it('updates Vue optimize state without legacy DOM mirroring', () => {
     const store = useOptimizeStore()
     store.setInputField('fastStart', '5')
     store.setSelectField('backend', 'CpuOnly')
 
-    expect(harness.fields.fastStart?.value).toBe('5')
-    expect(harness.fields.backend?.value).toBe('CpuOnly')
-    expect(harness.eventsById.fastStart).toEqual(['input'])
-    expect(harness.eventsById.backend).toEqual(['change'])
+    expect(store.fastStart).toBe('5')
+    expect(store.backend).toBe('CpuOnly')
+    expect(store.source).toBe('vue')
+    expect(harness.fields.fastStart?.value).toBe('3')
+    expect(harness.fields.backend?.value).toBe('Auto')
   })
 
-  it('dispatches direct optimize run/cancel/validation runtime wrappers', () => {
+  it('dispatches optimize run/cancel/validation through optimize service', () => {
     const store = useOptimizeStore()
     store.runOptimization()
     store.cancelOptimization()
     store.runValidation()
 
-    expect(invokeLegacyOptimizeRunRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizeCancelRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizeValidateRuntimeMock).toHaveBeenCalled()
+    expect(runOptimizationMock).toHaveBeenCalled()
+    expect(cancelOptimizationMock).toHaveBeenCalled()
+    expect(runValidationMock).toHaveBeenCalled()
   })
 
-  it('dispatches direct optimize preset and gpu utility runtime wrappers', () => {
+  it('dispatches optimize preset and gpu utility actions through optimize service', () => {
     const store = useOptimizeStore()
     store.applyPreset()
     store.presetKernel()
     store.refreshGpuStatus()
     store.runGpuParityCheck()
 
-    expect(invokeLegacyOptimizeApplyPresetRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizePresetKernelRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizeRefreshGpuStatusRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyOptimizeGpuParityCheckRuntimeMock).toHaveBeenCalled()
+    expect(applyPresetMock).toHaveBeenCalled()
+    expect(presetKernelMock).toHaveBeenCalled()
+    expect(refreshGpuStatusMock).toHaveBeenCalled()
+    expect(runGpuParityCheckMock).toHaveBeenCalled()
+  })
+
+  it('syncs MA param/sweep state from provided payload', () => {
+    const store = useOptimizeStore()
+    store.syncMaParamState({
+      fast: {
+        params: { alpha: 3 },
+        sweeps: { alpha: [1, 5, 2] },
+      },
+      slow: {
+        params: { beta: 7 },
+        sweeps: { beta: [2, 10, 4] },
+      },
+    })
+
+    expect(store.fastMaParams).toEqual({ alpha: 3 })
+    expect(store.slowMaParams).toEqual({ beta: 7 })
+    expect(store.fastMaParamSweeps).toEqual({ alpha: [1, 5, 2] })
+    expect(store.slowMaParamSweeps).toEqual({ beta: [2, 10, 4] })
+    expect(store.source).toBe('vue')
   })
 })

@@ -68,7 +68,7 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="heatmap"]') as HTMLElement | null
-  const mount = document.getElementById('heatmapVueShellMount')
+  const mount = document.querySelector('#heatmapVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueHeatmap = '1'
@@ -309,5 +309,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

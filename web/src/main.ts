@@ -5,12 +5,11 @@ import './styles/app.css'
 import { runStorageMigrations } from './utils/storage'
 
 runStorageMigrations()
-window.__VTA_DISABLE_LEGACY_SHORTCUTS__ = true
-window.__VTA_VUE_WORKFLOW_OWNER__ = true
 
-const root = document.getElementById('app')
+const root = document.querySelector('#app') as HTMLElement | null
 if (root) {
   const app = createApp(App)
   app.use(createPinia())
   app.mount(root)
 }
+

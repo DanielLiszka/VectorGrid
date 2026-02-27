@@ -2,9 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStrategyStore, type StrategyOption } from '../stores/strategyStore'
+import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const strategyStore = useStrategyStore()
+const optimizeStore = useOptimizeStore()
 const workflowStore = useWorkflowStore()
 const {
   costPreset,
@@ -23,23 +25,75 @@ const {
   trailingStopPct,
   dmConstraintMinTrades,
   dmConstraintMaxDd,
-  dmConstraintsVisible,
   exitMode,
   exitModeOptions,
   kaufmanStopPeriod,
   kaufmanStopMult,
   kaufmanStopMaType,
-  kaufmanStopPeriodVisible,
-  kaufmanStopMultVisible,
-  kaufmanStopMaTypeVisible,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(strategyStore)
+const { strategyKind } = storeToRefs(optimizeStore)
 const { controlsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
 const adoptedNodes: { node: HTMLElement; parent: Node; next: ChildNode | null }[] = []
+const compatCleanupFns: Array<() => void> = []
+
+const LEGACY_STRATEGY_TEXT_IDS = [
+  'compositeSignalMode',
+  'halfTrendAmplitude',
+  'halfTrendAtrPeriod',
+  'halfTrendChannelDev',
+  'maczFastLength',
+  'maczSlowLength',
+  'maczSignalLength',
+  'maczLengthZ',
+  'maczLengthStdev',
+  'maczGamma',
+  'maczA',
+  'maczB',
+  'ottPeriod',
+  'ottPercent',
+  'ottMaType',
+  'trendLrPeriod',
+  'trendLrMinDeg',
+  'trendBbwPeriod',
+  'trendBbwMult',
+  'trendBbwMin',
+  'trendRocPeriod',
+  'trendAdxPeriod',
+  'trendAdxMin',
+  'regimeAdxPeriod',
+  'regimeAdxEnter',
+  'regimeAdxExit',
+  'regimeRevEntryRel',
+  'regimeRevExitRel',
+  'breakoutBbPeriod',
+  'breakoutBbMult',
+  'breakoutConfirmBars',
+  'breakoutMacdFast',
+  'breakoutMacdSlow',
+  'breakoutMacdSignal',
+  'breakoutCmoPeriod',
+  'breakoutCmoMinAbs',
+  'breakoutAdoscShort',
+  'breakoutAdoscLong',
+  'breakoutAdxPeriod',
+  'breakoutAdxMin',
+] as const
+
+const LEGACY_STRATEGY_CHECKBOX_IDS = [
+  'longOnly',
+  'allowFlip',
+  'tradeOnNext',
+  'trendUseRoc',
+  'trendUseAdx',
+  'breakoutUseAdx',
+  'maczUseVolume',
+  'maczUseLag',
+] as const
 
 const costPresetDraft = ref('custom')
 const feeDraft = ref('0')
@@ -60,6 +114,16 @@ const kaufmanMultDraft = ref('2.0')
 const kaufmanTypeDraft = ref('sma')
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'strategy')
+const strategyKindNormalized = computed(() => String(strategyKind.value || 'DoubleMa').trim() || 'DoubleMa')
+const isDoubleLikeKind = computed(() => {
+  const kind = strategyKindNormalized.value
+  return kind === 'DoubleMa' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+})
+const showDmConstraints = computed(() => isDoubleLikeKind.value)
+const showKaufmanFields = computed(() => {
+  const mode = String(exitMode.value || 'cross').trim() || 'cross'
+  return isDoubleLikeKind.value && mode === 'kaufman_stop'
+})
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -90,10 +154,21 @@ watch(signalPersistenceBars, (v) => { const next = String(v || '1'); if (persist
 watch(trailingStopPct, (v) => { const next = String(v || ''); if (trailingDraft.value !== next) trailingDraft.value = next }, { immediate: true })
 watch(dmConstraintMinTrades, (v) => { const next = String(v || ''); if (minTradesDraft.value !== next) minTradesDraft.value = next }, { immediate: true })
 watch(dmConstraintMaxDd, (v) => { const next = String(v || ''); if (maxDdDraft.value !== next) maxDdDraft.value = next }, { immediate: true })
-watch(exitMode, (v) => { const next = String(v || 'cross'); if (exitModeDraft.value !== next) exitModeDraft.value = next }, { immediate: true })
+watch(exitMode, (v) => {
+  const next = String(v || 'cross')
+  if (exitModeDraft.value !== next) exitModeDraft.value = next
+  syncLegacyStrategyVisibility()
+}, { immediate: true })
 watch(kaufmanStopPeriod, (v) => { const next = String(v || '22'); if (kaufmanPeriodDraft.value !== next) kaufmanPeriodDraft.value = next }, { immediate: true })
 watch(kaufmanStopMult, (v) => { const next = String(v || '2.0'); if (kaufmanMultDraft.value !== next) kaufmanMultDraft.value = next }, { immediate: true })
 watch(kaufmanStopMaType, (v) => { const next = String(v || 'sma'); if (kaufmanTypeDraft.value !== next) kaufmanTypeDraft.value = next }, { immediate: true })
+watch(strategyKindNormalized, () => {
+  syncLegacyStrategyVisibility()
+}, { flush: 'post' })
+watch(updatedAtUnixMs, () => {
+  syncLegacyStrategyInputsFromStore()
+  syncLegacyStrategyVisibility()
+}, { flush: 'post' })
 
 function setInputValue(id: string, nextValue: string): void {
   strategyStore.setInputField(id, nextValue)
@@ -103,9 +178,154 @@ function setSelectValue(id: string, nextValue: string): void {
   strategyStore.setSelectField(id, nextValue)
 }
 
+function queryLegacyById<T extends Element>(id: string): T | null {
+  const selector = `[id="${id}"]`
+  const panel = panelRoot.value ?? (document.querySelector('[data-vue-panel="strategy"]') as HTMLElement | null)
+  if (panel) {
+    const scoped = panel.querySelector(selector) as T | null
+    if (scoped) return scoped
+  }
+  const byQuery = typeof document.querySelector === 'function'
+    ? document.querySelector(selector)
+    : null
+  if (byQuery) return byQuery as T
+  const getById = (document as unknown as { getElementById?: (nextId: string) => Element | null }).getElementById
+  if (typeof getById !== 'function') return null
+  return (getById.call(document, id) as T | null) ?? null
+}
+
+function setElementDisplay(id: string, visibleValue: boolean): void {
+  const el = queryLegacyById<HTMLElement>(id)
+  if (!el) return
+  el.style.display = visibleValue ? '' : 'none'
+}
+
+function setElementDisabled(id: string, disabled: boolean): void {
+  const el = queryLegacyById<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(id)
+  if (!el) return
+  el.disabled = disabled
+}
+
+function readChecked(id: string): boolean {
+  const el = queryLegacyById<HTMLInputElement>(id)
+  return !!el?.checked
+}
+
+function clearCompatListeners(): void {
+  while (compatCleanupFns.length > 0) {
+    const cleanup = compatCleanupFns.pop()
+    if (!cleanup) continue
+    cleanup()
+  }
+}
+
+function syncLegacyStrategyVisibility(): void {
+  const kind = strategyKindNormalized.value
+  const isCompTrend = kind === 'CompositeTrend'
+  const isRegimeHybrid = kind === 'RegimeHybrid'
+  const isBreakoutMomentum = kind === 'BreakoutMomentum'
+  const isCompCpu = kind === 'CompositeCpu'
+  const isComp = isCompCpu || kind === 'CompositeMo'
+  const useKaufmanExit = showKaufmanFields.value
+
+  setElementDisplay('trendQualityWrap', isCompTrend || isRegimeHybrid)
+  setElementDisplay('regimeHybridParamsWrap', isRegimeHybrid)
+  setElementDisplay('breakoutMomentumWrap', isBreakoutMomentum)
+  setElementDisplay('compositeSignalModeWrap', isComp)
+  setElementDisplay('compositeParamsWrap', isCompCpu)
+
+  setElementDisabled('trendAdxPeriod', !(isCompTrend && readChecked('trendUseAdx')))
+  setElementDisabled('trendAdxMin', !(isCompTrend && readChecked('trendUseAdx')))
+  setElementDisabled('breakoutAdxPeriod', !(isBreakoutMomentum && readChecked('breakoutUseAdx')))
+  setElementDisabled('breakoutAdxMin', !(isBreakoutMomentum && readChecked('breakoutUseAdx')))
+  setElementDisabled('allowFlip', useKaufmanExit)
+
+  const allowFlip = queryLegacyById<HTMLInputElement>('allowFlip')
+  if (allowFlip) {
+    allowFlip.title = useKaufmanExit
+      ? 'Allow flip is ignored when Exit mode = Kaufman-stop.'
+      : 'Allow switching long↔short on opposite signals (when Long-only is off).'
+  }
+}
+
+function seedLegacyStrategyInputsToStore(): void {
+  const storeMap = strategyStore as unknown as Record<string, unknown>
+  for (const id of LEGACY_STRATEGY_TEXT_IDS) {
+    const el = queryLegacyById<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(id)
+    if (!el) continue
+    const domValue = String(el.value || '').trim()
+    const storeValue = String(storeMap[id] ?? '').trim()
+    if (!storeValue && domValue) strategyStore.setInputField(id, domValue)
+  }
+  for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
+    const el = queryLegacyById<HTMLInputElement>(id)
+    if (!el) continue
+    const storeValue = !!storeMap[id]
+    if (storeValue !== !!el.checked) strategyStore.setCheckboxField(id, !!el.checked)
+  }
+}
+
+function syncLegacyStrategyInputsFromStore(): void {
+  const storeMap = strategyStore as unknown as Record<string, unknown>
+  for (const id of LEGACY_STRATEGY_TEXT_IDS) {
+    const el = queryLegacyById<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(id)
+    if (!el) continue
+    const nextValue = String(storeMap[id] ?? '')
+    if (String(el.value || '') === nextValue) continue
+    el.value = nextValue
+  }
+  for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
+    const el = queryLegacyById<HTMLInputElement>(id)
+    if (!el) continue
+    const nextChecked = !!storeMap[id]
+    if (!!el.checked === nextChecked) continue
+    el.checked = nextChecked
+  }
+}
+
+function bindLegacyStrategyInputs(): void {
+  clearCompatListeners()
+  const onTextChange = (id: string, target: EventTarget | null) => {
+    const el = target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
+    if (!el) return
+    strategyStore.setInputField(id, String(el.value || ''))
+    syncLegacyStrategyVisibility()
+  }
+  const onCheckboxChange = (id: string, target: EventTarget | null) => {
+    const el = target as HTMLInputElement | null
+    if (!el) return
+    strategyStore.setCheckboxField(id, !!el.checked)
+    syncLegacyStrategyVisibility()
+  }
+
+  for (const id of LEGACY_STRATEGY_TEXT_IDS) {
+    const el = queryLegacyById<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(id)
+    if (!el) continue
+    const handler = (event: Event) => onTextChange(id, event.target)
+    el.addEventListener('input', handler)
+    el.addEventListener('change', handler)
+    compatCleanupFns.push(() => {
+      el.removeEventListener('input', handler)
+      el.removeEventListener('change', handler)
+    })
+  }
+
+  for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
+    const el = queryLegacyById<HTMLInputElement>(id)
+    if (!el) continue
+    const handler = (event: Event) => onCheckboxChange(id, event.target)
+    el.addEventListener('input', handler)
+    el.addEventListener('change', handler)
+    compatCleanupFns.push(() => {
+      el.removeEventListener('input', handler)
+      el.removeEventListener('change', handler)
+    })
+  }
+}
+
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="strategy"]') as HTMLElement | null
-  const mount = document.getElementById('strategyVueShellMount')
+  const mount = document.querySelector('#strategyVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueStrategy = '1'
@@ -114,7 +334,7 @@ function resolveMount(): void {
 
 function adoptLegacyStrategyBlocks(): void {
   const panel = panelRoot.value ?? (document.querySelector('[data-vue-panel="strategy"]') as HTMLElement | null)
-  const host = document.getElementById('strategyCompatHostVue')
+  const host = document.querySelector('#strategyCompatHostVue') as HTMLElement | null
   if (!panel || !host) return
   const nodes = Array.from(panel.querySelectorAll('.strategyLegacyPassthrough')) as HTMLElement[]
   for (const node of nodes) {
@@ -143,10 +363,15 @@ onMounted(async () => {
   resolveMount()
   window.setTimeout(() => {
     adoptLegacyStrategyBlocks()
+    seedLegacyStrategyInputsToStore()
+    syncLegacyStrategyInputsFromStore()
+    bindLegacyStrategyInputs()
+    syncLegacyStrategyVisibility()
   }, 0)
 })
 
 onBeforeUnmount(() => {
+  clearCompatListeners()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueStrategy
     panelRoot.value = null
@@ -314,7 +539,7 @@ onBeforeUnmount(() => {
 
       <section class="pane">
         <h3>Constraints and exits</h3>
-        <div class="rowTwo" v-if="dmConstraintsVisible">
+        <div class="rowTwo" v-if="showDmConstraints">
           <div>
             <label for="vueDmMinTrades">Min trades (optional)</label>
             <input
@@ -360,7 +585,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="rowThree">
-          <div v-if="kaufmanStopPeriodVisible">
+          <div v-if="showKaufmanFields">
             <label for="vueKaufmanPeriod">Kaufman period</label>
             <input
               id="vueKaufmanPeriod"
@@ -371,7 +596,7 @@ onBeforeUnmount(() => {
               @input="kaufmanPeriodDraft = String(($event.target as HTMLInputElement).value || '22'); setInputValue('kaufmanStopPeriod', kaufmanPeriodDraft)"
             />
           </div>
-          <div v-if="kaufmanStopMultVisible">
+          <div v-if="showKaufmanFields">
             <label for="vueKaufmanMult">Kaufman multiplier</label>
             <input
               id="vueKaufmanMult"
@@ -382,7 +607,7 @@ onBeforeUnmount(() => {
               @input="kaufmanMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); setInputValue('kaufmanStopMult', kaufmanMultDraft)"
             />
           </div>
-          <div v-if="kaufmanStopMaTypeVisible">
+          <div v-if="showKaufmanFields">
             <label for="vueKaufmanType">Kaufman MA type</label>
             <input
               id="vueKaufmanType"

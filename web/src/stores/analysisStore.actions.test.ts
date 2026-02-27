@@ -1,391 +1,217 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import {
-  invokeLegacyAnalysisClearBaselineRuntime,
-  invokeLegacyAnalysisClearTopFiltersRuntime,
-  invokeLegacyAnalysisCopyBestRuntime,
-  invokeLegacyAnalysisExportTopCsvRuntime,
-  invokeLegacyAnalysisExportTopJsonRuntime,
-  invokeLegacyAnalysisHeatmapExportPngRuntime,
-  invokeLegacyAnalysisRerenderDrillRuntime,
-  invokeLegacyAnalysisSelectTopRowRuntime,
-  invokeLegacyAnalysisSetBaselineRuntime,
-  invokeLegacyAnalysisSortTopTableRuntime,
-  invokeLegacyDataBrowseCsvRuntime,
-  invokeLegacyDataOpenPolygonRuntime,
-  invokeLegacyMetaBatchRefreshRuntime,
-  invokeLegacyMetaBatchRevealSummaryRuntime,
-  invokeLegacyMetaBatchRetryFailedRuntime,
-  invokeLegacyMetaBatchSelectAllRuntime,
-  invokeLegacyMetaBatchSelectNoneRuntime,
-  invokeLegacyMetaBatchStopRuntime,
-  invokeLegacyMetaDeleteSavedRuntime,
-  invokeLegacyMetaDeleteStage4SavedRuntime,
-  invokeLegacyMetaLoadSavedRuntime,
-  invokeLegacyMetaLoadStage4SavedRuntime,
-  invokeLegacyMetaMlApplyRuntime,
-  invokeLegacyMetaMlDeleteRuntime,
-  invokeLegacyMetaMlRefreshRuntime,
-  invokeLegacyMetaMlTrainRuntime,
-  invokeLegacyMetaOpenReportRuntime,
-  invokeLegacyMetaOpenSavedReportRuntime,
-  invokeLegacyMetaRefreshSavedRuntime,
-  invokeLegacyMetaRefreshStage4SavedRuntime,
-  invokeLegacyMetaRevealFilesRuntime,
-  invokeLegacyMetaRevealSavedRuntime,
-  invokeLegacyMetaRevealStage4Runtime,
-  invokeLegacyMetaRevealStage4SavedRuntime,
-  invokeLegacyMetaRunBatchRuntime,
-  invokeLegacyMetaRunRuntime,
-  invokeLegacyMetaRunStage4Runtime,
-  invokeLegacyMetaSaveSavedTagsRuntime,
-  invokeLegacyMetaSaveStage4SavedTagsRuntime,
-  invokeLegacyMetaToggleBatchDatasetRuntime,
-  invokeLegacyOptimizeCancelRuntime,
-  invokeLegacyOptimizeRunRuntime,
-} from '../legacy/actions'
+import * as analysisService from '../services/analysisService'
+import * as dataService from '../services/dataService'
+import * as metaService from '../services/metaService'
+import * as optimizeService from '../services/optimizeService'
 import { useAnalysisStore } from './analysisStore'
+import { useHistoryStore } from './historyStore'
 import { useWorkflowStore } from './workflowStore'
 
-vi.mock('../legacy/actions', () => ({
-  invokeLegacyAnalysisClearBaselineRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisClearTopFiltersRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisCopyBestRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisExportTopCsvRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisExportTopJsonRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisHeatmapExportPngRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisRerenderDrillRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisSelectTopRowRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisSetBaselineRuntime: vi.fn(async () => true),
-  invokeLegacyAnalysisSortTopTableRuntime: vi.fn(async () => true),
-  invokeLegacyDataBrowseCsvRuntime: vi.fn(async () => true),
-  invokeLegacyDataOpenPolygonRuntime: vi.fn(async () => true),
-  invokeLegacyMetaBatchRefreshRuntime: vi.fn(async () => true),
-  invokeLegacyMetaBatchRevealSummaryRuntime: vi.fn(async () => true),
-  invokeLegacyMetaBatchRetryFailedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaBatchSelectAllRuntime: vi.fn(async () => true),
-  invokeLegacyMetaBatchSelectNoneRuntime: vi.fn(async () => true),
-  invokeLegacyMetaBatchStopRuntime: vi.fn(async () => true),
-  invokeLegacyMetaDeleteSavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaDeleteStage4SavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaLoadSavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaLoadStage4SavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaMlApplyRuntime: vi.fn(async () => true),
-  invokeLegacyMetaMlDeleteRuntime: vi.fn(async () => true),
-  invokeLegacyMetaMlRefreshRuntime: vi.fn(async () => true),
-  invokeLegacyMetaMlTrainRuntime: vi.fn(async () => true),
-  invokeLegacyMetaOpenReportRuntime: vi.fn(async () => true),
-  invokeLegacyMetaOpenSavedReportRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRefreshSavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRefreshStage4SavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRevealFilesRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRevealSavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRevealStage4Runtime: vi.fn(async () => true),
-  invokeLegacyMetaRevealStage4SavedRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRunBatchRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRunRuntime: vi.fn(async () => true),
-  invokeLegacyMetaRunStage4Runtime: vi.fn(async () => true),
-  invokeLegacyMetaSaveSavedTagsRuntime: vi.fn(async () => true),
-  invokeLegacyMetaSaveStage4SavedTagsRuntime: vi.fn(async () => true),
-  invokeLegacyMetaToggleBatchDatasetRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeRunRuntime: vi.fn(async () => true),
-  invokeLegacyOptimizeCancelRuntime: vi.fn(async () => true),
+vi.mock('../services/analysisService', () => ({
+  clearBaseline: vi.fn(async () => undefined),
+  clearTopFilters: vi.fn(async () => undefined),
+  copyBest: vi.fn(async () => undefined),
+  drillClearTradeSelection: vi.fn(async () => undefined),
+  drillNextTrade: vi.fn(async () => undefined),
+  drillPrevTrade: vi.fn(async () => undefined),
+  exportTopCsv: vi.fn(async () => undefined),
+  exportTopJson: vi.fn(async () => undefined),
+  heatmapExportPng: vi.fn(async () => undefined),
+  rerenderDrill: vi.fn(async () => undefined),
+  refreshCompareSummary: vi.fn(async () => undefined),
+  refreshTopTableFromWorkflowRun: vi.fn(() => true),
+  selectTopRow: vi.fn(async () => undefined),
+  setBaseline: vi.fn(async () => undefined),
+  sortTopTable: vi.fn(async () => undefined),
 }))
 
-const invokeLegacyAnalysisClearBaselineRuntimeMock = vi.mocked(invokeLegacyAnalysisClearBaselineRuntime)
-const invokeLegacyAnalysisClearTopFiltersRuntimeMock = vi.mocked(invokeLegacyAnalysisClearTopFiltersRuntime)
-const invokeLegacyAnalysisCopyBestRuntimeMock = vi.mocked(invokeLegacyAnalysisCopyBestRuntime)
-const invokeLegacyAnalysisExportTopCsvRuntimeMock = vi.mocked(invokeLegacyAnalysisExportTopCsvRuntime)
-const invokeLegacyAnalysisExportTopJsonRuntimeMock = vi.mocked(invokeLegacyAnalysisExportTopJsonRuntime)
-const invokeLegacyAnalysisHeatmapExportPngRuntimeMock = vi.mocked(invokeLegacyAnalysisHeatmapExportPngRuntime)
-const invokeLegacyAnalysisRerenderDrillRuntimeMock = vi.mocked(invokeLegacyAnalysisRerenderDrillRuntime)
-const invokeLegacyAnalysisSelectTopRowRuntimeMock = vi.mocked(invokeLegacyAnalysisSelectTopRowRuntime)
-const invokeLegacyAnalysisSetBaselineRuntimeMock = vi.mocked(invokeLegacyAnalysisSetBaselineRuntime)
-const invokeLegacyAnalysisSortTopTableRuntimeMock = vi.mocked(invokeLegacyAnalysisSortTopTableRuntime)
-const invokeLegacyDataBrowseCsvRuntimeMock = vi.mocked(invokeLegacyDataBrowseCsvRuntime)
-const invokeLegacyDataOpenPolygonRuntimeMock = vi.mocked(invokeLegacyDataOpenPolygonRuntime)
-const invokeLegacyMetaBatchRefreshRuntimeMock = vi.mocked(invokeLegacyMetaBatchRefreshRuntime)
-const invokeLegacyMetaBatchRevealSummaryRuntimeMock = vi.mocked(invokeLegacyMetaBatchRevealSummaryRuntime)
-const invokeLegacyMetaBatchRetryFailedRuntimeMock = vi.mocked(invokeLegacyMetaBatchRetryFailedRuntime)
-const invokeLegacyMetaBatchSelectAllRuntimeMock = vi.mocked(invokeLegacyMetaBatchSelectAllRuntime)
-const invokeLegacyMetaBatchSelectNoneRuntimeMock = vi.mocked(invokeLegacyMetaBatchSelectNoneRuntime)
-const invokeLegacyMetaBatchStopRuntimeMock = vi.mocked(invokeLegacyMetaBatchStopRuntime)
-const invokeLegacyMetaDeleteSavedRuntimeMock = vi.mocked(invokeLegacyMetaDeleteSavedRuntime)
-const invokeLegacyMetaDeleteStage4SavedRuntimeMock = vi.mocked(invokeLegacyMetaDeleteStage4SavedRuntime)
-const invokeLegacyMetaLoadSavedRuntimeMock = vi.mocked(invokeLegacyMetaLoadSavedRuntime)
-const invokeLegacyMetaLoadStage4SavedRuntimeMock = vi.mocked(invokeLegacyMetaLoadStage4SavedRuntime)
-const invokeLegacyMetaMlApplyRuntimeMock = vi.mocked(invokeLegacyMetaMlApplyRuntime)
-const invokeLegacyMetaMlDeleteRuntimeMock = vi.mocked(invokeLegacyMetaMlDeleteRuntime)
-const invokeLegacyMetaMlRefreshRuntimeMock = vi.mocked(invokeLegacyMetaMlRefreshRuntime)
-const invokeLegacyMetaMlTrainRuntimeMock = vi.mocked(invokeLegacyMetaMlTrainRuntime)
-const invokeLegacyMetaOpenReportRuntimeMock = vi.mocked(invokeLegacyMetaOpenReportRuntime)
-const invokeLegacyMetaOpenSavedReportRuntimeMock = vi.mocked(invokeLegacyMetaOpenSavedReportRuntime)
-const invokeLegacyMetaRefreshSavedRuntimeMock = vi.mocked(invokeLegacyMetaRefreshSavedRuntime)
-const invokeLegacyMetaRefreshStage4SavedRuntimeMock = vi.mocked(invokeLegacyMetaRefreshStage4SavedRuntime)
-const invokeLegacyMetaRevealFilesRuntimeMock = vi.mocked(invokeLegacyMetaRevealFilesRuntime)
-const invokeLegacyMetaRevealSavedRuntimeMock = vi.mocked(invokeLegacyMetaRevealSavedRuntime)
-const invokeLegacyMetaRevealStage4RuntimeMock = vi.mocked(invokeLegacyMetaRevealStage4Runtime)
-const invokeLegacyMetaRevealStage4SavedRuntimeMock = vi.mocked(invokeLegacyMetaRevealStage4SavedRuntime)
-const invokeLegacyMetaRunBatchRuntimeMock = vi.mocked(invokeLegacyMetaRunBatchRuntime)
-const invokeLegacyMetaRunRuntimeMock = vi.mocked(invokeLegacyMetaRunRuntime)
-const invokeLegacyMetaRunStage4RuntimeMock = vi.mocked(invokeLegacyMetaRunStage4Runtime)
-const invokeLegacyMetaSaveSavedTagsRuntimeMock = vi.mocked(invokeLegacyMetaSaveSavedTagsRuntime)
-const invokeLegacyMetaSaveStage4SavedTagsRuntimeMock = vi.mocked(invokeLegacyMetaSaveStage4SavedTagsRuntime)
-const invokeLegacyMetaToggleBatchDatasetRuntimeMock = vi.mocked(invokeLegacyMetaToggleBatchDatasetRuntime)
-const invokeLegacyOptimizeRunRuntimeMock = vi.mocked(invokeLegacyOptimizeRunRuntime)
-const invokeLegacyOptimizeCancelRuntimeMock = vi.mocked(invokeLegacyOptimizeCancelRuntime)
+vi.mock('../services/metaService', () => ({
+  batchRefresh: vi.fn(async () => undefined),
+  batchRevealSummary: vi.fn(async () => undefined),
+  batchRetryFailed: vi.fn(async () => undefined),
+  batchSelectAll: vi.fn(async () => undefined),
+  batchSelectNone: vi.fn(async () => undefined),
+  batchStop: vi.fn(async () => undefined),
+  deleteSaved: vi.fn(async () => undefined),
+  deleteStage4Saved: vi.fn(async () => undefined),
+  loadSaved: vi.fn(async () => undefined),
+  loadStage4Saved: vi.fn(async () => undefined),
+  mlApply: vi.fn(async () => undefined),
+  mlDelete: vi.fn(async () => undefined),
+  mlRefresh: vi.fn(async () => undefined),
+  mlTrain: vi.fn(async () => undefined),
+  openMetaReport: vi.fn(async () => undefined),
+  openSavedReport: vi.fn(async () => undefined),
+  refreshSaved: vi.fn(async () => undefined),
+  refreshStage4Saved: vi.fn(async () => undefined),
+  revealMetaFiles: vi.fn(async () => undefined),
+  revealSaved: vi.fn(async () => undefined),
+  revealStage4: vi.fn(async () => undefined),
+  revealStage4Saved: vi.fn(async () => undefined),
+  runBatch: vi.fn(async () => undefined),
+  runMeta: vi.fn(async () => undefined),
+  runStage4: vi.fn(async () => undefined),
+  refreshBatchDatasetView: vi.fn(() => undefined),
+  saveSavedTags: vi.fn(async () => undefined),
+  saveStage4SavedTags: vi.fn(async () => undefined),
+  toggleBatchDataset: vi.fn(async () => undefined),
+}))
 
-interface LegacyTextField {
-  value: string
-  disabled?: boolean
-  type?: string
-  dispatchEvent: (event: Event) => boolean
-}
+vi.mock('../services/dataService', () => ({
+  browseCsv: vi.fn(async () => null),
+  openPolygon: vi.fn(async () => undefined),
+}))
 
-interface LegacyCheckboxField {
-  checked: boolean
-  disabled?: boolean
-  type: 'checkbox'
-  dispatchEvent: (event: Event) => boolean
-}
+vi.mock('../services/optimizeService', () => ({
+  cancelOptimization: vi.fn(async () => undefined),
+  runOptimization: vi.fn(async () => undefined),
+}))
 
-interface DocumentHarness {
-  fields: Record<string, LegacyTextField | LegacyCheckboxField>
-  eventsById: Record<string, string[]>
-}
+const clearBaselineMock = vi.mocked(analysisService.clearBaseline)
+const clearTopFiltersMock = vi.mocked(analysisService.clearTopFilters)
+const copyBestMock = vi.mocked(analysisService.copyBest)
+const drillClearTradeSelectionMock = vi.mocked(analysisService.drillClearTradeSelection)
+const drillNextTradeMock = vi.mocked(analysisService.drillNextTrade)
+const drillPrevTradeMock = vi.mocked(analysisService.drillPrevTrade)
+const exportTopCsvMock = vi.mocked(analysisService.exportTopCsv)
+const exportTopJsonMock = vi.mocked(analysisService.exportTopJson)
+const heatmapExportPngMock = vi.mocked(analysisService.heatmapExportPng)
+const rerenderDrillMock = vi.mocked(analysisService.rerenderDrill)
+const refreshCompareSummaryMock = vi.mocked(analysisService.refreshCompareSummary)
+const refreshTopTableFromWorkflowRunMock = vi.mocked(analysisService.refreshTopTableFromWorkflowRun)
+const selectTopRowMock = vi.mocked(analysisService.selectTopRow)
+const setBaselineMock = vi.mocked(analysisService.setBaseline)
+const sortTopTableMock = vi.mocked(analysisService.sortTopTable)
 
-function installDocumentHarness(): DocumentHarness {
-  const eventsById: Record<string, string[]> = {}
-  const trackEvent = (id: string, event: Event): boolean => {
-    if (!eventsById[id]) eventsById[id] = []
-    eventsById[id].push(String(event.type || '').trim())
-    return true
-  }
-  const fields: Record<string, LegacyTextField | LegacyCheckboxField> = {
-    filterMinPnl: {
-      value: '',
-      dispatchEvent: (event: Event) => trackEvent('filterMinPnl', event),
-    },
-    compareSelect: {
-      value: '',
-      dispatchEvent: (event: Event) => trackEvent('compareSelect', event),
-    },
-    metaTopK: {
-      value: '25',
-      dispatchEvent: (event: Event) => trackEvent('metaTopK', event),
-    },
-    metaStrategyKind: {
-      value: 'DoubleMa',
-      dispatchEvent: (event: Event) => trackEvent('metaStrategyKind', event),
-    },
-    metaEvalHoldout: {
-      checked: false,
-      type: 'checkbox',
-      dispatchEvent: (event: Event) => trackEvent('metaEvalHoldout', event),
-    },
-  }
-  vi.stubGlobal('document', {
-    documentElement: { dataset: {} },
-    getElementById: (id: string) => fields[id] ?? null,
-  })
-  return { fields, eventsById }
-}
+const batchRefreshMock = vi.mocked(metaService.batchRefresh)
+const batchRevealSummaryMock = vi.mocked(metaService.batchRevealSummary)
+const batchRetryFailedMock = vi.mocked(metaService.batchRetryFailed)
+const batchSelectAllMock = vi.mocked(metaService.batchSelectAll)
+const batchSelectNoneMock = vi.mocked(metaService.batchSelectNone)
+const batchStopMock = vi.mocked(metaService.batchStop)
+const deleteSavedMock = vi.mocked(metaService.deleteSaved)
+const deleteStage4SavedMock = vi.mocked(metaService.deleteStage4Saved)
+const loadSavedMock = vi.mocked(metaService.loadSaved)
+const loadStage4SavedMock = vi.mocked(metaService.loadStage4Saved)
+const mlApplyMock = vi.mocked(metaService.mlApply)
+const mlDeleteMock = vi.mocked(metaService.mlDelete)
+const mlRefreshMock = vi.mocked(metaService.mlRefresh)
+const mlTrainMock = vi.mocked(metaService.mlTrain)
+const openMetaReportMock = vi.mocked(metaService.openMetaReport)
+const openSavedReportMock = vi.mocked(metaService.openSavedReport)
+const refreshSavedMock = vi.mocked(metaService.refreshSaved)
+const refreshStage4SavedMock = vi.mocked(metaService.refreshStage4Saved)
+const revealMetaFilesMock = vi.mocked(metaService.revealMetaFiles)
+const revealSavedMock = vi.mocked(metaService.revealSaved)
+const revealStage4Mock = vi.mocked(metaService.revealStage4)
+const revealStage4SavedMock = vi.mocked(metaService.revealStage4Saved)
+const runBatchMock = vi.mocked(metaService.runBatch)
+const runMetaMock = vi.mocked(metaService.runMeta)
+const runStage4Mock = vi.mocked(metaService.runStage4)
+const saveSavedTagsMock = vi.mocked(metaService.saveSavedTags)
+const saveStage4SavedTagsMock = vi.mocked(metaService.saveStage4SavedTags)
+const toggleBatchDatasetMock = vi.mocked(metaService.toggleBatchDataset)
+
+const browseCsvMock = vi.mocked(dataService.browseCsv)
+const openPolygonMock = vi.mocked(dataService.openPolygon)
+const runOptimizationMock = vi.mocked(optimizeService.runOptimization)
+const cancelOptimizationMock = vi.mocked(optimizeService.cancelOptimization)
 
 describe('analysis store actions', () => {
-  let harness: DocumentHarness
-
   beforeEach(() => {
     setActivePinia(createPinia())
-    harness = installDocumentHarness()
-    invokeLegacyAnalysisClearBaselineRuntimeMock.mockClear()
-    invokeLegacyAnalysisClearBaselineRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisClearTopFiltersRuntimeMock.mockClear()
-    invokeLegacyAnalysisClearTopFiltersRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisCopyBestRuntimeMock.mockClear()
-    invokeLegacyAnalysisCopyBestRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisExportTopCsvRuntimeMock.mockClear()
-    invokeLegacyAnalysisExportTopCsvRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisExportTopJsonRuntimeMock.mockClear()
-    invokeLegacyAnalysisExportTopJsonRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisHeatmapExportPngRuntimeMock.mockClear()
-    invokeLegacyAnalysisHeatmapExportPngRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisRerenderDrillRuntimeMock.mockClear()
-    invokeLegacyAnalysisRerenderDrillRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisSelectTopRowRuntimeMock.mockClear()
-    invokeLegacyAnalysisSelectTopRowRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisSetBaselineRuntimeMock.mockClear()
-    invokeLegacyAnalysisSetBaselineRuntimeMock.mockResolvedValue(true)
-    invokeLegacyAnalysisSortTopTableRuntimeMock.mockClear()
-    invokeLegacyAnalysisSortTopTableRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataBrowseCsvRuntimeMock.mockClear()
-    invokeLegacyDataBrowseCsvRuntimeMock.mockResolvedValue(true)
-    invokeLegacyDataOpenPolygonRuntimeMock.mockClear()
-    invokeLegacyDataOpenPolygonRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaBatchRefreshRuntimeMock.mockClear()
-    invokeLegacyMetaBatchRefreshRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaBatchRevealSummaryRuntimeMock.mockClear()
-    invokeLegacyMetaBatchRevealSummaryRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaBatchRetryFailedRuntimeMock.mockClear()
-    invokeLegacyMetaBatchRetryFailedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaBatchSelectAllRuntimeMock.mockClear()
-    invokeLegacyMetaBatchSelectAllRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaBatchSelectNoneRuntimeMock.mockClear()
-    invokeLegacyMetaBatchSelectNoneRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaBatchStopRuntimeMock.mockClear()
-    invokeLegacyMetaBatchStopRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaDeleteSavedRuntimeMock.mockClear()
-    invokeLegacyMetaDeleteSavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaDeleteStage4SavedRuntimeMock.mockClear()
-    invokeLegacyMetaDeleteStage4SavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaLoadSavedRuntimeMock.mockClear()
-    invokeLegacyMetaLoadSavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaLoadStage4SavedRuntimeMock.mockClear()
-    invokeLegacyMetaLoadStage4SavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaMlApplyRuntimeMock.mockClear()
-    invokeLegacyMetaMlApplyRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaMlDeleteRuntimeMock.mockClear()
-    invokeLegacyMetaMlDeleteRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaMlRefreshRuntimeMock.mockClear()
-    invokeLegacyMetaMlRefreshRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaMlTrainRuntimeMock.mockClear()
-    invokeLegacyMetaMlTrainRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaOpenReportRuntimeMock.mockClear()
-    invokeLegacyMetaOpenReportRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaOpenSavedReportRuntimeMock.mockClear()
-    invokeLegacyMetaOpenSavedReportRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRefreshSavedRuntimeMock.mockClear()
-    invokeLegacyMetaRefreshSavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRefreshStage4SavedRuntimeMock.mockClear()
-    invokeLegacyMetaRefreshStage4SavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRevealFilesRuntimeMock.mockClear()
-    invokeLegacyMetaRevealFilesRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRevealSavedRuntimeMock.mockClear()
-    invokeLegacyMetaRevealSavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRevealStage4RuntimeMock.mockClear()
-    invokeLegacyMetaRevealStage4RuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRevealStage4SavedRuntimeMock.mockClear()
-    invokeLegacyMetaRevealStage4SavedRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRunBatchRuntimeMock.mockClear()
-    invokeLegacyMetaRunBatchRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRunRuntimeMock.mockClear()
-    invokeLegacyMetaRunRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaRunStage4RuntimeMock.mockClear()
-    invokeLegacyMetaRunStage4RuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaSaveSavedTagsRuntimeMock.mockClear()
-    invokeLegacyMetaSaveSavedTagsRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaSaveStage4SavedTagsRuntimeMock.mockClear()
-    invokeLegacyMetaSaveStage4SavedTagsRuntimeMock.mockResolvedValue(true)
-    invokeLegacyMetaToggleBatchDatasetRuntimeMock.mockClear()
-    invokeLegacyMetaToggleBatchDatasetRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeRunRuntimeMock.mockClear()
-    invokeLegacyOptimizeRunRuntimeMock.mockResolvedValue(true)
-    invokeLegacyOptimizeCancelRuntimeMock.mockClear()
-    invokeLegacyOptimizeCancelRuntimeMock.mockResolvedValue(true)
+    vi.clearAllMocks()
   })
 
-  it('dispatches top-table field updates via legacy DOM events', () => {
+  it('updates analysis/history controls and keeps Vue store state in sync', () => {
     const store = useAnalysisStore()
-    store.setInputField('filterMinPnl', '42')
-    store.setSelectField('compareSelect', 'run_01')
+    const historyStore = useHistoryStore()
 
-    expect((harness.fields.filterMinPnl as LegacyTextField).value).toBe('42')
-    expect((harness.fields.compareSelect as LegacyTextField).value).toBe('run_01')
-    expect(harness.eventsById.filterMinPnl).toEqual(['input'])
-    expect(harness.eventsById.compareSelect).toEqual(['change'])
+    store.setInputField('filterMinPnl', '1.5')
+    store.setInputField('filterMinSharpe', ' 0.9 ')
+    store.setSelectField('paretoX', 'sharpe')
+    store.setSelectField('heatmapRange', 'q1_99')
+    store.setSelectField('compareSelect', 'latest')
+    store.setMetaInputField('metaTopK', ' 40 ')
+    store.setMetaSelectField('metaStrategyKind', 'MeanReversion')
+    store.setMetaSelectField('metaCompareSelect', 'baseline-1')
+    store.setMetaInputField('batchDatasetSearch', 'btc')
+    store.setMetaInputField('metaSavedSearch', 'saved-foo')
+    store.setMetaSelectField('metaSavedSelect', 'meta-saved-1')
+    store.setMetaInputField('metaSavedTags', 'alpha,beta')
+    store.setMetaInputField('stage4SavedSearch', 'stage4-foo')
+    store.setMetaSelectField('stage4SavedSelect', 'stage4-saved-1')
+    store.setMetaInputField('stage4SavedTags', 'gamma,delta')
+    store.setMetaCheckboxField('metaEvalHoldout', true)
+    store.setMetaCheckboxField('metaUseMlConfidence', true)
+    store.setMetaCheckboxField('metaMlAutopilot', false)
+
+    expect(store.filterMinPnl).toBe('1.5')
+    expect(store.filterMinSharpe).toBe('0.9')
+    expect(store.paretoX).toBe('sharpe')
+    expect(store.heatmapRange).toBe('q1_99')
+    expect(historyStore.compareSelectedValue).toBe('latest')
+    expect(store.compareSummary).toBe('Baseline selected: latest')
+    expect(store.metaTopK).toBe('40')
+    expect(store.metaStrategyKind).toBe('MeanReversion')
+    expect(store.metaCompareSelected).toBe('baseline-1')
+    expect(store.batchDatasetSearch).toBe('btc')
+    expect(store.metaSavedSearch).toBe('saved-foo')
+    expect(store.metaSavedSelected).toBe('meta-saved-1')
+    expect(store.metaSavedTagsDraft).toBe('alpha,beta')
+    expect(store.stage4SavedSearch).toBe('stage4-foo')
+    expect(store.stage4SavedSelected).toBe('stage4-saved-1')
+    expect(store.stage4SavedTagsDraft).toBe('gamma,delta')
+    expect(store.metaEvalHoldout).toBe(true)
+    expect(store.metaUseMlConfidence).toBe(true)
+    expect(store.metaMlAutopilot).toBe(false)
+    expect(store.source).toBe('vue')
+    expect(store.updatedAtUnixMs).toBeGreaterThan(0)
+    expect(refreshTopTableFromWorkflowRunMock).toHaveBeenCalledTimes(2)
+    expect(refreshCompareSummaryMock).toHaveBeenCalledTimes(1)
   })
 
-  it('dispatches top-table selection actions', () => {
+  it('routes core analysis actions through analysisService', () => {
     const store = useAnalysisStore()
+
     store.clearTopFilters()
-    store.sortTopTable('pnl')
-    store.selectTopRow(3)
-
-    expect(invokeLegacyAnalysisClearTopFiltersRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyAnalysisSortTopTableRuntimeMock).toHaveBeenCalledWith({ key: 'pnl' })
-    expect(invokeLegacyAnalysisSelectTopRowRuntimeMock).toHaveBeenCalledWith({ index: 3 })
-  })
-
-  it('dispatches overview export and baseline actions', () => {
-    const store = useAnalysisStore()
+    store.sortTopTable(' sharpe ')
+    store.selectTopRow(3.9)
     store.copyBest()
     store.exportTopCsv()
     store.exportTopJson()
     store.setBaseline()
     store.clearBaseline()
-
-    expect(invokeLegacyAnalysisCopyBestRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyAnalysisExportTopCsvRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyAnalysisExportTopJsonRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyAnalysisSetBaselineRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyAnalysisClearBaselineRuntimeMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('routes overview browse and polygon actions through workflow + data stores', () => {
-    const workflowStore = useWorkflowStore()
-    const workspaceSpy = vi.spyOn(workflowStore, 'selectWorkspace')
-    const controlsSpy = vi.spyOn(workflowStore, 'selectControlsTab')
-    const store = useAnalysisStore()
-    store.overviewPrimaryAction = 'browse_csv'
-    store.overviewSecondaryAction = 'polygon'
-
-    store.overviewEmptyPrimary()
-    store.overviewEmptySecondary()
-
-    expect(workspaceSpy).toHaveBeenCalledWith('workflow', 'data')
-    expect(controlsSpy).not.toHaveBeenCalled()
-    expect(invokeLegacyDataBrowseCsvRuntimeMock).toHaveBeenCalled()
-    expect(invokeLegacyDataOpenPolygonRuntimeMock).toHaveBeenCalled()
-  })
-
-  it('routes overview optimize actions through workflow + optimize stores', () => {
-    const workflowStore = useWorkflowStore()
-    const workspaceSpy = vi.spyOn(workflowStore, 'selectWorkspace')
-    const controlsSpy = vi.spyOn(workflowStore, 'selectControlsTab')
-    const store = useAnalysisStore()
-
-    store.overviewPrimaryAction = 'go_opt'
-    store.overviewEmptyPrimary()
-    expect(workspaceSpy).toHaveBeenCalledWith('workflow', 'optimize')
-    expect(controlsSpy).toHaveBeenCalledWith('opt')
-
-    store.overviewSecondaryAction = 'run_opt'
-    store.overviewEmptySecondary()
-    expect(invokeLegacyOptimizeRunRuntimeMock).toHaveBeenCalled()
-
-    store.overviewSecondaryAction = 'cancel_run'
-    store.overviewEmptySecondary()
-    expect(invokeLegacyOptimizeCancelRuntimeMock).toHaveBeenCalled()
-  })
-
-  it('dispatches heatmap export action', () => {
-    const store = useAnalysisStore()
     store.heatmapExportPng()
-    expect(invokeLegacyAnalysisHeatmapExportPngRuntimeMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('dispatches drill rerender action', () => {
-    const store = useAnalysisStore()
     store.rerenderDrill()
-    expect(invokeLegacyAnalysisRerenderDrillRuntimeMock).toHaveBeenCalledTimes(1)
+    store.drillClearTradeSelection()
+    store.drillPrevTrade()
+    store.drillNextTrade()
+
+    expect(clearTopFiltersMock).toHaveBeenCalled()
+    expect(sortTopTableMock).toHaveBeenCalledWith('sharpe')
+    expect(selectTopRowMock).toHaveBeenCalledWith(3)
+    expect(copyBestMock).toHaveBeenCalled()
+    expect(exportTopCsvMock).toHaveBeenCalled()
+    expect(exportTopJsonMock).toHaveBeenCalled()
+    expect(setBaselineMock).toHaveBeenCalled()
+    expect(clearBaselineMock).toHaveBeenCalled()
+    expect(heatmapExportPngMock).toHaveBeenCalled()
+    expect(rerenderDrillMock).toHaveBeenCalled()
+    expect(drillClearTradeSelectionMock).toHaveBeenCalled()
+    expect(drillPrevTradeMock).toHaveBeenCalled()
+    expect(drillNextTradeMock).toHaveBeenCalled()
   })
 
-  it('dispatches meta field updates via legacy DOM events', () => {
+  it('routes meta/stage4/ml actions through metaService', () => {
     const store = useAnalysisStore()
-    store.setMetaInputField('metaTopK', '20')
-    store.setMetaSelectField('metaStrategyKind', 'CompositeMo')
-    store.setMetaCheckboxField('metaEvalHoldout', true)
+    store.batchDatasets = [
+      { path: 'C:/dataset.csv', label: 'dataset', meta: '—', checked: false, disabled: false },
+    ]
+    store.batchSelectedCount = 0
+    store.batchTotalCount = 1
 
-    const metaEvalHoldout = harness.fields.metaEvalHoldout as LegacyCheckboxField
-    expect((harness.fields.metaTopK as LegacyTextField).value).toBe('20')
-    expect((harness.fields.metaStrategyKind as LegacyTextField).value).toBe('CompositeMo')
-    expect(metaEvalHoldout.checked).toBe(true)
-    expect(harness.eventsById.metaTopK).toEqual(['input'])
-    expect(harness.eventsById.metaStrategyKind).toEqual(['change'])
-    expect(harness.eventsById.metaEvalHoldout).toEqual(['change'])
-  })
-
-  it('dispatches meta action groups', () => {
-    const store = useAnalysisStore()
     store.runBatch()
     store.batchStop()
     store.batchRefresh()
@@ -413,38 +239,66 @@ describe('analysis store actions', () => {
     store.runMeta()
     store.openMetaReport()
     store.revealMetaFiles()
-    store.toggleBatchDataset(' C:/data.csv ', true)
+    store.toggleBatchDataset(' C:/dataset.csv ', true)
 
-    expect(invokeLegacyMetaRunBatchRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaBatchStopRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaBatchRefreshRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaBatchSelectAllRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaBatchSelectNoneRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaBatchRetryFailedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaBatchRevealSummaryRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaSaveSavedTagsRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRefreshSavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaLoadSavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaOpenSavedReportRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRevealSavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaDeleteSavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaSaveStage4SavedTagsRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRefreshStage4SavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaLoadStage4SavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRevealStage4SavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaDeleteStage4SavedRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaMlRefreshRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaMlTrainRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaMlApplyRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaMlDeleteRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRunStage4RuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRevealStage4RuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRunRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaOpenReportRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaRevealFilesRuntimeMock).toHaveBeenCalledTimes(1)
-    expect(invokeLegacyMetaToggleBatchDatasetRuntimeMock).toHaveBeenCalledWith({
-      path: 'C:/data.csv',
-      checked: true,
-    })
+    expect(runBatchMock).toHaveBeenCalled()
+    expect(batchStopMock).toHaveBeenCalled()
+    expect(batchRefreshMock).toHaveBeenCalled()
+    expect(batchSelectAllMock).toHaveBeenCalled()
+    expect(batchSelectNoneMock).toHaveBeenCalled()
+    expect(batchRetryFailedMock).toHaveBeenCalled()
+    expect(batchRevealSummaryMock).toHaveBeenCalled()
+    expect(saveSavedTagsMock).toHaveBeenCalled()
+    expect(refreshSavedMock).toHaveBeenCalled()
+    expect(loadSavedMock).toHaveBeenCalled()
+    expect(openSavedReportMock).toHaveBeenCalled()
+    expect(revealSavedMock).toHaveBeenCalled()
+    expect(deleteSavedMock).toHaveBeenCalled()
+    expect(saveStage4SavedTagsMock).toHaveBeenCalled()
+    expect(refreshStage4SavedMock).toHaveBeenCalled()
+    expect(loadStage4SavedMock).toHaveBeenCalled()
+    expect(revealStage4SavedMock).toHaveBeenCalled()
+    expect(deleteStage4SavedMock).toHaveBeenCalled()
+    expect(mlRefreshMock).toHaveBeenCalled()
+    expect(mlTrainMock).toHaveBeenCalled()
+    expect(mlApplyMock).toHaveBeenCalled()
+    expect(mlDeleteMock).toHaveBeenCalled()
+    expect(runStage4Mock).toHaveBeenCalled()
+    expect(revealStage4Mock).toHaveBeenCalled()
+    expect(runMetaMock).toHaveBeenCalled()
+    expect(openMetaReportMock).toHaveBeenCalled()
+    expect(revealMetaFilesMock).toHaveBeenCalled()
+    expect(toggleBatchDatasetMock).toHaveBeenCalledWith('C:/dataset.csv', true)
+    expect(store.batchDatasets[0]?.checked).toBe(true)
+    expect(store.batchSelectedCount).toBe(1)
+    expect(store.batchTotalCount).toBe(1)
+  })
+
+  it('routes overview empty actions through workflow/data/optimize stores', () => {
+    const store = useAnalysisStore()
+    const workflowStore = useWorkflowStore()
+
+    store.overviewPrimaryAction = 'browse_csv'
+    store.overviewEmptyPrimary()
+    expect(workflowStore.workspace).toBe('workflow')
+    expect(workflowStore.workflow).toBe('data')
+    expect(browseCsvMock).toHaveBeenCalled()
+
+    store.overviewPrimaryAction = 'polygon'
+    store.overviewEmptyPrimary()
+    expect(openPolygonMock).toHaveBeenCalled()
+
+    store.overviewPrimaryAction = 'go_opt'
+    store.overviewEmptyPrimary()
+    expect(workflowStore.workspace).toBe('workflow')
+    expect(workflowStore.workflow).toBe('optimize')
+
+    store.overviewPrimaryAction = 'run_opt'
+    store.overviewEmptyPrimary()
+    expect(runOptimizationMock).toHaveBeenCalled()
+
+    store.overviewPrimaryAction = 'cancel_run'
+    store.overviewEmptyPrimary()
+    expect(cancelOptimizationMock).toHaveBeenCalled()
   })
 })

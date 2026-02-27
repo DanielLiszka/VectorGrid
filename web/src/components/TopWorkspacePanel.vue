@@ -107,7 +107,7 @@ function onTableScroll(event: Event): void {
 
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="top"]') as HTMLElement | null
-  const mount = document.getElementById('topVueShellMount')
+  const mount = document.querySelector('#topVueShellMount') as HTMLElement | null
   if (!panel || !mount) return
   panelRoot.value = panel
   panel.dataset.vueTop = '1'
@@ -389,5 +389,6 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
+
 
 

@@ -1,72 +1,11 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
-import {
-  invokeLegacyAnalysisClearBaselineRuntime,
-  invokeLegacyAnalysisClearTopFiltersRuntime,
-  invokeLegacyAnalysisCopyBestRuntime,
-  invokeLegacyAnalysisDrillClearTradeSelectionRuntime,
-  invokeLegacyAnalysisDrillNextTradeRuntime,
-  invokeLegacyAnalysisDrillPrevTradeRuntime,
-  invokeLegacyAnalysisExportTopCsvRuntime,
-  invokeLegacyAnalysisExportTopJsonRuntime,
-  invokeLegacyAnalysisHeatmapExportPngRuntime,
-  invokeLegacyAnalysisRerenderDrillRuntime,
-  invokeLegacyAnalysisSelectTopRowRuntime,
-  invokeLegacyAnalysisSetBaselineRuntime,
-  invokeLegacyAnalysisSortTopTableRuntime,
-  invokeLegacyMetaBatchRefreshRuntime,
-  invokeLegacyMetaBatchRevealSummaryRuntime,
-  invokeLegacyMetaBatchRetryFailedRuntime,
-  invokeLegacyMetaBatchSelectAllRuntime,
-  invokeLegacyMetaBatchSelectNoneRuntime,
-  invokeLegacyMetaBatchStopRuntime,
-  invokeLegacyMetaDeleteSavedRuntime,
-  invokeLegacyMetaDeleteStage4SavedRuntime,
-  invokeLegacyMetaLoadSavedRuntime,
-  invokeLegacyMetaLoadStage4SavedRuntime,
-  invokeLegacyMetaMlApplyRuntime,
-  invokeLegacyMetaMlDeleteRuntime,
-  invokeLegacyMetaMlRefreshRuntime,
-  invokeLegacyMetaMlTrainRuntime,
-  invokeLegacyMetaOpenReportRuntime,
-  invokeLegacyMetaOpenSavedReportRuntime,
-  invokeLegacyMetaRefreshSavedRuntime,
-  invokeLegacyMetaRefreshStage4SavedRuntime,
-  invokeLegacyMetaRevealFilesRuntime,
-  invokeLegacyMetaRevealSavedRuntime,
-  invokeLegacyMetaRevealStage4Runtime,
-  invokeLegacyMetaRevealStage4SavedRuntime,
-  invokeLegacyMetaRunBatchRuntime,
-  invokeLegacyMetaRunRuntime,
-  invokeLegacyMetaRunStage4Runtime,
-  invokeLegacyMetaSaveSavedTagsRuntime,
-  invokeLegacyMetaSaveStage4SavedTagsRuntime,
-  invokeLegacyMetaToggleBatchDatasetRuntime,
-} from '../legacy/actions'
+import * as analysisService from '../services/analysisService'
+import * as metaService from '../services/metaService'
 import { useDataStore } from './dataStore'
+import { useHistoryStore } from './historyStore'
 import { useOptimizeStore } from './optimizeStore'
 import { useWorkflowStore } from './workflowStore'
-
-function updateLegacyTextField(field: string, value: string, eventType: 'input' | 'change'): void {
-  if (typeof document === 'undefined') return
-  const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-  if (!el || el.disabled) return
-  if (String(el.value ?? '') !== value) el.value = value
-  el.dispatchEvent(new Event(eventType, { bubbles: true }))
-}
-
-function updateLegacyCheckboxField(field: string, checked: boolean): void {
-  if (typeof document === 'undefined') return
-  const key = String(field || '').trim()
-  if (!key) return
-  const el = document.getElementById(key) as HTMLInputElement | null
-  if (!el || el.disabled) return
-  if (String(el.type || '').trim().toLowerCase() !== 'checkbox') return
-  if (el.checked !== checked) el.checked = checked
-  el.dispatchEvent(new Event('change', { bubbles: true }))
-}
 
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback
@@ -266,8 +205,200 @@ interface AnalysisState {
   stabilityMeta: string
   heatmapMeta: string
   statusLine: string
-  source: 'legacy-dom' | 'vue' | 'unknown'
+  source: 'vue' | 'unknown'
   updatedAtUnixMs: number
+}
+
+function applyVueAnalysisFieldUpdate(state: AnalysisState, field: string, value: string): boolean {
+  const key = String(field || '').trim()
+  const next = String(value || '').trim()
+  if (!key) return false
+
+  switch (key) {
+    case 'filterMinPnl':
+      state.filterMinPnl = next
+      return true
+    case 'filterMinSharpe':
+      state.filterMinSharpe = next
+      return true
+    case 'filterMaxDd':
+      state.filterMaxDd = next
+      return true
+    case 'filterMinTrades':
+      state.filterMinTrades = next
+      return true
+    case 'filterMinExposure':
+      state.filterMinExposure = next
+      return true
+    case 'paretoX':
+      state.paretoX = next || 'max_dd'
+      return true
+    case 'paretoY':
+      state.paretoY = next || 'pnl'
+      return true
+    case 'heatmapColor':
+      state.heatmapColor = next || 'cividis'
+      return true
+    case 'heatmapRange':
+      state.heatmapRange = next || 'q2_98'
+      return true
+    case 'heatmapShowTop':
+      state.heatmapShowTop = next || 'true'
+      return true
+    case 'heatmapShowCrosshair':
+      state.heatmapShowCrosshair = next || 'true'
+      return true
+    default:
+      return false
+  }
+}
+
+function applyVueMetaTextFieldUpdate(state: AnalysisState, field: string, value: string): boolean {
+  const key = String(field || '').trim()
+  const next = String(value || '').trim()
+  if (!key) return false
+
+  switch (key) {
+    case 'metaStrategyKind':
+      state.metaStrategyKind = next
+      return true
+    case 'metaTimeframe':
+      state.metaTimeframe = next
+      return true
+    case 'metaRequiredTag':
+      state.metaRequiredTag = next
+      return true
+    case 'metaMinSamples':
+      state.metaMinSamples = next
+      return true
+    case 'metaTopK':
+      state.metaTopK = next
+      return true
+    case 'metaHoldoutTag':
+      state.metaHoldoutTag = next
+      return true
+    case 'metaHoldoutMode':
+      state.metaHoldoutMode = next
+      return true
+    case 'metaHoldoutReps':
+      state.metaHoldoutReps = next
+      return true
+    case 'metaHoldoutEvalTopN':
+      state.metaHoldoutEvalTopN = next
+      return true
+    case 'metaHoldoutEvalRankBy':
+      state.metaHoldoutEvalRankBy = next
+      return true
+    case 'metaHoldoutExploreN':
+      state.metaHoldoutExploreN = next
+      return true
+    case 'metaGroupingMode':
+      state.metaGroupingMode = next
+      return true
+    case 'metaClusterIntBucket':
+      state.metaClusterIntBucket = next
+      return true
+    case 'metaClusterFloatBucket':
+      state.metaClusterFloatBucket = next
+      return true
+    case 'metaCompareSelect':
+      state.metaCompareSelected = next
+      return true
+    case 'batchDatasetSearch':
+      state.batchDatasetSearch = next
+      return true
+    case 'batchHoldoutPct':
+      state.batchHoldoutPct = next
+      return true
+    case 'batchHoldoutTag':
+      state.batchHoldoutTag = next
+      return true
+    case 'batchTags':
+      state.batchTags = next
+      return true
+    case 'metaSavedSearch':
+      state.metaSavedSearch = next
+      return true
+    case 'metaSavedSelect':
+      state.metaSavedSelected = next
+      return true
+    case 'metaSavedTags':
+      state.metaSavedTagsDraft = next
+      return true
+    case 'stage4SavedSearch':
+      state.stage4SavedSearch = next
+      return true
+    case 'stage4SavedSelect':
+      state.stage4SavedSelected = next
+      return true
+    case 'stage4SavedTags':
+      state.stage4SavedTagsDraft = next
+      return true
+    case 'metaStage4TopK':
+      state.metaStage4TopK = next
+      return true
+    case 'metaStage4MinConf':
+      state.metaStage4MinConf = next
+      return true
+    case 'metaStage4MetaWeight':
+      state.metaStage4MetaWeight = next
+      return true
+    case 'metaStage4MlWeight':
+      state.metaStage4MlWeight = next
+      return true
+    case 'metaStage4UncertaintyWeight':
+      state.metaStage4UncertaintyWeight = next
+      return true
+    case 'metaStage4AcceptConf':
+      state.metaStage4AcceptConf = next
+      return true
+    case 'metaStage4ReviewConf':
+      state.metaStage4ReviewConf = next
+      return true
+    case 'metaStage4MaxAcceptUncertainty':
+      state.metaStage4MaxAcceptUncertainty = next
+      return true
+    default:
+      return false
+  }
+}
+
+function applyVueMetaCheckboxFieldUpdate(state: AnalysisState, field: string, checked: boolean): boolean {
+  const key = String(field || '').trim()
+  const next = !!checked
+  if (!key) return false
+
+  switch (key) {
+    case 'metaEvalHoldout':
+      state.metaEvalHoldout = next
+      return true
+    case 'metaSaveHoldoutRows':
+      state.metaSaveHoldoutRows = next
+      return true
+    case 'batchAutoMeta':
+      state.batchAutoMeta = next
+      return true
+    case 'batchSkipDone':
+      state.batchSkipDone = next
+      return true
+    case 'metaStage4AutoTrain':
+      state.metaStage4AutoTrain = next
+      return true
+    case 'metaStage4RequireHealthy':
+      state.metaStage4RequireHealthy = next
+      return true
+    case 'metaStage4FallbackToMeta':
+      state.metaStage4FallbackToMeta = next
+      return true
+    case 'metaUseMlConfidence':
+      state.metaUseMlConfidence = next
+      return true
+    case 'metaMlAutopilot':
+      state.metaMlAutopilot = next
+      return true
+    default:
+      return false
+  }
 }
 
 export const useAnalysisStore = defineStore('analysis', {
@@ -588,52 +719,78 @@ export const useAnalysisStore = defineStore('analysis', {
       this.stabilityMeta = String(snapshot.stabilityMeta ?? this.stabilityMeta ?? '-').trim() || '-'
       this.heatmapMeta = String(snapshot.heatmapMeta ?? this.heatmapMeta ?? '-').trim() || '-'
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
-      this.source = 'legacy-dom'
+      this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
     setInputField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'input')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      const isTopFilterKey = key === 'filterMinPnl'
+        || key === 'filterMinSharpe'
+        || key === 'filterMaxDd'
+        || key === 'filterMinTrades'
+        || key === 'filterMinExposure'
+      if (applyVueAnalysisFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+        if (isTopFilterKey) {
+          analysisService.refreshTopTableFromWorkflowRun()
+        }
+      }
     },
 
     setSelectField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'change')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (key === 'compareSelect') {
+        useHistoryStore().setSelectField(key, next)
+        this.compareSummary = next.trim() ? `Baseline selected: ${next.trim()}` : '-'
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+        void analysisService.refreshCompareSummary()
+        return
+      }
+      if (applyVueAnalysisFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     clearTopFilters(): void {
-      void invokeLegacyAnalysisClearTopFiltersRuntime()
+      void analysisService.clearTopFilters()
     },
 
     sortTopTable(key: string): void {
-      void invokeLegacyAnalysisSortTopTableRuntime({ key: String(key || '').trim() })
+      void analysisService.sortTopTable(String(key || '').trim())
     },
 
     selectTopRow(index: number): void {
-      void invokeLegacyAnalysisSelectTopRowRuntime({ index: Math.max(0, Math.floor(Number(index || 0))) })
+      void analysisService.selectTopRow(Math.max(0, Math.floor(Number(index || 0))))
     },
 
     copyBest(): void {
-      void invokeLegacyAnalysisCopyBestRuntime()
+      void analysisService.copyBest()
     },
 
     exportTopCsv(): void {
-      void invokeLegacyAnalysisExportTopCsvRuntime()
+      void analysisService.exportTopCsv()
     },
 
     exportTopJson(): void {
-      void invokeLegacyAnalysisExportTopJsonRuntime()
+      void analysisService.exportTopJson()
     },
 
     setBaseline(): void {
-      void invokeLegacyAnalysisSetBaselineRuntime()
+      void analysisService.setBaseline()
     },
 
     clearBaseline(): void {
-      void invokeLegacyAnalysisClearBaselineRuntime()
+      void analysisService.clearBaseline()
     },
 
     heatmapExportPng(): void {
-      void invokeLegacyAnalysisHeatmapExportPngRuntime()
+      void analysisService.heatmapExportPng()
     },
 
     overviewEmptyPrimary(): void {
@@ -645,143 +802,186 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     rerenderDrill(): void {
-      void invokeLegacyAnalysisRerenderDrillRuntime()
+      void analysisService.rerenderDrill()
     },
 
     drillClearTradeSelection(): void {
-      void invokeLegacyAnalysisDrillClearTradeSelectionRuntime()
+      void analysisService.drillClearTradeSelection()
     },
 
     drillPrevTrade(): void {
-      void invokeLegacyAnalysisDrillPrevTradeRuntime()
+      void analysisService.drillPrevTrade()
     },
 
     drillNextTrade(): void {
-      void invokeLegacyAnalysisDrillNextTradeRuntime()
+      void analysisService.drillNextTrade()
     },
 
     setMetaInputField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'input')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueMetaTextFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+        if (key === 'batchDatasetSearch') {
+          metaService.refreshBatchDatasetView()
+        }
+      }
     },
 
     setMetaSelectField(field: string, value: string): void {
-      updateLegacyTextField(field, String(value || ''), 'change')
+      const key = String(field || '').trim()
+      const next = String(value || '')
+      if (applyVueMetaTextFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     setMetaCheckboxField(field: string, checked: boolean): void {
-      updateLegacyCheckboxField(field, !!checked)
+      const key = String(field || '').trim()
+      const next = !!checked
+      if (applyVueMetaCheckboxFieldUpdate(this, key, next)) {
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
     },
 
     runBatch(): void {
-      void invokeLegacyMetaRunBatchRuntime()
+      void metaService.runBatch()
     },
 
     batchStop(): void {
-      void invokeLegacyMetaBatchStopRuntime()
+      void metaService.batchStop()
     },
 
     batchRefresh(): void {
-      void invokeLegacyMetaBatchRefreshRuntime()
+      void metaService.batchRefresh()
     },
 
     batchSelectAll(): void {
-      void invokeLegacyMetaBatchSelectAllRuntime()
+      void metaService.batchSelectAll()
     },
 
     batchSelectNone(): void {
-      void invokeLegacyMetaBatchSelectNoneRuntime()
+      void metaService.batchSelectNone()
     },
 
     batchRetryFailed(): void {
-      void invokeLegacyMetaBatchRetryFailedRuntime()
+      void metaService.batchRetryFailed()
     },
 
     batchRevealSummary(): void {
-      void invokeLegacyMetaBatchRevealSummaryRuntime()
+      void metaService.batchRevealSummary()
     },
 
     saveSavedTags(): void {
-      void invokeLegacyMetaSaveSavedTagsRuntime()
+      void metaService.saveSavedTags()
     },
 
     refreshSaved(): void {
-      void invokeLegacyMetaRefreshSavedRuntime()
+      void metaService.refreshSaved()
     },
 
     loadSaved(): void {
-      void invokeLegacyMetaLoadSavedRuntime()
+      void metaService.loadSaved()
     },
 
     openSavedReport(): void {
-      void invokeLegacyMetaOpenSavedReportRuntime()
+      void metaService.openSavedReport()
     },
 
     revealSaved(): void {
-      void invokeLegacyMetaRevealSavedRuntime()
+      void metaService.revealSaved()
     },
 
     deleteSaved(): void {
-      void invokeLegacyMetaDeleteSavedRuntime()
+      void metaService.deleteSaved()
     },
 
     saveStage4SavedTags(): void {
-      void invokeLegacyMetaSaveStage4SavedTagsRuntime()
+      void metaService.saveStage4SavedTags()
     },
 
     refreshStage4Saved(): void {
-      void invokeLegacyMetaRefreshStage4SavedRuntime()
+      void metaService.refreshStage4Saved()
     },
 
     loadStage4Saved(): void {
-      void invokeLegacyMetaLoadStage4SavedRuntime()
+      void metaService.loadStage4Saved()
     },
 
     revealStage4Saved(): void {
-      void invokeLegacyMetaRevealStage4SavedRuntime()
+      void metaService.revealStage4Saved()
     },
 
     deleteStage4Saved(): void {
-      void invokeLegacyMetaDeleteStage4SavedRuntime()
+      void metaService.deleteStage4Saved()
     },
 
     mlRefresh(): void {
-      void invokeLegacyMetaMlRefreshRuntime()
+      void metaService.mlRefresh()
     },
 
     mlTrain(): void {
-      void invokeLegacyMetaMlTrainRuntime()
+      void metaService.mlTrain()
     },
 
     mlApply(): void {
-      void invokeLegacyMetaMlApplyRuntime()
+      void metaService.mlApply()
     },
 
     mlDelete(): void {
-      void invokeLegacyMetaMlDeleteRuntime()
+      void metaService.mlDelete()
     },
 
     runStage4(): void {
-      void invokeLegacyMetaRunStage4Runtime()
+      void metaService.runStage4()
     },
 
     revealStage4(): void {
-      void invokeLegacyMetaRevealStage4Runtime()
+      void metaService.revealStage4()
     },
 
     runMeta(): void {
-      void invokeLegacyMetaRunRuntime()
+      void metaService.runMeta()
     },
 
     openMetaReport(): void {
-      void invokeLegacyMetaOpenReportRuntime()
+      void metaService.openMetaReport()
     },
 
     revealMetaFiles(): void {
-      void invokeLegacyMetaRevealFilesRuntime()
+      void metaService.revealMetaFiles()
     },
 
     toggleBatchDataset(path: string, checked: boolean): void {
-      void invokeLegacyMetaToggleBatchDatasetRuntime({ path: String(path || '').trim(), checked: !!checked })
+      const normalizedPath = String(path || '').trim()
+      if (!normalizedPath) return
+      const nextChecked = !!checked
+      let changed = false
+      const nextRows = this.batchDatasets.map((entry) => {
+        const entryPath = String(entry.path || '').trim()
+        if (!entryPath || entryPath !== normalizedPath) return entry
+        if (entry.checked === nextChecked) return entry
+        changed = true
+        return {
+          ...entry,
+          checked: nextChecked,
+        }
+      })
+
+      if (changed) {
+        this.batchDatasets = nextRows
+        this.batchSelectedCount = nextRows.filter((entry) => !!entry.checked).length
+        this.batchTotalCount = nextRows.length
+        this.source = 'vue'
+        this.updatedAtUnixMs = Date.now()
+      }
+
+      void metaService.toggleBatchDataset(normalizedPath, nextChecked)
     },
   },
 })
+
+
