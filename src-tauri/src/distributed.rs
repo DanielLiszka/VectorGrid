@@ -1126,6 +1126,10 @@ pub async fn distributed_run_double_ma_tiled(
             all: None,
             heatmap: None,
             vdps: None,
+            hybrid_timing_ms: None,
+            backend_route: None,
+            backend_fallback_reason: None,
+            indicator_route_plan: None,
         };
 
         Ok(DistributedTiledRunResponse {

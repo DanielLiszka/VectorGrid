@@ -41,6 +41,147 @@ pub fn list_moving_averages() -> Vec<MaInfo> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct GpuSpeedupEntry {
+    pub indicator_id: String,
+    pub indicator_name: String,
+    pub speedup: f64,
+    pub cpu_ms: f64,
+    pub cuda_ms: f64,
+}
+
+fn parse_csv_fields(line: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cell = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if in_quotes && matches!(chars.peek(), Some('"')) {
+                    cell.push('"');
+                    let _ = chars.next();
+                } else {
+                    in_quotes = !in_quotes;
+                }
+            }
+            ',' if !in_quotes => {
+                out.push(cell.trim().to_string());
+                cell.clear();
+            }
+            _ => cell.push(ch),
+        }
+    }
+
+    out.push(cell.trim().to_string());
+    out
+}
+
+fn find_workspace_root_from(start: &Path) -> Option<PathBuf> {
+    for ancestor in start.ancestors().take(8) {
+        if ancestor.join("Cargo.toml").is_file() && ancestor.join("src-tauri").is_dir() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+fn find_workspace_root() -> Option<PathBuf> {
+    let mut starts: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p) = exe.parent() {
+            starts.push(p.to_path_buf());
+        }
+    }
+    starts.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for start in starts {
+        let key = start.to_string_lossy().to_string();
+        if !seen.insert(key) {
+            continue;
+        }
+        if let Some(root) = find_workspace_root_from(&start) {
+            return Some(root);
+        }
+    }
+
+    find_repo_data_dir().and_then(|data_dir| data_dir.parent().map(|p| p.to_path_buf()))
+}
+
+fn load_gpu_speedups_csv() -> Result<Vec<GpuSpeedupEntry>, String> {
+    let Some(root) = find_workspace_root() else {
+        return Err("unable to locate workspace root for gpu_speedups.csv".to_string());
+    };
+    let csv_path = root.join("gpu_speedups.csv");
+    if !csv_path.is_file() {
+        return Err(format!(
+            "gpu speedup table not found: {}",
+            csv_path.to_string_lossy()
+        ));
+    }
+
+    let raw = std::fs::read_to_string(&csv_path).map_err(|e| {
+        format!(
+            "failed to read gpu speedup table {}: {}",
+            csv_path.to_string_lossy(),
+            e
+        )
+    })?;
+    let mut out: Vec<GpuSpeedupEntry> = Vec::new();
+
+    for (line_idx, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if line_idx == 0 && trimmed.to_ascii_lowercase().starts_with("indicator_id,") {
+            continue;
+        }
+        let fields = parse_csv_fields(trimmed);
+        if fields.len() < 5 {
+            continue;
+        }
+        let indicator_id = fields[0].trim().to_string();
+        if indicator_id.is_empty() {
+            continue;
+        }
+        let indicator_name = fields[1].trim().to_string();
+        let speedup = match fields[2].trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => continue,
+        };
+        let cpu_ms = match fields[3].trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => continue,
+        };
+        let cuda_ms = match fields[4].trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => continue,
+        };
+        out.push(GpuSpeedupEntry {
+            indicator_id,
+            indicator_name,
+            speedup,
+            cpu_ms,
+            cuda_ms,
+        });
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn list_gpu_speedups() -> Result<Vec<GpuSpeedupEntry>, String> {
+    tauri::async_runtime::spawn_blocking(load_gpu_speedups_csv)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SampleCsv {
     pub id: String,
     pub label: String,

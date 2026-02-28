@@ -63,6 +63,7 @@ enum BackendArg {
     Auto,
     Cpu,
     GpuSweep,
+    GpuHybridKernel,
     GpuKernel,
 }
 
@@ -197,6 +198,7 @@ fn to_backend(arg: BackendArg, device_id: u32) -> Backend {
         BackendArg::Auto => Backend::Auto { device_id },
         BackendArg::Cpu => Backend::CpuOnly,
         BackendArg::GpuSweep => Backend::GpuOnly { device_id },
+        BackendArg::GpuHybridKernel => Backend::GpuHybridKernel { device_id },
         BackendArg::GpuKernel => Backend::GpuKernel { device_id },
     }
 }
