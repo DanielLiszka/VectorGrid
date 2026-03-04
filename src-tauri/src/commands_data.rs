@@ -40,6 +40,11 @@ pub fn list_moving_averages() -> Vec<MaInfo> {
     crate::ma_registry::list_mas()
 }
 
+#[tauri::command]
+pub fn list_dynamic_indicators() -> Vec<ta_app_core::IndicatorDescriptor> {
+    ta_app_core::list_dynamic_indicator_descriptors_cached().to_vec()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GpuSpeedupEntry {
     pub indicator_id: String,
