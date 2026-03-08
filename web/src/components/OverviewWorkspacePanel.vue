@@ -41,6 +41,17 @@ const panelRoot = ref<HTMLElement | null>(null)
 const compareDraft = ref('')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'overview')
+const showPendingOverview = computed(() => {
+  if (overviewEmptyVisible.value || canCopyBest.value) return false
+  const title = String(bestTitle.value || '').trim()
+  const meta = String(bestMeta.value || '').trim()
+  const summary = String(bestSummary.value || '').trim()
+  const placeholder = new Set(['', '-', '—'])
+  const statsLookEmpty =
+    bestStats.value.length === 0 ||
+    bestStats.value.every((stat) => placeholder.has(String(stat.value || '').trim()))
+  return statsLookEmpty && placeholder.has(title) && placeholder.has(meta) && placeholder.has(summary)
+})
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -113,6 +124,14 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div class="muted" style="margin-top: 0.65rem; font-size: 0.85rem;">{{ overviewEmptyHint }}</div>
+      </section>
+
+      <section v-else-if="showPendingOverview" class="emptyState overviewPendingState">
+        <div class="emptyTitle">No analyzed winner yet.</div>
+        <div class="emptyBody">
+          Results will appear here after an optimization run is scored or an existing run library result is loaded.
+        </div>
+        <div class="muted mono">{{ statusLine }}</div>
       </section>
 
       <section v-else class="bestCard">
@@ -234,6 +253,13 @@ onBeforeUnmount(() => {
   margin-top: 0.45rem;
   max-height: 200px;
   overflow: auto;
+}
+
+.overviewPendingState {
+  min-height: 220px;
+  display: grid;
+  align-content: center;
+  gap: 0.65rem;
 }
 
 .actions {

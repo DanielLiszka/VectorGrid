@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { useStorage } from '@vueuse/core'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const workflowStore = useWorkflowStore()
+const workspaceGridRef = ref<HTMLElement | null>(null)
+const viewportWidth = ref(1440)
+const splitFraction = useStorage<number>('VTA_WORKSPACE_SPLIT_V1', 0.34)
+const dividerDrag = ref<{ pointerId: number; startClientX: number; startFraction: number } | null>(null)
 
 const { controlsTab, resultsTab, workspace, workflow, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
 
@@ -55,9 +60,17 @@ const effectiveControlsTab = computed(() => String(controlsTab.value || '').trim
 const effectiveResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
 
 const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
+const splitLayoutActive = computed(() => !settingsWorkspaceActive.value && viewportWidth.value > 1200)
 const shellSubtitle = computed(() => {
   const text = String(workflowSubtitle.value || '').trim()
   return text || '—'
+})
+const workspaceGridStyle = computed(() => {
+  if (!splitLayoutActive.value) return undefined
+  const fraction = clampSplitFraction(splitFraction.value)
+  return {
+    gridTemplateColumns: `${(fraction * 100).toFixed(3)}% 14px minmax(0, 1fr)`,
+  }
 })
 
 function selectWorkspace(key: string): void {
@@ -84,6 +97,91 @@ function selectResultsTab(key: string): void {
   if (String(effectiveResultsTab.value || '').trim() === key) return
   workflowStore.selectResultsTab(key)
 }
+
+function currentGridWidth(): number {
+  const fallback = Math.max(960, viewportWidth.value - 48)
+  return Math.max(1, workspaceGridRef.value?.clientWidth ?? fallback)
+}
+
+function clampSplitFraction(raw: number): number {
+  const totalWidth = currentGridWidth()
+  const minControlsPx = 420
+  const maxControlsPx = Math.min(760, Math.max(minControlsPx, totalWidth - 520))
+  const minFraction = Math.min(0.6, minControlsPx / totalWidth)
+  const maxFraction = Math.max(minFraction, Math.min(0.6, maxControlsPx / totalWidth))
+  if (!Number.isFinite(raw)) return Math.min(maxFraction, Math.max(minFraction, 0.34))
+  return Math.min(maxFraction, Math.max(minFraction, raw))
+}
+
+function syncViewportMetrics(): void {
+  viewportWidth.value = window.innerWidth
+  splitFraction.value = clampSplitFraction(splitFraction.value)
+}
+
+function onWindowResize(): void {
+  syncViewportMetrics()
+}
+
+function onDividerPointerDown(event: PointerEvent): void {
+  if (!splitLayoutActive.value || event.button !== 0) return
+  const target = event.currentTarget as HTMLElement | null
+  target?.setPointerCapture?.(event.pointerId)
+  dividerDrag.value = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startFraction: clampSplitFraction(splitFraction.value),
+  }
+}
+
+function onDividerPointerMove(event: PointerEvent): void {
+  const drag = dividerDrag.value
+  if (!drag || drag.pointerId !== event.pointerId) return
+  const deltaX = event.clientX - drag.startClientX
+  splitFraction.value = clampSplitFraction(drag.startFraction + deltaX / currentGridWidth())
+  event.preventDefault()
+}
+
+function releaseDividerPointer(event: PointerEvent): void {
+  const drag = dividerDrag.value
+  if (!drag || drag.pointerId !== event.pointerId) return
+  const target = event.currentTarget as HTMLElement | null
+  if (target?.hasPointerCapture?.(event.pointerId)) target.releasePointerCapture(event.pointerId)
+  dividerDrag.value = null
+}
+
+function onDividerPointerUp(event: PointerEvent): void {
+  releaseDividerPointer(event)
+}
+
+function onDividerPointerCancel(event: PointerEvent): void {
+  releaseDividerPointer(event)
+}
+
+function onDividerKeydown(event: KeyboardEvent): void {
+  if (!splitLayoutActive.value) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return
+  event.preventDefault()
+  if (event.key === 'Home') {
+    splitFraction.value = clampSplitFraction(0)
+    return
+  }
+  if (event.key === 'End') {
+    splitFraction.value = clampSplitFraction(1)
+    return
+  }
+  const delta = event.key === 'ArrowLeft' ? -0.02 : 0.02
+  splitFraction.value = clampSplitFraction(splitFraction.value + delta)
+}
+
+onMounted(async () => {
+  await nextTick()
+  syncViewportMetrics()
+  window.addEventListener('resize', onWindowResize, { passive: true })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onWindowResize)
+})
 </script>
 
 <template>
@@ -138,7 +236,7 @@ function selectResultsTab(key: string): void {
     </header>
 
     <main class="shellMain">
-      <section class="workspaceGrid" v-show="!settingsWorkspaceActive">
+      <section ref="workspaceGridRef" class="workspaceGrid" :style="workspaceGridStyle" v-show="!settingsWorkspaceActive">
         <aside class="controlsColumn">
           <nav id="controlsTabBar" class="tabsRow compact">
             <button
@@ -170,6 +268,20 @@ function selectResultsTab(key: string): void {
             <div id="distributedVueShellMount"></div>
           </div>
         </aside>
+
+        <button
+          v-if="splitLayoutActive"
+          type="button"
+          class="workspaceDivider"
+          aria-label="Resize setup and results panels"
+          @pointerdown="onDividerPointerDown"
+          @pointermove="onDividerPointerMove"
+          @pointerup="onDividerPointerUp"
+          @pointercancel="onDividerPointerCancel"
+          @keydown="onDividerKeydown"
+        >
+          <span class="workspaceDividerGrip" aria-hidden="true"></span>
+        </button>
 
         <section class="resultsColumn">
           <nav id="resultsTabBar" class="tabsRow compact">
@@ -245,31 +357,37 @@ function selectResultsTab(key: string): void {
 .shellHeader {
   border-bottom: 1px solid var(--border);
   background: var(--header-bg);
-  padding: 0.85rem 1rem 0.7rem;
+  padding: 0.95rem 1.1rem 0.85rem;
   display: grid;
-  gap: 0.45rem;
+  gap: 0.55rem;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--accent-soft) 38%, transparent);
 }
 
 .brandRow {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.9rem;
+  padding-bottom: 0.15rem;
 }
 
 .brandRow h1 {
   margin: 0;
-  font-size: 1rem;
-  letter-spacing: 0.02em;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
 }
 
 .subtitle {
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 64%;
+  max-width: min(48rem, 58%);
+  padding: 0.38rem 0.72rem;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
 }
 
 .tabsRow {
@@ -280,74 +398,147 @@ function selectResultsTab(key: string): void {
 
 .tabBtn {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 999px;
   background: var(--surface2);
   color: inherit;
-  font-size: 0.74rem;
-  padding: 0.34rem 0.62rem;
+  font-size: 0.76rem;
+  padding: 0.38rem 0.7rem;
+  font-weight: 600;
 }
 
 .tabBtn.active {
   border-color: color-mix(in oklab, var(--accent) 64%, var(--border));
   background: color-mix(in oklab, var(--accent-soft) 68%, var(--surface2));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-soft) 28%, transparent);
 }
 
 .shellMain {
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
 }
 
 .workspaceGrid {
+  flex: 1 1 auto;
   height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(340px, 38%) minmax(440px, 1fr);
-  gap: 0.8rem;
-  padding: 0.8rem;
+  grid-template-columns: minmax(420px, 34%) 14px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+  align-items: stretch;
+  align-content: stretch;
+  box-sizing: border-box;
 }
 
 .controlsColumn,
 .resultsColumn {
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 18px;
   background: var(--panel);
-  padding: 0.65rem;
+  padding: 0.8rem;
   display: grid;
   align-content: start;
-  gap: 0.55rem;
+  gap: 0.7rem;
+  box-shadow: var(--shadow-md);
+}
+
+.controlsColumn {
+  padding: 0.95rem;
+}
+
+.workspaceDivider {
+  position: relative;
+  align-self: stretch;
+  width: 14px;
+  min-width: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.workspaceDivider::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+  background: color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+.workspaceDividerGrip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 88px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at center, color-mix(in oklab, var(--accent) 42%, var(--border)) 0 1px, transparent 1.5px) center / 8px 12px repeat-y,
+    color-mix(in oklab, var(--surface2) 86%, transparent);
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-soft) 22%, transparent);
+}
+
+.workspaceDivider:hover .workspaceDividerGrip,
+.workspaceDivider:focus-visible .workspaceDividerGrip {
+  background:
+    radial-gradient(circle at center, color-mix(in oklab, var(--accent) 62%, var(--border)) 0 1px, transparent 1.5px) center / 8px 12px repeat-y,
+    color-mix(in oklab, var(--surface) 92%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
 }
 
 .tabsRow.compact .tabBtn {
-  font-size: 0.71rem;
-  padding: 0.28rem 0.5rem;
+  font-size: 0.73rem;
+  padding: 0.32rem 0.58rem;
 }
 
 .panelHost {
   min-height: 0;
+  min-width: 0;
 }
 
 #settingsShellGrid {
+  flex: 1 1 auto;
   height: 100%;
+  width: 100%;
+  min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 18px;
   background: var(--panel);
-  margin: 0.8rem;
-  padding: 0.8rem;
+  margin: 1rem;
+  padding: 1rem;
   display: grid;
-  gap: 0.75rem;
+  gap: 0.9rem;
+  box-shadow: var(--shadow-md);
 }
 
 #executionShellPane {
   border-top: 1px dashed var(--border);
-  padding-top: 0.75rem;
+  padding-top: 0.9rem;
 }
 
 #runFooterShell {
   border-top: 1px solid var(--border);
-  background: var(--panel-footer);
-  padding: 0.55rem 0.8rem;
+  background: color-mix(in srgb, var(--panel-footer) 92%, var(--surface));
+  padding: 0.7rem 1rem;
+  box-shadow: 0 -10px 24px color-mix(in srgb, var(--accent-soft) 18%, transparent);
 }
 
 .mono {
@@ -357,22 +548,55 @@ function selectResultsTab(key: string): void {
 @media (max-width: 1200px) {
   .workspaceGrid {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .subtitle {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 900px) {
+  .workspaceBar,
+  .workflowStepBar,
+  .workflowBar,
+  .tabsRow.compact {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
+    scrollbar-width: thin;
+  }
+
+  .workspaceBar .tabBtn,
+  .workflowStepBar .tabBtn,
+  .workflowBar .tabBtn,
+  .tabsRow.compact .tabBtn {
+    flex: 0 0 auto;
   }
 }
 
 @media (max-width: 760px) {
   .shellHeader {
-    padding: 0.7rem 0.65rem 0.6rem;
+    padding: 0.8rem 0.75rem 0.7rem;
+  }
+
+  .brandRow {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .workspaceGrid {
-    padding: 0.65rem;
-    gap: 0.65rem;
+    padding: 0.75rem;
+    gap: 0.75rem;
   }
 
   #settingsShellGrid {
-    margin: 0.65rem;
-    padding: 0.65rem;
+    margin: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  #runFooterShell {
+    padding: 0.7rem 0.75rem;
   }
 }
 </style>

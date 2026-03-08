@@ -55,6 +55,22 @@ const minExposureDraft = ref('')
 const visible = computed(() => String(resultsTab.value || '').trim() === 'top')
 const renderedColumns = computed<TopColumn[]>(() => topColumns.value as TopColumn[])
 const renderedRows = computed<TopRow[]>(() => topTableRows.value as TopRow[])
+const hasTopResults = computed(() => Number(topRows.value || 0) > 0)
+const filtersActive = computed(() =>
+  [
+    minPnlDraft.value,
+    minSharpeDraft.value,
+    maxDdDraft.value,
+    minTradesDraft.value,
+    minExposureDraft.value,
+  ].some((value) => String(value || '').trim().length > 0),
+)
+const emptyTitle = computed(() => (filtersActive.value ? 'No rows match the current filters.' : 'No ranked runs yet.'))
+const emptyBody = computed(() =>
+  filtersActive.value
+    ? 'Broaden or clear the active filters to repopulate the ranking table.'
+    : 'Run an optimization or load prior analysis results to populate the ranked table.',
+)
 const {
   scrollElementRef: tableScrollElementRef,
   virtualRows,
@@ -203,7 +219,17 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div ref="tableScrollElementRef" class="tableWrap">
+        <div v-if="!hasTopResults" class="emptyState topEmptyState">
+          <div class="emptyTitle">{{ emptyTitle }}</div>
+          <div class="emptyBody">{{ emptyBody }}</div>
+          <div v-if="filtersActive || canClearTopFilters" class="emptyActions">
+            <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
+          </div>
+          <div class="muted mono">{{ topFilterMeta || statusLine }}</div>
+          <div v-if="topSelectionGuardrail" class="muted mono">{{ topSelectionGuardrail }}</div>
+        </div>
+
+        <div v-else ref="tableScrollElementRef" class="tableWrap">
           <table class="topTableVue">
             <thead>
               <tr>
@@ -308,7 +334,7 @@ onBeforeUnmount(() => {
 }
 
 .metaLine.bad {
-  color: var(--bad);
+  color: var(--danger);
 }
 
 .status {
@@ -323,6 +349,13 @@ onBeforeUnmount(() => {
 
 .tableWrap {
   overflow: auto;
+}
+
+.topEmptyState {
+  min-height: 260px;
+  display: grid;
+  align-content: center;
+  gap: 0.65rem;
 }
 
 .topTableVue {

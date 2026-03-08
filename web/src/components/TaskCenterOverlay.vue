@@ -52,6 +52,7 @@ const timelineItems = computed(() => headItems(timeline.value, 8))
 const toastItems = computed(() => headItems(toasts.value, 4))
 const runningCount = computed(() => activeTasksCount())
 const overall = computed(() => overallProgress.value)
+const quietMode = computed(() => !expanded.value && runningCount.value <= 0 && !overall.value && toastItems.value.length === 0)
 const rootStyle = computed(() => {
   const pos = normalizeLauncherPos(launcherPos.value) ?? { x: 12, y: 12 }
   return {
@@ -268,7 +269,7 @@ function toastClass(toast: TaskToastItem): string {
     <div ref="referenceRef" class="overlayAnchor">
       <button
         class="overlayToggle"
-        :class="{ dragging: toggleDragging }"
+        :class="{ dragging: toggleDragging, quiet: quietMode }"
         type="button"
         :aria-expanded="expanded ? 'true' : 'false'"
         :aria-controls="taskCenterPanelId"
@@ -278,9 +279,9 @@ function toastClass(toast: TaskToastItem): string {
         @pointerup="onTogglePointerUp"
         @pointercancel="onTogglePointerCancel"
       >
-        <span class="toggleLabel">Task Center</span>
-        <span class="toggleBadge">{{ runningCount }}</span>
-        <span class="toggleState">{{ centerStatusLabel }}</span>
+        <span class="toggleLabel">{{ quietMode ? 'Tasks' : 'Task Center' }}</span>
+        <span v-if="!quietMode || runningCount > 0" class="toggleBadge">{{ runningCount }}</span>
+        <span v-if="!quietMode || centerStatusLabel !== 'Idle'" class="toggleState">{{ centerStatusLabel }}</span>
         <span v-if="overall" class="togglePct">{{ overall.pct.toFixed(0) }}%</span>
       </button>
     </div>
@@ -403,10 +404,30 @@ function toastClass(toast: TaskToastItem): string {
   letter-spacing: 0.01em;
   backdrop-filter: blur(10px);
   box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
 }
 
 .overlayToggle.dragging {
   cursor: grabbing;
+}
+
+.overlayToggle.quiet {
+  gap: 6px;
+  padding: 5px 10px;
+  background: rgba(7, 33, 53, 0.72);
+  border-color: rgba(2, 132, 199, 0.26);
+  color: #cfe8f8;
+  opacity: 0.84;
+  box-shadow: 0 8px 18px rgba(2, 6, 23, 0.22);
+}
+
+.overlayToggle.quiet:hover {
+  opacity: 1;
+  transform: translateY(-1px);
 }
 
 .toggleLabel {

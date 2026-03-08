@@ -270,6 +270,21 @@ function selectedMaHint(
   return notes.join(' ')
 }
 
+function optionLabelFor(options: OptimizeOption[], value: string, fallback: string): string {
+  const target = String(value || '').trim()
+  if (!target) return String(fallback || '').trim()
+  const match = options.find((option) => String(option.value || '').trim() === target)
+  const raw = String(match?.label || fallback || target).trim()
+  return raw || target
+}
+
+function compactSummaryLabel(label: string): string {
+  return String(label || '')
+    .replace(/\s+\([^)]*\)$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 const selectedBackend = computed<BackendKind>(() => normalizeBackendKind(backendDraft.value || backend.value || 'Auto'))
 const backendAwareMaOptions = computed(() =>
   buildBackendAwareMaOptions(maCatalogEntries.value, selectedBackend.value, maSpeedupById.value),
@@ -303,6 +318,24 @@ const fastTypeOptionItems = computed(() =>
 const slowTypeOptionItems = computed(() =>
   resolvedOptions(backendAwareMaOptions.value, slowMaType.value, slowMaType.value || 'MA type', slowMaTypeOptions.value),
 )
+const optimizeSummaryChips = computed(() => {
+  const chips: string[] = []
+  const strategyValue = String(strategyDraft.value || strategyKind.value || '').trim()
+  const presetValue = String(presetDraft.value || presetProfile.value || '').trim()
+  const objectiveName = String(objectiveDraft.value || objective.value || '').trim()
+  const modeName = String(modeDraft.value || mode.value || '').trim()
+  const strategyLabel = compactSummaryLabel(optionLabelFor(strategyOptionItems.value, strategyValue, strategyValue))
+  const presetLabel = compactSummaryLabel(optionLabelFor(presetOptionItems.value, presetValue, presetValue))
+  const backendName = compactSummaryLabel(backendLabel(selectedBackend.value))
+  const pairs = String(pairsPreview.value || '').trim()
+  if (strategyLabel) chips.push(`Strategy: ${strategyLabel}`)
+  if (presetLabel) chips.push(`Preset: ${presetLabel}`)
+  if (objectiveName) chips.push(`Objective: ${objectiveName}`)
+  if (modeName) chips.push(`Mode: ${modeName}`)
+  if (backendName) chips.push(`Route: ${backendName}`)
+  if (pairs) chips.push(pairs)
+  return chips
+})
 
 watch(
   () => [
@@ -682,11 +715,23 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#optVueShellMount">
     <section class="optPanelVueRoot optVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Optimize</div>
+        <div class="headCopy">
+          <div class="title">Optimize</div>
+          <div class="subtitle">Choose the strategy shape, execution route, and sweep ranges for the next run.</div>
+        </div>
         <div class="meta mono">{{ stamp }}</div>
       </header>
+      <div class="summaryChips" aria-label="Optimization summary">
+        <span v-for="chip in optimizeSummaryChips" :key="`opt_summary_${chip}`" class="summaryChip mono">{{ chip }}</span>
+      </div>
 
-      <section class="pane">
+      <section class="pane paneProminent">
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Setup</div>
+            <h3>Strategy and objective</h3>
+          </div>
+        </div>
         <div class="gridTwo">
           <div>
             <label for="vueStrategyKind">Strategy</label>
@@ -762,6 +807,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Execution</div>
+            <h3>Backend and GPU route</h3>
+          </div>
+        </div>
         <div class="gridTwo">
           <div>
             <label for="vueBackend">Backend</label>
@@ -810,9 +861,16 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div class="split">
+        <div class="paneHeader">
           <div>
-            <h3>Fast range</h3>
+            <div class="sectionEyebrow">Search Space</div>
+            <h3>Fast and slow sweep ranges</h3>
+          </div>
+          <div class="meta mono">{{ pairsPreview }}</div>
+        </div>
+        <div class="split">
+          <div class="rangeCard">
+            <div class="rangeTitle">Fast side</div>
             <div class="rowThree">
               <div>
                 <label for="vueFastStart">Start</label>
@@ -866,8 +924,8 @@ onBeforeUnmount(() => {
             <div v-if="fastMaBackendHint" class="muted mono">{{ fastMaBackendHint }}</div>
           </div>
 
-          <div>
-            <h3>Slow range</h3>
+          <div class="rangeCard">
+            <div class="rangeTitle">Slow side</div>
             <div class="rowThree">
               <div>
                 <label for="vueSlowStart">Start</label>
@@ -921,11 +979,15 @@ onBeforeUnmount(() => {
             <div v-if="slowMaBackendHint" class="muted mono">{{ slowMaBackendHint }}</div>
           </div>
         </div>
-        <div class="muted mono">{{ pairsPreview }}</div>
       </section>
 
       <section class="pane">
-        <h3>Run controls</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Actions</div>
+            <h3>Run from this panel</h3>
+          </div>
+        </div>
         <div class="actions">
           <button type="button" class="primary" :disabled="runDisabled" @click="runOptimizationAction">Run optimization</button>
           <button type="button" :disabled="validateDisabled" @click="runValidationAction">Run validation</button>
@@ -935,7 +997,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>MA parameters</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Advanced</div>
+            <h3>MA parameters</h3>
+          </div>
+        </div>
         <div class="split">
           <div class="maParamSide">
             <div class="muted maParamTitle">Fast MA parameters</div>
@@ -1084,17 +1151,43 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
 }
 
+.headCopy {
+  display: grid;
+  gap: 0.18rem;
+}
+
 .title {
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 650;
+}
+
+.subtitle {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--muted);
 }
 
 .meta {
   font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.summaryChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+}
+
+.summaryChip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--panel) 86%, var(--surface));
+  padding: 0.22rem 0.52rem;
+  font-size: 0.72rem;
   color: var(--muted);
 }
 
@@ -1106,9 +1199,33 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.paneProminent {
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--accent-soft) 60%, var(--panel-footer)),
+    color-mix(in oklab, var(--panel-footer) 92%, var(--surface))
+  );
+}
+
+.paneHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.sectionEyebrow {
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
+  margin: 0.12rem 0 0;
+  font-size: 0.92rem;
 }
 
 .gridTwo {
@@ -1125,6 +1242,22 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.8rem;
+}
+
+.rangeCard {
+  border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 80%, transparent);
+  padding: 0.7rem;
+}
+
+.rangeTitle {
+  margin-bottom: 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .rowThree {
@@ -1199,6 +1332,10 @@ onBeforeUnmount(() => {
   .rowThree,
   .inputWithAction {
     grid-template-columns: 1fr;
+  }
+
+  .paneHeader {
+    flex-direction: column;
   }
 }
 </style>

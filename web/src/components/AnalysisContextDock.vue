@@ -53,6 +53,7 @@ const stamp = computed(() => {
 })
 
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
+const quietMode = computed(() => !dockOpen.value)
 
 function exportTopCsvAction(): void {
   commandActionStore.exportTopCsv()
@@ -80,13 +81,14 @@ function toggleDock(): void {
     <div ref="referenceRef" class="dockAnchor">
       <button
         class="dockToggle"
+        :class="{ quiet: quietMode }"
         type="button"
         :aria-expanded="dockOpen ? 'true' : 'false'"
         :aria-controls="dockPanelId"
         @click="toggleDock"
       >
-        <span class="dockToggleLabel">Analysis</span>
-        <span class="dockToggleState">{{ dockOpen ? 'Open' : 'Closed' }}</span>
+        <span class="dockToggleLabel">{{ quietMode ? 'Insights' : 'Analysis' }}</span>
+        <span class="dockToggleState">{{ dockOpen ? activeResultsTab : 'Closed' }}</span>
       </button>
     </div>
 
@@ -126,8 +128,8 @@ function toggleDock(): void {
 <style scoped>
 .analysisDockRoot {
   position: fixed;
-  right: 10px;
-  bottom: 224px;
+  right: 220px;
+  bottom: 18px;
   z-index: 4037;
   pointer-events: none;
 }
@@ -154,6 +156,25 @@ function toggleDock(): void {
   font-weight: 650;
   letter-spacing: 0.04em;
   box-shadow: 0 12px 28px rgba(2, 6, 23, 0.36);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.dockToggle.quiet {
+  gap: 6px;
+  padding: 5px 9px;
+  background: rgba(4, 47, 46, 0.7);
+  border-color: rgba(45, 212, 191, 0.24);
+  opacity: 0.82;
+  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.22);
+}
+
+.dockToggle.quiet:hover {
+  opacity: 1;
+  transform: translateY(-1px);
 }
 
 .dockToggleLabel {
@@ -249,8 +270,8 @@ function toggleDock(): void {
 
 @media (max-width: 760px) {
   .analysisDockRoot {
-    right: 8px;
-    bottom: 8px;
+    right: 150px;
+    bottom: 10px;
   }
 
   .analysisDock {

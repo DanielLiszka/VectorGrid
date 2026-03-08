@@ -58,6 +58,19 @@ const rowLabel = computed(() => {
   const rows = String(dataLen.value || '').trim()
   return rows || '—'
 })
+const dataSummaryChips = computed(() => {
+  const chips: string[] = []
+  const dataset = String(datasetLabel.value || '').trim()
+  const timeframe = String(dataTimeframe.value || '').trim()
+  const loadedId = String(dataId.value || '').trim()
+  const fieldCount = dataFields.value.length
+  if (dataset) chips.push(`Dataset: ${dataset}`)
+  chips.push(`Rows: ${rowLabel.value}`)
+  if (timeframe) chips.push(`Timeframe: ${timeframe}`)
+  if (loadedId) chips.push(`Loaded ID: ${loadedId}`)
+  if (fieldCount > 0) chips.push(`Fields: ${fieldCount}`)
+  return chips
+})
 
 watch(
   () => [
@@ -148,12 +161,23 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#dataVueShellMount">
     <section class="dataPanelVueRoot dataVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Data Source</div>
+        <div class="headCopy">
+          <div class="title">Data Source</div>
+          <div class="subtitle">Load a dataset, choose storage behavior, and confirm the working timeframe before you optimize.</div>
+        </div>
         <div class="meta mono">{{ rowLabel }} rows · {{ stamp }}</div>
       </header>
+      <div class="summaryChips" aria-label="Dataset summary">
+        <span v-for="chip in dataSummaryChips" :key="`data_summary_${chip}`" class="summaryChip mono">{{ chip }}</span>
+      </div>
 
-      <section class="pane">
-        <h3>CSV input</h3>
+      <section class="pane paneProminent">
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Import</div>
+            <h3>CSV input</h3>
+          </div>
+        </div>
         <label for="vueCsvPath">CSV path</label>
         <div class="inputWithActions">
           <input
@@ -188,7 +212,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="sampleCsvVisible && sampleCsvOptions.length">
-        <h3>Sample datasets</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Quick Start</div>
+            <h3>Sample datasets</h3>
+          </div>
+        </div>
         <div class="actions">
           <button
             v-for="(sample, index) in sampleCsvOptions"
@@ -203,7 +232,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Storage and cache</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Storage</div>
+            <h3>Storage and cache</h3>
+          </div>
+        </div>
         <label for="vueMarketDataDir">Market data folder</label>
         <div class="inputWithActions">
           <input
@@ -237,7 +271,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Dataset context</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Context</div>
+            <h3>Dataset context</h3>
+          </div>
+        </div>
         <div class="stats">
           <div><span class="k">Loaded ID</span><span class="v mono">{{ dataId }}</span></div>
           <div><span class="k">Rows</span><span class="v mono">{{ dataLen }}</span></div>
@@ -247,7 +286,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Timeframe</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Resolution</div>
+            <h3>Timeframe</h3>
+          </div>
+        </div>
         <div class="inputWithActions">
           <select
             id="vueDataTimeframe"
@@ -283,7 +327,12 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Columns</h3>
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Schema</div>
+            <h3>Columns</h3>
+          </div>
+        </div>
         <div class="badges">
           <span class="badge mono" v-for="field in dataFields" :key="`field_${field}`">{{ field }}</span>
           <span v-if="!dataFields.length" class="muted">No columns available.</span>
@@ -305,17 +354,43 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
 }
 
+.headCopy {
+  display: grid;
+  gap: 0.18rem;
+}
+
 .title {
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 650;
+}
+
+.subtitle {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--muted);
 }
 
 .meta {
   font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.summaryChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+}
+
+.summaryChip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--panel) 86%, var(--surface));
+  padding: 0.22rem 0.52rem;
+  font-size: 0.72rem;
   color: var(--muted);
 }
 
@@ -327,9 +402,33 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.paneProminent {
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--accent-soft) 56%, var(--panel-footer)),
+    color-mix(in oklab, var(--panel-footer) 92%, var(--surface))
+  );
+}
+
+.paneHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.sectionEyebrow {
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
+  margin: 0.12rem 0 0;
+  font-size: 0.92rem;
 }
 
 .inputWithActions {
@@ -445,6 +544,10 @@ onBeforeUnmount(() => {
 
   .stats {
     grid-template-columns: 1fr;
+  }
+
+  .paneHeader {
+    flex-direction: column;
   }
 }
 </style>

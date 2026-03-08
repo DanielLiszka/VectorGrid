@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useStorage } from '@vueuse/core'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 
@@ -19,11 +20,23 @@ const {
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
+const footerExpanded = useStorage<boolean>('VTA_RUN_FOOTER_EXPANDED_V1', false)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
   if (!Number.isFinite(ms) || ms <= 0) return '—'
   return new Date(ms).toLocaleTimeString([], { hour12: false })
+})
+const hasRunActivity = computed(() => {
+  if (canCancel.value) return true
+  return String(progressMeta.value || '').trim().length > 0
+})
+const showDetails = computed(() => hasRunActivity.value || footerExpanded.value)
+const footerSummary = computed(() => {
+  const badges = runReadinessBadges.value.filter((badge) => String(badge || '').trim().length > 0)
+  if (hasRunActivity.value && String(progressMeta.value || '').trim()) return String(progressMeta.value || '').trim()
+  if (badges.length > 0) return badges.slice(0, 2).join(' · ')
+  return String(runReadinessHint.value || '').trim() || 'Ready to run once data and strategy inputs are configured.'
 })
 
 function runOptimizationAction(): void {
@@ -32,6 +45,10 @@ function runOptimizationAction(): void {
 
 function cancelRunAction(): void {
   commandActionStore.cancelOptimization()
+}
+
+function toggleFooterDetails(): void {
+  footerExpanded.value = !footerExpanded.value
 }
 
 function resolveMount(): void {
@@ -58,26 +75,40 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport v-if="mountReady" to="#runFooterVueShellMount">
-    <section class="runFooterVueRoot">
-      <header class="head">
-        <div class="title">Run Control</div>
-        <div class="meta mono">{{ stamp }}</div>
-      </header>
+    <section class="runFooterVueRoot" :class="{ compact: !showDetails }">
+      <div class="primaryRow">
+        <header class="head">
+          <div class="eyebrow">Run Control</div>
+          <div class="title">Execution readiness</div>
+          <div class="meta mono">Updated {{ stamp }}</div>
+          <div class="summaryPill mono">{{ footerSummary }}</div>
+        </header>
 
-      <div class="actions">
-        <button type="button" class="primary" :disabled="runDisabled" @click="runOptimizationAction">Run optimization</button>
-        <button type="button" class="danger" :disabled="!canCancel" @click="cancelRunAction">Cancel</button>
+        <div class="actions">
+          <button type="button" class="subtle" @click="toggleFooterDetails">
+            {{ showDetails ? 'Hide details' : 'Show details' }}
+          </button>
+          <button type="button" class="primary" :disabled="runDisabled" @click="runOptimizationAction">Run optimization</button>
+          <button type="button" class="danger-btn" :disabled="!canCancel" @click="cancelRunAction">Cancel</button>
+        </div>
       </div>
 
-      <div v-if="progressMeta" class="metaLine mono">{{ progressMeta }}</div>
-      <div class="metaLine mono">{{ runPlanMeta }}</div>
+      <div v-if="showDetails" class="summaryGrid">
+        <section class="summaryCard summaryCardPrimary">
+          <div class="summaryLabel">Plan</div>
+          <div v-if="progressMeta" class="metaLine mono">{{ progressMeta }}</div>
+          <div class="metaLine mono">{{ runPlanMeta }}</div>
+          <div class="status mono">{{ statusLine }}</div>
+        </section>
 
-      <div class="badges" aria-live="polite" aria-label="Run readiness">
-        <span v-for="badge in runReadinessBadges" :key="`run_badge_${badge}`" class="badge">{{ badge }}</span>
+        <section class="summaryCard">
+          <div class="summaryLabel">Readiness</div>
+          <div class="badges" aria-live="polite" aria-label="Run readiness">
+            <span v-for="badge in runReadinessBadges" :key="`run_badge_${badge}`" class="badge">{{ badge }}</span>
+          </div>
+          <div class="metaLine mono">{{ runReadinessHint }}</div>
+        </section>
       </div>
-
-      <div class="metaLine mono">{{ runReadinessHint }}</div>
-      <div class="status mono">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -85,21 +116,40 @@ onBeforeUnmount(() => {
 <style scoped>
 .runFooterVueRoot {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.75rem;
+}
+
+.runFooterVueRoot.compact {
+  gap: 0;
+}
+
+.primaryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
 }
 
 .head {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.eyebrow {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .title {
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
 }
 
 .meta {
@@ -107,28 +157,79 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
+.summaryPill {
+  margin-top: 0.18rem;
+  max-width: min(76ch, 100%);
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface2) 88%, transparent);
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.2;
+  padding: 0.3rem 0.62rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+  justify-content: flex-end;
 }
 
 .actions button {
-  padding: 0.45rem 0.68rem;
-  font-size: 0.78rem;
+  min-height: 2.35rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.8rem;
+}
+
+.actions .subtle {
+  background: color-mix(in oklab, var(--surface2) 84%, transparent);
+  color: var(--muted);
 }
 
 .actions .primary {
   border-color: color-mix(in oklab, var(--accent) 72%, var(--border));
 }
 
-.actions .danger {
-  border-color: color-mix(in oklab, var(--bad) 66%, var(--border));
+.summaryGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 0.75rem;
+}
+
+.summaryCard {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--panel) 86%, var(--surface));
+  padding: 0.7rem 0.8rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.summaryCardPrimary {
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--accent-soft) 72%, var(--panel)),
+    color-mix(in oklab, var(--panel) 90%, var(--surface))
+  );
+}
+
+.summaryLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .metaLine {
-  font-size: 0.78rem;
-  color: var(--muted);
+  font-size: 0.8rem;
+  color: var(--text);
+  line-height: 1.3;
 }
 
 .badges {
@@ -140,18 +241,34 @@ onBeforeUnmount(() => {
 .badge {
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0.2rem 0.48rem;
+  padding: 0.24rem 0.52rem;
   font-size: 0.72rem;
-  background: color-mix(in oklab, var(--panel) 88%, var(--panel-footer));
+  background: color-mix(in oklab, var(--panel) 84%, var(--surface));
 }
 
 .status {
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: var(--muted);
+  padding-top: 0.1rem;
 }
 
 .mono {
   font-family: var(--mono);
+}
+
+@media (max-width: 980px) {
+  .primaryRow,
+  .summaryGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
+
+  .summaryPill {
+    white-space: normal;
+  }
 }
 </style>
 
