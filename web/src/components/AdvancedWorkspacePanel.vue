@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAdvancedStore, type AdvancedOption } from '../stores/advancedStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -62,17 +63,41 @@ const objectiveOptionItems = computed(() => resolvedOptions(objectiveOptions.val
 const modeOptionItems = computed(() => resolvedOptions(modeOptions.value, mode.value, mode.value || 'Grid'))
 const includeAllOptionItems = computed(() => resolvedOptions(includeAllOptions.value, includeAll.value, includeAll.value || 'false'))
 
-watch(maSource, (v) => { const next = String(v || 'close'); if (maSourceDraft.value !== next) maSourceDraft.value = next }, { immediate: true })
-watch(objective, (v) => { const next = String(v || 'Sharpe'); if (objectiveDraft.value !== next) objectiveDraft.value = next }, { immediate: true })
-watch(mode, (v) => { const next = String(v || 'Grid'); if (modeDraft.value !== next) modeDraft.value = next }, { immediate: true })
-watch(heatmapBins, (v) => { const next = String(v || '128'); if (heatmapBinsDraft.value !== next) heatmapBinsDraft.value = next }, { immediate: true })
-watch(topK, (v) => { const next = String(v || '20'); if (topKDraft.value !== next) topKDraft.value = next }, { immediate: true })
-watch(includeAll, (v) => { const next = String(v || 'false'); if (includeAllDraft.value !== next) includeAllDraft.value = next }, { immediate: true })
-watch(exportAllCsvPath, (v) => { const next = String(v || ''); if (exportPathDraft.value !== next) exportPathDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(maSource.value || 'close'),
+    String(objective.value || 'Sharpe'),
+    String(mode.value || 'Grid'),
+    String(heatmapBins.value || '128'),
+    String(topK.value || '20'),
+    String(includeAll.value || 'false'),
+    String(exportAllCsvPath.value || ''),
+  ] as const,
+  ([
+    nextMaSource,
+    nextObjective,
+    nextMode,
+    nextHeatmapBins,
+    nextTopK,
+    nextIncludeAll,
+    nextExportPath,
+  ]) => {
+    if (maSourceDraft.value !== nextMaSource) maSourceDraft.value = nextMaSource
+    if (objectiveDraft.value !== nextObjective) objectiveDraft.value = nextObjective
+    if (modeDraft.value !== nextMode) modeDraft.value = nextMode
+    if (heatmapBinsDraft.value !== nextHeatmapBins) heatmapBinsDraft.value = nextHeatmapBins
+    if (topKDraft.value !== nextTopK) topKDraft.value = nextTopK
+    if (includeAllDraft.value !== nextIncludeAll) includeAllDraft.value = nextIncludeAll
+    if (exportPathDraft.value !== nextExportPath) exportPathDraft.value = nextExportPath
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   advancedStore.setInputField(id, nextValue)
 }
+
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setSelectValue(id: string, nextValue: string): void {
   advancedStore.setSelectField(id, nextValue)
@@ -392,6 +417,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   clearCompatObservers()
   clearCompatListeners()
   if (panelRoot.value) {
@@ -480,7 +506,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="heatmapBinsDraft"
-              @input="heatmapBinsDraft = String(($event.target as HTMLInputElement).value || '128'); setInputValue('heatmapBins', heatmapBinsDraft)"
+              @input="heatmapBinsDraft = String(($event.target as HTMLInputElement).value || '128'); queueInputValue('heatmapBins', heatmapBinsDraft)"
+              @change="commitInputValue('heatmapBins', heatmapBinsDraft)"
             />
           </div>
           <div>
@@ -491,7 +518,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="topKDraft"
-              @input="topKDraft = String(($event.target as HTMLInputElement).value || '20'); setInputValue('topK', topKDraft)"
+              @input="topKDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('topK', topKDraft)"
+              @change="commitInputValue('topK', topKDraft)"
             />
           </div>
           <div>
@@ -520,7 +548,8 @@ onBeforeUnmount(() => {
             type="text"
             :value="exportPathDraft"
             placeholder="C:\\path\\to\\all_pairs.csv"
-            @input="exportPathDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('exportAllCsvPath', exportPathDraft)"
+            @input="exportPathDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('exportAllCsvPath', exportPathDraft)"
+            @change="commitInputValue('exportAllCsvPath', exportPathDraft)"
           />
           <button type="button" :disabled="!canBrowseExportAll" @click="advancedStore.browseExportAll()">Browse</button>
         </div>

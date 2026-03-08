@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useVirtualTableRows } from '../composables/useVirtualTableRows'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -138,10 +140,6 @@ const { aggregateTab, resultsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
-const tableScrollTop = ref(0)
-const virtualRowHeightPx = 28
-const virtualOverscanRows = 12
-const virtualWindowRows = 80
 
 const strategyDraft = ref('CompositeMo')
 const timeframeDraft = ref('')
@@ -193,20 +191,13 @@ const compareTabActive = computed(() => activeAggregateTab.value === 'compare')
 const renderedColumns = computed<MetaColumn[]>(() => metaTableColumns.value as MetaColumn[])
 const renderedRows = computed<MetaRow[]>(() => metaTableRows.value as MetaRow[])
 const renderedBatchDatasets = computed<BatchDatasetItem[]>(() => batchDatasets.value as BatchDatasetItem[])
-const virtualFirstRowIndex = computed(() => {
-  const firstByScroll = Math.floor(tableScrollTop.value / virtualRowHeightPx)
-  const maxFirst = Math.max(0, renderedRows.value.length - virtualWindowRows)
-  return Math.min(maxFirst, Math.max(0, firstByScroll - virtualOverscanRows))
-})
-const virtualLastRowExclusive = computed(() => {
-  return Math.min(renderedRows.value.length, virtualFirstRowIndex.value + virtualWindowRows)
-})
-const virtualRows = computed(() => renderedRows.value.slice(virtualFirstRowIndex.value, virtualLastRowExclusive.value))
-const virtualTopSpacerPx = computed(() => virtualFirstRowIndex.value * virtualRowHeightPx)
-const virtualBottomSpacerPx = computed(() => {
-  const hiddenCount = Math.max(0, renderedRows.value.length - virtualLastRowExclusive.value)
-  return hiddenCount * virtualRowHeightPx
-})
+const {
+  scrollElementRef: tableScrollElementRef,
+  virtualRows,
+  topSpacerPx: virtualTopSpacerPx,
+  bottomSpacerPx: virtualBottomSpacerPx,
+  scrollToTop,
+} = useVirtualTableRows(renderedRows)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -261,52 +252,146 @@ const groupingModeOptions: OptionItem[] = [
   { value: 'exact', label: 'Exact (strict)', disabled: false },
 ]
 
-watch(metaStrategyKind, (v) => { const next = String(v || 'CompositeMo'); if (strategyDraft.value !== next) strategyDraft.value = next }, { immediate: true })
-watch(metaTimeframe, (v) => { const next = String(v || ''); if (timeframeDraft.value !== next) timeframeDraft.value = next }, { immediate: true })
-watch(metaRequiredTag, (v) => { const next = String(v || ''); if (requiredTagDraft.value !== next) requiredTagDraft.value = next }, { immediate: true })
-watch(metaMinSamples, (v) => { const next = String(v || '30'); if (minSamplesDraft.value !== next) minSamplesDraft.value = next }, { immediate: true })
-watch(metaTopK, (v) => { const next = String(v || '25'); if (topKDraft.value !== next) topKDraft.value = next }, { immediate: true })
-watch(metaHoldoutTag, (v) => { const next = String(v || 'holdout').trim() || 'holdout'; if (holdoutTagDraft.value !== next) holdoutTagDraft.value = next }, { immediate: true })
-watch(metaEvalHoldout, (v) => { const next = Boolean(v); if (holdoutEvalDraft.value !== next) holdoutEvalDraft.value = next }, { immediate: true })
-watch(metaSaveHoldoutRows, (v) => { const next = Boolean(v); if (holdoutSaveRowsDraft.value !== next) holdoutSaveRowsDraft.value = next }, { immediate: true })
-watch(metaHoldoutMode, (v) => { const next = String(v || 'light').trim() || 'light'; if (holdoutModeDraft.value !== next) holdoutModeDraft.value = next }, { immediate: true })
-watch(metaHoldoutReps, (v) => { const next = String(v || '2').trim() || '2'; if (holdoutRepsDraft.value !== next) holdoutRepsDraft.value = next }, { immediate: true })
-watch(metaHoldoutEvalTopN, (v) => { const next = String(v || '0').trim() || '0'; if (holdoutEvalTopNDraft.value !== next) holdoutEvalTopNDraft.value = next }, { immediate: true })
-watch(metaHoldoutEvalRankBy, (v) => { const next = String(v || 'auto').trim() || 'auto'; if (holdoutEvalRankByDraft.value !== next) holdoutEvalRankByDraft.value = next }, { immediate: true })
-watch(metaHoldoutExploreN, (v) => { const next = String(v || '0').trim() || '0'; if (holdoutExploreNDraft.value !== next) holdoutExploreNDraft.value = next }, { immediate: true })
-watch(metaGroupingMode, (v) => { const next = String(v || 'clustered').trim() || 'clustered'; if (groupingModeDraft.value !== next) groupingModeDraft.value = next }, { immediate: true })
-watch(metaClusterIntBucket, (v) => { const next = String(v || '5').trim() || '5'; if (clusterIntBucketDraft.value !== next) clusterIntBucketDraft.value = next }, { immediate: true })
-watch(metaClusterFloatBucket, (v) => { const next = String(v || '0.25').trim() || '0.25'; if (clusterFloatBucketDraft.value !== next) clusterFloatBucketDraft.value = next }, { immediate: true })
-watch(metaCompareSelected, (v) => { const next = String(v || '').trim(); if (compareDraft.value !== next) compareDraft.value = next }, { immediate: true })
-watch(batchDatasetSearch, (v) => { const next = String(v || '').trim(); if (batchSearchDraft.value !== next) batchSearchDraft.value = next }, { immediate: true })
-watch(batchTags, (v) => { const next = String(v || '').trim(); if (batchTagsDraft.value !== next) batchTagsDraft.value = next }, { immediate: true })
-watch(batchHoldoutPct, (v) => { const next = String(v || '15').trim() || '15'; if (batchHoldoutPctDraft.value !== next) batchHoldoutPctDraft.value = next }, { immediate: true })
-watch(batchHoldoutTag, (v) => { const next = String(v || 'holdout').trim() || 'holdout'; if (batchHoldoutTagDraft.value !== next) batchHoldoutTagDraft.value = next }, { immediate: true })
-watch(batchAutoMeta, (v) => { const next = Boolean(v); if (batchAutoMetaDraft.value !== next) batchAutoMetaDraft.value = next }, { immediate: true })
-watch(batchSkipDone, (v) => { const next = Boolean(v); if (batchSkipDoneDraft.value !== next) batchSkipDoneDraft.value = next }, { immediate: true })
-watch(metaSavedSearch, (v) => { const next = String(v || '').trim(); if (metaSavedSearchDraft.value !== next) metaSavedSearchDraft.value = next }, { immediate: true })
-watch(metaSavedSelected, (v) => { const next = String(v || '').trim(); if (metaSavedSelectDraft.value !== next) metaSavedSelectDraft.value = next }, { immediate: true })
-watch(metaSavedTagsDraft, (v) => { const next = String(v || '').trim(); if (metaSavedTagsLocalDraft.value !== next) metaSavedTagsLocalDraft.value = next }, { immediate: true })
-watch(stage4SavedSearch, (v) => { const next = String(v || '').trim(); if (stage4SavedSearchDraft.value !== next) stage4SavedSearchDraft.value = next }, { immediate: true })
-watch(stage4SavedSelected, (v) => { const next = String(v || '').trim(); if (stage4SavedSelectDraft.value !== next) stage4SavedSelectDraft.value = next }, { immediate: true })
-watch(stage4SavedTagsDraft, (v) => { const next = String(v || '').trim(); if (stage4SavedTagsLocalDraft.value !== next) stage4SavedTagsLocalDraft.value = next }, { immediate: true })
-watch(metaUseMlConfidence, (v) => { const next = Boolean(v); if (metaUseMlConfidenceDraft.value !== next) metaUseMlConfidenceDraft.value = next }, { immediate: true })
-watch(metaMlAutopilot, (v) => { const next = Boolean(v); if (metaMlAutopilotDraft.value !== next) metaMlAutopilotDraft.value = next }, { immediate: true })
-watch(metaStage4TopK, (v) => { const next = String(v || '10').trim() || '10'; if (metaStage4TopKDraft.value !== next) metaStage4TopKDraft.value = next }, { immediate: true })
-watch(metaStage4MinConf, (v) => { const next = String(v || '0.55').trim() || '0.55'; if (metaStage4MinConfDraft.value !== next) metaStage4MinConfDraft.value = next }, { immediate: true })
-watch(metaStage4MetaWeight, (v) => { const next = String(v || '0.60').trim() || '0.60'; if (metaStage4MetaWeightDraft.value !== next) metaStage4MetaWeightDraft.value = next }, { immediate: true })
-watch(metaStage4MlWeight, (v) => { const next = String(v || '0.35').trim() || '0.35'; if (metaStage4MlWeightDraft.value !== next) metaStage4MlWeightDraft.value = next }, { immediate: true })
-watch(metaStage4UncertaintyWeight, (v) => { const next = String(v || '0.05').trim() || '0.05'; if (metaStage4UncertaintyWeightDraft.value !== next) metaStage4UncertaintyWeightDraft.value = next }, { immediate: true })
-watch(metaStage4AcceptConf, (v) => { const next = String(v || '0.70').trim() || '0.70'; if (metaStage4AcceptConfDraft.value !== next) metaStage4AcceptConfDraft.value = next }, { immediate: true })
-watch(metaStage4ReviewConf, (v) => { const next = String(v || '0.55').trim() || '0.55'; if (metaStage4ReviewConfDraft.value !== next) metaStage4ReviewConfDraft.value = next }, { immediate: true })
-watch(metaStage4MaxAcceptUncertainty, (v) => { const next = String(v || '0.45').trim() || '0.45'; if (metaStage4MaxAcceptUncertaintyDraft.value !== next) metaStage4MaxAcceptUncertaintyDraft.value = next }, { immediate: true })
-watch(metaStage4AutoTrain, (v) => { const next = Boolean(v); if (metaStage4AutoTrainDraft.value !== next) metaStage4AutoTrainDraft.value = next }, { immediate: true })
-watch(metaStage4RequireHealthy, (v) => { const next = Boolean(v); if (metaStage4RequireHealthyDraft.value !== next) metaStage4RequireHealthyDraft.value = next }, { immediate: true })
-watch(metaStage4FallbackToMeta, (v) => { const next = Boolean(v); if (metaStage4FallbackToMetaDraft.value !== next) metaStage4FallbackToMetaDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(metaStrategyKind.value || 'CompositeMo'),
+    String(metaTimeframe.value || ''),
+    String(metaRequiredTag.value || ''),
+    String(metaMinSamples.value || '30'),
+    String(metaTopK.value || '25'),
+    String(metaHoldoutTag.value || 'holdout').trim() || 'holdout',
+    Boolean(metaEvalHoldout.value),
+    Boolean(metaSaveHoldoutRows.value),
+    String(metaHoldoutMode.value || 'light').trim() || 'light',
+    String(metaHoldoutReps.value || '2').trim() || '2',
+    String(metaHoldoutEvalTopN.value || '0').trim() || '0',
+    String(metaHoldoutEvalRankBy.value || 'auto').trim() || 'auto',
+    String(metaHoldoutExploreN.value || '0').trim() || '0',
+    String(metaGroupingMode.value || 'clustered').trim() || 'clustered',
+    String(metaClusterIntBucket.value || '5').trim() || '5',
+    String(metaClusterFloatBucket.value || '0.25').trim() || '0.25',
+    String(metaCompareSelected.value || '').trim(),
+    String(batchDatasetSearch.value || '').trim(),
+    String(batchTags.value || '').trim(),
+    String(batchHoldoutPct.value || '15').trim() || '15',
+    String(batchHoldoutTag.value || 'holdout').trim() || 'holdout',
+    Boolean(batchAutoMeta.value),
+    Boolean(batchSkipDone.value),
+    String(metaSavedSearch.value || '').trim(),
+    String(metaSavedSelected.value || '').trim(),
+    String(metaSavedTagsDraft.value || '').trim(),
+    String(stage4SavedSearch.value || '').trim(),
+    String(stage4SavedSelected.value || '').trim(),
+    String(stage4SavedTagsDraft.value || '').trim(),
+    Boolean(metaUseMlConfidence.value),
+    Boolean(metaMlAutopilot.value),
+    String(metaStage4TopK.value || '10').trim() || '10',
+    String(metaStage4MinConf.value || '0.55').trim() || '0.55',
+    String(metaStage4MetaWeight.value || '0.60').trim() || '0.60',
+    String(metaStage4MlWeight.value || '0.35').trim() || '0.35',
+    String(metaStage4UncertaintyWeight.value || '0.05').trim() || '0.05',
+    String(metaStage4AcceptConf.value || '0.70').trim() || '0.70',
+    String(metaStage4ReviewConf.value || '0.55').trim() || '0.55',
+    String(metaStage4MaxAcceptUncertainty.value || '0.45').trim() || '0.45',
+    Boolean(metaStage4AutoTrain.value),
+    Boolean(metaStage4RequireHealthy.value),
+    Boolean(metaStage4FallbackToMeta.value),
+  ] as const,
+  ([
+    nextStrategy,
+    nextTimeframe,
+    nextRequiredTag,
+    nextMinSamples,
+    nextTopK,
+    nextHoldoutTag,
+    nextHoldoutEval,
+    nextHoldoutSaveRows,
+    nextHoldoutMode,
+    nextHoldoutReps,
+    nextHoldoutEvalTopN,
+    nextHoldoutEvalRankBy,
+    nextHoldoutExploreN,
+    nextGroupingMode,
+    nextClusterIntBucket,
+    nextClusterFloatBucket,
+    nextCompare,
+    nextBatchSearch,
+    nextBatchTags,
+    nextBatchHoldoutPct,
+    nextBatchHoldoutTag,
+    nextBatchAutoMeta,
+    nextBatchSkipDone,
+    nextMetaSavedSearch,
+    nextMetaSavedSelect,
+    nextMetaSavedTags,
+    nextStage4SavedSearch,
+    nextStage4SavedSelect,
+    nextStage4SavedTags,
+    nextUseMlConfidence,
+    nextMlAutopilot,
+    nextStage4TopK,
+    nextStage4MinConf,
+    nextStage4MetaWeight,
+    nextStage4MlWeight,
+    nextStage4UncertaintyWeight,
+    nextStage4AcceptConf,
+    nextStage4ReviewConf,
+    nextStage4MaxAcceptUncertainty,
+    nextStage4AutoTrain,
+    nextStage4RequireHealthy,
+    nextStage4FallbackToMeta,
+  ]) => {
+    if (strategyDraft.value !== nextStrategy) strategyDraft.value = nextStrategy
+    if (timeframeDraft.value !== nextTimeframe) timeframeDraft.value = nextTimeframe
+    if (requiredTagDraft.value !== nextRequiredTag) requiredTagDraft.value = nextRequiredTag
+    if (minSamplesDraft.value !== nextMinSamples) minSamplesDraft.value = nextMinSamples
+    if (topKDraft.value !== nextTopK) topKDraft.value = nextTopK
+    if (holdoutTagDraft.value !== nextHoldoutTag) holdoutTagDraft.value = nextHoldoutTag
+    if (holdoutEvalDraft.value !== nextHoldoutEval) holdoutEvalDraft.value = nextHoldoutEval
+    if (holdoutSaveRowsDraft.value !== nextHoldoutSaveRows) holdoutSaveRowsDraft.value = nextHoldoutSaveRows
+    if (holdoutModeDraft.value !== nextHoldoutMode) holdoutModeDraft.value = nextHoldoutMode
+    if (holdoutRepsDraft.value !== nextHoldoutReps) holdoutRepsDraft.value = nextHoldoutReps
+    if (holdoutEvalTopNDraft.value !== nextHoldoutEvalTopN) holdoutEvalTopNDraft.value = nextHoldoutEvalTopN
+    if (holdoutEvalRankByDraft.value !== nextHoldoutEvalRankBy) holdoutEvalRankByDraft.value = nextHoldoutEvalRankBy
+    if (holdoutExploreNDraft.value !== nextHoldoutExploreN) holdoutExploreNDraft.value = nextHoldoutExploreN
+    if (groupingModeDraft.value !== nextGroupingMode) groupingModeDraft.value = nextGroupingMode
+    if (clusterIntBucketDraft.value !== nextClusterIntBucket) clusterIntBucketDraft.value = nextClusterIntBucket
+    if (clusterFloatBucketDraft.value !== nextClusterFloatBucket) clusterFloatBucketDraft.value = nextClusterFloatBucket
+    if (compareDraft.value !== nextCompare) compareDraft.value = nextCompare
+    if (batchSearchDraft.value !== nextBatchSearch) batchSearchDraft.value = nextBatchSearch
+    if (batchTagsDraft.value !== nextBatchTags) batchTagsDraft.value = nextBatchTags
+    if (batchHoldoutPctDraft.value !== nextBatchHoldoutPct) batchHoldoutPctDraft.value = nextBatchHoldoutPct
+    if (batchHoldoutTagDraft.value !== nextBatchHoldoutTag) batchHoldoutTagDraft.value = nextBatchHoldoutTag
+    if (batchAutoMetaDraft.value !== nextBatchAutoMeta) batchAutoMetaDraft.value = nextBatchAutoMeta
+    if (batchSkipDoneDraft.value !== nextBatchSkipDone) batchSkipDoneDraft.value = nextBatchSkipDone
+    if (metaSavedSearchDraft.value !== nextMetaSavedSearch) metaSavedSearchDraft.value = nextMetaSavedSearch
+    if (metaSavedSelectDraft.value !== nextMetaSavedSelect) metaSavedSelectDraft.value = nextMetaSavedSelect
+    if (metaSavedTagsLocalDraft.value !== nextMetaSavedTags) metaSavedTagsLocalDraft.value = nextMetaSavedTags
+    if (stage4SavedSearchDraft.value !== nextStage4SavedSearch) stage4SavedSearchDraft.value = nextStage4SavedSearch
+    if (stage4SavedSelectDraft.value !== nextStage4SavedSelect) stage4SavedSelectDraft.value = nextStage4SavedSelect
+    if (stage4SavedTagsLocalDraft.value !== nextStage4SavedTags) stage4SavedTagsLocalDraft.value = nextStage4SavedTags
+    if (metaUseMlConfidenceDraft.value !== nextUseMlConfidence) metaUseMlConfidenceDraft.value = nextUseMlConfidence
+    if (metaMlAutopilotDraft.value !== nextMlAutopilot) metaMlAutopilotDraft.value = nextMlAutopilot
+    if (metaStage4TopKDraft.value !== nextStage4TopK) metaStage4TopKDraft.value = nextStage4TopK
+    if (metaStage4MinConfDraft.value !== nextStage4MinConf) metaStage4MinConfDraft.value = nextStage4MinConf
+    if (metaStage4MetaWeightDraft.value !== nextStage4MetaWeight) metaStage4MetaWeightDraft.value = nextStage4MetaWeight
+    if (metaStage4MlWeightDraft.value !== nextStage4MlWeight) metaStage4MlWeightDraft.value = nextStage4MlWeight
+    if (metaStage4UncertaintyWeightDraft.value !== nextStage4UncertaintyWeight) metaStage4UncertaintyWeightDraft.value = nextStage4UncertaintyWeight
+    if (metaStage4AcceptConfDraft.value !== nextStage4AcceptConf) metaStage4AcceptConfDraft.value = nextStage4AcceptConf
+    if (metaStage4ReviewConfDraft.value !== nextStage4ReviewConf) metaStage4ReviewConfDraft.value = nextStage4ReviewConf
+    if (metaStage4MaxAcceptUncertaintyDraft.value !== nextStage4MaxAcceptUncertainty) metaStage4MaxAcceptUncertaintyDraft.value = nextStage4MaxAcceptUncertainty
+    if (metaStage4AutoTrainDraft.value !== nextStage4AutoTrain) metaStage4AutoTrainDraft.value = nextStage4AutoTrain
+    if (metaStage4RequireHealthyDraft.value !== nextStage4RequireHealthy) metaStage4RequireHealthyDraft.value = nextStage4RequireHealthy
+    if (metaStage4FallbackToMetaDraft.value !== nextStage4FallbackToMeta) metaStage4FallbackToMetaDraft.value = nextStage4FallbackToMeta
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   analysisStore.setMetaInputField(id, nextValue)
 }
+
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setSelectValue(id: string, nextValue: string): void {
   analysisStore.setMetaSelectField(id, nextValue)
@@ -314,6 +399,11 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function setCheckedValue(id: string, nextValue: boolean): void {
   analysisStore.setMetaCheckboxField(id, nextValue)
+}
+
+function runAction(action: () => void): void {
+  flushQueuedInputValuesNow()
+  action()
 }
 
 function clickAggregateTab(tab: string): void {
@@ -330,12 +420,6 @@ function toggleBatchDataset(index: number): void {
   analysisStore.toggleBatchDataset(path, !entry.checked)
 }
 
-function onTableScroll(event: Event): void {
-  const target = event.target as HTMLElement | null
-  if (!target) return
-  tableScrollTop.value = Math.max(0, Math.floor(target.scrollTop || 0))
-}
-
 function resolveMount(): void {
   const panel = document.querySelector('[data-vue-panel="meta"]') as HTMLElement | null
   const mount = document.querySelector('#metaVueShellMount') as HTMLElement | null
@@ -348,10 +432,11 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
-  tableScrollTop.value = 0
+  scrollToTop()
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueMeta
     panelRoot.value = null
@@ -410,7 +495,8 @@ onBeforeUnmount(() => {
               id="vueBatchDatasetSearch"
               type="text"
               :value="batchSearchDraft"
-              @input="batchSearchDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('batchDatasetSearch', batchSearchDraft)"
+              @input="batchSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('batchDatasetSearch', batchSearchDraft)"
+              @change="commitInputValue('batchDatasetSearch', batchSearchDraft)"
             />
           </div>
           <div>
@@ -419,7 +505,8 @@ onBeforeUnmount(() => {
               id="vueBatchTags"
               type="text"
               :value="batchTagsDraft"
-              @input="batchTagsDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('batchTags', batchTagsDraft)"
+              @input="batchTagsDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('batchTags', batchTagsDraft)"
+              @change="commitInputValue('batchTags', batchTagsDraft)"
             />
           </div>
           <div>
@@ -431,7 +518,8 @@ onBeforeUnmount(() => {
               max="50"
               step="1"
               :value="batchHoldoutPctDraft"
-              @input="batchHoldoutPctDraft = String(($event.target as HTMLInputElement).value || '15'); setInputValue('batchHoldoutPct', batchHoldoutPctDraft)"
+              @input="batchHoldoutPctDraft = String(($event.target as HTMLInputElement).value || '15'); queueInputValue('batchHoldoutPct', batchHoldoutPctDraft)"
+              @change="commitInputValue('batchHoldoutPct', batchHoldoutPctDraft)"
             />
           </div>
           <div>
@@ -440,7 +528,8 @@ onBeforeUnmount(() => {
               id="vueBatchHoldoutTag"
               type="text"
               :value="batchHoldoutTagDraft"
-              @input="batchHoldoutTagDraft = String(($event.target as HTMLInputElement).value || 'holdout'); setInputValue('batchHoldoutTag', batchHoldoutTagDraft)"
+              @input="batchHoldoutTagDraft = String(($event.target as HTMLInputElement).value || 'holdout'); queueInputValue('batchHoldoutTag', batchHoldoutTagDraft)"
+              @change="commitInputValue('batchHoldoutTag', batchHoldoutTagDraft)"
             />
           </div>
         </div>
@@ -465,13 +554,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="actions">
-          <button type="button" class="primary" :disabled="!canRunBatch" @click="analysisStore.runBatch()">Run batch</button>
-          <button type="button" :disabled="!canBatchStop" @click="analysisStore.batchStop()">Stop after current</button>
-          <button type="button" :disabled="!canBatchRefresh" @click="analysisStore.batchRefresh()">Refresh</button>
-          <button type="button" :disabled="!canBatchSelectAll" @click="analysisStore.batchSelectAll()">All</button>
-          <button type="button" :disabled="!canBatchSelectNone" @click="analysisStore.batchSelectNone()">None</button>
-          <button type="button" :disabled="!canBatchRetryFailed" @click="analysisStore.batchRetryFailed()">Retry failed</button>
-          <button type="button" :disabled="!canBatchRevealSummary" @click="analysisStore.batchRevealSummary()">Reveal summary</button>
+          <button type="button" class="primary" :disabled="!canRunBatch" @click="runAction(() => analysisStore.runBatch())">Run batch</button>
+          <button type="button" :disabled="!canBatchStop" @click="runAction(() => analysisStore.batchStop())">Stop after current</button>
+          <button type="button" :disabled="!canBatchRefresh" @click="runAction(() => analysisStore.batchRefresh())">Refresh</button>
+          <button type="button" :disabled="!canBatchSelectAll" @click="runAction(() => analysisStore.batchSelectAll())">All</button>
+          <button type="button" :disabled="!canBatchSelectNone" @click="runAction(() => analysisStore.batchSelectNone())">None</button>
+          <button type="button" :disabled="!canBatchRetryFailed" @click="runAction(() => analysisStore.batchRetryFailed())">Retry failed</button>
+          <button type="button" :disabled="!canBatchRevealSummary" @click="runAction(() => analysisStore.batchRevealSummary())">Reveal summary</button>
         </div>
 
         <div class="metaLine mono">{{ batchMeta }}</div>
@@ -504,7 +593,8 @@ onBeforeUnmount(() => {
               id="vueMetaSavedSearch"
               type="text"
               :value="metaSavedSearchDraft"
-              @input="metaSavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('metaSavedSearch', metaSavedSearchDraft)"
+              @input="metaSavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('metaSavedSearch', metaSavedSearchDraft)"
+              @change="commitInputValue('metaSavedSearch', metaSavedSearchDraft)"
             />
           </div>
           <div>
@@ -531,18 +621,19 @@ onBeforeUnmount(() => {
                 id="vueMetaSavedTags"
                 type="text"
                 :value="metaSavedTagsLocalDraft"
-                @input="metaSavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('metaSavedTags', metaSavedTagsLocalDraft)"
+                @input="metaSavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('metaSavedTags', metaSavedTagsLocalDraft)"
+                @change="commitInputValue('metaSavedTags', metaSavedTagsLocalDraft)"
               />
-              <button type="button" :disabled="!canSaveMetaSavedTags" @click="analysisStore.saveSavedTags()">Save</button>
+              <button type="button" :disabled="!canSaveMetaSavedTags" @click="runAction(() => analysisStore.saveSavedTags())">Save</button>
             </div>
           </div>
         </div>
         <div class="actions">
-          <button type="button" :disabled="!canRefreshMetaSaved" @click="analysisStore.refreshSaved()">Refresh</button>
-          <button type="button" :disabled="!canLoadMetaSaved" @click="analysisStore.loadSaved()">Load</button>
-          <button type="button" :disabled="!canOpenMetaSavedReport" @click="analysisStore.openSavedReport()">Open report</button>
-          <button type="button" :disabled="!canRevealMetaSaved" @click="analysisStore.revealSaved()">Reveal file</button>
-          <button type="button" :disabled="!canDeleteMetaSaved" @click="analysisStore.deleteSaved()">Delete</button>
+          <button type="button" :disabled="!canRefreshMetaSaved" @click="runAction(() => analysisStore.refreshSaved())">Refresh</button>
+          <button type="button" :disabled="!canLoadMetaSaved" @click="runAction(() => analysisStore.loadSaved())">Load</button>
+          <button type="button" :disabled="!canOpenMetaSavedReport" @click="runAction(() => analysisStore.openSavedReport())">Open report</button>
+          <button type="button" :disabled="!canRevealMetaSaved" @click="runAction(() => analysisStore.revealSaved())">Reveal file</button>
+          <button type="button" :disabled="!canDeleteMetaSaved" @click="runAction(() => analysisStore.deleteSaved())">Delete</button>
         </div>
         <div class="metaLine mono">{{ metaSavedMeta }}</div>
       </section>
@@ -556,7 +647,8 @@ onBeforeUnmount(() => {
               id="vueStage4SavedSearch"
               type="text"
               :value="stage4SavedSearchDraft"
-              @input="stage4SavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('stage4SavedSearch', stage4SavedSearchDraft)"
+              @input="stage4SavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('stage4SavedSearch', stage4SavedSearchDraft)"
+              @change="commitInputValue('stage4SavedSearch', stage4SavedSearchDraft)"
             />
           </div>
           <div>
@@ -583,17 +675,18 @@ onBeforeUnmount(() => {
                 id="vueStage4SavedTags"
                 type="text"
                 :value="stage4SavedTagsLocalDraft"
-                @input="stage4SavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
+                @input="stage4SavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
+                @change="commitInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
               />
-              <button type="button" :disabled="!canSaveStage4SavedTags" @click="analysisStore.saveStage4SavedTags()">Save</button>
+              <button type="button" :disabled="!canSaveStage4SavedTags" @click="runAction(() => analysisStore.saveStage4SavedTags())">Save</button>
             </div>
           </div>
         </div>
         <div class="actions">
-          <button type="button" :disabled="!canRefreshStage4Saved" @click="analysisStore.refreshStage4Saved()">Refresh</button>
-          <button type="button" :disabled="!canLoadStage4Saved" @click="analysisStore.loadStage4Saved()">Load</button>
-          <button type="button" :disabled="!canRevealStage4Saved" @click="analysisStore.revealStage4Saved()">Reveal file</button>
-          <button type="button" :disabled="!canDeleteStage4Saved" @click="analysisStore.deleteStage4Saved()">Delete</button>
+          <button type="button" :disabled="!canRefreshStage4Saved" @click="runAction(() => analysisStore.refreshStage4Saved())">Refresh</button>
+          <button type="button" :disabled="!canLoadStage4Saved" @click="runAction(() => analysisStore.loadStage4Saved())">Load</button>
+          <button type="button" :disabled="!canRevealStage4Saved" @click="runAction(() => analysisStore.revealStage4Saved())">Reveal file</button>
+          <button type="button" :disabled="!canDeleteStage4Saved" @click="runAction(() => analysisStore.deleteStage4Saved())">Delete</button>
         </div>
         <div class="metaLine mono">{{ stage4SavedMeta }}</div>
       </section>
@@ -619,10 +712,10 @@ onBeforeUnmount(() => {
           </label>
         </div>
         <div class="actions">
-          <button type="button" :disabled="!canMetaMlRefresh" @click="analysisStore.mlRefresh()">Refresh</button>
-          <button type="button" :disabled="!canMetaMlTrain" @click="analysisStore.mlTrain()">Train / update</button>
-          <button type="button" :disabled="!canMetaMlApply" @click="analysisStore.mlApply()">Apply to current meta</button>
-          <button type="button" :disabled="!canMetaMlDelete" @click="analysisStore.mlDelete()">Delete model</button>
+          <button type="button" :disabled="!canMetaMlRefresh" @click="runAction(() => analysisStore.mlRefresh())">Refresh</button>
+          <button type="button" :disabled="!canMetaMlTrain" @click="runAction(() => analysisStore.mlTrain())">Train / update</button>
+          <button type="button" :disabled="!canMetaMlApply" @click="runAction(() => analysisStore.mlApply())">Apply to current meta</button>
+          <button type="button" :disabled="!canMetaMlDelete" @click="runAction(() => analysisStore.mlDelete())">Delete model</button>
         </div>
         <div class="metaLine mono">{{ metaMlStatus }}</div>
 
@@ -635,7 +728,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="metaStage4TopKDraft"
-              @input="metaStage4TopKDraft = String(($event.target as HTMLInputElement).value || '10'); setInputValue('metaStage4TopK', metaStage4TopKDraft)"
+              @input="metaStage4TopKDraft = String(($event.target as HTMLInputElement).value || '10'); queueInputValue('metaStage4TopK', metaStage4TopKDraft)"
+              @change="commitInputValue('metaStage4TopK', metaStage4TopKDraft)"
             />
           </div>
           <div>
@@ -647,12 +741,13 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="metaStage4MinConfDraft"
-              @input="metaStage4MinConfDraft = String(($event.target as HTMLInputElement).value || '0.55'); setInputValue('metaStage4MinConf', metaStage4MinConfDraft)"
+              @input="metaStage4MinConfDraft = String(($event.target as HTMLInputElement).value || '0.55'); queueInputValue('metaStage4MinConf', metaStage4MinConfDraft)"
+              @change="commitInputValue('metaStage4MinConf', metaStage4MinConfDraft)"
             />
           </div>
           <div class="actions" style="margin-top: 1.4rem;">
-            <button type="button" :disabled="!canRunMetaStage4" @click="analysisStore.runStage4()">Run Stage 4</button>
-            <button type="button" :disabled="!canRevealMetaStage4" @click="analysisStore.revealStage4()">Reveal Stage 4 file</button>
+            <button type="button" :disabled="!canRunMetaStage4" @click="runAction(() => analysisStore.runStage4())">Run Stage 4</button>
+            <button type="button" :disabled="!canRevealMetaStage4" @click="runAction(() => analysisStore.revealStage4())">Reveal Stage 4 file</button>
           </div>
         </div>
 
@@ -665,7 +760,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="metaStage4MetaWeightDraft"
-              @input="metaStage4MetaWeightDraft = String(($event.target as HTMLInputElement).value || '0.60'); setInputValue('metaStage4MetaWeight', metaStage4MetaWeightDraft)"
+              @input="metaStage4MetaWeightDraft = String(($event.target as HTMLInputElement).value || '0.60'); queueInputValue('metaStage4MetaWeight', metaStage4MetaWeightDraft)"
+              @change="commitInputValue('metaStage4MetaWeight', metaStage4MetaWeightDraft)"
             />
           </div>
           <div>
@@ -676,7 +772,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="metaStage4MlWeightDraft"
-              @input="metaStage4MlWeightDraft = String(($event.target as HTMLInputElement).value || '0.35'); setInputValue('metaStage4MlWeight', metaStage4MlWeightDraft)"
+              @input="metaStage4MlWeightDraft = String(($event.target as HTMLInputElement).value || '0.35'); queueInputValue('metaStage4MlWeight', metaStage4MlWeightDraft)"
+              @change="commitInputValue('metaStage4MlWeight', metaStage4MlWeightDraft)"
             />
           </div>
           <div>
@@ -687,7 +784,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="metaStage4UncertaintyWeightDraft"
-              @input="metaStage4UncertaintyWeightDraft = String(($event.target as HTMLInputElement).value || '0.05'); setInputValue('metaStage4UncertaintyWeight', metaStage4UncertaintyWeightDraft)"
+              @input="metaStage4UncertaintyWeightDraft = String(($event.target as HTMLInputElement).value || '0.05'); queueInputValue('metaStage4UncertaintyWeight', metaStage4UncertaintyWeightDraft)"
+              @change="commitInputValue('metaStage4UncertaintyWeight', metaStage4UncertaintyWeightDraft)"
             />
           </div>
         </div>
@@ -702,7 +800,8 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="metaStage4AcceptConfDraft"
-              @input="metaStage4AcceptConfDraft = String(($event.target as HTMLInputElement).value || '0.70'); setInputValue('metaStage4AcceptConf', metaStage4AcceptConfDraft)"
+              @input="metaStage4AcceptConfDraft = String(($event.target as HTMLInputElement).value || '0.70'); queueInputValue('metaStage4AcceptConf', metaStage4AcceptConfDraft)"
+              @change="commitInputValue('metaStage4AcceptConf', metaStage4AcceptConfDraft)"
             />
           </div>
           <div>
@@ -714,7 +813,8 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="metaStage4ReviewConfDraft"
-              @input="metaStage4ReviewConfDraft = String(($event.target as HTMLInputElement).value || '0.55'); setInputValue('metaStage4ReviewConf', metaStage4ReviewConfDraft)"
+              @input="metaStage4ReviewConfDraft = String(($event.target as HTMLInputElement).value || '0.55'); queueInputValue('metaStage4ReviewConf', metaStage4ReviewConfDraft)"
+              @change="commitInputValue('metaStage4ReviewConf', metaStage4ReviewConfDraft)"
             />
           </div>
           <div>
@@ -726,7 +826,8 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="metaStage4MaxAcceptUncertaintyDraft"
-              @input="metaStage4MaxAcceptUncertaintyDraft = String(($event.target as HTMLInputElement).value || '0.45'); setInputValue('metaStage4MaxAcceptUncertainty', metaStage4MaxAcceptUncertaintyDraft)"
+              @input="metaStage4MaxAcceptUncertaintyDraft = String(($event.target as HTMLInputElement).value || '0.45'); queueInputValue('metaStage4MaxAcceptUncertainty', metaStage4MaxAcceptUncertaintyDraft)"
+              @change="commitInputValue('metaStage4MaxAcceptUncertainty', metaStage4MaxAcceptUncertaintyDraft)"
             />
           </div>
         </div>
@@ -788,7 +889,8 @@ onBeforeUnmount(() => {
               type="text"
               :value="timeframeDraft"
               placeholder="1m"
-              @input="timeframeDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('metaTimeframe', timeframeDraft)"
+              @input="timeframeDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('metaTimeframe', timeframeDraft)"
+              @change="commitInputValue('metaTimeframe', timeframeDraft)"
             />
           </div>
           <div>
@@ -798,7 +900,8 @@ onBeforeUnmount(() => {
               type="text"
               :value="requiredTagDraft"
               placeholder="e.g. 1m, forex, top50"
-              @input="requiredTagDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('metaRequiredTag', requiredTagDraft)"
+              @input="requiredTagDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('metaRequiredTag', requiredTagDraft)"
+              @change="commitInputValue('metaRequiredTag', requiredTagDraft)"
             />
           </div>
           <div>
@@ -809,7 +912,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="minSamplesDraft"
-              @input="minSamplesDraft = String(($event.target as HTMLInputElement).value || '30'); setInputValue('metaMinSamples', minSamplesDraft)"
+              @input="minSamplesDraft = String(($event.target as HTMLInputElement).value || '30'); queueInputValue('metaMinSamples', minSamplesDraft)"
+              @change="commitInputValue('metaMinSamples', minSamplesDraft)"
             />
           </div>
           <div>
@@ -820,14 +924,15 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="topKDraft"
-              @input="topKDraft = String(($event.target as HTMLInputElement).value || '25'); setInputValue('metaTopK', topKDraft)"
+              @input="topKDraft = String(($event.target as HTMLInputElement).value || '25'); queueInputValue('metaTopK', topKDraft)"
+              @change="commitInputValue('metaTopK', topKDraft)"
             />
           </div>
         </div>
         <div class="actions">
-          <button type="button" class="primary" :disabled="!canRunMeta" @click="analysisStore.runMeta()">Run meta analysis</button>
-          <button type="button" :disabled="!canOpenMetaReport" @click="analysisStore.openMetaReport()">Open meta report (XLSX)</button>
-          <button type="button" :disabled="!canRevealMetaFiles" @click="analysisStore.revealMetaFiles()">Reveal files</button>
+          <button type="button" class="primary" :disabled="!canRunMeta" @click="runAction(() => analysisStore.runMeta())">Run meta analysis</button>
+          <button type="button" :disabled="!canOpenMetaReport" @click="runAction(() => analysisStore.openMetaReport())">Open meta report (XLSX)</button>
+          <button type="button" :disabled="!canRevealMetaFiles" @click="runAction(() => analysisStore.revealMetaFiles())">Reveal files</button>
         </div>
       </section>
 
@@ -840,7 +945,8 @@ onBeforeUnmount(() => {
               id="vueMetaHoldoutTag"
               type="text"
               :value="holdoutTagDraft"
-              @input="holdoutTagDraft = String(($event.target as HTMLInputElement).value || 'holdout'); setInputValue('metaHoldoutTag', holdoutTagDraft)"
+              @input="holdoutTagDraft = String(($event.target as HTMLInputElement).value || 'holdout'); queueInputValue('metaHoldoutTag', holdoutTagDraft)"
+              @change="commitInputValue('metaHoldoutTag', holdoutTagDraft)"
             />
           </div>
           <div>
@@ -907,7 +1013,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="holdoutEvalTopNDraft"
-              @input="holdoutEvalTopNDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('metaHoldoutEvalTopN', holdoutEvalTopNDraft)"
+              @input="holdoutEvalTopNDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('metaHoldoutEvalTopN', holdoutEvalTopNDraft)"
+              @change="commitInputValue('metaHoldoutEvalTopN', holdoutEvalTopNDraft)"
             />
           </div>
           <div>
@@ -935,7 +1042,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="holdoutExploreNDraft"
-              @input="holdoutExploreNDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('metaHoldoutExploreN', holdoutExploreNDraft)"
+              @input="holdoutExploreNDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('metaHoldoutExploreN', holdoutExploreNDraft)"
+              @change="commitInputValue('metaHoldoutExploreN', holdoutExploreNDraft)"
             />
           </div>
         </div>
@@ -966,7 +1074,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="clusterIntBucketDraft"
-              @input="clusterIntBucketDraft = String(($event.target as HTMLInputElement).value || '5'); setInputValue('metaClusterIntBucket', clusterIntBucketDraft)"
+              @input="clusterIntBucketDraft = String(($event.target as HTMLInputElement).value || '5'); queueInputValue('metaClusterIntBucket', clusterIntBucketDraft)"
+              @change="commitInputValue('metaClusterIntBucket', clusterIntBucketDraft)"
             />
           </div>
           <div>
@@ -977,7 +1086,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="clusterFloatBucketDraft"
-              @input="clusterFloatBucketDraft = String(($event.target as HTMLInputElement).value || '0.25'); setInputValue('metaClusterFloatBucket', clusterFloatBucketDraft)"
+              @input="clusterFloatBucketDraft = String(($event.target as HTMLInputElement).value || '0.25'); queueInputValue('metaClusterFloatBucket', clusterFloatBucketDraft)"
+              @change="commitInputValue('metaClusterFloatBucket', clusterFloatBucketDraft)"
             />
           </div>
         </div>
@@ -986,7 +1096,7 @@ onBeforeUnmount(() => {
 
       <section v-if="metaTabActive" class="pane">
         <div class="metaLine mono">{{ metaMeta }}</div>
-        <div class="tableWrap" @scroll="onTableScroll">
+        <div ref="tableScrollElementRef" class="tableWrap">
           <table class="metaTableVue">
             <thead>
               <tr>
@@ -1003,12 +1113,12 @@ onBeforeUnmount(() => {
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
                 <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
-              <tr v-for="(row, rowOffset) in virtualRows" :key="`meta_row_${virtualFirstRowIndex + rowOffset}`">
-                <template v-for="cell in row.cells" :key="`meta_row_${virtualFirstRowIndex + rowOffset}_${cell.text}_${cell.className}`">
+              <tr v-for="virtualRow in virtualRows" :key="`meta_row_${virtualRow.index}`">
+                <template v-for="cell in virtualRow.row.cells" :key="`meta_row_${virtualRow.index}_${cell.text}_${cell.className}`">
                   <td
                     :class="cell.className"
                     :title="cell.title || undefined"
-                    :colspan="row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
                     {{ cell.text }}
                   </td>
@@ -1280,6 +1390,4 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
-
-
 

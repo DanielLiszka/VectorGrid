@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -63,20 +64,50 @@ const stamp = computed(() => {
   return new Date(ms).toLocaleTimeString([], { hour12: false })
 })
 
-watch(symbol, (v) => { const next = String(v || ''); if (symbolDraft.value !== next) symbolDraft.value = next }, { immediate: true })
-watch(qty, (v) => { const next = String(v || ''); if (qtyDraft.value !== next) qtyDraft.value = next }, { immediate: true })
-watch(riskStopLossPct, (v) => { const next = String(v || ''); if (riskSlDraft.value !== next) riskSlDraft.value = next }, { immediate: true })
-watch(riskTakeProfitPct, (v) => { const next = String(v || ''); if (riskTpDraft.value !== next) riskTpDraft.value = next }, { immediate: true })
-watch(manualFastLen, (v) => { const next = String(v || ''); if (manualFastDraft.value !== next) manualFastDraft.value = next }, { immediate: true })
-watch(manualSlowLen, (v) => { const next = String(v || ''); if (manualSlowDraft.value !== next) manualSlowDraft.value = next }, { immediate: true })
-watch(apiKey, (v) => { const next = String(v || ''); if (apiKeyDraft.value !== next) apiKeyDraft.value = next }, { immediate: true })
-watch(apiSecret, (v) => { const next = String(v || ''); if (apiSecretDraft.value !== next) apiSecretDraft.value = next }, { immediate: true })
-watch(mode, (v) => { const next = String(v || 'paper'); if (modeDraft.value !== next) modeDraft.value = next }, { immediate: true })
-watch(paramSource, (v) => { const next = String(v || 'selected'); if (sourceDraft.value !== next) sourceDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(symbol.value || ''),
+    String(qty.value || ''),
+    String(riskStopLossPct.value || ''),
+    String(riskTakeProfitPct.value || ''),
+    String(manualFastLen.value || ''),
+    String(manualSlowLen.value || ''),
+    String(apiKey.value || ''),
+    String(apiSecret.value || ''),
+    String(mode.value || 'paper'),
+    String(paramSource.value || 'selected'),
+  ] as const,
+  ([
+    nextSymbol,
+    nextQty,
+    nextRiskStopLossPct,
+    nextRiskTakeProfitPct,
+    nextManualFastLen,
+    nextManualSlowLen,
+    nextApiKey,
+    nextApiSecret,
+    nextMode,
+    nextParamSource,
+  ]) => {
+    if (symbolDraft.value !== nextSymbol) symbolDraft.value = nextSymbol
+    if (qtyDraft.value !== nextQty) qtyDraft.value = nextQty
+    if (riskSlDraft.value !== nextRiskStopLossPct) riskSlDraft.value = nextRiskStopLossPct
+    if (riskTpDraft.value !== nextRiskTakeProfitPct) riskTpDraft.value = nextRiskTakeProfitPct
+    if (manualFastDraft.value !== nextManualFastLen) manualFastDraft.value = nextManualFastLen
+    if (manualSlowDraft.value !== nextManualSlowLen) manualSlowDraft.value = nextManualSlowLen
+    if (apiKeyDraft.value !== nextApiKey) apiKeyDraft.value = nextApiKey
+    if (apiSecretDraft.value !== nextApiSecret) apiSecretDraft.value = nextApiSecret
+    if (modeDraft.value !== nextMode) modeDraft.value = nextMode
+    if (sourceDraft.value !== nextParamSource) sourceDraft.value = nextParamSource
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   execStore.setInputField(id, nextValue)
 }
+
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setSelectValue(id: string, nextValue: string): void {
   execStore.setSelectField(id, nextValue)
@@ -84,6 +115,46 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function setCheckboxValue(id: string, checked: boolean): void {
   execStore.setCheckboxField(id, checked)
+}
+
+function testConnectionAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.testConnection()
+}
+
+function clearKeysAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.clearKeys()
+}
+
+function runOnceAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.runOnce()
+}
+
+function refreshOrdersAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.refreshOrders()
+}
+
+function startLiveAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.startLive()
+}
+
+function stopLiveAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.stopLive()
+}
+
+function startRunnerAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.startRunner()
+}
+
+function stopRunnerAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.stopRunner()
 }
 
 function resolveMount(): void {
@@ -101,6 +172,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   if (paneRoot.value) {
     delete paneRoot.value.dataset.vueExecution
     paneRoot.value = null
@@ -127,19 +199,48 @@ onBeforeUnmount(() => {
           </div>
           <div>
             <label for="vueExecSymbol">Symbol</label>
-            <input id="vueExecSymbol" type="text" :value="symbolDraft" placeholder="AAPL" @input="symbolDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execSymbol', symbolDraft)" />
+            <input
+              id="vueExecSymbol"
+              type="text"
+              :value="symbolDraft"
+              placeholder="AAPL"
+              @input="symbolDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execSymbol', symbolDraft)"
+              @change="commitInputValue('execSymbol', symbolDraft)"
+            />
           </div>
           <div>
             <label for="vueExecQty">Quantity</label>
-            <input id="vueExecQty" type="number" min="0.0001" step="0.0001" :value="qtyDraft" @input="qtyDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execQty', qtyDraft)" />
+            <input
+              id="vueExecQty"
+              type="number"
+              min="0.0001"
+              step="0.0001"
+              :value="qtyDraft"
+              @input="qtyDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execQty', qtyDraft)"
+              @change="commitInputValue('execQty', qtyDraft)"
+            />
           </div>
           <div>
             <label for="vueExecApiKey">API key</label>
-            <input id="vueExecApiKey" type="text" :value="apiKeyDraft" autocomplete="off" @input="apiKeyDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execApiKey', apiKeyDraft)" />
+            <input
+              id="vueExecApiKey"
+              type="text"
+              :value="apiKeyDraft"
+              autocomplete="off"
+              @input="apiKeyDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execApiKey', apiKeyDraft)"
+              @change="commitInputValue('execApiKey', apiKeyDraft)"
+            />
           </div>
           <div>
             <label for="vueExecApiSecret">API secret</label>
-            <input id="vueExecApiSecret" type="password" :value="apiSecretDraft" autocomplete="off" @input="apiSecretDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execApiSecret', apiSecretDraft)" />
+            <input
+              id="vueExecApiSecret"
+              type="password"
+              :value="apiSecretDraft"
+              autocomplete="off"
+              @input="apiSecretDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execApiSecret', apiSecretDraft)"
+              @change="commitInputValue('execApiSecret', apiSecretDraft)"
+            />
           </div>
           <div>
             <label for="vueExecSource">Parameter source</label>
@@ -151,19 +252,51 @@ onBeforeUnmount(() => {
           </div>
           <div>
             <label for="vueExecRiskSl">Risk SL % (optional)</label>
-            <input id="vueExecRiskSl" type="number" min="0" step="0.0001" :value="riskSlDraft" @input="riskSlDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execRiskStopLossPct', riskSlDraft)" />
+            <input
+              id="vueExecRiskSl"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="riskSlDraft"
+              @input="riskSlDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execRiskStopLossPct', riskSlDraft)"
+              @change="commitInputValue('execRiskStopLossPct', riskSlDraft)"
+            />
           </div>
           <div>
             <label for="vueExecRiskTp">Risk TP % (optional)</label>
-            <input id="vueExecRiskTp" type="number" min="0" step="0.0001" :value="riskTpDraft" @input="riskTpDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execRiskTakeProfitPct', riskTpDraft)" />
+            <input
+              id="vueExecRiskTp"
+              type="number"
+              min="0"
+              step="0.0001"
+              :value="riskTpDraft"
+              @input="riskTpDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execRiskTakeProfitPct', riskTpDraft)"
+              @change="commitInputValue('execRiskTakeProfitPct', riskTpDraft)"
+            />
           </div>
           <div>
             <label for="vueExecManualFast">Manual fast len</label>
-            <input id="vueExecManualFast" type="number" min="1" step="1" :value="manualFastDraft" @input="manualFastDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execManualFastLen', manualFastDraft)" />
+            <input
+              id="vueExecManualFast"
+              type="number"
+              min="1"
+              step="1"
+              :value="manualFastDraft"
+              @input="manualFastDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execManualFastLen', manualFastDraft)"
+              @change="commitInputValue('execManualFastLen', manualFastDraft)"
+            />
           </div>
           <div>
             <label for="vueExecManualSlow">Manual slow len</label>
-            <input id="vueExecManualSlow" type="number" min="1" step="1" :value="manualSlowDraft" @input="manualSlowDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('execManualSlowLen', manualSlowDraft)" />
+            <input
+              id="vueExecManualSlow"
+              type="number"
+              min="1"
+              step="1"
+              :value="manualSlowDraft"
+              @input="manualSlowDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execManualSlowLen', manualSlowDraft)"
+              @change="commitInputValue('execManualSlowLen', manualSlowDraft)"
+            />
           </div>
         </div>
 
@@ -195,14 +328,14 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="actions">
-          <button type="button" :disabled="!canTestConnection" @click="execStore.testConnection()">Test account</button>
-          <button type="button" :disabled="!canClearKeys" @click="execStore.clearKeys()">Clear keys</button>
-          <button type="button" :disabled="!canRunOnce" @click="execStore.runOnce()">Execute once</button>
-          <button type="button" :disabled="!canRefreshOrders" @click="execStore.refreshOrders()">Refresh orders</button>
-          <button type="button" :disabled="!canStartLive" @click="execStore.startLive()">Start live</button>
-          <button type="button" :disabled="!canStopLive" @click="execStore.stopLive()">Stop live</button>
-          <button type="button" :disabled="!canStartRunner" @click="execStore.startRunner()">Start runner</button>
-          <button type="button" :disabled="!canStopRunner" @click="execStore.stopRunner()">Stop runner</button>
+          <button type="button" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
+          <button type="button" :disabled="!canClearKeys" @click="clearKeysAction">Clear keys</button>
+          <button type="button" :disabled="!canRunOnce" @click="runOnceAction">Execute once</button>
+          <button type="button" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
+          <button type="button" :disabled="!canStartLive" @click="startLiveAction">Start live</button>
+          <button type="button" :disabled="!canStopLive" @click="stopLiveAction">Stop live</button>
+          <button type="button" :disabled="!canStartRunner" @click="startRunnerAction">Start runner</button>
+          <button type="button" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
         </div>
       </section>
 

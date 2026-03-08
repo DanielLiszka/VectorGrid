@@ -12,7 +12,7 @@ describe('metaRequestBuilder', () => {
       evalHoldout: false,
       groupingMode: 'clustered',
       clusterIntBucket: '5',
-      clusterFloatBucket: '0.25',
+      clusterFloatBucket: '0.25'
     })
 
     expect(req).toMatchObject({
@@ -25,7 +25,7 @@ describe('metaRequestBuilder', () => {
       min_samples: 30,
       top_k: 25,
       strict_shortlist: true,
-      allow_shortlist_fallback: false,
+      allow_shortlist_fallback: false
     })
   })
 
@@ -47,7 +47,7 @@ describe('metaRequestBuilder', () => {
       valPerturbMin: '0.01',
       valPerturbMax: '0.08',
       valMcEnable: true,
-      valMcSims: '800',
+      valMcSims: '800'
     })
 
     expect(req).toMatchObject({
@@ -60,10 +60,15 @@ describe('metaRequestBuilder', () => {
       holdout_validation: {
         seed: 3,
         walk_forward: { window_bars: 4000, step_bars: 500 },
-        perturb: { iterations: 12, pct_min: 0.01, pct_max: 0.08, flip_bool_prob: 0.02 },
+        perturb: {
+          iterations: 12,
+          pct_min: 0.01,
+          pct_max: 0.08,
+          flip_bool_prob: 0.02
+        },
         trade_bootstrap: { simulations: 800 },
-        validation_engine: 'iterative',
-      },
+        validation_engine: 'iterative'
+      }
     })
   })
 
@@ -71,14 +76,42 @@ describe('metaRequestBuilder', () => {
     const req = buildMetaSelectionRequest({
       strategyKind: 'UnknownStrategy',
       evalHoldout: true,
-      holdoutMode: 'heavy',
+      holdoutMode: 'heavy'
     })
 
     expect(req).toMatchObject({
       strategy_kind: 'UnknownStrategy',
       eval_holdout: false,
       holdout_mode: 'light',
-      holdout_validation: null,
+      holdout_validation: null
+    })
+  })
+
+  it('keeps holdout enabled for ASR strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Asr',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Asr',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for VEMR strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Vemr',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Vemr',
+      eval_holdout: true,
+      holdout_mode: 'light'
     })
   })
 })

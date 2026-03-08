@@ -1,8 +1,15 @@
 import { getActivePinia } from 'pinia'
+import { markRaw } from 'vue'
+import { useLightweightChart } from '../composables/useLightweightChart'
 import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import { invokeCommand } from '../tauri/invoke'
 
-type TopColumn = { key?: unknown; label?: unknown; sort?: unknown; alignLeft?: unknown }
+type TopColumn = {
+  key?: unknown
+  label?: unknown
+  sort?: unknown
+  alignLeft?: unknown
+}
 type TopRowCell = { text?: unknown; className?: unknown; title?: unknown }
 type TopRow = { selected?: unknown; cells?: unknown }
 type SortDir = 'asc' | 'desc'
@@ -113,6 +120,32 @@ interface StabilityInvocation {
   request: Record<string, unknown>
 }
 
+interface DrillTvChartContext {
+  chart: any
+  candle: any
+  fast: any
+  slow: any
+  halftrend: any
+  macz: any
+}
+
+interface DrillTvRenderPayload {
+  seq: number
+  ctx: DrillTvChartContext
+  candleData: Array<{
+    time: number
+    open: number
+    high: number
+    low: number
+    close: number
+  }>
+  fastData: Array<{ time: number; value: number }>
+  slowData: Array<{ time: number; value: number }>
+  halftrendData: Array<{ time: number; value: number }>
+  maczData: Array<{ time: number; value: number; color?: string }>
+  trades: number
+}
+
 let compareSeq = 0
 let drillSeq = 0
 let drillSelectedTradeIdx = -1
@@ -123,14 +156,14 @@ const drillCurvesCache = new Map<string, unknown>()
 const stabilityCache = new Map<string, unknown>()
 const drillPriceBarsCache = new Map<string, DrillPriceBar[]>()
 let drillTvModulePromise: Promise<any> | null = null
-let drillTvChart: any = null
+const drillTvRuntime = useLightweightChart<any>()
 let drillTvCandleSeries: any = null
 let drillTvFastSeries: any = null
 let drillTvSlowSeries: any = null
 let drillTvHalftrendSeries: any = null
 let drillTvMaczSeries: any = null
-let drillTvHost: HTMLElement | null = null
-let drillTvResizeObserver: ResizeObserver | null = null
+let drillTvRenderFrame = 0
+let drillTvPendingPayload: DrillTvRenderPayload | null = null
 
 function text(v: unknown): string {
   return String(v ?? '').trim()
@@ -143,6 +176,13 @@ function num(v: unknown, fallback = NaN): number {
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+}
+
+function markRawEntity<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    return markRaw(value as object) as T
+  }
+  return value
 }
 
 function asNumberMap(v: unknown): Record<string, number> | null {
@@ -189,6 +229,9 @@ function parseIndex(v: unknown): number {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = text(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Asr') return 'Asr'
+  if (kind === 'Vcc') return 'Vcc'
+  if (kind === 'Vemr') return 'Vemr'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -199,10 +242,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
 
 function isDoubleLikeKind(kindRaw: unknown): boolean {
   const kind = normalizeStrategyKindRaw(kindRaw)
-  return kind === 'DoubleMa'
-    || kind === 'CompositeTrend'
-    || kind === 'RegimeHybrid'
-    || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 }
 
 function markAnalysisVue(store: AnalysisStoreState): void {
@@ -253,7 +293,7 @@ function hasValidationResult(): boolean {
   const wf = asRecord(root.workflowArtifacts)
   const val = wf.currentValidation
   if (!val || typeof val !== 'object') return false
-  return !!((val as WorkflowValidationState).res)
+  return !!(val as WorkflowValidationState).res
 }
 
 function readTopColumns(store: AnalysisStoreState): TopColumn[] {
@@ -264,7 +304,10 @@ function readTopRows(store: AnalysisStoreState): TopRow[] {
   return Array.isArray(store.topTableRows) ? (store.topTableRows as TopRow[]) : []
 }
 
-function readSortState(store: AnalysisStoreState): { key: string; dir: SortDir } {
+function readSortState(store: AnalysisStoreState): {
+  key: string
+  dir: SortDir
+} {
   const columns = readTopColumns(store)
   for (const col of columns) {
     const key = text(col?.key)
@@ -305,20 +348,15 @@ function isMo(req: Record<string, unknown>, res: Record<string, unknown>): boole
 }
 
 function resolveRunMaParams(runReq: Record<string, unknown>, side: 'fast' | 'slow', maId: string): Record<string, number> | null {
-  const direct = side === 'fast'
-    ? asNumberMap(runReq.fast_ma_params ?? runReq.fastMaParams)
-    : asNumberMap(runReq.slow_ma_params ?? runReq.slowMaParams)
+  const direct = side === 'fast' ? asNumberMap(runReq.fast_ma_params ?? runReq.fastMaParams) : asNumberMap(runReq.slow_ma_params ?? runReq.slowMaParams)
   if (direct) return direct
   const id = text(maId).toLowerCase()
   if (id !== 'alma') return null
-  const hasLegacy = runReq.alma_offset != null
-    || runReq.almaOffset != null
-    || runReq.alma_sigma != null
-    || runReq.almaSigma != null
+  const hasLegacy = runReq.alma_offset != null || runReq.almaOffset != null || runReq.alma_sigma != null || runReq.almaSigma != null
   if (!hasLegacy) return null
   return {
     offset: num(runReq.alma_offset ?? runReq.almaOffset, 0.85),
-    sigma: num(runReq.alma_sigma ?? runReq.almaSigma, 6.0),
+    sigma: num(runReq.alma_sigma ?? runReq.almaSigma, 6.0)
   }
 }
 
@@ -352,7 +390,7 @@ function collectTopRows(res: Record<string, unknown>): TopRowModel[] {
         metrics: asRecord(row.metrics),
         maximize_value: num(row.maximize_value, Number.NEGATIVE_INFINITY),
         minimize_value: num(row.minimize_value, Number.POSITIVE_INFINITY),
-        violation: num(row.violation, 0),
+        violation: num(row.violation, 0)
       }
     })
     pts.sort((a, b) => {
@@ -370,7 +408,11 @@ function collectTopRows(res: Record<string, unknown>): TopRowModel[] {
         rank: i + 1,
         params: p.params,
         metrics: p.metrics,
-        mo: { maximize_value: p.maximize_value, minimize_value: p.minimize_value, violation: p.violation },
+        mo: {
+          maximize_value: p.maximize_value,
+          minimize_value: p.minimize_value,
+          violation: p.violation
+        }
       })
     }
     return out
@@ -379,7 +421,11 @@ function collectTopRows(res: Record<string, unknown>): TopRowModel[] {
   const top = Array.isArray(res.top) ? res.top : []
   for (let i = 0; i < top.length; i += 1) {
     const row = Array.isArray(top[i]) ? (top[i] as unknown[]) : []
-    out.push({ rank: i + 1, params: asRecord(row[0]), metrics: asRecord(row[1]) })
+    out.push({
+      rank: i + 1,
+      params: asRecord(row[0]),
+      metrics: asRecord(row[1])
+    })
   }
   if (!out.length) {
     const p = asRecord(res.best_params)
@@ -429,7 +475,7 @@ function applyTopFilters(rows: TopRowModel[], filters: TopFilterValues): TopRowM
 
 function sortRows(rows: TopRowModel[], key: string, dir: SortDir, objective: string): TopRowModel[] {
   const d = dir === 'desc' ? -1 : 1
-  const cmp = (a: number | string, b: number | string): number => (a === b ? 0 : (a < b ? -1 : 1))
+  const cmp = (a: number | string, b: number | string): number => (a === b ? 0 : a < b ? -1 : 1)
   const k = text(key || 'rank')
   return [...rows].sort((ra, rb) => {
     const pa = ra.params || {}
@@ -468,31 +514,41 @@ function topColumnsFor(req: Record<string, unknown>, res: Record<string, unknown
   const objectives = asRecord(req.objectives)
   const columns: TopColumn[] = isMo(req, res)
     ? [
-      { key: 'rank', label: '#', sort: '', alignLeft: true },
-      { key: 'fast', label: 'Fast', sort: '', alignLeft: true },
-      { key: 'slow', label: 'Slow', sort: '', alignLeft: true },
-      { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
-      { key: 'ret_pct', label: 'Ret %', sort: '', alignLeft: false },
-      { key: 'sharpe', label: 'Sharpe', sort: '', alignLeft: false },
-      { key: 'max_dd', label: 'MaxDD', sort: '', alignLeft: false },
-      { key: 'trades', label: 'Trades', sort: '', alignLeft: false },
-      { key: 'exposure', label: 'Expo', sort: '', alignLeft: false },
-      { key: 'maximize_value', label: `Max(${String(objectives.maximize ?? req.objective ?? 'maximize')})`, sort: '', alignLeft: false },
-      { key: 'minimize_value', label: `Min(${String(objectives.minimize ?? '?')})`, sort: '', alignLeft: false },
-      { key: 'violation', label: 'Viol', sort: '', alignLeft: false },
-    ]
+        { key: 'rank', label: '#', sort: '', alignLeft: true },
+        { key: 'fast', label: 'Fast', sort: '', alignLeft: true },
+        { key: 'slow', label: 'Slow', sort: '', alignLeft: true },
+        { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
+        { key: 'ret_pct', label: 'Ret %', sort: '', alignLeft: false },
+        { key: 'sharpe', label: 'Sharpe', sort: '', alignLeft: false },
+        { key: 'max_dd', label: 'MaxDD', sort: '', alignLeft: false },
+        { key: 'trades', label: 'Trades', sort: '', alignLeft: false },
+        { key: 'exposure', label: 'Expo', sort: '', alignLeft: false },
+        {
+          key: 'maximize_value',
+          label: `Max(${String(objectives.maximize ?? req.objective ?? 'maximize')})`,
+          sort: '',
+          alignLeft: false
+        },
+        {
+          key: 'minimize_value',
+          label: `Min(${String(objectives.minimize ?? '?')})`,
+          sort: '',
+          alignLeft: false
+        },
+        { key: 'violation', label: 'Viol', sort: '', alignLeft: false }
+      ]
     : [
-      { key: 'rank', label: '#', sort: '', alignLeft: true },
-      { key: 'fast', label: 'Fast', sort: '', alignLeft: true },
-      { key: 'slow', label: 'Slow', sort: '', alignLeft: true },
-      { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
-      { key: 'ret_pct', label: 'Ret %', sort: '', alignLeft: false },
-      { key: 'sharpe', label: 'Sharpe', sort: '', alignLeft: false },
-      { key: 'max_dd', label: 'MaxDD', sort: '', alignLeft: false },
-      { key: 'trades', label: 'Trades', sort: '', alignLeft: false },
-      { key: 'exposure', label: 'Expo', sort: '', alignLeft: false },
-      { key: 'score', label: 'Score', sort: '', alignLeft: false },
-    ]
+        { key: 'rank', label: '#', sort: '', alignLeft: true },
+        { key: 'fast', label: 'Fast', sort: '', alignLeft: true },
+        { key: 'slow', label: 'Slow', sort: '', alignLeft: true },
+        { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
+        { key: 'ret_pct', label: 'Ret %', sort: '', alignLeft: false },
+        { key: 'sharpe', label: 'Sharpe', sort: '', alignLeft: false },
+        { key: 'max_dd', label: 'MaxDD', sort: '', alignLeft: false },
+        { key: 'trades', label: 'Trades', sort: '', alignLeft: false },
+        { key: 'exposure', label: 'Expo', sort: '', alignLeft: false },
+        { key: 'score', label: 'Score', sort: '', alignLeft: false }
+      ]
   for (const col of columns) if (text(col.key) === sort.key) col.sort = sort.dir
   return columns
 }
@@ -508,11 +564,7 @@ function cacheSet(cache: Map<string, unknown>, key: string, value: unknown, max 
   }
 }
 
-function buildTopRowModelsForCurrentFilters(
-  store: AnalysisStoreState,
-  req: Record<string, unknown>,
-  res: Record<string, unknown>,
-): TopRowModel[] {
+function buildTopRowModelsForCurrentFilters(store: AnalysisStoreState, req: Record<string, unknown>, res: Record<string, unknown>): TopRowModel[] {
   const objective = objectiveOf(req)
   const sort = readSortState(store)
   const collected = collectTopRows(res)
@@ -539,9 +591,7 @@ function nonEmptyRecord(value: unknown): Record<string, unknown> | null {
   return Object.keys(row).length ? row : null
 }
 
-export function resolveExecutionTopRowSnapshot(
-  preferredSourceRaw: unknown,
-): AnalysisExecutionTopRowSnapshot {
+export function resolveExecutionTopRowSnapshot(preferredSourceRaw: unknown): AnalysisExecutionTopRowSnapshot {
   const preferredSource = text(preferredSourceRaw).toLowerCase() === 'best' ? 'best' : 'selected'
   const run = readWorkflowRun()
   const runReq = nonEmptyRecord(run?.req)
@@ -556,7 +606,7 @@ export function resolveExecutionTopRowSnapshot(
       return {
         params: bestParams,
         metrics: asRecord(runRes.best_metrics),
-        source: 'best',
+        source: 'best'
       }
     }
 
@@ -568,7 +618,7 @@ export function resolveExecutionTopRowSnapshot(
         return {
           params: asRecord(top.params),
           metrics: asRecord(top.metrics),
-          source: 'best_top_fallback',
+          source: 'best_top_fallback'
         }
       }
     }
@@ -579,7 +629,7 @@ export function resolveExecutionTopRowSnapshot(
       return {
         params: asRecord(fallback.params),
         metrics: asRecord(fallback.metrics),
-        source: 'best_top_fallback',
+        source: 'best_top_fallback'
       }
     }
     throw new Error('No Top rows available. Run an optimization first.')
@@ -601,7 +651,7 @@ export function resolveExecutionTopRowSnapshot(
   return {
     params: asRecord(selected.params),
     metrics: asRecord(selected.metrics),
-    source: 'selected',
+    source: 'selected'
   }
 }
 
@@ -621,17 +671,18 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
 
   const base: Record<string, unknown> = {
     data_id: dataId,
+    backend: runReq.backend || { backend: 'CpuOnly' },
     params: {
       fast_len: fastLen,
       slow_len: slowLen,
       fast_ma_type: text(params.fast_ma_type),
-      slow_ma_type: text(params.slow_ma_type),
+      slow_ma_type: text(params.slow_ma_type)
     },
     ma_source: text(runReq.ma_source) || 'close',
     fast_ma_params: fastParams,
     slow_ma_params: slowParams,
     strategy: runReq.strategy || runReq.base_strategy || {},
-    bins: desiredDrillBins(),
+    bins: desiredDrillBins()
   }
 
   if (isDoubleLikeKind(kind)) {
@@ -641,8 +692,8 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
       command: 'compute_double_ma_drilldown',
       request: {
         ...base,
-        halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null,
-      },
+        halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null
+      }
     }
   }
 
@@ -657,8 +708,8 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
         macz: params.macz || {},
         ott: params.ott || {},
         signal_mode: params.signal_mode || params.signalMode || runReq.signal_mode || runReq.signalMode || 'hard_gate',
-        strategy: params.strategy || base.strategy,
-      },
+        strategy: params.strategy || base.strategy
+      }
     }
   }
 
@@ -671,27 +722,24 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
-      signal_mode: runReq.signal_mode || runReq.signalMode || 'hard_gate',
-    },
+      asr: runReq.asr || null,
+      vemr: runReq.vemr || null,
+      signal_mode: runReq.signal_mode || runReq.signalMode || 'hard_gate'
+    }
   }
 }
 
-export function buildExecutionStrategyFromRunContext(
-  paramsRaw: Record<string, unknown>,
-  runReqRaw: Record<string, unknown>,
-): AnalysisExecutionStrategySnapshot | null {
+export function buildExecutionStrategyFromRunContext(paramsRaw: Record<string, unknown>, runReqRaw: Record<string, unknown>): AnalysisExecutionStrategySnapshot | null {
   const invocation = buildDrilldownInvocation(paramsRaw, runReqRaw)
   if (!invocation) return null
   const strategyKind = normalizeStrategyKindRaw(invocation.kind)
-  const kind = invocation.command === 'compute_double_ma_drilldown'
-    ? 'double_ma'
-    : 'composite_cpu'
+  const kind = invocation.command === 'compute_double_ma_drilldown' ? 'double_ma' : 'composite_cpu'
   return {
     strategyKind,
     strategy: {
       kind,
-      req: invocation.request,
-    },
+      req: invocation.request
+    }
   }
 }
 
@@ -702,12 +750,12 @@ function buildLocalStabilityInvocation(paramsRaw: Record<string, unknown>, invoc
     ...invocation.request,
     objective,
     radius: 1,
-    step: 1,
+    step: 1
   }
   if (invocation.command === 'compute_double_ma_drilldown') {
     return {
       command: 'compute_double_ma_local_stability',
-      request: base,
+      request: base
     }
   }
 
@@ -722,8 +770,8 @@ function buildLocalStabilityInvocation(paramsRaw: Record<string, unknown>, invoc
         macz: params.macz || {},
         ott: params.ott || {},
         signal_mode: params.signal_mode || params.signalMode || runReq.signal_mode || runReq.signalMode || 'hard_gate',
-        strategy: params.strategy || runReq.strategy || runReq.base_strategy || {},
-      },
+        strategy: params.strategy || runReq.strategy || runReq.base_strategy || {}
+      }
     }
   }
   return {
@@ -733,8 +781,10 @@ function buildLocalStabilityInvocation(paramsRaw: Record<string, unknown>, invoc
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
-      signal_mode: runReq.signal_mode || runReq.signalMode || 'hard_gate',
-    },
+      asr: runReq.asr || null,
+      vemr: runReq.vemr || null,
+      signal_mode: runReq.signal_mode || runReq.signalMode || 'hard_gate'
+    }
   }
 }
 
@@ -758,7 +808,7 @@ async function runVueDrillPipeline(index: number, row: TopRowModel): Promise<boo
   try {
     const drillKey = requestCacheKey(invocation.command, invocation.request)
     const cachedDrill = drillCurvesCache.get(drillKey)
-    const curves = cachedDrill ?? await invokeCommand(invocation.command, { req: invocation.request })
+    const curves = cachedDrill ?? (await invokeCommand(invocation.command, { req: invocation.request }))
     if (!cachedDrill) cacheSet(drillCurvesCache, drillKey, curves, 96)
     if (seq !== drillSeq) return true
 
@@ -782,9 +832,7 @@ async function runVueDrillPipeline(index: number, row: TopRowModel): Promise<boo
       const eq = asRecord(curvesRow.equity)
       const metricPart = formatDrillMetricsSummary(metrics)
       const moPart = formatDrillMoSummary(row.mo)
-      const parts = [
-        `${text(params.fast_ma_type) || '?'}(${num(params.fast_len, 0) || '?'}) vs ${text(params.slow_ma_type) || '?'}(${num(params.slow_len, 0) || '?'})`,
-      ]
+      const parts = [`${text(params.fast_ma_type) || '?'}(${num(params.fast_len, 0) || '?'}) vs ${text(params.slow_ma_type) || '?'}(${num(params.slow_len, 0) || '?'})`]
       if (metricPart) parts.push(metricPart)
       if (moPart) parts.push(moPart)
       parts.push(`bins=${num(eq.bins, 0)} start_t=${num(eq.start_t, 0)} end_t=${num(eq.end_t, 0)}`)
@@ -802,7 +850,7 @@ async function runVueDrillPipeline(index: number, row: TopRowModel): Promise<boo
       store.stabilityStatus = 'Computing stability…'
       markAnalysisVue(store)
     }
-    const stabilityRes = cachedStability ?? await invokeCommand(stability.command, { req: stability.request })
+    const stabilityRes = cachedStability ?? (await invokeCommand(stability.command, { req: stability.request }))
     if (!cachedStability) cacheSet(stabilityCache, stabilityKey, stabilityRes, 96)
     if (seq !== drillSeq) return true
     renderStabilityDom(stabilityRes, store)
@@ -847,39 +895,71 @@ export function refreshTopTableFromWorkflowRun(): boolean {
 
   const rows: TopRow[] = filtered.length
     ? filtered.map((row, index) => {
-      const p = row.params || {}
-      const m = row.metrics || {}
-      const d = row.mo || {}
-      const cells: TopRowCell[] = [
-        { text: String(row.rank), className: 'left mono', title: '' },
-        { text: `${String(p.fast_ma_type || '?')}(${String(p.fast_len || '?')})`, className: 'left mono', title: '' },
-        { text: `${String(p.slow_ma_type || '?')}(${String(p.slow_len || '?')})`, className: 'left mono', title: '' },
-        { text: fmt(m.pnl, 6), className: 'mono', title: '' },
-        { text: fmtPct(m.pnl, 2), className: 'mono', title: '' },
-        { text: fmt(m.sharpe, 6), className: 'mono', title: '' },
-        { text: fmt(m.max_dd, 6), className: 'mono', title: '' },
-        { text: String(num(m.trades, 0)), className: 'mono', title: '' },
-        { text: fmt(m.exposure, 4), className: 'mono', title: '' },
+        const p = row.params || {}
+        const m = row.metrics || {}
+        const d = row.mo || {}
+        const cells: TopRowCell[] = [
+          { text: String(row.rank), className: 'left mono', title: '' },
+          {
+            text: `${String(p.fast_ma_type || '?')}(${String(p.fast_len || '?')})`,
+            className: 'left mono',
+            title: ''
+          },
+          {
+            text: `${String(p.slow_ma_type || '?')}(${String(p.slow_len || '?')})`,
+            className: 'left mono',
+            title: ''
+          },
+          { text: fmt(m.pnl, 6), className: 'mono', title: '' },
+          { text: fmtPct(m.pnl, 2), className: 'mono', title: '' },
+          { text: fmt(m.sharpe, 6), className: 'mono', title: '' },
+          { text: fmt(m.max_dd, 6), className: 'mono', title: '' },
+          { text: String(num(m.trades, 0)), className: 'mono', title: '' },
+          { text: fmt(m.exposure, 4), className: 'mono', title: '' }
+        ]
+        if (!mo)
+          cells.push({
+            text: fmt(scoreOf(m, objective), 6),
+            className: 'mono',
+            title: ''
+          })
+        else {
+          cells.push({
+            text: fmt(d.maximize_value, 6),
+            className: 'mono',
+            title: ''
+          })
+          cells.push({
+            text: fmt(d.minimize_value, 6),
+            className: 'mono',
+            title: ''
+          })
+          cells.push({
+            text: fmt(d.violation, 6),
+            className: 'mono',
+            title: ''
+          })
+        }
+        return { selected: index === selectedIndex, cells }
+      })
+    : [
+        {
+          selected: false,
+          cells: [
+            {
+              text: sorted.length ? 'No rows match the current filters.' : 'No rows.',
+              className: 'left muted',
+              title: ''
+            }
+          ]
+        }
       ]
-      if (!mo) cells.push({ text: fmt(scoreOf(m, objective), 6), className: 'mono', title: '' })
-      else {
-        cells.push({ text: fmt(d.maximize_value, 6), className: 'mono', title: '' })
-        cells.push({ text: fmt(d.minimize_value, 6), className: 'mono', title: '' })
-        cells.push({ text: fmt(d.violation, 6), className: 'mono', title: '' })
-      }
-      return { selected: index === selectedIndex, cells }
-    })
-    : [{ selected: false, cells: [{ text: sorted.length ? 'No rows match the current filters.' : 'No rows.', className: 'left muted', title: '' }] }]
 
   store.topColumns = topColumnsFor(req, res, sort)
   store.topTableRows = rows
   store.topRows = filtered.length
   store.topFilterMeta = `showing ${filtered.length}/${sorted.length} rows`
-  store.topSelectionGuardrail = filtered.length
-    ? (hasValidationResult()
-      ? `Validation context loaded for ${text(req.strategy_kind ?? req.strategyKind) || 'DoubleMa'}. Final selection should still include holdout/meta confirmation.`
-      : 'Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust.')
-    : '—'
+  store.topSelectionGuardrail = filtered.length ? (hasValidationResult() ? `Validation context loaded for ${text(req.strategy_kind ?? req.strategyKind) || 'DoubleMa'}. Final selection should still include holdout/meta confirmation.` : 'Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust.') : '—'
   store.canClearTopFilters = Object.keys(filters).length > 0
   markAnalysisVue(store)
   return true
@@ -963,7 +1043,9 @@ async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
   if (!normalizedPath) return null
   const cached = baselineArtifactCache.get(normalizedPath)
   if (cached) return cached
-  const raw = await invokeCommand('load_run_artifact', { path: normalizedPath }) as RunArtifactPayload
+  const raw = (await invokeCommand('load_run_artifact', {
+    path: normalizedPath
+  })) as RunArtifactPayload
   const row = asRecord(raw)
   const run = asRecord(row.run)
   const req = asRecord(run.req)
@@ -973,17 +1055,13 @@ async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
     source: 'disk',
     ts: text(row.ts) || text(run.ts),
     req,
-    res,
+    res
   }
   baselineArtifactCache.set(normalizedPath, baseline)
   return baseline
 }
 
-async function resolveBaselineSelection(
-  selectedValue: string,
-  current: WorkflowRunState,
-  history: HistoryStoreState | null,
-): Promise<BaselineRun | null> {
+async function resolveBaselineSelection(selectedValue: string, current: WorkflowRunState, history: HistoryStoreState | null): Promise<BaselineRun | null> {
   const selected = text(selectedValue)
   if (!selected) return null
   if (selected.startsWith('disk:')) {
@@ -999,7 +1077,7 @@ async function resolveBaselineSelection(
       source: 'hist',
       ts: baselineTs,
       req: currentReq,
-      res: currentRes,
+      res: currentRes
     }
   }
 
@@ -1013,7 +1091,7 @@ async function resolveBaselineSelection(
     source: 'hist',
     ts: baselineTs || loaded.ts,
     req: loaded.req,
-    res: loaded.res,
+    res: loaded.res
   }
 }
 
@@ -1035,7 +1113,7 @@ function buildCompareSummary(currentRun: WorkflowRunState, baseline: BaselineRun
   const bScore = scoreOf(bm, bObj)
   const cRt = runtimeMsOf(cRes)
   const bRt = runtimeMsOf(bRes)
-  const ratio = cRt > 0 && bRt > 0 ? (bRt / cRt) : 0
+  const ratio = cRt > 0 && bRt > 0 ? bRt / cRt : 0
   const delta = (left: unknown, right: unknown): number => num(left, 0) - num(right, 0)
 
   const lines: string[] = []
@@ -1119,7 +1197,13 @@ async function copyText(body: string): Promise<boolean> {
   const src = text(body)
   if (!src) return false
   try {
-    const clip = (globalThis as { navigator?: { clipboard?: { writeText?: (value: string) => Promise<void> } } }).navigator?.clipboard
+    const clip = (
+      globalThis as {
+        navigator?: {
+          clipboard?: { writeText?: (value: string) => Promise<void> }
+        }
+      }
+    ).navigator?.clipboard
     if (clip && typeof clip.writeText === 'function') {
       await clip.writeText(src)
       return true
@@ -1131,11 +1215,13 @@ async function copyText(body: string): Promise<boolean> {
 function byIds<T extends HTMLElement>(ids: readonly string[]): T | null {
   if (typeof document === 'undefined') return null
   for (const id of ids) {
-    const node = typeof document.querySelector === 'function'
-      ? document.querySelector(`[id="${id}"]`)
-      : null
+    const node = typeof document.querySelector === 'function' ? document.querySelector(`[id="${id}"]`) : null
     if (node) return node as T
-    const getById = (document as unknown as { getElementById?: (nextId: string) => Element | null }).getElementById
+    const getById = (
+      document as unknown as {
+        getElementById?: (nextId: string) => Element | null
+      }
+    ).getElementById
     if (typeof getById === 'function') {
       const fallback = getById.call(document, id)
       if (fallback) return fallback as T
@@ -1184,9 +1270,7 @@ function navigateDrillTradeDom(isNext: boolean): string | null {
   if (!rows.length) return null
   let index = rows.findIndex((row) => row.classList.contains('selected'))
   if (index < 0) index = rows.length - 1
-  const targetIndex = isNext
-    ? Math.min(rows.length - 1, index + 1)
-    : Math.max(0, index - 1)
+  const targetIndex = isNext ? Math.min(rows.length - 1, index + 1) : Math.max(0, index - 1)
   const target = rows[targetIndex]
   if (!target) return null
   if (!clickRow(target)) return null
@@ -1293,7 +1377,7 @@ function renderStabilityDom(resultRaw: unknown, store: AnalysisStoreState | null
       { text: fmt(metrics.pnl, 6), cls: 'mono' },
       { text: fmt(metrics.sharpe, 6), cls: 'mono' },
       { text: fmt(metrics.max_dd, 6), cls: 'mono' },
-      { text: String(Math.floor(num(metrics.trades, 0))), cls: 'mono' },
+      { text: String(Math.floor(num(metrics.trades, 0))), cls: 'mono' }
     ]
     for (const cell of cells) {
       const td = document.createElement('td')
@@ -1376,35 +1460,81 @@ async function loadDrillTvModule(): Promise<any | null> {
 }
 
 function disposeDrillTvChartDom(): void {
-  if (drillTvResizeObserver && drillTvHost) {
-    try {
-      drillTvResizeObserver.unobserve(drillTvHost)
-    } catch {}
-  }
-  drillTvResizeObserver = null
-  if (drillTvChart && typeof drillTvChart.remove === 'function') {
-    try {
-      drillTvChart.remove()
-    } catch {}
-  }
-  drillTvChart = null
+  cancelDrillTvRenderFrame()
+  drillTvRuntime.dispose((chart) => {
+    if (!chart || typeof chart.remove !== 'function') return
+    chart.remove()
+  })
   drillTvCandleSeries = null
   drillTvFastSeries = null
   drillTvSlowSeries = null
   drillTvHalftrendSeries = null
   drillTvMaczSeries = null
-  drillTvHost = null
 }
 
-function clearSeries(series: any): void {
-  if (series && typeof series.setData === 'function') {
-    try {
-      series.setData([])
-    } catch {}
+function cancelDrillTvRenderFrame(): void {
+  if (drillTvRenderFrame && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(drillTvRenderFrame)
+  }
+  drillTvRenderFrame = 0
+  drillTvPendingPayload = null
+}
+
+function setSeriesData(series: any, data: unknown[]): boolean {
+  if (!series || typeof series.setData !== 'function') return true
+  try {
+    series.setData(data)
+    return true
+  } catch {
+    return false
   }
 }
 
+function clearSeries(series: any): void {
+  setSeriesData(series, [])
+}
+
+function flushDrillTvRenderFrame(): void {
+  drillTvRenderFrame = 0
+  const payload = drillTvPendingPayload
+  drillTvPendingPayload = null
+  if (!payload) return
+  if (payload.seq !== drillSeq) return
+  const { ctx } = payload
+  if (!setSeriesData(ctx.candle, payload.candleData)) {
+    clearDrillTvChartDom('Unable to render drill chart.')
+    return
+  }
+  setSeriesData(ctx.fast, payload.fastData)
+  setSeriesData(ctx.slow, payload.slowData)
+  setSeriesData(ctx.halftrend, payload.halftrendData)
+  setSeriesData(ctx.macz, payload.maczData)
+
+  try {
+    const ts = ctx.chart.timeScale && ctx.chart.timeScale()
+    if (ts && typeof ts.fitContent === 'function') ts.fitContent()
+  } catch {}
+
+  const meta = byIds<HTMLElement>(['drillTvChartMetaVue', 'drillTvChartMeta'])
+  if (meta) {
+    meta.textContent = `candles=${payload.candleData.length} fast=${payload.fastData.length} slow=${payload.slowData.length} trades=${payload.trades}`
+  }
+}
+
+function scheduleDrillTvRenderFrame(payload: DrillTvRenderPayload): void {
+  drillTvPendingPayload = payload
+  if (drillTvRenderFrame) return
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    flushDrillTvRenderFrame()
+    return
+  }
+  drillTvRenderFrame = window.requestAnimationFrame(() => {
+    flushDrillTvRenderFrame()
+  })
+}
+
 function clearDrillTvChartDom(msg = 'Hover for OHLC/MA values; click a marker to focus a trade.'): void {
+  cancelDrillTvRenderFrame()
   const meta = byIds<HTMLElement>(['drillTvChartMetaVue', 'drillTvChartMeta'])
   if (meta) meta.textContent = msg
   clearSeries(drillTvCandleSeries)
@@ -1414,27 +1544,22 @@ function clearDrillTvChartDom(msg = 'Hover for OHLC/MA values; click a marker to
   clearSeries(drillTvMaczSeries)
 }
 
-async function ensureDrillTvChartDom(): Promise<{
-  chart: any
-  candle: any
-  fast: any
-  slow: any
-  halftrend: any
-  macz: any
-} | null> {
+async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
   const host = byIds<HTMLElement>(['drillTvChartVue', 'drillTvChart'])
   if (!host) return null
-  if (drillTvChart && drillTvHost && drillTvHost !== host) {
+  const existingChart = drillTvRuntime.chartRef.value
+  const existingHost = drillTvRuntime.hostRef.value
+  if (existingChart && existingHost && existingHost !== host) {
     disposeDrillTvChartDom()
   }
-  if (drillTvChart && drillTvCandleSeries) {
+  if (drillTvRuntime.chartRef.value && drillTvCandleSeries) {
     return {
-      chart: drillTvChart,
+      chart: drillTvRuntime.chartRef.value,
       candle: drillTvCandleSeries,
       fast: drillTvFastSeries,
       slow: drillTvSlowSeries,
       halftrend: drillTvHalftrendSeries,
-      macz: drillTvMaczSeries,
+      macz: drillTvMaczSeries
     }
   }
   const chartModule = await loadDrillTvModule()
@@ -1448,24 +1573,24 @@ async function ensureDrillTvChartDom(): Promise<{
       height,
       layout: {
         textColor: 'rgba(203, 213, 225, 0.92)',
-        background: { type: 'solid', color: 'rgba(2, 6, 23, 0)' },
+        background: { type: 'solid', color: 'rgba(2, 6, 23, 0)' }
       },
       grid: {
         vertLines: { color: 'rgba(51, 65, 85, 0.35)' },
-        horzLines: { color: 'rgba(51, 65, 85, 0.35)' },
+        horzLines: { color: 'rgba(51, 65, 85, 0.35)' }
       },
       rightPriceScale: {
-        borderColor: 'rgba(100, 116, 139, 0.45)',
+        borderColor: 'rgba(100, 116, 139, 0.45)'
       },
       timeScale: {
         borderColor: 'rgba(100, 116, 139, 0.45)',
         fixLeftEdge: false,
-        fixRightEdge: false,
+        fixRightEdge: false
       },
       crosshair: {
         vertLine: { color: 'rgba(148, 163, 184, 0.45)' },
-        horzLine: { color: 'rgba(148, 163, 184, 0.45)' },
-      },
+        horzLine: { color: 'rgba(148, 163, 184, 0.45)' }
+      }
     })
   } catch {
     return null
@@ -1478,7 +1603,7 @@ async function ensureDrillTvChartDom(): Promise<{
     wickDownColor: 'rgba(225, 29, 72, 0.9)',
     borderVisible: true,
     borderUpColor: 'rgba(22, 163, 74, 1)',
-    borderDownColor: 'rgba(225, 29, 72, 1)',
+    borderDownColor: 'rgba(225, 29, 72, 1)'
   }
   let candle = null
   if (typeof chartAny.addSeries === 'function' && chartModule.CandlestickSeries) {
@@ -1505,14 +1630,14 @@ async function ensureDrillTvChartDom(): Promise<{
     lineWidth: 2,
     crosshairMarkerVisible: false,
     lastValueVisible: false,
-    priceLineVisible: false,
+    priceLineVisible: false
   }
   const slowOpts = {
     color: 'rgba(245, 158, 11, 0.95)',
     lineWidth: 2,
     crosshairMarkerVisible: false,
     lastValueVisible: false,
-    priceLineVisible: false,
+    priceLineVisible: false
   }
   const halftrendOpts = {
     color: 'rgba(125, 211, 252, 0.95)',
@@ -1520,13 +1645,13 @@ async function ensureDrillTvChartDom(): Promise<{
     crosshairMarkerVisible: false,
     lastValueVisible: false,
     priceLineVisible: false,
-    lineStyle: 2,
+    lineStyle: 2
   }
   const maczOpts = {
     color: 'rgba(148, 163, 184, 0.6)',
     priceLineVisible: false,
     lastValueVisible: false,
-    base: 0,
+    base: 0
   }
 
   let fast = null
@@ -1561,36 +1686,32 @@ async function ensureDrillTvChartDom(): Promise<{
     }
   }
 
-  drillTvChart = chartAny
-  drillTvCandleSeries = candle
-  drillTvFastSeries = fast
-  drillTvSlowSeries = slow
-  drillTvHalftrendSeries = halftrend
-  drillTvMaczSeries = macz
-  drillTvHost = host
-
-  if (typeof ResizeObserver !== 'undefined') {
-    drillTvResizeObserver = new ResizeObserver(() => {
-      if (!drillTvChart || !drillTvHost) return
-      const rect = drillTvHost.getBoundingClientRect()
-      if (!rect.width || !rect.height) return
-      try {
-        drillTvChart.applyOptions({
-          width: Math.max(240, Math.floor(rect.width)),
-          height: Math.max(220, Math.floor(rect.height)),
-        })
-      } catch {}
-    })
-    drillTvResizeObserver.observe(host)
-  }
+  drillTvCandleSeries = markRawEntity(candle)
+  drillTvFastSeries = markRawEntity(fast)
+  drillTvSlowSeries = markRawEntity(slow)
+  drillTvHalftrendSeries = markRawEntity(halftrend)
+  drillTvMaczSeries = markRawEntity(macz)
+  drillTvRuntime.setHost(host)
+  drillTvRuntime.setChart(chartAny)
+  drillTvRuntime.observeHostResize((rect) => {
+    const chartRef = drillTvRuntime.chartRef.value
+    if (!chartRef || typeof chartRef.applyOptions !== 'function') return
+    if (!rect.width || !rect.height) return
+    try {
+      chartRef.applyOptions({
+        width: Math.max(240, Math.floor(rect.width)),
+        height: Math.max(220, Math.floor(rect.height))
+      })
+    } catch {}
+  })
 
   return {
-    chart: drillTvChart,
+    chart: drillTvRuntime.chartRef.value,
     candle: drillTvCandleSeries,
     fast: drillTvFastSeries,
     slow: drillTvSlowSeries,
     halftrend: drillTvHalftrendSeries,
-    macz: drillTvMaczSeries,
+    macz: drillTvMaczSeries
   }
 }
 
@@ -1614,7 +1735,11 @@ function normalizeIndicatorBarsForChart(raw: unknown): Array<{ time: number; fas
 
 function normalizeCompositeIndicatorBarsForChart(raw: unknown): Array<{ time: number; halftrend: number | null; macz: number | null }> {
   const rows = Array.isArray(raw) ? raw : []
-  const out: Array<{ time: number; halftrend: number | null; macz: number | null }> = []
+  const out: Array<{
+    time: number
+    halftrend: number | null
+    macz: number | null
+  }> = []
   for (const rowRaw of rows) {
     const row = asRecord(rowRaw)
     const time = normalizeChartTimeSec(row.time ?? row.timestamp ?? row.ts ?? row.t)
@@ -1632,9 +1757,7 @@ function normalizeCompositeIndicatorBarsForChart(raw: unknown): Array<{ time: nu
 
 async function renderDrillTvChartDom(curvesRaw: unknown, barsRaw: DrillPriceBar[] | null, seq: number): Promise<void> {
   if (seq !== drillSeq) return
-  const bars = Array.isArray(barsRaw)
-    ? barsRaw.filter((b) => Number.isFinite(b.time) && Number.isFinite(b.open) && Number.isFinite(b.high) && Number.isFinite(b.low) && Number.isFinite(b.close))
-    : []
+  const bars = Array.isArray(barsRaw) ? barsRaw.filter((b) => Number.isFinite(b.time) && Number.isFinite(b.open) && Number.isFinite(b.high) && Number.isFinite(b.low) && Number.isFinite(b.close)) : []
   if (!bars.length) {
     clearDrillTvChartDom('No valid OHLC bars available for chart rendering.')
     return
@@ -1646,16 +1769,10 @@ async function renderDrillTvChartDom(curvesRaw: unknown, barsRaw: DrillPriceBar[
     open: b.open,
     high: b.high,
     low: b.low,
-    close: b.close,
+    close: b.close
   }))
   if (!candleData.length) {
     clearDrillTvChartDom('No candle points generated from loaded bars.')
-    return
-  }
-  try {
-    ctx.candle.setData(candleData)
-  } catch {
-    clearDrillTvChartDom('Unable to render drill chart.')
     return
   }
 
@@ -1667,10 +1784,6 @@ async function renderDrillTvChartDom(curvesRaw: unknown, barsRaw: DrillPriceBar[
     if (Number.isFinite(row.fast ?? NaN)) fastData.push({ time: row.time, value: Number(row.fast) })
     if (Number.isFinite(row.slow ?? NaN)) slowData.push({ time: row.time, value: Number(row.slow) })
   }
-  clearSeries(ctx.fast)
-  clearSeries(ctx.slow)
-  if (ctx.fast && fastData.length) ctx.fast.setData(fastData)
-  if (ctx.slow && slowData.length) ctx.slow.setData(slowData)
 
   const compositeBars = normalizeCompositeIndicatorBarsForChart(curves.composite_indicator_bars)
   const halftrendData: Array<{ time: number; value: number }> = []
@@ -1684,25 +1797,20 @@ async function renderDrillTvChartDom(curvesRaw: unknown, barsRaw: DrillPriceBar[
       maczData.push({
         time: row.time,
         value,
-        color: value >= 0 ? 'rgba(34, 197, 94, 0.75)' : 'rgba(244, 63, 94, 0.75)',
+        color: value >= 0 ? 'rgba(34, 197, 94, 0.75)' : 'rgba(244, 63, 94, 0.75)'
       })
     }
   }
-  clearSeries(ctx.halftrend)
-  clearSeries(ctx.macz)
-  if (ctx.halftrend && halftrendData.length) ctx.halftrend.setData(halftrendData)
-  if (ctx.macz && maczData.length) ctx.macz.setData(maczData)
-
-  try {
-    const ts = ctx.chart.timeScale && ctx.chart.timeScale()
-    if (ts && typeof ts.fitContent === 'function') ts.fitContent()
-  } catch {}
-
-  const meta = byIds<HTMLElement>(['drillTvChartMetaVue', 'drillTvChartMeta'])
-  if (meta) {
-    const trades = Array.isArray(curves.trades) ? curves.trades.length : 0
-    meta.textContent = `candles=${candleData.length} fast=${fastData.length} slow=${slowData.length} trades=${trades}`
-  }
+  scheduleDrillTvRenderFrame({
+    seq,
+    ctx,
+    candleData,
+    fastData,
+    slowData,
+    halftrendData,
+    maczData,
+    trades: Array.isArray(curves.trades) ? curves.trades.length : 0
+  })
 }
 
 function normalizeDrillPriceBars(raw: unknown): DrillPriceBar[] {
@@ -1729,7 +1837,7 @@ function normalizeDrillPriceBars(raw: unknown): DrillPriceBar[] {
       close,
       volume: num(row.volume ?? row.v, 0),
       fromIndex,
-      toIndex,
+      toIndex
     })
   }
   if (out.length <= 1) return out
@@ -1750,10 +1858,16 @@ async function fetchDrillPriceBars(dataId: string): Promise<DrillPriceBar[]> {
   if (cached) return cached
   let raw: unknown
   try {
-    raw = await invokeCommand('get_price_bars', { dataId: id, maxPoints: 8000 })
+    raw = await invokeCommand('get_price_bars', {
+      dataId: id,
+      maxPoints: 8000
+    })
   } catch (firstError) {
     try {
-      raw = await invokeCommand('get_price_bars', { data_id: id, max_points: 8000 })
+      raw = await invokeCommand('get_price_bars', {
+        data_id: id,
+        max_points: 8000
+      })
     } catch {
       throw firstError
     }
@@ -1781,7 +1895,7 @@ function mapTradeIndexToChartTime(indexRaw: unknown, barsRaw: DrillPriceBar[] | 
     let bestDist = Number.POSITIVE_INFINITY
     for (const bar of bars) {
       if (x >= bar.fromIndex && x <= bar.toIndex) return bar.time
-      const d = x < bar.fromIndex ? (bar.fromIndex - x) : (x - bar.toIndex)
+      const d = x < bar.fromIndex ? bar.fromIndex - x : x - bar.toIndex
       if (d < bestDist) {
         bestDist = d
         bestTime = bar.time
@@ -1903,7 +2017,7 @@ function renderTradesDom(curvesRaw: unknown, barsRaw: DrillPriceBar[] | null): b
     const tradeIdx = start + i
     const idxLabel = tradeIdx + 1
     const dirVal = num(trade.direction, 0)
-    const dir = dirVal > 0 ? 'Long' : (dirVal < 0 ? 'Short' : 'Flat')
+    const dir = dirVal > 0 ? 'Long' : dirVal < 0 ? 'Short' : 'Flat'
     const entry = Math.floor(num(trade.entry_t, 0))
     const bars = Math.floor(num(trade.bars, 0))
     const pnl = num(trade.pnl, NaN)
@@ -1919,13 +2033,33 @@ function renderTradesDom(curvesRaw: unknown, barsRaw: DrillPriceBar[] | null): b
     const cells = [
       { text: String(idxLabel), cls: 'left mono', title: '' },
       { text: dir, cls: 'left mono', title: '' },
-      { text: String(entry), cls: 'left mono', title: Number.isFinite(entryTime ?? NaN) ? formatUtcTimeFromSec(entryTime) : '' },
-      { text: Number.isFinite(entryTime ?? NaN) ? formatUtcTimeShortFromSec(entryTime) : '-', cls: 'left mono', title: Number.isFinite(entryTime ?? NaN) ? formatUtcTimeFromSec(entryTime) : '' },
-      { text: Number.isFinite(exit) ? String(Math.floor(exit)) : '-', cls: 'left mono', title: Number.isFinite(exitTime ?? NaN) ? formatUtcTimeFromSec(exitTime) : '' },
-      { text: Number.isFinite(exitTime ?? NaN) ? formatUtcTimeShortFromSec(exitTime) : '-', cls: 'left mono', title: Number.isFinite(exitTime ?? NaN) ? formatUtcTimeFromSec(exitTime) : '' },
+      {
+        text: String(entry),
+        cls: 'left mono',
+        title: Number.isFinite(entryTime ?? NaN) ? formatUtcTimeFromSec(entryTime) : ''
+      },
+      {
+        text: Number.isFinite(entryTime ?? NaN) ? formatUtcTimeShortFromSec(entryTime) : '-',
+        cls: 'left mono',
+        title: Number.isFinite(entryTime ?? NaN) ? formatUtcTimeFromSec(entryTime) : ''
+      },
+      {
+        text: Number.isFinite(exit) ? String(Math.floor(exit)) : '-',
+        cls: 'left mono',
+        title: Number.isFinite(exitTime ?? NaN) ? formatUtcTimeFromSec(exitTime) : ''
+      },
+      {
+        text: Number.isFinite(exitTime ?? NaN) ? formatUtcTimeShortFromSec(exitTime) : '-',
+        cls: 'left mono',
+        title: Number.isFinite(exitTime ?? NaN) ? formatUtcTimeFromSec(exitTime) : ''
+      },
       { text: String(bars), cls: 'mono', title: '' },
-      { text: Number.isFinite(pnl) ? `${(pnl * 100).toFixed(2)}%` : '-', cls: 'mono', title: '' },
-      { text: open ? 'open' : 'closed', cls: 'left mono', title: '' },
+      {
+        text: Number.isFinite(pnl) ? `${(pnl * 100).toFixed(2)}%` : '-',
+        cls: 'mono',
+        title: ''
+      },
+      { text: open ? 'open' : 'closed', cls: 'left mono', title: '' }
     ]
     for (const cell of cells) {
       const td = document.createElement('td')
@@ -1946,13 +2080,7 @@ function renderTradesDom(curvesRaw: unknown, barsRaw: DrillPriceBar[] | null): b
   return true
 }
 
-function renderDrillDomFallback(
-  curvesRaw: unknown,
-  paramsRaw: Record<string, unknown>,
-  metricsRaw: Record<string, unknown>,
-  row: TopRowModel,
-  bars: DrillPriceBar[] | null,
-): boolean {
+function renderDrillDomFallback(curvesRaw: unknown, paramsRaw: Record<string, unknown>, metricsRaw: Record<string, unknown>, row: TopRowModel, bars: DrillPriceBar[] | null): boolean {
   const wrap = drillWrap()
   const hint = byIds<HTMLElement>(['drillEmptyHintVue', 'drillEmptyHint'])
   const meta = byIds<HTMLElement>(['drillMetaVue', 'drillMeta'])
@@ -1976,17 +2104,23 @@ function renderDrillDomFallback(
   if (meta) {
     const metricPart = formatDrillMetricsSummary(metricsRaw)
     const moPart = formatDrillMoSummary(row.mo)
-    const parts = [
-      `${text(paramsRaw.fast_ma_type) || '?'}(${num(paramsRaw.fast_len, 0) || '?'}) vs ${text(paramsRaw.slow_ma_type) || '?'}(${num(paramsRaw.slow_len, 0) || '?'})`,
-    ]
+    const parts = [`${text(paramsRaw.fast_ma_type) || '?'}(${num(paramsRaw.fast_len, 0) || '?'}) vs ${text(paramsRaw.slow_ma_type) || '?'}(${num(paramsRaw.slow_len, 0) || '?'})`]
     if (metricPart) parts.push(metricPart)
     if (moPart) parts.push(moPart)
     parts.push(`bins=${bins} start_t=${num(eq.start_t, 0)} end_t=${num(eq.end_t, 0)} (min/max per bin)`)
     meta.textContent = parts.join(' | ')
   }
 
-  drawMinMaxChartDom(eqCanvas, eq.minmax, { stroke: 'rgba(52, 211, 153, 0.95)', baseline: 1.0, height: 160 })
-  drawMinMaxChartDom(ddCanvas, dd.minmax, { stroke: 'rgba(251, 113, 133, 0.95)', baseline: 0.0, height: 160 })
+  drawMinMaxChartDom(eqCanvas, eq.minmax, {
+    stroke: 'rgba(52, 211, 153, 0.95)',
+    baseline: 1.0,
+    height: 160
+  })
+  drawMinMaxChartDom(ddCanvas, dd.minmax, {
+    stroke: 'rgba(251, 113, 133, 0.95)',
+    baseline: 0.0,
+    height: 160
+  })
   renderTradesDom(curves, bars)
   return true
 }
@@ -2009,9 +2143,7 @@ export async function sortTopTable(key: string): Promise<void> {
   const store = readAnalysisStore()
   if (!store || !sortKey) return
   const current = readSortState(store)
-  const nextDir: SortDir = current.key === sortKey
-    ? (current.dir === 'asc' ? 'desc' : 'asc')
-    : defaultSortDir(sortKey)
+  const nextDir: SortDir = current.key === sortKey ? (current.dir === 'asc' ? 'desc' : 'asc') : defaultSortDir(sortKey)
   const columns = readTopColumns(store)
   if (columns.length > 0) {
     for (const col of columns) col.sort = text(col?.key) === sortKey ? nextDir : ''
@@ -2073,24 +2205,14 @@ export async function exportTopCsv(): Promise<void> {
     const m = row.metrics || {}
     const pnl = num(m.pnl, 0)
     const score = scoreOf(m, objective)
-    const paramsJson = (() => { try { return JSON.stringify(p) } catch { return '{}' } })()
-    lines.push([
-      row.rank,
-      csvEscape(p.fast_ma_type || ''),
-      num(p.fast_len, 0),
-      csvEscape(p.slow_ma_type || ''),
-      num(p.slow_len, 0),
-      pnl,
-      pnl * 100,
-      num(finalEq(pnl, seed), 0),
-      num(m.sharpe, 0),
-      num(m.max_dd, 0),
-      num(m.trades, 0),
-      num(m.exposure, 0),
-      num(m.net_exposure, 0),
-      num(score, 0),
-      csvEscape(paramsJson),
-    ].join(','))
+    const paramsJson = (() => {
+      try {
+        return JSON.stringify(p)
+      } catch {
+        return '{}'
+      }
+    })()
+    lines.push([row.rank, csvEscape(p.fast_ma_type || ''), num(p.fast_len, 0), csvEscape(p.slow_ma_type || ''), num(p.slow_len, 0), pnl, pnl * 100, num(finalEq(pnl, seed), 0), num(m.sharpe, 0), num(m.max_dd, 0), num(m.trades, 0), num(m.exposure, 0), num(m.net_exposure, 0), num(score, 0), csvEscape(paramsJson)].join(','))
   }
   if (downloadText(`vectorbt_top_${sanitizeTs(run?.ts)}.csv`, lines.join('\n'), 'text/csv')) {
     setStatus(store, 'Exported top CSV.')

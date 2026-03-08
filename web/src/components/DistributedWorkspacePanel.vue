@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDistributedStore } from '../stores/distributedStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -63,23 +64,98 @@ const stamp = computed(() => {
   return new Date(ms).toLocaleTimeString([], { hour12: false })
 })
 
-watch(workerBindAddr, (v) => { const next = String(v || ''); if (workerBindDraft.value !== next) workerBindDraft.value = next }, { immediate: true })
-watch(workerToken, (v) => { const next = String(v || ''); if (workerTokenDraft.value !== next) workerTokenDraft.value = next }, { immediate: true })
-watch(leaderToken, (v) => { const next = String(v || ''); if (leaderTokenDraft.value !== next) leaderTokenDraft.value = next }, { immediate: true })
-watch(workersText, (v) => { const next = String(v || ''); if (workersDraft.value !== next) workersDraft.value = next }, { immediate: true })
-watch(assetsCsvText, (v) => { const next = String(v || ''); if (assetsDraft.value !== next) assetsDraft.value = next }, { immediate: true })
-watch(pathFrom, (v) => { const next = String(v || ''); if (pathFromDraft.value !== next) pathFromDraft.value = next }, { immediate: true })
-watch(pathTo, (v) => { const next = String(v || ''); if (pathToDraft.value !== next) pathToDraft.value = next }, { immediate: true })
-watch(tileCsvPath, (v) => { const next = String(v || ''); if (tileCsvDraft.value !== next) tileCsvDraft.value = next }, { immediate: true })
-watch(tilesPerWorker, (v) => { const next = String(v || ''); if (tilesPerWorkerDraft.value !== next) tilesPerWorkerDraft.value = next }, { immediate: true })
-watch(leaderMode, (v) => { const next = String(v || 'assets'); if (modeDraft.value !== next) modeDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(workerBindAddr.value || ''),
+    String(workerToken.value || ''),
+    String(leaderToken.value || ''),
+    String(workersText.value || ''),
+    String(assetsCsvText.value || ''),
+    String(pathFrom.value || ''),
+    String(pathTo.value || ''),
+    String(tileCsvPath.value || ''),
+    String(tilesPerWorker.value || ''),
+    String(leaderMode.value || 'assets'),
+  ] as const,
+  ([
+    nextWorkerBindAddr,
+    nextWorkerToken,
+    nextLeaderToken,
+    nextWorkersText,
+    nextAssetsCsvText,
+    nextPathFrom,
+    nextPathTo,
+    nextTileCsvPath,
+    nextTilesPerWorker,
+    nextLeaderMode,
+  ]) => {
+    if (workerBindDraft.value !== nextWorkerBindAddr) workerBindDraft.value = nextWorkerBindAddr
+    if (workerTokenDraft.value !== nextWorkerToken) workerTokenDraft.value = nextWorkerToken
+    if (leaderTokenDraft.value !== nextLeaderToken) leaderTokenDraft.value = nextLeaderToken
+    if (workersDraft.value !== nextWorkersText) workersDraft.value = nextWorkersText
+    if (assetsDraft.value !== nextAssetsCsvText) assetsDraft.value = nextAssetsCsvText
+    if (pathFromDraft.value !== nextPathFrom) pathFromDraft.value = nextPathFrom
+    if (pathToDraft.value !== nextPathTo) pathToDraft.value = nextPathTo
+    if (tileCsvDraft.value !== nextTileCsvPath) tileCsvDraft.value = nextTileCsvPath
+    if (tilesPerWorkerDraft.value !== nextTilesPerWorker) tilesPerWorkerDraft.value = nextTilesPerWorker
+    if (modeDraft.value !== nextLeaderMode) modeDraft.value = nextLeaderMode
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   distStore.setInputField(id, nextValue)
 }
 
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
+
 function setSelectValue(id: string, nextValue: string): void {
   distStore.setSelectField(id, nextValue)
+}
+
+function generateTokenAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.generateToken()
+}
+
+function startWorkerAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.startWorker()
+}
+
+function stopWorkerAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.stopWorker()
+}
+
+function workerStatusAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.refreshWorkerStatus()
+}
+
+function fillFromPolygonAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.fillFromPolygon()
+}
+
+function runAssetsAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.runAssets()
+}
+
+function useCurrentCsvAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.useCurrentCsv()
+}
+
+function runTilesAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.runTiles()
+}
+
+function cancelDistributedAction(): void {
+  flushQueuedInputValuesNow()
+  distStore.cancel()
 }
 
 function resolveMount(): void {
@@ -97,6 +173,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueDistributed
     panelRoot.value = null
@@ -121,7 +198,8 @@ onBeforeUnmount(() => {
             type="text"
             :value="workerBindDraft"
             placeholder="127.0.0.1:48991"
-            @input="workerBindDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distWorkerBindAddr', workerBindDraft)"
+            @input="workerBindDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distWorkerBindAddr', workerBindDraft)"
+            @change="commitInputValue('distWorkerBindAddr', workerBindDraft)"
           />
 
           <label for="vueDistWorkerToken" style="margin-top: 0.55rem;">Worker token</label>
@@ -131,15 +209,16 @@ onBeforeUnmount(() => {
               type="text"
               :value="workerTokenDraft"
               placeholder="(required)"
-              @input="workerTokenDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distWorkerToken', workerTokenDraft)"
+              @input="workerTokenDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distWorkerToken', workerTokenDraft)"
+              @change="commitInputValue('distWorkerToken', workerTokenDraft)"
             />
-            <button type="button" @click="distStore.generateToken()">Generate</button>
+            <button type="button" @click="generateTokenAction">Generate</button>
           </div>
 
           <div class="actions">
-            <button type="button" :disabled="!canStartWorker" @click="distStore.startWorker()">Start worker</button>
-            <button type="button" :disabled="!canStopWorker" @click="distStore.stopWorker()">Stop</button>
-            <button type="button" :disabled="!canWorkerStatus" @click="distStore.refreshWorkerStatus()">Status</button>
+            <button type="button" :disabled="!canStartWorker" @click="startWorkerAction">Start worker</button>
+            <button type="button" :disabled="!canStopWorker" @click="stopWorkerAction">Stop</button>
+            <button type="button" :disabled="!canWorkerStatus" @click="workerStatusAction">Status</button>
           </div>
           <div class="muted mono">{{ workerStatus }}</div>
         </section>
@@ -162,7 +241,8 @@ onBeforeUnmount(() => {
             type="text"
             :value="leaderTokenDraft"
             placeholder="(must match workers)"
-            @input="leaderTokenDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distLeaderToken', leaderTokenDraft)"
+            @input="leaderTokenDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distLeaderToken', leaderTokenDraft)"
+            @change="commitInputValue('distLeaderToken', leaderTokenDraft)"
           />
 
           <label for="vueDistWorkers" style="margin-top: 0.55rem;">Worker URLs (one per line)</label>
@@ -171,7 +251,8 @@ onBeforeUnmount(() => {
             rows="4"
             :value="workersDraft"
             placeholder="http://192.168.1.50:48991"
-            @input="workersDraft = String(($event.target as HTMLTextAreaElement).value || ''); setInputValue('distLeaderWorkers', workersDraft)"
+            @input="workersDraft = String(($event.target as HTMLTextAreaElement).value || ''); queueInputValue('distLeaderWorkers', workersDraft)"
+            @change="commitInputValue('distLeaderWorkers', workersDraft)"
           ></textarea>
 
           <div class="muted mono">{{ leaderModeHint }}</div>
@@ -187,7 +268,8 @@ onBeforeUnmount(() => {
             rows="5"
             :value="assetsDraft"
             placeholder="\\\\SERVER\\share\\AAPL.csv"
-            @input="assetsDraft = String(($event.target as HTMLTextAreaElement).value || ''); setInputValue('distAssetsCsvs', assetsDraft)"
+            @input="assetsDraft = String(($event.target as HTMLTextAreaElement).value || ''); queueInputValue('distAssetsCsvs', assetsDraft)"
+            @change="commitInputValue('distAssetsCsvs', assetsDraft)"
           ></textarea>
 
           <div class="gridTwo">
@@ -198,7 +280,8 @@ onBeforeUnmount(() => {
                 type="text"
                 :value="pathFromDraft"
                 placeholder="C:\\Users\\...\\polygon_cache"
-                @input="pathFromDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distPathFrom', pathFromDraft)"
+                @input="pathFromDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distPathFrom', pathFromDraft)"
+                @change="commitInputValue('distPathFrom', pathFromDraft)"
               />
             </div>
             <div>
@@ -208,14 +291,15 @@ onBeforeUnmount(() => {
                 type="text"
                 :value="pathToDraft"
                 placeholder="\\\\LEADERPC\\polygon_share"
-                @input="pathToDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distPathTo', pathToDraft)"
+                @input="pathToDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distPathTo', pathToDraft)"
+                @change="commitInputValue('distPathTo', pathToDraft)"
               />
             </div>
           </div>
 
           <div class="actions">
-            <button type="button" :disabled="!canFillFromPolygon" @click="distStore.fillFromPolygon()">Fill from Polygon</button>
-            <button type="button" :disabled="!canRunAssets" @click="distStore.runAssets()">Run assets</button>
+            <button type="button" :disabled="!canFillFromPolygon" @click="fillFromPolygonAction">Fill from Polygon</button>
+            <button type="button" :disabled="!canRunAssets" @click="runAssetsAction">Run assets</button>
           </div>
         </template>
 
@@ -227,9 +311,10 @@ onBeforeUnmount(() => {
               type="text"
               :value="tileCsvDraft"
               placeholder="\\\\SERVER\\share\\dataset.csv"
-              @input="tileCsvDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distTileCsvPath', tileCsvDraft)"
+              @input="tileCsvDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distTileCsvPath', tileCsvDraft)"
+              @change="commitInputValue('distTileCsvPath', tileCsvDraft)"
             />
-            <button type="button" :disabled="!canUseCurrentCsv" @click="distStore.useCurrentCsv()">Use current</button>
+            <button type="button" :disabled="!canUseCurrentCsv" @click="useCurrentCsvAction">Use current</button>
           </div>
           <label for="vueDistTilesPerWorker" style="margin-top: 0.55rem;">Tiles per worker</label>
           <input
@@ -238,10 +323,11 @@ onBeforeUnmount(() => {
             min="1"
             step="1"
             :value="tilesPerWorkerDraft"
-            @input="tilesPerWorkerDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('distTilesPerWorker', tilesPerWorkerDraft)"
+            @input="tilesPerWorkerDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('distTilesPerWorker', tilesPerWorkerDraft)"
+            @change="commitInputValue('distTilesPerWorker', tilesPerWorkerDraft)"
           />
           <div class="actions">
-            <button type="button" :disabled="!canRunTiles" @click="distStore.runTiles()">Run tiles</button>
+            <button type="button" :disabled="!canRunTiles" @click="runTilesAction">Run tiles</button>
           </div>
         </template>
       </section>
@@ -249,7 +335,7 @@ onBeforeUnmount(() => {
       <section class="pane">
         <h3>Output</h3>
         <div class="actions">
-          <button type="button" class="danger" :disabled="!canCancel" @click="distStore.cancel()">Cancel distributed run</button>
+          <button type="button" class="danger" :disabled="!canCancel" @click="cancelDistributedAction">Cancel distributed run</button>
         </div>
         <pre class="mono output">{{ outputPreview }}</pre>
         <div class="muted mono">{{ statusLine }}</div>

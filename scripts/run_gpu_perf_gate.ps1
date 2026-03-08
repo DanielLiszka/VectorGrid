@@ -5,7 +5,9 @@ param(
   [string]$OutPath = "target/gpu_perf_summary.json",
   [string]$BenchFilter = "double_ma/gpu_kernel/sma_sma/200k/small",
   [string]$CriterionEstimatesGlob = "*double_ma_gpu_kernel_sma_sma_200k*\small_1590pairs\new\estimates.json",
-  [double]$RegressionPct = 10.0
+  [double]$RegressionPct = 10.0,
+  [bool]$CheckDynamicStrategyRatio = $true,
+  [double]$DynamicStrategyRegressionPct = 20.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,36 +20,72 @@ function Write-PassFailLine([string]$name, [bool]$pass, [string]$msg) {
   }
 }
 
-Write-Host "Running GPU kernel benchmark ($BenchFilter)..."
-$benchCmd = @(
-  "bench",
-  "-p", "ta_app_core",
-  "--bench", "double_ma_opt",
-  "--features", "cuda,cuda-backtest-kernel",
-  "--",
-  $BenchFilter
-)
-cargo @benchCmd
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
-}
-
-$estimate = Get-ChildItem -Path "target/criterion" -Recurse -File -Filter "estimates.json" |
-  Where-Object { $_.FullName -like $CriterionEstimatesGlob } |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-if ($null -eq $estimate) {
-  Write-Host "No exact match for '$CriterionEstimatesGlob'. Falling back to most recent GPU-kernel estimate file."
+function Find-LatestGpuKernelEstimate([string]$glob) {
   $estimate = Get-ChildItem -Path "target/criterion" -Recurse -File -Filter "estimates.json" |
-    Where-Object { $_.FullName -like "*double_ma_gpu_kernel*\\new\\estimates.json" } |
+    Where-Object { $_.FullName -like $glob } |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
   if ($null -eq $estimate) {
+    Write-Host "No exact match for '$glob'. Falling back to most recent GPU-kernel estimate file."
+    $estimate = Get-ChildItem -Path "target/criterion" -Recurse -File -Filter "estimates.json" |
+      Where-Object { $_.FullName -like "*double_ma_gpu_kernel*\\new\\estimates.json" } |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+  }
+  if ($null -eq $estimate) {
     throw "Could not find any GPU-kernel criterion estimates.json file."
+  }
+  return $estimate
+}
+
+function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabled) {
+  if ($dynamicStrategyEnabled) {
+    $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = "1"
+    Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight ON..."
+  } else {
+    Remove-Item Env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL -ErrorAction SilentlyContinue
+    Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight OFF..."
+  }
+
+  $benchCmd = @(
+    "bench",
+    "-p", "ta_app_core",
+    "--bench", "double_ma_opt",
+    "--features", "cuda,cuda-backtest-kernel",
+    "--",
+    $benchFilter
+  )
+  cargo @benchCmd
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+
+  $estimate = Find-LatestGpuKernelEstimate -glob $CriterionEstimatesGlob
+  $criterion = Get-Content -Raw $estimate.FullName | ConvertFrom-Json
+  return [ordered]@{
+    estimate_path = $estimate.FullName
+    mean_ms = [math]::Round(([double]$criterion.mean.point_estimate) / 1000000.0, 6)
+    mean_ci_lower_ms = [math]::Round(([double]$criterion.mean.confidence_interval.lower_bound) / 1000000.0, 6)
+    mean_ci_upper_ms = [math]::Round(([double]$criterion.mean.confidence_interval.upper_bound) / 1000000.0, 6)
+    median_ms = [math]::Round(([double]$criterion.median.point_estimate) / 1000000.0, 6)
   }
 }
 
-$criterion = Get-Content -Raw $estimate.FullName | ConvertFrom-Json
+$prevDynamicFlag = [Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
+try {
+  $offRun = Invoke-GpuKernelBench -benchFilter $BenchFilter -dynamicStrategyEnabled $false
+  $onRun = $null
+  if ($CheckDynamicStrategyRatio) {
+    $onRun = Invoke-GpuKernelBench -benchFilter $BenchFilter -dynamicStrategyEnabled $true
+  }
+} finally {
+  if ([string]::IsNullOrWhiteSpace($prevDynamicFlag)) {
+    Remove-Item Env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL -ErrorAction SilentlyContinue
+  } else {
+    $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = $prevDynamicFlag
+  }
+}
+
 $gpuInfo = ""
 try {
   $gpuInfo = (& nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | Select-Object -First 1).Trim()
@@ -59,12 +97,27 @@ $summary = [ordered]@{
   generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
   mode = $Mode
   bench_filter = $BenchFilter
-  criterion_estimates_json = $estimate.FullName
-  criterion_mean_ms = [math]::Round(([double]$criterion.mean.point_estimate) / 1000000.0, 6)
-  criterion_mean_ci_lower_ms = [math]::Round(([double]$criterion.mean.confidence_interval.lower_bound) / 1000000.0, 6)
-  criterion_mean_ci_upper_ms = [math]::Round(([double]$criterion.mean.confidence_interval.upper_bound) / 1000000.0, 6)
-  criterion_median_ms = [math]::Round(([double]$criterion.median.point_estimate) / 1000000.0, 6)
+  criterion_estimates_json = $offRun.estimate_path
+  criterion_mean_ms = $offRun.mean_ms
+  criterion_mean_ci_lower_ms = $offRun.mean_ci_lower_ms
+  criterion_mean_ci_upper_ms = $offRun.mean_ci_upper_ms
+  criterion_median_ms = $offRun.median_ms
   gpu = $gpuInfo
+}
+if ($CheckDynamicStrategyRatio -and $null -ne $onRun) {
+  $ratio = 0.0
+  if ($offRun.mean_ms -gt 0.0) {
+    $ratio = [double]$onRun.mean_ms / [double]$offRun.mean_ms
+  }
+  $summary.dynamic_strategy = [ordered]@{
+    checked = $true
+    regression_pct = $DynamicStrategyRegressionPct
+    off_estimates_json = $offRun.estimate_path
+    on_estimates_json = $onRun.estimate_path
+    off_mean_ms = $offRun.mean_ms
+    on_mean_ms = $onRun.mean_ms
+    ratio_on_over_off = [math]::Round($ratio, 6)
+  }
 }
 
 $outDir = Split-Path -Parent $OutPath
@@ -103,6 +156,15 @@ $budget = 1.0 + ($RegressionPct / 100.0)
 $pass = $candMean -le ($baseMean * $budget)
 
 Write-PassFailLine "gpu_criterion_mean_not_regressed_${RegressionPct}pct" $pass "$candMean ms vs baseline $baseMean ms"
-if (!$pass) {
+$dynamicPass = $true
+if ($CheckDynamicStrategyRatio -and $null -ne $summary.dynamic_strategy) {
+  $offMean = [double]$summary.dynamic_strategy.off_mean_ms
+  $onMean = [double]$summary.dynamic_strategy.on_mean_ms
+  $dynamicBudget = 1.0 + ($DynamicStrategyRegressionPct / 100.0)
+  $dynamicPass = $onMean -le ($offMean * $dynamicBudget)
+  Write-PassFailLine "gpu_dynamic_strategy_ratio_not_regressed_${DynamicStrategyRegressionPct}pct" $dynamicPass "$onMean ms (on) vs $offMean ms (off)"
+}
+
+if (!($pass -and $dynamicPass)) {
   throw "GPU performance gate failed"
 }

@@ -64,6 +64,15 @@ describe('movingAverageCatalogService', () => {
     expect(catalog[0]).toEqual({
       id: 'alma',
       label: 'ALMA',
+      supportsCpu: false,
+      supportsCuda: false,
+      supportsCudaMaSweep: false,
+      supportsCudaKernel: false,
+      prefersCudaKernel: false,
+      requiresCandles: false,
+      periodBased: false,
+      singleOutput: false,
+      notes: '',
       params: [
         {
           key: 'offset',
@@ -90,6 +99,15 @@ describe('movingAverageCatalogService', () => {
     expect(catalog[1]).toEqual({
       id: 'sma',
       label: 'sma',
+      supportsCpu: false,
+      supportsCuda: false,
+      supportsCudaMaSweep: false,
+      supportsCudaKernel: false,
+      prefersCudaKernel: false,
+      requiresCandles: false,
+      periodBased: false,
+      singleOutput: false,
+      notes: '',
       params: [
         {
           key: 'period',
@@ -103,6 +121,42 @@ describe('movingAverageCatalogService', () => {
         },
       ],
     })
+  })
+
+  it('normalizes capability flags and notes', () => {
+    const catalog = normalizeMovingAverageCatalog([
+      {
+        id: 'ema',
+        label: 'EMA',
+        supports_cpu: true,
+        supports_cuda: 1,
+        supports_cuda_ma_sweep: 'yes',
+        supports_cuda_kernel: 'false',
+        prefers_cuda_kernel: '0',
+        requires_candles: 'on',
+        period_based: true,
+        single_output: 'true',
+        notes: '  test note  ',
+        params: [],
+      },
+    ])
+
+    expect(catalog).toEqual([
+      {
+        id: 'ema',
+        label: 'EMA',
+        supportsCpu: true,
+        supportsCuda: true,
+        supportsCudaMaSweep: true,
+        supportsCudaKernel: false,
+        prefersCudaKernel: false,
+        requiresCandles: true,
+        periodBased: true,
+        singleOutput: true,
+        notes: 'test note',
+        params: [],
+      },
+    ])
   })
 
   it('caches list_moving_averages responses unless force refresh is requested', async () => {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useDebounceFn } from '@vueuse/core'
 import { useHistoryStore } from '../stores/historyStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -49,6 +50,18 @@ const savedValue = ref('')
 const searchDraft = ref('')
 const tagsDraft = ref('')
 const panelRoot = ref<HTMLElement | null>(null)
+const queuedSearchValue = ref<string | null>(null)
+const queuedTagsValue = ref<string | null>(null)
+
+const commitSavedRunsSearch = useDebounceFn((value: string) => {
+  queuedSearchValue.value = null
+  historyStore.setSavedRunsSearch(value)
+}, 110, { maxWait: 420 })
+
+const commitSavedRunsTags = useDebounceFn((value: string) => {
+  queuedTagsValue.value = null
+  historyStore.setSavedRunsTagsDraft(value)
+}, 110, { maxWait: 420 })
 
 const visible = computed(() => {
   const ws = String(workspace.value || '').trim()
@@ -63,37 +76,17 @@ const stamp = computed(() => {
 })
 
 watch(
-  sessionSelectedValue,
-  (value) => {
-    const next = String(value || '').trim()
-    if (sessionValue.value !== next) sessionValue.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  savedSelectedValue,
-  (value) => {
-    const next = String(value || '').trim()
-    if (savedValue.value !== next) savedValue.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  savedRunsSearch,
-  (value) => {
-    const next = String(value || '')
-    if (searchDraft.value !== next) searchDraft.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  savedRunsTagsDraft,
-  (value) => {
-    const next = String(value || '')
-    if (tagsDraft.value !== next) tagsDraft.value = next
+  () => [
+    String(sessionSelectedValue.value || '').trim(),
+    String(savedSelectedValue.value || '').trim(),
+    String(savedRunsSearch.value || ''),
+    String(savedRunsTagsDraft.value || ''),
+  ] as const,
+  ([nextSessionValue, nextSavedValue, nextSavedRunsSearch, nextSavedRunsTagsDraft]) => {
+    if (sessionValue.value !== nextSessionValue) sessionValue.value = nextSessionValue
+    if (savedValue.value !== nextSavedValue) savedValue.value = nextSavedValue
+    if (searchDraft.value !== nextSavedRunsSearch) searchDraft.value = nextSavedRunsSearch
+    if (tagsDraft.value !== nextSavedRunsTagsDraft) tagsDraft.value = nextSavedRunsTagsDraft
   },
   { immediate: true },
 )
@@ -142,12 +135,14 @@ function onSavedSelect(value: string): void {
 
 function onSavedSearch(value: string): void {
   searchDraft.value = value
-  historyStore.setSavedRunsSearch(value)
+  queuedSearchValue.value = value
+  commitSavedRunsSearch(value)
 }
 
 function onSavedTags(value: string): void {
   tagsDraft.value = value
-  historyStore.setSavedRunsTagsDraft(value)
+  queuedTagsValue.value = value
+  commitSavedRunsTags(value)
 }
 
 function resolveMount(): void {
@@ -166,6 +161,14 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (queuedSearchValue.value != null) {
+    historyStore.setSavedRunsSearch(queuedSearchValue.value)
+    queuedSearchValue.value = null
+  }
+  if (queuedTagsValue.value != null) {
+    historyStore.setSavedRunsTagsDraft(queuedTagsValue.value)
+    queuedTagsValue.value = null
+  }
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueHistory
     panelRoot.value = null

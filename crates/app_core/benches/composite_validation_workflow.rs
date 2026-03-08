@@ -61,6 +61,8 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
             fast_len,
             slow_len,
             halftrend,
+            asr: None,
+            vemr: None,
             macz,
             ott,
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,

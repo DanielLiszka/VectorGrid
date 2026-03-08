@@ -48,8 +48,17 @@ function resolvedOptions(options: OptionItem[], fallbackValue: string, fallbackL
 const xOptions = computed(() => resolvedOptions(paretoXOptions.value as OptionItem[], paretoX.value, paretoX.value || 'max_dd'))
 const yOptions = computed(() => resolvedOptions(paretoYOptions.value as OptionItem[], paretoY.value, paretoY.value || 'pnl'))
 
-watch(paretoX, (v) => { const next = String(v || 'max_dd'); if (xDraft.value !== next) xDraft.value = next }, { immediate: true })
-watch(paretoY, (v) => { const next = String(v || 'pnl'); if (yDraft.value !== next) yDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(paretoX.value || 'max_dd'),
+    String(paretoY.value || 'pnl'),
+  ] as const,
+  ([nextX, nextY]) => {
+    if (xDraft.value !== nextX) xDraft.value = nextX
+    if (yDraft.value !== nextY) yDraft.value = nextY
+  },
+  { immediate: true },
+)
 
 function setSelectValue(id: string, nextValue: string): void {
   analysisStore.setSelectField(id, nextValue)

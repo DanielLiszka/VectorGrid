@@ -1,0 +1,7 @@
+benchmark,pairs,time_lo_ms,time_med_ms,time_hi_ms,backtests_per_sec_med
+asr/gpu_route/200k/small/975pairs,975,321.98,508.80,785.27,1916
+asr/gpu_route/200k/medium/2365pairs,2365,389.47,458.04,551.79,5163
+asr/gpu_route/200k/large/13385pairs,13385,413.00,454.30,516.76,29463
+asr/gpu_route/200k/xlarge/29765pairs,29765,537.73,588.84,681.36,50549
+asr/gpu_route/200k/xxlarge/57535pairs,57535,1138.00,1148.90,1159.90,50078
+asr/gpu_route/200k/ultra/124695pairs,124695,2553.70,2668.90,2851.40,46721

@@ -1118,6 +1118,38 @@ static __device__ __forceinline__ float objective_score_f32(const float* __restr
     return NEG_INF_F;
 }
 
+static __device__ __forceinline__ float objective_score_vemr_f32(
+    const float* __restrict__ metrics,
+    size_t base,
+    int M,
+    int objective
+) {
+    // objective: 0 = pnl, 1 = sharpe, 2 = sortino, 3 = calmar, 4 = omega,
+    // 5 = -volatility, 6 = -max_dd
+    if (objective == 0) {
+        return (M > 0) ? metrics[base + 0] : NEG_INF_F;
+    }
+    if (objective == 1) {
+        return (M > 1) ? metrics[base + 1] : NEG_INF_F;
+    }
+    if (objective == 2) {
+        return (M > 2) ? metrics[base + 2] : NEG_INF_F;
+    }
+    if (objective == 3) {
+        return (M > 3) ? metrics[base + 3] : NEG_INF_F;
+    }
+    if (objective == 4) {
+        return (M > 4) ? metrics[base + 4] : NEG_INF_F;
+    }
+    if (objective == 5) {
+        return (M > 5) ? -metrics[base + 5] : NEG_INF_F;
+    }
+    if (objective == 6) {
+        return (M > 6) ? -metrics[base + 6] : NEG_INF_F;
+    }
+    return NEG_INF_F;
+}
+
 static __device__ __forceinline__ bool passes_constraints_f32(
     const float* __restrict__ metrics,
     size_t base,
@@ -1674,6 +1706,92 @@ void select_topk_metric_rows_from_candidates_f32_v2(
 }
 
 extern "C" __global__
+void select_topk_vemr_metric_rows_f32(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    int topk,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (idx < rows) {
+            const size_t base = (size_t)idx * (size_t)M;
+            score = objective_score_vemr_f32(metrics_rows, base, M, objective);
+            if (!isfinite(score)) score = NEG_INF_F;
+            val = idx;
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_vemr_metric_rows_from_candidates_f32(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    int topk,
+    const int* __restrict__ in_row_idx,
+    int in_len,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int row = -1;
+        float score = NEG_INF_F;
+        if (in_pos < in_len) {
+            row = in_row_idx[in_pos];
+            if (row >= 0 && row < rows) {
+                const size_t base = (size_t)row * (size_t)M;
+                score = objective_score_vemr_f32(metrics_rows, base, M, objective);
+                if (!isfinite(score)) score = NEG_INF_F;
+            }
+        }
+        keys[item] = score;
+        vals[item] = row;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
 void gather_topk_metric_rows_f32(
     const float* __restrict__ metrics_rows,
     int rows,
@@ -1835,5 +1953,957 @@ void vdps_generate_seed_pairs_tm_i32(
             out_fast[i] = f;
             out_slow[i] = s;
         }
+    }
+}
+
+extern "C" __global__
+void pack_rows_u64_ptr_f32(
+    const unsigned long long* __restrict__ row_ptrs,
+    int rows,
+    int cols,
+    float* __restrict__ out_row_major
+) {
+    if (rows <= 0 || cols <= 0) return;
+    const int total = rows * cols;
+    const int stride = blockDim.x * gridDim.x;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total; idx += stride) {
+        const int row = idx / cols;
+        const int col = idx - row * cols;
+        const uintptr_t raw = (uintptr_t)row_ptrs[row];
+        const float* __restrict__ src = reinterpret_cast<const float*>(raw);
+        out_row_major[idx] = src ? src[col] : NAN;
+    }
+}
+
+extern "C" __global__
+void asr_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ fast_squeeze_row_major,
+    const float* __restrict__ fast_momentum_row_major,
+    int fast_rows,
+    int fast_stride,
+    const float* __restrict__ slow_angle_row_major,
+    const float* __restrict__ slow_er_row_major,
+    const float* __restrict__ slow_z_row_major,
+    int slow_rows,
+    int slow_stride,
+    const float* __restrict__ kaufman_long,
+    const float* __restrict__ kaufman_short,
+    const int* __restrict__ combo_fast_row_idx,
+    const int* __restrict__ combo_slow_row_idx,
+    const int* __restrict__ combo_start_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float angle_deg_min,
+    float angle_deg_mr,
+    int use_er_filter,
+    float er_min,
+    float er_mr,
+    float z_entry,
+    float z_exit,
+    int confirm_bars,
+    int mom_fade_bars,
+    int max_trade_bars,
+    int max_mr_trade_bars,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row = combo_fast_row_idx[idx];
+    const int slow_row = combo_slow_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = 0.0f; // pnl
+        out_metrics[base + 1] = 0.0f; // sharpe
+        out_metrics[base + 2] = 0.0f; // sortino
+        out_metrics[base + 3] = 0.0f; // calmar
+        out_metrics[base + 4] = 0.0f; // omega
+        out_metrics[base + 5] = 0.0f; // volatility
+        out_metrics[base + 6] = 0.0f; // max_dd
+        out_metrics[base + 7] = 0.0f; // trades
+        out_metrics[base + 8] = 0.0f; // exposure
+        out_metrics[base + 9] = 0.0f; // net_exposure
+    }
+    if (fast_row < 0 || fast_row >= fast_rows || slow_row < 0 || slow_row >= slow_rows) return;
+    if (start_t < 0 || start_t >= T) return;
+
+    const float* __restrict__ squeeze = fast_squeeze_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ momentum = fast_momentum_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ angle = slow_angle_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ er = slow_er_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ zscore = slow_z_row_major + ((size_t)slow_row * (size_t)slow_stride);
+
+    int pos_signal = 0;
+    int entry_mode = 0; // 0=None, 1=Trend, 2=MeanReversion
+    int bars_in_trade = 0;
+    int mom_fade_count = 0;
+    int release_confirm_left = 0;
+
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const int confirm_bars_clamped = max(confirm_bars, 0);
+    const int mom_fade_bars_clamped = max(mom_fade_bars, 1);
+    const int max_trade_bars_clamped = max(max_trade_bars, 1);
+    const int max_mr_trade_bars_clamped = max(max_mr_trade_bars, 1);
+
+    for (int t = start_t; t < T; ++t) {
+        const int sig_t = max(0, t - trade_on_next_bar);
+        const int prev_t = max(0, sig_t - 1);
+
+        const float squeeze_now = squeeze[sig_t];
+        const float squeeze_prev = squeeze[prev_t];
+        const float mom_now = momentum[sig_t];
+        const float mom_prev = momentum[prev_t];
+        const float mom_delta = (isfinite(mom_now) && isfinite(mom_prev)) ? (mom_now - mom_prev) : NAN;
+        const float ang_now = angle[sig_t];
+        const float er_now = er[sig_t];
+        const float z_now = zscore[sig_t];
+
+        const int squeeze_on_now = isfinite(squeeze_now) && squeeze_now > 0.5f;
+        const int squeeze_on_prev = isfinite(squeeze_prev) && squeeze_prev > 0.5f;
+        const int squeeze_release = squeeze_on_prev && !squeeze_on_now;
+
+        if (squeeze_release) {
+            release_confirm_left = confirm_bars_clamped;
+        } else if (release_confirm_left > 0) {
+            release_confirm_left -= 1;
+        }
+        const int release_confirmed = squeeze_release || (release_confirm_left == 0);
+
+        const int trend_ok_long = isfinite(ang_now)
+            && (ang_now >= angle_deg_min)
+            && (!use_er_filter || (isfinite(er_now) && er_now >= er_min));
+        const int trend_ok_short = isfinite(ang_now)
+            && (ang_now <= -angle_deg_min)
+            && (!use_er_filter || (isfinite(er_now) && er_now >= er_min));
+        const int trend_weak = isfinite(ang_now)
+            && (fabsf(ang_now) <= angle_deg_mr)
+            && (!use_er_filter || (isfinite(er_now) && er_now <= er_mr));
+
+        if (pos_signal == 0) {
+            bars_in_trade = 0;
+            mom_fade_count = 0;
+
+            int next_pos = 0;
+            int next_mode = 0;
+
+            if (release_confirmed) {
+                if (trend_ok_long && isfinite(mom_now) && mom_now > 0.0f && isfinite(mom_delta) && mom_delta > 0.0f) {
+                    next_pos = 1;
+                    next_mode = 1;
+                } else if (!long_only && trend_ok_short && isfinite(mom_now) && mom_now < 0.0f && isfinite(mom_delta) && mom_delta < 0.0f) {
+                    next_pos = -1;
+                    next_mode = 1;
+                }
+            }
+
+            if (next_pos == 0 && trend_weak && isfinite(z_now)) {
+                if (z_now <= -z_entry) {
+                    next_pos = 1;
+                    next_mode = 2;
+                } else if (!long_only && z_now >= z_entry) {
+                    next_pos = -1;
+                    next_mode = 2;
+                }
+            }
+
+            if (long_only && next_pos < 0) {
+                next_pos = 0;
+                next_mode = 0;
+            }
+
+            pos_signal = next_pos;
+            entry_mode = next_mode;
+            if (pos_signal != 0) {
+                bars_in_trade = 1;
+            }
+        } else {
+            int exit_now = 0;
+            const float close_now = close[t];
+            if (pos_signal > 0) {
+                const float stop = kaufman_long[sig_t];
+                if (isfinite(close_now) && isfinite(stop) && close_now <= stop) {
+                    exit_now = 1;
+                }
+            } else {
+                const float stop = kaufman_short[sig_t];
+                if (isfinite(close_now) && isfinite(stop) && close_now >= stop) {
+                    exit_now = 1;
+                }
+            }
+
+            if (!exit_now) {
+                if (entry_mode == 1) {
+                    int fading = 0;
+                    if (pos_signal > 0) {
+                        fading = isfinite(mom_delta) && (mom_delta < 0.0f);
+                    } else {
+                        fading = isfinite(mom_delta) && (mom_delta > 0.0f);
+                    }
+                    if (fading) {
+                        mom_fade_count += 1;
+                    } else {
+                        mom_fade_count = 0;
+                    }
+                    if (mom_fade_count >= mom_fade_bars_clamped) {
+                        exit_now = 1;
+                    }
+                    if (bars_in_trade >= max_trade_bars_clamped) {
+                        exit_now = 1;
+                    }
+                } else if (entry_mode == 2) {
+                    if (isfinite(z_now) && fabsf(z_now) <= z_exit) {
+                        exit_now = 1;
+                    }
+                    if (bars_in_trade >= max_mr_trade_bars_clamped) {
+                        exit_now = 1;
+                    }
+                }
+            }
+
+            if (exit_now) {
+                pos_signal = 0;
+                entry_mode = 0;
+                bars_in_trade = 0;
+                mom_fade_count = 0;
+            } else {
+                bars_in_trade += 1;
+            }
+        }
+
+        int desired = pos_signal;
+        if (long_only && desired < 0) {
+            desired = 0;
+        }
+
+        if (desired != pos_exec) {
+            if (pos_exec == 0 || desired == 0) {
+                if (log_cost != 0.0f) log_eq += log_cost;
+                trades += 1;
+                pos_exec = desired;
+            } else if (no_flip) {
+                if (log_cost != 0.0f) log_eq += log_cost;
+                trades += 1;
+                pos_exec = 0;
+            } else {
+                if (log_cost != 0.0f) log_eq += 2.0f * log_cost;
+                trades += 2;
+                pos_exec = desired;
+            }
+        }
+
+        const float step_log = (pos_exec == 0) ? 0.0f : ((float)pos_exec) * lr[t];
+        log_eq += step_log;
+
+        if (log_eq > log_peak) {
+            log_peak = log_eq;
+        }
+        const float dd_log = log_peak - log_eq;
+        if (dd_log > max_log_dd) {
+            max_log_dd = dd_log;
+        }
+
+        const float step_r = expf(step_log) - 1.0f;
+        n_obs += 1;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_exec);
+        sum_pos += pos_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void vcc_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ fast_squeeze_row_major,
+    const float* __restrict__ fast_momentum_row_major,
+    int fast_rows,
+    int fast_stride,
+    const float* __restrict__ trend_row_major,
+    int trend_rows,
+    int trend_stride,
+    const int* __restrict__ combo_fast_row_idx,
+    const int* __restrict__ combo_trend_row_idx,
+    const int* __restrict__ combo_start_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    int require_momentum_accel,
+    int confirm_bars,
+    int max_trade_bars,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row = combo_fast_row_idx[idx];
+    const int trend_row = combo_trend_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = 0.0f; // pnl
+        out_metrics[base + 1] = 0.0f; // sharpe
+        out_metrics[base + 2] = 0.0f; // sortino
+        out_metrics[base + 3] = 0.0f; // calmar
+        out_metrics[base + 4] = 0.0f; // omega
+        out_metrics[base + 5] = 0.0f; // volatility
+        out_metrics[base + 6] = 0.0f; // max_dd
+        out_metrics[base + 7] = 0.0f; // trades
+        out_metrics[base + 8] = 0.0f; // exposure
+        out_metrics[base + 9] = 0.0f; // net_exposure
+    }
+    if (fast_row < 0 || fast_row >= fast_rows || trend_row < 0 || trend_row >= trend_rows) return;
+    if (start_t < 0 || start_t >= T) return;
+
+    const float* __restrict__ squeeze = fast_squeeze_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ momentum = fast_momentum_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ trend = trend_row_major + ((size_t)trend_row * (size_t)trend_stride);
+
+    int pos_signal = 0;
+    int bars_in_trade = 0;
+    int release_confirm_left = 0;
+
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const int confirm_bars_clamped = max(confirm_bars, 0);
+    const int max_trade_bars_clamped = max(max_trade_bars, 1);
+
+    for (int t = start_t; t < T; ++t) {
+        const int sig_t = max(0, t - trade_on_next_bar);
+        const int prev_t = max(0, sig_t - 1);
+
+        const float squeeze_now = squeeze[sig_t];
+        const float squeeze_prev = squeeze[prev_t];
+        const float mom_now = momentum[sig_t];
+        const float mom_prev = momentum[prev_t];
+        const float mom_delta = (isfinite(mom_now) && isfinite(mom_prev)) ? (mom_now - mom_prev) : NAN;
+        const float trend_now = trend[sig_t];
+
+        const int squeeze_on_now = isfinite(squeeze_now) && squeeze_now > 0.5f;
+        const int squeeze_on_prev = isfinite(squeeze_prev) && squeeze_prev > 0.5f;
+        const int squeeze_release = squeeze_on_prev && !squeeze_on_now;
+
+        if (squeeze_release) {
+            release_confirm_left = confirm_bars_clamped;
+        } else if (release_confirm_left > 0 && !squeeze_on_now) {
+            release_confirm_left -= 1;
+        }
+        const int release_confirmed = squeeze_release || (confirm_bars_clamped > 0 && release_confirm_left == 0 && !squeeze_on_now);
+
+        const int bullish_trend = isfinite(trend_now) && trend_now > 0.5f;
+        const int bearish_trend = isfinite(trend_now) && trend_now <= 0.5f;
+
+        if (pos_signal == 0) {
+            bars_in_trade = 0;
+            if (release_confirmed) {
+                int long_mom_ok = 0;
+                int short_mom_ok = 0;
+                if (require_momentum_accel) {
+                    long_mom_ok = isfinite(mom_now) && mom_now > 0.0f && isfinite(mom_delta) && mom_delta > 0.0f;
+                    short_mom_ok = isfinite(mom_now) && mom_now < 0.0f && isfinite(mom_delta) && mom_delta < 0.0f;
+                } else {
+                    long_mom_ok = isfinite(mom_now) && mom_now > 0.0f;
+                    short_mom_ok = isfinite(mom_now) && mom_now < 0.0f;
+                }
+
+                if (bullish_trend && long_mom_ok) {
+                    pos_signal = 1;
+                    bars_in_trade = 1;
+                } else if (!long_only && bearish_trend && short_mom_ok) {
+                    pos_signal = -1;
+                    bars_in_trade = 1;
+                }
+            }
+        } else {
+            int exit_now = 0;
+            if (pos_signal > 0) {
+                if (!isfinite(mom_now) || mom_now <= 0.0f || !bullish_trend) {
+                    exit_now = 1;
+                }
+            } else {
+                if (!isfinite(mom_now) || mom_now >= 0.0f || !bearish_trend) {
+                    exit_now = 1;
+                }
+            }
+
+            if (bars_in_trade >= max_trade_bars_clamped) {
+                exit_now = 1;
+            }
+
+            if (exit_now) {
+                pos_signal = 0;
+                bars_in_trade = 0;
+            } else {
+                bars_in_trade += 1;
+            }
+        }
+
+        int desired = pos_signal;
+        if (long_only && desired < 0) {
+            desired = 0;
+        }
+
+        if (desired != pos_exec) {
+            if (pos_exec == 0 || desired == 0) {
+                if (log_cost != 0.0f) log_eq += log_cost;
+                trades += 1;
+                pos_exec = desired;
+            } else if (no_flip) {
+                if (log_cost != 0.0f) log_eq += log_cost;
+                trades += 1;
+                pos_exec = 0;
+            } else {
+                if (log_cost != 0.0f) log_eq += 2.0f * log_cost;
+                trades += 2;
+                pos_exec = desired;
+            }
+        }
+
+        const float step_log = (pos_exec == 0) ? 0.0f : ((float)pos_exec) * lr[t];
+        log_eq += step_log;
+
+        if (log_eq > log_peak) {
+            log_peak = log_eq;
+        }
+        const float dd_log = log_peak - log_eq;
+        if (dd_log > max_log_dd) {
+            max_log_dd = dd_log;
+        }
+
+        const float step_r = expf(step_log) - 1.0f;
+        n_obs += 1;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_exec);
+        sum_pos += pos_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void vemr_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ zscore_row_major,
+    int z_rows,
+    int z_stride,
+    const float* __restrict__ bb_upper_row_major,
+    const float* __restrict__ bb_middle_row_major,
+    const float* __restrict__ bb_lower_row_major,
+    int bb_rows,
+    int bb_stride,
+    const float* __restrict__ atr_row_major,
+    int atr_rows,
+    int atr_stride,
+    const int* __restrict__ combo_z_row_idx,
+    const int* __restrict__ combo_bb_row_idx,
+    const int* __restrict__ combo_atr_row_idx,
+    const int* __restrict__ combo_start_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float z_entry,
+    float z_exit,
+    float atr_stop_mult,
+    int require_band_touch,
+    int confirm_bars,
+    int max_trade_bars,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int z_row = combo_z_row_idx[idx];
+    const int bb_row = combo_bb_row_idx[idx];
+    const int atr_row = combo_atr_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (z_row < 0 || z_row >= z_rows || bb_row < 0 || bb_row >= bb_rows || atr_row < 0 || atr_row >= atr_rows || start_t < 0 || start_t >= T) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ zscore = zscore_row_major + ((size_t)z_row * (size_t)z_stride);
+    const float* __restrict__ bb_upper = bb_upper_row_major + ((size_t)bb_row * (size_t)bb_stride);
+    const float* __restrict__ bb_middle = bb_middle_row_major + ((size_t)bb_row * (size_t)bb_stride);
+    const float* __restrict__ bb_lower = bb_lower_row_major + ((size_t)bb_row * (size_t)bb_stride);
+    const float* __restrict__ atr = atr_row_major + ((size_t)atr_row * (size_t)atr_stride);
+
+    int pos_signal = 0;
+    int bars_in_trade = 0;
+    float entry_price = NAN;
+    int long_setup_count = 0;
+    int short_setup_count = 0;
+
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const int confirm_bars_clamped = max(confirm_bars, 0);
+    const int need_confirm = confirm_bars_clamped + 1;
+    const int max_trade_bars_clamped = max(max_trade_bars, 1);
+    const int require_band_touch_i = (require_band_touch != 0) ? 1 : 0;
+
+    for (int t = start_t; t < T; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+
+        const float z_now = zscore[sig_t];
+        const int z_valid = isfinite(z_now);
+        float close_now = 0.0f;
+        int have_close = 0;
+        int long_seed = 0;
+        int short_seed = 0;
+
+        if (pos_signal == 0) {
+            if (z_valid && (z_now <= -z_entry)) {
+                if (!require_band_touch_i) {
+                    long_seed = 1;
+                } else {
+                    close_now = close[sig_t];
+                    have_close = 1;
+                    const float lower_now = bb_lower[sig_t];
+                    long_seed = isfinite(close_now) && isfinite(lower_now) && (close_now <= lower_now);
+                }
+            }
+            if (!long_only && z_valid && (z_now >= z_entry)) {
+                if (!require_band_touch_i) {
+                    short_seed = 1;
+                } else {
+                    if (!have_close) {
+                        close_now = close[sig_t];
+                        have_close = 1;
+                    }
+                    const float upper_now = bb_upper[sig_t];
+                    short_seed = isfinite(close_now) && isfinite(upper_now) && (close_now >= upper_now);
+                }
+            }
+
+            bars_in_trade = 0;
+            entry_price = NAN;
+
+            long_setup_count = long_seed ? (long_setup_count + 1) : 0;
+            short_setup_count = short_seed ? (short_setup_count + 1) : 0;
+
+            if (long_setup_count >= need_confirm) {
+                if (!have_close) {
+                    close_now = close[sig_t];
+                    have_close = 1;
+                }
+                pos_signal = 1;
+                bars_in_trade = 1;
+                entry_price = close_now;
+                long_setup_count = 0;
+                short_setup_count = 0;
+            } else if (!long_only && short_setup_count >= need_confirm) {
+                if (!have_close) {
+                    close_now = close[sig_t];
+                    have_close = 1;
+                }
+                pos_signal = -1;
+                bars_in_trade = 1;
+                entry_price = close_now;
+                long_setup_count = 0;
+                short_setup_count = 0;
+            }
+        } else if (pos_signal > 0) {
+            close_now = close[sig_t];
+            const float atr_now = atr[sig_t];
+            const float stop_dist = isfinite(atr_now) ? (atr_stop_mult * atr_now) : NAN;
+            const int long_stop_hit = isfinite(entry_price)
+                && isfinite(stop_dist)
+                && isfinite(close_now)
+                && (close_now <= entry_price - stop_dist);
+            const float middle_now = bb_middle[sig_t];
+            const int mean_exit = (z_valid && (z_now >= -z_exit))
+                || (isfinite(close_now) && isfinite(middle_now) && (close_now >= middle_now));
+            int exit_now = long_stop_hit || mean_exit;
+
+            if (!long_only && z_valid && (z_now >= z_entry)) {
+                if (!require_band_touch_i) {
+                    short_seed = 1;
+                } else {
+                    const float upper_now = bb_upper[sig_t];
+                    short_seed = isfinite(close_now) && isfinite(upper_now) && (close_now >= upper_now);
+                }
+            }
+
+            if (!long_only && short_seed) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                    bars_in_trade = 1;
+                    entry_price = close_now;
+                    long_setup_count = 0;
+                    short_setup_count = 0;
+                } else {
+                    exit_now = 1;
+                }
+            }
+            if (bars_in_trade >= max_trade_bars_clamped) {
+                exit_now = 1;
+            }
+
+            if (exit_now) {
+                pos_signal = 0;
+                bars_in_trade = 0;
+                entry_price = NAN;
+            } else if (pos_signal > 0) {
+                bars_in_trade += 1;
+            }
+        } else {
+            close_now = close[sig_t];
+            const float atr_now = atr[sig_t];
+            const float stop_dist = isfinite(atr_now) ? (atr_stop_mult * atr_now) : NAN;
+            const int short_stop_hit = isfinite(entry_price)
+                && isfinite(stop_dist)
+                && isfinite(close_now)
+                && (close_now >= entry_price + stop_dist);
+            const float middle_now = bb_middle[sig_t];
+            const int mean_exit = (z_valid && (z_now <= z_exit))
+                || (isfinite(close_now) && isfinite(middle_now) && (close_now <= middle_now));
+            int exit_now = short_stop_hit || mean_exit;
+
+            if (z_valid && (z_now <= -z_entry)) {
+                if (!require_band_touch_i) {
+                    long_seed = 1;
+                } else {
+                    const float lower_now = bb_lower[sig_t];
+                    long_seed = isfinite(close_now) && isfinite(lower_now) && (close_now <= lower_now);
+                }
+            }
+
+            if (long_seed) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                    bars_in_trade = 1;
+                    entry_price = close_now;
+                    long_setup_count = 0;
+                    short_setup_count = 0;
+                } else {
+                    exit_now = 1;
+                }
+            }
+            if (bars_in_trade >= max_trade_bars_clamped) {
+                exit_now = 1;
+            }
+
+            if (exit_now) {
+                pos_signal = 0;
+                bars_in_trade = 0;
+                entry_price = NAN;
+            } else if (pos_signal < 0) {
+                bars_in_trade += 1;
+            }
+        }
+
+        int desired = pos_signal;
+        if (long_only && desired < 0) {
+            desired = 0;
+        }
+
+        if (desired != pos_exec) {
+            if (pos_exec == 0 || desired == 0) {
+                if (log_cost != 0.0f) log_eq += log_cost;
+                trades += 1;
+                pos_exec = desired;
+            } else if (no_flip) {
+                if (log_cost != 0.0f) log_eq += log_cost;
+                trades += 1;
+                pos_exec = 0;
+            } else {
+                if (log_cost != 0.0f) log_eq += 2.0f * log_cost;
+                trades += 2;
+                pos_exec = desired;
+            }
+        }
+
+        const float step_log = (pos_exec == 0) ? 0.0f : ((float)pos_exec) * lr[t];
+        log_eq += step_log;
+
+        if (log_eq > log_peak) {
+            log_peak = log_eq;
+        }
+        const float dd_log = log_peak - log_eq;
+        if (dd_log > max_log_dd) {
+            max_log_dd = dd_log;
+        }
+
+        const float step_r = expf(step_log) - 1.0f;
+        n_obs += 1;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_exec);
+        sum_pos += pos_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
     }
 }

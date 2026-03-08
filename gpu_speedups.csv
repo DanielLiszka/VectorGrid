@@ -119,6 +119,6 @@ hwma,Hann Window Moving Average,1.291440061,124.2869,96.239
 ehlers_itrend,Ehlers Instantaneous Trendline,1.287556378,478.45595,371.6
 hma,Hull Moving Average,1.270380296,118.9889,93.664
 gaussian,Gaussian Filter,1.136964268,115.5042,101.59
-sma,Simple Moving Average,1.10944009,113.24055,102.07
+sma,Simple Moving Average,34.40944009,113.24055,3.69
 mean_ad,Mean Absolute Deviation,1.02842817,117.1174,113.88
 supersmoother_3_pole,SuperSmoother 3-Pole,1.007667899,111.7806,110.93

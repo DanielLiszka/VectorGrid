@@ -229,6 +229,27 @@ fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, St
     Ok(metas.into_iter().map(|(_p, v)| v).collect())
 }
 
+fn strategy_supports_holdout(strategy_kind: &str) -> bool {
+    matches!(
+        strategy_kind,
+        "CompositeCpu"
+            | "CompositeMo"
+            | "DoubleMa"
+            | "Asr"
+            | "Vemr"
+            | "CompositeTrend"
+            | "RegimeHybrid"
+            | "BreakoutMomentum"
+    )
+}
+
+fn strategy_uses_double_ma_validation(strategy_kind: &str) -> bool {
+    matches!(
+        strategy_kind,
+        "DoubleMa" | "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum"
+    )
+}
+
 fn stage4_training_metas_excluding_source(
     metas_with_paths: Vec<(PathBuf, Value)>,
     source_meta_path: &Path,
@@ -1389,12 +1410,7 @@ fn run_meta_selection_blocking(
         );
     }
 
-    let supports_holdout = req.strategy_kind == "CompositeCpu"
-        || req.strategy_kind == "CompositeMo"
-        || req.strategy_kind == "DoubleMa"
-        || req.strategy_kind == "CompositeTrend"
-        || req.strategy_kind == "RegimeHybrid"
-        || req.strategy_kind == "BreakoutMomentum";
+    let supports_holdout = strategy_supports_holdout(req.strategy_kind.as_str());
     let holdout_tag = if req.eval_holdout && supports_holdout {
         req.holdout_tag
             .as_deref()
@@ -1947,11 +1963,7 @@ fn apply_holdout_evaluation(
             let Some(first) = idxs.first() else { continue };
             let g0 = &result.groups[*first];
 
-            if req.strategy_kind == "DoubleMa"
-                || req.strategy_kind == "CompositeTrend"
-                || req.strategy_kind == "RegimeHybrid"
-                || req.strategy_kind == "BreakoutMomentum"
-            {
+            if strategy_uses_double_ma_validation(req.strategy_kind.as_str()) {
                 let mut candidates: Vec<ta_app_core::DoubleMaValidationParams> = Vec::new();
                 candidates.reserve(idxs.len().saturating_mul(3));
                 for &gi in idxs {
@@ -2313,7 +2325,8 @@ fn apply_holdout_evaluation(
 mod tests {
     use super::{
         should_block_stage4_for_unhealthy_model, stage4_autotrain_failure_fallback,
-        stage4_training_metas_excluding_source,
+        stage4_training_metas_excluding_source, strategy_supports_holdout,
+        strategy_uses_double_ma_validation,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -2380,5 +2393,19 @@ mod tests {
 
         assert!(warnings.is_empty());
         assert!(err.contains("no usable existing model"));
+    }
+
+    #[test]
+    fn holdout_support_includes_asr_strategy() {
+        assert!(strategy_supports_holdout("Asr"));
+        assert!(strategy_supports_holdout("Vemr"));
+        assert!(strategy_supports_holdout("DoubleMa"));
+        assert!(!strategy_supports_holdout("Unknown"));
+    }
+
+    #[test]
+    fn asr_routes_to_composite_validation_path() {
+        assert!(!strategy_uses_double_ma_validation("Asr"));
+        assert!(strategy_uses_double_ma_validation("DoubleMa"));
     }
 }

@@ -57,6 +57,7 @@ enum BackendArg {
     Auto,
     Cpu,
     GpuSweep,
+    GpuHybridKernel,
     GpuKernel,
 }
 
@@ -173,6 +174,9 @@ fn main() -> Result<(), String> {
         BackendArg::GpuSweep => Backend::GpuOnly {
             device_id: cli.device_id,
         },
+        BackendArg::GpuHybridKernel => Backend::GpuHybridKernel {
+            device_id: cli.device_id,
+        },
         BackendArg::GpuKernel => Backend::GpuKernel {
             device_id: cli.device_id,
         },
@@ -191,10 +195,13 @@ fn main() -> Result<(), String> {
         );
     }
     if cli.export_all_csv_path.is_some()
-        && !matches!(backend, Backend::GpuKernel { .. } | Backend::Auto { .. })
+        && !matches!(
+            backend,
+            Backend::GpuKernel { .. } | Backend::GpuHybridKernel { .. } | Backend::Auto { .. }
+        )
     {
         return Err(
-            "export_all_csv_path requires backend=gpu-kernel (or auto that resolves to gpu-kernel)"
+            "export_all_csv_path requires backend=gpu-kernel/gpu-hybrid-kernel (or auto that resolves to kernel)"
                 .to_string(),
         );
     }

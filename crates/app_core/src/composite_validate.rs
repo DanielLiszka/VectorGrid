@@ -1,13 +1,24 @@
+use crate::asr::{
+    build_asr_desired_positions, compute_asr_fast_signals, compute_asr_kaufman_stops,
+    compute_asr_slow_signals, compute_asr_start_t, eval_asr_curves_from_desired,
+    eval_asr_metrics_window_from_desired, resolve_asr_periods, validate_asr_params, AsrFastSignals,
+    AsrKaufmanStops, AsrSlowSignals, AsrStrategyParams,
+};
 use crate::composite_cpu::{compute_macz_hist, compute_ott_line, MaczGateParams, OttGateParams};
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
     compute_halftrend_trend, compute_log_returns_f64, first_finite_idx, lookup_ma_info,
     ma_matrix_cpu_f64, resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg,
-    HalfTrendRegimeFilter,
+    Backend, HalfTrendRegimeFilter,
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
 use crate::validation_pipeline::ValidationPostCandidate;
+use crate::vemr::{
+    build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
+    compute_vemr_start_t, resolve_vemr_periods, validate_vemr_params, VemrFastSignals,
+    VemrRiskSignals, VemrStrategyParams,
+};
 
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -25,6 +36,10 @@ pub struct CompositeParams {
     pub fast_len: u16,
     pub slow_len: u16,
     pub halftrend: HalfTrendRegimeFilter,
+    #[serde(default)]
+    pub asr: Option<AsrStrategyParams>,
+    #[serde(default)]
+    pub vemr: Option<VemrStrategyParams>,
     #[serde(default)]
     pub macz: MaczGateParams,
     #[serde(default)]
@@ -366,7 +381,7 @@ fn emit_progress(
     crate::progress::emit_double_ma_progress(progress, processed, total, phase);
 }
 
-struct CandidateSeries<'a> {
+struct CompositeCandidateSeries<'a> {
     n: usize,
     lr: &'a [f64],
     ott_prices: &'a [f64],
@@ -380,7 +395,64 @@ struct CandidateSeries<'a> {
     cfg: StrategyConfig,
 }
 
+struct AsrCandidateSeries<'a> {
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    n: usize,
+    lr: &'a [f64],
+    desired: Vec<i32>,
+    start_t: usize,
+    cfg: StrategyConfig,
+}
+
+struct VemrCandidateSeries<'a> {
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    n: usize,
+    lr: &'a [f64],
+    desired: Vec<i32>,
+    start_t: usize,
+    cfg: StrategyConfig,
+}
+
+enum CandidateSeries<'a> {
+    Composite(CompositeCandidateSeries<'a>),
+    Asr(AsrCandidateSeries<'a>),
+    Vemr(VemrCandidateSeries<'a>),
+}
+
 fn build_candidate_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    base_first_valid: usize,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    params: &CompositeParams,
+) -> Result<CandidateSeries<'a>, String> {
+    let custom_strategy_count =
+        usize::from(params.asr.is_some()) + usize::from(params.vemr.is_some());
+    if custom_strategy_count > 1 {
+        return Err("Select only one of ASR or VEMR strategy config.".to_string());
+    }
+    if let Some(asr_cfg) = params.asr.as_ref() {
+        return build_asr_candidate_series(candles, lr, ott_prices, ma_source, params, asr_cfg);
+    }
+    if let Some(vemr_cfg) = params.vemr.as_ref() {
+        return build_vemr_candidate_series(candles, lr, ott_prices, ma_source, params, vemr_cfg);
+    }
+    build_composite_candidate_series(
+        candles,
+        lr,
+        ott_prices,
+        base_first_valid,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        params,
+    )
+}
+
+fn build_composite_candidate_series<'a>(
     candles: &vector_ta::utilities::data_loader::Candles,
     lr: &'a [f64],
     ott_prices: &'a [f64],
@@ -500,7 +572,7 @@ fn build_candidate_series<'a>(
         return Err("not enough candles after warmup".to_string());
     }
 
-    Ok(CandidateSeries {
+    Ok(CandidateSeries::Composite(CompositeCandidateSeries {
         n,
         lr,
         ott_prices,
@@ -512,53 +584,286 @@ fn build_candidate_series<'a>(
         start_t,
         signal_mode: params.signal_mode,
         cfg: params.strategy.clone(),
-    })
+    }))
+}
+
+fn build_asr_candidate_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    ma_source: &str,
+    params: &CompositeParams,
+    asr_cfg: &AsrStrategyParams,
+) -> Result<CandidateSeries<'a>, String> {
+    validate_strategy_cfg(&params.strategy)?;
+    validate_asr_params(asr_cfg)?;
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    if lr.len() != n || ott_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+
+    let fast_ma = params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = params.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("fast/slow MA type cannot be empty".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
+    if close.len() != n || ma_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_source =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    let periods = resolve_asr_periods(asr_cfg, params.fast_len, params.slow_len);
+    let fast_signals: AsrFastSignals = compute_asr_fast_signals(
+        candles,
+        ma_source,
+        &Backend::CpuOnly,
+        asr_cfg,
+        periods.squeeze,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let slow_signals: AsrSlowSignals = compute_asr_slow_signals(
+        candles,
+        ma_source,
+        &Backend::CpuOnly,
+        asr_cfg,
+        periods.trend,
+        periods.er,
+        periods.z,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let kaufman: AsrKaufmanStops = compute_asr_kaufman_stops(candles, &params.strategy)?;
+    let max_period = usize::from(
+        periods
+            .squeeze
+            .max(periods.trend)
+            .max(periods.er)
+            .max(periods.z),
+    )
+    .max(1);
+    let start_t = compute_asr_start_t(
+        first_valid_close,
+        first_valid_source,
+        fast_signals.first_valid,
+        slow_signals.first_valid,
+        kaufman.first_valid,
+        max_period,
+        params.strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup".to_string());
+    }
+
+    let desired = build_asr_desired_positions(
+        close,
+        &fast_signals,
+        &slow_signals,
+        &kaufman,
+        start_t,
+        &params.strategy,
+        asr_cfg,
+    );
+
+    Ok(CandidateSeries::Asr(AsrCandidateSeries {
+        candles,
+        n,
+        lr,
+        desired,
+        start_t,
+        cfg: params.strategy.clone(),
+    }))
+}
+
+fn build_vemr_candidate_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    ma_source: &str,
+    params: &CompositeParams,
+    vemr_cfg: &VemrStrategyParams,
+) -> Result<CandidateSeries<'a>, String> {
+    validate_strategy_cfg(&params.strategy)?;
+    validate_vemr_params(vemr_cfg)?;
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    if lr.len() != n || ott_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+
+    let fast_ma = params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = params.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("fast/slow MA type cannot be empty".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
+    if close.len() != n || ma_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_source =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    let periods = resolve_vemr_periods(vemr_cfg, params.fast_len, params.slow_len);
+    let fast_signals: VemrFastSignals = compute_vemr_fast_signals(
+        candles,
+        ma_source,
+        &Backend::CpuOnly,
+        vemr_cfg,
+        periods.z,
+        periods.bb,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let risk_signals: VemrRiskSignals = compute_vemr_risk_signals(
+        candles,
+        ma_source,
+        &Backend::CpuOnly,
+        periods.atr,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let max_period = usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
+    let start_t = compute_vemr_start_t(
+        first_valid_close,
+        first_valid_source,
+        fast_signals.first_valid,
+        risk_signals.first_valid,
+        max_period,
+        params.strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup".to_string());
+    }
+
+    let desired = build_vemr_desired_positions(
+        close,
+        &fast_signals,
+        &risk_signals,
+        start_t,
+        &params.strategy,
+        vemr_cfg,
+    );
+
+    Ok(CandidateSeries::Vemr(VemrCandidateSeries {
+        candles,
+        n,
+        lr,
+        desired,
+        start_t,
+        cfg: params.strategy.clone(),
+    }))
 }
 
 fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usize) -> Metrics {
-    let n = series.n;
-    let end_t = end_t.min(n);
-    if end_t < 2 || start_t >= end_t {
-        return Metrics::default();
-    }
-    let lr = &series.lr[..end_t];
-    let ott_prices = &series.ott_prices[..end_t];
-    let fast = &series.fast[..end_t];
-    let slow = &series.slow[..end_t];
-    let ht = &series.halftrend_trend[..end_t];
-    let macz = &series.macz_hist[..end_t];
-    let ott_line = &series.ott_line[..end_t];
+    match series {
+        CandidateSeries::Composite(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            if end_t < 2 || start_t >= end_t {
+                return Metrics::default();
+            }
+            let lr = &series.lr[..end_t];
+            let ott_prices = &series.ott_prices[..end_t];
+            let fast = &series.fast[..end_t];
+            let slow = &series.slow[..end_t];
+            let ht = &series.halftrend_trend[..end_t];
+            let macz = &series.macz_hist[..end_t];
+            let ott_line = &series.ott_line[..end_t];
 
-    ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
-        lr,
-        ott_prices,
-        fast,
-        slow,
-        ht,
-        macz,
-        ott_line,
-        start_t,
-        &series.cfg,
-        series.signal_mode,
-    )
+            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+                lr,
+                ott_prices,
+                fast,
+                slow,
+                ht,
+                macz,
+                ott_line,
+                start_t,
+                &series.cfg,
+                series.signal_mode,
+            )
+        }
+        CandidateSeries::Asr(series) => eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            &series.desired,
+            start_t,
+            end_t.min(series.n),
+            &series.cfg,
+        ),
+        CandidateSeries::Vemr(series) => eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            &series.desired,
+            start_t,
+            end_t.min(series.n),
+            &series.cfg,
+        ),
+    }
 }
 
 fn trades_for_series(series: &CandidateSeries<'_>) -> Vec<Trade> {
-    let curves =
-        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
-            series.lr,
-            series.ott_prices,
-            &series.fast,
-            &series.slow,
-            &series.halftrend_trend,
-            &series.macz_hist,
-            &series.ott_line,
-            series.start_t,
-            &series.cfg,
-            1,
-            series.signal_mode,
-        );
-    curves.trades
+    match series {
+        CandidateSeries::Composite(series) => {
+            let curves = ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+                series.lr,
+                series.ott_prices,
+                &series.fast,
+                &series.slow,
+                &series.halftrend_trend,
+                &series.macz_hist,
+                &series.ott_line,
+                series.start_t,
+                &series.cfg,
+                1,
+                series.signal_mode,
+            );
+            curves.trades
+        }
+        CandidateSeries::Asr(series) => {
+            eval_asr_curves_from_desired(
+                series.candles,
+                series.lr,
+                &series.desired,
+                series.start_t,
+                &series.cfg,
+                1,
+            )
+            .trades
+        }
+        CandidateSeries::Vemr(series) => {
+            eval_asr_curves_from_desired(
+                series.candles,
+                series.lr,
+                &series.desired,
+                series.start_t,
+                &series.cfg,
+                1,
+            )
+            .trades
+        }
+    }
 }
 
 fn desired_positions_for_series(
@@ -566,45 +871,73 @@ fn desired_positions_for_series(
     start_t: usize,
     end_t: usize,
 ) -> Vec<i32> {
-    let n = series.n;
-    let end_t = end_t.min(n);
-    let mut out: Vec<i32> = vec![0; n];
-    if start_t >= end_t || n == 0 {
-        return out;
-    }
-
-    let trade_offset = if series.cfg.trade_on_next_bar {
-        1usize
-    } else {
-        0usize
-    };
-    let mut pos: i32 = 0;
-
-    for t in start_t..end_t {
-        let t_sig = t.saturating_sub(trade_offset);
-        let sign = ta_strategies::composite_cpu::composite_desired_position(
-            series.fast[t_sig],
-            series.slow[t_sig],
-            series.halftrend_trend[t_sig],
-            series.macz_hist[t_sig],
-            series.ott_prices[t_sig],
-            series.ott_line[t_sig],
-            pos,
-            &series.cfg,
-            series.signal_mode,
-        );
-        out[t] = sign;
-        if sign != pos {
-            if pos == 0 || sign == 0 {
-                pos = sign;
-            } else if !series.cfg.allow_flip {
-                pos = 0;
-            } else {
-                pos = sign;
+    match series {
+        CandidateSeries::Composite(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            let mut out: Vec<i32> = vec![0; n];
+            if start_t >= end_t || n == 0 {
+                return out;
             }
+
+            let trade_offset = if series.cfg.trade_on_next_bar {
+                1usize
+            } else {
+                0usize
+            };
+            let mut pos: i32 = 0;
+
+            for t in start_t..end_t {
+                let t_sig = t.saturating_sub(trade_offset);
+                let sign = ta_strategies::composite_cpu::composite_desired_position(
+                    series.fast[t_sig],
+                    series.slow[t_sig],
+                    series.halftrend_trend[t_sig],
+                    series.macz_hist[t_sig],
+                    series.ott_prices[t_sig],
+                    series.ott_line[t_sig],
+                    pos,
+                    &series.cfg,
+                    series.signal_mode,
+                );
+                out[t] = sign;
+                if sign != pos {
+                    if pos == 0 || sign == 0 {
+                        pos = sign;
+                    } else if !series.cfg.allow_flip {
+                        pos = 0;
+                    } else {
+                        pos = sign;
+                    }
+                }
+            }
+            out
+        }
+        CandidateSeries::Asr(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            let mut out: Vec<i32> = vec![0; n];
+            if start_t >= end_t || n == 0 {
+                return out;
+            }
+            for t in start_t..end_t {
+                out[t] = *series.desired.get(t).unwrap_or(&0);
+            }
+            out
+        }
+        CandidateSeries::Vemr(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            let mut out: Vec<i32> = vec![0; n];
+            if start_t >= end_t || n == 0 {
+                return out;
+            }
+            for t in start_t..end_t {
+                out[t] = *series.desired.get(t).unwrap_or(&0);
+            }
+            out
         }
     }
-    out
 }
 
 fn slice_return_stats_for_series(
@@ -618,59 +951,144 @@ fn slice_return_stats_for_series(
         return out;
     }
 
-    let end_t = start_t
-        .saturating_add(slice_bars.saturating_mul(slices))
-        .min(series.n);
-    if end_t <= start_t + 1 {
-        return out;
-    }
-
-    let trade_offset = if series.cfg.trade_on_next_bar {
-        1usize
-    } else {
-        0usize
-    };
-    let mut pos: i32 = 0;
-
-    for t in start_t..end_t {
-        let slice_idx = (t - start_t) / slice_bars;
-        if slice_idx >= slices {
-            break;
-        }
-        let t_sig = t.saturating_sub(trade_offset);
-        let sign = ta_strategies::composite_cpu::composite_desired_position(
-            series.fast[t_sig],
-            series.slow[t_sig],
-            series.halftrend_trend[t_sig],
-            series.macz_hist[t_sig],
-            series.ott_prices[t_sig],
-            series.ott_line[t_sig],
-            pos,
-            &series.cfg,
-            series.signal_mode,
-        );
-
-        if sign != pos {
-            if pos == 0 || sign == 0 {
-                pos = if sign == 0 { 0 } else { sign };
-            } else if !series.cfg.allow_flip {
-                pos = 0;
-            } else {
-                pos = sign;
+    match series {
+        CandidateSeries::Composite(series) => {
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
             }
+
+            let trade_offset = if series.cfg.trade_on_next_bar {
+                1usize
+            } else {
+                0usize
+            };
+            let mut pos: i32 = 0;
+
+            for t in start_t..end_t {
+                let slice_idx = (t - start_t) / slice_bars;
+                if slice_idx >= slices {
+                    break;
+                }
+                let t_sig = t.saturating_sub(trade_offset);
+                let sign = ta_strategies::composite_cpu::composite_desired_position(
+                    series.fast[t_sig],
+                    series.slow[t_sig],
+                    series.halftrend_trend[t_sig],
+                    series.macz_hist[t_sig],
+                    series.ott_prices[t_sig],
+                    series.ott_line[t_sig],
+                    pos,
+                    &series.cfg,
+                    series.signal_mode,
+                );
+
+                if sign != pos {
+                    if pos == 0 || sign == 0 {
+                        pos = if sign == 0 { 0 } else { sign };
+                    } else if !series.cfg.allow_flip {
+                        pos = 0;
+                    } else {
+                        pos = sign;
+                    }
+                }
+
+                let lr_t = series.lr[t];
+                let step_r = if pos == 0 {
+                    0.0
+                } else {
+                    (pos as f64) * lr_t.exp_m1()
+                };
+                out[slice_idx].sum += step_r;
+                out[slice_idx].sumsq += step_r * step_r;
+            }
+            out
         }
+        CandidateSeries::Asr(series) => {
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
+            }
 
-        let lr_t = series.lr[t];
-        let step_r = if pos == 0 {
-            0.0
-        } else {
-            (pos as f64) * lr_t.exp_m1()
-        };
-        out[slice_idx].sum += step_r;
-        out[slice_idx].sumsq += step_r * step_r;
+            for t in start_t..end_t {
+                let slice_idx = (t - start_t) / slice_bars;
+                if slice_idx >= slices {
+                    break;
+                }
+                let pos = series.desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                let lr_t = series.lr[t];
+                let step_r = if pos == 0 {
+                    0.0
+                } else {
+                    (pos as f64) * lr_t.exp_m1()
+                };
+                out[slice_idx].sum += step_r;
+                out[slice_idx].sumsq += step_r * step_r;
+            }
+            out
+        }
+        CandidateSeries::Vemr(series) => {
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
+            }
+
+            for t in start_t..end_t {
+                let slice_idx = (t - start_t) / slice_bars;
+                if slice_idx >= slices {
+                    break;
+                }
+                let pos = series.desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                let lr_t = series.lr[t];
+                let step_r = if pos == 0 {
+                    0.0
+                } else {
+                    (pos as f64) * lr_t.exp_m1()
+                };
+                out[slice_idx].sum += step_r;
+                out[slice_idx].sumsq += step_r * step_r;
+            }
+            out
+        }
     }
+}
 
-    out
+fn series_n(series: &CandidateSeries<'_>) -> usize {
+    match series {
+        CandidateSeries::Composite(series) => series.n,
+        CandidateSeries::Asr(series) => series.n,
+        CandidateSeries::Vemr(series) => series.n,
+    }
+}
+
+fn series_start_t(series: &CandidateSeries<'_>) -> usize {
+    match series {
+        CandidateSeries::Composite(series) => series.start_t,
+        CandidateSeries::Asr(series) => series.start_t,
+        CandidateSeries::Vemr(series) => series.start_t,
+    }
+}
+
+fn series_lr<'a>(series: &'a CandidateSeries<'a>) -> &'a [f64] {
+    match series {
+        CandidateSeries::Composite(series) => series.lr,
+        CandidateSeries::Asr(series) => series.lr,
+        CandidateSeries::Vemr(series) => series.lr,
+    }
+}
+
+fn series_cfg<'a>(series: &'a CandidateSeries<'a>) -> &'a StrategyConfig {
+    match series {
+        CandidateSeries::Composite(series) => &series.cfg,
+        CandidateSeries::Asr(series) => &series.cfg,
+        CandidateSeries::Vemr(series) => &series.cfg,
+    }
 }
 
 fn repair_params(p: &mut CompositeParams) {
@@ -737,6 +1155,42 @@ fn repair_params(p: &mut CompositeParams) {
     }
     if p.ott.ma_type.trim().is_empty() {
         p.ott.ma_type = "VAR".to_string();
+    }
+
+    if let Some(vemr) = p.vemr.as_mut() {
+        if vemr.z_period == 0 {
+            vemr.z_period = 20;
+        }
+        if vemr.bb_period == 0 {
+            vemr.bb_period = 20;
+        }
+        if vemr.atr_period == 0 {
+            vemr.atr_period = 14;
+        }
+        if vemr.z_ma_type.trim().is_empty() {
+            vemr.z_ma_type = "sma".to_string();
+        }
+        if !vemr.z_nbdev.is_finite() || vemr.z_nbdev <= 0.0 {
+            vemr.z_nbdev = 1.0;
+        }
+        if !vemr.z_entry.is_finite() || vemr.z_entry <= 0.0 {
+            vemr.z_entry = 2.0;
+        }
+        if !vemr.z_exit.is_finite() || vemr.z_exit < 0.0 {
+            vemr.z_exit = 0.5;
+        }
+        if vemr.z_exit > vemr.z_entry {
+            vemr.z_exit = vemr.z_entry;
+        }
+        if !vemr.bb_mult.is_finite() || vemr.bb_mult <= 0.0 {
+            vemr.bb_mult = 2.0;
+        }
+        if !vemr.atr_stop_mult.is_finite() || vemr.atr_stop_mult <= 0.0 {
+            vemr.atr_stop_mult = 2.0;
+        }
+        if vemr.max_trade_bars == 0 {
+            vemr.max_trade_bars = 80;
+        }
     }
 
     // Strategy config
@@ -830,6 +1284,33 @@ fn perturb_params(
     p.ott.percent = apply_pct_f64(p.ott.percent, rand_mult(rng, pct_min, pct_max));
     if rng.gen_bool(flip_bool_prob) {
         // Keep ma_type stable most of the time; flipping is not well-defined here.
+    }
+
+    if let Some(vemr) = p.vemr.as_mut() {
+        vemr.z_period = apply_pct_u16(vemr.z_period, rand_mult(rng, pct_min, pct_max));
+        vemr.bb_period = apply_pct_u16(vemr.bb_period, rand_mult(rng, pct_min, pct_max));
+        vemr.atr_period = apply_pct_u16(vemr.atr_period, rand_mult(rng, pct_min, pct_max));
+        vemr.z_nbdev = apply_pct_f64(vemr.z_nbdev, rand_mult(rng, pct_min, pct_max));
+        vemr.z_entry = apply_pct_f64(vemr.z_entry, rand_mult(rng, pct_min, pct_max));
+        vemr.z_exit = apply_pct_f64(vemr.z_exit, rand_mult(rng, pct_min, pct_max));
+        vemr.bb_mult = apply_pct_f64(vemr.bb_mult, rand_mult(rng, pct_min, pct_max));
+        vemr.atr_stop_mult = apply_pct_f64(vemr.atr_stop_mult, rand_mult(rng, pct_min, pct_max));
+        vemr.confirm_bars =
+            apply_pct_u16(vemr.confirm_bars.max(1), rand_mult(rng, pct_min, pct_max))
+                .saturating_sub(1);
+        vemr.max_trade_bars = apply_pct_u16(vemr.max_trade_bars, rand_mult(rng, pct_min, pct_max));
+        if rng.gen_bool(flip_bool_prob) {
+            vemr.map_fast_to_z_period = !vemr.map_fast_to_z_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            vemr.map_fast_to_bb_period = !vemr.map_fast_to_bb_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            vemr.map_slow_to_atr_period = !vemr.map_slow_to_atr_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            vemr.require_band_touch = !vemr.require_band_touch;
+        }
     }
 
     // Strategy config
@@ -934,14 +1415,14 @@ pub fn run_composite_validation_blocking_with_candles(
                 slow_ma_params.as_ref(),
                 &p2,
             )?;
-            let series_start_t = series.start_t;
-
-            let in_sample = eval_metrics_window(&series, series.start_t, series.n);
+            let start_t0 = series_start_t(&series);
+            let n_total = series_n(&series);
+            let in_sample = eval_metrics_window(&series, start_t0, n_total);
 
             let walk_forward = if let Some(cfg) = walk_cfg.as_ref() {
                 Some(crate::validation_pipeline::compute_walk_forward_stats(
-                    series.n,
-                    series.start_t,
+                    n_total,
+                    start_t0,
                     cfg,
                     |t0, end| eval_metrics_window(&series, t0, end),
                 ))
@@ -967,7 +1448,7 @@ pub fn run_composite_validation_blocking_with_candles(
                             slow_ma_params.as_ref(),
                             pp,
                         )?;
-                        Ok(eval_metrics_window(&s2, s2.start_t, s2.n))
+                        Ok(eval_metrics_window(&s2, series_start_t(&s2), series_n(&s2)))
                     },
                 )?
             } else {
@@ -988,17 +1469,17 @@ pub fn run_composite_validation_blocking_with_candles(
                 crate::validation_pipeline::maybe_run_iterative_validation(
                     validation_engine,
                     &in_sample,
-                    series.lr,
+                    series_lr(&series),
                     crate::iterative_sim::OhlcSlice {
                         open: &candles.open,
                         high: &candles.high,
                         low: &candles.low,
                         close: &candles.close,
                     },
-                    series.start_t,
-                    &series.cfg,
+                    start_t0,
+                    series_cfg(&series),
                     &iterative_cfg,
-                    || desired_positions_for_series(&series, series.start_t, series.n),
+                    || desired_positions_for_series(&series, start_t0, n_total),
                 );
 
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
@@ -1026,8 +1507,8 @@ pub fn run_composite_validation_blocking_with_candles(
                     robust_score,
                     robust_pareto: false,
                 },
-                series_start_t,
-                series.n.saturating_sub(series_start_t),
+                start_t0,
+                n_total.saturating_sub(start_t0),
             ))
         },
         |cand, cscv_start_t, slice_bars, slices| {
@@ -1109,6 +1590,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1152,6 +1635,114 @@ mod tests {
         assert_eq!(c.perturb.as_ref().unwrap().iterations, 3);
         assert_eq!(c.trade_bootstrap.as_ref().unwrap().simulations, 50);
         assert!(c.robust_score.is_finite());
+    }
+
+    #[test]
+    fn asr_validation_smoke_runs_and_returns_stats() {
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "alma".to_string(),
+            slow_ma_type: "alma".to_string(),
+            fast_len: 12,
+            slow_len: 48,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: Some(AsrStrategyParams::default()),
+            vemr: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "asr-test".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 600,
+                step_bars: 300,
+            }),
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 7,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("asr validation run");
+        assert_eq!(res.candidates.len(), 1);
+        let c = &res.candidates[0];
+        assert!(c.in_sample.sharpe.is_finite());
+        assert!(c.robust_score.is_finite());
+        assert!(c.walk_forward.as_ref().map(|w| w.windows).unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn vemr_validation_smoke_runs_and_returns_stats() {
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len: 12,
+            slow_len: 48,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vemr: Some(VemrStrategyParams::default()),
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "vemr-test".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 600,
+                step_bars: 300,
+            }),
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 11,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vemr validation run");
+        assert_eq!(res.candidates.len(), 1);
+        let c = &res.candidates[0];
+        assert!(c.in_sample.sharpe.is_finite());
+        assert!(c.robust_score.is_finite());
+        assert!(c.walk_forward.as_ref().map(|w| w.windows).unwrap_or(0) > 0);
     }
 
     #[test]
@@ -1203,6 +1794,8 @@ mod tests {
                 channel_deviation: -1.0,
                 atr_period: 0,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams {
                 fast_length: 0,
                 slow_length: 0,
@@ -1247,6 +1840,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1320,6 +1915,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1372,6 +1969,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1435,6 +2034,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1489,6 +2090,10 @@ mod tests {
         let signal_mode = CompositeSignalMode::HardGate;
 
         let opt_req = CompositeCpuRequest {
+            backend: crate::double_ma::Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
             data_id: "opt-comp".to_string(),
             fast_range: (5, 9, 1),
             slow_range: (18, 28, 2),
@@ -1525,6 +2130,8 @@ mod tests {
                 fast_len: p.fast_len,
                 slow_len: p.slow_len,
                 halftrend: halftrend.clone(),
+                asr: None,
+                vemr: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode,
@@ -1674,6 +2281,8 @@ mod tests {
                 fast_len: pt.params.fast_len,
                 slow_len: pt.params.slow_len,
                 halftrend: pt.params.halftrend.clone(),
+                asr: None,
+                vemr: None,
                 macz: pt.params.macz.clone(),
                 ott: pt.params.ott.clone(),
                 signal_mode: pt.params.signal_mode,
@@ -1765,6 +2374,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1832,6 +2443,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,

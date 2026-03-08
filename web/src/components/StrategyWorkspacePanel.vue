@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useStrategyStore, type StrategyOption } from '../stores/strategyStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
@@ -30,6 +31,50 @@ const {
   kaufmanStopPeriod,
   kaufmanStopMult,
   kaufmanStopMaType,
+  asrUseErFilter,
+  asrSqueezeBbMult,
+  asrSqueezeKcMult,
+  asrAngleDegMin,
+  asrAngleDegMr,
+  asrErMin,
+  asrErMr,
+  asrZMaType,
+  asrZNbdev,
+  asrZDevtype,
+  asrZEntry,
+  asrZExit,
+  asrConfirmBars,
+  asrMomFadeBars,
+  asrMaxTradeBars,
+  asrMaxMrTradeBars,
+  vccSqueezePeriod,
+  vccMomentumPeriod,
+  vccMomentumBbPeriod,
+  vccTrendPeriod,
+  vccSqueezeBbMult,
+  vccSqueezeKcMult,
+  vccConfirmBars,
+  vccMaxTradeBars,
+  vemrZPeriod,
+  vemrZMaType,
+  vemrZNbdev,
+  vemrZDevtype,
+  vemrZEntry,
+  vemrZExit,
+  vemrBbPeriod,
+  vemrBbMult,
+  vemrAtrPeriod,
+  vemrAtrStopMult,
+  vemrConfirmBars,
+  vemrMaxTradeBars,
+  vccMapFastToSqueezePeriod,
+  vccMapFastToMomentumPeriod,
+  vccMapSlowToTrendPeriod,
+  vccRequireMomentumAccel,
+  vemrMapFastToZPeriod,
+  vemrMapFastToBbPeriod,
+  vemrMapSlowToAtrPeriod,
+  vemrRequireBandTouch,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(strategyStore)
@@ -112,17 +157,55 @@ const exitModeDraft = ref('cross')
 const kaufmanPeriodDraft = ref('22')
 const kaufmanMultDraft = ref('2.0')
 const kaufmanTypeDraft = ref('sma')
+const asrSqueezeBbMultDraft = ref('2.0')
+const asrSqueezeKcMultDraft = ref('1.5')
+const asrAngleDegMinDraft = ref('10.0')
+const asrAngleDegMrDraft = ref('6.0')
+const asrErMinDraft = ref('0.30')
+const asrErMrDraft = ref('0.25')
+const asrZMaTypeDraft = ref('sma')
+const asrZNbdevDraft = ref('1.0')
+const asrZDevtypeDraft = ref('0')
+const asrZEntryDraft = ref('2.0')
+const asrZExitDraft = ref('0.5')
+const asrConfirmBarsDraft = ref('0')
+const asrMomFadeBarsDraft = ref('2')
+const asrMaxTradeBarsDraft = ref('80')
+const asrMaxMrTradeBarsDraft = ref('30')
+const vccSqueezePeriodDraft = ref('20')
+const vccMomentumPeriodDraft = ref('20')
+const vccMomentumBbPeriodDraft = ref('20')
+const vccTrendPeriodDraft = ref('6')
+const vccSqueezeBbMultDraft = ref('2.0')
+const vccSqueezeKcMultDraft = ref('1.5')
+const vccConfirmBarsDraft = ref('0')
+const vccMaxTradeBarsDraft = ref('120')
+const vemrZPeriodDraft = ref('20')
+const vemrZMaTypeDraft = ref('sma')
+const vemrZNbdevDraft = ref('1.0')
+const vemrZDevtypeDraft = ref('0')
+const vemrZEntryDraft = ref('2.0')
+const vemrZExitDraft = ref('0.5')
+const vemrBbPeriodDraft = ref('20')
+const vemrBbMultDraft = ref('2.0')
+const vemrAtrPeriodDraft = ref('14')
+const vemrAtrStopMultDraft = ref('2.0')
+const vemrConfirmBarsDraft = ref('0')
+const vemrMaxTradeBarsDraft = ref('80')
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'strategy')
 const strategyKindNormalized = computed(() => String(strategyKind.value || 'DoubleMa').trim() || 'DoubleMa')
 const isDoubleLikeKind = computed(() => {
   const kind = strategyKindNormalized.value
-  return kind === 'DoubleMa' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'Asr' || kind === 'Vemr' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 })
 const showDmConstraints = computed(() => isDoubleLikeKind.value)
+const showAsrControls = computed(() => strategyKindNormalized.value === 'Asr')
+const showVccControls = computed(() => strategyKindNormalized.value === 'Vcc')
+const showVemrControls = computed(() => strategyKindNormalized.value === 'Vemr')
 const showKaufmanFields = computed(() => {
   const mode = String(exitMode.value || 'cross').trim() || 'cross'
-  return isDoubleLikeKind.value && mode === 'kaufman_stop'
+  return showAsrControls.value || (isDoubleLikeKind.value && mode === 'kaufman_stop')
 })
 
 const stamp = computed(() => {
@@ -141,27 +224,172 @@ function resolvedOptions(options: StrategyOption[], fallbackValue: string, fallb
 const costPresetOptionItems = computed(() => resolvedOptions(costPresetOptions.value, costPreset.value, costPreset.value || 'custom'))
 const exitModeOptionItems = computed(() => resolvedOptions(exitModeOptions.value, exitMode.value, exitMode.value || 'cross'))
 
-watch(costPreset, (v) => { const next = String(v || 'custom'); if (costPresetDraft.value !== next) costPresetDraft.value = next }, { immediate: true })
-watch(feeBps, (v) => { const next = String(v || '0'); if (feeDraft.value !== next) feeDraft.value = next }, { immediate: true })
-watch(spreadBps, (v) => { const next = String(v || '0'); if (spreadDraft.value !== next) spreadDraft.value = next }, { immediate: true })
-watch(slippageBps, (v) => { const next = String(v || '0'); if (slippageDraft.value !== next) slippageDraft.value = next }, { immediate: true })
-watch(epsRel, (v) => { const next = String(v || '0'); if (epsDraft.value !== next) epsDraft.value = next }, { immediate: true })
-watch(startingEquity, (v) => { const next = String(v || '10000'); if (equityDraft.value !== next) equityDraft.value = next }, { immediate: true })
-watch(stopLossPct, (v) => { const next = String(v || ''); if (slDraft.value !== next) slDraft.value = next }, { immediate: true })
-watch(takeProfitPct, (v) => { const next = String(v || ''); if (tpDraft.value !== next) tpDraft.value = next }, { immediate: true })
-watch(cooldownBars, (v) => { const next = String(v || '0'); if (cooldownDraft.value !== next) cooldownDraft.value = next }, { immediate: true })
-watch(signalPersistenceBars, (v) => { const next = String(v || '1'); if (persistenceDraft.value !== next) persistenceDraft.value = next }, { immediate: true })
-watch(trailingStopPct, (v) => { const next = String(v || ''); if (trailingDraft.value !== next) trailingDraft.value = next }, { immediate: true })
-watch(dmConstraintMinTrades, (v) => { const next = String(v || ''); if (minTradesDraft.value !== next) minTradesDraft.value = next }, { immediate: true })
-watch(dmConstraintMaxDd, (v) => { const next = String(v || ''); if (maxDdDraft.value !== next) maxDdDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(costPreset.value || 'custom'),
+    String(feeBps.value || '0'),
+    String(spreadBps.value || '0'),
+    String(slippageBps.value || '0'),
+    String(epsRel.value || '0'),
+    String(startingEquity.value || '10000'),
+    String(stopLossPct.value || ''),
+    String(takeProfitPct.value || ''),
+    String(cooldownBars.value || '0'),
+    String(signalPersistenceBars.value || '1'),
+    String(trailingStopPct.value || ''),
+    String(dmConstraintMinTrades.value || ''),
+    String(dmConstraintMaxDd.value || ''),
+    String(kaufmanStopPeriod.value || '22'),
+    String(kaufmanStopMult.value || '2.0'),
+    String(kaufmanStopMaType.value || 'sma'),
+    String(asrSqueezeBbMult.value || '2.0'),
+    String(asrSqueezeKcMult.value || '1.5'),
+    String(asrAngleDegMin.value || '10.0'),
+    String(asrAngleDegMr.value || '6.0'),
+    String(asrErMin.value || '0.30'),
+    String(asrErMr.value || '0.25'),
+    String(asrZMaType.value || 'sma'),
+    String(asrZNbdev.value || '1.0'),
+    String(asrZDevtype.value || '0'),
+    String(asrZEntry.value || '2.0'),
+    String(asrZExit.value || '0.5'),
+    String(asrConfirmBars.value || '0'),
+    String(asrMomFadeBars.value || '2'),
+    String(asrMaxTradeBars.value || '80'),
+    String(asrMaxMrTradeBars.value || '30'),
+    String(vccSqueezePeriod.value || '20'),
+    String(vccMomentumPeriod.value || '20'),
+    String(vccMomentumBbPeriod.value || '20'),
+    String(vccTrendPeriod.value || '6'),
+    String(vccSqueezeBbMult.value || '2.0'),
+    String(vccSqueezeKcMult.value || '1.5'),
+    String(vccConfirmBars.value || '0'),
+    String(vccMaxTradeBars.value || '120'),
+    String(vemrZPeriod.value || '20'),
+    String(vemrZMaType.value || 'sma'),
+    String(vemrZNbdev.value || '1.0'),
+    String(vemrZDevtype.value || '0'),
+    String(vemrZEntry.value || '2.0'),
+    String(vemrZExit.value || '0.5'),
+    String(vemrBbPeriod.value || '20'),
+    String(vemrBbMult.value || '2.0'),
+    String(vemrAtrPeriod.value || '14'),
+    String(vemrAtrStopMult.value || '2.0'),
+    String(vemrConfirmBars.value || '0'),
+    String(vemrMaxTradeBars.value || '80'),
+  ] as const,
+  ([
+    nextCostPreset,
+    nextFeeBps,
+    nextSpreadBps,
+    nextSlippageBps,
+    nextEpsRel,
+    nextStartingEquity,
+    nextStopLossPct,
+    nextTakeProfitPct,
+    nextCooldownBars,
+    nextSignalPersistenceBars,
+    nextTrailingStopPct,
+    nextDmConstraintMinTrades,
+    nextDmConstraintMaxDd,
+    nextKaufmanStopPeriod,
+    nextKaufmanStopMult,
+    nextKaufmanStopMaType,
+    nextAsrSqueezeBbMult,
+    nextAsrSqueezeKcMult,
+    nextAsrAngleDegMin,
+    nextAsrAngleDegMr,
+    nextAsrErMin,
+    nextAsrErMr,
+    nextAsrZMaType,
+    nextAsrZNbdev,
+    nextAsrZDevtype,
+    nextAsrZEntry,
+    nextAsrZExit,
+    nextAsrConfirmBars,
+    nextAsrMomFadeBars,
+    nextAsrMaxTradeBars,
+    nextAsrMaxMrTradeBars,
+    nextVccSqueezePeriod,
+    nextVccMomentumPeriod,
+    nextVccMomentumBbPeriod,
+    nextVccTrendPeriod,
+    nextVccSqueezeBbMult,
+    nextVccSqueezeKcMult,
+    nextVccConfirmBars,
+    nextVccMaxTradeBars,
+    nextVemrZPeriod,
+    nextVemrZMaType,
+    nextVemrZNbdev,
+    nextVemrZDevtype,
+    nextVemrZEntry,
+    nextVemrZExit,
+    nextVemrBbPeriod,
+    nextVemrBbMult,
+    nextVemrAtrPeriod,
+    nextVemrAtrStopMult,
+    nextVemrConfirmBars,
+    nextVemrMaxTradeBars,
+  ]) => {
+    if (costPresetDraft.value !== nextCostPreset) costPresetDraft.value = nextCostPreset
+    if (feeDraft.value !== nextFeeBps) feeDraft.value = nextFeeBps
+    if (spreadDraft.value !== nextSpreadBps) spreadDraft.value = nextSpreadBps
+    if (slippageDraft.value !== nextSlippageBps) slippageDraft.value = nextSlippageBps
+    if (epsDraft.value !== nextEpsRel) epsDraft.value = nextEpsRel
+    if (equityDraft.value !== nextStartingEquity) equityDraft.value = nextStartingEquity
+    if (slDraft.value !== nextStopLossPct) slDraft.value = nextStopLossPct
+    if (tpDraft.value !== nextTakeProfitPct) tpDraft.value = nextTakeProfitPct
+    if (cooldownDraft.value !== nextCooldownBars) cooldownDraft.value = nextCooldownBars
+    if (persistenceDraft.value !== nextSignalPersistenceBars) persistenceDraft.value = nextSignalPersistenceBars
+    if (trailingDraft.value !== nextTrailingStopPct) trailingDraft.value = nextTrailingStopPct
+    if (minTradesDraft.value !== nextDmConstraintMinTrades) minTradesDraft.value = nextDmConstraintMinTrades
+    if (maxDdDraft.value !== nextDmConstraintMaxDd) maxDdDraft.value = nextDmConstraintMaxDd
+    if (kaufmanPeriodDraft.value !== nextKaufmanStopPeriod) kaufmanPeriodDraft.value = nextKaufmanStopPeriod
+    if (kaufmanMultDraft.value !== nextKaufmanStopMult) kaufmanMultDraft.value = nextKaufmanStopMult
+    if (kaufmanTypeDraft.value !== nextKaufmanStopMaType) kaufmanTypeDraft.value = nextKaufmanStopMaType
+    if (asrSqueezeBbMultDraft.value !== nextAsrSqueezeBbMult) asrSqueezeBbMultDraft.value = nextAsrSqueezeBbMult
+    if (asrSqueezeKcMultDraft.value !== nextAsrSqueezeKcMult) asrSqueezeKcMultDraft.value = nextAsrSqueezeKcMult
+    if (asrAngleDegMinDraft.value !== nextAsrAngleDegMin) asrAngleDegMinDraft.value = nextAsrAngleDegMin
+    if (asrAngleDegMrDraft.value !== nextAsrAngleDegMr) asrAngleDegMrDraft.value = nextAsrAngleDegMr
+    if (asrErMinDraft.value !== nextAsrErMin) asrErMinDraft.value = nextAsrErMin
+    if (asrErMrDraft.value !== nextAsrErMr) asrErMrDraft.value = nextAsrErMr
+    if (asrZMaTypeDraft.value !== nextAsrZMaType) asrZMaTypeDraft.value = nextAsrZMaType
+    if (asrZNbdevDraft.value !== nextAsrZNbdev) asrZNbdevDraft.value = nextAsrZNbdev
+    if (asrZDevtypeDraft.value !== nextAsrZDevtype) asrZDevtypeDraft.value = nextAsrZDevtype
+    if (asrZEntryDraft.value !== nextAsrZEntry) asrZEntryDraft.value = nextAsrZEntry
+    if (asrZExitDraft.value !== nextAsrZExit) asrZExitDraft.value = nextAsrZExit
+    if (asrConfirmBarsDraft.value !== nextAsrConfirmBars) asrConfirmBarsDraft.value = nextAsrConfirmBars
+    if (asrMomFadeBarsDraft.value !== nextAsrMomFadeBars) asrMomFadeBarsDraft.value = nextAsrMomFadeBars
+    if (asrMaxTradeBarsDraft.value !== nextAsrMaxTradeBars) asrMaxTradeBarsDraft.value = nextAsrMaxTradeBars
+    if (asrMaxMrTradeBarsDraft.value !== nextAsrMaxMrTradeBars) asrMaxMrTradeBarsDraft.value = nextAsrMaxMrTradeBars
+    if (vccSqueezePeriodDraft.value !== nextVccSqueezePeriod) vccSqueezePeriodDraft.value = nextVccSqueezePeriod
+    if (vccMomentumPeriodDraft.value !== nextVccMomentumPeriod) vccMomentumPeriodDraft.value = nextVccMomentumPeriod
+    if (vccMomentumBbPeriodDraft.value !== nextVccMomentumBbPeriod) vccMomentumBbPeriodDraft.value = nextVccMomentumBbPeriod
+    if (vccTrendPeriodDraft.value !== nextVccTrendPeriod) vccTrendPeriodDraft.value = nextVccTrendPeriod
+    if (vccSqueezeBbMultDraft.value !== nextVccSqueezeBbMult) vccSqueezeBbMultDraft.value = nextVccSqueezeBbMult
+    if (vccSqueezeKcMultDraft.value !== nextVccSqueezeKcMult) vccSqueezeKcMultDraft.value = nextVccSqueezeKcMult
+    if (vccConfirmBarsDraft.value !== nextVccConfirmBars) vccConfirmBarsDraft.value = nextVccConfirmBars
+    if (vccMaxTradeBarsDraft.value !== nextVccMaxTradeBars) vccMaxTradeBarsDraft.value = nextVccMaxTradeBars
+    if (vemrZPeriodDraft.value !== nextVemrZPeriod) vemrZPeriodDraft.value = nextVemrZPeriod
+    if (vemrZMaTypeDraft.value !== nextVemrZMaType) vemrZMaTypeDraft.value = nextVemrZMaType
+    if (vemrZNbdevDraft.value !== nextVemrZNbdev) vemrZNbdevDraft.value = nextVemrZNbdev
+    if (vemrZDevtypeDraft.value !== nextVemrZDevtype) vemrZDevtypeDraft.value = nextVemrZDevtype
+    if (vemrZEntryDraft.value !== nextVemrZEntry) vemrZEntryDraft.value = nextVemrZEntry
+    if (vemrZExitDraft.value !== nextVemrZExit) vemrZExitDraft.value = nextVemrZExit
+    if (vemrBbPeriodDraft.value !== nextVemrBbPeriod) vemrBbPeriodDraft.value = nextVemrBbPeriod
+    if (vemrBbMultDraft.value !== nextVemrBbMult) vemrBbMultDraft.value = nextVemrBbMult
+    if (vemrAtrPeriodDraft.value !== nextVemrAtrPeriod) vemrAtrPeriodDraft.value = nextVemrAtrPeriod
+    if (vemrAtrStopMultDraft.value !== nextVemrAtrStopMult) vemrAtrStopMultDraft.value = nextVemrAtrStopMult
+    if (vemrConfirmBarsDraft.value !== nextVemrConfirmBars) vemrConfirmBarsDraft.value = nextVemrConfirmBars
+    if (vemrMaxTradeBarsDraft.value !== nextVemrMaxTradeBars) vemrMaxTradeBarsDraft.value = nextVemrMaxTradeBars
+  },
+  { immediate: true },
+)
 watch(exitMode, (v) => {
   const next = String(v || 'cross')
   if (exitModeDraft.value !== next) exitModeDraft.value = next
   syncLegacyStrategyVisibility()
 }, { immediate: true })
-watch(kaufmanStopPeriod, (v) => { const next = String(v || '22'); if (kaufmanPeriodDraft.value !== next) kaufmanPeriodDraft.value = next }, { immediate: true })
-watch(kaufmanStopMult, (v) => { const next = String(v || '2.0'); if (kaufmanMultDraft.value !== next) kaufmanMultDraft.value = next }, { immediate: true })
-watch(kaufmanStopMaType, (v) => { const next = String(v || 'sma'); if (kaufmanTypeDraft.value !== next) kaufmanTypeDraft.value = next }, { immediate: true })
 watch(strategyKindNormalized, () => {
   syncLegacyStrategyVisibility()
 }, { flush: 'post' })
@@ -173,6 +401,8 @@ watch(updatedAtUnixMs, () => {
 function setInputValue(id: string, nextValue: string): void {
   strategyStore.setInputField(id, nextValue)
 }
+
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setSelectValue(id: string, nextValue: string): void {
   strategyStore.setSelectField(id, nextValue)
@@ -371,6 +601,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   clearCompatListeners()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueStrategy
@@ -415,7 +646,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="feeDraft"
-              @input="feeDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('feeBps', feeDraft)"
+              @input="feeDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('feeBps', feeDraft)"
+              @change="commitInputValue('feeBps', feeDraft)"
             />
           </div>
           <div>
@@ -426,7 +658,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="spreadDraft"
-              @input="spreadDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('spreadBps', spreadDraft)"
+              @input="spreadDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('spreadBps', spreadDraft)"
+              @change="commitInputValue('spreadBps', spreadDraft)"
             />
           </div>
           <div>
@@ -437,7 +670,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.01"
               :value="slippageDraft"
-              @input="slippageDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('slippageBps', slippageDraft)"
+              @input="slippageDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('slippageBps', slippageDraft)"
+              @change="commitInputValue('slippageBps', slippageDraft)"
             />
           </div>
         </div>
@@ -454,7 +688,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.0001"
               :value="epsDraft"
-              @input="epsDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('epsRel', epsDraft)"
+              @input="epsDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('epsRel', epsDraft)"
+              @change="commitInputValue('epsRel', epsDraft)"
             />
           </div>
           <div class="muted inlineMeta mono">{{ costHint }}</div>
@@ -471,7 +706,8 @@ onBeforeUnmount(() => {
             min="0.01"
             step="1"
             :value="equityDraft"
-            @input="equityDraft = String(($event.target as HTMLInputElement).value || '10000'); setInputValue('startingEquity', equityDraft)"
+            @input="equityDraft = String(($event.target as HTMLInputElement).value || '10000'); queueInputValue('startingEquity', equityDraft)"
+            @change="commitInputValue('startingEquity', equityDraft)"
           />
         </div>
 
@@ -484,7 +720,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.0001"
               :value="slDraft"
-              @input="slDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('stopLossPct', slDraft)"
+              @input="slDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('stopLossPct', slDraft)"
+              @change="commitInputValue('stopLossPct', slDraft)"
             />
           </div>
           <div>
@@ -495,7 +732,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.0001"
               :value="tpDraft"
-              @input="tpDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('takeProfitPct', tpDraft)"
+              @input="tpDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('takeProfitPct', tpDraft)"
+              @change="commitInputValue('takeProfitPct', tpDraft)"
             />
           </div>
           <div>
@@ -506,7 +744,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.0001"
               :value="trailingDraft"
-              @input="trailingDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('trailingStopPct', trailingDraft)"
+              @input="trailingDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('trailingStopPct', trailingDraft)"
+              @change="commitInputValue('trailingStopPct', trailingDraft)"
             />
           </div>
         </div>
@@ -520,7 +759,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="cooldownDraft"
-              @input="cooldownDraft = String(($event.target as HTMLInputElement).value || '0'); setInputValue('cooldownBars', cooldownDraft)"
+              @input="cooldownDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('cooldownBars', cooldownDraft)"
+              @change="commitInputValue('cooldownBars', cooldownDraft)"
             />
           </div>
           <div>
@@ -531,7 +771,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="persistenceDraft"
-              @input="persistenceDraft = String(($event.target as HTMLInputElement).value || '1'); setInputValue('signalPersistenceBars', persistenceDraft)"
+              @input="persistenceDraft = String(($event.target as HTMLInputElement).value || '1'); queueInputValue('signalPersistenceBars', persistenceDraft)"
+              @change="commitInputValue('signalPersistenceBars', persistenceDraft)"
             />
           </div>
         </div>
@@ -548,7 +789,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="minTradesDraft"
-              @input="minTradesDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('dmConstraintMinTrades', minTradesDraft)"
+              @input="minTradesDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('dmConstraintMinTrades', minTradesDraft)"
+              @change="commitInputValue('dmConstraintMinTrades', minTradesDraft)"
             />
           </div>
           <div>
@@ -559,7 +801,8 @@ onBeforeUnmount(() => {
               min="0"
               step="0.0001"
               :value="maxDdDraft"
-              @input="maxDdDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('dmConstraintMaxDd', maxDdDraft)"
+              @input="maxDdDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('dmConstraintMaxDd', maxDdDraft)"
+              @change="commitInputValue('dmConstraintMaxDd', maxDdDraft)"
             />
           </div>
         </div>
@@ -593,7 +836,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="kaufmanPeriodDraft"
-              @input="kaufmanPeriodDraft = String(($event.target as HTMLInputElement).value || '22'); setInputValue('kaufmanStopPeriod', kaufmanPeriodDraft)"
+              @input="kaufmanPeriodDraft = String(($event.target as HTMLInputElement).value || '22'); queueInputValue('kaufmanStopPeriod', kaufmanPeriodDraft)"
+              @change="commitInputValue('kaufmanStopPeriod', kaufmanPeriodDraft)"
             />
           </div>
           <div v-if="showKaufmanFields">
@@ -604,7 +848,8 @@ onBeforeUnmount(() => {
               min="0.0001"
               step="0.01"
               :value="kaufmanMultDraft"
-              @input="kaufmanMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); setInputValue('kaufmanStopMult', kaufmanMultDraft)"
+              @input="kaufmanMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('kaufmanStopMult', kaufmanMultDraft)"
+              @change="commitInputValue('kaufmanStopMult', kaufmanMultDraft)"
             />
           </div>
           <div v-if="showKaufmanFields">
@@ -613,8 +858,231 @@ onBeforeUnmount(() => {
               id="vueKaufmanType"
               type="text"
               :value="kaufmanTypeDraft"
-              @input="kaufmanTypeDraft = String(($event.target as HTMLInputElement).value || 'sma'); setInputValue('kaufmanStopMaType', kaufmanTypeDraft)"
+              @input="kaufmanTypeDraft = String(($event.target as HTMLInputElement).value || 'sma'); queueInputValue('kaufmanStopMaType', kaufmanTypeDraft)"
+              @change="commitInputValue('kaufmanStopMaType', kaufmanTypeDraft)"
             />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" v-if="showAsrControls">
+        <h3>ASR parameters</h3>
+        <div class="rowThree">
+          <div>
+            <label for="vueAsrSqueezeBbMult">Squeeze BB mult</label>
+            <input id="vueAsrSqueezeBbMult" type="number" min="0.0001" step="0.01" :value="asrSqueezeBbMultDraft" @input="asrSqueezeBbMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('asrSqueezeBbMult', asrSqueezeBbMultDraft)" @change="commitInputValue('asrSqueezeBbMult', asrSqueezeBbMultDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrSqueezeKcMult">Squeeze KC mult</label>
+            <input id="vueAsrSqueezeKcMult" type="number" min="0.0001" step="0.01" :value="asrSqueezeKcMultDraft" @input="asrSqueezeKcMultDraft = String(($event.target as HTMLInputElement).value || '1.5'); queueInputValue('asrSqueezeKcMult', asrSqueezeKcMultDraft)" @change="commitInputValue('asrSqueezeKcMult', asrSqueezeKcMultDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrUseErFilter">Use ER filter</label>
+            <input id="vueAsrUseErFilter" type="checkbox" :checked="Boolean(asrUseErFilter)" @change="strategyStore.setCheckboxField('asrUseErFilter', !!(($event.target as HTMLInputElement).checked))" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueAsrAngleMin">Angle min (deg)</label>
+            <input id="vueAsrAngleMin" type="number" min="0" step="0.1" :value="asrAngleDegMinDraft" @input="asrAngleDegMinDraft = String(($event.target as HTMLInputElement).value || '10.0'); queueInputValue('asrAngleDegMin', asrAngleDegMinDraft)" @change="commitInputValue('asrAngleDegMin', asrAngleDegMinDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrAngleMr">Angle MR (deg)</label>
+            <input id="vueAsrAngleMr" type="number" min="0" step="0.1" :value="asrAngleDegMrDraft" @input="asrAngleDegMrDraft = String(($event.target as HTMLInputElement).value || '6.0'); queueInputValue('asrAngleDegMr', asrAngleDegMrDraft)" @change="commitInputValue('asrAngleDegMr', asrAngleDegMrDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrErMin">ER min</label>
+            <input id="vueAsrErMin" type="number" min="0" step="0.01" :value="asrErMinDraft" @input="asrErMinDraft = String(($event.target as HTMLInputElement).value || '0.30'); queueInputValue('asrErMin', asrErMinDraft)" @change="commitInputValue('asrErMin', asrErMinDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueAsrErMr">ER MR</label>
+            <input id="vueAsrErMr" type="number" min="0" step="0.01" :value="asrErMrDraft" @input="asrErMrDraft = String(($event.target as HTMLInputElement).value || '0.25'); queueInputValue('asrErMr', asrErMrDraft)" @change="commitInputValue('asrErMr', asrErMrDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrZEntry">Z entry</label>
+            <input id="vueAsrZEntry" type="number" min="0" step="0.1" :value="asrZEntryDraft" @input="asrZEntryDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('asrZEntry', asrZEntryDraft)" @change="commitInputValue('asrZEntry', asrZEntryDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrZExit">Z exit</label>
+            <input id="vueAsrZExit" type="number" min="0" step="0.1" :value="asrZExitDraft" @input="asrZExitDraft = String(($event.target as HTMLInputElement).value || '0.5'); queueInputValue('asrZExit', asrZExitDraft)" @change="commitInputValue('asrZExit', asrZExitDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueAsrConfirmBars">Confirm bars</label>
+            <input id="vueAsrConfirmBars" type="number" min="0" step="1" :value="asrConfirmBarsDraft" @input="asrConfirmBarsDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('asrConfirmBars', asrConfirmBarsDraft)" @change="commitInputValue('asrConfirmBars', asrConfirmBarsDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrMomFadeBars">Momentum fade bars</label>
+            <input id="vueAsrMomFadeBars" type="number" min="1" step="1" :value="asrMomFadeBarsDraft" @input="asrMomFadeBarsDraft = String(($event.target as HTMLInputElement).value || '2'); queueInputValue('asrMomFadeBars', asrMomFadeBarsDraft)" @change="commitInputValue('asrMomFadeBars', asrMomFadeBarsDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrMaxTradeBars">Max trend bars</label>
+            <input id="vueAsrMaxTradeBars" type="number" min="1" step="1" :value="asrMaxTradeBarsDraft" @input="asrMaxTradeBarsDraft = String(($event.target as HTMLInputElement).value || '80'); queueInputValue('asrMaxTradeBars', asrMaxTradeBarsDraft)" @change="commitInputValue('asrMaxTradeBars', asrMaxTradeBarsDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueAsrMaxMrTradeBars">Max MR bars</label>
+            <input id="vueAsrMaxMrTradeBars" type="number" min="1" step="1" :value="asrMaxMrTradeBarsDraft" @input="asrMaxMrTradeBarsDraft = String(($event.target as HTMLInputElement).value || '30'); queueInputValue('asrMaxMrTradeBars', asrMaxMrTradeBarsDraft)" @change="commitInputValue('asrMaxMrTradeBars', asrMaxMrTradeBarsDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrZMaType">Z MA type</label>
+            <input id="vueAsrZMaType" type="text" :value="asrZMaTypeDraft" @input="asrZMaTypeDraft = String(($event.target as HTMLInputElement).value || 'sma'); queueInputValue('asrZMaType', asrZMaTypeDraft)" @change="commitInputValue('asrZMaType', asrZMaTypeDraft)" />
+          </div>
+          <div>
+            <label for="vueAsrZNbdev">Z nbdev</label>
+            <input id="vueAsrZNbdev" type="number" min="0.0001" step="0.1" :value="asrZNbdevDraft" @input="asrZNbdevDraft = String(($event.target as HTMLInputElement).value || '1.0'); queueInputValue('asrZNbdev', asrZNbdevDraft)" @change="commitInputValue('asrZNbdev', asrZNbdevDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueAsrZDevtype">Z devtype</label>
+            <input id="vueAsrZDevtype" type="number" min="0" step="1" :value="asrZDevtypeDraft" @input="asrZDevtypeDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('asrZDevtype', asrZDevtypeDraft)" @change="commitInputValue('asrZDevtype', asrZDevtypeDraft)" />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" v-if="showVccControls">
+        <h3>VCC parameters</h3>
+        <div class="rowTwo">
+          <label class="checkboxRow" for="vueVccMapFastToSqueeze">
+            <input id="vueVccMapFastToSqueeze" type="checkbox" :checked="Boolean(vccMapFastToSqueezePeriod)" @change="strategyStore.setCheckboxField('vccMapFastToSqueezePeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map fast length to squeeze period</span>
+          </label>
+          <label class="checkboxRow" for="vueVccMapFastToMomentum">
+            <input id="vueVccMapFastToMomentum" type="checkbox" :checked="Boolean(vccMapFastToMomentumPeriod)" @change="strategyStore.setCheckboxField('vccMapFastToMomentumPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map fast length to momentum period</span>
+          </label>
+        </div>
+        <div class="rowTwo">
+          <label class="checkboxRow" for="vueVccMapSlowToTrend">
+            <input id="vueVccMapSlowToTrend" type="checkbox" :checked="Boolean(vccMapSlowToTrendPeriod)" @change="strategyStore.setCheckboxField('vccMapSlowToTrendPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map slow length to trend period</span>
+          </label>
+          <label class="checkboxRow" for="vueVccRequireMomentumAccel">
+            <input id="vueVccRequireMomentumAccel" type="checkbox" :checked="Boolean(vccRequireMomentumAccel)" @change="strategyStore.setCheckboxField('vccRequireMomentumAccel', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Require momentum acceleration</span>
+          </label>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVccSqueezePeriod">Squeeze period</label>
+            <input id="vueVccSqueezePeriod" type="number" min="1" step="1" :disabled="Boolean(vccMapFastToSqueezePeriod)" :value="vccSqueezePeriodDraft" @input="vccSqueezePeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('vccSqueezePeriod', vccSqueezePeriodDraft)" @change="commitInputValue('vccSqueezePeriod', vccSqueezePeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVccMomentumPeriod">Momentum period</label>
+            <input id="vueVccMomentumPeriod" type="number" min="1" step="1" :disabled="Boolean(vccMapFastToMomentumPeriod)" :value="vccMomentumPeriodDraft" @input="vccMomentumPeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('vccMomentumPeriod', vccMomentumPeriodDraft)" @change="commitInputValue('vccMomentumPeriod', vccMomentumPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVccMomentumBbPeriod">Momentum BB period</label>
+            <input id="vueVccMomentumBbPeriod" type="number" min="1" step="1" :value="vccMomentumBbPeriodDraft" @input="vccMomentumBbPeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('vccMomentumBbPeriod', vccMomentumBbPeriodDraft)" @change="commitInputValue('vccMomentumBbPeriod', vccMomentumBbPeriodDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVccTrendPeriod">Trend period</label>
+            <input id="vueVccTrendPeriod" type="number" min="1" step="1" :disabled="Boolean(vccMapSlowToTrendPeriod)" :value="vccTrendPeriodDraft" @input="vccTrendPeriodDraft = String(($event.target as HTMLInputElement).value || '6'); queueInputValue('vccTrendPeriod', vccTrendPeriodDraft)" @change="commitInputValue('vccTrendPeriod', vccTrendPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVccSqueezeBbMult">Squeeze BB mult</label>
+            <input id="vueVccSqueezeBbMult" type="number" min="0.0001" step="0.01" :value="vccSqueezeBbMultDraft" @input="vccSqueezeBbMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('vccSqueezeBbMult', vccSqueezeBbMultDraft)" @change="commitInputValue('vccSqueezeBbMult', vccSqueezeBbMultDraft)" />
+          </div>
+          <div>
+            <label for="vueVccSqueezeKcMult">Squeeze KC mult</label>
+            <input id="vueVccSqueezeKcMult" type="number" min="0.0001" step="0.01" :value="vccSqueezeKcMultDraft" @input="vccSqueezeKcMultDraft = String(($event.target as HTMLInputElement).value || '1.5'); queueInputValue('vccSqueezeKcMult', vccSqueezeKcMultDraft)" @change="commitInputValue('vccSqueezeKcMult', vccSqueezeKcMultDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVccConfirmBars">Confirm bars</label>
+            <input id="vueVccConfirmBars" type="number" min="0" step="1" :value="vccConfirmBarsDraft" @input="vccConfirmBarsDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('vccConfirmBars', vccConfirmBarsDraft)" @change="commitInputValue('vccConfirmBars', vccConfirmBarsDraft)" />
+          </div>
+          <div>
+            <label for="vueVccMaxTradeBars">Max trade bars</label>
+            <input id="vueVccMaxTradeBars" type="number" min="1" step="1" :value="vccMaxTradeBarsDraft" @input="vccMaxTradeBarsDraft = String(($event.target as HTMLInputElement).value || '120'); queueInputValue('vccMaxTradeBars', vccMaxTradeBarsDraft)" @change="commitInputValue('vccMaxTradeBars', vccMaxTradeBarsDraft)" />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" v-if="showVemrControls">
+        <h3>VEMR parameters</h3>
+        <div class="rowTwo">
+          <label class="checkboxRow" for="vueVemrMapFastToZ">
+            <input id="vueVemrMapFastToZ" type="checkbox" :checked="Boolean(vemrMapFastToZPeriod)" @change="strategyStore.setCheckboxField('vemrMapFastToZPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map fast length to Z period</span>
+          </label>
+          <label class="checkboxRow" for="vueVemrMapFastToBb">
+            <input id="vueVemrMapFastToBb" type="checkbox" :checked="Boolean(vemrMapFastToBbPeriod)" @change="strategyStore.setCheckboxField('vemrMapFastToBbPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map fast length to BB period</span>
+          </label>
+        </div>
+        <div class="rowTwo">
+          <label class="checkboxRow" for="vueVemrMapSlowToAtr">
+            <input id="vueVemrMapSlowToAtr" type="checkbox" :checked="Boolean(vemrMapSlowToAtrPeriod)" @change="strategyStore.setCheckboxField('vemrMapSlowToAtrPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map slow length to ATR period</span>
+          </label>
+          <label class="checkboxRow" for="vueVemrRequireBandTouch">
+            <input id="vueVemrRequireBandTouch" type="checkbox" :checked="Boolean(vemrRequireBandTouch)" @change="strategyStore.setCheckboxField('vemrRequireBandTouch', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Require BB band touch on entry</span>
+          </label>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVemrZPeriod">Z period</label>
+            <input id="vueVemrZPeriod" type="number" min="1" step="1" :disabled="Boolean(vemrMapFastToZPeriod)" :value="vemrZPeriodDraft" @input="vemrZPeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('vemrZPeriod', vemrZPeriodDraft)" @change="commitInputValue('vemrZPeriod', vemrZPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrZEntry">Z entry</label>
+            <input id="vueVemrZEntry" type="number" min="0.0001" step="0.1" :value="vemrZEntryDraft" @input="vemrZEntryDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('vemrZEntry', vemrZEntryDraft)" @change="commitInputValue('vemrZEntry', vemrZEntryDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrZExit">Z exit</label>
+            <input id="vueVemrZExit" type="number" min="0" step="0.1" :value="vemrZExitDraft" @input="vemrZExitDraft = String(($event.target as HTMLInputElement).value || '0.5'); queueInputValue('vemrZExit', vemrZExitDraft)" @change="commitInputValue('vemrZExit', vemrZExitDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVemrZMaType">Z MA type</label>
+            <input id="vueVemrZMaType" type="text" :value="vemrZMaTypeDraft" @input="vemrZMaTypeDraft = String(($event.target as HTMLInputElement).value || 'sma'); queueInputValue('vemrZMaType', vemrZMaTypeDraft)" @change="commitInputValue('vemrZMaType', vemrZMaTypeDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrZNbdev">Z nbdev</label>
+            <input id="vueVemrZNbdev" type="number" min="0.0001" step="0.1" :value="vemrZNbdevDraft" @input="vemrZNbdevDraft = String(($event.target as HTMLInputElement).value || '1.0'); queueInputValue('vemrZNbdev', vemrZNbdevDraft)" @change="commitInputValue('vemrZNbdev', vemrZNbdevDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrZDevtype">Z devtype</label>
+            <input id="vueVemrZDevtype" type="number" min="0" step="1" :value="vemrZDevtypeDraft" @input="vemrZDevtypeDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('vemrZDevtype', vemrZDevtypeDraft)" @change="commitInputValue('vemrZDevtype', vemrZDevtypeDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVemrBbPeriod">BB period</label>
+            <input id="vueVemrBbPeriod" type="number" min="1" step="1" :disabled="Boolean(vemrMapFastToBbPeriod)" :value="vemrBbPeriodDraft" @input="vemrBbPeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('vemrBbPeriod', vemrBbPeriodDraft)" @change="commitInputValue('vemrBbPeriod', vemrBbPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrBbMult">BB multiplier</label>
+            <input id="vueVemrBbMult" type="number" min="0.0001" step="0.1" :value="vemrBbMultDraft" @input="vemrBbMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('vemrBbMult', vemrBbMultDraft)" @change="commitInputValue('vemrBbMult', vemrBbMultDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrAtrPeriod">ATR period</label>
+            <input id="vueVemrAtrPeriod" type="number" min="1" step="1" :disabled="Boolean(vemrMapSlowToAtrPeriod)" :value="vemrAtrPeriodDraft" @input="vemrAtrPeriodDraft = String(($event.target as HTMLInputElement).value || '14'); queueInputValue('vemrAtrPeriod', vemrAtrPeriodDraft)" @change="commitInputValue('vemrAtrPeriod', vemrAtrPeriodDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVemrAtrStopMult">ATR stop mult</label>
+            <input id="vueVemrAtrStopMult" type="number" min="0.0001" step="0.1" :value="vemrAtrStopMultDraft" @input="vemrAtrStopMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('vemrAtrStopMult', vemrAtrStopMultDraft)" @change="commitInputValue('vemrAtrStopMult', vemrAtrStopMultDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrConfirmBars">Confirm bars</label>
+            <input id="vueVemrConfirmBars" type="number" min="0" step="1" :value="vemrConfirmBarsDraft" @input="vemrConfirmBarsDraft = String(($event.target as HTMLInputElement).value || '0'); queueInputValue('vemrConfirmBars', vemrConfirmBarsDraft)" @change="commitInputValue('vemrConfirmBars', vemrConfirmBarsDraft)" />
+          </div>
+          <div>
+            <label for="vueVemrMaxTradeBars">Max trade bars</label>
+            <input id="vueVemrMaxTradeBars" type="number" min="1" step="1" :value="vemrMaxTradeBarsDraft" @input="vemrMaxTradeBarsDraft = String(($event.target as HTMLInputElement).value || '80'); queueInputValue('vemrMaxTradeBars', vemrMaxTradeBarsDraft)" @change="commitInputValue('vemrMaxTradeBars', vemrMaxTradeBarsDraft)" />
           </div>
         </div>
       </section>
@@ -681,6 +1149,13 @@ onBeforeUnmount(() => {
 
 .inlineMeta {
   align-self: end;
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
 }
 
 .status {

@@ -91,7 +91,7 @@ const META_TABLE_COLUMNS: MetaTableColumn[] = markRaw([
   { label: 'H DD p90', alignLeft: false },
   { label: 'Fast', alignLeft: true },
   { label: 'Slow', alignLeft: true },
-  { label: 'Params', alignLeft: true },
+  { label: 'Params', alignLeft: true }
 ]) as MetaTableColumn[]
 
 const ANALYSIS_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -119,7 +119,7 @@ const ANALYSIS_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   metaStage4UncertaintyWeight: { key: 'metaStage4UncertaintyWeight' },
   metaStage4AcceptConf: { key: 'metaStage4AcceptConf' },
   metaStage4ReviewConf: { key: 'metaStage4ReviewConf' },
-  metaStage4MaxAcceptUncertainty: { key: 'metaStage4MaxAcceptUncertainty' },
+  metaStage4MaxAcceptUncertainty: { key: 'metaStage4MaxAcceptUncertainty' }
 }
 
 const ANALYSIS_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -129,7 +129,7 @@ const ANALYSIS_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   batchSkipDone: { key: 'batchSkipDone' },
   metaStage4AutoTrain: { key: 'metaStage4AutoTrain' },
   metaStage4RequireHealthy: { key: 'metaStage4RequireHealthy' },
-  metaStage4FallbackToMeta: { key: 'metaStage4FallbackToMeta' },
+  metaStage4FallbackToMeta: { key: 'metaStage4FallbackToMeta' }
 }
 
 const VALIDATION_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -139,12 +139,12 @@ const VALIDATION_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbIters: { key: 'perturbIters' },
   valPerturbMin: { key: 'perturbMin' },
   valPerturbMax: { key: 'perturbMax' },
-  valMcSims: { key: 'mcSims' },
+  valMcSims: { key: 'mcSims' }
 }
 
 const VALIDATION_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbEnable: { key: 'perturbEnable' },
-  valMcEnable: { key: 'mcEnable' },
+  valMcEnable: { key: 'mcEnable' }
 }
 
 let LAST_META_RUN: Record<string, unknown> | null = null
@@ -313,7 +313,7 @@ function patchAnalysisStore(patch: Record<string, unknown>): void {
 
 function setStatusLine(message: string): void {
   patchAnalysisStore({
-    statusLine: normalizeText(message) || 'Ready.',
+    statusLine: normalizeText(message) || 'Ready.'
   })
 }
 
@@ -433,7 +433,7 @@ function tryBuildAutoMetaRequest(): Record<string, unknown> | null {
     valPerturbMin: readStoreTextInputValue('valPerturbMin'),
     valPerturbMax: readStoreTextInputValue('valPerturbMax'),
     valMcEnable: readStoreCheckboxValue('valMcEnable'),
-    valMcSims: readStoreTextInputValue('valMcSims'),
+    valMcSims: readStoreTextInputValue('valMcSims')
   })
 }
 
@@ -448,7 +448,7 @@ function tryBuildAutoMetaBatchRequest(): Record<string, unknown> | null {
     holdoutTag: readStoreTextInputValue('batchHoldoutTag'),
     autoMeta: readStoreCheckboxValue('batchAutoMeta'),
     skipDone: readStoreCheckboxValue('batchSkipDone'),
-    tags: readStoreTextInputValue('batchTags'),
+    tags: readStoreTextInputValue('batchTags')
   })
 }
 
@@ -466,14 +466,14 @@ function tryBuildAutoMetaStage4Request(): Record<string, unknown> | null {
     maxAcceptUncertainty: readStoreTextInputValue('metaStage4MaxAcceptUncertainty'),
     autoTrainModel: readStoreCheckboxValue('metaStage4AutoTrain'),
     requireHealthyModel: readStoreCheckboxValue('metaStage4RequireHealthy'),
-    fallbackToMetaIfEmpty: readStoreCheckboxValue('metaStage4FallbackToMeta'),
+    fallbackToMetaIfEmpty: readStoreCheckboxValue('metaStage4FallbackToMeta')
   })
 }
 
 function tryBuildAutoMetaMlScope(): Record<string, unknown> | null {
   return buildMetaMlScope({
     strategyKind: readStoreTextInputValue('metaStrategyKind'),
-    timeframe: readStoreTextInputValue('metaTimeframe'),
+    timeframe: readStoreTextInputValue('metaTimeframe')
   })
 }
 
@@ -484,11 +484,14 @@ function currentMetaScope(): { strategy_kind: string; timeframe: string } {
   const timeframe = normalizeText(result?.timeframe ?? store?.metaTimeframe)
   return {
     strategy_kind: strategy,
-    timeframe,
+    timeframe
   }
 }
 
-function normalizeMlScope(scopeValue: unknown): { strategy_kind: string; timeframe: string } {
+function normalizeMlScope(scopeValue: unknown): {
+  strategy_kind: string
+  timeframe: string
+} {
   const payload = normalizeRequestPayload(scopeValue)
   if (payload) {
     const strategyKind = normalizeText(payload.strategy_kind ?? payload.strategyKind) || currentMetaScope().strategy_kind
@@ -523,36 +526,16 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
     const slow = `${normalizeText(params.slow_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.slow_len || 0)))}`.trim()
 
     const finalScore = Number(group.final_score)
-    const rankScore = Number.isFinite(finalScore)
-      ? finalScore
-      : Number(group.meta_score || 0)
+    const rankScore = Number.isFinite(finalScore) ? finalScore : Number(group.meta_score || 0)
 
-    const cells = [
-      String(index + 1),
-      String(Math.max(0, Math.floor(Number(group.samples || 0)))),
-      fmtPct(group.pass_rate, 1),
-      fmtFixed(rankScore, 6),
-      Number.isFinite(Number(group.ml_confidence)) ? fmtPct(group.ml_confidence, 1) : '-',
-      fmtFixed(group.robust_score_p10, 6),
-      fmtFixed(group.robust_score_median, 6),
-      fmtFixed(group.max_dd_p90, 6),
-      fmtFixed(group.psr_median, 4),
-      fmtFixed(group.dsr_median, 4),
-      holdout ? fmtPct(holdout.pass_rate, 1) : '-',
-      holdout ? fmtFixed(holdout.score_p10, 6) : '-',
-      holdout ? fmtFixed(holdout.score_median, 6) : '-',
-      holdout ? fmtFixed(holdout.max_dd_p90, 6) : '-',
-      fast,
-      slow,
-      formatParamsCompact(params) || pretty(params),
-    ]
+    const cells = [String(index + 1), String(Math.max(0, Math.floor(Number(group.samples || 0)))), fmtPct(group.pass_rate, 1), fmtFixed(rankScore, 6), Number.isFinite(Number(group.ml_confidence)) ? fmtPct(group.ml_confidence, 1) : '-', fmtFixed(group.robust_score_p10, 6), fmtFixed(group.robust_score_median, 6), fmtFixed(group.max_dd_p90, 6), fmtFixed(group.psr_median, 4), fmtFixed(group.dsr_median, 4), holdout ? fmtPct(holdout.pass_rate, 1) : '-', holdout ? fmtFixed(holdout.score_p10, 6) : '-', holdout ? fmtFixed(holdout.score_median, 6) : '-', holdout ? fmtFixed(holdout.max_dd_p90, 6) : '-', fast, slow, formatParamsCompact(params) || pretty(params)]
 
     rows.push({
       cells: cells.map((text, cellIndex) => ({
         text,
         className: cellIndex >= 14 ? 'left' : '',
-        title: '',
-      })),
+        title: ''
+      }))
     })
   }
   return rows
@@ -572,28 +555,16 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const metaPath = normalizePath(resp?.meta_json_path)
 
   const warnText = warnings.length ? ` · warn=${warnings.length}` : ''
-  const holdoutText = holdoutDatasets
-    ? ` · holdout=${holdoutDatasets}${holdoutSkipped ? ` (skipped ${holdoutSkipped})` : ''}`
-    : ''
-  const rankMode = groups.some((group) => Number.isFinite(Number(group.final_score)))
-    ? ' · rank=holdout-adjusted'
-    : ''
+  const holdoutText = holdoutDatasets ? ` · holdout=${holdoutDatasets}${holdoutSkipped ? ` (skipped ${holdoutSkipped})` : ''}` : ''
+  const rankMode = groups.some((group) => Number.isFinite(Number(group.final_score))) ? ' · rank=holdout-adjusted' : ''
 
-  const metaMeta = result
-    ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${rankMode}${warnText}`
-    : '—'
+  const metaMeta = result ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${rankMode}${warnText}` : '—'
 
   const latestGroups = String(groups.length)
-  const latestArtifacts = result
-    ? `${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))}`
-    : '—'
-  const latestHoldout = holdoutDatasets
-    ? `${holdoutDatasets}${holdoutSkipped ? ` (skip ${holdoutSkipped})` : ''}`
-    : (result ? '0' : '—')
+  const latestArtifacts = result ? `${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))}` : '—'
+  const latestHoldout = holdoutDatasets ? `${holdoutDatasets}${holdoutSkipped ? ` (skip ${holdoutSkipped})` : ''}` : result ? '0' : '—'
   const runtimeMs = Math.max(0, Math.floor(Number(result?.runtime_ms || 0)))
-  const latestRuntime = result
-    ? (runtimeMs >= 1000 ? `${(runtimeMs / 1000).toFixed(2)}s` : `${runtimeMs}ms`)
-    : '—'
+  const latestRuntime = result ? (runtimeMs >= 1000 ? `${(runtimeMs / 1000).toFixed(2)}s` : `${runtimeMs}ms`) : '—'
 
   patchAnalysisStore({
     metaMeta,
@@ -606,7 +577,7 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
     aggregateSummaryLatestArtifacts: latestArtifacts,
     aggregateSummaryLatestHoldout: latestHoldout,
     aggregateSummaryLatestRuntime: latestRuntime,
-    statusLine: reportPath ? `Meta complete. Saved report: ${reportPath}` : (result ? 'Meta complete.' : 'Ready.'),
+    statusLine: reportPath ? `Meta complete. Saved report: ${reportPath}` : result ? 'Meta complete.' : 'Ready.'
   })
 
   if (!resp || previousMetaPath !== metaPath) {
@@ -614,7 +585,7 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
     patchAnalysisStore({
       metaStage4Status: '—',
       metaStage4OutputPreview: '-',
-      canRevealMetaStage4: false,
+      canRevealMetaStage4: false
     })
   }
 
@@ -632,22 +603,16 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   if (!result || groups.length === 0) {
     patchAnalysisStore({
       metaStage4Status: '—',
-      metaStage4OutputPreview: '-',
+      metaStage4OutputPreview: '-'
     })
     updateMetaStage4Buttons()
     return
   }
 
   const lines: string[] = []
-  lines.push(
-    `scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} min_ml=${fmtFixed(result.min_ml_confidence, 3)}`,
-  )
-  lines.push(
-    `weights(meta/ml/unc)=${fmtFixed(result.meta_weight, 3)}/${fmtFixed(result.ml_weight, 3)}/${fmtFixed(result.uncertainty_weight, 3)} buckets(accept/review/reject)=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}`,
-  )
-  lines.push(
-    `policy accept>=${fmtFixed(result.accept_confidence, 3)} review>=${fmtFixed(result.review_confidence, 3)} max_accept_unc=${fmtFixed(result.max_accept_uncertainty, 3)}`,
-  )
+  lines.push(`scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} min_ml=${fmtFixed(result.min_ml_confidence, 3)}`)
+  lines.push(`weights(meta/ml/unc)=${fmtFixed(result.meta_weight, 3)}/${fmtFixed(result.ml_weight, 3)}/${fmtFixed(result.uncertainty_weight, 3)} buckets(accept/review/reject)=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}`)
+  lines.push(`policy accept>=${fmtFixed(result.accept_confidence, 3)} review>=${fmtFixed(result.review_confidence, 3)} max_accept_unc=${fmtFixed(result.max_accept_uncertainty, 3)}`)
 
   for (let index = 0; index < groups.length; index += 1) {
     const row = groups[index] ?? {}
@@ -659,20 +624,23 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
     const fast = `${normalizeText(params.fast_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.fast_len || 0)))}`.trim()
     const slow = `${normalizeText(params.slow_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.slow_len || 0)))}`.trim()
     const finalRank = Number(row.final_rank_score)
-    const rankScore = Number.isFinite(finalRank)
-      ? finalRank
-      : (Number.isFinite(Number(row.final_score)) ? Number(row.final_score) : Number(row.meta_score || 0))
+    const rankScore = Number.isFinite(finalRank) ? finalRank : Number.isFinite(Number(row.final_score)) ? Number(row.final_score) : Number(row.meta_score || 0)
     lines.push(`#${rank} ${bucket} ml=${confText} unc=${uncText} final=${fmtFixed(rankScore, 6)} ${fast} vs ${slow}`.trim())
   }
 
   const warnings = Array.isArray(result.warnings) ? result.warnings : []
   if (warnings.length > 0) {
-    lines.push(`warnings=${warnings.length}: ${warnings.map((item) => normalizeText(item)).filter((item) => item.length > 0).join(' | ')}`)
+    lines.push(
+      `warnings=${warnings.length}: ${warnings
+        .map((item) => normalizeText(item))
+        .filter((item) => item.length > 0)
+        .join(' | ')}`
+    )
   }
 
   patchAnalysisStore({
     metaStage4Status: `Stage 4 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))} · file=${path ? fileBasename(path) : '—'}`,
-    metaStage4OutputPreview: lines.join('\n'),
+    metaStage4OutputPreview: lines.join('\n')
   })
 
   updateMetaStage4Buttons()
@@ -701,7 +669,7 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   const modelMeta = asRecord(model?.meta)
   const modelPath = normalizePath(status.model_path)
 
-  const healthy = modelMeta?.healthy === false ? 'UNHEALTHY' : (modelMeta?.healthy === true ? 'healthy' : 'unknown')
+  const healthy = modelMeta?.healthy === false ? 'UNHEALTHY' : modelMeta?.healthy === true ? 'healthy' : 'unknown'
   const target = normalizeText(modelMeta?.target)
   const trainedRows = Number(modelMeta?.trained_rows)
   const auc = Number(modelMeta?.cv_auc)
@@ -709,11 +677,7 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   const brier = Number.isFinite(brierRaw) ? brierRaw : Number(modelMeta?.cv_brier)
   const baselineBrier = Number(modelMeta?.baseline_brier)
 
-  const parts = [
-    `Model: ${fileBasename(modelPath) || modelPath || 'model.json'}`,
-    `bytes=${Math.max(0, Math.floor(Number(status.bytes || 0)))}`,
-    healthy,
-  ]
+  const parts = [`Model: ${fileBasename(modelPath) || modelPath || 'model.json'}`, `bytes=${Math.max(0, Math.floor(Number(status.bytes || 0)))}`, healthy]
 
   if (target) parts.push(`target=${target}`)
   if (Number.isFinite(trainedRows)) parts.push(`trained_rows=${Math.max(0, Math.floor(trainedRows))}`)
@@ -749,7 +713,7 @@ function updateMetaMlButtons(): void {
     canMetaMlRefresh: hasTf,
     canMetaMlTrain: hasTf,
     canMetaMlApply: hasTf && hasMeta && hasModel,
-    canMetaMlDelete: hasTf && hasModel,
+    canMetaMlDelete: hasTf && hasModel
   })
 }
 
@@ -760,7 +724,7 @@ function updateMetaStage4Buttons(): void {
   const stage4Path = normalizePath(LAST_META_STAGE4_RUN?.stage4_json_path)
   patchAnalysisStore({
     canRunMetaStage4: hasTf && groups.length > 0,
-    canRevealMetaStage4: !!stage4Path,
+    canRevealMetaStage4: !!stage4Path
   })
 }
 
@@ -771,16 +735,8 @@ function filterMetaSaved(items: Record<string, unknown>[], query: string): Recor
   if (terms.length === 0) return items
 
   return items.filter((item) => {
-    const tags = Array.isArray(item.tags)
-      ? item.tags.map((tag) => normalizeText(tag).toLowerCase()).join(' ')
-      : ''
-    const haystack = [
-      normalizeText(item.ts).toLowerCase(),
-      normalizeText(item.strategy_kind).toLowerCase(),
-      normalizeText(item.timeframe).toLowerCase(),
-      normalizeText(item.required_tag).toLowerCase(),
-      tags,
-    ].join(' ')
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => normalizeText(tag).toLowerCase()).join(' ') : ''
+    const haystack = [normalizeText(item.ts).toLowerCase(), normalizeText(item.strategy_kind).toLowerCase(), normalizeText(item.timeframe).toLowerCase(), normalizeText(item.required_tag).toLowerCase(), tags].join(' ')
     return terms.every((term) => haystack.includes(term))
   })
 }
@@ -792,16 +748,8 @@ function filterStage4Saved(items: Record<string, unknown>[], query: string): Rec
   if (terms.length === 0) return items
 
   return items.filter((item) => {
-    const tags = Array.isArray(item.tags)
-      ? item.tags.map((tag) => normalizeText(tag).toLowerCase()).join(' ')
-      : ''
-    const haystack = [
-      normalizeText(item.ts).toLowerCase(),
-      normalizeText(item.strategy_kind).toLowerCase(),
-      normalizeText(item.timeframe).toLowerCase(),
-      normalizeText(item.source_meta_json_path).toLowerCase(),
-      tags,
-    ].join(' ')
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => normalizeText(tag).toLowerCase()).join(' ') : ''
+    const haystack = [normalizeText(item.ts).toLowerCase(), normalizeText(item.strategy_kind).toLowerCase(), normalizeText(item.timeframe).toLowerCase(), normalizeText(item.source_meta_json_path).toLowerCase(), tags].join(' ')
     return terms.every((term) => haystack.includes(term))
   })
 }
@@ -817,30 +765,43 @@ function updateMetaSavedState(preferredPath = ''): void {
   }
 
   const selectedEntry = SAVED_META.find((entry) => normalizePath(entry.path) === selectedPath) ?? null
-  const selectedTags = selectedEntry && Array.isArray(selectedEntry.tags)
-    ? selectedEntry.tags.map((tag) => normalizeText(tag)).filter((tag) => tag.length > 0).join(', ')
-    : ''
+  const selectedTags =
+    selectedEntry && Array.isArray(selectedEntry.tags)
+      ? selectedEntry.tags
+          .map((tag) => normalizeText(tag))
+          .filter((tag) => tag.length > 0)
+          .join(', ')
+      : ''
 
   const metaSavedMeta = selectedEntry
     ? [
-      `ts=${normalizeText(selectedEntry.ts)}`,
-      `strategy=${normalizeText(selectedEntry.strategy_kind) || '—'}`,
-      normalizeText(selectedEntry.timeframe) ? `tf=${normalizeText(selectedEntry.timeframe)}` : '',
-      normalizeText(selectedEntry.required_tag) ? `tag=${normalizeText(selectedEntry.required_tag)}` : '',
-      `groups=${Math.max(0, Math.floor(Number(selectedEntry.groups || 0)))}`,
-      `artifacts=${Math.max(0, Math.floor(Number(selectedEntry.artifacts_used || 0)))}`,
-      Number(selectedEntry.holdout_datasets || 0) > 0 ? `holdout=${Math.max(0, Math.floor(Number(selectedEntry.holdout_datasets || 0)))}` : '',
-      Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
-        ? `tags=${selectedEntry.tags.map((tag) => normalizeText(tag)).filter((tag) => tag.length > 0).join(',')}`
-        : '',
-      selectedEntry.bytes != null ? `bytes=${Math.max(0, Math.floor(Number(selectedEntry.bytes || 0)))}` : '',
-    ].filter((part) => part.length > 0).join(' • ')
+        `ts=${normalizeText(selectedEntry.ts)}`,
+        `strategy=${normalizeText(selectedEntry.strategy_kind) || '—'}`,
+        normalizeText(selectedEntry.timeframe) ? `tf=${normalizeText(selectedEntry.timeframe)}` : '',
+        normalizeText(selectedEntry.required_tag) ? `tag=${normalizeText(selectedEntry.required_tag)}` : '',
+        `groups=${Math.max(0, Math.floor(Number(selectedEntry.groups || 0)))}`,
+        `artifacts=${Math.max(0, Math.floor(Number(selectedEntry.artifacts_used || 0)))}`,
+        Number(selectedEntry.holdout_datasets || 0) > 0 ? `holdout=${Math.max(0, Math.floor(Number(selectedEntry.holdout_datasets || 0)))}` : '',
+        Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
+          ? `tags=${selectedEntry.tags
+              .map((tag) => normalizeText(tag))
+              .filter((tag) => tag.length > 0)
+              .join(',')}`
+          : '',
+        selectedEntry.bytes != null ? `bytes=${Math.max(0, Math.floor(Number(selectedEntry.bytes || 0)))}` : ''
+      ]
+        .filter((part) => part.length > 0)
+        .join(' • ')
     : `saved meta: ${filtered.length}/${SAVED_META.length}`
 
   const reportPath = normalizePath(selectedEntry?.report_xlsx_path)
 
   const options = [
-    { value: '', label: filtered.length > 0 ? 'Select a saved meta run...' : 'No meta runs yet', disabled: false },
+    {
+      value: '',
+      label: filtered.length > 0 ? 'Select a saved meta run...' : 'No meta runs yet',
+      disabled: false
+    },
     ...filtered.map((entry) => {
       const ts = normalizeText(entry.ts) || 'unknown'
       const kind = normalizeText(entry.strategy_kind)
@@ -855,9 +816,9 @@ function updateMetaSavedState(preferredPath = ''): void {
       return {
         value: normalizePath(entry.path),
         label: `${ts} | ${kind}${tfHint} | groups=${groups} | arts=${artifacts}${holdoutHint}${tagsHint}`,
-        disabled: false,
+        disabled: false
       }
-    }),
+    })
   ]
 
   let compareSelected = normalizePath(store.metaCompareSelected)
@@ -865,7 +826,11 @@ function updateMetaSavedState(preferredPath = ''): void {
     compareSelected = ''
   }
   const compareOptions = [
-    { value: '', label: SAVED_META.length > 0 ? 'Compare against...' : 'No meta runs yet', disabled: false },
+    {
+      value: '',
+      label: SAVED_META.length > 0 ? 'Compare against...' : 'No meta runs yet',
+      disabled: false
+    },
     ...SAVED_META.map((entry) => {
       const ts = normalizeText(entry.ts) || 'unknown'
       const kind = normalizeText(entry.strategy_kind)
@@ -875,9 +840,9 @@ function updateMetaSavedState(preferredPath = ''): void {
       return {
         value: normalizePath(entry.path),
         label: `${ts} | ${kind}${tfHint} | groups=${groups}`,
-        disabled: false,
+        disabled: false
       }
-    }),
+    })
   ]
 
   patchAnalysisStore({
@@ -893,7 +858,7 @@ function updateMetaSavedState(preferredPath = ''): void {
     canRefreshMetaSaved: true,
     metaCompareOptions: markRaw(compareOptions),
     metaCompareSelected: compareSelected,
-    aggregateSummarySavedMeta: String(SAVED_META.length),
+    aggregateSummarySavedMeta: String(SAVED_META.length)
   })
 }
 
@@ -908,29 +873,42 @@ function updateStage4SavedState(preferredPath = ''): void {
   }
 
   const selectedEntry = SAVED_STAGE4.find((entry) => normalizePath(entry.path) === selectedPath) ?? null
-  const selectedTags = selectedEntry && Array.isArray(selectedEntry.tags)
-    ? selectedEntry.tags.map((tag) => normalizeText(tag)).filter((tag) => tag.length > 0).join(', ')
-    : ''
+  const selectedTags =
+    selectedEntry && Array.isArray(selectedEntry.tags)
+      ? selectedEntry.tags
+          .map((tag) => normalizeText(tag))
+          .filter((tag) => tag.length > 0)
+          .join(', ')
+      : ''
 
   const stage4SavedMeta = selectedEntry
     ? [
-      `ts=${normalizeText(selectedEntry.ts)}`,
-      `strategy=${normalizeText(selectedEntry.strategy_kind) || '—'}`,
-      normalizeText(selectedEntry.timeframe) ? `tf=${normalizeText(selectedEntry.timeframe)}` : '',
-      `selected=${Math.max(0, Math.floor(Number(selectedEntry.groups_selected || 0)))}/${Math.max(0, Math.floor(Number(selectedEntry.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(selectedEntry.groups_considered || 0)))}`,
-      Number.isFinite(Number(selectedEntry.min_ml_confidence)) ? `min_ml=${fmtFixed(selectedEntry.min_ml_confidence, 3)}` : '',
-      Number.isFinite(Number(selectedEntry.top_k)) ? `top_k=${Math.max(0, Math.floor(Number(selectedEntry.top_k || 0)))}` : '',
-      `model=${normalizeBoolean(selectedEntry.model_healthy) ? 'healthy' : 'unhealthy'}`,
-      normalizeText(selectedEntry.source_meta_json_path) ? `source=${fileBasename(normalizeText(selectedEntry.source_meta_json_path))}` : '',
-      Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
-        ? `tags=${selectedEntry.tags.map((tag) => normalizeText(tag)).filter((tag) => tag.length > 0).join(',')}`
-        : '',
-      selectedEntry.bytes != null ? `bytes=${Math.max(0, Math.floor(Number(selectedEntry.bytes || 0)))}` : '',
-    ].filter((part) => part.length > 0).join(' • ')
+        `ts=${normalizeText(selectedEntry.ts)}`,
+        `strategy=${normalizeText(selectedEntry.strategy_kind) || '—'}`,
+        normalizeText(selectedEntry.timeframe) ? `tf=${normalizeText(selectedEntry.timeframe)}` : '',
+        `selected=${Math.max(0, Math.floor(Number(selectedEntry.groups_selected || 0)))}/${Math.max(0, Math.floor(Number(selectedEntry.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(selectedEntry.groups_considered || 0)))}`,
+        Number.isFinite(Number(selectedEntry.min_ml_confidence)) ? `min_ml=${fmtFixed(selectedEntry.min_ml_confidence, 3)}` : '',
+        Number.isFinite(Number(selectedEntry.top_k)) ? `top_k=${Math.max(0, Math.floor(Number(selectedEntry.top_k || 0)))}` : '',
+        `model=${normalizeBoolean(selectedEntry.model_healthy) ? 'healthy' : 'unhealthy'}`,
+        normalizeText(selectedEntry.source_meta_json_path) ? `source=${fileBasename(normalizeText(selectedEntry.source_meta_json_path))}` : '',
+        Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
+          ? `tags=${selectedEntry.tags
+              .map((tag) => normalizeText(tag))
+              .filter((tag) => tag.length > 0)
+              .join(',')}`
+          : '',
+        selectedEntry.bytes != null ? `bytes=${Math.max(0, Math.floor(Number(selectedEntry.bytes || 0)))}` : ''
+      ]
+        .filter((part) => part.length > 0)
+        .join(' • ')
     : `saved Stage 4: ${filtered.length}/${SAVED_STAGE4.length}`
 
   const options = [
-    { value: '', label: filtered.length > 0 ? 'Select a saved Stage 4 run...' : 'No Stage 4 runs yet', disabled: false },
+    {
+      value: '',
+      label: filtered.length > 0 ? 'Select a saved Stage 4 run...' : 'No Stage 4 runs yet',
+      disabled: false
+    },
     ...filtered.map((entry) => {
       const ts = normalizeText(entry.ts) || 'unknown'
       const kind = normalizeText(entry.strategy_kind)
@@ -946,9 +924,9 @@ function updateStage4SavedState(preferredPath = ''): void {
       return {
         value: normalizePath(entry.path),
         label: `${ts} | ${kind}${tfHint} | selected=${selected}/${scored}/${considered}${confHint}${tagsHint}`,
-        disabled: false,
+        disabled: false
       }
-    }),
+    })
   ]
 
   patchAnalysisStore({
@@ -960,7 +938,7 @@ function updateStage4SavedState(preferredPath = ''): void {
     canLoadStage4Saved: !!selectedEntry,
     canRevealStage4Saved: !!selectedEntry,
     canDeleteStage4Saved: !!selectedEntry,
-    canSaveStage4SavedTags: !!selectedEntry,
+    canSaveStage4SavedTags: !!selectedEntry
   })
 }
 
@@ -983,7 +961,7 @@ function buildMetaSelectionResponseFromArtifact(artifact: Record<string, unknown
     report_xlsx_bytes: 0,
     meta_json_path: normalizePath(path),
     meta_json_bytes: 0,
-    result: asRecord(artifact.res),
+    result: asRecord(artifact.res)
   }
 }
 
@@ -992,7 +970,7 @@ function buildStage4ResponseFromArtifact(artifact: Record<string, unknown>, path
     ts: normalizeText(artifact.ts) || new Date().toISOString(),
     stage4_json_path: normalizePath(path),
     stage4_json_bytes: 0,
-    result: asRecord(artifact.res),
+    result: asRecord(artifact.res)
   }
 }
 
@@ -1041,6 +1019,9 @@ function isCancellationError(error: unknown): boolean {
 
 function normalizeStrategyKind(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Asr') return 'Asr'
+  if (kind === 'Vcc') return 'Vcc'
+  if (kind === 'Vemr') return 'Vemr'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -1059,9 +1040,7 @@ function readBatchSelectedPaths(): string[] {
 }
 
 function setBatchSelectedPaths(paths: unknown): void {
-  const next = Array.isArray(paths)
-    ? paths.map((entry) => normalizePath(entry)).filter((entry) => entry.length > 0)
-    : []
+  const next = Array.isArray(paths) ? paths.map((entry) => normalizePath(entry)).filter((entry) => entry.length > 0) : []
   BATCH_SELECTED_PATHS = new Set(next)
   BATCH_SELECTED_PATHS_READY = true
 }
@@ -1097,7 +1076,7 @@ function syncBatchButtons(): void {
     canBatchSelectAll: !BATCH_RUNNING,
     canBatchSelectNone: !BATCH_RUNNING,
     canBatchRetryFailed: !BATCH_RUNNING && batchFailedCount() > 0,
-    canBatchRevealSummary: !BATCH_RUNNING && hasSummaryPath,
+    canBatchRevealSummary: !BATCH_RUNNING && hasSummaryPath
   })
 }
 
@@ -1126,8 +1105,7 @@ function filterBatchDatasets(items: BatchDatasetEntry[], query: string): BatchDa
 function renderBatchDatasetList(extra = ''): void {
   const store = getAnalysisStore()
   if (!store) return
-  const filtered = filterBatchDatasets(BATCH_DATASETS_CACHE, normalizeText(store.batchDatasetSearch))
-    .sort((left, right) => `${left.market}${left.label}`.localeCompare(`${right.market}${right.label}`))
+  const filtered = filterBatchDatasets(BATCH_DATASETS_CACHE, normalizeText(store.batchDatasetSearch)).sort((left, right) => `${left.market}${left.label}`.localeCompare(`${right.market}${right.label}`))
 
   const maxRender = filtered.length > 1000 ? 500 : filtered.length
   const visible = filtered.slice(0, maxRender)
@@ -1137,33 +1115,26 @@ function renderBatchDatasetList(extra = ''): void {
     label: entry.label,
     meta: entry.meta,
     checked: selected.has(entry.path),
-    disabled: BATCH_RUNNING,
+    disabled: BATCH_RUNNING
   }))
   patchAnalysisStore({
     batchDatasets: markRaw(rows),
     batchSelectedCount: selected.size,
-    batchTotalCount: BATCH_DATASETS_CACHE.length,
+    batchTotalCount: BATCH_DATASETS_CACHE.length
   })
   updateBatchMeta(extra)
   syncBatchButtons()
 }
 
-function normalizeBatchDatasetEntry(
-  value: unknown,
-  fallback: Partial<BatchDatasetEntry> = {},
-): BatchDatasetEntry | null {
+function normalizeBatchDatasetEntry(value: unknown, fallback: Partial<BatchDatasetEntry> = {}): BatchDatasetEntry | null {
   const row = asRecord(value)
   if (!row) return null
   const path = normalizePath(row.csv_path ?? row.path ?? fallback.path)
   if (!path) return null
   const market = normalizeText(row.market ?? fallback.market).toLowerCase()
-  const adjusted = market === 'stocks'
-    ? normalizeBoolean(row.adjusted ?? fallback.adjusted)
-    : null
+  const adjusted = market === 'stocks' ? normalizeBoolean(row.adjusted ?? fallback.adjusted) : null
   const timeframe = normalizeText(row.timeframe ?? fallback.timeframe)
-  const label = normalizeText(
-    (row.display_symbol ?? row.polygon_ticker ?? row.label ?? fallback.label ?? fileBasename(path)) || path,
-  )
+  const label = normalizeText((row.display_symbol ?? row.polygon_ticker ?? row.label ?? fallback.label ?? fileBasename(path)) || path)
   const source = normalizeText(row.source ?? fallback.source) || (market === 'local' ? 'repo_data' : 'polygon')
   const sourceSize = normalizeMaybeInteger(row.source_size_bytes ?? fallback.source_size_bytes)
   const sourceMtime = normalizeMaybeInteger(row.source_mtime_utc_ms ?? fallback.source_mtime_utc_ms)
@@ -1184,7 +1155,7 @@ function normalizeBatchDatasetEntry(
     source,
     source_size_bytes: sourceSize,
     source_mtime_utc_ms: sourceMtime,
-    source_content_fingerprint: sourceFp,
+    source_content_fingerprint: sourceFp
   }
 }
 
@@ -1212,16 +1183,17 @@ async function refreshBatchDatasetsInternal(): Promise<void> {
     const raw = (await invokeCommand('list_repo_data_csvs', {
       maxFiles: 20000,
       recursive: true,
-      includeIdentity: true,
+      includeIdentity: true
     })) as unknown
     const record = asRecord(raw)
     localDir = normalizeText(record?.dir)
     localTruncated = normalizeBoolean(record?.truncated)
-    const entries = Array.isArray(record?.csv_entries)
-      ? (record?.csv_entries as unknown[])
-      : (Array.isArray(record?.csv_paths) ? (record?.csv_paths as unknown[]) : [])
+    const entries = Array.isArray(record?.csv_entries) ? (record?.csv_entries as unknown[]) : Array.isArray(record?.csv_paths) ? (record?.csv_paths as unknown[]) : []
     for (const entry of entries) {
-      const row = normalizeBatchDatasetEntry(entry, { market: 'local', source: 'repo_data' })
+      const row = normalizeBatchDatasetEntry(entry, {
+        market: 'local',
+        source: 'repo_data'
+      })
       if (!row) continue
       if (byPath.has(row.path)) continue
       byPath.set(row.path, row)
@@ -1253,7 +1225,7 @@ function setBatchSummaryState(summary: Record<string, unknown> | null, path: str
   LAST_BATCH_SUMMARY = payload ? { path: summaryPath, summary: payload } : null
 
   patchAnalysisStore({
-    batchOutputPreview: payload ? pretty({ path: summaryPath || null, summary: payload }) : '-',
+    batchOutputPreview: payload ? pretty({ path: summaryPath || null, summary: payload }) : '-'
   })
   if (summaryPath) writeStorageString(LAST_BATCH_SUMMARY_KEY, summaryPath)
   else removeStorageKey(LAST_BATCH_SUMMARY_KEY)
@@ -1266,7 +1238,9 @@ async function loadLastBatchSummaryFromDisk(): Promise<void> {
   const path = normalizePath(readStorageString(LAST_BATCH_SUMMARY_KEY, ''))
   if (!path) return
   try {
-    const artifact = (await invokeCommand('load_run_artifact', { path })) as unknown
+    const artifact = (await invokeCommand('load_run_artifact', {
+      path
+    })) as unknown
     const row = asRecord(artifact)
     if (!row || normalizeText(row.kind) !== 'vectorbt_batch_summary') return
     setBatchSummaryState(row, path)
@@ -1306,7 +1280,7 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
     .filter((entry) => !!entry && normalizeBoolean(entry.checked))
     .map((entry) => ({
       csv_path: normalizePath(entry?.csv_path ?? entry?.path),
-      label: normalizeText(entry?.label),
+      label: normalizeText(entry?.label)
     }))
     .filter((entry) => entry.csv_path.length > 0)
     .slice(0, crossMax)
@@ -1321,24 +1295,22 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
           iterations: perturbIters,
           pct_min: perturbMin,
           pct_max: perturbMax,
-          flip_bool_prob: 0.02,
+          flip_bool_prob: 0.02
         }
       : null,
     trade_bootstrap: mcEnable ? { simulations: mcSims } : null,
-    cross_ticker: crossEnable && crossMax > 0 && crossDatasets.length > 0
-      ? { max_datasets: crossMax, datasets: crossDatasets }
-      : null,
+    cross_ticker: crossEnable && crossMax > 0 && crossDatasets.length > 0 ? { max_datasets: crossMax, datasets: crossDatasets } : null,
     cscv_pbo: cscvEnable
       ? {
           slices: cscvSlices,
           max_combinations: 50000,
-          threshold: 0,
+          threshold: 0
         }
       : null,
     seed,
     max_candidates: candidates,
     min_psr: minPsr,
-    min_dsr: minDsr,
+    min_dsr: minDsr
   }
 }
 
@@ -1365,17 +1337,17 @@ async function applyRunTags(tags: string[]): Promise<void> {
         csv_path: run.csvPath,
         tags,
         req: run.req,
-        res: run.res,
+        res: run.res
       },
       currentValidation: workflowArtifacts.currentValidation
         ? {
             ts: workflowArtifacts.currentValidation.ts,
             req: workflowArtifacts.currentValidation.req,
-            res: workflowArtifacts.currentValidation.res,
+            res: workflowArtifacts.currentValidation.res
           }
-        : null,
+        : null
     },
-    'vue',
+    'vue'
   )
 
   const artifactPath = normalizePath(run.artifactPath)
@@ -1387,7 +1359,9 @@ async function applyRunTags(tags: string[]): Promise<void> {
 async function refreshSavedRunCount(): Promise<void> {
   try {
     const rows = (await invokeCommand('list_run_artifacts')) as unknown
-    patchAnalysisStore({ aggregateSummarySavedRuns: String(Array.isArray(rows) ? rows.length : 0) })
+    patchAnalysisStore({
+      aggregateSummarySavedRuns: String(Array.isArray(rows) ? rows.length : 0)
+    })
   } catch {
     // keep batch flow non-throwing if run-list query fails
   }
@@ -1398,12 +1372,10 @@ async function loadBatchDataset(path: string): Promise<{ timeframe: string }> {
   const loaded = await loadDataCsv(path)
   dataStore?.applyLoadResult(loaded, {
     treatAsBase: true,
-    statusLine: loaded.cacheHit
-      ? 'Loaded (binary cache).'
-      : (loaded.cachePath ? 'Loaded (CSV parsed + cached).' : 'Loaded.'),
+    statusLine: loaded.cacheHit ? 'Loaded (binary cache).' : loaded.cachePath ? 'Loaded (CSV parsed + cached).' : 'Loaded.'
   })
   return {
-    timeframe: normalizeText(loaded.meta?.timeframe),
+    timeframe: normalizeText(loaded.meta?.timeframe)
   }
 }
 
@@ -1416,10 +1388,10 @@ async function maybeApplyBatchTimeframe(timeframe: string): Promise<{ timeframe:
   const loaded = await applyDataTimeframe(target, baseId)
   dataStore?.applyLoadResult(loaded, {
     treatAsBase: false,
-    statusLine: loaded.cacheHit ? `Using ${target} (cached).` : `Using ${target}.`,
+    statusLine: loaded.cacheHit ? `Using ${target} (cached).` : `Using ${target}.`
   })
   return {
-    timeframe: normalizeText(loaded.meta?.timeframe || target),
+    timeframe: normalizeText(loaded.meta?.timeframe || target)
   }
 }
 
@@ -1454,9 +1426,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
 
     await ensureBatchDatasetsLoaded()
 
-    const selectedPaths = Array.isArray(req?.selected_paths)
-      ? req!.selected_paths as unknown[]
-      : readBatchSelectedPaths()
+    const selectedPaths = Array.isArray(req?.selected_paths) ? (req!.selected_paths as unknown[]) : readBatchSelectedPaths()
     const normalizedSelected = selectedPaths.map((entry) => normalizePath(entry)).filter((entry) => entry.length > 0)
     setBatchSelectedPaths(normalizedSelected)
     renderBatchDatasetList('')
@@ -1507,9 +1477,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
       return
     }
 
-    let expectedTimeframe = hasTfOverride
-      ? tfOverride
-      : (selectedTimeframes.size === 1 ? Array.from(selectedTimeframes)[0] : '')
+    let expectedTimeframe = hasTfOverride ? tfOverride : selectedTimeframes.size === 1 ? Array.from(selectedTimeframes)[0] : ''
 
     BATCH_RUNNING = true
     BATCH_STOP_REQUESTED = false
@@ -1559,9 +1527,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
           if (!row) continue
           if (normalizeStrategyKind(row.strategy_kind) !== strategyKind) continue
           if (normalizeText(row.config_fingerprint) !== expectedFingerprint) continue
-          const rowTags = Array.isArray(row.tags)
-            ? row.tags.map((tag) => normalizeText(tag).toLowerCase()).filter((tag) => tag.length > 0)
-            : []
+          const rowTags = Array.isArray(row.tags) ? row.tags.map((tag) => normalizeText(tag).toLowerCase()).filter((tag) => tag.length > 0) : []
           if (!rowTags.includes(primaryTag.toLowerCase())) continue
           const csvPath = normalizePath(row.csv_path)
           if (!csvPath) continue
@@ -1614,14 +1580,8 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
       const curFp = normalizeText(ds?.source_content_fingerprint)
       const curSize = normalizeMaybeInteger(ds?.source_size_bytes)
       const curMtime = normalizeMaybeInteger(ds?.source_mtime_utc_ms)
-      const strictKey = curFp
-        ? doneKeyStrictFp(path, tfKey, curFp)
-        : (curSize != null && curMtime != null && curSize >= 0 && curMtime > 0
-          ? doneKeyStrictMeta(path, tfKey, curSize, curMtime)
-          : '')
-      const isDone = skipDone && expectedFingerprint
-        ? (strictKey ? doneStrict.has(strictKey) : doneLoose.has(looseKey))
-        : false
+      const strictKey = curFp ? doneKeyStrictFp(path, tfKey, curFp) : curSize != null && curMtime != null && curSize >= 0 && curMtime > 0 ? doneKeyStrictMeta(path, tfKey, curSize, curMtime) : ''
+      const isDone = skipDone && expectedFingerprint ? (strictKey ? doneStrict.has(strictKey) : doneLoose.has(looseKey)) : false
       if (isDone) {
         skipped += 1
         updateBatchMeta(`skipping ${label || 'dataset'} (already completed for ${primaryTag})`)
@@ -1647,7 +1607,12 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
       } catch (error) {
         const err = `load: ${normalizeText(error)}`
         failures.push({ label, error: err })
-        failedRows.push({ csv_path: path, label, is_holdout: isHoldout, error: err })
+        failedRows.push({
+          csv_path: path,
+          label,
+          is_holdout: isHoldout,
+          error: err
+        })
         setStatusLine(`Batch: failed to load ${label}: ${normalizeText(error)}`)
         continue
       }
@@ -1669,7 +1634,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
           is_holdout: isHoldout,
           ts: normalizeText(run?.ts) || null,
           artifact_path: normalizePath(run?.artifactPath) || null,
-          report_xlsx_path: normalizePath(run?.reportXlsxPath) || null,
+          report_xlsx_path: normalizePath(run?.reportXlsxPath) || null
         })
 
         if (skipDone && expectedFingerprint) {
@@ -1684,7 +1649,12 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
         }
         const err = `run: ${normalizeText(error)}`
         failures.push({ label, error: err })
-        failedRows.push({ csv_path: path, label, is_holdout: isHoldout, error: err })
+        failedRows.push({
+          csv_path: path,
+          label,
+          is_holdout: isHoldout,
+          error: err
+        })
         setStatusLine(`Batch: failed on ${label}: ${normalizeText(error)}`)
       }
     }
@@ -1714,13 +1684,15 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
         ok: okRows,
         skipped: skippedRows,
         failed: failedRows,
-        cancelled,
+        cancelled
       },
-      runtime_ms: Math.max(0, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt)),
+      runtime_ms: Math.max(0, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt))
     }
 
     try {
-      const saved = (await invokeCommand('save_batch_summary', { summary })) as unknown
+      const saved = (await invokeCommand('save_batch_summary', {
+        summary
+      })) as unknown
       const path = normalizePath(asRecord(saved)?.path)
       setBatchSummaryState(summary, path)
     } catch (error) {
@@ -1896,7 +1868,9 @@ export async function loadSaved(): Promise<void> {
       return
     }
 
-    const artifactRaw = (await invokeCommand('load_run_artifact', { path })) as unknown
+    const artifactRaw = (await invokeCommand('load_run_artifact', {
+      path
+    })) as unknown
     const artifact = asRecord(artifactRaw)
     const kind = normalizeText(artifact?.kind)
     if (kind !== 'vectorbt_meta_selection') {
@@ -2009,7 +1983,9 @@ export async function loadStage4Saved(): Promise<void> {
       return
     }
 
-    const artifactRaw = (await invokeCommand('load_run_artifact', { path })) as unknown
+    const artifactRaw = (await invokeCommand('load_run_artifact', {
+      path
+    })) as unknown
     const artifact = asRecord(artifactRaw)
     const kind = normalizeText(artifact?.kind)
     if (kind !== 'vectorbt_meta_stage4_experimental') {
@@ -2069,16 +2045,18 @@ export async function mlRefresh(options: MetaMlActionOptions = {}): Promise<void
     if (!normalizeText(scope.timeframe)) {
       LAST_META_ML_STATUS = null
       patchAnalysisStore({
-        metaMlStatus: 'Timeframe required (set Meta timeframe filter or run meta once).',
+        metaMlStatus: 'Timeframe required (set Meta timeframe filter or run meta once).'
       })
       updateMetaMlButtons()
       return
     }
 
-    const statusRaw = (await invokeCommand('ml_confidence_model_status', { scope })) as unknown
+    const statusRaw = (await invokeCommand('ml_confidence_model_status', {
+      scope
+    })) as unknown
     LAST_META_ML_STATUS = asRecord(statusRaw) ?? {}
     patchAnalysisStore({
-      metaMlStatus: formatMlStatus(LAST_META_ML_STATUS, scope),
+      metaMlStatus: formatMlStatus(LAST_META_ML_STATUS, scope)
     })
     updateMetaMlButtons()
     setStatusLine('Refreshed ML confidence status.')
@@ -2124,7 +2102,10 @@ export async function mlApply(options: MetaMlActionOptions = {}): Promise<void> 
       return
     }
 
-    const raw = (await invokeCommand('apply_ml_confidence_model', { scope, groups })) as unknown
+    const raw = (await invokeCommand('apply_ml_confidence_model', {
+      scope,
+      groups
+    })) as unknown
     const payload = asRecord(raw) ?? {}
     const confidences = Array.isArray(payload.confidences) ? payload.confidences : []
 
@@ -2155,9 +2136,7 @@ export async function mlApply(options: MetaMlActionOptions = {}): Promise<void> 
 
     renderMetaSelection(LAST_META_RUN)
 
-    const warnings = Array.isArray(payload.warnings)
-      ? payload.warnings.map((warning) => normalizeText(warning)).filter((warning) => warning.length > 0)
-      : []
+    const warnings = Array.isArray(payload.warnings) ? payload.warnings.map((warning) => normalizeText(warning)).filter((warning) => warning.length > 0) : []
     if (warnings.length > 0) {
       setStatusLine(`Applied ML confidence (warnings: ${warnings.length}).`)
     } else {
@@ -2202,7 +2181,9 @@ export async function runStage4(options: MetaStage4RunOptions = {}): Promise<voi
       return
     }
 
-    const payload = (await invokeCommand('run_meta_stage4_experimental', { req })) as unknown
+    const payload = (await invokeCommand('run_meta_stage4_experimental', {
+      req
+    })) as unknown
     const response = asRecord(payload)
     if (!response) {
       setStatusLine('Stage 4 returned an invalid response.')
@@ -2212,9 +2193,7 @@ export async function runStage4(options: MetaStage4RunOptions = {}): Promise<voi
     renderMetaStage4(response)
     await refreshStage4SavedInternal(normalizePath(response.stage4_json_path))
     selectMetaResultsTab()
-    setStatusLine(normalizePath(response.stage4_json_path)
-      ? `Stage 4 complete. Saved: ${normalizePath(response.stage4_json_path)}`
-      : 'Stage 4 complete.')
+    setStatusLine(normalizePath(response.stage4_json_path) ? `Stage 4 complete. Saved: ${normalizePath(response.stage4_json_path)}` : 'Stage 4 complete.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2250,7 +2229,9 @@ export async function runMeta(options: MetaRunOptions = {}): Promise<void> {
       return
     }
 
-    const payload = (await invokeCommand('run_meta_selection', { req })) as unknown
+    const payload = (await invokeCommand('run_meta_selection', {
+      req
+    })) as unknown
     const response = asRecord(payload)
     if (!response) {
       setStatusLine('Meta run returned an invalid response.')

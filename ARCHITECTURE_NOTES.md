@@ -22,6 +22,13 @@ Last updated: 2026-02-26
 - Large table surfaces (Top/Validation/Meta) are virtualized at the component layer to keep UI render cost bounded.
 - Task/progress updates are throttled/debounced in `web/src/stores/taskStore.ts` to prevent high-frequency UI churn.
 
+## Double MA backend semantics (current)
+
+- `CpuOnly`: indicators + backtest on CPU (f64 path).
+- `GpuOnly`: indicators on GPU, copied to host, backtest on CPU.
+- `GpuKernel`: full GPU/VRAM path for supported MA/strategy constraints.
+- `GpuHybridKernel`: phase-1 backend contract; currently wired to the same runtime path/constraints as `GpuKernel` while hybrid mixed-indicator orchestration is implemented incrementally.
+
 ## Current module boundaries (incremental refactor)
 
 - `src-tauri/src/commands.rs`

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { markRaw } from 'vue'
 import {
   applySavedRun as applySavedRunAction,
   applySession as applySessionAction,
@@ -52,13 +53,24 @@ function normalizeTags(value: unknown): string[] {
     if (!next) continue
     out.push(next)
   }
-  return out
+  return markRaw(out)
+}
+
+function rawArray<T>(value: T[]): T[] {
+  return markRaw(value)
 }
 
 function filterTokens(value: string): string[] {
   const query = normalizeText(value).toLowerCase()
   if (!query) return []
-  return query.split(/\s+/g).map((token) => normalizeText(token)).filter((token) => token.length > 0)
+  const out: string[] = []
+  const tokens = query.split(/\s+/g)
+  for (const token of tokens) {
+    const next = normalizeText(token)
+    if (!next) continue
+    out.push(next)
+  }
+  return out
 }
 
 function fileBasename(path: string): string {
@@ -87,19 +99,6 @@ function runtimeRunning(): boolean {
   return String(root.dataset.running || '').trim() === '1'
 }
 
-function normalizeEntry(value: HistorySavedRunEntry): HistorySavedRunEntry {
-  return {
-    ts: normalizeText(value.ts),
-    path: normalizePath(value.path),
-    bytes: Number.isFinite(Number(value.bytes)) && Number(value.bytes) > 0 ? Math.floor(Number(value.bytes)) : 0,
-    strategyKind: normalizeText(value.strategyKind),
-    hasValidation: !!value.hasValidation,
-    reportXlsxPath: normalizePath(value.reportXlsxPath),
-    csvPath: normalizePath(value.csvPath),
-    tags: normalizeTags(value.tags),
-  }
-}
-
 function savedRunLabel(entry: HistorySavedRunEntry): string {
   const hasVal = entry.hasValidation ? 'val' : '-'
   const hasXlsx = entry.reportXlsxPath ? 'xlsx' : '-'
@@ -113,7 +112,7 @@ function sessionRunLabel(entry: HistorySessionSummary): string {
 
 function filterSavedRunsEntries(entries: HistorySavedRunEntry[], search: string): HistorySavedRunEntry[] {
   const tokens = filterTokens(search)
-  if (!tokens.length) return [...entries]
+  if (!tokens.length) return entries
   const out: HistorySavedRunEntry[] = []
   for (const entry of entries) {
     const hay = `${entry.ts} ${entry.strategyKind} ${entry.csvPath} ${entry.tags.join(' ')}`
@@ -173,19 +172,19 @@ interface HistoryState {
 
 function sanitizeOptionArray(value: unknown): HistoryOption[] {
   if (!Array.isArray(value)) return []
-  return value
-    .map((entry) => {
-      if (!entry || typeof entry !== 'object') return null
-      const valueText = String((entry as { value?: unknown }).value ?? '').trim()
-      const labelText = String((entry as { label?: unknown }).label ?? '').trim()
-      const disabled = Boolean((entry as { disabled?: unknown }).disabled)
-      return {
-        value: valueText,
-        label: labelText || valueText || '—',
-        disabled,
-      }
+  const out: HistoryOption[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const valueText = String((entry as { value?: unknown }).value ?? '').trim()
+    const labelText = String((entry as { label?: unknown }).label ?? '').trim()
+    const disabled = Boolean((entry as { disabled?: unknown }).disabled)
+    out.push({
+      value: valueText,
+      label: labelText || valueText || '—',
+      disabled,
     })
-    .filter((entry): entry is HistoryOption => entry !== null)
+  }
+  return rawArray(out)
 }
 
 function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
@@ -208,7 +207,30 @@ function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
       tags: normalizeTags(typed.tags),
     })
   }
-  return out
+  return rawArray(out)
+}
+
+function pruneSavedRunDetailCache(
+  cache: Record<string, HistorySavedRunDetail>,
+  savedRuns: HistorySavedRunEntry[],
+): Record<string, HistorySavedRunDetail> {
+  const allowed = new Set<string>()
+  for (const entry of savedRuns) {
+    const path = normalizePath(entry.path)
+    if (!path) continue
+    allowed.add(path)
+  }
+
+  let removedAny = false
+  const nextCache: Record<string, HistorySavedRunDetail> = {}
+  for (const [path, detail] of Object.entries(cache)) {
+    if (!allowed.has(path)) {
+      removedAny = true
+      continue
+    }
+    nextCache[path] = detail
+  }
+  return removedAny ? nextCache : cache
 }
 
 function applyVueTextFieldUpdate(state: HistoryState, field: string, value: string): boolean {
@@ -312,7 +334,7 @@ export const useHistoryStore = defineStore('history', {
       }
       const hasSelection = selectedTs && runs.some((entry) => normalizeText(entry.ts) === selectedTs)
       this.sessionRunCount = runs.length
-      this.sessionOptions = options
+      this.sessionOptions = rawArray(options)
       this.sessionSelectedValue = hasSelection ? selectedTs : ''
       this.sessionSelectedLabel = hasSelection
         ? (options.find((entry) => entry.value === selectedTs)?.label || 'No runs yet')
@@ -386,7 +408,7 @@ export const useHistoryStore = defineStore('history', {
     },
 
     syncSavedRunsView(preferredPath?: string): void {
-      const filtered = filterSavedRunsEntries(this.savedRunsRaw.map((entry) => normalizeEntry(entry)), this.savedRunsSearch)
+      const filtered = filterSavedRunsEntries(this.savedRunsRaw, this.savedRunsSearch)
       const options: HistoryOption[] = [{
         value: '',
         label: filtered.length ? 'Select a saved run...' : 'No saved runs yet',
@@ -406,7 +428,7 @@ export const useHistoryStore = defineStore('history', {
         : ''
       const selectedEntry = filtered.find((entry) => entry.path === selectedPath) || null
 
-      this.savedOptions = options
+      this.savedOptions = rawArray(options)
       this.savedRunCount = this.savedRunsRaw.length
       this.savedSelectedValue = selectedPath
       this.savedSelectedLabel = selectedEntry ? savedRunLabel(selectedEntry) : 'No saved runs'
@@ -484,17 +506,14 @@ export const useHistoryStore = defineStore('history', {
 
       void loadSavedRunDetailAction(nextPath)
         .then((detail) => {
-          this.savedRunDetailCache = {
-            ...this.savedRunDetailCache,
-            [nextPath]: {
-              strategyKind: normalizeText(detail?.strategyKind),
-              timeframe: normalizeText(detail?.timeframe),
-              csvPath: normalizePath(detail?.csvPath || ''),
-              reportPath: normalizePath(detail?.reportPath || ''),
-              hasValidation: !!detail?.hasValidation,
-              tags: normalizeTags(detail?.tags),
-              paramsText: normalizeText(detail?.paramsText) || 'Request unavailable.',
-            },
+          this.savedRunDetailCache[nextPath] = {
+            strategyKind: normalizeText(detail?.strategyKind),
+            timeframe: normalizeText(detail?.timeframe),
+            csvPath: normalizePath(detail?.csvPath || ''),
+            reportPath: normalizePath(detail?.reportPath || ''),
+            hasValidation: !!detail?.hasValidation,
+            tags: normalizeTags(detail?.tags),
+            paramsText: normalizeText(detail?.paramsText) || 'Request unavailable.',
           }
           if (this.savedRunDetailSeq === seq && this.savedSelectedValue === nextPath) {
             this.syncSavedRunsView(nextPath)
@@ -605,13 +624,7 @@ export const useHistoryStore = defineStore('history', {
         .then(() => refreshSavedRunsAction())
         .then((summary) => {
           this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs)
-          const allowed = new Set(this.savedRunsRaw.map((entry) => entry.path))
-          const nextCache: Record<string, HistorySavedRunDetail> = {}
-          for (const [path, detail] of Object.entries(this.savedRunDetailCache)) {
-            if (!allowed.has(path)) continue
-            nextCache[path] = detail
-          }
-          this.savedRunDetailCache = nextCache
+          this.savedRunDetailCache = pruneSavedRunDetailCache(this.savedRunDetailCache, this.savedRunsRaw)
           this.syncSavedRunsView(nextPath)
           this.statusLine = 'Saved tags.'
           this.source = 'vue'
@@ -631,13 +644,7 @@ export const useHistoryStore = defineStore('history', {
       void refreshSavedRunsAction()
         .then((summary) => {
           this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs)
-          const allowed = new Set(this.savedRunsRaw.map((entry) => entry.path))
-          const nextCache: Record<string, HistorySavedRunDetail> = {}
-          for (const [path, detail] of Object.entries(this.savedRunDetailCache)) {
-            if (!allowed.has(path)) continue
-            nextCache[path] = detail
-          }
-          this.savedRunDetailCache = nextCache
+          this.savedRunDetailCache = pruneSavedRunDetailCache(this.savedRunDetailCache, this.savedRunsRaw)
           this.syncSavedRunsView(preferredPath)
           this.statusLine = 'Refreshed saved runs.'
           this.source = 'vue'
@@ -693,13 +700,7 @@ export const useHistoryStore = defineStore('history', {
         .then(() => refreshSavedRunsAction())
         .then((summary) => {
           this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs)
-          const allowed = new Set(this.savedRunsRaw.map((entry) => entry.path))
-          const nextCache: Record<string, HistorySavedRunDetail> = {}
-          for (const [path, detail] of Object.entries(this.savedRunDetailCache)) {
-            if (!allowed.has(path)) continue
-            nextCache[path] = detail
-          }
-          this.savedRunDetailCache = nextCache
+          this.savedRunDetailCache = pruneSavedRunDetailCache(this.savedRunDetailCache, this.savedRunsRaw)
           const preferred = this.savedSelectedValue === nextPath ? '' : this.savedSelectedValue
           this.syncSavedRunsView(preferred)
           this.statusLine = 'Deleted saved run.'

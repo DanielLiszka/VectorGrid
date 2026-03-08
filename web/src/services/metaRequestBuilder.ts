@@ -14,12 +14,7 @@ function num(value: unknown, fallback: number): number {
 }
 
 function supportsHoldout(strategyKind: string): boolean {
-  return strategyKind === 'CompositeCpu'
-    || strategyKind === 'CompositeMo'
-    || strategyKind === 'DoubleMa'
-    || strategyKind === 'CompositeTrend'
-    || strategyKind === 'RegimeHybrid'
-    || strategyKind === 'BreakoutMomentum'
+  return strategyKind === 'CompositeCpu' || strategyKind === 'CompositeMo' || strategyKind === 'DoubleMa' || strategyKind === 'Asr' || strategyKind === 'Vemr' || strategyKind === 'CompositeTrend' || strategyKind === 'RegimeHybrid' || strategyKind === 'BreakoutMomentum'
 }
 
 export interface MetaSelectionBuildInputs {
@@ -71,34 +66,44 @@ export function buildMetaSelectionRequest(inputs: MetaSelectionBuildInputs): Rec
   const floatBucketRaw = Number(inputs.clusterFloatBucket)
   const floatBucket = Number.isFinite(floatBucketRaw) ? Math.max(0, floatBucketRaw) : 0.25
 
-  const holdoutValidation = (evalHoldout && holdoutMode === 'heavy')
-    ? (() => {
-      const seed = Math.max(0, Math.floor(num(inputs.valSeed, 1)))
-      const walk_forward = {
-        window_bars: Math.max(64, Math.floor(num(inputs.valWfWindow, 20000))),
-        step_bars: Math.max(1, Math.floor(num(inputs.valWfStep, 20000))),
-      }
-      const perturb = normalizeBoolean(inputs.valPerturbEnable)
-        ? {
-          iterations: Math.max(0, Math.floor(num(inputs.valPerturbIters, 8))),
-          pct_min: Math.max(0, num(inputs.valPerturbMin, 0.015)),
-          pct_max: Math.max(0, num(inputs.valPerturbMax, 0.06)),
-          flip_bool_prob: 0.02,
-        }
-        : null
-      const trade_bootstrap = normalizeBoolean(inputs.valMcEnable)
-        ? { simulations: Math.max(0, Math.floor(num(inputs.valMcSims, 500))) }
-        : null
-      const validation_engine = 'iterative'
-      const iterative = {
-        stop_loss_pct: null,
-        take_profit_pct: null,
-        intrabar_rule: 'pessimistic',
-        slippage_vol_mult: 0.15,
-      }
-      return { seed, walk_forward, perturb, trade_bootstrap, validation_engine, iterative }
-    })()
-    : null
+  const holdoutValidation =
+    evalHoldout && holdoutMode === 'heavy'
+      ? (() => {
+          const seed = Math.max(0, Math.floor(num(inputs.valSeed, 1)))
+          const walk_forward = {
+            window_bars: Math.max(64, Math.floor(num(inputs.valWfWindow, 20000))),
+            step_bars: Math.max(1, Math.floor(num(inputs.valWfStep, 20000)))
+          }
+          const perturb = normalizeBoolean(inputs.valPerturbEnable)
+            ? {
+                iterations: Math.max(0, Math.floor(num(inputs.valPerturbIters, 8))),
+                pct_min: Math.max(0, num(inputs.valPerturbMin, 0.015)),
+                pct_max: Math.max(0, num(inputs.valPerturbMax, 0.06)),
+                flip_bool_prob: 0.02
+              }
+            : null
+          const trade_bootstrap = normalizeBoolean(inputs.valMcEnable)
+            ? {
+                simulations: Math.max(0, Math.floor(num(inputs.valMcSims, 500)))
+              }
+            : null
+          const validation_engine = 'iterative'
+          const iterative = {
+            stop_loss_pct: null,
+            take_profit_pct: null,
+            intrabar_rule: 'pessimistic',
+            slippage_vol_mult: 0.15
+          }
+          return {
+            seed,
+            walk_forward,
+            perturb,
+            trade_bootstrap,
+            validation_engine,
+            iterative
+          }
+        })()
+      : null
 
   return {
     strategy_kind: strategyKind,
@@ -118,6 +123,6 @@ export function buildMetaSelectionRequest(inputs: MetaSelectionBuildInputs): Rec
     min_samples: minSamples,
     top_k: topK,
     strict_shortlist: true,
-    allow_shortlist_fallback: false,
+    allow_shortlist_fallback: false
   }
 }

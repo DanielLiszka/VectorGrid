@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDataStore } from '../stores/dataStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
@@ -49,28 +50,15 @@ const stamp = computed(() => {
 })
 
 watch(
-  theme,
-  (value) => {
-    const next = String(value || 'system').trim() || 'system'
-    if (themeDraft.value !== next) themeDraft.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  effect,
-  (value) => {
-    const next = String(value || 'none').trim() || 'none'
-    if (effectDraft.value !== next) effectDraft.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  marketDataDir,
-  (value) => {
-    const next = String(value || '')
-    if (marketDataDirDraft.value !== next) marketDataDirDraft.value = next
+  () => [
+    String(theme.value || 'system').trim() || 'system',
+    String(effect.value || 'none').trim() || 'none',
+    String(marketDataDir.value || ''),
+  ] as const,
+  ([nextTheme, nextEffect, nextMarketDataDir]) => {
+    if (themeDraft.value !== nextTheme) themeDraft.value = nextTheme
+    if (effectDraft.value !== nextEffect) effectDraft.value = nextEffect
+    if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
   },
   { immediate: true },
 )
@@ -99,6 +87,8 @@ function setInputValue(id: string, nextValue: string): void {
   settingsStore.setInputField(id, nextValue)
 }
 
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
+
 function resolveMount(): void {
   const settingsGrid = document.querySelector('#settingsShellGrid') as HTMLElement | null
   const mount = document.querySelector('#settingsVueShellMount') as HTMLElement | null
@@ -122,6 +112,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   if (runtimeObserver) {
     runtimeObserver.disconnect()
     runtimeObserver = null
@@ -200,7 +191,8 @@ onBeforeUnmount(() => {
               type="text"
               :value="marketDataDirDraft"
               placeholder="Default (AppData)"
-              @input="marketDataDirDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('settingsMarketDataDir', marketDataDirDraft)"
+              @input="marketDataDirDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('settingsMarketDataDir', marketDataDirDraft)"
+              @change="commitInputValue('settingsMarketDataDir', marketDataDirDraft)"
             />
             <div class="actions">
               <button type="button" :disabled="!canBrowseMarketDataDir" @click="settingsStore.browseMarketDataDir()">Browse</button>

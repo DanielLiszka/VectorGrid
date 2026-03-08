@@ -199,6 +199,22 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
     total
 }
 
+fn run_with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    let key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
+    let prev = std::env::var(key).ok();
+    if enabled {
+        std::env::set_var(key, "1");
+    } else {
+        std::env::remove_var(key);
+    }
+    let out = f();
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    out
+}
+
 fn bench_double_ma_cpu(c: &mut Criterion) {
     let candles = make_synth_candles(200_000);
     let cancel = AtomicBool::new(false);
@@ -505,6 +521,132 @@ fn bench_double_ma_gpu_kernel(c: &mut Criterion) {
 fn bench_double_ma_gpu_kernel(_c: &mut Criterion) {}
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+    let candles = make_synth_candles(200_000);
+    let cancel = AtomicBool::new(false);
+
+    let ma_cases: &[MaBenchCase] = &[
+        MaBenchCase {
+            label: "sma_sma",
+            fast_ma: "sma",
+            slow_ma: "sma",
+        },
+        MaBenchCase {
+            label: "alma_alma",
+            fast_ma: "alma",
+            slow_ma: "alma",
+        },
+    ];
+
+    let cases: &[(&str, (u32, u32, u32), (u32, u32, u32), Option<&'static str>)] = &[
+        ("small", (5, 50, 1), (20, 200, 5), None),
+        ("large", (5, 200, 1), (10, 400, 1), None),
+        ("xlarge", (5, 500, 1), (10, 1000, 1), None),
+        (
+            "xlarge_batched_1gb",
+            (5, 500, 1),
+            (10, 1000, 1),
+            Some("1024"),
+        ),
+        ("xxlarge", (5, 1000, 1), (10, 2000, 1), None),
+        (
+            "xxlarge_batched_1gb",
+            (5, 1000, 1),
+            (10, 2000, 1),
+            Some("1024"),
+        ),
+    ];
+
+    let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
+    let prev_hybrid = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+    std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+    for ma in ma_cases {
+        let mut group = c.benchmark_group(format!("double_ma/gpu_hybrid_kernel/{}/200k", ma.label));
+        group.measurement_time(Duration::from_secs(8));
+        group.sample_size(if ma.fast_ma == "alma" || ma.slow_ma == "alma" {
+            10
+        } else {
+            20
+        });
+
+        for (label, fast_range, slow_range, budget_mb) in cases.iter().copied() {
+            match budget_mb {
+                Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+                None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+            }
+
+            let fast_periods = expand_range_u16(fast_range);
+            let slow_periods = expand_range_u16(slow_range);
+            let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+            let name = format!("{label}/{pairs}pairs");
+
+            let fast_ma_params = if ma.fast_ma == "alma" {
+                Some(alma_params_default())
+            } else {
+                None
+            };
+            let slow_ma_params = if ma.slow_ma == "alma" {
+                Some(alma_params_default())
+            } else {
+                None
+            };
+
+            let req = DoubleMaRequest {
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                data_id: "bench".to_string(),
+                fast_range,
+                slow_range,
+                fast_ma_types: vec![ma.fast_ma.to_string()],
+                slow_ma_types: vec![ma.slow_ma.to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params,
+                slow_ma_params,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::Grid,
+                top_k: Some(50),
+                include_all: Some(false),
+                heatmap_bins: Some(64),
+                constraints: None,
+                vdps: None,
+            };
+
+            group.bench_function(&name, |b| {
+                b.iter(|| {
+                    let req2 = req.clone();
+                    let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                        req2, &candles, &cancel, None,
+                    )
+                    .expect("gpu hybrid kernel run");
+                })
+            });
+        }
+
+        group.finish();
+    }
+
+    match prev_budget {
+        Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+        None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+    }
+    match prev_hybrid {
+        Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+        None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+    }
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_gpu_hybrid_kernel(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_double_ma_gpu_kernel_extra_ma(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
@@ -778,6 +920,91 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
 fn bench_double_ma_gpu_kernel_strategy_profiles(_c: &mut Criterion) {}
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+    let trend_candles = make_trending_candles(200_000);
+    let breakout_candles = make_breakout_candles(200_000);
+    let cancel = AtomicBool::new(false);
+
+    let strategy_cases: &[(&str, fn() -> StrategyConfig)] = &[
+        ("double_ma", StrategyConfig::default),
+        ("trend_quality", trend_quality_strategy_for_kernel),
+        ("regime_hybrid", regime_hybrid_strategy_for_kernel),
+        ("breakout_momentum", breakout_strategy_for_kernel),
+    ];
+    let mode_cases: &[(&str, bool)] = &[("legacy_off", false), ("dynamic_on", true)];
+    let workloads: &[(&str, (u32, u32, u32), (u32, u32, u32))] = &[
+        ("small", (5, 50, 1), (20, 200, 5)),
+        ("medium", (5, 100, 1), (10, 200, 1)),
+        ("large", (5, 200, 1), (10, 400, 1)),
+        ("xlarge", (5, 500, 1), (10, 1000, 1)),
+    ];
+
+    let mut group = c.benchmark_group("double_ma/gpu_kernel_dynamic_preflight/sma_sma/200k");
+    group.measurement_time(Duration::from_secs(8));
+    group.sample_size(10);
+
+    for (strategy_label, make_strategy) in strategy_cases.iter().copied() {
+        for (mode_label, dynamic_enabled) in mode_cases.iter().copied() {
+            for (workload_label, fast_range, slow_range) in workloads.iter().copied() {
+                let fast_periods = expand_range_u16(fast_range);
+                let slow_periods = expand_range_u16(slow_range);
+                let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+                let name = format!("{strategy_label}/{mode_label}/{workload_label}/{pairs}pairs");
+
+                let req = DoubleMaRequest {
+                    backend: Backend::GpuKernel { device_id: 0 },
+                    data_id: "bench".to_string(),
+                    fast_range,
+                    slow_range,
+                    fast_ma_types: vec!["sma".to_string()],
+                    slow_ma_types: vec!["sma".to_string()],
+                    ma_source: "close".to_string(),
+                    export_all_csv_path: None,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    fast_ma_param_sweeps: None,
+                    slow_ma_param_sweeps: None,
+                    strategy: make_strategy(),
+                    halftrend_filter: None,
+                    objective: ObjectiveKind::Sharpe,
+                    mode: OptimizationMode::Grid,
+                    top_k: Some(50),
+                    include_all: Some(false),
+                    heatmap_bins: Some(64),
+                    constraints: None,
+                    vdps: None,
+                };
+
+                group.bench_function(&name, |b| {
+                    b.iter(|| {
+                        let req2 = req.clone();
+                        let candles = if strategy_label == "breakout_momentum" {
+                            &breakout_candles
+                        } else {
+                            &trend_candles
+                        };
+                        run_with_dynamic_strategy_opt_env(dynamic_enabled, || {
+                            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                                req2, candles, &cancel, None,
+                            )
+                            .expect("gpu kernel dynamic-preflight strategy profile run");
+                        });
+                    })
+                });
+            }
+        }
+    }
+
+    group.finish();
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
@@ -912,8 +1139,10 @@ criterion_group!(
     bench_double_ma_cpu,
     bench_double_ma_gpu_sweep,
     bench_double_ma_gpu_kernel,
+    bench_double_ma_gpu_hybrid_kernel,
     bench_double_ma_gpu_kernel_extra_ma,
     bench_double_ma_gpu_kernel_strategy_profiles,
+    bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles,
     bench_double_ma_gpu_kernel_vdps
 );
 criterion_main!(benches);

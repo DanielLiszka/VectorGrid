@@ -10,7 +10,7 @@ use ta_app_core::double_ma::HalfTrendRegimeFilter;
 use ta_app_core::{
     meta_group_key_for_request, meta_select_from_artifacts,
     run_composite_cpu_optimization_blocking_with_candles,
-    run_composite_validation_blocking_with_candles, CompositeCpuRequest, CompositeParams,
+    run_composite_validation_blocking_with_candles, Backend, CompositeCpuRequest, CompositeParams,
     CompositeValidationRequest, HoldoutAggregate, HoldoutSummary, MetaClusterConfig,
     MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest, ValidationEngine,
 };
@@ -304,6 +304,10 @@ fn run_workflow_once(
             return Err("cancelled".to_string());
         }
         let opt_req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
             data_id: label.to_string(),
             fast_range: (5, 60, 5),
             slow_range: (20, 220, 10),
@@ -335,6 +339,8 @@ fn run_workflow_once(
                 fast_len: p.fast_len,
                 slow_len: p.slow_len,
                 halftrend: halftrend.clone(),
+                asr: None,
+                vemr: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,

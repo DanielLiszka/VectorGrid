@@ -10,6 +10,7 @@ use crate::progress::ProgressSink;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -286,6 +287,82 @@ impl IndicatorSeriesCache {
         key: IndicatorSeriesKey,
         value: Arc<IndicatorSeriesBundle>,
     ) -> Arc<IndicatorSeriesBundle> {
+        if let Some(existing) = self.map.get(&key) {
+            return Arc::clone(existing);
+        }
+        self.map.insert(key.clone(), Arc::clone(&value));
+        self.order.push_back(key);
+        while self.map.len() > self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            } else {
+                break;
+            }
+        }
+        value
+    }
+}
+
+fn composite_signal_mode_tag(mode: CompositeSignalMode) -> u8 {
+    match mode {
+        CompositeSignalMode::HardGate => 0,
+        CompositeSignalMode::EntryCoreExitOverlay => 1,
+        CompositeSignalMode::TrendPullbackReversion => 2,
+    }
+}
+
+fn dynamic_plan_cache_key(
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    indicator_key: &IndicatorSeriesKey,
+    strategy: &StrategyConfig,
+    signal_mode: CompositeSignalMode,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    fast_ma_type.hash(&mut hasher);
+    slow_ma_type.hash(&mut hasher);
+    indicator_key.hash(&mut hasher);
+    strategy.commission.to_bits().hash(&mut hasher);
+    strategy.eps_rel.to_bits().hash(&mut hasher);
+    strategy.long_only.hash(&mut hasher);
+    strategy.allow_flip.hash(&mut hasher);
+    strategy.trade_on_next_bar.hash(&mut hasher);
+    composite_signal_mode_tag(signal_mode).hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Debug)]
+struct DynamicCompositePlanCache {
+    cap: usize,
+    map: HashMap<u64, Arc<crate::strategy_plan::CompiledStrategyPlan>>,
+    order: VecDeque<u64>,
+}
+
+impl DynamicCompositePlanCache {
+    fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: u64) -> Option<Arc<crate::strategy_plan::CompiledStrategyPlan>> {
+        let hit = self.map.get(&key).cloned();
+        if hit.is_some() {
+            if let Some(pos) = self.order.iter().position(|k| *k == key) {
+                let _ = self.order.remove(pos);
+            }
+            self.order.push_back(key);
+        }
+        hit
+    }
+
+    fn insert(
+        &mut self,
+        key: u64,
+        value: Arc<crate::strategy_plan::CompiledStrategyPlan>,
+    ) -> Arc<crate::strategy_plan::CompiledStrategyPlan> {
         if let Some(existing) = self.map.get(&key) {
             return Arc::clone(existing);
         }
@@ -1043,8 +1120,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 .all(|d| d == (periods[1] as i32 - periods[0] as i32));
 
         let cols = n;
-        let mut values: Vec<f64> = vec![f64::NAN; periods.len().saturating_mul(cols)];
-
         if uniform {
             let (mat, cols2) = ma_matrix_cpu_f64(
                 candles,
@@ -1060,6 +1135,9 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
             return Ok((mat, map));
         }
+
+        let total = periods.len().saturating_mul(cols);
+        let mut values = crate::alloc_policy::alloc_f64_with_prefix_uninit_tail(total, 0, 0.0);
 
         // Non-uniform period sets: compute each row individually.
         for (row, &period) in periods.iter().enumerate() {
@@ -1180,10 +1258,28 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let constraints_cfg = req.constraints.clone();
     let base_strategy = req.base_strategy.clone();
     let ma_source = req.ma_source.clone();
+    let fast_ma_params = req.fast_ma_params.clone();
+    let slow_ma_params = req.slow_ma_params.clone();
     let objectives = req.objectives.clone();
     let search_space = req.search_space.clone();
     let allowed_pairs = allowed_pairs.map(Arc::new);
     let indicator_cache = Arc::new(Mutex::new(IndicatorSeriesCache::new(8)));
+    let dynamic_strategy_enabled =
+        crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled();
+    let dynamic_plan_cache = if dynamic_strategy_enabled {
+        Some(Arc::new(Mutex::new(DynamicCompositePlanCache::new(512))))
+    } else {
+        None
+    };
+    let dynamic_shadow_enabled =
+        dynamic_strategy_enabled && crate::strategy_dynamic::dynamic_strategy_opt_shadow_enabled();
+    let dynamic_shadow_every = if dynamic_shadow_enabled {
+        crate::strategy_dynamic::dynamic_strategy_opt_shadow_every().max(1)
+    } else {
+        0
+    };
+    let dynamic_shadow_sampled = AtomicUsize::new(0);
+    let dynamic_shadow_mismatches = AtomicUsize::new(0);
 
     let fast_choice_idx_by_period: Option<HashMap<u16, usize>> =
         fast_choice_map.as_ref().map(|m| {
@@ -1712,32 +1808,144 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             constraints.push(1.0);
         }
 
-        let metrics = if need_sharpe {
-            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
-                &lr,
-                ma_prices,
-                fast_row,
-                slow_row,
-                &indicator_bundle.halftrend_trend,
-                &indicator_bundle.macz_hist,
-                &indicator_bundle.ott_line,
-                start_t,
+        let invalid_outcome = |constraints: Vec<f64>| {
+            let metrics = Metrics::default();
+            let params = CompositeMoParams {
+                fast_ma_type: fast_ma_type.clone(),
+                slow_ma_type: slow_ma_type.clone(),
+                fast_len,
+                slow_len,
+                halftrend: halftrend.clone(),
+                macz: macz.clone(),
+                ott: ott.clone(),
+                strategy: strategy.clone(),
+                signal_mode,
+            };
+            EvalOutcome {
+                objectives: [f64::NEG_INFINITY, f64::NEG_INFINITY],
+                constraints,
+                payload: (metrics, params, f64::NEG_INFINITY, f64::NEG_INFINITY),
+            }
+        };
+
+        let eval_static_metrics = || {
+            if need_sharpe {
+                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+                    &lr,
+                    ma_prices,
+                    fast_row,
+                    slow_row,
+                    &indicator_bundle.halftrend_trend,
+                    &indicator_bundle.macz_hist,
+                    &indicator_bundle.ott_line,
+                    start_t,
+                    &strategy,
+                    signal_mode,
+                )
+            } else {
+                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
+                    &lr,
+                    ma_prices,
+                    fast_row,
+                    slow_row,
+                    &indicator_bundle.halftrend_trend,
+                    &indicator_bundle.macz_hist,
+                    &indicator_bundle.ott_line,
+                    start_t,
+                    &strategy,
+                    signal_mode,
+                )
+            }
+        };
+
+        let metrics = if dynamic_strategy_enabled {
+            let plan_key = dynamic_plan_cache_key(
+                &fast_ma_type,
+                &slow_ma_type,
+                &indicator_key,
                 &strategy,
                 signal_mode,
-            )
+            );
+
+            let cached_plan = dynamic_plan_cache.as_ref().and_then(|cache| {
+                if let Ok(mut cache) = cache.lock() {
+                    cache.get(plan_key)
+                } else {
+                    None
+                }
+            });
+            let compiled_plan = if let Some(plan) = cached_plan {
+                plan
+            } else {
+                let compiled =
+                    match crate::strategy_dynamic::compile_dynamic_plan_for_composite_cpu_config(
+                        &ma_source,
+                        &fast_ma_type,
+                        &slow_ma_type,
+                        fast_ma_params.as_ref(),
+                        slow_ma_params.as_ref(),
+                        &strategy,
+                        &halftrend,
+                        &macz,
+                        &ott,
+                        signal_mode,
+                        crate::strategy_plan::StrategyPlanBackend::Cpu,
+                    ) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            constraints.push(1.0);
+                            return invalid_outcome(constraints);
+                        }
+                    };
+                let plan = Arc::new(compiled);
+                if let Some(cache) = dynamic_plan_cache.as_ref() {
+                    if let Ok(mut cache) = cache.lock() {
+                        let _ = cache.insert(plan_key, Arc::clone(&plan));
+                    }
+                }
+                plan
+            };
+
+            let dynamic_metrics =
+                match crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu_precomputed(
+                    &compiled_plan,
+                    &lr,
+                    close,
+                    ma_prices,
+                    None,
+                    Some(&indicator_bundle.halftrend_trend),
+                    Some(&indicator_bundle.macz_hist),
+                    Some(&indicator_bundle.ott_line),
+                    None,
+                    fast_row,
+                    slow_row,
+                    start_t,
+                    need_sharpe,
+                ) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        constraints.push(1.0);
+                        return invalid_outcome(constraints);
+                    }
+                };
+
+            if dynamic_shadow_enabled {
+                let sampled = dynamic_shadow_sampled
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                if sampled % dynamic_shadow_every == 0 {
+                    let static_metrics = eval_static_metrics();
+                    if !crate::strategy_dynamic::metrics_shadow_equivalent(
+                        &dynamic_metrics,
+                        &static_metrics,
+                    ) {
+                        dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            dynamic_metrics
         } else {
-            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
-                &lr,
-                ma_prices,
-                fast_row,
-                slow_row,
-                &indicator_bundle.halftrend_trend,
-                &indicator_bundle.macz_hist,
-                &indicator_bundle.ott_line,
-                start_t,
-                &strategy,
-                signal_mode,
-            )
+            eval_static_metrics()
         };
 
         // User constraints derived from metrics.
@@ -1962,6 +2170,36 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         .collect::<Vec<_>>();
 
     let runtime_ms = start.elapsed().as_millis() as u64;
+    let shadow_sampled = if dynamic_shadow_enabled {
+        dynamic_shadow_sampled.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    let shadow_mismatches = if dynamic_shadow_enabled {
+        dynamic_shadow_mismatches.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    if dynamic_shadow_enabled && shadow_mismatches > 0 {
+        eprintln!(
+            "[dynamic-shadow][composite_mo] sampled={} mismatches={} every={}",
+            shadow_sampled, shadow_mismatches, dynamic_shadow_every
+        );
+    }
+    crate::strategy_dynamic::maybe_append_dynamic_strategy_artifact(
+        crate::strategy_dynamic::DynamicStrategyArtifactRecord {
+            scope: "composite_mo",
+            profile: "CompositeMo",
+            backend: "Cpu",
+            dynamic_enabled: dynamic_strategy_enabled,
+            shadow_enabled: dynamic_shadow_enabled,
+            shadow_every: dynamic_shadow_every,
+            shadow_sampled,
+            shadow_mismatches,
+            runtime_ms,
+            work_items: total_evals,
+        },
+    );
     Ok(CompositeMoResult {
         data_id: req.data_id,
         pareto,
@@ -1973,6 +2211,72 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+        let _guard = lock_env();
+        let key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
+        let prev = std::env::var(key).ok();
+        if enabled {
+            std::env::set_var(key, "1");
+        } else {
+            std::env::remove_var(key);
+        }
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        match out {
+            Ok(v) => v,
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+        }
+    }
+
+    fn with_dynamic_strategy_shadow_env<T>(every: usize, f: impl FnOnce() -> T) -> T {
+        let _guard = lock_env();
+        let key_exp = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
+        let key_shadow = "VECTORBT_DYNAMIC_STRATEGY_OPT_SHADOW";
+        let key_every = "VECTORBT_DYNAMIC_STRATEGY_OPT_SHADOW_EVERY";
+        let prev_exp = std::env::var(key_exp).ok();
+        let prev_shadow = std::env::var(key_shadow).ok();
+        let prev_every = std::env::var(key_every).ok();
+        std::env::set_var(key_exp, "1");
+        std::env::set_var(key_shadow, "1");
+        std::env::set_var(key_every, every.max(1).to_string());
+
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match prev_exp {
+            Some(v) => std::env::set_var(key_exp, v),
+            None => std::env::remove_var(key_exp),
+        }
+        match prev_shadow {
+            Some(v) => std::env::set_var(key_shadow, v),
+            None => std::env::remove_var(key_shadow),
+        }
+        match prev_every {
+            Some(v) => std::env::set_var(key_every, v),
+            None => std::env::remove_var(key_every),
+        }
+
+        match out {
+            Ok(v) => v,
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+        }
+    }
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-9
+    }
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
@@ -2061,6 +2365,179 @@ mod tests {
             .pareto
             .iter()
             .any(|p| p.params.fast_len < p.params.slow_len));
+    }
+
+    #[test]
+    fn composite_mo_dynamic_strategy_env_path_matches_legacy_results() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 8,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 10,
+                            high: 14,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "ott_ma_type".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["sma".to_string()],
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig {
+                    seed: 999,
+                    trials: 40,
+                },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_composite_mo_optimization_blocking_with_candles(
+                req.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .expect("legacy composite mo run")
+        });
+        let dynamic = with_dynamic_strategy_opt_env(true, || {
+            run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic composite mo run")
+        });
+
+        assert_eq!(legacy.total_evaluations, dynamic.total_evaluations);
+        assert_eq!(legacy.pareto.len(), dynamic.pareto.len());
+
+        let mut legacy_points = legacy.pareto.clone();
+        let mut dynamic_points = dynamic.pareto.clone();
+        let sort_key = |p: &CompositeMoPoint| {
+            (
+                p.params.fast_ma_type.clone(),
+                p.params.slow_ma_type.clone(),
+                p.params.fast_len,
+                p.params.slow_len,
+            )
+        };
+        legacy_points.sort_by_key(sort_key);
+        dynamic_points.sort_by_key(sort_key);
+
+        for (a, b) in legacy_points.iter().zip(dynamic_points.iter()) {
+            assert_eq!(sort_key(a), sort_key(b));
+            assert!(approx_eq(a.maximize_value, b.maximize_value));
+            assert!(approx_eq(a.minimize_value, b.minimize_value));
+            assert!(approx_eq(a.metrics.pnl, b.metrics.pnl));
+            assert!(approx_eq(a.metrics.sharpe, b.metrics.sharpe));
+            assert!(approx_eq(a.metrics.max_dd, b.metrics.max_dd));
+            assert_eq!(a.metrics.trades, b.metrics.trades);
+        }
+    }
+
+    #[test]
+    fn composite_mo_dynamic_strategy_shadow_mode_matches_legacy_results() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 8,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 10,
+                            high: 14,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "ott_ma_type".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["sma".to_string()],
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig {
+                    seed: 999,
+                    trials: 40,
+                },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_composite_mo_optimization_blocking_with_candles(
+                req.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .expect("legacy composite mo run")
+        });
+        let dynamic = with_dynamic_strategy_shadow_env(1, || {
+            run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic shadow composite mo run")
+        });
+
+        assert_eq!(legacy.total_evaluations, dynamic.total_evaluations);
+        assert_eq!(legacy.pareto.len(), dynamic.pareto.len());
     }
 
     #[test]

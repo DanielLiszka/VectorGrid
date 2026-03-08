@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useStorage } from '@vueuse/core'
 import { invokeCommand } from '../tauri/invoke'
+import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
 import {
+  activeTasksCount,
   activeTasksSnapshot,
   cancelCommandFor,
   dismissToast,
@@ -17,16 +20,48 @@ import {
 const taskStore = useTaskStore()
 const { centerStatus, history, events, overallProgress, timeline, toasts } = storeToRefs(taskStore)
 
-const expanded = ref(false)
-const busyCancelIds = ref<Record<string, boolean>>({})
+const expanded = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
+const launcherPos = useStorage<{ x: number; y: number }>('VTA_TASK_CENTER_POS_V1', { x: 12, y: 12 })
+const launcherPosInitialized = useStorage<boolean>('VTA_TASK_CENTER_POS_INIT_V1', false)
+const overlayRootRef = ref<HTMLElement | null>(null)
+const busyCancelIds = shallowRef<Set<string>>(new Set())
+const taskCenterPanelId = 'vta-task-center-panel'
+const { referenceRef, floatingRef, floatingStyles } = useAnchoredOverlay(expanded, {
+  placement: 'bottom-end',
+  offsetPx: 10,
+  paddingPx: 10,
+})
+const dragState = shallowRef<{
+  pointerId: number
+  startClientX: number
+  startClientY: number
+  startX: number
+  startY: number
+  dragging: boolean
+} | null>(null)
+const ignoreNextToggle = ref(false)
 
-const activeTasks = computed(() => activeTasksSnapshot())
-const historyTasks = computed(() => history.value.slice(0, 8))
-const eventItems = computed(() => events.value.slice(0, 8))
-const timelineItems = computed(() => timeline.value.slice(0, 8))
-const toastItems = computed(() => toasts.value.slice(0, 4))
-const runningCount = computed(() => activeTasks.value.length)
+function headItems<T>(items: T[], limit: number): T[] {
+  return items.length <= limit ? items : items.slice(0, limit)
+}
+
+const activeTasks = computed(() => (expanded.value ? activeTasksSnapshot() : []))
+const historyTasks = computed(() => headItems(history.value, 8))
+const eventItems = computed(() => headItems(events.value, 8))
+const timelineItems = computed(() => headItems(timeline.value, 8))
+const toastItems = computed(() => headItems(toasts.value, 4))
+const runningCount = computed(() => activeTasksCount())
 const overall = computed(() => overallProgress.value)
+const rootStyle = computed(() => {
+  const pos = normalizeLauncherPos(launcherPos.value) ?? { x: 12, y: 12 }
+  return {
+    left: `${Math.round(pos.x)}px`,
+    top: `${Math.round(pos.y)}px`,
+    right: 'auto',
+    bottom: 'auto',
+  }
+})
+const toggleDragging = computed(() => !!dragState.value?.dragging)
 const centerStatusLabel = computed(() => {
   const s = String(centerStatus.value || 'idle')
   if (s === 'running') return 'Running'
@@ -36,6 +71,116 @@ const centerStatusLabel = computed(() => {
   if (s === 'failed') return 'Failed'
   if (s === 'cancelled') return 'Cancelled'
   return 'Idle'
+})
+
+function toggleExpanded(): void {
+  if (ignoreNextToggle.value) {
+    ignoreNextToggle.value = false
+    return
+  }
+  expanded.value = !expanded.value
+}
+
+function normalizeLauncherPos(value: unknown): { x: number; y: number } | null {
+  if (!value || typeof value !== 'object') return null
+  const row = value as { x?: unknown; y?: unknown }
+  const x = Number(row.x)
+  const y = Number(row.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return { x, y }
+}
+
+function clampLauncherPos(next: { x: number; y: number }): { x: number; y: number } {
+  const margin = 8
+  const width = Math.max(1, overlayRootRef.value?.offsetWidth ?? 220)
+  const height = Math.max(1, overlayRootRef.value?.offsetHeight ?? 48)
+  const maxX = Math.max(margin, window.innerWidth - width - margin)
+  const maxY = Math.max(margin, window.innerHeight - height - margin)
+  return {
+    x: Math.min(maxX, Math.max(margin, Math.round(next.x))),
+    y: Math.min(maxY, Math.max(margin, Math.round(next.y))),
+  }
+}
+
+function setLauncherPos(next: { x: number; y: number }): void {
+  launcherPos.value = clampLauncherPos(next)
+}
+
+function syncInitialLauncherPos(): void {
+  const stored = normalizeLauncherPos(launcherPos.value)
+  if (!launcherPosInitialized.value || !stored) {
+    const width = Math.max(1, overlayRootRef.value?.offsetWidth ?? 220)
+    setLauncherPos({ x: window.innerWidth - width - 12, y: 12 })
+    launcherPosInitialized.value = true
+    return
+  }
+  setLauncherPos(stored)
+}
+
+function onViewportResize(): void {
+  const stored = normalizeLauncherPos(launcherPos.value)
+  if (!stored) return
+  setLauncherPos(stored)
+}
+
+function onTogglePointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return
+  const stored = normalizeLauncherPos(launcherPos.value) ?? { x: 12, y: 12 }
+  dragState.value = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startX: stored.x,
+    startY: stored.y,
+    dragging: false,
+  }
+  const target = event.currentTarget as HTMLElement | null
+  target?.setPointerCapture?.(event.pointerId)
+}
+
+function onTogglePointerMove(event: PointerEvent): void {
+  const state = dragState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  const dx = event.clientX - state.startClientX
+  const dy = event.clientY - state.startClientY
+  const moved = Math.abs(dx) > 3 || Math.abs(dy) > 3
+  if (!state.dragging && moved) {
+    dragState.value = { ...state, dragging: true }
+  }
+  const active = dragState.value
+  if (!active?.dragging) return
+  setLauncherPos({ x: active.startX + dx, y: active.startY + dy })
+  event.preventDefault()
+}
+
+function releaseTogglePointer(event: PointerEvent): void {
+  const state = dragState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  const target = event.currentTarget as HTMLElement | null
+  if (target?.hasPointerCapture?.(event.pointerId)) {
+    target.releasePointerCapture(event.pointerId)
+  }
+  if (state.dragging) ignoreNextToggle.value = true
+  dragState.value = null
+}
+
+function onTogglePointerUp(event: PointerEvent): void {
+  releaseTogglePointer(event)
+}
+
+function onTogglePointerCancel(event: PointerEvent): void {
+  releaseTogglePointer(event)
+}
+
+onMounted(() => {
+  nextTick(() => {
+    syncInitialLauncherPos()
+    window.addEventListener('resize', onViewportResize, { passive: true })
+  })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onViewportResize)
 })
 
 function statusLabel(task: TrackedTask): string {
@@ -86,17 +231,28 @@ async function cancelTask(task: TrackedTask): Promise<void> {
   const cmd = cancelCommandFor(task.command)
   if (!cmd) return
   markTaskCancelling(task.id)
-  busyCancelIds.value = { ...busyCancelIds.value, [task.id]: true }
+  setCancelBusy(task.id, true)
   try {
     await invokeCommand<void>(cmd)
   } catch {
     restoreTaskRunning(task.id)
     // Keep cancellation best-effort; error details are already surfaced by backend invoke failures.
   } finally {
-    const next = { ...busyCancelIds.value }
-    delete next[task.id]
-    busyCancelIds.value = next
+    setCancelBusy(task.id, false)
   }
+}
+
+function isCancelBusy(taskId: string): boolean {
+  return busyCancelIds.value.has(taskId)
+}
+
+function setCancelBusy(taskId: string, busy: boolean): void {
+  const id = String(taskId || '').trim()
+  if (!id) return
+  const next = new Set(busyCancelIds.value)
+  if (busy) next.add(id)
+  else next.delete(id)
+  busyCancelIds.value = next
 }
 
 function toastClass(toast: TaskToastItem): string {
@@ -108,13 +264,26 @@ function toastClass(toast: TaskToastItem): string {
 </script>
 
 <template>
-  <div class="taskOverlayRoot">
-    <button class="overlayToggle" type="button" @click="expanded = !expanded">
-      <span class="toggleLabel">Task Center</span>
-      <span class="toggleBadge">{{ runningCount }}</span>
-      <span class="toggleState">{{ centerStatusLabel }}</span>
-      <span v-if="overall" class="togglePct">{{ overall.pct.toFixed(0) }}%</span>
-    </button>
+  <div ref="overlayRootRef" class="taskOverlayRoot" :style="rootStyle">
+    <div ref="referenceRef" class="overlayAnchor">
+      <button
+        class="overlayToggle"
+        :class="{ dragging: toggleDragging }"
+        type="button"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :aria-controls="taskCenterPanelId"
+        @click="toggleExpanded"
+        @pointerdown="onTogglePointerDown"
+        @pointermove="onTogglePointerMove"
+        @pointerup="onTogglePointerUp"
+        @pointercancel="onTogglePointerCancel"
+      >
+        <span class="toggleLabel">Task Center</span>
+        <span class="toggleBadge">{{ runningCount }}</span>
+        <span class="toggleState">{{ centerStatusLabel }}</span>
+        <span v-if="overall" class="togglePct">{{ overall.pct.toFixed(0) }}%</span>
+      </button>
+    </div>
 
     <section v-if="toastItems.length > 0" class="toastStack">
       <article v-for="toast in toastItems" :key="toast.id" class="toastCard" :class="toastClass(toast)">
@@ -123,7 +292,7 @@ function toastClass(toast: TaskToastItem): string {
       </article>
     </section>
 
-    <section v-if="expanded" class="taskPanel">
+    <section v-if="expanded" :id="taskCenterPanelId" ref="floatingRef" class="taskPanel" :style="floatingStyles">
       <div v-if="overall" class="overallWrap">
         <div class="overallTitle">{{ overall.label }}</div>
         <div class="bar">
@@ -150,10 +319,10 @@ function toastClass(toast: TaskToastItem): string {
                 v-if="canCancel(task)"
                 class="cancelBtn"
                 type="button"
-                :disabled="!!busyCancelIds[task.id]"
+                :disabled="isCancelBusy(task.id)"
                 @click="cancelTask(task)"
               >
-                {{ busyCancelIds[task.id] ? 'Cancelling...' : 'Cancel' }}
+                {{ isCancelBusy(task.id) ? 'Cancelling...' : 'Cancel' }}
               </button>
             </div>
           </article>
@@ -201,15 +370,20 @@ function toastClass(toast: TaskToastItem): string {
   position: fixed;
   top: 12px;
   right: 12px;
-  width: min(460px, calc(100vw - 24px));
   z-index: 4000;
   pointer-events: none;
   display: grid;
   gap: 8px;
+  justify-items: end;
 }
 
 .taskOverlayRoot > * {
   pointer-events: auto;
+}
+
+.overlayAnchor {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .overlayToggle {
@@ -217,6 +391,9 @@ function toastClass(toast: TaskToastItem): string {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
   border: 1px solid rgba(2, 132, 199, 0.45);
   border-radius: 999px;
   padding: 7px 12px;
@@ -226,6 +403,10 @@ function toastClass(toast: TaskToastItem): string {
   letter-spacing: 0.01em;
   backdrop-filter: blur(10px);
   box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
+}
+
+.overlayToggle.dragging {
+  cursor: grabbing;
 }
 
 .toggleLabel {
@@ -305,6 +486,7 @@ function toastClass(toast: TaskToastItem): string {
 }
 
 .taskPanel {
+  width: min(460px, calc(100vw - 24px));
   border: 1px solid rgba(14, 116, 144, 0.4);
   border-radius: 16px;
   padding: 10px;
@@ -507,6 +689,9 @@ function toastClass(toast: TaskToastItem): string {
   .taskOverlayRoot {
     top: 8px;
     right: 8px;
+  }
+
+  .taskPanel {
     width: min(96vw, 420px);
   }
 }

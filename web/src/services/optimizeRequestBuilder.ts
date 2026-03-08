@@ -119,6 +119,8 @@ interface StrategyConfigBuildInputs {
 export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuildInputs {
   context: OptimizeBuildContext
   maSupportMap?: unknown
+  backend?: unknown
+  deviceId?: unknown
   fastStart?: unknown
   fastEnd?: unknown
   fastStep?: unknown
@@ -129,6 +131,7 @@ export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuild
   slowMaType?: unknown
   maSource?: unknown
   objective?: unknown
+  mode?: unknown
   topK?: unknown
   includeAll?: unknown
   compositeSignalMode?: unknown
@@ -148,6 +151,50 @@ export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuild
   ottPeriod?: unknown
   ottPercent?: unknown
   ottMaType?: unknown
+  asrSqueezeBbMult?: unknown
+  asrSqueezeKcMult?: unknown
+  asrAngleDegMin?: unknown
+  asrAngleDegMr?: unknown
+  asrUseErFilter?: unknown
+  asrErMin?: unknown
+  asrErMr?: unknown
+  asrZMaType?: unknown
+  asrZNbdev?: unknown
+  asrZDevtype?: unknown
+  asrZEntry?: unknown
+  asrZExit?: unknown
+  asrConfirmBars?: unknown
+  asrMomFadeBars?: unknown
+  asrMaxTradeBars?: unknown
+  asrMaxMrTradeBars?: unknown
+  vccMapFastToSqueezePeriod?: unknown
+  vccMapFastToMomentumPeriod?: unknown
+  vccMapSlowToTrendPeriod?: unknown
+  vccSqueezePeriod?: unknown
+  vccMomentumPeriod?: unknown
+  vccMomentumBbPeriod?: unknown
+  vccTrendPeriod?: unknown
+  vccSqueezeBbMult?: unknown
+  vccSqueezeKcMult?: unknown
+  vccConfirmBars?: unknown
+  vccRequireMomentumAccel?: unknown
+  vccMaxTradeBars?: unknown
+  vemrMapFastToZPeriod?: unknown
+  vemrMapFastToBbPeriod?: unknown
+  vemrMapSlowToAtrPeriod?: unknown
+  vemrZPeriod?: unknown
+  vemrZMaType?: unknown
+  vemrZNbdev?: unknown
+  vemrZDevtype?: unknown
+  vemrZEntry?: unknown
+  vemrZExit?: unknown
+  vemrBbPeriod?: unknown
+  vemrBbMult?: unknown
+  vemrRequireBandTouch?: unknown
+  vemrAtrPeriod?: unknown
+  vemrAtrStopMult?: unknown
+  vemrConfirmBars?: unknown
+  vemrMaxTradeBars?: unknown
   fastMaParams?: unknown
   slowMaParams?: unknown
 }
@@ -258,6 +305,9 @@ function normalizeText(value: unknown): string {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Asr') return 'Asr'
+  if (kind === 'Vcc') return 'Vcc'
+  if (kind === 'Vemr') return 'Vemr'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -383,10 +433,11 @@ function maSweepVariantCount(value: Record<string, [number, number, number]> | n
   return Math.max(1, Math.floor(count))
 }
 
-function normalizeBackend(value: unknown): 'Auto' | 'CpuOnly' | 'GpuOnly' | 'GpuKernel' {
+function normalizeBackend(value: unknown): 'Auto' | 'CpuOnly' | 'GpuKernel' {
   const backend = normalizeText(value)
   if (backend === 'CpuOnly') return 'CpuOnly'
-  if (backend === 'GpuOnly') return 'GpuOnly'
+  if (backend === 'GpuOnly') return 'GpuKernel'
+  if (backend === 'GpuHybridKernel') return 'GpuKernel'
   if (backend === 'GpuKernel') return 'GpuKernel'
   if (backend === 'Auto') return 'Auto'
   return 'CpuOnly'
@@ -969,13 +1020,15 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
       if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
         throw new Error('CPU backend does not support one of the selected MA types. Choose a supported MA or switch backend.')
       }
-    } else if (backend === 'GpuOnly') {
-      if (!maSupportsCuda(maSupportMap, fastMaType) || !maSupportsCuda(maSupportMap, slowMaType)) {
-        throw new Error('GPU backend requires CUDA support for both selected MAs. Choose a supported MA or switch backend.')
-      }
     } else if (backend === 'GpuKernel') {
-      if (!maSupportsKernel(maSupportMap, fastMaType) || !maSupportsKernel(maSupportMap, slowMaType)) {
-        throw new Error('GPU (kernel) does not support one of the selected MA types. Choose a supported MA or switch backend.')
+      const okFast = maSupportsCpu(maSupportMap, fastMaType)
+        || maSupportsCuda(maSupportMap, fastMaType)
+        || maSupportsKernel(maSupportMap, fastMaType)
+      const okSlow = maSupportsCpu(maSupportMap, slowMaType)
+        || maSupportsCuda(maSupportMap, slowMaType)
+        || maSupportsKernel(maSupportMap, slowMaType)
+      if (!okFast || !okSlow) {
+        throw new Error('GPU unified backend cannot run one of the selected MA types. Choose a supported MA or switch backend.')
       }
     } else {
       const okFast = maSupportsCpu(maSupportMap, fastMaType)
@@ -1055,7 +1108,9 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   if (exportAllCsvPath) {
     if (includeAll) throw new Error('exportAllCsvPath requires includeAll=false (stream export avoids huge RAM usage).')
     if (mode !== 'Grid') throw new Error('exportAllCsvPath requires mode=Grid.')
-    if (backend !== 'GpuKernel') throw new Error('exportAllCsvPath is currently supported only for the GPU (kernel) backend.')
+    if (backend !== 'GpuKernel') {
+      throw new Error('exportAllCsvPath is currently supported only for the GPU unified backend.')
+    }
     if ((fastVariantCount * slowVariantCount) > 1) {
       throw new Error('exportAllCsvPath is not supported when optimizing MA parameters. Disable MA param sweeps or export.')
     }
@@ -1073,7 +1128,7 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     if (heatmapBins > 0) throw new Error('GpuVdps mode currently requires heatmapBins=0.')
     if (exportAllCsvPath) throw new Error('GpuVdps mode does not support exportAllCsvPath.')
     if (backend === 'CpuOnly') {
-      throw new Error('GpuVdps mode requires backend=Auto/GpuOnly/GpuKernel with CUDA available.')
+      throw new Error('GpuVdps mode requires backend=Auto/GpuKernel with CUDA available.')
     }
     if (hasExecutionOverlays) {
       throw new Error('GpuVdps mode does not support cooldown/persistence/trailing-stop overlays.')
@@ -1144,7 +1199,17 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
 
 export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimizationBuildInputs): Record<string, unknown> | null {
   const kind = normalizeStrategyKindRaw(inputs.context?.strategy_kind)
-  if (kind !== 'CompositeCpu') return null
+  if (
+    kind !== 'Asr'
+    && kind !== 'Vcc'
+    && kind !== 'Vemr'
+    && kind !== 'CompositeCpu'
+    && kind !== 'CompositeTrend'
+    && kind !== 'RegimeHybrid'
+    && kind !== 'BreakoutMomentum'
+  ) {
+    return null
+  }
 
   const dataId = normalizeText(inputs.context?.data_id)
   if (!dataId) throw new Error('Load CSV first (missing data id).')
@@ -1176,7 +1241,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   if (!fastMaType) throw new Error('Select a fast MA type.')
   if (!slowMaType) throw new Error('Select a slow MA type.')
   const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
-  if (hasMovingAverageSupportData(maSupportMap)) {
+  if (kind !== 'Asr' && kind !== 'Vcc' && kind !== 'Vemr' && hasMovingAverageSupportData(maSupportMap)) {
     if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
       throw new Error('Composite strategy is CPU-only and does not support one of the selected MA types.')
     }
@@ -1242,12 +1307,177 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   }
 
   const startingEquity = normalizeStartingEquity(inputs.startingEquity)
-  const strategy = buildStrategyConfigFromInputs(inputs, 'CompositeCpu')
+  const strategy = buildStrategyConfigFromInputs(inputs, kind)
   const signalMode = normalizeCompositeSignalMode(inputs.compositeSignalMode)
+  const backend = normalizeBackend(inputs.backend)
+  const deviceId = Math.max(0, Math.floor(num(inputs.deviceId, 0)))
+  const backendPayload = (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr')
+    ? (backend === 'CpuOnly' ? { backend: 'CpuOnly' } : { backend, device_id: deviceId })
+    : { backend: 'CpuOnly' }
+
+  const asr = kind === 'Asr'
+    ? {
+        squeeze_bb_mult: Math.max(0.0001, num(inputs.asrSqueezeBbMult, 2.0)),
+        squeeze_kc_mult: Math.max(0.0001, num(inputs.asrSqueezeKcMult, 1.5)),
+        angle_deg_min: Math.max(0, num(inputs.asrAngleDegMin, 10.0)),
+        angle_deg_mr: Math.max(0, num(inputs.asrAngleDegMr, 6.0)),
+        use_er_filter: inputs.asrUseErFilter == null ? true : normalizeBoolean(inputs.asrUseErFilter),
+        er_min: Math.max(0, num(inputs.asrErMin, 0.30)),
+        er_mr: Math.max(0, num(inputs.asrErMr, 0.25)),
+        z_ma_type: normalizeText(inputs.asrZMaType || 'sma') || 'sma',
+        z_nbdev: Math.max(0.0001, num(inputs.asrZNbdev, 1.0)),
+        z_devtype: Math.max(0, Math.floor(num(inputs.asrZDevtype, 0))),
+        z_entry: Math.max(0, num(inputs.asrZEntry, 2.0)),
+        z_exit: Math.max(0, num(inputs.asrZExit, 0.5)),
+        confirm_bars: Math.max(0, Math.floor(num(inputs.asrConfirmBars, 0))),
+        mom_fade_bars: Math.max(1, Math.floor(num(inputs.asrMomFadeBars, 2))),
+        max_trade_bars: Math.max(1, Math.floor(num(inputs.asrMaxTradeBars, 80))),
+        max_mr_trade_bars: Math.max(1, Math.floor(num(inputs.asrMaxMrTradeBars, 30))),
+      }
+    : undefined
+  let vcc: Record<string, unknown> | undefined
+  if (kind === 'Vcc') {
+    const mapFastToSqueezePeriod = inputs.vccMapFastToSqueezePeriod == null
+      ? true
+      : normalizeBoolean(inputs.vccMapFastToSqueezePeriod)
+    const mapFastToMomentumPeriod = inputs.vccMapFastToMomentumPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vccMapFastToMomentumPeriod)
+    const mapSlowToTrendPeriod = inputs.vccMapSlowToTrendPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vccMapSlowToTrendPeriod)
+    const squeezePeriod = Math.floor(num(inputs.vccSqueezePeriod, 20))
+    const momentumPeriod = Math.floor(num(inputs.vccMomentumPeriod, 20))
+    const momentumBbPeriod = Math.floor(num(inputs.vccMomentumBbPeriod, 20))
+    const trendPeriod = Math.floor(num(inputs.vccTrendPeriod, 6))
+    const squeezeBbMult = num(inputs.vccSqueezeBbMult, 2.0)
+    const squeezeKcMult = num(inputs.vccSqueezeKcMult, 1.5)
+    const confirmBars = Math.floor(num(inputs.vccConfirmBars, 0))
+    const requireMomentumAccel = inputs.vccRequireMomentumAccel == null
+      ? true
+      : normalizeBoolean(inputs.vccRequireMomentumAccel)
+    const maxTradeBars = Math.floor(num(inputs.vccMaxTradeBars, 120))
+
+    if (!Number.isFinite(squeezePeriod) || squeezePeriod < 1 || squeezePeriod > 65535) {
+      throw new Error('VCC squeeze period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(momentumPeriod) || momentumPeriod < 1 || momentumPeriod > 65535) {
+      throw new Error('VCC momentum period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(momentumBbPeriod) || momentumBbPeriod < 1 || momentumBbPeriod > 65535) {
+      throw new Error('VCC momentum BB period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(trendPeriod) || trendPeriod < 1 || trendPeriod > 65535) {
+      throw new Error('VCC trend period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(squeezeBbMult) || squeezeBbMult <= 0) {
+      throw new Error('VCC squeeze BB multiplier must be > 0.')
+    }
+    if (!Number.isFinite(squeezeKcMult) || squeezeKcMult <= 0) {
+      throw new Error('VCC squeeze KC multiplier must be > 0.')
+    }
+    if (!Number.isFinite(confirmBars) || confirmBars < 0 || confirmBars > 65535) {
+      throw new Error('VCC confirm bars must be in [0, 65535].')
+    }
+    if (!Number.isFinite(maxTradeBars) || maxTradeBars < 1 || maxTradeBars > 65535) {
+      throw new Error('VCC max trade bars must be in [1, 65535].')
+    }
+
+    vcc = {
+      map_fast_to_squeeze_period: mapFastToSqueezePeriod,
+      map_fast_to_momentum_period: mapFastToMomentumPeriod,
+      map_slow_to_trend_period: mapSlowToTrendPeriod,
+      squeeze_period: squeezePeriod,
+      momentum_period: momentumPeriod,
+      momentum_bb_period: momentumBbPeriod,
+      trend_period: trendPeriod,
+      squeeze_bb_mult: squeezeBbMult,
+      squeeze_kc_mult: squeezeKcMult,
+      confirm_bars: confirmBars,
+      require_momentum_accel: requireMomentumAccel,
+      max_trade_bars: maxTradeBars,
+    }
+  }
+
+  let vemr: Record<string, unknown> | undefined
+  if (kind === 'Vemr') {
+    const mapFastToZPeriod = inputs.vemrMapFastToZPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vemrMapFastToZPeriod)
+    const mapFastToBbPeriod = inputs.vemrMapFastToBbPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vemrMapFastToBbPeriod)
+    const mapSlowToAtrPeriod = inputs.vemrMapSlowToAtrPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vemrMapSlowToAtrPeriod)
+
+    const zPeriod = Math.floor(num(inputs.vemrZPeriod, 20))
+    const zMaType = normalizeText(inputs.vemrZMaType || 'sma') || 'sma'
+    const zNbdev = num(inputs.vemrZNbdev, 1.0)
+    const zDevtype = Math.floor(num(inputs.vemrZDevtype, 0))
+    const zEntry = num(inputs.vemrZEntry, 2.0)
+    const zExit = num(inputs.vemrZExit, 0.5)
+    const bbPeriod = Math.floor(num(inputs.vemrBbPeriod, 20))
+    const bbMult = num(inputs.vemrBbMult, 2.0)
+    const requireBandTouch = inputs.vemrRequireBandTouch == null
+      ? true
+      : normalizeBoolean(inputs.vemrRequireBandTouch)
+    const atrPeriod = Math.floor(num(inputs.vemrAtrPeriod, 14))
+    const atrStopMult = num(inputs.vemrAtrStopMult, 2.0)
+    const confirmBars = Math.floor(num(inputs.vemrConfirmBars, 0))
+    const maxTradeBars = Math.floor(num(inputs.vemrMaxTradeBars, 80))
+
+    if (!Number.isFinite(zPeriod) || zPeriod < 1 || zPeriod > 65535) {
+      throw new Error('VEMR z period must be in [1, 65535].')
+    }
+    if (!zMaType) throw new Error('VEMR z MA type is required.')
+    if (!Number.isFinite(zNbdev) || zNbdev <= 0) throw new Error('VEMR z nbdev must be > 0.')
+    if (!Number.isFinite(zDevtype) || zDevtype < 0 || zDevtype > 255) {
+      throw new Error('VEMR z devtype must be in [0, 255].')
+    }
+    if (!Number.isFinite(zEntry) || zEntry <= 0) throw new Error('VEMR z entry must be > 0.')
+    if (!Number.isFinite(zExit) || zExit < 0) throw new Error('VEMR z exit must be >= 0.')
+    if (zExit > zEntry) throw new Error('VEMR z exit must be <= z entry.')
+    if (!Number.isFinite(bbPeriod) || bbPeriod < 1 || bbPeriod > 65535) {
+      throw new Error('VEMR BB period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(bbMult) || bbMult <= 0) throw new Error('VEMR BB multiplier must be > 0.')
+    if (!Number.isFinite(atrPeriod) || atrPeriod < 1 || atrPeriod > 65535) {
+      throw new Error('VEMR ATR period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(atrStopMult) || atrStopMult <= 0) {
+      throw new Error('VEMR ATR stop multiplier must be > 0.')
+    }
+    if (!Number.isFinite(confirmBars) || confirmBars < 0 || confirmBars > 65535) {
+      throw new Error('VEMR confirm bars must be in [0, 65535].')
+    }
+    if (!Number.isFinite(maxTradeBars) || maxTradeBars < 1 || maxTradeBars > 65535) {
+      throw new Error('VEMR max trade bars must be in [1, 65535].')
+    }
+
+    vemr = {
+      map_fast_to_z_period: mapFastToZPeriod,
+      map_fast_to_bb_period: mapFastToBbPeriod,
+      map_slow_to_atr_period: mapSlowToAtrPeriod,
+      z_period: zPeriod,
+      z_ma_type: zMaType,
+      z_nbdev: zNbdev,
+      z_devtype: zDevtype,
+      z_entry: zEntry,
+      z_exit: zExit,
+      bb_period: bbPeriod,
+      bb_mult: bbMult,
+      require_band_touch: requireBandTouch,
+      atr_period: atrPeriod,
+      atr_stop_mult: atrStopMult,
+      confirm_bars: confirmBars,
+      max_trade_bars: maxTradeBars,
+    }
+  }
 
   return {
-    strategy_kind: 'CompositeCpu',
-    backend: { backend: 'CpuOnly' },
+    strategy_kind: kind,
+    backend: backendPayload,
     data_id: dataId,
     starting_equity: startingEquity,
     fast_range: fast,
@@ -1262,6 +1492,9 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     halftrend,
     macz,
     ott,
+    asr,
+    vcc,
+    vemr,
     objective,
     mode: 'Grid',
     top_k: topK,

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useVirtualTableRows } from '../composables/useVirtualTableRows'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -81,10 +83,6 @@ const { resultsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
-const tableScrollTop = ref(0)
-const virtualRowHeightPx = 28
-const virtualOverscanRows = 12
-const virtualWindowRows = 80
 
 const candidatesDraft = ref('32')
 const seedDraft = ref('1')
@@ -113,20 +111,13 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'valida
 const renderedColumns = computed<ValidationColumn[]>(() => validationColumns.value as ValidationColumn[])
 const renderedRows = computed<ValidationRow[]>(() => validationRows.value as ValidationRow[])
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
-const virtualFirstRowIndex = computed(() => {
-  const firstByScroll = Math.floor(tableScrollTop.value / virtualRowHeightPx)
-  const maxFirst = Math.max(0, renderedRows.value.length - virtualWindowRows)
-  return Math.min(maxFirst, Math.max(0, firstByScroll - virtualOverscanRows))
-})
-const virtualLastRowExclusive = computed(() => {
-  return Math.min(renderedRows.value.length, virtualFirstRowIndex.value + virtualWindowRows)
-})
-const virtualRows = computed(() => renderedRows.value.slice(virtualFirstRowIndex.value, virtualLastRowExclusive.value))
-const virtualTopSpacerPx = computed(() => virtualFirstRowIndex.value * virtualRowHeightPx)
-const virtualBottomSpacerPx = computed(() => {
-  const hiddenCount = Math.max(0, renderedRows.value.length - virtualLastRowExclusive.value)
-  return hiddenCount * virtualRowHeightPx
-})
+const {
+  scrollElementRef: tableScrollElementRef,
+  virtualRows,
+  topSpacerPx: virtualTopSpacerPx,
+  bottomSpacerPx: virtualBottomSpacerPx,
+  scrollToTop,
+} = useVirtualTableRows(renderedRows)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -134,39 +125,139 @@ const stamp = computed(() => {
   return new Date(ms).toLocaleTimeString([], { hour12: false })
 })
 
-watch(candidates, (v) => { const next = String(v || '32'); if (candidatesDraft.value !== next) candidatesDraft.value = next }, { immediate: true })
-watch(seed, (v) => { const next = String(v || '1'); if (seedDraft.value !== next) seedDraft.value = next }, { immediate: true })
-watch(minPsr, (v) => { const next = String(v || ''); if (minPsrDraft.value !== next) minPsrDraft.value = next }, { immediate: true })
-watch(minDsr, (v) => { const next = String(v || ''); if (minDsrDraft.value !== next) minDsrDraft.value = next }, { immediate: true })
-watch(cscvSlices, (v) => { const next = String(v || ''); if (cscvDraft.value !== next) cscvDraft.value = next }, { immediate: true })
-watch(autoRun, (v) => { const next = Boolean(v); if (autoRunDraft.value !== next) autoRunDraft.value = next }, { immediate: true })
-watch(autoExportXlsx, (v) => { const next = Boolean(v); if (autoExportXlsxDraft.value !== next) autoExportXlsxDraft.value = next }, { immediate: true })
-watch(autoRevealReport, (v) => { const next = Boolean(v); if (autoRevealReportDraft.value !== next) autoRevealReportDraft.value = next }, { immediate: true })
-watch(autoExportTopN, (v) => { const next = String(v || '20').trim() || '20'; if (autoExportTopNDraft.value !== next) autoExportTopNDraft.value = next }, { immediate: true })
-watch(wfEnable, (v) => { const next = Boolean(v); if (wfEnableDraft.value !== next) wfEnableDraft.value = next }, { immediate: true })
-watch(wfWindow, (v) => { const next = String(v || '20000').trim() || '20000'; if (wfWindowDraft.value !== next) wfWindowDraft.value = next }, { immediate: true })
-watch(wfStep, (v) => { const next = String(v || '20000').trim() || '20000'; if (wfStepDraft.value !== next) wfStepDraft.value = next }, { immediate: true })
-watch(perturbEnable, (v) => { const next = Boolean(v); if (perturbEnableDraft.value !== next) perturbEnableDraft.value = next }, { immediate: true })
-watch(perturbIters, (v) => { const next = String(v || '8').trim() || '8'; if (perturbItersDraft.value !== next) perturbItersDraft.value = next }, { immediate: true })
-watch(perturbMin, (v) => { const next = String(v || '0.015').trim() || '0.015'; if (perturbMinDraft.value !== next) perturbMinDraft.value = next }, { immediate: true })
-watch(perturbMax, (v) => { const next = String(v || '0.06').trim() || '0.06'; if (perturbMaxDraft.value !== next) perturbMaxDraft.value = next }, { immediate: true })
-watch(mcEnable, (v) => { const next = Boolean(v); if (mcEnableDraft.value !== next) mcEnableDraft.value = next }, { immediate: true })
-watch(mcSims, (v) => { const next = String(v || '500').trim() || '500'; if (mcSimsDraft.value !== next) mcSimsDraft.value = next }, { immediate: true })
-watch(cscvEnable, (v) => { const next = Boolean(v); if (cscvEnableDraft.value !== next) cscvEnableDraft.value = next }, { immediate: true })
-watch(crossEnable, (v) => { const next = Boolean(v); if (crossEnableDraft.value !== next) crossEnableDraft.value = next }, { immediate: true })
-watch(crossMax, (v) => { const next = String(v || '6').trim() || '6'; if (crossMaxDraft.value !== next) crossMaxDraft.value = next }, { immediate: true })
-watch(crossSearch, (v) => { const next = String(v || '').trim(); if (crossSearchDraft.value !== next) crossSearchDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(candidates.value || '32'),
+    String(seed.value || '1'),
+    String(minPsr.value || ''),
+    String(minDsr.value || ''),
+    String(cscvSlices.value || ''),
+    Boolean(autoRun.value),
+    Boolean(autoExportXlsx.value),
+    Boolean(autoRevealReport.value),
+    String(autoExportTopN.value || '20').trim() || '20',
+    Boolean(wfEnable.value),
+    String(wfWindow.value || '20000').trim() || '20000',
+    String(wfStep.value || '20000').trim() || '20000',
+    Boolean(perturbEnable.value),
+    String(perturbIters.value || '8').trim() || '8',
+    String(perturbMin.value || '0.015').trim() || '0.015',
+    String(perturbMax.value || '0.06').trim() || '0.06',
+    Boolean(mcEnable.value),
+    String(mcSims.value || '500').trim() || '500',
+    Boolean(cscvEnable.value),
+    Boolean(crossEnable.value),
+    String(crossMax.value || '6').trim() || '6',
+    String(crossSearch.value || '').trim(),
+  ] as const,
+  ([
+    nextCandidates,
+    nextSeed,
+    nextMinPsr,
+    nextMinDsr,
+    nextCscv,
+    nextAutoRun,
+    nextAutoExportXlsx,
+    nextAutoRevealReport,
+    nextAutoExportTopN,
+    nextWfEnable,
+    nextWfWindow,
+    nextWfStep,
+    nextPerturbEnable,
+    nextPerturbIters,
+    nextPerturbMin,
+    nextPerturbMax,
+    nextMcEnable,
+    nextMcSims,
+    nextCscvEnable,
+    nextCrossEnable,
+    nextCrossMax,
+    nextCrossSearch,
+  ]) => {
+    if (candidatesDraft.value !== nextCandidates) candidatesDraft.value = nextCandidates
+    if (seedDraft.value !== nextSeed) seedDraft.value = nextSeed
+    if (minPsrDraft.value !== nextMinPsr) minPsrDraft.value = nextMinPsr
+    if (minDsrDraft.value !== nextMinDsr) minDsrDraft.value = nextMinDsr
+    if (cscvDraft.value !== nextCscv) cscvDraft.value = nextCscv
+    if (autoRunDraft.value !== nextAutoRun) autoRunDraft.value = nextAutoRun
+    if (autoExportXlsxDraft.value !== nextAutoExportXlsx) autoExportXlsxDraft.value = nextAutoExportXlsx
+    if (autoRevealReportDraft.value !== nextAutoRevealReport) autoRevealReportDraft.value = nextAutoRevealReport
+    if (autoExportTopNDraft.value !== nextAutoExportTopN) autoExportTopNDraft.value = nextAutoExportTopN
+    if (wfEnableDraft.value !== nextWfEnable) wfEnableDraft.value = nextWfEnable
+    if (wfWindowDraft.value !== nextWfWindow) wfWindowDraft.value = nextWfWindow
+    if (wfStepDraft.value !== nextWfStep) wfStepDraft.value = nextWfStep
+    if (perturbEnableDraft.value !== nextPerturbEnable) perturbEnableDraft.value = nextPerturbEnable
+    if (perturbItersDraft.value !== nextPerturbIters) perturbItersDraft.value = nextPerturbIters
+    if (perturbMinDraft.value !== nextPerturbMin) perturbMinDraft.value = nextPerturbMin
+    if (perturbMaxDraft.value !== nextPerturbMax) perturbMaxDraft.value = nextPerturbMax
+    if (mcEnableDraft.value !== nextMcEnable) mcEnableDraft.value = nextMcEnable
+    if (mcSimsDraft.value !== nextMcSims) mcSimsDraft.value = nextMcSims
+    if (cscvEnableDraft.value !== nextCscvEnable) cscvEnableDraft.value = nextCscvEnable
+    if (crossEnableDraft.value !== nextCrossEnable) crossEnableDraft.value = nextCrossEnable
+    if (crossMaxDraft.value !== nextCrossMax) crossMaxDraft.value = nextCrossMax
+    if (crossSearchDraft.value !== nextCrossSearch) crossSearchDraft.value = nextCrossSearch
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   validationStore.setInputField(id, nextValue)
 }
+
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setCheckedValue(id: string, nextValue: boolean): void {
   validationStore.setCheckboxField(id, nextValue)
 }
 
 function runValidationAction(): void {
+  flushQueuedInputValuesNow()
   validationStore.runValidation()
+}
+
+function exportShortlistCsvAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.exportShortlistCsv()
+}
+
+function exportValidationJsonAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.exportValidationJson()
+}
+
+function exportReportJsonAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.exportReportJson()
+}
+
+function exportReportXlsxAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.exportReportXlsx()
+}
+
+function openReportsDirAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.openReportsDir()
+}
+
+function crossRefreshAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.crossRefresh()
+}
+
+function crossSelectAllAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.crossSelectAll()
+}
+
+function crossSelectNoneAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.crossSelectNone()
+}
+
+function crossSelectMatchAction(): void {
+  flushQueuedInputValuesNow()
+  validationStore.crossSelectMatch()
 }
 
 function toggleCrossDataset(index: number): void {
@@ -175,12 +266,6 @@ function toggleCrossDataset(index: number): void {
   const path = String(entry.path || '').trim()
   if (!path) return
   validationStore.toggleCrossDataset(path, !entry.checked)
-}
-
-function onTableScroll(event: Event): void {
-  const target = event.target as HTMLElement | null
-  if (!target) return
-  tableScrollTop.value = Math.max(0, Math.floor(target.scrollTop || 0))
 }
 
 function resolveMount(): void {
@@ -195,10 +280,11 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
-  tableScrollTop.value = 0
+  scrollToTop()
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueValidation
     panelRoot.value = null
@@ -225,7 +311,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="candidatesDraft"
-              @input="candidatesDraft = String(($event.target as HTMLInputElement).value || '32'); setInputValue('valCandidates', candidatesDraft)"
+              @input="candidatesDraft = String(($event.target as HTMLInputElement).value || '32'); queueInputValue('valCandidates', candidatesDraft)"
+              @change="commitInputValue('valCandidates', candidatesDraft)"
             />
           </div>
           <div>
@@ -236,7 +323,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="seedDraft"
-              @input="seedDraft = String(($event.target as HTMLInputElement).value || '1'); setInputValue('valSeed', seedDraft)"
+              @input="seedDraft = String(($event.target as HTMLInputElement).value || '1'); queueInputValue('valSeed', seedDraft)"
+              @change="commitInputValue('valSeed', seedDraft)"
             />
           </div>
           <div>
@@ -248,7 +336,8 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="minPsrDraft"
-              @input="minPsrDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('valMinPsr', minPsrDraft)"
+              @input="minPsrDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinPsr', minPsrDraft)"
+              @change="commitInputValue('valMinPsr', minPsrDraft)"
             />
           </div>
           <div>
@@ -260,7 +349,8 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="minDsrDraft"
-              @input="minDsrDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('valMinDsr', minDsrDraft)"
+              @input="minDsrDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinDsr', minDsrDraft)"
+              @change="commitInputValue('valMinDsr', minDsrDraft)"
             />
           </div>
           <div>
@@ -271,18 +361,19 @@ onBeforeUnmount(() => {
               min="4"
               step="2"
               :value="cscvDraft"
-              @input="cscvDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('valCscvSlices', cscvDraft)"
+              @input="cscvDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valCscvSlices', cscvDraft)"
+              @change="commitInputValue('valCscvSlices', cscvDraft)"
             />
           </div>
         </div>
 
         <div class="actions">
           <button type="button" class="primary" :disabled="validateDisabled" @click="runValidationAction">Run validation</button>
-          <button type="button" :disabled="!canExportValidationCsv" @click="validationStore.exportShortlistCsv()">Export shortlist CSV</button>
-          <button type="button" :disabled="!canExportValidationJson" @click="validationStore.exportValidationJson()">Export validation JSON</button>
-          <button type="button" :disabled="!canExportReportJson" @click="validationStore.exportReportJson()">Export report JSON</button>
-          <button type="button" :disabled="!canExportReportXlsx" @click="validationStore.exportReportXlsx()">Export report XLSX</button>
-          <button type="button" :disabled="!canOpenReportsDir" @click="validationStore.openReportsDir()">Open reports folder</button>
+          <button type="button" :disabled="!canExportValidationCsv" @click="exportShortlistCsvAction">Export shortlist CSV</button>
+          <button type="button" :disabled="!canExportValidationJson" @click="exportValidationJsonAction">Export validation JSON</button>
+          <button type="button" :disabled="!canExportReportJson" @click="exportReportJsonAction">Export report JSON</button>
+          <button type="button" :disabled="!canExportReportXlsx" @click="exportReportXlsxAction">Export report XLSX</button>
+          <button type="button" :disabled="!canOpenReportsDir" @click="openReportsDirAction">Open reports folder</button>
         </div>
       </section>
 
@@ -324,7 +415,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="autoExportTopNDraft"
-              @input="autoExportTopNDraft = String(($event.target as HTMLInputElement).value || '20'); setInputValue('valAutoExportTopN', autoExportTopNDraft)"
+              @input="autoExportTopNDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('valAutoExportTopN', autoExportTopNDraft)"
+              @change="commitInputValue('valAutoExportTopN', autoExportTopNDraft)"
             />
           </div>
           <div>
@@ -377,7 +469,8 @@ onBeforeUnmount(() => {
               min="64"
               step="1"
               :value="wfWindowDraft"
-              @input="wfWindowDraft = String(($event.target as HTMLInputElement).value || '20000'); setInputValue('valWfWindow', wfWindowDraft)"
+              @input="wfWindowDraft = String(($event.target as HTMLInputElement).value || '20000'); queueInputValue('valWfWindow', wfWindowDraft)"
+              @change="commitInputValue('valWfWindow', wfWindowDraft)"
             />
           </div>
           <div>
@@ -388,7 +481,8 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="wfStepDraft"
-              @input="wfStepDraft = String(($event.target as HTMLInputElement).value || '20000'); setInputValue('valWfStep', wfStepDraft)"
+              @input="wfStepDraft = String(($event.target as HTMLInputElement).value || '20000'); queueInputValue('valWfStep', wfStepDraft)"
+              @change="commitInputValue('valWfStep', wfStepDraft)"
             />
           </div>
           <div>
@@ -399,7 +493,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="perturbItersDraft"
-              @input="perturbItersDraft = String(($event.target as HTMLInputElement).value || '8'); setInputValue('valPerturbIters', perturbItersDraft)"
+              @input="perturbItersDraft = String(($event.target as HTMLInputElement).value || '8'); queueInputValue('valPerturbIters', perturbItersDraft)"
+              @change="commitInputValue('valPerturbIters', perturbItersDraft)"
             />
           </div>
         </div>
@@ -412,7 +507,8 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="perturbMinDraft"
-              @input="perturbMinDraft = String(($event.target as HTMLInputElement).value || '0.015'); setInputValue('valPerturbMin', perturbMinDraft)"
+              @input="perturbMinDraft = String(($event.target as HTMLInputElement).value || '0.015'); queueInputValue('valPerturbMin', perturbMinDraft)"
+              @change="commitInputValue('valPerturbMin', perturbMinDraft)"
             />
           </div>
           <div>
@@ -422,7 +518,8 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="perturbMaxDraft"
-              @input="perturbMaxDraft = String(($event.target as HTMLInputElement).value || '0.06'); setInputValue('valPerturbMax', perturbMaxDraft)"
+              @input="perturbMaxDraft = String(($event.target as HTMLInputElement).value || '0.06'); queueInputValue('valPerturbMax', perturbMaxDraft)"
+              @change="commitInputValue('valPerturbMax', perturbMaxDraft)"
             />
           </div>
           <div>
@@ -433,7 +530,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="mcSimsDraft"
-              @input="mcSimsDraft = String(($event.target as HTMLInputElement).value || '500'); setInputValue('valMcSims', mcSimsDraft)"
+              @input="mcSimsDraft = String(($event.target as HTMLInputElement).value || '500'); queueInputValue('valMcSims', mcSimsDraft)"
+              @change="commitInputValue('valMcSims', mcSimsDraft)"
             />
           </div>
         </div>
@@ -458,7 +556,8 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="crossMaxDraft"
-              @input="crossMaxDraft = String(($event.target as HTMLInputElement).value || '6'); setInputValue('valCrossMax', crossMaxDraft)"
+              @input="crossMaxDraft = String(($event.target as HTMLInputElement).value || '6'); queueInputValue('valCrossMax', crossMaxDraft)"
+              @change="commitInputValue('valCrossMax', crossMaxDraft)"
             />
           </div>
           <div>
@@ -467,16 +566,17 @@ onBeforeUnmount(() => {
               id="vueValCrossSearch"
               type="text"
               :value="crossSearchDraft"
-              @input="crossSearchDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('valCrossSearch', crossSearchDraft)"
+              @input="crossSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valCrossSearch', crossSearchDraft)"
+              @change="commitInputValue('valCrossSearch', crossSearchDraft)"
             />
           </div>
           <div>
             <label>&nbsp;</label>
             <div class="actions" style="margin-top: 0;">
-              <button type="button" :disabled="!canCrossRefresh" @click="validationStore.crossRefresh()">Refresh list</button>
-              <button type="button" :disabled="!canCrossSelectAll" @click="validationStore.crossSelectAll()">All</button>
-              <button type="button" :disabled="!canCrossSelectNone" @click="validationStore.crossSelectNone()">None</button>
-              <button type="button" :disabled="!canCrossSelectMatch" @click="validationStore.crossSelectMatch()">Match current</button>
+              <button type="button" :disabled="!canCrossRefresh" @click="crossRefreshAction">Refresh list</button>
+              <button type="button" :disabled="!canCrossSelectAll" @click="crossSelectAllAction">All</button>
+              <button type="button" :disabled="!canCrossSelectNone" @click="crossSelectNoneAction">None</button>
+              <button type="button" :disabled="!canCrossSelectMatch" @click="crossSelectMatchAction">Match current</button>
             </div>
           </div>
         </div>
@@ -504,7 +604,7 @@ onBeforeUnmount(() => {
         <div class="metaLine mono">{{ validationMeta }}</div>
         <div class="metaLine mono">{{ validationShortlistMeta }}</div>
         <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
-        <div class="tableWrap" @scroll="onTableScroll">
+        <div ref="tableScrollElementRef" class="tableWrap">
           <table class="validationTableVue">
             <thead>
               <tr>
@@ -521,12 +621,12 @@ onBeforeUnmount(() => {
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
                 <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
-              <tr v-for="(row, rowOffset) in virtualRows" :key="`val_row_${virtualFirstRowIndex + rowOffset}`">
-                <template v-for="cell in row.cells" :key="`val_row_${virtualFirstRowIndex + rowOffset}_${cell.text}_${cell.className}`">
+              <tr v-for="virtualRow in virtualRows" :key="`val_row_${virtualRow.index}`">
+                <template v-for="cell in virtualRow.row.cells" :key="`val_row_${virtualRow.index}_${cell.text}_${cell.className}`">
                   <td
                     :class="cell.className"
                     :title="cell.title || undefined"
-                    :colspan="row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
                     {{ cell.text }}
                   </td>
@@ -725,7 +825,4 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 </style>
-
-
-
 

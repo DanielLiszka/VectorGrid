@@ -89,7 +89,7 @@ interface PresetProfile {
   valCrossMax: number
 }
 
-type DoubleMaParityBackend = 'GpuOnly' | 'GpuKernel'
+type DoubleMaParityBackend = 'GpuKernel'
 
 interface DoubleMaRequestOverrides {
   backend?: unknown
@@ -343,6 +343,41 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   breakoutAdoscLong: { storeId: 'strategy', key: 'breakoutAdoscLong' },
   breakoutAdxPeriod: { storeId: 'strategy', key: 'breakoutAdxPeriod' },
   breakoutAdxMin: { storeId: 'strategy', key: 'breakoutAdxMin' },
+  asrSqueezeBbMult: { storeId: 'strategy', key: 'asrSqueezeBbMult' },
+  asrSqueezeKcMult: { storeId: 'strategy', key: 'asrSqueezeKcMult' },
+  asrAngleDegMin: { storeId: 'strategy', key: 'asrAngleDegMin' },
+  asrAngleDegMr: { storeId: 'strategy', key: 'asrAngleDegMr' },
+  asrErMin: { storeId: 'strategy', key: 'asrErMin' },
+  asrErMr: { storeId: 'strategy', key: 'asrErMr' },
+  asrZMaType: { storeId: 'strategy', key: 'asrZMaType' },
+  asrZNbdev: { storeId: 'strategy', key: 'asrZNbdev' },
+  asrZDevtype: { storeId: 'strategy', key: 'asrZDevtype' },
+  asrZEntry: { storeId: 'strategy', key: 'asrZEntry' },
+  asrZExit: { storeId: 'strategy', key: 'asrZExit' },
+  asrConfirmBars: { storeId: 'strategy', key: 'asrConfirmBars' },
+  asrMomFadeBars: { storeId: 'strategy', key: 'asrMomFadeBars' },
+  asrMaxTradeBars: { storeId: 'strategy', key: 'asrMaxTradeBars' },
+  asrMaxMrTradeBars: { storeId: 'strategy', key: 'asrMaxMrTradeBars' },
+  vccSqueezePeriod: { storeId: 'strategy', key: 'vccSqueezePeriod' },
+  vccMomentumPeriod: { storeId: 'strategy', key: 'vccMomentumPeriod' },
+  vccMomentumBbPeriod: { storeId: 'strategy', key: 'vccMomentumBbPeriod' },
+  vccTrendPeriod: { storeId: 'strategy', key: 'vccTrendPeriod' },
+  vccSqueezeBbMult: { storeId: 'strategy', key: 'vccSqueezeBbMult' },
+  vccSqueezeKcMult: { storeId: 'strategy', key: 'vccSqueezeKcMult' },
+  vccConfirmBars: { storeId: 'strategy', key: 'vccConfirmBars' },
+  vccMaxTradeBars: { storeId: 'strategy', key: 'vccMaxTradeBars' },
+  vemrZPeriod: { storeId: 'strategy', key: 'vemrZPeriod' },
+  vemrZMaType: { storeId: 'strategy', key: 'vemrZMaType' },
+  vemrZNbdev: { storeId: 'strategy', key: 'vemrZNbdev' },
+  vemrZDevtype: { storeId: 'strategy', key: 'vemrZDevtype' },
+  vemrZEntry: { storeId: 'strategy', key: 'vemrZEntry' },
+  vemrZExit: { storeId: 'strategy', key: 'vemrZExit' },
+  vemrBbPeriod: { storeId: 'strategy', key: 'vemrBbPeriod' },
+  vemrBbMult: { storeId: 'strategy', key: 'vemrBbMult' },
+  vemrAtrPeriod: { storeId: 'strategy', key: 'vemrAtrPeriod' },
+  vemrAtrStopMult: { storeId: 'strategy', key: 'vemrAtrStopMult' },
+  vemrConfirmBars: { storeId: 'strategy', key: 'vemrConfirmBars' },
+  vemrMaxTradeBars: { storeId: 'strategy', key: 'vemrMaxTradeBars' },
   exitMode: { storeId: 'strategy', key: 'exitMode' },
   kaufmanStopPeriod: { storeId: 'strategy', key: 'kaufmanStopPeriod' },
   kaufmanStopMult: { storeId: 'strategy', key: 'kaufmanStopMult' },
@@ -360,6 +395,15 @@ const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   breakoutUseAdx: { storeId: 'strategy', key: 'breakoutUseAdx' },
   maczUseVolume: { storeId: 'strategy', key: 'maczUseVolume' },
   maczUseLag: { storeId: 'strategy', key: 'maczUseLag' },
+  asrUseErFilter: { storeId: 'strategy', key: 'asrUseErFilter' },
+  vccMapFastToSqueezePeriod: { storeId: 'strategy', key: 'vccMapFastToSqueezePeriod' },
+  vccMapFastToMomentumPeriod: { storeId: 'strategy', key: 'vccMapFastToMomentumPeriod' },
+  vccMapSlowToTrendPeriod: { storeId: 'strategy', key: 'vccMapSlowToTrendPeriod' },
+  vccRequireMomentumAccel: { storeId: 'strategy', key: 'vccRequireMomentumAccel' },
+  vemrMapFastToZPeriod: { storeId: 'strategy', key: 'vemrMapFastToZPeriod' },
+  vemrMapFastToBbPeriod: { storeId: 'strategy', key: 'vemrMapFastToBbPeriod' },
+  vemrMapSlowToAtrPeriod: { storeId: 'strategy', key: 'vemrMapSlowToAtrPeriod' },
+  vemrRequireBandTouch: { storeId: 'strategy', key: 'vemrRequireBandTouch' },
   vdpsDeterministic: { storeId: 'advanced', key: 'vdpsDeterministic' },
   moPrescanEnable: { storeId: 'advanced', key: 'moPrescanEnable' },
   moPrescanRequireGpu: { storeId: 'advanced', key: 'moPrescanRequireGpu' },
@@ -512,6 +556,56 @@ function readBestParams(result: unknown): Record<string, unknown> {
   const row = asRecord(result)
   const params = asRecord(row?.best_params)
   return params ?? {}
+}
+
+function summarizeBackendExecution(result: unknown): string {
+  const row = asRecord(result)
+  if (!row) return ''
+  const backendUsed = normalizeText(row.backend_used)
+  const route = normalizeText(row.backend_route)
+  const fallbackReason = normalizeText(row.backend_fallback_reason)
+  const indicatorPlan = asRecord(row.indicator_route_plan)
+  const fastPlan = asRecord(indicatorPlan?.fast)
+  const slowPlan = asRecord(indicatorPlan?.slow)
+  const fastId = normalizeText(fastPlan?.indicator_id)
+  const fastRoute = normalizeText(fastPlan?.route)
+  const fastCapability = normalizeText(fastPlan?.capability)
+  const fastGpuPreferred = normalizeBoolean(fastPlan?.gpu_preferred_by_speedup)
+  const slowId = normalizeText(slowPlan?.indicator_id)
+  const slowRoute = normalizeText(slowPlan?.route)
+  const slowCapability = normalizeText(slowPlan?.capability)
+  const slowGpuPreferred = normalizeBoolean(slowPlan?.gpu_preferred_by_speedup)
+  const parts: string[] = []
+  const policyCpuRouted: string[] = []
+  if (backendUsed) parts.push(`backend=${backendUsed}`)
+  if (route) parts.push(`route=${route}`)
+  if (fastId || slowId) {
+    const segs: string[] = []
+    if (fastId || fastRoute) segs.push(`fast:${fastId || '?'}->${fastRoute || '?'}`)
+    if (slowId || slowRoute) segs.push(`slow:${slowId || '?'}->${slowRoute || '?'}`)
+    if (segs.length > 0) parts.push(`indicators=${segs.join(', ')}`)
+  }
+  if (
+    fastRoute === 'cpu_staged'
+    && fastCapability === 'gpu_kernel'
+    && !fastGpuPreferred
+    && fastId
+  ) {
+    policyCpuRouted.push(`fast:${fastId}`)
+  }
+  if (
+    slowRoute === 'cpu_staged'
+    && slowCapability === 'gpu_kernel'
+    && !slowGpuPreferred
+    && slowId
+  ) {
+    policyCpuRouted.push(`slow:${slowId}`)
+  }
+  if (policyCpuRouted.length > 0) {
+    parts.push(`policy_cpu_route=${policyCpuRouted.join(', ')} (gpu_speedups.csv)`)
+  }
+  if (fallbackReason) parts.push(`fallback=${fallbackReason}`)
+  return parts.join(' • ')
 }
 
 function updateParityStatus(meta: string, statusLine: string): void {
@@ -678,19 +772,17 @@ export async function runGpuParityCheck(): Promise<void> {
     !hasExecutionOverlays &&
     maSupportsFlag(maSupportMap, fastMaType, 'supports_cuda_kernel') &&
     maSupportsFlag(maSupportMap, slowMaType, 'supports_cuda_kernel')
-  if (supportsKernel) {
-    gpuBackend = 'GpuKernel'
-  } else if (
+  const supportsCudaSweep =
     maSupportsFlag(maSupportMap, fastMaType, 'supports_cuda') &&
     maSupportsFlag(maSupportMap, slowMaType, 'supports_cuda')
-  ) {
-    gpuBackend = 'GpuOnly'
+  if (supportsKernel || supportsCudaSweep) {
+    gpuBackend = 'GpuKernel'
   }
 
   if (!gpuBackend) {
     updateParityStatus(
-      'Parity: unavailable (selected MAs do not support CUDA sweep/kernel).',
-      'Parity unavailable: selected MAs do not support CUDA.',
+      'Parity: unavailable (selected MAs do not support unified GPU path).',
+      'Parity unavailable: selected MAs do not support unified GPU.',
     )
     return
   }
@@ -802,17 +894,36 @@ function normalizeDataId(value: unknown): string {
   return id
 }
 
-function normalizeStrategyKindRaw(kindRaw: unknown): 'DoubleMa' | 'CompositeCpu' | 'CompositeMo' {
+type OptimizeStrategyKind =
+  | 'DoubleMa'
+  | 'Asr'
+  | 'Vcc'
+  | 'Vemr'
+  | 'CompositeCpu'
+  | 'CompositeMo'
+  | 'CompositeTrend'
+  | 'RegimeHybrid'
+  | 'BreakoutMomentum'
+
+function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Asr') return 'Asr'
+  if (kind === 'Vcc') return 'Vcc'
+  if (kind === 'Vemr') return 'Vemr'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
+  if (kind === 'CompositeTrend') return 'CompositeTrend'
+  if (kind === 'RegimeHybrid') return 'RegimeHybrid'
+  if (kind === 'BreakoutMomentum') return 'BreakoutMomentum'
   return 'DoubleMa'
 }
 
 function resolveOptimizationCommand(kindRaw: unknown): 'run_double_ma_optimization' | 'run_composite_cpu_optimization' | 'run_composite_mo_optimization' {
   const kind = normalizeStrategyKindRaw(kindRaw)
-  if (kind === 'CompositeCpu') return 'run_composite_cpu_optimization'
   if (kind === 'CompositeMo') return 'run_composite_mo_optimization'
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
+    return 'run_composite_cpu_optimization'
+  }
   return 'run_double_ma_optimization'
 }
 
@@ -1098,11 +1209,13 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
     return buildAutoDoubleMaRequest(context)
   }
 
-  if (kind === 'CompositeCpu') {
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
     const maSupportMap = await getMovingAverageSupportMap()
     return buildCompositeCpuOptimizationRequest({
       context,
       maSupportMap,
+      backend: readStoreTextInputValue('backend'),
+      deviceId: readStoreTextInputValue('deviceId'),
       fastStart: readStoreTextInputValue('fastStart'),
       fastEnd: readStoreTextInputValue('fastEnd'),
       fastStep: readStoreTextInputValue('fastStep'),
@@ -1178,6 +1291,50 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
       breakoutUseAdx: readStoreCheckboxValue('breakoutUseAdx'),
       breakoutAdxPeriod: readStoreTextInputValue('breakoutAdxPeriod'),
       breakoutAdxMin: readStoreTextInputValue('breakoutAdxMin'),
+      asrSqueezeBbMult: readStoreTextInputValue('asrSqueezeBbMult'),
+      asrSqueezeKcMult: readStoreTextInputValue('asrSqueezeKcMult'),
+      asrAngleDegMin: readStoreTextInputValue('asrAngleDegMin'),
+      asrAngleDegMr: readStoreTextInputValue('asrAngleDegMr'),
+      asrUseErFilter: readStoreCheckboxValue('asrUseErFilter'),
+      asrErMin: readStoreTextInputValue('asrErMin'),
+      asrErMr: readStoreTextInputValue('asrErMr'),
+      asrZMaType: readStoreTextInputValue('asrZMaType'),
+      asrZNbdev: readStoreTextInputValue('asrZNbdev'),
+      asrZDevtype: readStoreTextInputValue('asrZDevtype'),
+      asrZEntry: readStoreTextInputValue('asrZEntry'),
+      asrZExit: readStoreTextInputValue('asrZExit'),
+      asrConfirmBars: readStoreTextInputValue('asrConfirmBars'),
+      asrMomFadeBars: readStoreTextInputValue('asrMomFadeBars'),
+      asrMaxTradeBars: readStoreTextInputValue('asrMaxTradeBars'),
+      asrMaxMrTradeBars: readStoreTextInputValue('asrMaxMrTradeBars'),
+      vccMapFastToSqueezePeriod: readStoreCheckboxValue('vccMapFastToSqueezePeriod'),
+      vccMapFastToMomentumPeriod: readStoreCheckboxValue('vccMapFastToMomentumPeriod'),
+      vccMapSlowToTrendPeriod: readStoreCheckboxValue('vccMapSlowToTrendPeriod'),
+      vccSqueezePeriod: readStoreTextInputValue('vccSqueezePeriod'),
+      vccMomentumPeriod: readStoreTextInputValue('vccMomentumPeriod'),
+      vccMomentumBbPeriod: readStoreTextInputValue('vccMomentumBbPeriod'),
+      vccTrendPeriod: readStoreTextInputValue('vccTrendPeriod'),
+      vccSqueezeBbMult: readStoreTextInputValue('vccSqueezeBbMult'),
+      vccSqueezeKcMult: readStoreTextInputValue('vccSqueezeKcMult'),
+      vccConfirmBars: readStoreTextInputValue('vccConfirmBars'),
+      vccRequireMomentumAccel: readStoreCheckboxValue('vccRequireMomentumAccel'),
+      vccMaxTradeBars: readStoreTextInputValue('vccMaxTradeBars'),
+      vemrMapFastToZPeriod: readStoreCheckboxValue('vemrMapFastToZPeriod'),
+      vemrMapFastToBbPeriod: readStoreCheckboxValue('vemrMapFastToBbPeriod'),
+      vemrMapSlowToAtrPeriod: readStoreCheckboxValue('vemrMapSlowToAtrPeriod'),
+      vemrRequireBandTouch: readStoreCheckboxValue('vemrRequireBandTouch'),
+      vemrZPeriod: readStoreTextInputValue('vemrZPeriod'),
+      vemrZMaType: readStoreTextInputValue('vemrZMaType'),
+      vemrZNbdev: readStoreTextInputValue('vemrZNbdev'),
+      vemrZDevtype: readStoreTextInputValue('vemrZDevtype'),
+      vemrZEntry: readStoreTextInputValue('vemrZEntry'),
+      vemrZExit: readStoreTextInputValue('vemrZExit'),
+      vemrBbPeriod: readStoreTextInputValue('vemrBbPeriod'),
+      vemrBbMult: readStoreTextInputValue('vemrBbMult'),
+      vemrAtrPeriod: readStoreTextInputValue('vemrAtrPeriod'),
+      vemrAtrStopMult: readStoreTextInputValue('vemrAtrStopMult'),
+      vemrConfirmBars: readStoreTextInputValue('vemrConfirmBars'),
+      vemrMaxTradeBars: readStoreTextInputValue('vemrMaxTradeBars'),
       fastMaParams: fastParamState.params,
       slowMaParams: slowParamState.params,
     })
@@ -1463,7 +1620,10 @@ export async function runOptimization(options: OptimizeRunOptions = {}): Promise
     const elapsedMs = Math.max(0, finishedAt - startedAt)
     const strategyKind = normalizeStrategyKindRaw(req.strategy_kind ?? req.strategyKind)
     const progressMeta = `${strategyKind} • ${elapsedMs.toFixed(0)}ms`
-    const statusLine = `Done in ${elapsedMs.toFixed(0)}ms (frontend)`
+    const backendSummary = summarizeBackendExecution(res)
+    const statusLine = backendSummary
+      ? `Done in ${elapsedMs.toFixed(0)}ms (frontend) • ${backendSummary}`
+      : `Done in ${elapsedMs.toFixed(0)}ms (frontend)`
 
     patchStoreState('optimize', {
       progressMeta,

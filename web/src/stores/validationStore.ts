@@ -34,10 +34,14 @@ function normalizePath(value: string): string {
 function crossFilterTokens(value: string): string[] {
   const query = String(value || '').trim().toLowerCase()
   if (!query) return []
-  return query
-    .split(/[\s,]+/g)
-    .map((token) => String(token || '').trim())
-    .filter((token) => token.length > 0)
+  const out: string[] = []
+  const tokens = query.split(/[\s,]+/g)
+  for (const token of tokens) {
+    const next = String(token || '').trim()
+    if (!next) continue
+    out.push(next)
+  }
+  return out
 }
 
 function crossSearchText(entry: CrossDatasetEntry): string {
@@ -53,14 +57,68 @@ function crossVisible(entry: CrossDatasetEntry, tokens: string[]): boolean {
 }
 
 function buildCrossMeta(entries: CrossDatasetEntry[], search: string): string {
-  const total = entries.length
-  const selected = entries.filter((entry) => entry.checked).length
   const tokens = crossFilterTokens(search)
-  const visible = entries.filter((entry) => crossVisible(entry, tokens)).length
+  const total = entries.length
+  let selected = 0
+  let visible = 0
+  const hasFilter = tokens.length > 0
+  for (const entry of entries) {
+    if (entry.checked) selected += 1
+    if (!hasFilter || crossVisible(entry, tokens)) visible += 1
+  }
+  return buildCrossMetaFromCounts(total, selected, visible, tokens)
+}
+
+function buildCrossMetaFromCounts(total: number, selected: number, visible: number, tokens: string[]): string {
   const parts: string[] = []
   parts.push(`selected ${selected}/${total}${visible !== total ? ` (showing ${visible})` : ''}`)
   if (tokens.length) parts.push(`filter=${tokens.join(' ')}`)
   return parts.join(' • ')
+}
+
+interface CrossSelectionChange {
+  path: string
+  checked: boolean
+}
+
+function applyCrossSelection(
+  rows: CrossDatasetEntry[],
+  tokens: string[],
+  resolveChecked: (entry: CrossDatasetEntry) => boolean,
+): {
+  nextRows: CrossDatasetEntry[]
+  changes: CrossSelectionChange[]
+  selectedCount: number
+  visibleCount: number
+} {
+  const nextRows: CrossDatasetEntry[] = []
+  const changes: CrossSelectionChange[] = []
+  let selectedCount = 0
+  let visibleCount = 0
+  const hasFilter = tokens.length > 0
+  for (const entry of rows) {
+    const isVisible = !hasFilter || crossVisible(entry, tokens)
+    if (isVisible) visibleCount += 1
+
+    let nextEntry = entry
+    if (!entry.disabled && isVisible) {
+      const nextChecked = !!resolveChecked(entry)
+      if (entry.checked !== nextChecked) {
+        nextEntry = { ...entry, checked: nextChecked }
+        changes.push({ path: nextEntry.path, checked: nextChecked })
+      }
+    }
+
+    if (nextEntry.checked) selectedCount += 1
+    nextRows.push(nextEntry)
+  }
+
+  return {
+    nextRows: markRaw(nextRows),
+    changes,
+    selectedCount,
+    visibleCount,
+  }
 }
 
 function parseMarketLabel(value: string): { market: string; adjusted: boolean | null } {
@@ -401,25 +459,30 @@ export const useValidationStore = defineStore('validation', {
 
     crossRefresh(): void {
       if (!this.canCrossRefresh) return
-      const previousSelected = new Set(
-        this.crossDatasets
-          .filter((entry) => entry.checked)
-          .map((entry) => normalizePath(entry.path))
-          .filter((path) => path.length > 0),
-      )
+      const previousSelected = new Set<string>()
+      for (const entry of this.crossDatasets) {
+        if (!entry.checked) continue
+        const path = normalizePath(entry.path)
+        if (!path) continue
+        previousSelected.add(path)
+      }
 
       void crossRefreshAction()
         .then((summary) => {
           const rows = Array.isArray(summary?.datasets) ? summary.datasets : []
           const activePaths = new Set<string>()
           const next: CrossDatasetEntry[] = []
+          const tokens = crossFilterTokens(this.crossSearch)
+          const hasFilter = tokens.length > 0
+          let selectedCount = 0
+          let visibleCount = 0
           for (const row of rows) {
             const path = normalizePath(row.path)
             if (!path || activePaths.has(path)) continue
             activePaths.add(path)
             const label = String(row.label || path).trim() || path
             const meta = String(row.meta || '—').trim() || '—'
-            next.push({
+            const nextEntry: CrossDatasetEntry = {
               path,
               label,
               meta,
@@ -428,14 +491,20 @@ export const useValidationStore = defineStore('validation', {
               market: String(row.market || '').trim().toLowerCase(),
               timeframe: String(row.timeframe || '').trim().toLowerCase(),
               adjusted: row.adjusted === true ? true : (row.adjusted === false ? false : null),
-            })
+            }
+            if (nextEntry.checked) selectedCount += 1
+            if (!hasFilter || crossVisible(nextEntry, tokens)) visibleCount += 1
+            next.push(nextEntry)
           }
 
-          const staleSelections = [...previousSelected].filter((path) => !activePaths.has(path))
-          this.crossDatasets = next
-          this.crossSelectedCount = next.filter((entry) => entry.checked).length
+          const staleSelections: string[] = []
+          for (const path of previousSelected) {
+            if (!activePaths.has(path)) staleSelections.push(path)
+          }
+          this.crossDatasets = markRaw(next)
+          this.crossSelectedCount = selectedCount
           this.crossTotalCount = next.length
-          this.crossMeta = buildCrossMeta(next, this.crossSearch)
+          this.crossMeta = buildCrossMetaFromCounts(next.length, selectedCount, visibleCount, tokens)
           this.statusLine = 'Refreshed cross-ticker list.'
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
@@ -458,25 +527,22 @@ export const useValidationStore = defineStore('validation', {
 
     crossSelectAll(): void {
       const tokens = crossFilterTokens(this.crossSearch)
-      const next = this.crossDatasets.map((entry) => {
-        if (entry.disabled || !crossVisible(entry, tokens)) return entry
-        return {
-          ...entry,
-          checked: true,
-        }
-      })
-      const changed = next.filter((entry, index) => entry.checked !== this.crossDatasets[index]?.checked)
+      const { nextRows, changes, selectedCount, visibleCount } = applyCrossSelection(
+        this.crossDatasets,
+        tokens,
+        () => true,
+      )
 
-      this.crossDatasets = next
-      this.crossSelectedCount = next.filter((entry) => entry.checked).length
-      this.crossTotalCount = next.length
-      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.crossDatasets = nextRows
+      this.crossSelectedCount = selectedCount
+      this.crossTotalCount = nextRows.length
+      this.crossMeta = buildCrossMetaFromCounts(nextRows.length, selectedCount, visibleCount, tokens)
       this.statusLine = 'Cross-ticker: selected all (filtered view).'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
 
       void Promise.all(
-        changed.map((entry) => toggleCrossDatasetAction(entry.path, true)),
+        changes.map((entry) => toggleCrossDatasetAction(entry.path, true)),
       ).catch((error: unknown) => {
         this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
         this.source = 'vue'
@@ -486,25 +552,22 @@ export const useValidationStore = defineStore('validation', {
 
     crossSelectNone(): void {
       const tokens = crossFilterTokens(this.crossSearch)
-      const next = this.crossDatasets.map((entry) => {
-        if (entry.disabled || !crossVisible(entry, tokens)) return entry
-        return {
-          ...entry,
-          checked: false,
-        }
-      })
-      const changed = next.filter((entry, index) => entry.checked !== this.crossDatasets[index]?.checked)
+      const { nextRows, changes, selectedCount, visibleCount } = applyCrossSelection(
+        this.crossDatasets,
+        tokens,
+        () => false,
+      )
 
-      this.crossDatasets = next
-      this.crossSelectedCount = next.filter((entry) => entry.checked).length
-      this.crossTotalCount = next.length
-      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.crossDatasets = nextRows
+      this.crossSelectedCount = selectedCount
+      this.crossTotalCount = nextRows.length
+      this.crossMeta = buildCrossMetaFromCounts(nextRows.length, selectedCount, visibleCount, tokens)
       this.statusLine = 'Cross-ticker: cleared selection (filtered view).'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
 
       void Promise.all(
-        changed.map((entry) => toggleCrossDatasetAction(entry.path, false)),
+        changes.map((entry) => toggleCrossDatasetAction(entry.path, false)),
       ).catch((error: unknown) => {
         this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
         this.source = 'vue'
@@ -531,39 +594,32 @@ export const useValidationStore = defineStore('validation', {
       }
 
       const tokens = crossFilterTokens(this.crossSearch)
-      const next = this.crossDatasets.map((entry) => {
-        if (entry.disabled || !crossVisible(entry, tokens)) return entry
+      const { nextRows, changes, selectedCount, visibleCount } = applyCrossSelection(
+        this.crossDatasets,
+        tokens,
+        (entry) => {
+          const path = normalizePath(entry.path)
+          if (currentPath && path === currentPath) return false
 
-        const path = normalizePath(entry.path)
-        if (currentPath && path === currentPath) {
-          return {
-            ...entry,
-            checked: false,
+          const ctx = parseEntryContext(entry)
+          let checked = ctx.market === currentMarket.market && ctx.timeframe === timeframe
+          if (checked && currentMarket.market === 'stocks' && currentMarket.adjusted != null) {
+            checked = ctx.adjusted === currentMarket.adjusted
           }
-        }
+          return checked
+        },
+      )
 
-        const ctx = parseEntryContext(entry)
-        let checked = ctx.market === currentMarket.market && ctx.timeframe === timeframe
-        if (checked && currentMarket.market === 'stocks' && currentMarket.adjusted != null) {
-          checked = ctx.adjusted === currentMarket.adjusted
-        }
-        return {
-          ...entry,
-          checked,
-        }
-      })
-      const changed = next.filter((entry, index) => entry.checked !== this.crossDatasets[index]?.checked)
-
-      this.crossDatasets = next
-      this.crossSelectedCount = next.filter((entry) => entry.checked).length
-      this.crossTotalCount = next.length
-      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.crossDatasets = nextRows
+      this.crossSelectedCount = selectedCount
+      this.crossTotalCount = nextRows.length
+      this.crossMeta = buildCrossMetaFromCounts(nextRows.length, selectedCount, visibleCount, tokens)
       this.statusLine = 'Cross-ticker: selected datasets matching current dataset.'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
 
       void Promise.all(
-        changed.map((entry) => toggleCrossDatasetAction(entry.path, entry.checked)),
+        changes.map((entry) => toggleCrossDatasetAction(entry.path, entry.checked)),
       ).catch((error: unknown) => {
         this.statusLine = `Cross-ticker match selection failed: ${String(error || '')}`.trim()
         this.source = 'vue'
@@ -575,18 +631,27 @@ export const useValidationStore = defineStore('validation', {
       const nextPath = String(path || '').trim()
       if (!nextPath) return
       const nextChecked = !!checked
-      const next = this.crossDatasets.map((entry) => {
-        if (String(entry.path || '').trim() !== nextPath) return entry
-        if (entry.disabled) return entry
-        return {
-          ...entry,
-          checked: nextChecked,
+      const tokens = crossFilterTokens(this.crossSearch)
+      const next: CrossDatasetEntry[] = []
+      const hasFilter = tokens.length > 0
+      let selectedCount = 0
+      let visibleCount = 0
+      for (const entry of this.crossDatasets) {
+        let nextEntry = entry
+        if (String(entry.path || '').trim() === nextPath && !entry.disabled) {
+          nextEntry = {
+            ...entry,
+            checked: nextChecked,
+          }
         }
-      })
-      this.crossDatasets = next
-      this.crossSelectedCount = next.filter((entry) => entry.checked).length
+        if (nextEntry.checked) selectedCount += 1
+        if (!hasFilter || crossVisible(nextEntry, tokens)) visibleCount += 1
+        next.push(nextEntry)
+      }
+      this.crossDatasets = markRaw(next)
+      this.crossSelectedCount = selectedCount
       this.crossTotalCount = next.length
-      this.crossMeta = buildCrossMeta(next, this.crossSearch)
+      this.crossMeta = buildCrossMetaFromCounts(next.length, selectedCount, visibleCount, tokens)
       this.statusLine = `Cross-ticker: ${nextChecked ? 'selected' : 'cleared'} dataset.`
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()

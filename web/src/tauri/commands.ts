@@ -66,6 +66,8 @@ export const TAURI_COMMANDS = [
   'cancel_current_run',
   'cancel_double_ma_optimization',
   'list_moving_averages',
+  'list_dynamic_indicators',
+  'list_gpu_speedups',
   'get_gpu_status',
   'list_cuda_devices',
 ] as const

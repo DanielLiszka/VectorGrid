@@ -46,6 +46,9 @@ function normalizeText(value: unknown): string {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Asr') return 'Asr'
+  if (kind === 'Vcc') return 'Vcc'
+  if (kind === 'Vemr') return 'Vemr'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -56,14 +59,11 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
 
 function isDoubleLikeKind(kindRaw: unknown): boolean {
   const kind = normalizeStrategyKindRaw(kindRaw)
-  return kind === 'DoubleMa'
-    || kind === 'CompositeTrend'
-    || kind === 'RegimeHybrid'
-    || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 }
 
 function resolveValidationCommand(runReq: unknown): 'run_double_ma_validation' | 'run_composite_validation' {
-  const req = runReq && typeof runReq === 'object' ? runReq as Record<string, unknown> : null
+  const req = runReq && typeof runReq === 'object' ? (runReq as Record<string, unknown>) : null
   const kind = normalizeStrategyKindRaw(req?.strategy_kind ?? req?.strategyKind)
   return isDoubleLikeKind(kind) ? 'run_double_ma_validation' : 'run_composite_validation'
 }
@@ -147,7 +147,7 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbMax: { key: 'perturbMax' },
   valMcSims: { key: 'mcSims' },
   valCscvSlices: { key: 'cscvSlices' },
-  valCrossMax: { key: 'crossMax' },
+  valCrossMax: { key: 'crossMax' }
 }
 
 const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -155,7 +155,7 @@ const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbEnable: { key: 'perturbEnable' },
   valMcEnable: { key: 'mcEnable' },
   valCscvEnable: { key: 'cscvEnable' },
-  valCrossEnable: { key: 'crossEnable' },
+  valCrossEnable: { key: 'crossEnable' }
 }
 
 function readPiniaStoreState(storeId: string): Record<string, unknown> | null {
@@ -210,7 +210,7 @@ function readVueCrossSelectionFromStore(): CrossSelectionEntry[] | null {
     if (!csv_path) continue
     selected.push({
       csv_path,
-      label: normalizeText(row.label),
+      label: normalizeText(row.label)
     })
   }
   return selected
@@ -231,7 +231,7 @@ function normalizeCrossSelectionEntries(entries: CrossSelectionEntry[]): Array<{
     seen.add(csv_path)
     selected.push({
       csv_path,
-      label: normalizeText(entry?.label),
+      label: normalizeText(entry?.label)
     })
   }
   return selected
@@ -258,16 +258,14 @@ function writeVueCrossSelection(entries: CrossSelectionEntry[]): void {
     changed = true
     return {
       ...row,
-      checked: nextChecked,
+      checked: nextChecked
     }
   })
 
   if (!changed) return
   store.crossDatasets = nextRows
   store.crossTotalCount = nextRows.length
-  store.crossSelectedCount = nextRows.filter((entry) =>
-    !!entry && typeof entry === 'object' && normalizeBoolean((entry as Record<string, unknown>).checked))
-    .length
+  store.crossSelectedCount = nextRows.filter((entry) => !!entry && typeof entry === 'object' && normalizeBoolean((entry as Record<string, unknown>).checked)).length
   store.source = 'vue'
   store.updatedAtUnixMs = Date.now()
 }
@@ -334,7 +332,7 @@ function readRunSnapshotFromStore(): RunSnapshot | null {
   if (!snapshot) return null
   return {
     req: snapshot.req ?? null,
-    res: snapshot.res ?? null,
+    res: snapshot.res ?? null
   }
 }
 
@@ -362,7 +360,7 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
     csvPath: normalizeText(row.csvPath ?? row.csv_path),
     tags: normalizeStringList(row.tags),
     req: row.req ?? null,
-    res: row.res ?? null,
+    res: row.res ?? null
   }
 }
 
@@ -375,7 +373,7 @@ function readWorkflowValidationArtifactFromStore(): WorkflowValidationArtifactSn
   return {
     ts: normalizeText(row.ts) || new Date().toISOString(),
     req: row.req ?? null,
-    res: row.res ?? null,
+    res: row.res ?? null
   }
 }
 
@@ -387,7 +385,10 @@ function readLatestMetaReportPath(): string {
   return normalizeText(document.documentElement?.dataset?.latestMetaReportPath)
 }
 
-function readValidationExportPrefs(): { autoReveal: boolean; maxRows: number | null } {
+function readValidationExportPrefs(): {
+  autoReveal: boolean
+  maxRows: number | null
+} {
   const store = readValidationStoreState()
   const autoReveal = normalizeBoolean(store?.autoRevealReport)
   const rawTopN = Math.floor(Number(store?.autoExportTopN))
@@ -416,15 +417,13 @@ function buildCurrentReportPayloadFromStore(): {
     ts,
     data: {
       meta: datasetCtx.currentDataMeta,
-      ctx: datasetCtx.currentDatasetCtx,
+      ctx: datasetCtx.currentDatasetCtx
     },
     run: {
       req: run?.req ?? null,
-      res: run?.res ?? null,
+      res: run?.res ?? null
     },
-    validation: validation
-      ? { req: validation.req ?? null, res: validation.res ?? null }
-      : null,
+    validation: validation ? { req: validation.req ?? null, res: validation.res ?? null } : null
   }
 }
 
@@ -507,7 +506,7 @@ function buildRunDatasetContextState(): {
     has_high: fields.has('high'),
     has_low: fields.has('low'),
     has_close: fields.has('close'),
-    has_volume: fields.has('volume'),
+    has_volume: fields.has('volume')
   }
   if (Number.isFinite(len) && len >= 0) dataMeta.len = Math.floor(len)
   if (timeframe) dataMeta.timeframe = timeframe
@@ -528,7 +527,7 @@ function buildRunDatasetContextState(): {
     currentDataMeta: dataMeta,
     currentBaseDataMeta: dataMeta,
     currentBaseDatasetCtx: datasetCtx,
-    currentDatasetCtx: datasetCtx,
+    currentDatasetCtx: datasetCtx
   }
 }
 
@@ -555,11 +554,13 @@ function toOutputPreview(value: unknown): string {
 
 function queryDomById<T extends Element>(id: string): T | null {
   if (typeof document === 'undefined') return null
-  const byQuery = typeof document.querySelector === 'function'
-    ? document.querySelector(`[id="${id}"]`)
-    : null
+  const byQuery = typeof document.querySelector === 'function' ? document.querySelector(`[id="${id}"]`) : null
   if (byQuery) return byQuery as T
-  const getById = (document as unknown as { getElementById?: (nextId: string) => Element | null }).getElementById
+  const getById = (
+    document as unknown as {
+      getElementById?: (nextId: string) => Element | null
+    }
+  ).getElementById
   if (typeof getById !== 'function') return null
   return (getById.call(document, id) as T | null) ?? null
 }
@@ -636,7 +637,7 @@ function validationCandidates(result: unknown): Array<Record<string, unknown>> {
 function computeValidationShortlist(
   result: unknown,
   minPsr: number | null,
-  minDsr: number | null,
+  minDsr: number | null
 ): {
   rows: Array<Record<string, unknown>>
   candidates: Array<Record<string, unknown>>
@@ -678,10 +679,12 @@ function computeValidationShortlist(
   const cscv = asRecord(resultRecord?.cscv_pbo)
   const cscvCombos = Math.max(0, Math.floor(Number(cscv?.combinations ?? 0)))
   const cscvThreshold = Number(cscv?.threshold ?? 0)
-  const hasCscv = cscvCombos > 0 && candidates.some((candidate) => {
-    const stats = candidate.cscv_pbo
-    return !!(stats && typeof stats === 'object')
-  })
+  const hasCscv =
+    cscvCombos > 0 &&
+    candidates.some((candidate) => {
+      const stats = candidate.cscv_pbo
+      return !!(stats && typeof stats === 'object')
+    })
 
   const baseRows = strict.length > 0 ? strict : candidates
   const usedFallback = strict.length === 0
@@ -701,7 +704,7 @@ function computeValidationShortlist(
   const probFiltered = hasProbGate ? baseRows.filter(passProbabilityGates) : baseRows
   const cscvFiltered = hasCscv ? probFiltered.filter(passCscv) : probFiltered
   const usedCscvFallback = hasCscv && baseRows.length > 0 && cscvFiltered.length === 0
-  const pickedRows = hasProbGate ? cscvFiltered : (usedCscvFallback ? baseRows : cscvFiltered)
+  const pickedRows = hasProbGate ? cscvFiltered : usedCscvFallback ? baseRows : cscvFiltered
 
   const sortByFinal = (left: Record<string, unknown>, right: Record<string, unknown>): number => {
     const robustL = Number(left.robust_score ?? 0)
@@ -737,26 +740,16 @@ function computeValidationShortlist(
     cscvRankMin: CSCV_RANK_FRAC_MIN,
     usedCscvFallback,
     hasProbGate,
-    probPassN: probFiltered.length,
+    probPassN: probFiltered.length
   }
 }
 
-function buildValidationShortlistMetaText(
-  shortlist: ReturnType<typeof computeValidationShortlist>,
-  minPsr: number | null,
-  minDsr: number | null,
-): string {
+function buildValidationShortlistMetaText(shortlist: ReturnType<typeof computeValidationShortlist>, minPsr: number | null, minDsr: number | null): string {
   const robustParetoN = shortlist.candidates.filter((candidate) => !!candidate.robust_pareto).length
-  const crossParetoN = shortlist.hasCross
-    ? shortlist.candidates.filter((candidate) => !!candidate.cross_ticker_pareto).length
-    : 0
+  const crossParetoN = shortlist.hasCross ? shortlist.candidates.filter((candidate) => !!candidate.cross_ticker_pareto).length : 0
   const baseRule = shortlist.hasCross ? 'robust_pareto && cross_ticker_pareto' : 'robust_pareto'
-  const probRule = shortlist.hasProbGate
-    ? `prob(${minPsr != null ? `psr>=${fmtFixed(minPsr, 2)}` : ''}${minPsr != null && minDsr != null ? ',' : ''}${minDsr != null ? `dsr>=${fmtFixed(minDsr, 2)}` : ''})`
-    : ''
-  const cscvRule = shortlist.hasCscv
-    ? `cscv(oos_rank_p50>=${shortlist.cscvRankMin}, oos_sharpe_p50>=${shortlist.cscvThreshold})`
-    : ''
+  const probRule = shortlist.hasProbGate ? `prob(${minPsr != null ? `psr>=${fmtFixed(minPsr, 2)}` : ''}${minPsr != null && minDsr != null ? ',' : ''}${minDsr != null ? `dsr>=${fmtFixed(minDsr, 2)}` : ''})` : ''
+  const cscvRule = shortlist.hasCscv ? `cscv(oos_rank_p50>=${shortlist.cscvRankMin}, oos_sharpe_p50>=${shortlist.cscvThreshold})` : ''
   const rule = [baseRule, probRule, cscvRule].filter((part) => part.length > 0).join(' && ')
   const baseFallbackNote = shortlist.usedFallback ? ' • (fallback: top robust score)' : ''
   const cscvFallbackNote = shortlist.usedCscvFallback && !shortlist.hasProbGate ? ' • (cscv fallback)' : ''
@@ -783,14 +776,11 @@ function buildValidationTableColumns(): ValidationTableColumn[] {
     { label: 'PnL', alignLeft: false },
     { label: 'Sharpe', alignLeft: false },
     { label: 'Max DD', alignLeft: false },
-    { label: 'Trades', alignLeft: false },
+    { label: 'Trades', alignLeft: false }
   ]
 }
 
-function buildValidationTableRows(
-  shortlistRows: Array<Record<string, unknown>>,
-  hasCross: boolean,
-): ValidationTableRow[] {
+function buildValidationTableRows(shortlistRows: Array<Record<string, unknown>>, hasCross: boolean): ValidationTableRow[] {
   const rows: ValidationTableRow[] = []
   for (let i = 0; i < shortlistRows.length; i += 1) {
     const candidate = shortlistRows[i] || {}
@@ -805,25 +795,53 @@ function buildValidationTableRows(
         {
           text: `${normalizeText(params.fast_ma_type || '?')}(${Math.max(0, Math.floor(Number(params.fast_len || 0))) || '?'})`,
           className: 'left mono',
-          title: '',
+          title: ''
         },
         {
           text: `${normalizeText(params.slow_ma_type || '?')}(${Math.max(0, Math.floor(Number(params.slow_len || 0))) || '?'})`,
           className: 'left mono',
-          title: '',
+          title: ''
         },
         { text: fmt(candidate.robust_score, 6), className: 'mono', title: '' },
-        { text: candidate.psr != null ? fmt(candidate.psr, 4) : '-', className: 'mono', title: '' },
-        { text: candidate.dsr != null ? fmt(candidate.dsr, 4) : '-', className: 'mono', title: '' },
-        { text: cscv ? fmtPct(cscv.oos_rank_frac_p50, 1) : '-', className: 'mono', title: '' },
-        { text: candidate.robust_pareto ? 'robust' : '—', className: 'left', title: '' },
-        { text: cross ? fmt(cross.score, 6) : '-', className: 'mono', title: '' },
-        { text: hasCross ? (candidate.cross_ticker_pareto ? 'cross' : '—') : '—', className: 'left', title: '' },
+        {
+          text: candidate.psr != null ? fmt(candidate.psr, 4) : '-',
+          className: 'mono',
+          title: ''
+        },
+        {
+          text: candidate.dsr != null ? fmt(candidate.dsr, 4) : '-',
+          className: 'mono',
+          title: ''
+        },
+        {
+          text: cscv ? fmtPct(cscv.oos_rank_frac_p50, 1) : '-',
+          className: 'mono',
+          title: ''
+        },
+        {
+          text: candidate.robust_pareto ? 'robust' : '—',
+          className: 'left',
+          title: ''
+        },
+        {
+          text: cross ? fmt(cross.score, 6) : '-',
+          className: 'mono',
+          title: ''
+        },
+        {
+          text: hasCross ? (candidate.cross_ticker_pareto ? 'cross' : '—') : '—',
+          className: 'left',
+          title: ''
+        },
         { text: fmt(inSample.pnl, 6), className: 'mono', title: '' },
         { text: fmt(inSample.sharpe, 6), className: 'mono', title: '' },
         { text: fmt(inSample.max_dd, 6), className: 'mono', title: '' },
-        { text: String(Math.max(0, Math.floor(Number(inSample.trades || 0)))), className: 'mono', title: '' },
-      ],
+        {
+          text: String(Math.max(0, Math.floor(Number(inSample.trades || 0)))),
+          className: 'mono',
+          title: ''
+        }
+      ]
     })
   }
   return rows
@@ -834,7 +852,7 @@ async function persistValidationArtifact(
   runRes: unknown,
   validationReq: Record<string, unknown>,
   validationRes: unknown,
-  options: { reportXlsxPath?: string } = {},
+  options: { reportXlsxPath?: string } = {}
 ): Promise<{
   path: string
   ts: string
@@ -860,11 +878,13 @@ async function persistValidationArtifact(
     report_xlsx_path: reportXlsxPath,
     data: { csv_path: csvPath },
     dataset_meta: datasetMeta,
-    tags,
+    tags
   }
   let path = normalizeText(currentRun?.artifactPath)
   try {
-    const saved = (await invokeCommand('save_run_artifact', { artifact })) as SaveRunArtifactResponse
+    const saved = (await invokeCommand('save_run_artifact', {
+      artifact
+    })) as SaveRunArtifactResponse
     const next = normalizeText(saved?.path)
     if (next) path = next
   } catch {
@@ -879,7 +899,13 @@ function applyVueValidationArtifacts(
   runRes: unknown,
   validationReq: Record<string, unknown>,
   validationRes: unknown,
-  persisted: { path: string; ts: string; csvPath: string; reportXlsxPath: string; tags: string[] },
+  persisted: {
+    path: string
+    ts: string
+    csvPath: string
+    reportXlsxPath: string
+    tags: string[]
+  }
 ): void {
   applyWorkflowArtifactsPayload(
     {
@@ -890,15 +916,15 @@ function applyVueValidationArtifacts(
         csv_path: persisted.csvPath,
         tags: persisted.tags,
         req: runReq,
-        res: runRes,
+        res: runRes
       },
       currentValidation: {
         ts: persisted.ts,
         req: validationReq,
-        res: validationRes,
-      },
+        res: validationRes
+      }
     },
-    'vue',
+    'vue'
   )
 }
 
@@ -913,7 +939,7 @@ function resolveValidationBuildContextFromWorkflowArtifacts(): LegacyValidationB
     currentRunReq: runReq,
     currentRunRes: runRes,
     topRows: snapshotTopRows,
-    topRowsFiltered: [],
+    topRowsFiltered: []
   }
 }
 
@@ -923,7 +949,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = 'Run an optimization first.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message,
+      validationHint: message
     })
     writeDomTextContent('status', message)
     throw new Error(message)
@@ -935,7 +961,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = 'Run artifact is unavailable. Re-run optimization first.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message,
+      validationHint: message
     })
     writeDomTextContent('status', message)
     throw new Error(message)
@@ -963,7 +989,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     cscvSlices: readStoreTextInputValue('valCscvSlices'),
     crossEnable: readStoreCheckboxValue('valCrossEnable'),
     crossMax: readStoreTextInputValue('valCrossMax'),
-    crossDatasets: readVueCrossSelection(),
+    crossDatasets: readVueCrossSelection()
   }
   if (typeof options.useFiltered === 'boolean') buildInputs.useFiltered = options.useFiltered
 
@@ -974,7 +1000,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
   patchValidationStoreState({
     validateDisabled: true,
     statusLine: 'Running validation...',
-    validationHint: 'Running validation...',
+    validationHint: 'Running validation...'
   })
   writeDomTextContent('status', 'Running validation...')
 
@@ -989,9 +1015,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const shortlist = computeValidationShortlist(validationRes, minPsrGate, minDsrGate)
     const validationColumns = buildValidationTableColumns()
     const validationRows = buildValidationTableRows(shortlist.rows, shortlist.hasCross)
-    const validationShortlistMeta = validationRows.length > 0
-      ? buildValidationShortlistMetaText(shortlist, minPsrGate, minDsrGate)
-      : 'No validation result yet.'
+    const validationShortlistMeta = validationRows.length > 0 ? buildValidationShortlistMetaText(shortlist, minPsrGate, minDsrGate) : 'No validation result yet.'
     const statusLine = `Validation done in ${elapsedMs.toFixed(0)}ms (frontend)`
     const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes)
 
@@ -1009,7 +1033,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       canExportReportJson: true,
       canExportReportXlsx: true,
       validationShortlistMeta,
-      statusLine,
+      statusLine
     })
     writeDomTextContent('validationMeta', validationMeta)
     writeDomTextContent('status', statusLine)
@@ -1019,7 +1043,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = String(error || '').trim() || 'Validation failed.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message,
+      validationHint: message
     })
     writeDomTextContent('status', message)
     throw error
@@ -1034,16 +1058,12 @@ export async function exportShortlistCsv(): Promise<void> {
   const validationRes = validation?.res ?? null
   if (!validationRes) return
   const ts = normalizeText(run?.ts || validation?.ts) || new Date().toISOString()
-  const csv = await invokeCommand('build_validation_shortlist_csv', { validation_res: validationRes })
-  const downloaded = downloadText(
-    `vectorbt_validation_shortlist_${ts}.csv`,
-    String(csv || ''),
-    'text/csv;charset=utf-8',
-  )
+  const csv = await invokeCommand('build_validation_shortlist_csv', {
+    validation_res: validationRes
+  })
+  const downloaded = downloadText(`vectorbt_validation_shortlist_${ts}.csv`, String(csv || ''), 'text/csv;charset=utf-8')
   patchValidationStoreState({
-    statusLine: downloaded
-      ? 'Exported validation shortlist CSV.'
-      : 'Built validation shortlist CSV (download unavailable in this environment).',
+    statusLine: downloaded ? 'Exported validation shortlist CSV.' : 'Built validation shortlist CSV (download unavailable in this environment).'
   })
 }
 
@@ -1053,15 +1073,9 @@ export async function exportValidationJson(): Promise<void> {
   const validationRes = validation?.res ?? null
   if (!validationRes) return
   const ts = normalizeText(run?.ts || validation?.ts) || new Date().toISOString()
-  const downloaded = downloadText(
-    `vectorbt_validation_${ts}.json`,
-    safePrettyJson(validationRes),
-    'application/json;charset=utf-8',
-  )
+  const downloaded = downloadText(`vectorbt_validation_${ts}.json`, safePrettyJson(validationRes), 'application/json;charset=utf-8')
   patchValidationStoreState({
-    statusLine: downloaded
-      ? 'Exported validation JSON.'
-      : 'Built validation JSON (download unavailable in this environment).',
+    statusLine: downloaded ? 'Exported validation JSON.' : 'Built validation JSON (download unavailable in this environment).'
   })
 }
 
@@ -1070,15 +1084,9 @@ export async function exportReportJson(): Promise<void> {
   const hasRun = !!(report.run && report.run.res)
   if (!hasRun) return
   const ts = normalizeText(report.ts) || new Date().toISOString()
-  const downloaded = downloadText(
-    `vectorbt_report_${ts}.json`,
-    safePrettyJson(report),
-    'application/json;charset=utf-8',
-  )
+  const downloaded = downloadText(`vectorbt_report_${ts}.json`, safePrettyJson(report), 'application/json;charset=utf-8')
   patchValidationStoreState({
-    statusLine: downloaded
-      ? 'Exported report JSON.'
-      : 'Built report JSON (download unavailable in this environment).',
+    statusLine: downloaded ? 'Exported report JSON.' : 'Built report JSON (download unavailable in this environment).'
   })
 }
 
@@ -1095,7 +1103,7 @@ export async function exportReportXlsx(): Promise<void> {
     const stage3Path = readLatestMetaReportPath()
     if (!stage3Path) {
       patchValidationStoreState({
-        statusLine: 'Run validation first to export report XLSX (or run Meta Analysis to open Stage 3 XLSX).',
+        statusLine: 'Run validation first to export report XLSX (or run Meta Analysis to open Stage 3 XLSX).'
       })
       return
     }
@@ -1103,7 +1111,9 @@ export async function exportReportXlsx(): Promise<void> {
     if (autoReveal) {
       await invokeCommand('reveal_path', { path: stage3Path }).catch(() => undefined)
     }
-    patchValidationStoreState({ statusLine: `Opened Stage 3 XLSX report: ${stage3Path}` })
+    patchValidationStoreState({
+      statusLine: `Opened Stage 3 XLSX report: ${stage3Path}`
+    })
     return
   }
 
@@ -1111,21 +1121,15 @@ export async function exportReportXlsx(): Promise<void> {
   try {
     const saved = (await invokeCommand('save_report_xlsx', {
       report,
-      max_rows: maxRows,
+      max_rows: maxRows
     })) as SaveReportXlsxResponse
     path = normalizeText(saved?.path)
   } catch (saveError) {
     try {
       const base64 = await invokeCommand('build_report_xlsx', { report })
-      const downloaded = downloadBase64(
-        `vectorbt_report_${ts}.xlsx`,
-        String(base64 || ''),
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      )
+      const downloaded = downloadBase64(`vectorbt_report_${ts}.xlsx`, String(base64 || ''), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
       patchValidationStoreState({
-        statusLine: downloaded
-          ? 'Exported XLSX report as a file download.'
-          : 'Built XLSX report (download unavailable in this environment).',
+        statusLine: downloaded ? 'Exported XLSX report as a file download.' : 'Built XLSX report (download unavailable in this environment).'
       })
       return
     } catch (fallbackError) {
@@ -1136,7 +1140,9 @@ export async function exportReportXlsx(): Promise<void> {
   }
 
   if (!path) {
-    patchValidationStoreState({ statusLine: 'Saved XLSX report, but no path was returned.' })
+    patchValidationStoreState({
+      statusLine: 'Saved XLSX report, but no path was returned.'
+    })
     return
   }
 
@@ -1184,7 +1190,7 @@ export async function crossRefresh(): Promise<ValidationCrossRefreshSummary> {
       meta: `${marketLabel} • tf=${timeframe} • ${minTs} → ${maxTs} • rows=${rowsHint} • updated=${updated}`,
       market,
       timeframe: timeframe.toLowerCase(),
-      adjusted,
+      adjusted
     })
   }
 
@@ -1206,14 +1212,14 @@ export async function toggleCrossDataset(path: string, checked: boolean): Promis
       if (checked) {
         nextSelected.push({
           csv_path: csvPath,
-          label: normalizeText(item?.label),
+          label: normalizeText(item?.label)
         })
       }
       continue
     }
     nextSelected.push({
       csv_path: csvPath,
-      label: normalizeText(item?.label),
+      label: normalizeText(item?.label)
     })
   }
   if (checked && !present) {

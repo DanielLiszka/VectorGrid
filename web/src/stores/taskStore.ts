@@ -1,4 +1,5 @@
 import { createPinia, defineStore, getActivePinia, setActivePinia, type Pinia } from 'pinia'
+import { useDebounceFn } from '@vueuse/core'
 import { isTauriCommand, type TauriCommand } from '../tauri/commands'
 import { TASK_TIMELINE_STORAGE_KEY, readStorageJson, writeStorageJson } from '../utils/storage'
 
@@ -92,6 +93,7 @@ export interface PolygonLiveBarEventPayload {
 
 interface TaskState {
   activeById: Record<string, TrackedTask>
+  activeOrder: string[]
   history: TrackedTask[]
   events: TaskEventItem[]
   timeline: TaskTimelineItem[]
@@ -113,6 +115,8 @@ const MAX_TIMELINE = 300
 const MAX_TOASTS = 8
 const PROGRESS_UPDATE_INTERVAL_MS = 120
 const POLYGON_BAR_EVENT_INTERVAL_MS = 1000
+const RUNNER_EVENT_INTERVAL_MS = 200
+const POLYGON_STATUS_EVENT_INTERVAL_MS = 220
 const TASK_CENTER_PERSIST_VERSION = 1
 const PERSIST_DEBOUNCE_MS = 220
 
@@ -124,8 +128,12 @@ let lastDoubleMaPhase = ''
 let lastDoubleMaProgressAt = 0
 let lastDistributedProgressAt = 0
 let lastPolygonLiveBarAt = 0
+let lastRunnerEventAt = 0
+let lastRunnerEventSignature = ''
+let lastPolygonStatusAt = 0
+let lastPolygonStatusSignature = ''
 let hydratedFromStorage = false
-let persistTimer: ReturnType<typeof setTimeout> | null = null
+const commandLabelCache = new Map<string, string>()
 
 const PROGRESS_ELIGIBLE_COMMANDS = new Set<TauriCommand>([
   'run_double_ma_optimization',
@@ -168,6 +176,7 @@ const CANCEL_COMMAND_BY_COMMAND: Partial<Record<TauriCommand, TauriCommand>> = {
 export const useTaskStore = defineStore('task', {
   state: (): TaskState => ({
     activeById: {},
+    activeOrder: [],
     history: [],
     events: [],
     timeline: [],
@@ -215,6 +224,11 @@ function taskStoreSingleton() {
   return st
 }
 
+function removeActiveTaskId(st: TaskState, id: string): void {
+  const index = st.activeOrder.indexOf(id)
+  if (index >= 0) st.activeOrder.splice(index, 1)
+}
+
 function persistTaskCenterNow(): void {
   const st = taskStoreSingleton()
   const payload: PersistedTaskCenterV1 = {
@@ -226,26 +240,40 @@ function persistTaskCenterNow(): void {
   writeStorageJson(TASK_TIMELINE_STORAGE_KEY, payload)
 }
 
-function schedulePersistTaskCenter(): void {
-  if (persistTimer) return
-  persistTimer = setTimeout(() => {
-    persistTimer = null
+const persistTaskCenterDebounced = useDebounceFn(
+  () => {
     persistTaskCenterNow()
-  }, PERSIST_DEBOUNCE_MS)
+  },
+  PERSIST_DEBOUNCE_MS,
+  { maxWait: PERSIST_DEBOUNCE_MS * 3 },
+)
+
+function schedulePersistTaskCenter(): void {
+  persistTaskCenterDebounced()
 }
 
 function refreshCenterStatus(): void {
   const st = taskStoreSingleton()
-  const active = Object.values(st.activeById)
-  if (active.some((task) => task.status === 'cancelling')) {
+  let hasCancelling = false
+  let hasRunning = false
+  let hasQueued = false
+  for (const id of st.activeOrder) {
+    const task = st.activeById[id]
+    if (!task) continue
+    if (task.status === 'cancelling') hasCancelling = true
+    else if (task.status === 'running') hasRunning = true
+    else if (task.status === 'queued') hasQueued = true
+    if (hasCancelling) break
+  }
+  if (hasCancelling) {
     st.centerStatus = 'cancelling'
     return
   }
-  if (active.some((task) => task.status === 'running')) {
+  if (hasRunning) {
     st.centerStatus = 'running'
     return
   }
-  if (active.some((task) => task.status === 'queued')) {
+  if (hasQueued) {
     st.centerStatus = 'queued'
     return
   }
@@ -336,16 +364,17 @@ function isLikelyCancelledMessage(message: string): boolean {
 
 function newestProgressTask(): TrackedTask | null {
   const st = taskStoreSingleton()
-  const all = Object.values(st.activeById)
-  const ranked = all
-    .filter((task) => task.status === 'running' || task.status === 'cancelling' || task.status === 'queued')
-    .sort((a, b) => b.startedAt - a.startedAt)
-  for (const task of ranked) {
+  let fallback: TrackedTask | null = null
+  for (const id of st.activeOrder) {
+    const task = st.activeById[id]
+    if (!task) continue
+    if (task.status !== 'running' && task.status !== 'cancelling' && task.status !== 'queued') continue
+    if (!fallback) fallback = task
     if (isTauriCommand(task.command) && PROGRESS_ELIGIBLE_COMMANDS.has(task.command)) {
       return task
     }
   }
-  return ranked[0] ?? null
+  return fallback
 }
 
 function setTaskRunning(id: string): void {
@@ -358,7 +387,10 @@ function setTaskRunning(id: string): void {
 
 export function dismissToast(id: string): void {
   const st = taskStoreSingleton()
-  st.toasts = st.toasts.filter((toast) => toast.id !== id)
+  const targetId = String(id || '').trim()
+  if (!targetId) return
+  const index = st.toasts.findIndex((toast) => toast.id === targetId)
+  if (index >= 0) st.toasts.splice(index, 1)
 }
 
 export function markTaskCancelling(id: string): void {
@@ -383,18 +415,49 @@ export function restoreTaskRunning(id: string): void {
 }
 
 export function formatCommandLabel(command: string): string {
-  return command
+  const key = String(command || '')
+  const cached = commandLabelCache.get(key)
+  if (cached) return cached
+  const label = key
     .replace(/^run_/, '')
     .replace(/^compute_/, '')
     .replace(/^list_/, '')
     .replace(/^get_/, '')
     .replace(/_/g, ' ')
     .replace(/\b[a-z]/g, (s) => s.toUpperCase())
+  if (commandLabelCache.size > 256) commandLabelCache.clear()
+  commandLabelCache.set(key, label)
+  return label
 }
 
 export function activeTasksSnapshot(): TrackedTask[] {
   const st = taskStoreSingleton()
-  return Object.values(st.activeById).sort((a, b) => b.startedAt - a.startedAt)
+  const ordered: TrackedTask[] = []
+  for (const id of st.activeOrder) {
+    const task = st.activeById[id]
+    if (!task) continue
+    ordered.push(task)
+  }
+  if (ordered.length === st.activeOrder.length) return ordered
+
+  const seen = new Set<string>()
+  for (const task of ordered) seen.add(task.id)
+  for (const [id, task] of Object.entries(st.activeById)) {
+    if (seen.has(id)) continue
+    ordered.push(task)
+  }
+  ordered.sort((a, b) => b.startedAt - a.startedAt)
+  st.activeOrder = ordered.map((task) => task.id)
+  return ordered
+}
+
+export function activeTasksCount(): number {
+  const st = taskStoreSingleton()
+  let count = 0
+  for (const id of st.activeOrder) {
+    if (st.activeById[id]) count += 1
+  }
+  return count
 }
 
 export function cancelCommandFor(command: string): TauriCommand | null {
@@ -418,6 +481,7 @@ export function beginTrackedCommand(command: string, opts?: { queued?: boolean }
     ...(status === 'queued' ? { message: 'Queued.' } : {}),
   }
   st.activeById[id] = task
+  st.activeOrder.unshift(id)
 
   pushTimeline(command, status, `${label} ${status === 'queued' ? 'queued' : 'started'}.`, 'info', id, now)
   refreshCenterStatus()
@@ -439,6 +503,7 @@ export function completeTrackedCommand(id: string): void {
     message: task.message ?? 'Completed.',
   }
   delete st.activeById[id]
+  removeActiveTaskId(st, id)
   pushHistory(done)
   pushEvent(task.command, `${task.label} completed.`, 'info')
   pushTimeline(task.command, 'success', `${task.label} completed.`, 'success', task.id)
@@ -460,6 +525,7 @@ export function failTrackedCommand(id: string, err: unknown): void {
     ...(cancelled ? { message: 'Cancelled.' } : {}),
   }
   delete st.activeById[id]
+  removeActiveTaskId(st, id)
   pushHistory(done)
   pushEvent(
     task.command,
@@ -540,27 +606,46 @@ export function applyDistributedProgress(payload: DistributedProgressPayload): v
 }
 
 export function recordLiveExecutionRunnerEvent(payload: LiveExecutionRunnerEventPayload): void {
+  const now = Date.now()
+  const status = String(payload.status || '').trim()
+  const symbol = String(payload.symbol || '').trim()
+  const message = String(payload.message || '').trim()
+  const signature = `${symbol}|${status}|${message}`
+  if (signature === lastRunnerEventSignature && now - lastRunnerEventAt < RUNNER_EVENT_INTERVAL_MS) return
+  lastRunnerEventAt = now
+  lastRunnerEventSignature = signature
+
   const msg = [
-    payload.symbol || 'symbol',
-    payload.status || 'status',
-    payload.message || '',
+    symbol || 'symbol',
+    status || 'status',
+    message,
   ]
     .join(' ')
     .trim()
-  pushEvent('live_execution_runner_event', msg, 'info', Number(payload.at_unix_ms || Date.now()))
+  pushEvent('live_execution_runner_event', msg, 'info', Number(payload.at_unix_ms || now))
 }
 
 export function recordPolygonLiveStatusEvent(payload: PolygonLiveStatusEventPayload): void {
+  const now = Date.now()
+  const status = String(payload.status || '').trim()
+  const market = String(payload.market || '').trim()
+  const symbol = String(payload.symbol || '').trim()
+  const message = String(payload.message || '').trim()
+  const signature = `${market}|${symbol}|${status}|${message}`
+  if (signature === lastPolygonStatusSignature && now - lastPolygonStatusAt < POLYGON_STATUS_EVENT_INTERVAL_MS) return
+  lastPolygonStatusAt = now
+  lastPolygonStatusSignature = signature
+
   const msg = [
-    payload.market || 'market',
-    payload.symbol || 'symbol',
-    payload.status || 'status',
-    payload.message || '',
+    market || 'market',
+    symbol || 'symbol',
+    status || 'status',
+    message,
   ]
     .join(' ')
     .trim()
-  const level: TaskEventItem['level'] = payload.status === 'error' ? 'error' : 'info'
-  pushEvent('polygon_live_status', msg, level, Number(payload.at_unix_ms || Date.now()))
+  const level: TaskEventItem['level'] = status === 'error' ? 'error' : 'info'
+  pushEvent('polygon_live_status', msg, level, Number(payload.at_unix_ms || now))
 }
 
 export function recordPolygonLiveBarEvent(payload: PolygonLiveBarEventPayload): void {

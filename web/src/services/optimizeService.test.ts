@@ -272,6 +272,68 @@ describe('optimizeService', () => {
     expect(runValidationActionMock).toHaveBeenCalled()
   })
 
+  it('includes backend execution route details in status line when available', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      statusLine: '',
+      progressMeta: '',
+      runDisabled: false,
+      canCancel: false,
+      validateDisabled: false,
+    }
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_double_ma_optimization') {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+          backend_used: 'Cpu',
+          backend_route: 'GpuHybridKernel->CpuOnly',
+          backend_fallback_reason: 'Hybrid phase-1 fallback to CpuOnly.',
+          indicator_route_plan: {
+            fast: {
+              indicator_id: 'sma',
+              capability: 'gpu_kernel',
+              route: 'gpu_kernel',
+              gpu_preferred_by_speedup: true,
+            },
+            slow: {
+              indicator_id: 'kama',
+              capability: 'gpu_kernel',
+              route: 'cpu_staged',
+              gpu_preferred_by_speedup: false,
+            },
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorbt_run_test.json', bytes: 128 }
+      }
+      if (command === 'get_gpu_status') {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          last_used_backend: 'GpuKernel',
+          last_used_device_id: '0',
+        }
+      }
+      return {}
+    })
+
+    await runOptimization({
+      request: { strategy_kind: 'DoubleMa', data_id: 'data-1' },
+      switchTab: false,
+    })
+
+    const optimize = (pinia.state.value as Record<string, unknown>).optimize as Record<string, unknown>
+    const statusLine = String(optimize.statusLine || '')
+    expect(statusLine).toContain('backend=Cpu')
+    expect(statusLine).toContain('route=GpuHybridKernel->CpuOnly')
+    expect(statusLine).toContain('indicators=fast:sma->gpu_kernel, slow:kama->cpu_staged')
+    expect(statusLine).toContain('policy_cpu_route=slow:kama (gpu_speedups.csv)')
+    expect(statusLine).toContain('fallback=Hybrid phase-1 fallback to CpuOnly.')
+  })
+
   it('runs optimization via injected request when request payload is provided', async () => {
     await runOptimization({
       request: { strategy_kind: 'DoubleMa', data_id: 'data-123' },
@@ -401,6 +463,18 @@ describe('optimizeService', () => {
       longOnly: true,
       allowFlip: true,
       tradeOnNext: false,
+      vccMapFastToSqueezePeriod: false,
+      vccMapFastToMomentumPeriod: false,
+      vccMapSlowToTrendPeriod: true,
+      vccSqueezePeriod: '16',
+      vccMomentumPeriod: '18',
+      vccMomentumBbPeriod: '21',
+      vccTrendPeriod: '7',
+      vccSqueezeBbMult: '2.3',
+      vccSqueezeKcMult: '1.8',
+      vccConfirmBars: '2',
+      vccRequireMomentumAccel: false,
+      vccMaxTradeBars: '150',
     }
     ;(pinia.state.value as Record<string, unknown>).data = {
       dataId: 'data-789',
@@ -417,6 +491,296 @@ describe('optimizeService', () => {
     expect(req.strategy_kind).toBe('CompositeCpu')
     expect(req.data_id).toBe('data-789')
     expect(req.backend).toEqual({ backend: 'CpuOnly' })
+  })
+
+  it('routes CompositeTrend through the composite CPU optimization command', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'CompositeTrend',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      topK: '20',
+      includeAll: 'false',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: 'hard_gate',
+      halfTrendAmplitude: '2',
+      halfTrendAtrPeriod: '100',
+      halfTrendChannelDev: '2.0',
+      maczFastLength: '12',
+      maczSlowLength: '25',
+      maczSignalLength: '9',
+      maczLengthZ: '20',
+      maczLengthStdev: '25',
+      maczGamma: '0.02',
+      maczA: '1',
+      maczB: '1',
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: '2',
+      ottPercent: '1.4',
+      ottMaType: 'VAR',
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      trailingStopPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      trendUseRoc: true,
+      trendUseAdx: false,
+      trendLrPeriod: '34',
+      trendLrMinDeg: '2.0',
+      trendBbwPeriod: '20',
+      trendBbwMult: '2.0',
+      trendBbwMin: '0.04',
+      trendRocPeriod: '9',
+      trendAdxPeriod: '14',
+      trendAdxMin: '20',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-trend-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_composite_cpu_optimization')
+    expect(req.strategy_kind).toBe('CompositeTrend')
+  })
+
+  it('routes VCC through the composite CPU optimization command', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'Vcc',
+      backend: 'GpuKernel',
+      deviceId: '0',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'CoarseToFine',
+      topK: '20',
+      includeAll: 'false',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: 'hard_gate',
+      halfTrendAmplitude: '2',
+      halfTrendAtrPeriod: '100',
+      halfTrendChannelDev: '2.0',
+      maczFastLength: '12',
+      maczSlowLength: '25',
+      maczSignalLength: '9',
+      maczLengthZ: '20',
+      maczLengthStdev: '25',
+      maczGamma: '0.02',
+      maczA: '1',
+      maczB: '1',
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: '2',
+      ottPercent: '1.4',
+      ottMaType: 'VAR',
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      trailingStopPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      vccMapFastToSqueezePeriod: false,
+      vccMapFastToMomentumPeriod: false,
+      vccMapSlowToTrendPeriod: true,
+      vccSqueezePeriod: '16',
+      vccMomentumPeriod: '18',
+      vccMomentumBbPeriod: '21',
+      vccTrendPeriod: '7',
+      vccSqueezeBbMult: '2.3',
+      vccSqueezeKcMult: '1.8',
+      vccConfirmBars: '2',
+      vccRequireMomentumAccel: false,
+      vccMaxTradeBars: '150',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-vcc-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_composite_cpu_optimization')
+    expect(req.strategy_kind).toBe('Vcc')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req.mode).toBe('Grid')
+    expect(req.vcc).toMatchObject({
+      map_fast_to_squeeze_period: false,
+      map_fast_to_momentum_period: false,
+      map_slow_to_trend_period: true,
+      squeeze_period: 16,
+      momentum_period: 18,
+      momentum_bb_period: 21,
+      trend_period: 7,
+      squeeze_bb_mult: 2.3,
+      squeeze_kc_mult: 1.8,
+      confirm_bars: 2,
+      require_momentum_accel: false,
+      max_trade_bars: 150,
+    })
+  })
+
+  it('routes VEMR through the composite CPU optimization command', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'Vemr',
+      backend: 'GpuKernel',
+      deviceId: '0',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'CoarseToFine',
+      topK: '20',
+      includeAll: 'false',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: 'hard_gate',
+      halfTrendAmplitude: '2',
+      halfTrendAtrPeriod: '100',
+      halfTrendChannelDev: '2.0',
+      maczFastLength: '12',
+      maczSlowLength: '25',
+      maczSignalLength: '9',
+      maczLengthZ: '20',
+      maczLengthStdev: '25',
+      maczGamma: '0.02',
+      maczA: '1',
+      maczB: '1',
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: '2',
+      ottPercent: '1.4',
+      ottMaType: 'VAR',
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      trailingStopPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      vemrMapFastToZPeriod: false,
+      vemrMapFastToBbPeriod: true,
+      vemrMapSlowToAtrPeriod: false,
+      vemrRequireBandTouch: true,
+      vemrZPeriod: '18',
+      vemrZMaType: 'sma',
+      vemrZNbdev: '1.2',
+      vemrZDevtype: '0',
+      vemrZEntry: '2.4',
+      vemrZExit: '0.7',
+      vemrBbPeriod: '21',
+      vemrBbMult: '2.3',
+      vemrAtrPeriod: '17',
+      vemrAtrStopMult: '2.1',
+      vemrConfirmBars: '2',
+      vemrMaxTradeBars: '130',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-vemr-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_composite_cpu_optimization')
+    expect(req.strategy_kind).toBe('Vemr')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req.mode).toBe('Grid')
+    expect(req.vemr).toMatchObject({
+      map_fast_to_z_period: false,
+      map_fast_to_bb_period: true,
+      map_slow_to_atr_period: false,
+      require_band_touch: true,
+      z_period: 18,
+      z_ma_type: 'sma',
+      z_nbdev: 1.2,
+      z_devtype: 0,
+      z_entry: 2.4,
+      z_exit: 0.7,
+      bb_period: 21,
+      bb_mult: 2.3,
+      atr_period: 17,
+      atr_stop_mult: 2.1,
+      confirm_bars: 2,
+      max_trade_bars: 130,
+    })
   })
 
   it('auto-builds CompositeMo optimization request from Vue stores', async () => {

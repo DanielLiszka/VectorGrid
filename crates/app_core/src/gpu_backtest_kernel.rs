@@ -3,7 +3,7 @@
 use cust::context::CurrentContext;
 use cust::device::DeviceAttribute;
 use cust::function::{Function, FunctionAttribute};
-use cust::memory::{mem_get_info, DeviceBuffer};
+use cust::memory::{mem_get_info, AsyncCopyDestination, DeviceBuffer, LockedBuffer};
 use cust::module::Module;
 use cust::module::{ModuleJitOption, OptLevel};
 use cust::prelude::*;
@@ -40,24 +40,24 @@ const METRICS_COUNT: usize = 7;
 const TOPK_BLOCK_ITEMS: usize = 512;
 
 #[derive(Clone, Copy, Debug)]
-struct DeviceLaunchCaps {
-    sm_count: u32,
-    warp_size: u32,
-    max_threads_per_block: u32,
-    max_threads_per_sm: u32,
-    max_registers_per_sm: u32,
+pub(crate) struct DeviceLaunchCaps {
+    pub(crate) sm_count: u32,
+    pub(crate) warp_size: u32,
+    pub(crate) max_threads_per_block: u32,
+    pub(crate) max_threads_per_sm: u32,
+    pub(crate) max_registers_per_sm: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct KernelLaunchCaps {
-    max_threads_per_block: u32,
-    regs_per_thread: u32,
+pub(crate) struct KernelLaunchCaps {
+    pub(crate) max_threads_per_block: u32,
+    pub(crate) regs_per_thread: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct LaunchShape1d {
-    grid_x: u32,
-    block_x: u32,
+pub(crate) struct LaunchShape1d {
+    pub(crate) grid_x: u32,
+    pub(crate) block_x: u32,
 }
 
 #[derive(Default, Debug)]
@@ -161,7 +161,7 @@ fn device_attr_u32(device: Device, attr: DeviceAttribute, fallback: u32) -> u32 
 }
 
 #[inline]
-fn detect_device_launch_caps(device: Device) -> DeviceLaunchCaps {
+pub(crate) fn detect_device_launch_caps(device: Device) -> DeviceLaunchCaps {
     let warp_size = device_attr_u32(device, DeviceAttribute::WarpSize, 32).max(1);
     let max_threads_per_block = device_attr_u32(
         device,
@@ -191,7 +191,7 @@ fn detect_device_launch_caps(device: Device) -> DeviceLaunchCaps {
 }
 
 #[inline]
-fn detect_kernel_launch_caps(
+pub(crate) fn detect_kernel_launch_caps(
     func: &Function<'_>,
     device_caps: DeviceLaunchCaps,
 ) -> KernelLaunchCaps {
@@ -283,10 +283,11 @@ fn estimated_active_blocks_per_sm(
 }
 
 #[inline]
-fn choose_launch_shape_1d(
+pub(crate) fn choose_launch_shape_1d_from_candidates(
     total_items: usize,
     device_caps: DeviceLaunchCaps,
     kernel_caps: KernelLaunchCaps,
+    candidates: &[u32],
 ) -> LaunchShape1d {
     if total_items == 0 {
         return LaunchShape1d {
@@ -310,11 +311,14 @@ fn choose_launch_shape_1d(
         };
     }
 
-    let mut candidates: Vec<u32> = [64u32, 128, 256, 512]
+    let mut candidates: Vec<u32> = candidates
         .iter()
         .copied()
+        .map(|b| normalize_block_x(b, warp, max_block))
         .filter(|&b| b >= warp && b <= max_block)
         .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
     if candidates.is_empty() {
         candidates.push(normalize_block_x(max_block, warp, max_block));
     }
@@ -361,6 +365,20 @@ fn choose_launch_shape_1d(
         grid_x: div_ceil_u32(total_u32, block_x),
         block_x,
     }
+}
+
+#[inline]
+fn choose_launch_shape_1d(
+    total_items: usize,
+    device_caps: DeviceLaunchCaps,
+    kernel_caps: KernelLaunchCaps,
+) -> LaunchShape1d {
+    choose_launch_shape_1d_from_candidates(
+        total_items,
+        device_caps,
+        kernel_caps,
+        &[64u32, 128, 256, 512],
+    )
 }
 
 #[inline]
@@ -690,6 +708,12 @@ pub struct KernelConfig {
     pub slow_alma_sigma: f64,
 }
 
+pub struct PrecomputedHostMaMatrix<'a> {
+    pub periods: &'a [u16],
+    pub cols: usize,
+    pub values_row_major: &'a [f32],
+}
+
 impl Default for KernelConfig {
     fn default() -> Self {
         Self {
@@ -700,6 +724,117 @@ impl Default for KernelConfig {
             slow_alma_sigma: 6.0,
         }
     }
+}
+
+#[inline]
+fn validate_precomputed_host_matrix(
+    matrix: &PrecomputedHostMaMatrix<'_>,
+    expected_periods: &[u16],
+    expected_cols: usize,
+    side: &str,
+) -> Result<(), String> {
+    if matrix.cols != expected_cols {
+        return Err(format!(
+            "precomputed {side} cols mismatch: got {}, expected {expected_cols}",
+            matrix.cols
+        ));
+    }
+    if matrix.periods != expected_periods {
+        return Err(format!(
+            "precomputed {side} periods do not match requested period grid"
+        ));
+    }
+    let expected_len = expected_periods
+        .len()
+        .checked_mul(expected_cols)
+        .ok_or_else(|| format!("precomputed {side} matrix length overflow"))?;
+    if matrix.values_row_major.len() != expected_len {
+        return Err(format!(
+            "precomputed {side} matrix len mismatch: got {}, expected {expected_len}",
+            matrix.values_row_major.len()
+        ));
+    }
+    Ok(())
+}
+
+fn pack_precomputed_rows_with_padding(
+    src: &PrecomputedHostMaMatrix<'_>,
+    row_start: usize,
+    row_count: usize,
+    padded_rows: usize,
+    dst: &mut Vec<f32>,
+) -> Result<(), String> {
+    if row_count == 0 || padded_rows == 0 {
+        return Err(
+            "precomputed row pack requires non-empty row_count and padded_rows".to_string(),
+        );
+    }
+    if row_start
+        .checked_add(row_count)
+        .map_or(true, |end| end > src.periods.len())
+    {
+        return Err("precomputed row pack out of bounds".to_string());
+    }
+    let cols = src.cols;
+    let total = padded_rows
+        .checked_mul(cols)
+        .ok_or_else(|| "precomputed padded buffer overflow".to_string())?;
+    dst.clear();
+    dst.resize(total, f32::NAN);
+
+    let src_start = row_start
+        .checked_mul(cols)
+        .ok_or_else(|| "precomputed source start overflow".to_string())?;
+    let src_end = (row_start + row_count)
+        .checked_mul(cols)
+        .ok_or_else(|| "precomputed source end overflow".to_string())?;
+    let copied_len = row_count
+        .checked_mul(cols)
+        .ok_or_else(|| "precomputed copy length overflow".to_string())?;
+    dst[..copied_len].copy_from_slice(&src.values_row_major[src_start..src_end]);
+
+    if padded_rows > row_count {
+        let last_row_start = (row_count - 1) * cols;
+        let last_row_end = last_row_start + cols;
+        let last_row: Vec<f32> = dst[last_row_start..last_row_end].to_vec();
+        for pad_row in row_count..padded_rows {
+            let dst_start = pad_row * cols;
+            let dst_end = dst_start + cols;
+            dst[dst_start..dst_end].copy_from_slice(&last_row);
+        }
+    }
+    Ok(())
+}
+
+fn remap_precomputed_rows_for_periods(
+    src: &PrecomputedHostMaMatrix<'_>,
+    selected_periods: &[u16],
+    side: &str,
+) -> Result<Vec<f32>, String> {
+    let cols = src.cols;
+    let mut out = Vec::with_capacity(
+        selected_periods
+            .len()
+            .checked_mul(cols)
+            .ok_or_else(|| format!("precomputed {side} remap overflow"))?,
+    );
+    for &period in selected_periods {
+        let row = src
+            .periods
+            .iter()
+            .position(|&p| p == period)
+            .ok_or_else(|| {
+                format!("precomputed {side} matrix missing period {period} for recompute subset")
+            })?;
+        let start = row
+            .checked_mul(cols)
+            .ok_or_else(|| format!("precomputed {side} remap start overflow"))?;
+        let end = start
+            .checked_add(cols)
+            .ok_or_else(|| format!("precomputed {side} remap end overflow"))?;
+        out.extend_from_slice(&src.values_row_major[start..end]);
+    }
+    Ok(out)
 }
 
 fn expand_u16_range((start, end, step): (u32, u32, u32)) -> Result<Vec<u16>, String> {
@@ -998,6 +1133,195 @@ fn env_flag_override(name: &str) -> Option<bool> {
 #[inline]
 fn kernel_async_alloc_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_ASYNC_ALLOC", true)
+}
+
+#[inline]
+fn kernel_pinned_h2d_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_PINNED_H2D", true)
+}
+
+struct HostSeriesUploadInput<'a> {
+    close: &'a [f64],
+    ma: Option<&'a [f64]>,
+    volume: Option<&'a [f64]>,
+    high: Option<&'a [f64]>,
+    low: Option<&'a [f64]>,
+    regime_f32: Option<&'a [f32]>,
+}
+
+struct DeviceSeriesBuffers {
+    close: DeviceBuffer<f32>,
+    ma: Option<DeviceBuffer<f32>>,
+    volume: Option<DeviceBuffer<f32>>,
+    high: Option<DeviceBuffer<f32>>,
+    low: Option<DeviceBuffer<f32>>,
+    regime: Option<DeviceBuffer<f32>>,
+}
+
+struct AsyncPinnedUploadGuard<'a> {
+    stream: &'a Stream,
+    pinned: Vec<LockedBuffer<f32>>,
+    finalized: bool,
+}
+
+impl<'a> AsyncPinnedUploadGuard<'a> {
+    #[inline]
+    fn new(stream: &'a Stream) -> Self {
+        Self {
+            stream,
+            pinned: Vec::new(),
+            finalized: false,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, buf: LockedBuffer<f32>) {
+        self.pinned.push(buf);
+    }
+
+    #[inline]
+    fn finalize(mut self) -> Result<(), String> {
+        if !self.pinned.is_empty() {
+            self.stream.synchronize().map_err(|e| e.to_string())?;
+        }
+        self.finalized = true;
+        Ok(())
+    }
+}
+
+impl Drop for AsyncPinnedUploadGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finalized && !self.pinned.is_empty() {
+            let _ = self.stream.synchronize();
+        }
+    }
+}
+
+enum HostF32Source<'a> {
+    F32(&'a [f32]),
+    F64(&'a [f64]),
+}
+
+impl HostF32Source<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            HostF32Source::F32(src) => src.len(),
+            HostF32Source::F64(src) => src.len(),
+        }
+    }
+}
+
+#[inline]
+fn upload_f32_source_to_device(
+    stream: &Stream,
+    src: HostF32Source<'_>,
+    use_pinned: bool,
+    guard: &mut AsyncPinnedUploadGuard<'_>,
+) -> Result<DeviceBuffer<f32>, String> {
+    let len = src.len();
+    if use_pinned {
+        let mut locked =
+            unsafe { LockedBuffer::<f32>::uninitialized(len) }.map_err(|e| e.to_string())?;
+        match src {
+            HostF32Source::F32(slice) => {
+                locked.as_mut_slice().copy_from_slice(slice);
+            }
+            HostF32Source::F64(slice) => {
+                for (dst, &v) in locked.as_mut_slice().iter_mut().zip(slice.iter()) {
+                    *dst = v as f32;
+                }
+            }
+        }
+        if len > 0 {
+            let mut dev = unsafe { DeviceBuffer::<f32>::uninitialized_async(len, stream) }
+                .map_err(|e| e.to_string())?;
+            unsafe { dev.async_copy_from(locked.as_ref(), stream) }.map_err(|e| e.to_string())?;
+            guard.push(locked);
+            return Ok(dev);
+        }
+        // Empty buffers are valid and should avoid async copy submission.
+        return DeviceBuffer::from_slice(&[]).map_err(|e| e.to_string());
+    }
+
+    match src {
+        HostF32Source::F32(slice) => DeviceBuffer::from_slice(slice).map_err(|e| e.to_string()),
+        HostF32Source::F64(slice) => {
+            let tmp: Vec<f32> = slice.iter().map(|&x| x as f32).collect();
+            DeviceBuffer::from_slice(&tmp).map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn upload_market_series_to_device(
+    stream: &Stream,
+    host: HostSeriesUploadInput<'_>,
+) -> Result<DeviceSeriesBuffers, String> {
+    let use_pinned = kernel_pinned_h2d_enabled();
+    let mut guard = AsyncPinnedUploadGuard::new(stream);
+
+    let d_close = upload_f32_source_to_device(
+        stream,
+        HostF32Source::F64(host.close),
+        use_pinned,
+        &mut guard,
+    )?;
+    let d_ma = match host.ma {
+        Some(src) => Some(upload_f32_source_to_device(
+            stream,
+            HostF32Source::F64(src),
+            use_pinned,
+            &mut guard,
+        )?),
+        None => None,
+    };
+    let d_volume = match host.volume {
+        Some(src) => Some(upload_f32_source_to_device(
+            stream,
+            HostF32Source::F64(src),
+            use_pinned,
+            &mut guard,
+        )?),
+        None => None,
+    };
+    let d_high = match host.high {
+        Some(src) => Some(upload_f32_source_to_device(
+            stream,
+            HostF32Source::F64(src),
+            use_pinned,
+            &mut guard,
+        )?),
+        None => None,
+    };
+    let d_low = match host.low {
+        Some(src) => Some(upload_f32_source_to_device(
+            stream,
+            HostF32Source::F64(src),
+            use_pinned,
+            &mut guard,
+        )?),
+        None => None,
+    };
+    let d_regime = match host.regime_f32 {
+        Some(src) => Some(upload_f32_source_to_device(
+            stream,
+            HostF32Source::F32(src),
+            use_pinned,
+            &mut guard,
+        )?),
+        None => None,
+    };
+
+    guard.finalize()?;
+
+    Ok(DeviceSeriesBuffers {
+        close: d_close,
+        ma: d_ma,
+        volume: d_volume,
+        high: d_high,
+        low: d_low,
+        regime: d_regime,
+    })
 }
 
 #[inline]
@@ -1930,6 +2254,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
 
     let fast_ma = fast_ma_type.trim().to_ascii_lowercase();
     let slow_ma = slow_ma_type.trim().to_ascii_lowercase();
+    let fast_precomputed: Option<&PrecomputedHostMaMatrix<'_>> = None;
+    let slow_precomputed: Option<&PrecomputedHostMaMatrix<'_>> = None;
+    let fast_precomputed_enabled = false;
+    let slow_precomputed_enabled = false;
+    let fast_on_gpu = true;
+    let slow_on_gpu = true;
     let needs_ma_prices = ma_uses_source(fast_ma.as_str()) || ma_uses_source(slow_ma.as_str());
     let needs_volume = ma_requires_volume(fast_ma.as_str()) || ma_requires_volume(slow_ma.as_str());
     let needs_high_low = ma_requires_high_low_close(fast_ma.as_str())
@@ -2068,30 +2398,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     {
         return Err("FRAMA evenized window exceeds CUDA limit (1024)".to_string());
     }
-    if fast_ma == "vpwma" && fast_periods.iter().any(|&p| p <= 1) {
-        return Err("VPWMA periods must be >= 2 for the GPU kernel backend".to_string());
-    }
-    if slow_ma == "vpwma" && slow_periods.iter().any(|&p| p <= 1) {
-        return Err("VPWMA periods must be >= 2 for the GPU kernel backend".to_string());
-    }
-    if fast_ma == "frama"
-        && fast_periods.iter().any(|&p| {
-            let win = p as usize;
-            let even = if win & 1 == 1 { win + 1 } else { win };
-            even > 1024
-        })
-    {
-        return Err("FRAMA evenized window exceeds CUDA limit (1024)".to_string());
-    }
-    if slow_ma == "frama"
-        && slow_periods.iter().any(|&p| {
-            let win = p as usize;
-            let even = if win & 1 == 1 { win + 1 } else { win };
-            even > 1024
-        })
-    {
-        return Err("FRAMA evenized window exceeds CUDA limit (1024)".to_string());
-    }
 
     if n - first_valid < max_pf.max(max_ps) {
         return Err(format!(
@@ -2127,58 +2433,41 @@ fn eval_double_ma_batch_gpu_kernel_impl(
 
     let mut out_metrics = vec![Metrics::default(); combos.len()];
 
-    let close_f32: Vec<f32> = close.iter().map(|&x| x as f32).collect();
-    let d_close = DeviceBuffer::from_slice(&close_f32).map_err(|e| e.to_string())?;
-
+    let bt_stream = &rt.stream;
     let ma_is_close = ma_source.trim().eq_ignore_ascii_case("close");
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let d_ma_buf: Option<DeviceBuffer<f32>> = if alloc_ma_buf {
-        let ma_f32: Vec<f32> = ma_prices
-            .expect("ma_prices required when alloc_ma_buf=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&ma_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
+    let host_upload = HostSeriesUploadInput {
+        close,
+        ma: if alloc_ma_buf {
+            Some(ma_prices.expect("ma_prices required when alloc_ma_buf=true"))
+        } else {
+            None
+        },
+        volume: if needs_volume {
+            Some(volume.expect("volume required when needs_volume=true"))
+        } else {
+            None
+        },
+        high: if needs_high_low {
+            Some(high.expect("high required when needs_high_low=true"))
+        } else {
+            None
+        },
+        low: if needs_high_low {
+            Some(low.expect("low required when needs_high_low=true"))
+        } else {
+            None
+        },
+        regime_f32: regime_f32.as_deref(),
     };
+    let uploaded = upload_market_series_to_device(bt_stream, host_upload)?;
+    let d_close = uploaded.close;
+    let d_ma_buf = uploaded.ma;
+    let d_volume = uploaded.volume;
+    let d_high = uploaded.high;
+    let d_low = uploaded.low;
+    let d_regime = uploaded.regime;
     let d_ma_prices: &DeviceBuffer<f32> = d_ma_buf.as_ref().unwrap_or(&d_close);
-
-    let d_volume: Option<DeviceBuffer<f32>> = if needs_volume {
-        let vol_f32: Vec<f32> = volume
-            .expect("volume required when needs_volume=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&vol_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let d_high: Option<DeviceBuffer<f32>> = if needs_high_low {
-        let high_f32: Vec<f32> = high
-            .expect("high required when needs_high_low=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&high_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let d_low: Option<DeviceBuffer<f32>> = if needs_high_low {
-        let low_f32: Vec<f32> = low
-            .expect("low required when needs_high_low=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&low_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let d_regime: Option<DeviceBuffer<f32>> = if let Some(regime) = regime_f32.as_ref() {
-        Some(DeviceBuffer::from_slice(regime).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
 
     let vram_inputs = VramMaInputs {
         prices: d_ma_prices,
@@ -2208,10 +2497,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         } else {
             slow_ma_params
         };
-    if fast_ma == "sma" || slow_ma == "sma" {
+    if (fast_on_gpu && fast_ma == "sma") || (slow_on_gpu && slow_ma == "sma") {
         ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)?;
     }
-    if fast_ma == "vwma" || slow_ma == "vwma" {
+    if (fast_on_gpu && fast_ma == "vwma") || (slow_on_gpu && slow_ma == "vwma") {
         ma.ensure_vwma_prefix_pv_vol_f64(
             d_ma_prices,
             d_volume
@@ -2223,8 +2512,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     }
 
     let bt_module = &rt.module;
-    let bt_stream = &rt.stream;
-    let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
+    let use_fast_path = !fast_precomputed_enabled
+        && !slow_precomputed_enabled
+        && kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
     let use_valid_pair_map = kernel_valid_pair_map_enabled();
     let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
 
@@ -2390,6 +2680,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
 
     let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
     let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
+    let mut fast_precomputed_host_tile: Vec<f32> = Vec::new();
+    let mut slow_precomputed_host_tile: Vec<f32> = Vec::new();
     let mut tile_host_buf: Vec<f32> = alloc_uninit_copy(tile_out_cap);
 
     let strategy_kernel = kernel_strategy_params(strategy);
@@ -2440,7 +2732,50 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             .unwrap()
             .copy_from(&host_p_fast)
             .map_err(|e| e.to_string())?;
-        if use_fast_path {
+        if let Some(precomputed_fast) = fast_precomputed {
+            pack_precomputed_rows_with_padding(
+                precomputed_fast,
+                f_start,
+                pf,
+                pf_tile_tm,
+                &mut fast_precomputed_host_tile,
+            )?;
+            scratch
+                .d_fast_ma
+                .as_mut()
+                .ok_or_else(|| {
+                    "internal error: missing d_fast_ma for precomputed fast matrix".to_string()
+                })?
+                .copy_from(&fast_precomputed_host_tile)
+                .map_err(|e| e.to_string())?;
+            unsafe {
+                let mut in_ptr = scratch.d_fast_ma.as_ref().unwrap().as_device_ptr().as_raw();
+                let mut rows = pf as i32;
+                let mut cols = n as i32;
+                let mut out_rows = fast_tm_rows as i32;
+                let mut out_ptr = scratch
+                    .d_fast_ma_tm
+                    .as_ref()
+                    .unwrap()
+                    .as_device_ptr()
+                    .as_raw();
+                let total = pf.saturating_mul(n);
+                let launch =
+                    choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                let block_x: u32 = launch.block_x;
+                let grid_x: u32 = launch.grid_x;
+                let args: &mut [*mut c_void] = &mut [
+                    &mut in_ptr as *mut _ as *mut c_void,
+                    &mut rows as *mut _ as *mut c_void,
+                    &mut cols as *mut _ as *mut c_void,
+                    &mut out_rows as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                bt_stream
+                    .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                    .map_err(|e| e.to_string())?;
+            }
+        } else if use_fast_path {
             ma.compute_period_ma_tm_into(
                 fast_ma.as_str(),
                 fast_params,
@@ -2517,7 +2852,51 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 .unwrap()
                 .copy_from(&host_p_slow)
                 .map_err(|e| e.to_string())?;
-            if use_fast_path {
+            if let Some(precomputed_slow) = slow_precomputed {
+                pack_precomputed_rows_with_padding(
+                    precomputed_slow,
+                    s_start,
+                    ps,
+                    ps_tile_tm,
+                    &mut slow_precomputed_host_tile,
+                )?;
+                scratch
+                    .d_slow_ma
+                    .as_mut()
+                    .ok_or_else(|| {
+                        "internal error: missing d_slow_ma for precomputed slow matrix".to_string()
+                    })?
+                    .copy_from(&slow_precomputed_host_tile)
+                    .map_err(|e| e.to_string())?;
+
+                unsafe {
+                    let mut in_ptr = scratch.d_slow_ma.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut rows = ps as i32;
+                    let mut cols = n as i32;
+                    let mut out_rows = slow_tm_rows as i32;
+                    let mut out_ptr = scratch
+                        .d_slow_ma_tm
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let total = ps.saturating_mul(n);
+                    let launch =
+                        choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut in_ptr as *mut _ as *mut c_void,
+                        &mut rows as *mut _ as *mut c_void,
+                        &mut cols as *mut _ as *mut c_void,
+                        &mut out_rows as *mut _ as *mut c_void,
+                        &mut out_ptr as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+            } else if use_fast_path {
                 ma.compute_period_ma_tm_into(
                     slow_ma.as_str(),
                     slow_params,
@@ -2911,6 +3290,56 @@ pub fn optimize_double_ma_gpu_kernel(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
+    optimize_double_ma_gpu_kernel_with_precomputed(
+        candles,
+        fast_periods,
+        slow_periods,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        strategy,
+        objective,
+        top_k,
+        include_all,
+        cfg,
+        None,
+        None,
+        constraints,
+        export_all_csv_path,
+        total_pairs,
+        heatmap_bins,
+        cancel,
+        progress,
+    )
+}
+
+pub fn optimize_double_ma_gpu_kernel_with_precomputed(
+    candles: &Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    cfg: KernelConfig,
+    fast_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    slow_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    constraints: Option<&DoubleMaConstraints>,
+    export_all_csv_path: Option<&str>,
+    total_pairs: usize,
+    heatmap_bins: usize,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<OptimizationResult, String> {
     let device_id = cfg.device_id;
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
         let mut map = cell.borrow_mut();
@@ -2937,6 +3366,8 @@ pub fn optimize_double_ma_gpu_kernel(
             top_k,
             include_all,
             cfg,
+            fast_precomputed,
+            slow_precomputed,
             constraints,
             export_all_csv_path,
             total_pairs,
@@ -2963,6 +3394,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
+    fast_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    slow_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
     constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
@@ -3013,10 +3446,16 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     let fast_ma = fast_ma_type.trim().to_ascii_lowercase();
     let slow_ma = slow_ma_type.trim().to_ascii_lowercase();
-    let needs_ma_prices = ma_uses_source(fast_ma.as_str()) || ma_uses_source(slow_ma.as_str());
-    let needs_volume = ma_requires_volume(fast_ma.as_str()) || ma_requires_volume(slow_ma.as_str());
-    let needs_high_low = ma_requires_high_low_close(fast_ma.as_str())
-        || ma_requires_high_low_close(slow_ma.as_str());
+    let fast_precomputed_enabled = fast_precomputed.is_some();
+    let slow_precomputed_enabled = slow_precomputed.is_some();
+    let fast_on_gpu = !fast_precomputed_enabled;
+    let slow_on_gpu = !slow_precomputed_enabled;
+    let needs_ma_prices = (fast_on_gpu && ma_uses_source(fast_ma.as_str()))
+        || (slow_on_gpu && ma_uses_source(slow_ma.as_str()));
+    let needs_volume = (fast_on_gpu && ma_requires_volume(fast_ma.as_str()))
+        || (slow_on_gpu && ma_requires_volume(slow_ma.as_str()));
+    let needs_high_low = (fast_on_gpu && ma_requires_high_low_close(fast_ma.as_str()))
+        || (slow_on_gpu && ma_requires_high_low_close(slow_ma.as_str()));
 
     validate_candles_for_selected_mas(
         candles,
@@ -3050,6 +3489,12 @@ fn optimize_double_ma_gpu_kernel_impl(
     let n = close.len();
     if n < 2 {
         return Err("not enough candles".to_string());
+    }
+    if let Some(m) = fast_precomputed {
+        validate_precomputed_host_matrix(m, fast_periods, n, "fast")?;
+    }
+    if let Some(m) = slow_precomputed {
+        validate_precomputed_host_matrix(m, slow_periods, n, "slow")?;
     }
     if ma_prices.map_or(false, |p| p.len() != n) {
         return Err("ma source length mismatch".to_string());
@@ -3107,11 +3552,14 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
         .ok_or_else(|| "no index where all required series are finite".to_string())?;
-    if !crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str())
-        || !crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str())
-    {
+    if fast_on_gpu && !crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str()) {
         return Err(format!(
-            "GPU kernel backend does not support fast='{fast_ma_type}', slow='{slow_ma_type}'"
+            "GPU kernel backend does not support fast='{fast_ma_type}' without precomputed fast matrix"
+        ));
+    }
+    if slow_on_gpu && !crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str()) {
+        return Err(format!(
+            "GPU kernel backend does not support slow='{slow_ma_type}' without precomputed slow matrix"
         ));
     }
     if let (Some(t0), Some(p)) = (host_prep_t0, pipeline_profile.as_mut()) {
@@ -3164,6 +3612,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         ObjectiveKind::Pnl | ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar
     ) && !include_all
         && !export_enabled;
+    let fast_pass = fast_pass && !fast_precomputed_enabled && !slow_precomputed_enabled;
     let mut metrics_count: usize = if fast_pass { 3 } else { METRICS_COUNT };
     if !include_all && !export_enabled {
         if let Ok(v) = std::env::var("VECTORBT_KERNEL_METRICS_COUNT") {
@@ -3231,58 +3680,41 @@ fn optimize_double_ma_gpu_kernel_impl(
         slow_alma_sigma: cfg.slow_alma_sigma,
     };
 
-    let close_f32: Vec<f32> = close.iter().map(|&x| x as f32).collect();
-    let d_close = DeviceBuffer::from_slice(&close_f32).map_err(|e| e.to_string())?;
-
+    let bt_stream = &rt.stream;
     let ma_is_close = ma_source.trim().eq_ignore_ascii_case("close");
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let d_ma_buf: Option<DeviceBuffer<f32>> = if alloc_ma_buf {
-        let ma_f32: Vec<f32> = ma_prices
-            .expect("ma_prices required when alloc_ma_buf=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&ma_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
+    let host_upload = HostSeriesUploadInput {
+        close,
+        ma: if alloc_ma_buf {
+            Some(ma_prices.expect("ma_prices required when alloc_ma_buf=true"))
+        } else {
+            None
+        },
+        volume: if needs_volume {
+            Some(volume.expect("volume required when needs_volume=true"))
+        } else {
+            None
+        },
+        high: if needs_high_low {
+            Some(high.expect("high required when needs_high_low=true"))
+        } else {
+            None
+        },
+        low: if needs_high_low {
+            Some(low.expect("low required when needs_high_low=true"))
+        } else {
+            None
+        },
+        regime_f32: regime_f32.as_deref(),
     };
+    let uploaded = upload_market_series_to_device(bt_stream, host_upload)?;
+    let d_close = uploaded.close;
+    let d_ma_buf = uploaded.ma;
+    let d_volume = uploaded.volume;
+    let d_high = uploaded.high;
+    let d_low = uploaded.low;
+    let d_regime = uploaded.regime;
     let d_ma_prices: &DeviceBuffer<f32> = d_ma_buf.as_ref().unwrap_or(&d_close);
-
-    let d_volume: Option<DeviceBuffer<f32>> = if needs_volume {
-        let vol_f32: Vec<f32> = volume
-            .expect("volume required when needs_volume=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&vol_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let d_high: Option<DeviceBuffer<f32>> = if needs_high_low {
-        let high_f32: Vec<f32> = high
-            .expect("high required when needs_high_low=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&high_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let d_low: Option<DeviceBuffer<f32>> = if needs_high_low {
-        let low_f32: Vec<f32> = low
-            .expect("low required when needs_high_low=true")
-            .iter()
-            .map(|&x| x as f32)
-            .collect();
-        Some(DeviceBuffer::from_slice(&low_f32).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let d_regime: Option<DeviceBuffer<f32>> = if let Some(regime) = regime_f32.as_ref() {
-        Some(DeviceBuffer::from_slice(regime).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
 
     let vram_inputs = VramMaInputs {
         prices: d_ma_prices,
@@ -3327,7 +3759,6 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     let bt_module = &rt.module;
-    let bt_stream = &rt.stream;
     let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
     let use_valid_pair_map = kernel_valid_pair_map_enabled();
     let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
@@ -5235,6 +5666,38 @@ fn optimize_double_ma_gpu_kernel_impl(
         slow_needed.dedup();
 
         let total_pairs_subset = fast_needed.len().saturating_mul(slow_needed.len());
+        let mut fast_recompute_buf: Option<Vec<f32>> = None;
+        let mut slow_recompute_buf: Option<Vec<f32>> = None;
+        if let Some(src) = fast_precomputed {
+            fast_recompute_buf = Some(remap_precomputed_rows_for_periods(
+                src,
+                &fast_needed,
+                "fast",
+            )?);
+        }
+        if let Some(src) = slow_precomputed {
+            slow_recompute_buf = Some(remap_precomputed_rows_for_periods(
+                src,
+                &slow_needed,
+                "slow",
+            )?);
+        }
+        let fast_recompute_matrix =
+            fast_recompute_buf
+                .as_ref()
+                .map(|values| PrecomputedHostMaMatrix {
+                    periods: fast_needed.as_slice(),
+                    cols: n,
+                    values_row_major: values.as_slice(),
+                });
+        let slow_recompute_matrix =
+            slow_recompute_buf
+                .as_ref()
+                .map(|values| PrecomputedHostMaMatrix {
+                    periods: slow_needed.as_slice(),
+                    cols: n,
+                    values_row_major: values.as_slice(),
+                });
         let full = optimize_double_ma_gpu_kernel_impl(
             rt,
             candles,
@@ -5251,6 +5714,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             0,
             true,
             cfg_recompute,
+            fast_recompute_matrix.as_ref(),
+            slow_recompute_matrix.as_ref(),
             constraints,
             None,
             total_pairs_subset,
@@ -5303,4 +5768,73 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{kernel_async_alloc_enabled, kernel_pinned_h2d_enabled};
+    use std::sync::{Mutex, OnceLock};
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned")
+    }
+
+    #[test]
+    fn kernel_h2d_flag_defaults_to_enabled() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PINNED_H2D").ok();
+        std::env::remove_var("VECTORBT_KERNEL_PINNED_H2D");
+        assert!(kernel_pinned_h2d_enabled());
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PINNED_H2D"),
+        }
+    }
+
+    #[test]
+    fn kernel_h2d_flag_respects_false_tokens() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PINNED_H2D").ok();
+
+        std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", "0");
+        assert!(!kernel_pinned_h2d_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", "false");
+        assert!(!kernel_pinned_h2d_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", "1");
+        assert!(kernel_pinned_h2d_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PINNED_H2D"),
+        }
+    }
+
+    #[test]
+    fn kernel_async_alloc_flag_defaults_to_enabled_and_parses_false() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_ASYNC_ALLOC").ok();
+
+        std::env::remove_var("VECTORBT_KERNEL_ASYNC_ALLOC");
+        assert!(kernel_async_alloc_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_ASYNC_ALLOC", "0");
+        assert!(!kernel_async_alloc_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_ASYNC_ALLOC", "false");
+        assert!(!kernel_async_alloc_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_ASYNC_ALLOC", "1");
+        assert!(kernel_async_alloc_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_ASYNC_ALLOC", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_ASYNC_ALLOC"),
+        }
+    }
 }

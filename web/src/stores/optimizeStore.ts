@@ -15,6 +15,24 @@ export interface OptimizeOption {
   disabled: boolean
 }
 
+const STRATEGY_OPTIONS_DEFAULT: OptimizeOption[] = [
+  { value: 'DoubleMa', label: 'Double MA', disabled: false },
+  { value: 'Asr', label: 'Adaptive Squeeze Regime (ASR)', disabled: false },
+  { value: 'Vcc', label: 'Volatility Compression Confirmation (VCC)', disabled: false },
+  { value: 'Vemr', label: 'Volatility Expansion Mean Reversion (VEMR)', disabled: false },
+  { value: 'CompositeCpu', label: 'Composite CPU', disabled: false },
+  { value: 'CompositeTrend', label: 'Composite Trend', disabled: false },
+  { value: 'RegimeHybrid', label: 'Regime Hybrid', disabled: false },
+  { value: 'BreakoutMomentum', label: 'Breakout Momentum', disabled: false },
+  { value: 'CompositeMo', label: 'Composite MO', disabled: false },
+]
+
+const BACKEND_OPTIONS_DEFAULT: OptimizeOption[] = [
+  { value: 'Auto', label: 'Auto (recommended)', disabled: false },
+  { value: 'CpuOnly', label: 'CPU only (indicators + backtest on CPU)', disabled: false },
+  { value: 'GpuKernel', label: 'GPU unified (kernel + staged fallback)', disabled: false },
+]
+
 type MaParamMap = Record<string, number>
 type MaParamSweepMap = Record<string, [number, number, number]>
 interface MaParamStateInput {
@@ -38,6 +56,55 @@ function normalizedOptions(values: unknown): OptimizeOption[] {
     })
   }
   return entries
+}
+
+function normalizeStrategyOptions(values: unknown): OptimizeOption[] {
+  const entries = normalizedOptions(values)
+  const out: OptimizeOption[] = []
+  const seen = new Set<string>()
+  for (const option of entries) {
+    const value = String(option.value || '').trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    out.push(option)
+  }
+  for (const fallback of STRATEGY_OPTIONS_DEFAULT) {
+    if (seen.has(fallback.value)) continue
+    out.push({ ...fallback })
+  }
+  return out.length > 0 ? out : STRATEGY_OPTIONS_DEFAULT.map((option) => ({ ...option }))
+}
+
+function normalizeBackendOptions(values: unknown): OptimizeOption[] {
+  const entries = normalizedOptions(values)
+  const out: OptimizeOption[] = []
+  const seen = new Set<string>()
+  for (const option of entries) {
+    const value = normalizeBackendValue(option.value)
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    const fallbackLabel = BACKEND_OPTIONS_DEFAULT.find((row) => row.value === value)?.label
+    out.push({
+      value,
+      label: String(fallbackLabel || option.label || value).trim() || value,
+      disabled: Boolean(option.disabled),
+    })
+  }
+  for (const fallback of BACKEND_OPTIONS_DEFAULT) {
+    if (seen.has(fallback.value)) continue
+    out.push({ ...fallback })
+  }
+  return out.length > 0 ? out : BACKEND_OPTIONS_DEFAULT.map((option) => ({ ...option }))
+}
+
+function normalizeBackendValue(value: unknown): string {
+  const backend = String(value || '').trim()
+  if (backend === 'Auto') return 'Auto'
+  if (backend === 'CpuOnly') return 'CpuOnly'
+  if (backend === 'GpuKernel') return 'GpuKernel'
+  // Legacy backends are normalized to unified GPU backend.
+  if (backend === 'GpuOnly' || backend === 'GpuHybridKernel') return 'GpuKernel'
+  return 'CpuOnly'
 }
 
 function normalizeMaParams(value: unknown, fallback: MaParamMap | null = null): MaParamMap | null {
@@ -182,11 +249,7 @@ export const useOptimizeStore = defineStore('optimize', {
     activeControlsTab: 'data',
     strategyKind: 'DoubleMa',
     strategyHint: 'Double MA crossover strategy.',
-    strategyOptions: [
-      { value: 'DoubleMa', label: 'Double MA', disabled: false },
-      { value: 'CompositeCpu', label: 'Composite CPU', disabled: false },
-      { value: 'CompositeMo', label: 'Composite MO', disabled: false },
-    ],
+    strategyOptions: STRATEGY_OPTIONS_DEFAULT.map((option) => ({ ...option })),
     presetProfile: 'Balanced',
     presetOptions: [
       { value: 'Quick', label: 'Quick', disabled: false },
@@ -194,12 +257,7 @@ export const useOptimizeStore = defineStore('optimize', {
       { value: 'Deep', label: 'Deep', disabled: false },
     ],
     backend: 'Auto',
-    backendOptions: [
-      { value: 'Auto', label: 'Auto', disabled: false },
-      { value: 'CpuOnly', label: 'CPU only', disabled: false },
-      { value: 'GpuOnly', label: 'GPU only', disabled: false },
-      { value: 'GpuKernel', label: 'GPU kernel', disabled: false },
-    ],
+    backendOptions: BACKEND_OPTIONS_DEFAULT.map((option) => ({ ...option })),
     deviceId: '0',
     deviceOptions: [{ value: '0', label: '0 (Auto)', disabled: false }],
     objective: 'Sharpe',
@@ -248,11 +306,11 @@ export const useOptimizeStore = defineStore('optimize', {
       this.activeControlsTab = String(snapshot.activeControlsTab ?? this.activeControlsTab ?? 'data').trim() || 'data'
       this.strategyKind = String(snapshot.strategyKind ?? this.strategyKind ?? '').trim()
       this.strategyHint = String(snapshot.strategyHint ?? this.strategyHint ?? '—').trim() || '—'
-      this.strategyOptions = normalizedOptions(snapshot.strategyOptions ?? this.strategyOptions ?? [])
+      this.strategyOptions = normalizeStrategyOptions(snapshot.strategyOptions ?? this.strategyOptions ?? [])
       this.presetProfile = String(snapshot.presetProfile ?? this.presetProfile ?? 'Balanced').trim() || 'Balanced'
       this.presetOptions = normalizedOptions(snapshot.presetOptions ?? this.presetOptions ?? [])
-      this.backend = String(snapshot.backend ?? this.backend ?? '').trim()
-      this.backendOptions = normalizedOptions(snapshot.backendOptions ?? this.backendOptions ?? [])
+      this.backend = normalizeBackendValue(snapshot.backend ?? this.backend ?? '')
+      this.backendOptions = normalizeBackendOptions(snapshot.backendOptions ?? this.backendOptions ?? [])
       this.deviceId = String(snapshot.deviceId ?? this.deviceId ?? '0').trim() || '0'
       this.deviceOptions = normalizedOptions(snapshot.deviceOptions ?? this.deviceOptions ?? [])
       this.objective = String(snapshot.objective ?? this.objective ?? '').trim()

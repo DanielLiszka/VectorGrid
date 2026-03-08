@@ -16,6 +16,15 @@ export interface MaParamDescriptor {
 export interface MovingAverageCatalogEntry {
   id: string
   label: string
+  supportsCpu: boolean
+  supportsCuda: boolean
+  supportsCudaMaSweep: boolean
+  supportsCudaKernel: boolean
+  prefersCudaKernel: boolean
+  requiresCandles: boolean
+  periodBased: boolean
+  singleOutput: boolean
+  notes: string
   params: MaParamDescriptor[]
 }
 
@@ -33,6 +42,15 @@ interface RawMaParamDescriptor {
 interface RawMovingAverageEntry {
   id?: unknown
   label?: unknown
+  supports_cpu?: unknown
+  supports_cuda?: unknown
+  supports_cuda_ma_sweep?: unknown
+  supports_cuda_kernel?: unknown
+  prefers_cuda_kernel?: unknown
+  requires_candles?: unknown
+  period_based?: unknown
+  single_output?: unknown
+  notes?: unknown
   params?: unknown
 }
 
@@ -45,6 +63,12 @@ function normalizeText(value: unknown): string {
 function normalizeFinite(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeBool(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  const text = normalizeText(value).toLowerCase()
+  return text === 'true' || text === '1' || text === 'yes' || text === 'on'
 }
 
 function normalizeParamDescriptor(value: unknown): MaParamDescriptor | null {
@@ -83,6 +107,15 @@ export function normalizeMovingAverageCatalog(value: unknown): MovingAverageCata
     const id = normalizeText(row.id)
     if (!id) continue
     const label = normalizeText(row.label) || id
+    const supportsCpu = normalizeBool(row.supports_cpu)
+    const supportsCuda = normalizeBool(row.supports_cuda)
+    const supportsCudaMaSweep = normalizeBool(row.supports_cuda_ma_sweep)
+    const supportsCudaKernel = normalizeBool(row.supports_cuda_kernel)
+    const prefersCudaKernel = normalizeBool(row.prefers_cuda_kernel)
+    const requiresCandles = normalizeBool(row.requires_candles)
+    const periodBased = normalizeBool(row.period_based)
+    const singleOutput = normalizeBool(row.single_output)
+    const notes = normalizeText(row.notes)
     const rawParams = Array.isArray(row.params) ? row.params : []
     const params: MaParamDescriptor[] = []
     const seen = new Set<string>()
@@ -93,7 +126,20 @@ export function normalizeMovingAverageCatalog(value: unknown): MovingAverageCata
       seen.add(normalized.key)
       params.push(normalized)
     }
-    out.push({ id, label, params })
+    out.push({
+      id,
+      label,
+      supportsCpu,
+      supportsCuda,
+      supportsCudaMaSweep,
+      supportsCudaKernel,
+      prefersCudaKernel,
+      requiresCandles,
+      periodBased,
+      singleOutput,
+      notes,
+      params,
+    })
   }
   return out
 }

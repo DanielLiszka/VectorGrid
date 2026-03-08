@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useVirtualTableRows } from '../composables/useVirtualTableRows'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -43,10 +45,6 @@ const { resultsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
-const tableScrollTop = ref(0)
-const virtualRowHeightPx = 28
-const virtualOverscanRows = 12
-const virtualWindowRows = 80
 
 const minPnlDraft = ref('')
 const minSharpeDraft = ref('')
@@ -57,20 +55,13 @@ const minExposureDraft = ref('')
 const visible = computed(() => String(resultsTab.value || '').trim() === 'top')
 const renderedColumns = computed<TopColumn[]>(() => topColumns.value as TopColumn[])
 const renderedRows = computed<TopRow[]>(() => topTableRows.value as TopRow[])
-const virtualFirstRowIndex = computed(() => {
-  const firstByScroll = Math.floor(tableScrollTop.value / virtualRowHeightPx)
-  const maxFirst = Math.max(0, renderedRows.value.length - virtualWindowRows)
-  return Math.min(maxFirst, Math.max(0, firstByScroll - virtualOverscanRows))
-})
-const virtualLastRowExclusive = computed(() => {
-  return Math.min(renderedRows.value.length, virtualFirstRowIndex.value + virtualWindowRows)
-})
-const virtualRows = computed(() => renderedRows.value.slice(virtualFirstRowIndex.value, virtualLastRowExclusive.value))
-const virtualTopSpacerPx = computed(() => virtualFirstRowIndex.value * virtualRowHeightPx)
-const virtualBottomSpacerPx = computed(() => {
-  const hiddenCount = Math.max(0, renderedRows.value.length - virtualLastRowExclusive.value)
-  return hiddenCount * virtualRowHeightPx
-})
+const {
+  scrollElementRef: tableScrollElementRef,
+  virtualRows,
+  topSpacerPx: virtualTopSpacerPx,
+  bottomSpacerPx: virtualBottomSpacerPx,
+  scrollToTop,
+} = useVirtualTableRows(renderedRows)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -78,14 +69,33 @@ const stamp = computed(() => {
   return new Date(ms).toLocaleTimeString([], { hour12: false })
 })
 
-watch(filterMinPnl, (v) => { const next = String(v || ''); if (minPnlDraft.value !== next) minPnlDraft.value = next }, { immediate: true })
-watch(filterMinSharpe, (v) => { const next = String(v || ''); if (minSharpeDraft.value !== next) minSharpeDraft.value = next }, { immediate: true })
-watch(filterMaxDd, (v) => { const next = String(v || ''); if (maxDdDraft.value !== next) maxDdDraft.value = next }, { immediate: true })
-watch(filterMinTrades, (v) => { const next = String(v || ''); if (minTradesDraft.value !== next) minTradesDraft.value = next }, { immediate: true })
-watch(filterMinExposure, (v) => { const next = String(v || ''); if (minExposureDraft.value !== next) minExposureDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(filterMinPnl.value || ''),
+    String(filterMinSharpe.value || ''),
+    String(filterMaxDd.value || ''),
+    String(filterMinTrades.value || ''),
+    String(filterMinExposure.value || ''),
+  ] as const,
+  ([nextMinPnl, nextMinSharpe, nextMaxDd, nextMinTrades, nextMinExposure]) => {
+    if (minPnlDraft.value !== nextMinPnl) minPnlDraft.value = nextMinPnl
+    if (minSharpeDraft.value !== nextMinSharpe) minSharpeDraft.value = nextMinSharpe
+    if (maxDdDraft.value !== nextMaxDd) maxDdDraft.value = nextMaxDd
+    if (minTradesDraft.value !== nextMinTrades) minTradesDraft.value = nextMinTrades
+    if (minExposureDraft.value !== nextMinExposure) minExposureDraft.value = nextMinExposure
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   analysisStore.setInputField(id, nextValue)
+}
+
+const { queueInputValue: queueFilterInputValue, flushQueuedInputValuesNow: flushQueuedFilterInputsNow } =
+  useQueuedInputWriter(setInputValue, { waitMs: 130, maxWaitMs: 360 })
+
+function queueFilterInput(id: string, nextValue: string): void {
+  queueFilterInputValue(id, nextValue)
 }
 
 function clickTopHeader(key: string): void {
@@ -97,12 +107,6 @@ function clickTopHeader(key: string): void {
 function clickTopRow(index: number): void {
   if (!Number.isInteger(index) || index < 0) return
   analysisStore.selectTopRow(index)
-}
-
-function onTableScroll(event: Event): void {
-  const target = event.target as HTMLElement | null
-  if (!target) return
-  tableScrollTop.value = Math.max(0, Math.floor(target.scrollTop || 0))
 }
 
 function resolveMount(): void {
@@ -117,10 +121,11 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
-  tableScrollTop.value = 0
+  scrollToTop()
 })
 
 onBeforeUnmount(() => {
+  flushQueuedFilterInputsNow()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueTop
     panelRoot.value = null
@@ -145,7 +150,7 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="minPnlDraft"
-              @input="minPnlDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('filterMinPnl', minPnlDraft)"
+              @input="minPnlDraft = String(($event.target as HTMLInputElement).value || ''); queueFilterInput('filterMinPnl', minPnlDraft)"
             />
           </div>
           <div>
@@ -155,7 +160,7 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="minSharpeDraft"
-              @input="minSharpeDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('filterMinSharpe', minSharpeDraft)"
+              @input="minSharpeDraft = String(($event.target as HTMLInputElement).value || ''); queueFilterInput('filterMinSharpe', minSharpeDraft)"
             />
           </div>
           <div>
@@ -165,7 +170,7 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="maxDdDraft"
-              @input="maxDdDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('filterMaxDd', maxDdDraft)"
+              @input="maxDdDraft = String(($event.target as HTMLInputElement).value || ''); queueFilterInput('filterMaxDd', maxDdDraft)"
             />
           </div>
           <div>
@@ -176,7 +181,7 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="minTradesDraft"
-              @input="minTradesDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('filterMinTrades', minTradesDraft)"
+              @input="minTradesDraft = String(($event.target as HTMLInputElement).value || ''); queueFilterInput('filterMinTrades', minTradesDraft)"
             />
           </div>
           <div>
@@ -186,7 +191,7 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="minExposureDraft"
-              @input="minExposureDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('filterMinExposure', minExposureDraft)"
+              @input="minExposureDraft = String(($event.target as HTMLInputElement).value || ''); queueFilterInput('filterMinExposure', minExposureDraft)"
             />
           </div>
         </div>
@@ -198,7 +203,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div class="tableWrap" @scroll="onTableScroll">
+        <div ref="tableScrollElementRef" class="tableWrap">
           <table class="topTableVue">
             <thead>
               <tr>
@@ -219,16 +224,16 @@ onBeforeUnmount(() => {
                 <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
               <tr
-                v-for="(row, rowOffset) in virtualRows"
-                :key="`top_row_${virtualFirstRowIndex + rowOffset}`"
-                :class="{ selected: row.selected }"
-                @click="clickTopRow(virtualFirstRowIndex + rowOffset)"
+                v-for="virtualRow in virtualRows"
+                :key="`top_row_${virtualRow.index}`"
+                :class="{ selected: virtualRow.row.selected }"
+                @click="clickTopRow(virtualRow.index)"
               >
-                <template v-for="cell in row.cells" :key="`top_row_${virtualFirstRowIndex + rowOffset}_cell_${cell.text}_${cell.className}`">
+                <template v-for="cell in virtualRow.row.cells" :key="`top_row_${virtualRow.index}_cell_${cell.text}_${cell.className}`">
                   <td
                     :class="cell.className"
                     :title="cell.title || undefined"
-                    :colspan="row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
                     {{ cell.text }}
                   </td>

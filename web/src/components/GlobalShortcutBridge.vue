@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useEventListener } from '@vueuse/core'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
@@ -154,13 +155,9 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
-onMounted(() => {
-  document.addEventListener('keydown', onKeydown, true)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown, true)
-})
+if (typeof document !== 'undefined') {
+  useEventListener(document, 'keydown', onKeydown, { capture: true })
+}
 </script>
 
 <template></template>

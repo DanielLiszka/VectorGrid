@@ -3,11 +3,18 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { storeToRefs } from 'pinia'
 import { useOptimizeStore, type OptimizeOption } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import {
   listMovingAverageCatalog,
   type MaParamDescriptor,
   type MaParamKind,
+  type MovingAverageCatalogEntry,
 } from '../services/movingAverageCatalogService'
+import {
+  listDynamicIndicatorCatalog,
+  type DynamicIndicatorCatalogEntry,
+} from '../services/dynamicIndicatorCatalogService'
+import { listGpuSpeedupMap, type GpuSpeedupEntry } from '../services/gpuSpeedupsService'
 
 type MaSide = 'fast' | 'slow'
 interface MaParamUiState {
@@ -83,7 +90,10 @@ const fastTypeDraft = ref('')
 const slowTypeDraft = ref('')
 const maParamCatalogLoaded = ref(false)
 const maParamSchemasByMaId = shallowRef<Record<string, MaParamDescriptor[]>>({})
-const maCatalogOptions = shallowRef<OptimizeOption[]>([])
+const maCatalogEntries = shallowRef<MovingAverageCatalogEntry[]>([])
+const dynamicCatalogEntries = shallowRef<DynamicIndicatorCatalogEntry[]>([])
+const maSpeedupById = shallowRef<Record<string, GpuSpeedupEntry>>({})
+const maSpeedupLoaded = ref(false)
 const maParamUiStateBySide = ref<{ fast: MaParamUiStateByMa; slow: MaParamUiStateByMa }>({ fast: {}, slow: {} })
 const maParamTouchedBySide = ref<{ fast: Record<string, boolean>; slow: Record<string, boolean> }>({ fast: {}, slow: {} })
 
@@ -111,6 +121,7 @@ const stamp = computed(() => {
   return new Date(ms).toLocaleTimeString([], { hour12: false })
 })
 
+
 function resolvedOptions(
   options: OptimizeOption[],
   fallbackValue: string,
@@ -124,45 +135,243 @@ function resolvedOptions(
   return [{ value, label: String(fallbackLabel || value).trim() || value, disabled: false }]
 }
 
+type BackendKind = 'Auto' | 'CpuOnly' | 'GpuKernel'
+
+function normalizeBackendKind(value: string): BackendKind {
+  const next = String(value || '').trim()
+  if (next === 'CpuOnly') return 'CpuOnly'
+  if (next === 'GpuOnly') return 'GpuKernel'
+  if (next === 'GpuHybridKernel') return 'GpuKernel'
+  if (next === 'GpuKernel') return 'GpuKernel'
+  return 'Auto'
+}
+
+function backendLabel(backendKind: BackendKind): string {
+  if (backendKind === 'CpuOnly') return 'CPU'
+  if (backendKind === 'GpuKernel') return 'GPU unified'
+  return 'Auto'
+}
+
+function backendOptionDisplayLabel(option: OptimizeOption): string {
+  const value = String(option.value || '').trim()
+  if (value === 'Auto') return 'Auto (recommended)'
+  if (value === 'CpuOnly') return 'CPU only (indicators + backtest on CPU)'
+  if (value === 'GpuOnly' || value === 'GpuHybridKernel' || value === 'GpuKernel') {
+    return 'GPU unified (kernel + staged fallback)'
+  }
+  return String(option.label || option.value || '').trim() || value
+}
+
+const backendExecutionHint = computed(() => {
+  const backendKind = selectedBackend.value
+  if (backendKind === 'CpuOnly') {
+    return 'All indicator calculations and backtest metrics are executed on CPU (fp64 path).'
+  }
+  if (backendKind === 'GpuKernel') {
+    return 'Unified route: kernel-capable indicators stay on GPU; non-kernel indicators are staged, and fallback paths are handled automatically.'
+  }
+  return 'Auto selects the best route for strategy constraints, MA capability, and gpu_speedups.csv policy.'
+})
+
+function supportsBackend(entry: MovingAverageCatalogEntry, backendKind: BackendKind): boolean {
+  if (!entry.periodBased || !entry.singleOutput) return false
+  if (backendKind === 'CpuOnly') return entry.supportsCpu
+  if (backendKind === 'GpuKernel') {
+    // Unified GPU mode can route via kernel, CUDA-sweep fallback, or CPU staging.
+    return entry.supportsCudaKernel || entry.supportsCuda || entry.supportsCpu
+  }
+  return entry.supportsCpu || entry.supportsCuda || entry.supportsCudaKernel
+}
+
+function maOptionLabel(
+  entry: MovingAverageCatalogEntry,
+  backendKind: BackendKind,
+  speedup: GpuSpeedupEntry | null,
+): string {
+  const base = String(entry.label || entry.id).trim() || entry.id
+  if (!entry.periodBased || !entry.singleOutput) {
+    return `${base} (not period/single-output)`
+  }
+  if (backendKind !== 'GpuKernel') return base
+
+  const supportsGpuPath = entry.supportsCuda
+  const backendSupported = supportsBackend(entry, backendKind)
+
+  let perfText = ''
+  if (supportsGpuPath) {
+    if (speedup) {
+      perfText = `${speedup.speedup.toFixed(2)}x GPU`
+    } else if (maSpeedupLoaded.value) {
+      perfText = 'warning: GPU slower vs CPU'
+    } else {
+      perfText = 'GPU speed: loading...'
+    }
+  }
+
+  const supportText = backendSupported ? '' : `not supported on ${backendLabel(backendKind)}`
+  if (perfText && supportText) {
+    return `${base} (${perfText}; ${supportText})`
+  }
+  if (perfText) return `${base} (${perfText})`
+  if (supportText) {
+    return `${base} (${supportText})`
+  }
+  return base
+}
+
+function buildBackendAwareMaOptions(
+  catalog: MovingAverageCatalogEntry[],
+  backendKind: BackendKind,
+  speedupById: Record<string, GpuSpeedupEntry>,
+): OptimizeOption[] {
+  const entries = [...catalog]
+  entries.sort((a, b) => {
+    const left = String(a.label || a.id).toLowerCase()
+    const right = String(b.label || b.id).toLowerCase()
+    return left.localeCompare(right)
+  })
+  return entries.map((entry) => {
+    const id = String(entry.id || '').trim()
+    const speedup = id ? (speedupById[id] || null) : null
+    return {
+      value: id,
+      label: maOptionLabel(entry, backendKind, speedup),
+      disabled: !supportsBackend(entry, backendKind),
+    }
+  })
+}
+
+function selectedMaHint(
+  maType: string,
+  backendKind: BackendKind,
+  catalog: MovingAverageCatalogEntry[],
+  speedupById: Record<string, GpuSpeedupEntry>,
+): string {
+  if (backendKind !== 'GpuKernel') return ''
+  const id = String(maType || '').trim()
+  if (!id) return ''
+  const entry = catalog.find((row) => row.id === id)
+  if (!entry) return ''
+  const notes: string[] = []
+  if (!supportsBackend(entry, backendKind)) {
+    notes.push(`Selected MA is not supported on ${backendLabel(backendKind)}.`)
+  }
+  if (entry.supportsCpu && !entry.supportsCudaKernel) {
+    notes.push('This MA will use CPU staging in unified GPU mode.')
+  }
+  if (entry.supportsCuda) {
+    const speedup = speedupById[id]
+    if (speedup) {
+      notes.push(`GPU speedup on this system: ${speedup.speedup.toFixed(2)}x vs CPU.`)
+    } else if (maSpeedupLoaded.value) {
+      notes.push('Warning: this MA is slower on GPU vs CPU on this system.')
+    }
+  }
+  return notes.join(' ')
+}
+
+const selectedBackend = computed<BackendKind>(() => normalizeBackendKind(backendDraft.value || backend.value || 'Auto'))
+const backendAwareMaOptions = computed(() =>
+  buildBackendAwareMaOptions(maCatalogEntries.value, selectedBackend.value, maSpeedupById.value),
+)
+const fastMaBackendHint = computed(() =>
+  selectedMaHint(selectedFastMaType.value, selectedBackend.value, maCatalogEntries.value, maSpeedupById.value),
+)
+const slowMaBackendHint = computed(() =>
+  selectedMaHint(selectedSlowMaType.value, selectedBackend.value, maCatalogEntries.value, maSpeedupById.value),
+)
+const dynamicCatalogMeta = computed(() => {
+  const total = dynamicCatalogEntries.value.length
+  if (total <= 0) return 'Dynamic indicator catalog: unavailable.'
+  const gpuPreferred = dynamicCatalogEntries.value.filter((entry) => entry.prefersGpuBySpeedup).length
+  return `Dynamic indicator catalog: ${total} eligible indicators (${gpuPreferred} GPU-preferred by gpu_speedups.csv).`
+})
+
 const strategyOptionItems = computed(() => resolvedOptions(strategyOptions.value, strategyKind.value, strategyKind.value || 'Strategy'))
 const presetOptionItems = computed(() => resolvedOptions(presetOptions.value, presetProfile.value, presetProfile.value || 'Preset'))
-const backendOptionItems = computed(() => resolvedOptions(backendOptions.value, backend.value, backend.value || 'Backend'))
+const backendOptionItems = computed(() =>
+  resolvedOptions(backendOptions.value, backend.value, backend.value || 'Backend')
+    .map((option) => ({
+      ...option,
+      label: backendOptionDisplayLabel(option),
+    })),
+)
 const deviceOptionItems = computed(() => resolvedOptions(deviceOptions.value, deviceId.value || '0', deviceId.value || 'Auto'))
 const fastTypeOptionItems = computed(() =>
-  resolvedOptions(fastMaTypeOptions.value, fastMaType.value, fastMaType.value || 'MA type', maCatalogOptions.value),
+  resolvedOptions(backendAwareMaOptions.value, fastMaType.value, fastMaType.value || 'MA type', fastMaTypeOptions.value),
 )
 const slowTypeOptionItems = computed(() =>
-  resolvedOptions(slowMaTypeOptions.value, slowMaType.value, slowMaType.value || 'MA type', maCatalogOptions.value),
+  resolvedOptions(backendAwareMaOptions.value, slowMaType.value, slowMaType.value || 'MA type', slowMaTypeOptions.value),
 )
 
-watch(strategyKind, (v) => { const next = String(v || ''); if (strategyDraft.value !== next) strategyDraft.value = next }, { immediate: true })
-watch(presetProfile, (v) => { const next = String(v || ''); if (presetDraft.value !== next) presetDraft.value = next }, { immediate: true })
-watch(backend, (v) => { const next = String(v || ''); if (backendDraft.value !== next) backendDraft.value = next }, { immediate: true })
-watch(deviceId, (v) => { const next = String(v || '0'); if (deviceDraft.value !== next) deviceDraft.value = next }, { immediate: true })
-watch(objective, (v) => { const next = String(v || 'Sharpe'); if (objectiveDraft.value !== next) objectiveDraft.value = next }, { immediate: true })
-watch(mode, (v) => { const next = String(v || 'Grid'); if (modeDraft.value !== next) modeDraft.value = next }, { immediate: true })
-watch(fastStart, (v) => { const next = String(v || ''); if (fastStartDraft.value !== next) fastStartDraft.value = next }, { immediate: true })
-watch(fastEnd, (v) => { const next = String(v || ''); if (fastEndDraft.value !== next) fastEndDraft.value = next }, { immediate: true })
-watch(fastStep, (v) => { const next = String(v || ''); if (fastStepDraft.value !== next) fastStepDraft.value = next }, { immediate: true })
-watch(slowStart, (v) => { const next = String(v || ''); if (slowStartDraft.value !== next) slowStartDraft.value = next }, { immediate: true })
-watch(slowEnd, (v) => { const next = String(v || ''); if (slowEndDraft.value !== next) slowEndDraft.value = next }, { immediate: true })
-watch(slowStep, (v) => { const next = String(v || ''); if (slowStepDraft.value !== next) slowStepDraft.value = next }, { immediate: true })
-watch(fastMaType, (v) => { const next = String(v || ''); if (fastTypeDraft.value !== next) fastTypeDraft.value = next }, { immediate: true })
-watch(slowMaType, (v) => { const next = String(v || ''); if (slowTypeDraft.value !== next) slowTypeDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(strategyKind.value || ''),
+    String(presetProfile.value || ''),
+    String(backend.value || ''),
+    String(deviceId.value || '0'),
+    String(objective.value || 'Sharpe'),
+    String(mode.value || 'Grid'),
+    String(fastStart.value || ''),
+    String(fastEnd.value || ''),
+    String(fastStep.value || ''),
+    String(slowStart.value || ''),
+    String(slowEnd.value || ''),
+    String(slowStep.value || ''),
+    String(fastMaType.value || ''),
+    String(slowMaType.value || ''),
+  ] as const,
+  ([
+    nextStrategy,
+    nextPreset,
+    nextBackend,
+    nextDeviceId,
+    nextObjective,
+    nextMode,
+    nextFastStart,
+    nextFastEnd,
+    nextFastStep,
+    nextSlowStart,
+    nextSlowEnd,
+    nextSlowStep,
+    nextFastMaType,
+    nextSlowMaType,
+  ]) => {
+    if (strategyDraft.value !== nextStrategy) strategyDraft.value = nextStrategy
+    if (presetDraft.value !== nextPreset) presetDraft.value = nextPreset
+    if (backendDraft.value !== nextBackend) backendDraft.value = nextBackend
+    if (deviceDraft.value !== nextDeviceId) deviceDraft.value = nextDeviceId
+    if (objectiveDraft.value !== nextObjective) objectiveDraft.value = nextObjective
+    if (modeDraft.value !== nextMode) modeDraft.value = nextMode
+    if (fastStartDraft.value !== nextFastStart) fastStartDraft.value = nextFastStart
+    if (fastEndDraft.value !== nextFastEnd) fastEndDraft.value = nextFastEnd
+    if (fastStepDraft.value !== nextFastStep) fastStepDraft.value = nextFastStep
+    if (slowStartDraft.value !== nextSlowStart) slowStartDraft.value = nextSlowStart
+    if (slowEndDraft.value !== nextSlowEnd) slowEndDraft.value = nextSlowEnd
+    if (slowStepDraft.value !== nextSlowStep) slowStepDraft.value = nextSlowStep
+    if (fastTypeDraft.value !== nextFastMaType) fastTypeDraft.value = nextFastMaType
+    if (slowTypeDraft.value !== nextSlowMaType) slowTypeDraft.value = nextSlowMaType
+  },
+  { immediate: true },
+)
 
 function setInputValue(id: string, nextValue: string): void {
   optimizeStore.setInputField(id, nextValue)
 }
+
+const { queueInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setSelectValue(id: string, nextValue: string): void {
   optimizeStore.setSelectField(id, nextValue)
 }
 
 function runOptimizationAction(): void {
+  flushQueuedInputValuesNow()
   optimizeStore.runOptimization()
 }
 
 function runValidationAction(): void {
+  flushQueuedInputValuesNow()
   optimizeStore.runValidation()
 }
 
@@ -353,23 +562,41 @@ async function loadMaParamCatalog(): Promise<void> {
     const catalog = await listMovingAverageCatalog()
     if (panelDisposed) return
     const nextMap: Record<string, MaParamDescriptor[]> = {}
-    const nextOptions: OptimizeOption[] = []
     for (const item of catalog) {
       nextMap[item.id] = item.params
-      nextOptions.push({
-        value: String(item.id || '').trim(),
-        label: String(item.label || item.id || '').trim() || String(item.id || '').trim(),
-        disabled: false,
-      })
     }
     maParamSchemasByMaId.value = nextMap
-    maCatalogOptions.value = nextOptions
+    maCatalogEntries.value = catalog
   } catch {
     if (panelDisposed) return
     maParamSchemasByMaId.value = {}
-    maCatalogOptions.value = []
+    maCatalogEntries.value = []
   } finally {
     if (!panelDisposed) maParamCatalogLoaded.value = true
+  }
+}
+
+async function loadMaSpeedups(): Promise<void> {
+  try {
+    const speedupMap = await listGpuSpeedupMap()
+    if (panelDisposed) return
+    maSpeedupById.value = speedupMap
+  } catch {
+    if (panelDisposed) return
+    maSpeedupById.value = {}
+  } finally {
+    if (!panelDisposed) maSpeedupLoaded.value = true
+  }
+}
+
+async function loadDynamicCatalogMeta(): Promise<void> {
+  try {
+    const catalog = await listDynamicIndicatorCatalog()
+    if (panelDisposed) return
+    dynamicCatalogEntries.value = catalog
+  } catch {
+    if (panelDisposed) return
+    dynamicCatalogEntries.value = []
   }
 }
 
@@ -437,11 +664,12 @@ watch([() => optimizeStore.slowMaParams, () => optimizeStore.slowMaParamSweeps],
 onMounted(async () => {
   await nextTick()
   resolveMount()
-  await loadMaParamCatalog()
+  await Promise.all([loadMaParamCatalog(), loadMaSpeedups(), loadDynamicCatalogMeta()])
   syncMaParamStateFromVue()
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   panelDisposed = true
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueOpt
@@ -551,6 +779,7 @@ onBeforeUnmount(() => {
                 {{ option.label }}
               </option>
             </select>
+            <div class="muted mono">{{ backendExecutionHint }}</div>
           </div>
           <div>
             <label for="vueDevice">GPU device</label>
@@ -577,6 +806,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="muted mono">{{ gpuStatus }}</div>
         <div class="muted mono">{{ gpuParityMeta }}</div>
+        <div class="muted mono">{{ dynamicCatalogMeta }}</div>
       </section>
 
       <section class="pane">
@@ -592,7 +822,7 @@ onBeforeUnmount(() => {
                   min="1"
                   step="1"
                   :value="fastStartDraft"
-                  @input="fastStartDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('fastStart', fastStartDraft)"
+                  @input="fastStartDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('fastStart', fastStartDraft)"
                 />
               </div>
               <div>
@@ -603,7 +833,7 @@ onBeforeUnmount(() => {
                   min="1"
                   step="1"
                   :value="fastEndDraft"
-                  @input="fastEndDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('fastEnd', fastEndDraft)"
+                  @input="fastEndDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('fastEnd', fastEndDraft)"
                 />
               </div>
               <div>
@@ -614,7 +844,7 @@ onBeforeUnmount(() => {
                   min="0"
                   step="1"
                   :value="fastStepDraft"
-                  @input="fastStepDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('fastStep', fastStepDraft)"
+                  @input="fastStepDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('fastStep', fastStepDraft)"
                 />
               </div>
             </div>
@@ -633,6 +863,7 @@ onBeforeUnmount(() => {
                 {{ option.label }}
               </option>
             </select>
+            <div v-if="fastMaBackendHint" class="muted mono">{{ fastMaBackendHint }}</div>
           </div>
 
           <div>
@@ -646,7 +877,7 @@ onBeforeUnmount(() => {
                   min="1"
                   step="1"
                   :value="slowStartDraft"
-                  @input="slowStartDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('slowStart', slowStartDraft)"
+                  @input="slowStartDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('slowStart', slowStartDraft)"
                 />
               </div>
               <div>
@@ -657,7 +888,7 @@ onBeforeUnmount(() => {
                   min="1"
                   step="1"
                   :value="slowEndDraft"
-                  @input="slowEndDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('slowEnd', slowEndDraft)"
+                  @input="slowEndDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('slowEnd', slowEndDraft)"
                 />
               </div>
               <div>
@@ -668,7 +899,7 @@ onBeforeUnmount(() => {
                   min="0"
                   step="1"
                   :value="slowStepDraft"
-                  @input="slowStepDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('slowStep', slowStepDraft)"
+                  @input="slowStepDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('slowStep', slowStepDraft)"
                 />
               </div>
             </div>
@@ -687,6 +918,7 @@ onBeforeUnmount(() => {
                 {{ option.label }}
               </option>
             </select>
+            <div v-if="slowMaBackendHint" class="muted mono">{{ slowMaBackendHint }}</div>
           </div>
         </div>
         <div class="muted mono">{{ pairsPreview }}</div>

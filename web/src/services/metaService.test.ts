@@ -252,6 +252,30 @@ describe('meta service', () => {
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
   })
 
+  it('preserves Asr strategy kind for meta selection request', async () => {
+    const analysisStore = useAnalysisStore()
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: 'Asr',
+      metaTimeframe: '1m',
+      metaTopK: '10',
+      metaMinSamples: '20',
+    })
+    const validationStore = useValidationStore()
+    validationStore.applyLegacySnapshot({
+      seed: '1',
+      wfWindow: '20000',
+      wfStep: '20000',
+      perturbEnable: false,
+      mcEnable: false,
+    })
+
+    await runMeta()
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_selection')
+    expect(call).toBeTruthy()
+    expect((call?.[1] as { req?: { strategy_kind?: string } }).req?.strategy_kind).toBe('Asr')
+  })
+
   it('runs ml refresh/train/apply on direct command path', async () => {
     const analysisStore = useAnalysisStore()
     analysisStore.applyLegacySnapshot({

@@ -152,6 +152,55 @@ describe('validationService', () => {
 
   })
 
+  it('routes ASR validation through composite validation command', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '8',
+      seed: '3',
+      minPsr: '',
+      minDsr: '',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-01T00:00:00Z',
+        req: {
+          strategy_kind: 'Asr',
+          data_id: 'asr-data',
+          ma_source: 'close',
+          fast_ma_types: ['alma'],
+          slow_ma_types: ['alma'],
+          strategy: { fee_bps: 1.0 },
+          asr: { angle_deg_min: 10, z_entry: 2.0 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 12,
+                slow_len: 48,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+    const [command, args] = firstValidationRunCall()
+    expect(command).toBe('run_composite_validation')
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    const candidates = Array.isArray(req.candidates) ? req.candidates as Array<Record<string, unknown>> : []
+    expect(candidates[0]?.asr).toMatchObject({ angle_deg_min: 10, z_entry: 2.0 })
+  })
+
   it('prefers Vue validation store inputs when store source is ready', async () => {
     ;(pinia.state.value as Record<string, unknown>).validation = {
       source: 'vue',

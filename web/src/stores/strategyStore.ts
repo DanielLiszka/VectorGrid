@@ -130,6 +130,41 @@ interface StrategyState {
   breakoutAdoscLong: string
   breakoutAdxPeriod: string
   breakoutAdxMin: string
+  asrSqueezeBbMult: string
+  asrSqueezeKcMult: string
+  asrAngleDegMin: string
+  asrAngleDegMr: string
+  asrErMin: string
+  asrErMr: string
+  asrZMaType: string
+  asrZNbdev: string
+  asrZDevtype: string
+  asrZEntry: string
+  asrZExit: string
+  asrConfirmBars: string
+  asrMomFadeBars: string
+  asrMaxTradeBars: string
+  asrMaxMrTradeBars: string
+  vccSqueezePeriod: string
+  vccMomentumPeriod: string
+  vccMomentumBbPeriod: string
+  vccTrendPeriod: string
+  vccSqueezeBbMult: string
+  vccSqueezeKcMult: string
+  vccConfirmBars: string
+  vccMaxTradeBars: string
+  vemrZPeriod: string
+  vemrZMaType: string
+  vemrZNbdev: string
+  vemrZDevtype: string
+  vemrZEntry: string
+  vemrZExit: string
+  vemrBbPeriod: string
+  vemrBbMult: string
+  vemrAtrPeriod: string
+  vemrAtrStopMult: string
+  vemrConfirmBars: string
+  vemrMaxTradeBars: string
   dmConstraintMinTrades: string
   dmConstraintMaxDd: string
   dmConstraintsVisible: boolean
@@ -149,6 +184,15 @@ interface StrategyState {
   breakoutUseAdx: boolean
   maczUseVolume: boolean
   maczUseLag: boolean
+  asrUseErFilter: boolean
+  vccMapFastToSqueezePeriod: boolean
+  vccMapFastToMomentumPeriod: boolean
+  vccMapSlowToTrendPeriod: boolean
+  vccRequireMomentumAccel: boolean
+  vemrMapFastToZPeriod: boolean
+  vemrMapFastToBbPeriod: boolean
+  vemrMapSlowToAtrPeriod: boolean
+  vemrRequireBandTouch: boolean
   statusLine: string
   source: 'vue' | 'unknown'
   updatedAtUnixMs: number
@@ -207,6 +251,41 @@ const STRATEGY_TEXT_FIELDS = [
   'breakoutAdoscLong',
   'breakoutAdxPeriod',
   'breakoutAdxMin',
+  'asrSqueezeBbMult',
+  'asrSqueezeKcMult',
+  'asrAngleDegMin',
+  'asrAngleDegMr',
+  'asrErMin',
+  'asrErMr',
+  'asrZMaType',
+  'asrZNbdev',
+  'asrZDevtype',
+  'asrZEntry',
+  'asrZExit',
+  'asrConfirmBars',
+  'asrMomFadeBars',
+  'asrMaxTradeBars',
+  'asrMaxMrTradeBars',
+  'vccSqueezePeriod',
+  'vccMomentumPeriod',
+  'vccMomentumBbPeriod',
+  'vccTrendPeriod',
+  'vccSqueezeBbMult',
+  'vccSqueezeKcMult',
+  'vccConfirmBars',
+  'vccMaxTradeBars',
+  'vemrZPeriod',
+  'vemrZMaType',
+  'vemrZNbdev',
+  'vemrZDevtype',
+  'vemrZEntry',
+  'vemrZExit',
+  'vemrBbPeriod',
+  'vemrBbMult',
+  'vemrAtrPeriod',
+  'vemrAtrStopMult',
+  'vemrConfirmBars',
+  'vemrMaxTradeBars',
   'dmConstraintMinTrades',
   'dmConstraintMaxDd',
   'exitMode',
@@ -228,6 +307,15 @@ const STRATEGY_CHECKBOX_FIELDS = [
   'breakoutUseAdx',
   'maczUseVolume',
   'maczUseLag',
+  'asrUseErFilter',
+  'vccMapFastToSqueezePeriod',
+  'vccMapFastToMomentumPeriod',
+  'vccMapSlowToTrendPeriod',
+  'vccRequireMomentumAccel',
+  'vemrMapFastToZPeriod',
+  'vemrMapFastToBbPeriod',
+  'vemrMapSlowToAtrPeriod',
+  'vemrRequireBandTouch',
 ] as const
 
 type StrategyCheckboxField = (typeof STRATEGY_CHECKBOX_FIELDS)[number]
@@ -306,6 +394,41 @@ export const useStrategyStore = defineStore('strategy', {
     breakoutAdoscLong: '',
     breakoutAdxPeriod: '',
     breakoutAdxMin: '',
+    asrSqueezeBbMult: '2.0',
+    asrSqueezeKcMult: '1.5',
+    asrAngleDegMin: '10.0',
+    asrAngleDegMr: '6.0',
+    asrErMin: '0.30',
+    asrErMr: '0.25',
+    asrZMaType: 'sma',
+    asrZNbdev: '1.0',
+    asrZDevtype: '0',
+    asrZEntry: '2.0',
+    asrZExit: '0.5',
+    asrConfirmBars: '0',
+    asrMomFadeBars: '2',
+    asrMaxTradeBars: '80',
+    asrMaxMrTradeBars: '30',
+    vccSqueezePeriod: '20',
+    vccMomentumPeriod: '20',
+    vccMomentumBbPeriod: '20',
+    vccTrendPeriod: '6',
+    vccSqueezeBbMult: '2.0',
+    vccSqueezeKcMult: '1.5',
+    vccConfirmBars: '0',
+    vccMaxTradeBars: '120',
+    vemrZPeriod: '20',
+    vemrZMaType: 'sma',
+    vemrZNbdev: '1.0',
+    vemrZDevtype: '0',
+    vemrZEntry: '2.0',
+    vemrZExit: '0.5',
+    vemrBbPeriod: '20',
+    vemrBbMult: '2.0',
+    vemrAtrPeriod: '14',
+    vemrAtrStopMult: '2.0',
+    vemrConfirmBars: '0',
+    vemrMaxTradeBars: '80',
     dmConstraintMinTrades: '',
     dmConstraintMaxDd: '',
     dmConstraintsVisible: true,
@@ -325,6 +448,15 @@ export const useStrategyStore = defineStore('strategy', {
     breakoutUseAdx: false,
     maczUseVolume: false,
     maczUseLag: false,
+    asrUseErFilter: true,
+    vccMapFastToSqueezePeriod: true,
+    vccMapFastToMomentumPeriod: true,
+    vccMapSlowToTrendPeriod: true,
+    vccRequireMomentumAccel: true,
+    vemrMapFastToZPeriod: true,
+    vemrMapFastToBbPeriod: true,
+    vemrMapSlowToAtrPeriod: true,
+    vemrRequireBandTouch: true,
     statusLine: 'Ready.',
     source: 'unknown',
     updatedAtUnixMs: 0,
@@ -392,6 +524,41 @@ export const useStrategyStore = defineStore('strategy', {
       this.breakoutAdoscLong = String(snapshot.breakoutAdoscLong ?? this.breakoutAdoscLong ?? '').trim()
       this.breakoutAdxPeriod = String(snapshot.breakoutAdxPeriod ?? this.breakoutAdxPeriod ?? '').trim()
       this.breakoutAdxMin = String(snapshot.breakoutAdxMin ?? this.breakoutAdxMin ?? '').trim()
+      this.asrSqueezeBbMult = String(snapshot.asrSqueezeBbMult ?? this.asrSqueezeBbMult ?? '2.0').trim() || '2.0'
+      this.asrSqueezeKcMult = String(snapshot.asrSqueezeKcMult ?? this.asrSqueezeKcMult ?? '1.5').trim() || '1.5'
+      this.asrAngleDegMin = String(snapshot.asrAngleDegMin ?? this.asrAngleDegMin ?? '10.0').trim() || '10.0'
+      this.asrAngleDegMr = String(snapshot.asrAngleDegMr ?? this.asrAngleDegMr ?? '6.0').trim() || '6.0'
+      this.asrErMin = String(snapshot.asrErMin ?? this.asrErMin ?? '0.30').trim() || '0.30'
+      this.asrErMr = String(snapshot.asrErMr ?? this.asrErMr ?? '0.25').trim() || '0.25'
+      this.asrZMaType = String(snapshot.asrZMaType ?? this.asrZMaType ?? 'sma').trim() || 'sma'
+      this.asrZNbdev = String(snapshot.asrZNbdev ?? this.asrZNbdev ?? '1.0').trim() || '1.0'
+      this.asrZDevtype = String(snapshot.asrZDevtype ?? this.asrZDevtype ?? '0').trim() || '0'
+      this.asrZEntry = String(snapshot.asrZEntry ?? this.asrZEntry ?? '2.0').trim() || '2.0'
+      this.asrZExit = String(snapshot.asrZExit ?? this.asrZExit ?? '0.5').trim() || '0.5'
+      this.asrConfirmBars = String(snapshot.asrConfirmBars ?? this.asrConfirmBars ?? '0').trim() || '0'
+      this.asrMomFadeBars = String(snapshot.asrMomFadeBars ?? this.asrMomFadeBars ?? '2').trim() || '2'
+      this.asrMaxTradeBars = String(snapshot.asrMaxTradeBars ?? this.asrMaxTradeBars ?? '80').trim() || '80'
+      this.asrMaxMrTradeBars = String(snapshot.asrMaxMrTradeBars ?? this.asrMaxMrTradeBars ?? '30').trim() || '30'
+      this.vccSqueezePeriod = String(snapshot.vccSqueezePeriod ?? this.vccSqueezePeriod ?? '20').trim() || '20'
+      this.vccMomentumPeriod = String(snapshot.vccMomentumPeriod ?? this.vccMomentumPeriod ?? '20').trim() || '20'
+      this.vccMomentumBbPeriod = String(snapshot.vccMomentumBbPeriod ?? this.vccMomentumBbPeriod ?? '20').trim() || '20'
+      this.vccTrendPeriod = String(snapshot.vccTrendPeriod ?? this.vccTrendPeriod ?? '6').trim() || '6'
+      this.vccSqueezeBbMult = String(snapshot.vccSqueezeBbMult ?? this.vccSqueezeBbMult ?? '2.0').trim() || '2.0'
+      this.vccSqueezeKcMult = String(snapshot.vccSqueezeKcMult ?? this.vccSqueezeKcMult ?? '1.5').trim() || '1.5'
+      this.vccConfirmBars = String(snapshot.vccConfirmBars ?? this.vccConfirmBars ?? '0').trim() || '0'
+      this.vccMaxTradeBars = String(snapshot.vccMaxTradeBars ?? this.vccMaxTradeBars ?? '120').trim() || '120'
+      this.vemrZPeriod = String(snapshot.vemrZPeriod ?? this.vemrZPeriod ?? '20').trim() || '20'
+      this.vemrZMaType = String(snapshot.vemrZMaType ?? this.vemrZMaType ?? 'sma').trim() || 'sma'
+      this.vemrZNbdev = String(snapshot.vemrZNbdev ?? this.vemrZNbdev ?? '1.0').trim() || '1.0'
+      this.vemrZDevtype = String(snapshot.vemrZDevtype ?? this.vemrZDevtype ?? '0').trim() || '0'
+      this.vemrZEntry = String(snapshot.vemrZEntry ?? this.vemrZEntry ?? '2.0').trim() || '2.0'
+      this.vemrZExit = String(snapshot.vemrZExit ?? this.vemrZExit ?? '0.5').trim() || '0.5'
+      this.vemrBbPeriod = String(snapshot.vemrBbPeriod ?? this.vemrBbPeriod ?? '20').trim() || '20'
+      this.vemrBbMult = String(snapshot.vemrBbMult ?? this.vemrBbMult ?? '2.0').trim() || '2.0'
+      this.vemrAtrPeriod = String(snapshot.vemrAtrPeriod ?? this.vemrAtrPeriod ?? '14').trim() || '14'
+      this.vemrAtrStopMult = String(snapshot.vemrAtrStopMult ?? this.vemrAtrStopMult ?? '2.0').trim() || '2.0'
+      this.vemrConfirmBars = String(snapshot.vemrConfirmBars ?? this.vemrConfirmBars ?? '0').trim() || '0'
+      this.vemrMaxTradeBars = String(snapshot.vemrMaxTradeBars ?? this.vemrMaxTradeBars ?? '80').trim() || '80'
       this.dmConstraintMinTrades = String(snapshot.dmConstraintMinTrades ?? this.dmConstraintMinTrades ?? '').trim()
       this.dmConstraintMaxDd = String(snapshot.dmConstraintMaxDd ?? this.dmConstraintMaxDd ?? '').trim()
       this.dmConstraintsVisible = Boolean(snapshot.dmConstraintsVisible ?? this.dmConstraintsVisible)
@@ -411,6 +578,15 @@ export const useStrategyStore = defineStore('strategy', {
       this.breakoutUseAdx = Boolean(snapshot.breakoutUseAdx ?? this.breakoutUseAdx)
       this.maczUseVolume = Boolean(snapshot.maczUseVolume ?? this.maczUseVolume)
       this.maczUseLag = Boolean(snapshot.maczUseLag ?? this.maczUseLag)
+      this.asrUseErFilter = Boolean(snapshot.asrUseErFilter ?? this.asrUseErFilter)
+      this.vccMapFastToSqueezePeriod = Boolean(snapshot.vccMapFastToSqueezePeriod ?? this.vccMapFastToSqueezePeriod)
+      this.vccMapFastToMomentumPeriod = Boolean(snapshot.vccMapFastToMomentumPeriod ?? this.vccMapFastToMomentumPeriod)
+      this.vccMapSlowToTrendPeriod = Boolean(snapshot.vccMapSlowToTrendPeriod ?? this.vccMapSlowToTrendPeriod)
+      this.vccRequireMomentumAccel = Boolean(snapshot.vccRequireMomentumAccel ?? this.vccRequireMomentumAccel)
+      this.vemrMapFastToZPeriod = Boolean(snapshot.vemrMapFastToZPeriod ?? this.vemrMapFastToZPeriod)
+      this.vemrMapFastToBbPeriod = Boolean(snapshot.vemrMapFastToBbPeriod ?? this.vemrMapFastToBbPeriod)
+      this.vemrMapSlowToAtrPeriod = Boolean(snapshot.vemrMapSlowToAtrPeriod ?? this.vemrMapSlowToAtrPeriod)
+      this.vemrRequireBandTouch = Boolean(snapshot.vemrRequireBandTouch ?? this.vemrRequireBandTouch)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()

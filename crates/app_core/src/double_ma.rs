@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
 use ta_strategies::double_ma::{
@@ -13,6 +13,9 @@ use ta_strategies::double_ma::{
 use crate::alloc_policy::alloc_f64_with_prefix_uninit_tail;
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
+use crate::request_normalization::{
+    normalize_heatmap_bins, normalize_optional_path, normalize_topk_include_all,
+};
 
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::{
@@ -23,10 +26,31 @@ use vector_ta::cuda::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "backend")]
 pub enum Backend {
+    #[serde(alias = "auto", alias = "AUTO")]
     Auto { device_id: u32 },
+    #[serde(alias = "cpu_only", alias = "CPU_ONLY", alias = "cpu")]
     CpuOnly,
+    #[serde(alias = "gpu_only", alias = "GPU_ONLY", alias = "GpuSweep")]
     GpuOnly { device_id: u32 },
+    #[serde(
+        alias = "gpu_hybrid_kernel",
+        alias = "GPU_HYBRID_KERNEL",
+        alias = "GpuHybrid"
+    )]
+    GpuHybridKernel { device_id: u32 },
+    #[serde(alias = "gpu_kernel", alias = "GPU_KERNEL")]
     GpuKernel { device_id: u32 },
+}
+
+#[inline]
+fn backend_kind_label(backend: &Backend) -> &'static str {
+    match backend {
+        Backend::Auto { .. } => "Auto",
+        Backend::CpuOnly => "CpuOnly",
+        Backend::GpuOnly { .. } => "GpuOnly",
+        Backend::GpuHybridKernel { .. } => "GpuHybridKernel",
+        Backend::GpuKernel { .. } => "GpuKernel",
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -226,6 +250,37 @@ pub struct BackendOptimizationResult {
     pub heatmap: Option<OptimizationHeatmap>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vdps: Option<VdpsTelemetry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_timing_ms: Option<HybridTimingMs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_route: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_fallback_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indicator_route_plan: Option<IndicatorRoutePlanSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct HybridTimingMs {
+    pub planner_ms: u64,
+    pub cpu_indicator_prep_ms: u64,
+    pub gpu_indicator_prep_ms: u64,
+    pub h2d_upload_ms: u64,
+    pub kernel_eval_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndicatorRouteDecisionSummary {
+    pub indicator_id: String,
+    pub capability: String,
+    pub route: String,
+    pub gpu_preferred_by_speedup: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndicatorRoutePlanSummary {
+    pub fast: IndicatorRouteDecisionSummary,
+    pub slow: IndicatorRouteDecisionSummary,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -562,6 +617,17 @@ fn vdps_gpu_refill_enabled() -> bool {
 }
 
 #[inline]
+fn hybrid_backend_enabled() -> bool {
+    match std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL") {
+        Ok(v) => {
+            let v = v.trim();
+            !(v == "0" || v.eq_ignore_ascii_case("false"))
+        }
+        Err(_) => true,
+    }
+}
+
+#[inline]
 #[cfg_attr(
     not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
     allow(dead_code)
@@ -573,6 +639,29 @@ pub(crate) fn kernel_regime_filters_enabled() -> bool {
             !(v == "0" || v.eq_ignore_ascii_case("false"))
         }
         Err(_) => true,
+    }
+}
+
+fn merge_optional_note(target: &mut Option<String>, incoming: Option<String>) {
+    let Some(incoming) = incoming.and_then(|s| {
+        let trimmed = s.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) else {
+        return;
+    };
+
+    match target {
+        None => *target = Some(incoming),
+        Some(existing) => {
+            if !existing.split(" | ").any(|part| part == incoming) {
+                existing.push_str(" | ");
+                existing.push_str(incoming.as_str());
+            }
+        }
     }
 }
 
@@ -728,6 +817,59 @@ fn merge_vdps_telemetry(target: &mut Option<VdpsTelemetry>, incoming: Option<Vdp
     }
 }
 
+fn merge_hybrid_timing(target: &mut Option<HybridTimingMs>, incoming: Option<HybridTimingMs>) {
+    let Some(inc) = incoming else {
+        return;
+    };
+    if let Some(cur) = target.as_mut() {
+        cur.planner_ms = cur.planner_ms.saturating_add(inc.planner_ms);
+        cur.cpu_indicator_prep_ms = cur
+            .cpu_indicator_prep_ms
+            .saturating_add(inc.cpu_indicator_prep_ms);
+        cur.gpu_indicator_prep_ms = cur
+            .gpu_indicator_prep_ms
+            .saturating_add(inc.gpu_indicator_prep_ms);
+        cur.h2d_upload_ms = cur.h2d_upload_ms.saturating_add(inc.h2d_upload_ms);
+        cur.kernel_eval_ms = cur.kernel_eval_ms.saturating_add(inc.kernel_eval_ms);
+    } else {
+        *target = Some(inc);
+    }
+}
+
+fn map_hybrid_capability_label(cap: crate::ma_policy::HybridCapabilityTier) -> &'static str {
+    match cap {
+        crate::ma_policy::HybridCapabilityTier::GpuKernel => "gpu_kernel",
+        crate::ma_policy::HybridCapabilityTier::CudaOnly => "cuda_only",
+        crate::ma_policy::HybridCapabilityTier::CpuOnly => "cpu_only",
+        crate::ma_policy::HybridCapabilityTier::Unsupported => "unsupported",
+    }
+}
+
+fn map_hybrid_route_label(route: crate::ma_policy::HybridRouteTier) -> &'static str {
+    match route {
+        crate::ma_policy::HybridRouteTier::GpuKernel => "gpu_kernel",
+        crate::ma_policy::HybridRouteTier::CpuStaged => "cpu_staged",
+        crate::ma_policy::HybridRouteTier::Unsupported => "unsupported",
+    }
+}
+
+fn build_indicator_route_plan_summary(fast_ma: &str, slow_ma: &str) -> IndicatorRoutePlanSummary {
+    let plan = crate::ma_policy::plan_double_ma_hybrid_route(fast_ma, slow_ma);
+    let fast = IndicatorRouteDecisionSummary {
+        indicator_id: plan.fast.indicator_id,
+        capability: map_hybrid_capability_label(plan.fast.capability).to_string(),
+        route: map_hybrid_route_label(plan.fast.route).to_string(),
+        gpu_preferred_by_speedup: plan.fast.gpu_preferred_by_speedup,
+    };
+    let slow = IndicatorRouteDecisionSummary {
+        indicator_id: plan.slow.indicator_id,
+        capability: map_hybrid_capability_label(plan.slow.capability).to_string(),
+        route: map_hybrid_route_label(plan.slow.route).to_string(),
+        gpu_preferred_by_speedup: plan.slow.gpu_preferred_by_speedup,
+    };
+    IndicatorRoutePlanSummary { fast, slow }
+}
+
 #[inline]
 pub(crate) fn metrics_pass_constraints(
     metrics: &ta_strategies::double_ma::Metrics,
@@ -749,7 +891,7 @@ pub(crate) fn metrics_pass_constraints(
     true
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct KaufmanStopSeries {
     pub long: Vec<f64>,
     pub short: Vec<f64>,
@@ -2771,20 +2913,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         return Err("cancelled".to_string());
     }
 
+    let requested_backend = req.backend.clone();
     let fast = req.fast_range;
     let slow = req.slow_range;
 
     let fast_ma_types = req.fast_ma_types;
     let slow_ma_types = req.slow_ma_types;
     let ma_source = req.ma_source;
-    let export_all_csv_path = req.export_all_csv_path.and_then(|s| {
-        let t = s.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
-    });
+    let export_all_csv_path = normalize_optional_path(req.export_all_csv_path);
     let fast_ma_params = req.fast_ma_params;
     let slow_ma_params = req.slow_ma_params;
     let fast_ma_param_sweeps = req.fast_ma_param_sweeps;
@@ -2792,12 +2928,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let strategy = req.strategy;
     let halftrend_filter = req.halftrend_filter;
     let constraints = sanitize_double_ma_constraints(req.constraints)?;
-    let heatmap_bins = req.heatmap_bins.unwrap_or(0) as usize;
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
     validate_strategy_cfg(&strategy)?;
     let strategy = strategy_cfg_for_optimization(strategy);
-    if heatmap_bins > 512 {
-        return Err("heatmap_bins too large (max 512)".to_string());
-    }
 
     if fast_ma_types.len() != 1 || slow_ma_types.len() != 1 {
         return Err("Select exactly one fast MA and one slow MA.".to_string());
@@ -2872,8 +3005,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     let start = std::time::Instant::now();
     let objective = req.objective;
-    let top_k = req.top_k.unwrap_or(0);
-    let include_all = req.include_all.unwrap_or(false);
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
     if export_all_csv_path.is_some() && include_all {
         return Err(
             "export_all_csv_path requires include_all=false (stream export avoids huge RAM usage)"
@@ -2930,6 +3062,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         None
     };
 
+    let mut backend_route: Option<String> = None;
+    let mut backend_fallback_reason: Option<String> = None;
+    let indicator_route_plan_summary = build_indicator_route_plan_summary(&fast_ma, &slow_ma);
+
     let mut backend = match req.backend {
         Backend::Auto { device_id } => {
             let export_requested = export_all_csv_path.is_some();
@@ -2956,6 +3092,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 && crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str());
             #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
             let kernel_supported = false;
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            let hybrid_supported = cuda_available() && hybrid_backend_enabled();
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            let hybrid_supported = false;
 
             let kernel_preferred = kernel_supported
                 && crate::ma_policy::prefers_gpu_kernel_ma(fast_ma.as_str())
@@ -2969,6 +3109,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
             if kernel_preferred || (export_requested && kernel_supported) {
                 Backend::GpuKernel { device_id }
+            } else if hybrid_supported {
+                Backend::GpuHybridKernel { device_id }
             } else if cuda_ok {
                 Backend::GpuOnly { device_id }
             } else if cpu_ok {
@@ -2981,6 +3123,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
         other => other,
     };
+
+    if let Backend::GpuHybridKernel { device_id } = backend {
+        if !hybrid_backend_enabled() {
+            backend = Backend::GpuKernel { device_id };
+            merge_optional_note(
+                &mut backend_fallback_reason,
+                Some(
+                    "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
+                        .to_string(),
+                ),
+            );
+        }
+    }
 
     // If the user explicitly asks for the kernel backend but it's not available for this MA/build,
     // fall back to the best available backend (unless export is requested).
@@ -3030,20 +3185,62 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     "No supported backend for fast='{fast_ma}' slow='{slow_ma}' (try different MAs or enable CUDA)."
                 ));
             };
+            let resolved = backend_kind_label(&backend);
+            merge_optional_note(
+                &mut backend_fallback_reason,
+                Some(format!(
+                    "Requested GpuKernel is unavailable for fast='{fast_ma}' slow='{slow_ma}' under current strategy/kernel constraints; using {resolved}."
+                )),
+            );
         }
+    }
+
+    if matches!(mode_used, OptimizationModeResolved::GpuVdps) {
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+        if let Backend::GpuOnly { device_id } = &backend {
+            if hybrid_backend_enabled() && cuda_available() {
+                backend = Backend::GpuHybridKernel {
+                    device_id: *device_id,
+                };
+                merge_optional_note(
+                    &mut backend_fallback_reason,
+                    Some(
+                        "GpuVdps promotes GpuOnly to GpuHybridKernel for unified GPU routing."
+                            .to_string(),
+                    ),
+                );
+            }
+        }
+    }
+
+    let requested_backend_label = backend_kind_label(&requested_backend);
+    let resolved_backend_label = backend_kind_label(&backend);
+    if matches!(requested_backend, Backend::Auto { .. }) {
+        backend_route = Some(format!("Auto->{resolved_backend_label}"));
+    } else if requested_backend_label != resolved_backend_label {
+        backend_route = Some(format!(
+            "{requested_backend_label}->{resolved_backend_label}"
+        ));
     }
 
     if matches!(mode_used, OptimizationModeResolved::GpuVdps) && matches!(backend, Backend::CpuOnly)
     {
         return Err(
-            "GpuVdps mode requires a GPU backend. Choose backend=Auto/GpuOnly/GpuKernel with CUDA available."
+            "GpuVdps mode requires a GPU backend. Choose backend=Auto/GpuOnly/GpuHybridKernel/GpuKernel with CUDA available."
                 .to_string(),
         );
     }
     let vdps_gpu_refill_device_id = match backend {
-        Backend::GpuKernel { device_id } => Some(device_id),
+        Backend::GpuKernel { device_id } | Backend::GpuHybridKernel { device_id } => {
+            Some(device_id)
+        }
         _ => None,
     };
+    let dynamic_gpu_preflight_required = dynamic_gpu_preflight_required_for_backend(
+        crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled(),
+        &mode_used,
+        &backend,
+    );
 
     struct OffsetProgress<'a> {
         inner: &'a dyn ProgressSink,
@@ -3077,7 +3274,122 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     slow_alma_sigma: f64,
                     constraints: Option<&DoubleMaConstraints>,
                     progress: Option<&dyn ProgressSink>|
-     -> Result<(OptimizationResult, BackendUsed), String> {
+     -> Result<
+        (
+            OptimizationResult,
+            BackendUsed,
+            Option<HybridTimingMs>,
+            Option<String>,
+            Option<String>,
+        ),
+        String,
+    > {
+        enum GpuGridDispatch {
+            GpuOnly { device_id: u32 },
+            GpuKernel { device_id: u32 },
+            GpuHybridKernel { device_id: u32 },
+        }
+
+        let run_gpu_grid = |dispatch: GpuGridDispatch| match dispatch {
+            GpuGridDispatch::GpuOnly { device_id } => {
+                if export_all_csv_path.is_some() {
+                    return Err("export_all_csv_path is currently supported only for the GPU (kernel) backend".to_string());
+                }
+                let result = optimize_double_ma_gpu_sweep_tiled(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    &fast_ma,
+                    &slow_ma,
+                    &ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    halftrend_trend.as_deref(),
+                    &strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?;
+                Ok((result, BackendUsed::Gpu, None, None, None))
+            }
+            GpuGridDispatch::GpuKernel { device_id } => {
+                let result = optimize_double_ma_gpu_kernel_tiled(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    &fast_ma,
+                    &slow_ma,
+                    &ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    halftrend_trend.as_deref(),
+                    &strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    export_all_csv_path,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?;
+                Ok((result, BackendUsed::Gpu, None, None, None))
+            }
+            GpuGridDispatch::GpuHybridKernel { device_id } => {
+                let (result, timing, backend_used, route_note, fallback_reason) =
+                    optimize_double_ma_gpu_hybrid_kernel_phase1(
+                        candles,
+                        device_id,
+                        fast_periods,
+                        slow_periods,
+                        &fast_ma,
+                        &slow_ma,
+                        &ma_source,
+                        fast_ma_params,
+                        slow_ma_params,
+                        halftrend_trend.as_deref(),
+                        &strategy,
+                        objective,
+                        top_k,
+                        include_all,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        constraints,
+                        export_all_csv_path,
+                        total_pairs,
+                        heatmap_bins,
+                        cancel,
+                        progress,
+                        !matches!(mode_used, OptimizationModeResolved::GpuVdps),
+                    )?;
+                Ok((
+                    result,
+                    backend_used,
+                    Some(timing),
+                    route_note,
+                    fallback_reason,
+                ))
+            }
+        };
+
         match &backend {
             Backend::CpuOnly => {
                 if export_all_csv_path.is_some() {
@@ -3107,67 +3419,18 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     cancel,
                     progress,
                 )?;
-                Ok((result, BackendUsed::Cpu))
+                Ok((result, BackendUsed::Cpu, None, None, None))
             }
-            Backend::GpuOnly { device_id } => {
-                if export_all_csv_path.is_some() {
-                    return Err("export_all_csv_path is currently supported only for the GPU (kernel) backend".to_string());
-                }
-                let result = optimize_double_ma_gpu_sweep_tiled(
-                    candles,
-                    *device_id,
-                    fast_periods,
-                    slow_periods,
-                    &fast_ma,
-                    &slow_ma,
-                    &ma_source,
-                    fast_ma_params,
-                    slow_ma_params,
-                    halftrend_trend.as_deref(),
-                    &strategy,
-                    objective,
-                    top_k,
-                    include_all,
-                    fast_alma_offset,
-                    fast_alma_sigma,
-                    slow_alma_offset,
-                    slow_alma_sigma,
-                    constraints,
-                    total_pairs,
-                    heatmap_bins,
-                    cancel,
-                    progress,
-                )?;
-                Ok((result, BackendUsed::Gpu))
-            }
-            Backend::GpuKernel { device_id } => {
-                let result = optimize_double_ma_gpu_kernel_tiled(
-                    candles,
-                    *device_id,
-                    fast_periods,
-                    slow_periods,
-                    &fast_ma,
-                    &slow_ma,
-                    &ma_source,
-                    fast_ma_params,
-                    slow_ma_params,
-                    halftrend_trend.as_deref(),
-                    &strategy,
-                    objective,
-                    top_k,
-                    include_all,
-                    fast_alma_offset,
-                    fast_alma_sigma,
-                    slow_alma_offset,
-                    slow_alma_sigma,
-                    constraints,
-                    export_all_csv_path,
-                    total_pairs,
-                    heatmap_bins,
-                    cancel,
-                    progress,
-                )?;
-                Ok((result, BackendUsed::Gpu))
+            Backend::GpuOnly { device_id } => run_gpu_grid(GpuGridDispatch::GpuOnly {
+                device_id: *device_id,
+            }),
+            Backend::GpuKernel { device_id } => run_gpu_grid(GpuGridDispatch::GpuKernel {
+                device_id: *device_id,
+            }),
+            Backend::GpuHybridKernel { device_id } => {
+                run_gpu_grid(GpuGridDispatch::GpuHybridKernel {
+                    device_id: *device_id,
+                })
             }
             Backend::Auto { .. } => {
                 unreachable!("Backend::Auto should be resolved before dispatch")
@@ -3179,6 +3442,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         res: OptimizationResult,
         backend_used: BackendUsed,
         vdps: Option<VdpsTelemetry>,
+        hybrid_timing_ms: Option<HybridTimingMs>,
+        route_note: Option<String>,
+        fallback_reason: Option<String>,
     }
 
     let run_mode_for_params = |fast_ma_params: Option<&HashMap<String, f64>>,
@@ -3192,7 +3458,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
      -> Result<ModeRunResult, String> {
         match mode_used {
             OptimizationModeResolved::Grid => {
-                let (res, backend_used) = run_grid(
+                let (res, backend_used, hybrid_timing_ms, route_note, fallback_reason) = run_grid(
                     &fast_periods,
                     &slow_periods,
                     top_k,
@@ -3213,6 +3479,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     res,
                     backend_used,
                     vdps: None,
+                    hybrid_timing_ms,
+                    route_note,
+                    fallback_reason,
                 })
             }
             OptimizationModeResolved::CoarseToFine => {
@@ -3225,27 +3494,31 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 }
 
                 if factor <= 1 {
-                    let (res, backend_used) = run_grid(
-                        &fast_periods,
-                        &slow_periods,
-                        top_k,
-                        include_all,
-                        heatmap_bins,
-                        export_all_csv_path.as_deref(),
-                        total_pairs,
-                        fast_ma_params,
-                        slow_ma_params,
-                        fast_alma_offset,
-                        fast_alma_sigma,
-                        slow_alma_offset,
-                        slow_alma_sigma,
-                        constraints,
-                        progress,
-                    )?;
+                    let (res, backend_used, hybrid_timing_ms, route_note, fallback_reason) =
+                        run_grid(
+                            &fast_periods,
+                            &slow_periods,
+                            top_k,
+                            include_all,
+                            heatmap_bins,
+                            export_all_csv_path.as_deref(),
+                            total_pairs,
+                            fast_ma_params,
+                            slow_ma_params,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            progress,
+                        )?;
                     Ok(ModeRunResult {
                         res,
                         backend_used,
                         vdps: None,
+                        hybrid_timing_ms,
+                        route_note,
+                        fallback_reason,
                     })
                 } else {
                     let coarse_fast = (
@@ -3276,7 +3549,13 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         );
                     }
 
-                    let (coarse_res, coarse_backend) = run_grid(
+                    let (
+                        coarse_res,
+                        coarse_backend,
+                        coarse_hybrid_timing_ms,
+                        coarse_route_note,
+                        coarse_fallback_reason,
+                    ) = run_grid(
                         &coarse_fast_periods,
                         &coarse_slow_periods,
                         0,
@@ -3334,7 +3613,13 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         );
                     }
 
-                    let (mut fine_res, fine_backend) = run_grid(
+                    let (
+                        mut fine_res,
+                        fine_backend,
+                        fine_hybrid_timing_ms,
+                        fine_route_note,
+                        fine_fallback_reason,
+                    ) = run_grid(
                         &fine_fast_periods,
                         &fine_slow_periods,
                         top_k,
@@ -3360,11 +3645,23 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     } else {
                         BackendUsed::Gpu
                     };
+                    let mut hybrid_timing_ms: Option<HybridTimingMs> = None;
+                    merge_hybrid_timing(&mut hybrid_timing_ms, coarse_hybrid_timing_ms);
+                    merge_hybrid_timing(&mut hybrid_timing_ms, fine_hybrid_timing_ms);
+                    let mut route_note: Option<String> = None;
+                    merge_optional_note(&mut route_note, coarse_route_note);
+                    merge_optional_note(&mut route_note, fine_route_note);
+                    let mut fallback_reason: Option<String> = None;
+                    merge_optional_note(&mut fallback_reason, coarse_fallback_reason);
+                    merge_optional_note(&mut fallback_reason, fine_fallback_reason);
 
                     Ok(ModeRunResult {
                         res: fine_res,
                         backend_used,
                         vdps: None,
+                        hybrid_timing_ms,
+                        route_note,
+                        fallback_reason,
                     })
                 }
             }
@@ -3382,6 +3679,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 let mut any_gpu = false;
                 let mut last_res: Option<OptimizationResult> = None;
                 let mut rung_stats: Vec<VdpsRungTelemetry> = Vec::with_capacity(rung_plan.len());
+                let mut hybrid_timing_ms_acc: Option<HybridTimingMs> = None;
+                let mut route_note_acc: Option<String> = None;
+                let mut fallback_reason_acc: Option<String> = None;
 
                 let mut seed_pairs: Vec<(u16, u16)> = Vec::new();
                 let fast_step_base = fast.2.max(1) as u16;
@@ -3514,7 +3814,13 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         survivors_target.clamp(top_k.max(8), cfg.max_survivor_seeds)
                     };
 
-                    let (mut rung_res, rung_backend) = run_grid(
+                    let (
+                        mut rung_res,
+                        rung_backend,
+                        rung_hybrid_timing_ms,
+                        rung_route_note,
+                        rung_fallback_reason,
+                    ) = run_grid(
                         &rung_fast,
                         &rung_slow,
                         rung_top_k,
@@ -3531,6 +3837,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         constraints,
                         progress,
                     )?;
+                    merge_hybrid_timing(&mut hybrid_timing_ms_acc, rung_hybrid_timing_ms);
+                    merge_optional_note(&mut route_note_acc, rung_route_note);
+                    merge_optional_note(&mut fallback_reason_acc, rung_fallback_reason);
 
                     if matches!(rung_backend, BackendUsed::Gpu) {
                         any_gpu = true;
@@ -3732,7 +4041,13 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 if cfg.quality_check_max_pairs > 0 && total_pairs <= cfg.quality_check_max_pairs {
                     let quality_top_k = cfg.quality_check_top_k.max(1).min(top_k.max(1));
                     let quality_start = std::time::Instant::now();
-                    if let Ok((baseline_res, baseline_backend)) = run_grid(
+                    if let Ok((
+                        baseline_res,
+                        baseline_backend,
+                        baseline_hybrid_timing_ms,
+                        baseline_route_note,
+                        baseline_fallback_reason,
+                    )) = run_grid(
                         &fast_periods,
                         &slow_periods,
                         quality_top_k,
@@ -3749,6 +4064,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         constraints,
                         None,
                     ) {
+                        merge_hybrid_timing(&mut hybrid_timing_ms_acc, baseline_hybrid_timing_ms);
+                        merge_optional_note(&mut route_note_acc, baseline_route_note);
+                        merge_optional_note(&mut fallback_reason_acc, baseline_fallback_reason);
                         quality_check_baseline_runtime_ms =
                             Some(quality_start.elapsed().as_millis() as u64);
                         quality_check_baseline_backend = Some(baseline_backend);
@@ -3836,6 +4154,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     res: final_res,
                     backend_used,
                     vdps: Some(vdps),
+                    hybrid_timing_ms: hybrid_timing_ms_acc,
+                    route_note: route_note_acc,
+                    fallback_reason: fallback_reason_acc,
                 })
             }
         }
@@ -3894,6 +4215,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let mut merged_heatmap: Option<OptimizationHeatmap> = None;
     let mut merged_num_combos: usize = 0;
     let mut merged_vdps: Option<VdpsTelemetry> = None;
+    let mut merged_hybrid_timing_ms: Option<HybridTimingMs> = None;
+    let mut merged_backend_route: Option<String> = None;
+    let mut merged_backend_fallback_reason: Option<String> = None;
+    merge_optional_note(&mut merged_backend_route, backend_route.take());
+    merge_optional_note(
+        &mut merged_backend_fallback_reason,
+        backend_fallback_reason.take(),
+    );
 
     let multi_grid_offset_progress =
         matches!(mode_used, OptimizationModeResolved::Grid) && variant_pairs > 1;
@@ -3911,6 +4240,17 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 resolve_alma_params_for_side("fast", &fast_ma, fast_params)?;
             let (slow_alma_offset, slow_alma_sigma) =
                 resolve_alma_params_for_side("slow", &slow_ma, slow_params)?;
+
+            maybe_compile_dynamic_gpu_plan_preflight(
+                dynamic_gpu_preflight_required,
+                &ma_source,
+                &fast_ma,
+                &slow_ma,
+                fast_params,
+                slow_params,
+                &strategy,
+                halftrend_filter.as_ref(),
+            )?;
 
             let offset_sink;
             let progress_for_run: Option<&dyn ProgressSink> = if multi_grid_offset_progress {
@@ -3940,6 +4280,15 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 progress_for_run,
             )?;
             merge_vdps_telemetry(&mut merged_vdps, mode_out.vdps.take());
+            merge_hybrid_timing(
+                &mut merged_hybrid_timing_ms,
+                mode_out.hybrid_timing_ms.take(),
+            );
+            merge_optional_note(&mut merged_backend_route, mode_out.route_note.take());
+            merge_optional_note(
+                &mut merged_backend_fallback_reason,
+                mode_out.fallback_reason.take(),
+            );
             let backend_used = mode_out.backend_used;
             let mut res = mode_out.res;
 
@@ -4025,6 +4374,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let backend_used = merged_backend_used;
 
     let runtime_ms = start.elapsed().as_millis() as u64;
+    let work_items = result.num_combos;
 
     let fast_ma_label = fast_ma_types
         .first()
@@ -4036,6 +4386,35 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| slow_ma.clone());
+
+    if matches!(backend_used, BackendUsed::Gpu)
+        && crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled()
+    {
+        let profile = if strategy.breakout_momentum_enable {
+            "breakout_momentum"
+        } else if strategy.regime_hybrid_enable {
+            "regime_hybrid"
+        } else if strategy.trend_quality_enable {
+            "composite_trend"
+        } else {
+            "double_ma"
+        };
+        let backend_label = merged_backend_route.as_deref().unwrap_or("Gpu");
+        crate::strategy_dynamic::maybe_append_dynamic_strategy_artifact(
+            crate::strategy_dynamic::DynamicStrategyArtifactRecord {
+                scope: "double_ma_gpu",
+                profile,
+                backend: backend_label,
+                dynamic_enabled: true,
+                shadow_enabled: false,
+                shadow_every: 0,
+                shadow_sampled: 0,
+                shadow_mismatches: 0,
+                runtime_ms,
+                work_items,
+            },
+        );
+    }
 
     let resolve_params = |p: &ta_strategies::double_ma::DoubleMaParams| -> DoubleMaParamsResolved {
         let fast_ma_params = fast_param_variants
@@ -4106,13 +4485,17 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         matrix_index,
         best_col,
         top_cols,
-        num_combos: result.num_combos,
+        num_combos: work_items,
         num_candles: n,
         runtime_ms,
         top,
         all,
         heatmap,
         vdps: merged_vdps,
+        hybrid_timing_ms: merged_hybrid_timing_ms,
+        backend_route: merged_backend_route,
+        backend_fallback_reason: merged_backend_fallback_reason,
+        indicator_route_plan: Some(indicator_route_plan_summary),
     })
 }
 
@@ -5528,32 +5911,6 @@ fn sweep_tile_sizes(total_fast: usize, total_slow: usize, series_len: usize) -> 
     )
 }
 
-fn eval_double_ma_metrics_f64(prices: &[f64], fast: &[f64], slow: &[f64]) -> Metrics {
-    let n = prices.len();
-    if n < 2 || fast.len() != n || slow.len() != n {
-        return Metrics::default();
-    }
-
-    let cfg = StrategyConfig::default();
-    let lr = compute_log_returns_f64(prices);
-    let first_valid = first_finite_idx(prices).unwrap_or(0);
-    let t_sig0 = fast
-        .iter()
-        .zip(slow.iter())
-        .position(|(f, s)| f.is_finite() && s.is_finite())
-        .unwrap_or(n);
-    let trade_offset = if cfg.trade_on_next_bar {
-        1usize
-    } else {
-        0usize
-    };
-    let start_t = t_sig0.saturating_add(trade_offset).max(first_valid);
-
-    ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
-        &lr, fast, slow, start_t, &cfg,
-    )
-}
-
 fn ma_period_step(periods: &[u16]) -> usize {
     if periods.len() < 2 {
         return 0;
@@ -5781,6 +6138,134 @@ pub(crate) fn ma_matrix_cpu_f64(
     Ok((values, n))
 }
 
+pub(crate) fn ma_matrix_cpu_f32_staging(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_type: &str,
+    ma_source: &str,
+    periods: &[u16],
+    ma_params: Option<&HashMap<String, f64>>,
+    alma_offset: f64,
+    alma_sigma: f64,
+) -> Result<(Vec<f32>, usize), String> {
+    let n = candles.close.len();
+    if periods.is_empty() {
+        return Err("empty period list".to_string());
+    }
+    let rows = periods.len();
+    let expected_len = rows
+        .checked_mul(n)
+        .ok_or_else(|| "rows*cols overflow".to_string())?;
+
+    let start = periods[0] as usize;
+    let end = periods[rows - 1] as usize;
+    let step = ma_period_step(periods);
+
+    let mut values: Vec<f32> = vec![f32::NAN; expected_len];
+
+    if ma_type.eq_ignore_ascii_case("alma") {
+        let prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
+        let sweep = vector_ta::indicators::moving_averages::alma::AlmaBatchRange {
+            period: (start, end, step),
+            offset: (alma_offset, alma_offset, 0.0),
+            sigma: (alma_sigma, alma_sigma, 0.0),
+        };
+        let out = vector_ta::indicators::moving_averages::alma::alma_batch_with_kernel(
+            prices,
+            &sweep,
+            vector_ta::utilities::enums::Kernel::Auto,
+        )
+        .map_err(|e| e.to_string())?;
+        if out.cols != n {
+            return Err(format!("alma batch cols {} != {n}", out.cols));
+        }
+        for (src_row, params) in out.combos.iter().enumerate() {
+            let per = params.period.unwrap_or(start) as usize;
+            let row = if step == 0 {
+                0usize
+            } else if per >= start && (per - start) % step == 0 {
+                (per - start) / step
+            } else {
+                continue;
+            };
+            if row >= rows {
+                continue;
+            }
+            let src_off = src_row.saturating_mul(out.cols);
+            let dst_off = row.saturating_mul(n);
+            if src_off + n > out.values.len() || dst_off + n > values.len() {
+                continue;
+            }
+            for (dst, &src) in values[dst_off..dst_off + n]
+                .iter_mut()
+                .zip(out.values[src_off..src_off + n].iter())
+            {
+                *dst = src as f32;
+            }
+        }
+        return Ok((values, n));
+    }
+
+    let data = vector_ta::indicators::moving_averages::ma::MaData::Candles {
+        candles,
+        source: ma_source,
+    };
+    let batch = vector_ta::indicators::moving_averages::ma_batch::ma_batch_with_kernel_and_params(
+        ma_type,
+        data,
+        (start, end, step.max(1)),
+        vector_ta::utilities::enums::Kernel::Auto,
+        ma_params,
+    );
+
+    match batch {
+        Ok(b) if b.cols == n => {
+            for (src_row, &period) in b.periods.iter().enumerate() {
+                let per = period as usize;
+                let row = if step == 0 {
+                    if per == start {
+                        0usize
+                    } else {
+                        continue;
+                    }
+                } else if per >= start && (per - start) % step == 0 {
+                    (per - start) / step
+                } else {
+                    continue;
+                };
+                if row >= rows {
+                    continue;
+                }
+                let src_off = src_row.saturating_mul(b.cols);
+                let dst_off = row.saturating_mul(n);
+                if src_off + n > b.values.len() || dst_off + n > values.len() {
+                    continue;
+                }
+                for (dst, &src) in values[dst_off..dst_off + n]
+                    .iter_mut()
+                    .zip(b.values[src_off..src_off + n].iter())
+                {
+                    *dst = src as f32;
+                }
+            }
+            Ok((values, n))
+        }
+        _ => {
+            // Fall back to existing f64 CPU path when batch kernels are unavailable.
+            let (values_f64, cols) = ma_matrix_cpu_f64(
+                candles,
+                ma_type,
+                ma_source,
+                periods,
+                ma_params,
+                alma_offset,
+                alma_sigma,
+            )?;
+            let values_f32: Vec<f32> = values_f64.into_iter().map(|v| v as f32).collect();
+            Ok((values_f32, cols))
+        }
+    }
+}
+
 fn optimize_double_ma_cpu_tiled(
     candles: &vector_ta::utilities::data_loader::Candles,
     fast_periods: &[u16],
@@ -5805,6 +6290,7 @@ fn optimize_double_ma_cpu_tiled(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
+    let run_start = std::time::Instant::now();
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
@@ -5862,6 +6348,41 @@ fn optimize_double_ma_cpu_tiled(
             .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
         first_valid = first_valid.max(fv_k_long.max(fv_k_short));
     }
+
+    let dynamic_plan_ctx = if crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled() {
+        let plan = crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config(
+            ma_source,
+            fast_ma_type,
+            slow_ma_type,
+            fast_ma_params,
+            slow_ma_params,
+            strategy,
+            None,
+            crate::strategy_plan::StrategyPlanBackend::Cpu,
+        )?;
+        let ctx = crate::strategy_dynamic::build_dynamic_cpu_context_from_precomputed(
+            &lr,
+            close,
+            ma_prices,
+            halftrend_trend,
+            None,
+            None,
+            None,
+            kaufman_stops.as_ref(),
+        );
+        Some((plan, ctx))
+    } else {
+        None
+    };
+    let dynamic_shadow_enabled = dynamic_plan_ctx.is_some()
+        && crate::strategy_dynamic::dynamic_strategy_opt_shadow_enabled();
+    let dynamic_shadow_every = if dynamic_shadow_enabled {
+        crate::strategy_dynamic::dynamic_strategy_opt_shadow_every().max(1)
+    } else {
+        0
+    };
+    let dynamic_shadow_sampled = AtomicUsize::new(0);
+    let dynamic_shadow_mismatches = AtomicUsize::new(0);
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
     let heatmap_cfg = if heatmap_bins > 0 {
         Some((
@@ -5923,17 +6444,49 @@ fn optimize_double_ma_cpu_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = eval_metrics_f64_with_exit_mode(
-                            &lr,
-                            close,
-                            fast_row,
-                            slow_row,
-                            halftrend_trend,
-                            start_t,
-                            strategy,
-                            kaufman_stops.as_ref(),
-                            true,
-                        );
+                        let metrics = if let Some((plan, ctx)) = dynamic_plan_ctx.as_ref() {
+                            let dynamic_metrics =
+                                crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
+                                    plan, ctx, fast_row, slow_row, start_t, true,
+                                )?;
+                            if dynamic_shadow_enabled {
+                                let sampled = dynamic_shadow_sampled
+                                    .fetch_add(1, Ordering::Relaxed)
+                                    .saturating_add(1);
+                                if sampled % dynamic_shadow_every == 0 {
+                                    let static_metrics = eval_metrics_f64_with_exit_mode(
+                                        &lr,
+                                        close,
+                                        fast_row,
+                                        slow_row,
+                                        halftrend_trend,
+                                        start_t,
+                                        strategy,
+                                        kaufman_stops.as_ref(),
+                                        true,
+                                    );
+                                    if !crate::strategy_dynamic::metrics_shadow_equivalent(
+                                        &dynamic_metrics,
+                                        &static_metrics,
+                                    ) {
+                                        dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            dynamic_metrics
+                        } else {
+                            eval_metrics_f64_with_exit_mode(
+                                &lr,
+                                close,
+                                fast_row,
+                                slow_row,
+                                halftrend_trend,
+                                start_t,
+                                strategy,
+                                kaufman_stops.as_ref(),
+                                true,
+                            )
+                        };
                         if metrics_pass_constraints(&metrics, constraints) {
                             let params = DoubleMaParams {
                                 fast_len,
@@ -5992,17 +6545,54 @@ fn optimize_double_ma_cpu_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = eval_metrics_f64_with_exit_mode(
-                            &lr,
-                            close,
-                            fast_row,
-                            slow_row,
-                            halftrend_trend,
-                            start_t,
-                            strategy,
-                            kaufman_stops.as_ref(),
-                            compute_sharpe,
-                        );
+                        let metrics = if let Some((plan, ctx)) = dynamic_plan_ctx.as_ref() {
+                            let dynamic_metrics =
+                                crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
+                                    plan,
+                                    ctx,
+                                    fast_row,
+                                    slow_row,
+                                    start_t,
+                                    compute_sharpe,
+                                )?;
+                            if dynamic_shadow_enabled {
+                                let sampled = dynamic_shadow_sampled
+                                    .fetch_add(1, Ordering::Relaxed)
+                                    .saturating_add(1);
+                                if sampled % dynamic_shadow_every == 0 {
+                                    let static_metrics = eval_metrics_f64_with_exit_mode(
+                                        &lr,
+                                        close,
+                                        fast_row,
+                                        slow_row,
+                                        halftrend_trend,
+                                        start_t,
+                                        strategy,
+                                        kaufman_stops.as_ref(),
+                                        compute_sharpe,
+                                    );
+                                    if !crate::strategy_dynamic::metrics_shadow_equivalent(
+                                        &dynamic_metrics,
+                                        &static_metrics,
+                                    ) {
+                                        dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            dynamic_metrics
+                        } else {
+                            eval_metrics_f64_with_exit_mode(
+                                &lr,
+                                close,
+                                fast_row,
+                                slow_row,
+                                halftrend_trend,
+                                start_t,
+                                strategy,
+                                kaufman_stops.as_ref(),
+                                compute_sharpe,
+                            )
+                        };
                         if metrics_pass_constraints(&metrics, constraints) {
                             local.push(
                                 DoubleMaParams {
@@ -6099,17 +6689,23 @@ fn optimize_double_ma_cpu_tiled(
             let max_p = (fast_len as usize).max(slow_len as usize).max(1);
             let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
             let start_t = t_valid.saturating_add(trade_offset);
-            Ok(eval_metrics_f64_with_exit_mode(
-                &lr,
-                close,
-                fast,
-                slow,
-                halftrend_trend,
-                start_t,
-                strategy,
-                kaufman_stops.as_ref(),
-                true,
-            ))
+            if let Some((plan, ctx)) = dynamic_plan_ctx.as_ref() {
+                crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
+                    plan, ctx, fast, slow, start_t, true,
+                )
+            } else {
+                Ok(eval_metrics_f64_with_exit_mode(
+                    &lr,
+                    close,
+                    fast,
+                    slow,
+                    halftrend_trend,
+                    start_t,
+                    strategy,
+                    kaufman_stops.as_ref(),
+                    true,
+                ))
+            }
         };
 
         result.best_metrics = recompute(
@@ -6127,7 +6723,84 @@ fn optimize_double_ma_cpu_tiled(
         }
     }
 
+    let shadow_sampled = if dynamic_shadow_enabled {
+        dynamic_shadow_sampled.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    let shadow_mismatches = if dynamic_shadow_enabled {
+        dynamic_shadow_mismatches.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    if dynamic_shadow_enabled && shadow_mismatches > 0 {
+        eprintln!(
+            "[dynamic-shadow][double_ma_cpu] sampled={} mismatches={} every={}",
+            shadow_sampled, shadow_mismatches, dynamic_shadow_every
+        );
+    }
+    crate::strategy_dynamic::maybe_append_dynamic_strategy_artifact(
+        crate::strategy_dynamic::DynamicStrategyArtifactRecord {
+            scope: "double_ma_cpu",
+            profile: "DoubleMa",
+            backend: "Cpu",
+            dynamic_enabled: dynamic_plan_ctx.is_some(),
+            shadow_enabled: dynamic_shadow_enabled,
+            shadow_every: dynamic_shadow_every,
+            shadow_sampled,
+            shadow_mismatches,
+            runtime_ms: run_start.elapsed().as_millis() as u64,
+            work_items: processed,
+        },
+    );
+
     Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_compile_dynamic_gpu_plan_preflight(
+    enabled: bool,
+    ma_source: &str,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+
+    let plan = crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config(
+        ma_source,
+        fast_ma_type,
+        slow_ma_type,
+        fast_ma_params,
+        slow_ma_params,
+        strategy,
+        halftrend_filter,
+        crate::strategy_plan::StrategyPlanBackend::GpuUnified,
+    )
+    .map_err(|e| format!("dynamic GPU plan compile failed: {e}"))?;
+
+    crate::strategy_gpu_program::compile_gpu_predicate_program(&plan)
+        .map_err(|e| format!("dynamic GPU predicate compile failed: {e}"))?;
+
+    Ok(())
+}
+
+fn dynamic_gpu_preflight_required_for_backend(
+    dynamic_enabled: bool,
+    mode_used: &OptimizationModeResolved,
+    backend: &Backend,
+) -> bool {
+    if !dynamic_enabled {
+        return false;
+    }
+    matches!(backend, Backend::GpuKernel { .. })
+        || (matches!(mode_used, OptimizationModeResolved::GpuVdps)
+            && matches!(backend, Backend::GpuHybridKernel { .. }))
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -6679,6 +7352,312 @@ fn vdps_generate_seed_pairs_gpu(
     )
 }
 
+fn optimize_double_ma_gpu_hybrid_kernel_phase1(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    device_id: u32,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    constraints: Option<&DoubleMaConstraints>,
+    export_all_csv_path: Option<&str>,
+    total_pairs: usize,
+    heatmap_bins: usize,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    allow_cpu_fallback: bool,
+) -> Result<
+    (
+        OptimizationResult,
+        HybridTimingMs,
+        BackendUsed,
+        Option<String>,
+        Option<String>,
+    ),
+    String,
+> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    emit_progress(progress, 0, 1, "hybrid_plan");
+    let planner_t0 = std::time::Instant::now();
+    let route_plan = crate::ma_policy::plan_double_ma_hybrid_route(fast_ma_type, slow_ma_type);
+    let planner_ms = planner_t0.elapsed().as_millis() as u64;
+
+    if !route_plan.is_fully_supported() {
+        return Err(format!(
+            "GpuHybridKernel has unsupported MA(s): {}",
+            route_plan.unsupported_ids().join(", ")
+        ));
+    }
+    let fast_info =
+        lookup_ma_info(fast_ma_type).ok_or_else(|| format!("unknown fast MA: '{fast_ma_type}'"))?;
+    let slow_info =
+        lookup_ma_info(slow_ma_type).ok_or_else(|| format!("unknown slow MA: '{slow_ma_type}'"))?;
+
+    let mut kernel_blockers: Vec<String> = Vec::new();
+    let fast_requires_cpu_precompute =
+        route_plan.fast.route == crate::ma_policy::HybridRouteTier::CpuStaged;
+    let slow_requires_cpu_precompute =
+        route_plan.slow.route == crate::ma_policy::HybridRouteTier::CpuStaged;
+    if fast_requires_cpu_precompute && !fast_info.supports_cpu_single {
+        kernel_blockers.push(format!(
+            "fast MA '{fast_ma_type}' requires CPU staging (kernel unsupported or CPU-preferred by gpu_speedups.csv) but has no CPU-single implementation"
+        ));
+    }
+    if slow_requires_cpu_precompute && !slow_info.supports_cpu_single {
+        kernel_blockers.push(format!(
+            "slow MA '{slow_ma_type}' requires CPU staging (kernel unsupported or CPU-preferred by gpu_speedups.csv) but has no CPU-single implementation"
+        ));
+    }
+    if strategy_uses_kaufman_stop_exit(strategy) {
+        kernel_blockers.push("kaufman-stop exit is not supported by GPU kernel path".to_string());
+    }
+    if strategy.uses_execution_overlays() {
+        kernel_blockers.push(
+            "execution overlays (cooldown/persistence/trailing stop) are not supported by GPU kernel path"
+                .to_string(),
+        );
+    }
+    if regime_filter.is_some() && !kernel_regime_filters_enabled() {
+        kernel_blockers
+            .push("regime filter provided while kernel regime filters are disabled".to_string());
+    }
+    if matches!(objective, ObjectiveKind::Sortino | ObjectiveKind::Omega) {
+        kernel_blockers.push(format!(
+            "objective {objective:?} is not supported by GPU kernel path"
+        ));
+    }
+    #[cfg(feature = "cuda")]
+    {
+        if !cuda_available() {
+            kernel_blockers.push("CUDA runtime is unavailable".to_string());
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        kernel_blockers.push("CUDA feature is not enabled in this build".to_string());
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    emit_progress(progress, 0, 1, "hybrid_prepare");
+    let mut fast_precomputed_host: Option<Vec<f32>> = None;
+    let mut slow_precomputed_host: Option<Vec<f32>> = None;
+    let mut fast_precomputed_cols: Option<usize> = None;
+    let mut slow_precomputed_cols: Option<usize> = None;
+    let cpu_indicator_prep_ms = if kernel_blockers.is_empty()
+        && (fast_requires_cpu_precompute || slow_requires_cpu_precompute)
+    {
+        let t0 = std::time::Instant::now();
+        if fast_requires_cpu_precompute {
+            let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
+                candles,
+                fast_ma_type,
+                ma_source,
+                fast_periods,
+                fast_ma_params,
+                fast_alma_offset,
+                fast_alma_sigma,
+            )?;
+            fast_precomputed_host = Some(mat_f32);
+            fast_precomputed_cols = Some(cols);
+        }
+        if slow_requires_cpu_precompute {
+            let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
+                candles,
+                slow_ma_type,
+                ma_source,
+                slow_periods,
+                slow_ma_params,
+                slow_alma_offset,
+                slow_alma_sigma,
+            )?;
+            slow_precomputed_host = Some(mat_f32);
+            slow_precomputed_cols = Some(cols);
+        }
+        t0.elapsed().as_millis() as u64
+    } else {
+        0
+    };
+    let gpu_indicator_prep_ms = 0u64;
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    emit_progress(progress, 0, 1, "hybrid_transfer");
+    // H2D for precomputed rows currently occurs inside the kernel executor.
+    let h2d_upload_ms = 0u64;
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    let mut route_note: Option<String> = None;
+    let mut fallback_reason: Option<String> = None;
+    let blockers_text = kernel_blockers.join("; ");
+    #[cfg(feature = "cuda")]
+    let gpu_sweep_eligible =
+        cuda_available() && fast_info.supports_cuda_single && slow_info.supports_cuda_single;
+    #[cfg(not(feature = "cuda"))]
+    let gpu_sweep_eligible = false;
+    let cpu_eligible = fast_info.supports_cpu_single && slow_info.supports_cpu_single;
+
+    let (result, backend_used, kernel_eval_ms) = if kernel_blockers.is_empty() {
+        emit_progress(progress, 0, 1, "hybrid_kernel");
+        let kernel_t0 = std::time::Instant::now();
+        let res = optimize_double_ma_gpu_kernel_tiled_with_precomputed(
+            candles,
+            device_id,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            strategy,
+            objective,
+            top_k,
+            include_all,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            fast_precomputed_host.as_deref(),
+            fast_precomputed_cols,
+            slow_precomputed_host.as_deref(),
+            slow_precomputed_cols,
+            constraints,
+            export_all_csv_path,
+            total_pairs,
+            heatmap_bins,
+            cancel,
+            progress,
+        )?;
+        (
+            res,
+            BackendUsed::Gpu,
+            kernel_t0.elapsed().as_millis() as u64,
+        )
+    } else if gpu_sweep_eligible {
+        if export_all_csv_path.is_some() {
+            return Err(format!(
+                "export_all_csv_path requires the GPU kernel path; current hybrid selection cannot run kernel path: {blockers_text}"
+            ));
+        }
+        emit_progress(progress, 0, 1, "hybrid_fallback_gpu_sweep");
+        let sweep_t0 = std::time::Instant::now();
+        let res = optimize_double_ma_gpu_sweep_tiled(
+            candles,
+            device_id,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            strategy,
+            objective,
+            top_k,
+            include_all,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            constraints,
+            total_pairs,
+            heatmap_bins,
+            cancel,
+            progress,
+        )?;
+        route_note = Some("GpuHybridKernel->GpuOnly".to_string());
+        fallback_reason = Some(format!(
+            "Hybrid phase-1 kernel path unavailable; using GpuOnly. Reasons: {blockers_text}"
+        ));
+        (res, BackendUsed::Gpu, sweep_t0.elapsed().as_millis() as u64)
+    } else if cpu_eligible {
+        if export_all_csv_path.is_some() {
+            return Err(format!(
+                "export_all_csv_path requires the GPU kernel path; current hybrid selection cannot run kernel path: {blockers_text}"
+            ));
+        }
+        if !allow_cpu_fallback {
+            return Err(format!(
+                "GpuHybridKernel in GpuVdps mode requires GPU-executable routing (no CPU fallback). Reasons: {blockers_text}"
+            ));
+        }
+        emit_progress(progress, 0, 1, "hybrid_fallback_cpu");
+        let cpu_t0 = std::time::Instant::now();
+        let res = optimize_double_ma_cpu_tiled(
+            candles,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            strategy,
+            objective,
+            top_k,
+            include_all,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            constraints,
+            total_pairs,
+            heatmap_bins,
+            cancel,
+            progress,
+        )?;
+        route_note = Some("GpuHybridKernel->CpuOnly".to_string());
+        fallback_reason = Some(format!(
+            "Hybrid phase-1 kernel path unavailable; falling back to CpuOnly. Reasons: {blockers_text}"
+        ));
+        (res, BackendUsed::Cpu, cpu_t0.elapsed().as_millis() as u64)
+    } else {
+        return Err(format!(
+            "GpuHybridKernel cannot route this MA pair/backend combination. fast='{fast_ma_type}', slow='{slow_ma_type}'. Reasons: {blockers_text}"
+        ));
+    };
+
+    Ok((
+        result,
+        HybridTimingMs {
+            planner_ms,
+            cpu_indicator_prep_ms,
+            gpu_indicator_prep_ms,
+            h2d_upload_ms,
+            kernel_eval_ms,
+        },
+        backend_used,
+        route_note,
+        fallback_reason,
+    ))
+}
+
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 fn optimize_double_ma_gpu_kernel_tiled(
     _candles: &vector_ta::utilities::data_loader::Candles,
@@ -6699,6 +7678,40 @@ fn optimize_double_ma_gpu_kernel_tiled(
     _fast_alma_sigma: f64,
     _slow_alma_offset: f64,
     _slow_alma_sigma: f64,
+    _constraints: Option<&DoubleMaConstraints>,
+    _export_all_csv_path: Option<&str>,
+    _total_pairs: usize,
+    _heatmap_bins: usize,
+    _cancel: &AtomicBool,
+    _progress: Option<&dyn ProgressSink>,
+) -> Result<OptimizationResult, String> {
+    Err("GPU kernel backend requires building `ta_desktop_demo_app` with `--features cuda,cuda-backtest-kernel`".to_string())
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
+    _candles: &vector_ta::utilities::data_loader::Candles,
+    _device_id: u32,
+    _fast_periods: &[u16],
+    _slow_periods: &[u16],
+    _fast_ma_type: &str,
+    _slow_ma_type: &str,
+    _ma_source: &str,
+    _fast_ma_params: Option<&HashMap<String, f64>>,
+    _slow_ma_params: Option<&HashMap<String, f64>>,
+    _regime_filter: Option<&[f64]>,
+    _strategy: &StrategyConfig,
+    _objective: ObjectiveKind,
+    _top_k: usize,
+    _include_all: bool,
+    _fast_alma_offset: f64,
+    _fast_alma_sigma: f64,
+    _slow_alma_offset: f64,
+    _slow_alma_sigma: f64,
+    _fast_precomputed_values: Option<&[f32]>,
+    _fast_precomputed_cols: Option<usize>,
+    _slow_precomputed_values: Option<&[f32]>,
+    _slow_precomputed_cols: Option<usize>,
     _constraints: Option<&DoubleMaConstraints>,
     _export_all_csv_path: Option<&str>,
     _total_pairs: usize,
@@ -6736,11 +7749,93 @@ fn optimize_double_ma_gpu_kernel_tiled(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
+    optimize_double_ma_gpu_kernel_tiled_with_precomputed(
+        candles,
+        device_id,
+        fast_periods,
+        slow_periods,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        strategy,
+        objective,
+        top_k,
+        include_all,
+        fast_alma_offset,
+        fast_alma_sigma,
+        slow_alma_offset,
+        slow_alma_sigma,
+        None,
+        None,
+        None,
+        None,
+        constraints,
+        export_all_csv_path,
+        total_pairs,
+        heatmap_bins,
+        cancel,
+        progress,
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    device_id: u32,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    fast_precomputed_values: Option<&[f32]>,
+    fast_precomputed_cols: Option<usize>,
+    slow_precomputed_values: Option<&[f32]>,
+    slow_precomputed_cols: Option<usize>,
+    constraints: Option<&DoubleMaConstraints>,
+    export_all_csv_path: Option<&str>,
+    total_pairs: usize,
+    heatmap_bins: usize,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<OptimizationResult, String> {
     if !cuda_available() {
         return Err("CUDA device not available (cuda_available() == false)".to_string());
     }
 
-    crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel(
+    let fast_precomputed = match (fast_precomputed_values, fast_precomputed_cols) {
+        (Some(values), Some(cols)) => Some(crate::gpu_backtest_kernel::PrecomputedHostMaMatrix {
+            periods: fast_periods,
+            cols,
+            values_row_major: values,
+        }),
+        (None, None) => None,
+        _ => return Err("fast precomputed matrix requires both values and cols".to_string()),
+    };
+    let slow_precomputed = match (slow_precomputed_values, slow_precomputed_cols) {
+        (Some(values), Some(cols)) => Some(crate::gpu_backtest_kernel::PrecomputedHostMaMatrix {
+            periods: slow_periods,
+            cols,
+            values_row_major: values,
+        }),
+        (None, None) => None,
+        _ => return Err("slow precomputed matrix requires both values and cols".to_string()),
+    };
+
+    crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_with_precomputed(
         candles,
         fast_periods,
         slow_periods,
@@ -6761,6 +7856,8 @@ fn optimize_double_ma_gpu_kernel_tiled(
             slow_alma_offset,
             slow_alma_sigma,
         },
+        fast_precomputed.as_ref(),
+        slow_precomputed.as_ref(),
         constraints,
         export_all_csv_path,
         total_pairs,
@@ -6773,6 +7870,92 @@ fn optimize_double_ma_gpu_kernel_tiled(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::{DoubleMaProgressPayload, ProgressSink};
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+        let _guard = lock_env();
+        let key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
+        let prev = std::env::var(key).ok();
+        if enabled {
+            std::env::set_var(key, "1");
+        } else {
+            std::env::remove_var(key);
+        }
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        match out {
+            Ok(v) => v,
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+        }
+    }
+
+    fn with_dynamic_strategy_shadow_env<T>(every: usize, f: impl FnOnce() -> T) -> T {
+        let _guard = lock_env();
+        let key_exp = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
+        let key_shadow = "VECTORBT_DYNAMIC_STRATEGY_OPT_SHADOW";
+        let key_every = "VECTORBT_DYNAMIC_STRATEGY_OPT_SHADOW_EVERY";
+        let prev_exp = std::env::var(key_exp).ok();
+        let prev_shadow = std::env::var(key_shadow).ok();
+        let prev_every = std::env::var(key_every).ok();
+        std::env::set_var(key_exp, "1");
+        std::env::set_var(key_shadow, "1");
+        std::env::set_var(key_every, every.max(1).to_string());
+
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match prev_exp {
+            Some(v) => std::env::set_var(key_exp, v),
+            None => std::env::remove_var(key_exp),
+        }
+        match prev_shadow {
+            Some(v) => std::env::set_var(key_shadow, v),
+            None => std::env::remove_var(key_shadow),
+        }
+        match prev_every {
+            Some(v) => std::env::set_var(key_every, v),
+            None => std::env::remove_var(key_every),
+        }
+
+        match out {
+            Ok(v) => v,
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingProgressSink {
+        events: std::sync::Mutex<Vec<DoubleMaProgressPayload>>,
+    }
+
+    impl RecordingProgressSink {
+        fn snapshot(&self) -> Vec<DoubleMaProgressPayload> {
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+    }
+
+    impl ProgressSink for RecordingProgressSink {
+        fn emit_double_ma_progress(&self, payload: DoubleMaProgressPayload) {
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(payload);
+        }
+    }
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
@@ -6898,6 +8081,52 @@ mod tests {
         ]
     }
 
+    fn find_cpu_only_period_single_ma() -> Option<String> {
+        vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                matches!(
+                    crate::ma_policy::classify_hybrid_capability(info.id),
+                    crate::ma_policy::HybridCapabilityTier::CpuOnly
+                ) && info.period_based
+                    && info.single_output
+            })
+            .map(|info| info.id.to_string())
+    }
+
+    #[test]
+    fn backend_deserialize_aliases_remain_compatible() {
+        let auto: Backend =
+            serde_json::from_str(r#"{"backend":"auto","device_id":3}"#).expect("auto alias");
+        assert!(matches!(auto, Backend::Auto { device_id: 3 }));
+
+        let cpu: Backend = serde_json::from_str(r#"{"backend":"cpu_only"}"#).expect("cpu alias");
+        assert!(matches!(cpu, Backend::CpuOnly));
+
+        let gpu_only: Backend = serde_json::from_str(r#"{"backend":"GpuSweep","device_id":1}"#)
+            .expect("gpu-only alias");
+        assert!(matches!(gpu_only, Backend::GpuOnly { device_id: 1 }));
+
+        let gpu_hybrid: Backend =
+            serde_json::from_str(r#"{"backend":"GpuHybrid","device_id":2}"#).expect("hybrid alias");
+        assert!(matches!(
+            gpu_hybrid,
+            Backend::GpuHybridKernel { device_id: 2 }
+        ));
+
+        let gpu_kernel: Backend = serde_json::from_str(r#"{"backend":"gpu_kernel","device_id":7}"#)
+            .expect("kernel alias");
+        assert!(matches!(gpu_kernel, Backend::GpuKernel { device_id: 7 }));
+
+        let canonical = serde_json::to_value(Backend::GpuHybridKernel { device_id: 5 })
+            .expect("serialize canonical backend");
+        assert_eq!(
+            canonical.get("backend").and_then(|v| v.as_str()),
+            Some("GpuHybridKernel")
+        );
+        assert_eq!(canonical.get("device_id").and_then(|v| v.as_u64()), Some(5));
+    }
+
     #[test]
     fn cpu_smoke_small_grid_counts_and_shapes() {
         let candles = make_trending_candles(5000);
@@ -6937,6 +8166,1386 @@ mod tests {
     }
 
     #[test]
+    fn cpu_dynamic_strategy_env_path_matches_legacy_results() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("legacy cpu run")
+        });
+        let dynamic = with_dynamic_strategy_opt_env(true, || {
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic cpu run")
+        });
+
+        assert_eq!(legacy.num_combos, dynamic.num_combos);
+        assert_eq!(legacy.best_params.fast_len, dynamic.best_params.fast_len);
+        assert_eq!(legacy.best_params.slow_len, dynamic.best_params.slow_len);
+        assert!((legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() < 1e-12);
+        assert!((legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() < 1e-12);
+        assert!((legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() < 1e-12);
+        assert_eq!(legacy.best_metrics.trades, dynamic.best_metrics.trades);
+        assert_eq!(legacy.top.len(), dynamic.top.len());
+
+        let heatmap_legacy = legacy.heatmap.expect("legacy heatmap");
+        let heatmap_dynamic = dynamic.heatmap.expect("dynamic heatmap");
+        assert_eq!(heatmap_legacy.values, heatmap_dynamic.values);
+    }
+
+    #[test]
+    fn cpu_dynamic_strategy_env_path_matches_legacy_results_include_all() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(0),
+            include_all: Some(true),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("legacy cpu run")
+        });
+        let dynamic = with_dynamic_strategy_opt_env(true, || {
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic cpu run")
+        });
+
+        assert_eq!(legacy.num_combos, dynamic.num_combos);
+        assert_eq!(legacy.best_params.fast_len, dynamic.best_params.fast_len);
+        assert_eq!(legacy.best_params.slow_len, dynamic.best_params.slow_len);
+        assert!((legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() < 1e-12);
+        assert!((legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() < 1e-12);
+        assert!((legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() < 1e-12);
+        assert_eq!(legacy.best_metrics.trades, dynamic.best_metrics.trades);
+
+        let all_legacy = legacy.all.expect("legacy all rows");
+        let all_dynamic = dynamic.all.expect("dynamic all rows");
+        assert_eq!(all_legacy.len(), all_dynamic.len());
+        for ((lp, lm), (dp, dm)) in all_legacy.iter().zip(all_dynamic.iter()) {
+            assert_eq!(lp.fast_len, dp.fast_len);
+            assert_eq!(lp.slow_len, dp.slow_len);
+            assert_eq!(lp.fast_ma_type, dp.fast_ma_type);
+            assert_eq!(lp.slow_ma_type, dp.slow_ma_type);
+            assert!((lm.sharpe - dm.sharpe).abs() < 1e-12);
+            assert!((lm.pnl - dm.pnl).abs() < 1e-12);
+            assert!((lm.max_dd - dm.max_dd).abs() < 1e-12);
+            assert_eq!(lm.trades, dm.trades);
+        }
+    }
+
+    #[test]
+    fn cpu_dynamic_strategy_env_path_matches_legacy_results_with_constraints() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: Some(DoubleMaConstraints {
+                min_trades: Some(1),
+                max_drawdown: Some(10.0),
+            }),
+            vdps: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("legacy cpu run")
+        });
+        let dynamic = with_dynamic_strategy_opt_env(true, || {
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic cpu run")
+        });
+
+        assert_eq!(legacy.num_combos, dynamic.num_combos);
+        assert_eq!(legacy.best_params.fast_len, dynamic.best_params.fast_len);
+        assert_eq!(legacy.best_params.slow_len, dynamic.best_params.slow_len);
+        assert!((legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() < 1e-12);
+        assert!((legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() < 1e-12);
+        assert!((legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() < 1e-12);
+        assert_eq!(legacy.best_metrics.trades, dynamic.best_metrics.trades);
+        assert_eq!(legacy.top.len(), dynamic.top.len());
+    }
+
+    #[test]
+    fn cpu_dynamic_strategy_cancelled_matches_legacy_results() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(true);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+        };
+
+        let legacy_err = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect_err("legacy cpu run should be cancelled")
+        });
+        let dynamic_err = with_dynamic_strategy_opt_env(true, || {
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect_err("dynamic cpu run should be cancelled")
+        });
+
+        assert_eq!(legacy_err, "cancelled");
+        assert_eq!(dynamic_err, "cancelled");
+    }
+
+    #[test]
+    fn cpu_dynamic_strategy_progress_parity_matches_legacy_results() {
+        fn assert_progress_invariants(
+            events: &[DoubleMaProgressPayload],
+        ) -> (&'static str, usize, usize) {
+            assert!(!events.is_empty(), "expected progress events");
+            let first_phase = events[0].phase;
+            let mut last_processed = 0usize;
+            let mut total_pairs = events[0].total_pairs;
+            for ev in events {
+                assert_eq!(ev.phase, "cpu", "unexpected phase");
+                assert_eq!(ev.phase, first_phase, "phase changed unexpectedly");
+                assert_eq!(ev.total_pairs, total_pairs, "total_pairs changed");
+                assert!(
+                    ev.processed_pairs >= last_processed,
+                    "processed_pairs must be monotonic"
+                );
+                last_processed = ev.processed_pairs;
+                total_pairs = ev.total_pairs;
+            }
+            assert_eq!(
+                last_processed, total_pairs,
+                "final progress must reach total"
+            );
+            (first_phase, last_processed, total_pairs)
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+        };
+
+        let legacy_sink = RecordingProgressSink::default();
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(
+                req.clone(),
+                &candles,
+                &cancel,
+                Some(&legacy_sink),
+            )
+            .expect("legacy cpu run")
+        });
+        let dynamic_sink = RecordingProgressSink::default();
+        let dynamic = with_dynamic_strategy_opt_env(true, || {
+            run_double_ma_optimization_blocking_with_candles(
+                req,
+                &candles,
+                &cancel,
+                Some(&dynamic_sink),
+            )
+            .expect("dynamic cpu run")
+        });
+
+        let legacy_events = legacy_sink.snapshot();
+        let dynamic_events = dynamic_sink.snapshot();
+        let (legacy_phase, legacy_processed, legacy_total) =
+            assert_progress_invariants(&legacy_events);
+        let (dynamic_phase, dynamic_processed, dynamic_total) =
+            assert_progress_invariants(&dynamic_events);
+
+        assert_eq!(legacy_phase, dynamic_phase);
+        assert_eq!(legacy_total, dynamic_total);
+        assert_eq!(legacy_processed, dynamic_processed);
+        assert_eq!(legacy_total, legacy.num_combos);
+        assert_eq!(dynamic_total, dynamic.num_combos);
+    }
+
+    #[test]
+    fn cpu_dynamic_strategy_shadow_mode_matches_legacy_results() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("legacy cpu run")
+        });
+        let dynamic = with_dynamic_strategy_shadow_env(1, || {
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic shadow cpu run")
+        });
+
+        assert_eq!(legacy.best_params.fast_len, dynamic.best_params.fast_len);
+        assert_eq!(legacy.best_params.slow_len, dynamic.best_params.slow_len);
+        assert!((legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() < 1e-12);
+        assert!((legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() < 1e-12);
+        assert!((legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() < 1e-12);
+        assert_eq!(legacy.best_metrics.trades, dynamic.best_metrics.trades);
+    }
+
+    #[test]
+    fn dynamic_gpu_preflight_disabled_is_noop() {
+        let strategy = StrategyConfig::default();
+        let res = maybe_compile_dynamic_gpu_plan_preflight(
+            false,
+            "close",
+            "unknown_ma_type",
+            "another_unknown",
+            None,
+            None,
+            &strategy,
+            None,
+        );
+        assert!(res.is_ok(), "disabled preflight should be a no-op");
+    }
+
+    #[test]
+    fn dynamic_gpu_preflight_compiles_for_standard_double_ma() {
+        let strategy = StrategyConfig::default();
+        maybe_compile_dynamic_gpu_plan_preflight(
+            true, "close", "sma", "alma", None, None, &strategy, None,
+        )
+        .expect("gpu preflight should compile for standard double-ma setup");
+    }
+
+    #[test]
+    fn dynamic_gpu_preflight_compiles_with_halftrend_filter() {
+        let strategy = StrategyConfig::default();
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 14,
+        };
+        maybe_compile_dynamic_gpu_plan_preflight(
+            true,
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &strategy,
+            Some(&halftrend),
+        )
+        .expect("gpu preflight should compile with halftrend filter config");
+    }
+
+    #[test]
+    fn dynamic_gpu_preflight_requirement_logic_matches_expected_routes() {
+        assert!(dynamic_gpu_preflight_required_for_backend(
+            true,
+            &OptimizationModeResolved::Grid,
+            &Backend::GpuKernel { device_id: 0 },
+        ));
+        assert!(dynamic_gpu_preflight_required_for_backend(
+            true,
+            &OptimizationModeResolved::GpuVdps,
+            &Backend::GpuHybridKernel { device_id: 0 },
+        ));
+        assert!(!dynamic_gpu_preflight_required_for_backend(
+            true,
+            &OptimizationModeResolved::Grid,
+            &Backend::GpuHybridKernel { device_id: 0 },
+        ));
+        assert!(!dynamic_gpu_preflight_required_for_backend(
+            false,
+            &OptimizationModeResolved::GpuVdps,
+            &Backend::GpuKernel { device_id: 0 },
+        ));
+        assert!(!dynamic_gpu_preflight_required_for_backend(
+            true,
+            &OptimizationModeResolved::Grid,
+            &Backend::CpuOnly,
+        ));
+    }
+
+    #[test]
+    fn auto_backend_records_route_metadata() {
+        let candles = make_trending_candles(1500);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::Auto { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 6, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("auto backend run");
+        let route = res.backend_route.unwrap_or_default();
+        assert!(
+            route.starts_with("Auto->"),
+            "expected Auto route note, got '{route}'"
+        );
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    #[test]
+    fn gpu_hybrid_phase1_cpu_fallback_surfaces_route_metadata() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        let cpu_only_ma = vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                matches!(
+                    crate::ma_policy::classify_hybrid_capability(info.id),
+                    crate::ma_policy::HybridCapabilityTier::CpuOnly
+                ) && info.period_based
+                    && info.single_output
+            })
+            .map(|info| info.id.to_string());
+        let Some(cpu_only_ma) = cpu_only_ma else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(1500);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 21, 1),
+            slow_range: (40, 41, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid cpu fallback run");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(
+            res.backend_route.as_deref(),
+            Some("GpuHybridKernel->CpuOnly")
+        );
+        let reason = res.backend_fallback_reason.unwrap_or_default();
+        assert!(
+            reason.contains("falling back to CpuOnly"),
+            "unexpected fallback reason: {reason}"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[test]
+    fn gpu_hybrid_env_disable_records_fallback_reason() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "0");
+
+        let cpu_only_ma = vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                matches!(
+                    crate::ma_policy::classify_hybrid_capability(info.id),
+                    crate::ma_policy::HybridCapabilityTier::CpuOnly
+                ) && info.period_based
+                    && info.single_output
+            })
+            .map(|info| info.id.to_string());
+        let Some(cpu_only_ma) = cpu_only_ma else {
+            match prev {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(1200);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 20, 1),
+            slow_range: (40, 40, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid env disabled run");
+        let reason = res.backend_fallback_reason.unwrap_or_default();
+        assert!(
+            reason.contains("VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0"),
+            "expected env fallback note, got '{reason}'"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_kernel_capable_pair_stays_on_gpu_path() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(1600);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (20, 24, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid kernel-capable run");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
+        );
+        assert!(
+            res.backend_route.is_none(),
+            "expected no backend route fallback, got {:?}",
+            res.backend_route
+        );
+        assert!(
+            res.backend_fallback_reason.is_none(),
+            "expected no fallback reason, got {:?}",
+            res.backend_fallback_reason
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_large_alma_route_smoke() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(200_000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 200, 1),
+            slow_range: (10, 400, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(50),
+            include_all: Some(false),
+            heatmap_bins: Some(64),
+            constraints: None,
+            vdps: None,
+        };
+
+        let t0 = std::time::Instant::now();
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid large alma run");
+        let elapsed_ms = t0.elapsed().as_millis();
+        assert!(elapsed_ms > 0, "expected non-zero elapsed time");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
+        );
+        assert!(
+            res.backend_route.is_none(),
+            "expected no route fallback, got {:?}",
+            res.backend_route
+        );
+        assert!(
+            res.backend_fallback_reason.is_none(),
+            "expected no fallback reason, got {:?}",
+            res.backend_fallback_reason
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_batched_matches_unbatched_best_params_alma() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_hybrid = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(50_000);
+        let cancel = AtomicBool::new(false);
+        let mut alma_p: HashMap<String, f64> = HashMap::new();
+        alma_p.insert("offset".to_string(), 0.85);
+        alma_p.insert("sigma".to_string(), 6.0);
+
+        let base_req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 120, 1),
+            slow_range: (10, 240, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: Some(alma_p.clone()),
+            slow_ma_params: Some(alma_p),
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(10),
+            include_all: Some(false),
+            heatmap_bins: Some(32),
+            constraints: None,
+            vdps: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
+        let single = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("unbatched gpu-hybrid run");
+
+        std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "128");
+        let batched =
+            run_double_ma_optimization_blocking_with_candles(base_req, &candles, &cancel, None)
+                .expect("batched gpu-hybrid run");
+
+        match prev_budget {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+        }
+        match prev_hybrid {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+
+        assert!(
+            matches!(single.backend_used, BackendUsed::Gpu),
+            "expected GPU backend for unbatched run"
+        );
+        assert!(
+            matches!(batched.backend_used, BackendUsed::Gpu),
+            "expected GPU backend for batched run"
+        );
+        assert!(
+            single.backend_route.is_none() && single.backend_fallback_reason.is_none(),
+            "unexpected hybrid fallback on unbatched run: route={:?} fallback={:?}",
+            single.backend_route,
+            single.backend_fallback_reason
+        );
+        assert!(
+            batched.backend_route.is_none() && batched.backend_fallback_reason.is_none(),
+            "unexpected hybrid fallback on batched run: route={:?} fallback={:?}",
+            batched.backend_route,
+            batched.backend_fallback_reason
+        );
+        assert_eq!(single.num_combos, batched.num_combos);
+        assert_eq!(single.best_params.fast_len, batched.best_params.fast_len);
+        assert_eq!(single.best_params.slow_len, batched.best_params.slow_len);
+        let h1 = single.heatmap.expect("single heatmap");
+        let h2 = batched.heatmap.expect("batched heatmap");
+        assert_eq!(h1.bins_fast, h2.bins_fast);
+        assert_eq!(h1.bins_slow, h2.bins_slow);
+        assert_eq!(h1.fast_min, h2.fast_min);
+        assert_eq!(h1.fast_max, h2.fast_max);
+        assert_eq!(h1.slow_min, h2.slow_min);
+        assert_eq!(h1.slow_max, h2.slow_max);
+        assert_eq!(h1.values, h2.values);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_cpu_only_ma_uses_gpu_kernel_with_precomputed_staging() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let Some(cpu_only_ma) = find_cpu_only_period_single_ma() else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(2400);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 23, 1),
+            slow_range: (40, 44, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid mixed-origin gpu route");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
+        );
+        assert!(
+            res.backend_route.is_none(),
+            "expected no fallback route, got {:?}",
+            res.backend_route
+        );
+        assert!(
+            res.backend_fallback_reason.is_none(),
+            "expected no fallback reason, got {:?}",
+            res.backend_fallback_reason
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_vdps_cpu_only_ma_stays_on_gpu_route() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let Some(cpu_only_ma) = find_cpu_only_period_single_ma() else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(2600);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 22, 1),
+            slow_range: (40, 44, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("GpuVdps hybrid mixed-origin gpu route");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
+        );
+        assert!(
+            res.backend_route.is_none(),
+            "expected no fallback route, got {:?}",
+            res.backend_route
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    #[test]
+    fn gpu_hybrid_unsupported_kernel_objective_falls_back_to_cpu_on_cpu_builds() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        let candles = make_trending_candles(1200);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 5, 1),
+            slow_range: (20, 20, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sortino,
+            mode: OptimizationMode::Grid,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid objective fallback");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(
+            res.backend_route.as_deref(),
+            Some("GpuHybridKernel->CpuOnly")
+        );
+        let reason = res.backend_fallback_reason.unwrap_or_default();
+        assert!(
+            reason.contains("objective Sortino"),
+            "expected objective blocker in fallback reason, got '{reason}'"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    #[test]
+    fn gpu_hybrid_repeatability_for_cpu_fallback_path() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        let cpu_only_ma = vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                matches!(
+                    crate::ma_policy::classify_hybrid_capability(info.id),
+                    crate::ma_policy::HybridCapabilityTier::CpuOnly
+                ) && info.period_based
+                    && info.single_output
+            })
+            .map(|info| info.id.to_string());
+        let Some(cpu_only_ma) = cpu_only_ma else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(1800);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 21, 1),
+            slow_range: (40, 42, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let r1 =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("hybrid run #1");
+        let r2 = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid run #2");
+
+        assert!(matches!(r1.backend_used, BackendUsed::Cpu));
+        assert!(matches!(r2.backend_used, BackendUsed::Cpu));
+        assert_eq!(r1.backend_route, r2.backend_route);
+        assert_eq!(r1.best_params.fast_len, r2.best_params.fast_len);
+        assert_eq!(r1.best_params.slow_len, r2.best_params.slow_len);
+        assert_eq!(r1.num_combos, r2.num_combos);
+        assert!((r1.best_metrics.pnl - r2.best_metrics.pnl).abs() <= 1e-12);
+        assert!((r1.best_metrics.sharpe - r2.best_metrics.sharpe).abs() <= 1e-12);
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    #[test]
+    fn gpu_hybrid_cpu_fallback_matches_cpu_backend_for_cpu_only_ma() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        let cpu_only_ma = vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                matches!(
+                    crate::ma_policy::classify_hybrid_capability(info.id),
+                    crate::ma_policy::HybridCapabilityTier::CpuOnly
+                ) && info.period_based
+                    && info.single_output
+            })
+            .map(|info| info.id.to_string());
+        let Some(cpu_only_ma) = cpu_only_ma else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_choppy_candles(2200);
+        let cancel = AtomicBool::new(false);
+
+        let mut base_req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (20, 22, 1),
+            slow_range: (40, 44, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+        let cpu_res = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu run");
+
+        base_req.backend = Backend::GpuHybridKernel { device_id: 0 };
+        let hybrid_res =
+            run_double_ma_optimization_blocking_with_candles(base_req, &candles, &cancel, None)
+                .expect("hybrid run");
+
+        assert!(matches!(cpu_res.backend_used, BackendUsed::Cpu));
+        assert!(matches!(hybrid_res.backend_used, BackendUsed::Cpu));
+        assert_eq!(
+            hybrid_res.backend_route.as_deref(),
+            Some("GpuHybridKernel->CpuOnly")
+        );
+        assert_eq!(
+            cpu_res.best_params.fast_len,
+            hybrid_res.best_params.fast_len
+        );
+        assert_eq!(
+            cpu_res.best_params.slow_len,
+            hybrid_res.best_params.slow_len
+        );
+        assert_eq!(cpu_res.num_combos, hybrid_res.num_combos);
+        assert!((cpu_res.best_metrics.pnl - hybrid_res.best_metrics.pnl).abs() <= 1e-12);
+        assert!((cpu_res.best_metrics.sharpe - hybrid_res.best_metrics.sharpe).abs() <= 1e-12);
+        assert!((cpu_res.best_metrics.max_dd - hybrid_res.best_metrics.max_dd).abs() <= 1e-12);
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    #[test]
+    fn gpu_hybrid_vdps_rejects_cpu_fallback_mode() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        let cpu_only_ma = vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                matches!(
+                    crate::ma_policy::classify_hybrid_capability(info.id),
+                    crate::ma_policy::HybridCapabilityTier::CpuOnly
+                ) && info.period_based
+                    && info.single_output
+            })
+            .map(|info| info.id.to_string());
+        let Some(cpu_only_ma) = cpu_only_ma else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(2400);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 20, 1),
+            slow_range: (40, 40, 1),
+            fast_ma_types: vec![cpu_only_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("GpuVdps hybrid should reject CPU fallback");
+        assert!(
+            err.contains("no CPU fallback") || err.contains("requires GPU-executable routing"),
+            "unexpected error: {err}"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    #[test]
+    fn gpu_hybrid_cpu_fallback_parity_across_double_like_strategies() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        let Some(cpu_only_ma) = find_cpu_only_period_single_ma() else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_breakout_candles(2600);
+        let cancel = AtomicBool::new(false);
+
+        for (label, strategy) in double_like_kernel_strategy_cases() {
+            let cpu_req = DoubleMaRequest {
+                backend: Backend::CpuOnly,
+                data_id: "test".to_string(),
+                fast_range: (20, 22, 1),
+                slow_range: (40, 44, 1),
+                fast_ma_types: vec![cpu_only_ma.clone()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::Grid,
+                top_k: Some(5),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
+            let hybrid_req = DoubleMaRequest {
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ..cpu_req.clone()
+            };
+
+            let cpu_res =
+                run_double_ma_optimization_blocking_with_candles(cpu_req, &candles, &cancel, None)
+                    .unwrap_or_else(|e| panic!("cpu run failed for '{label}': {e}"));
+            let hybrid_res = run_double_ma_optimization_blocking_with_candles(
+                hybrid_req, &candles, &cancel, None,
+            )
+            .unwrap_or_else(|e| panic!("hybrid run failed for '{label}': {e}"));
+
+            assert!(
+                matches!(hybrid_res.backend_used, BackendUsed::Cpu),
+                "expected CPU fallback for '{label}'"
+            );
+            assert_eq!(
+                hybrid_res.backend_route.as_deref(),
+                Some("GpuHybridKernel->CpuOnly"),
+                "unexpected route for '{label}'"
+            );
+            assert_eq!(
+                cpu_res.best_params.fast_len, hybrid_res.best_params.fast_len,
+                "fast_len mismatch for '{label}'"
+            );
+            assert_eq!(
+                cpu_res.best_params.slow_len, hybrid_res.best_params.slow_len,
+                "slow_len mismatch for '{label}'"
+            );
+            assert_eq!(
+                cpu_res.num_combos, hybrid_res.num_combos,
+                "combo-count mismatch for '{label}'"
+            );
+            assert!(
+                (cpu_res.best_metrics.sharpe - hybrid_res.best_metrics.sharpe).abs() <= 1e-12,
+                "sharpe mismatch for '{label}'"
+            );
+            assert!(
+                (cpu_res.best_metrics.pnl - hybrid_res.best_metrics.pnl).abs() <= 1e-12,
+                "pnl mismatch for '{label}'"
+            );
+        }
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[test]
+    fn gpu_hybrid_overlay_blocker_surfaces_fallback_reason() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+        if !cfg!(feature = "cuda") {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        }
+        if !matches!(
+            crate::ma_policy::classify_hybrid_capability("sma"),
+            crate::ma_policy::HybridCapabilityTier::GpuKernel
+        ) {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        }
+
+        let candles = make_trending_candles(1800);
+        let cancel = AtomicBool::new(false);
+        let mut strategy = StrategyConfig::default();
+        strategy.trailing_stop_pct = Some(0.02);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 6, 1),
+            slow_range: (20, 22, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy,
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid overlay fallback");
+        if let Some(route) = res.backend_route.as_deref() {
+            let reason = res.backend_fallback_reason.unwrap_or_default();
+            assert!(
+                reason.to_ascii_lowercase().contains("execution overlays"),
+                "expected overlay blocker reason, got '{reason}'"
+            );
+            assert!(
+                route == "GpuHybridKernel->GpuOnly" || route == "GpuHybridKernel->CpuOnly",
+                "unexpected route '{route}'"
+            );
+        } else {
+            assert!(
+                matches!(res.backend_used, BackendUsed::Gpu),
+                "expected GPU backend when no fallback route is recorded"
+            );
+        }
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[test]
     fn gpu_vdps_rejects_cpu_backend() {
         let candles = make_trending_candles(2000);
         let cancel = AtomicBool::new(false);
@@ -6971,6 +9580,79 @@ mod tests {
             err.to_ascii_lowercase().contains("requires a gpu backend"),
             "unexpected error: {err}"
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_vdps_promotes_gpu_only_to_hybrid_kernel_when_available() {
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL");
+
+        if !cuda_available() {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        }
+
+        let candles = make_trending_candles(2200);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuOnly { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (8, 12, 2),
+            slow_range: (20, 28, 4),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: Some(VdpsConfig {
+                eta: None,
+                rungs: Some(vec![0.5, 1.0]),
+                min_initial_pairs: None,
+                max_survivor_seeds: None,
+                max_period_candidates: None,
+                random_injection_ratio: None,
+                elite_mutation_ratio: None,
+                differential_ratio: None,
+                deterministic: Some(true),
+                seed: Some(42),
+                quality_check_max_pairs: None,
+                quality_check_top_k: None,
+            }),
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("GpuVdps run should succeed");
+        assert_eq!(
+            res.backend_route.as_deref(),
+            Some("GpuOnly->GpuHybridKernel"),
+            "expected GpuVdps to promote GpuOnly to hybrid kernel route"
+        );
+        let reason = res.backend_fallback_reason.unwrap_or_default();
+        assert!(
+            reason.contains("promotes GpuOnly to GpuHybridKernel"),
+            "expected promotion note in fallback reason, got '{reason}'"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -7236,6 +9918,134 @@ mod tests {
             assert!(
                 trades_delta <= 1,
                 "trades delta too large for {label}: {trades_delta}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_dynamic_strategy_env_path_matches_legacy_results() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (9, 9, 0),
+            slow_range: (21, 21, 0),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let legacy = with_dynamic_strategy_opt_env(false, || {
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("legacy gpu-kernel run")
+        });
+        let dynamic = with_dynamic_strategy_opt_env(true, || {
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("dynamic-preflight gpu-kernel run")
+        });
+
+        assert_eq!(legacy.best_params.fast_len, dynamic.best_params.fast_len);
+        assert_eq!(legacy.best_params.slow_len, dynamic.best_params.slow_len);
+        assert!((legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() <= 1e-6);
+        assert!((legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() <= 1e-6);
+        assert!((legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() <= 1e-6);
+        assert_eq!(legacy.best_metrics.trades, dynamic.best_metrics.trades);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_dynamic_strategy_env_path_matches_legacy_results_for_double_like_strategies() {
+        if !cuda_available() {
+            return;
+        }
+
+        let cancel = AtomicBool::new(false);
+        for (label, strategy) in double_like_kernel_strategy_cases() {
+            let candles = if label == "breakout_momentum" {
+                make_breakout_candles(8_000)
+            } else {
+                make_trending_candles(8_000)
+            };
+            let req = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: "test".to_string(),
+                fast_range: (9, 9, 0),
+                slow_range: (21, 21, 0),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy,
+                halftrend_filter: None,
+                objective: ObjectiveKind::Pnl,
+                mode: OptimizationMode::Grid,
+                top_k: Some(1),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
+
+            let legacy = with_dynamic_strategy_opt_env(false, || {
+                run_double_ma_optimization_blocking_with_candles(
+                    req.clone(),
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("legacy gpu-kernel run failed for {label}: {e}"))
+            });
+            let dynamic = with_dynamic_strategy_opt_env(true, || {
+                run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                    .unwrap_or_else(|e| {
+                        panic!("dynamic-preflight gpu-kernel run failed for {label}: {e}")
+                    })
+            });
+
+            assert_eq!(
+                (legacy.best_params.fast_len, legacy.best_params.slow_len),
+                (dynamic.best_params.fast_len, dynamic.best_params.slow_len),
+                "best params mismatch for {label}"
+            );
+            assert!(
+                (legacy.best_metrics.pnl - dynamic.best_metrics.pnl).abs() <= 1e-6,
+                "pnl mismatch for {label}"
+            );
+            assert!(
+                (legacy.best_metrics.sharpe - dynamic.best_metrics.sharpe).abs() <= 1e-6,
+                "sharpe mismatch for {label}"
+            );
+            assert!(
+                (legacy.best_metrics.max_dd - dynamic.best_metrics.max_dd).abs() <= 1e-6,
+                "max_dd mismatch for {label}"
+            );
+            assert_eq!(
+                legacy.best_metrics.trades, dynamic.best_metrics.trades,
+                "trade count mismatch for {label}"
             );
         }
     }
@@ -7959,6 +10769,42 @@ mod tests {
         let b = out4[idx];
         assert!(a.is_finite() && b.is_finite());
         assert!((a - b).abs() > 1e-9);
+    }
+
+    #[test]
+    fn cpu_ma_matrix_f32_staging_matches_f64_cast() {
+        let candles = make_trending_candles(1536);
+        let periods = [5u16, 7u16, 9u16];
+
+        let mut gaussian_params: HashMap<String, f64> = HashMap::new();
+        gaussian_params.insert("poles".to_string(), 3.0);
+
+        let compare = |ma_type: &str, params: Option<&HashMap<String, f64>>| {
+            let (out64, cols64) =
+                ma_matrix_cpu_f64(&candles, ma_type, "close", &periods, params, 0.85, 6.0)
+                    .expect("f64 matrix");
+            let (out32, cols32) =
+                ma_matrix_cpu_f32_staging(&candles, ma_type, "close", &periods, params, 0.85, 6.0)
+                    .expect("f32 staging matrix");
+
+            assert_eq!(cols64, cols32, "cols mismatch for {ma_type}");
+            assert_eq!(out64.len(), out32.len(), "len mismatch for {ma_type}");
+
+            for (&v64, &v32) in out64.iter().zip(out32.iter()) {
+                if v64.is_nan() {
+                    assert!(v32.is_nan(), "expected NaN parity for {ma_type}");
+                } else {
+                    assert_eq!(
+                        (v64 as f32).to_bits(),
+                        v32.to_bits(),
+                        "value mismatch for {ma_type}"
+                    );
+                }
+            }
+        };
+
+        compare("sma", None);
+        compare("gaussian", Some(&gaussian_params));
     }
 
     #[cfg(feature = "cuda")]

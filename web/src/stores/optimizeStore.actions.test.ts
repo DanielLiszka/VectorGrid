@@ -135,4 +135,23 @@ describe('optimize store actions', () => {
     expect(store.slowMaParamSweeps).toEqual({ beta: [2, 10, 4] })
     expect(store.source).toBe('vue')
   })
+
+  it('keeps new backend options when hydrating an older snapshot', () => {
+    const store = useOptimizeStore()
+    store.applyLegacySnapshot({
+      backend: 'GpuHybridKernel',
+      backendOptions: [
+        { value: 'Auto', label: 'Auto', disabled: false },
+        { value: 'CpuOnly', label: 'CPU only', disabled: false },
+        { value: 'GpuOnly', label: 'GPU only', disabled: false },
+        { value: 'GpuKernel', label: 'GPU kernel', disabled: false },
+      ],
+    } as never)
+
+    const optionValues = store.backendOptions.map((option) => option.value)
+    expect(optionValues).not.toContain('GpuOnly')
+    expect(optionValues).not.toContain('GpuHybridKernel')
+    expect(optionValues).toContain('GpuKernel')
+    expect(store.backend).toBe('GpuKernel')
+  })
 })

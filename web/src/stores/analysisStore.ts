@@ -959,24 +959,26 @@ export const useAnalysisStore = defineStore('analysis', {
       const normalizedPath = String(path || '').trim()
       if (!normalizedPath) return
       const nextChecked = !!checked
-      let changed = false
-      const nextRows = this.batchDatasets.map((entry) => {
-        const entryPath = String(entry.path || '').trim()
-        if (!entryPath || entryPath !== normalizedPath) return entry
-        if (entry.checked === nextChecked) return entry
-        changed = true
-        return {
-          ...entry,
-          checked: nextChecked,
+      const rows = this.batchDatasets
+      const targetIndex = rows.findIndex((entry) => String(entry.path || '').trim() === normalizedPath)
+      if (targetIndex >= 0) {
+        const current = rows[targetIndex]
+        if (current && current.checked !== nextChecked) {
+          const nextRows = rows.slice()
+          nextRows[targetIndex] = {
+            ...current,
+            checked: nextChecked,
+          }
+          this.batchDatasets = markRaw(nextRows)
+          let nextSelectedCount = Number(this.batchSelectedCount || 0) + (nextChecked ? 1 : -1)
+          if (!Number.isFinite(nextSelectedCount) || nextSelectedCount < 0 || nextSelectedCount > nextRows.length) {
+            nextSelectedCount = nextRows.reduce((count, entry) => count + (entry.checked ? 1 : 0), 0)
+          }
+          this.batchSelectedCount = nextSelectedCount
+          this.batchTotalCount = nextRows.length
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
         }
-      })
-
-      if (changed) {
-        this.batchDatasets = nextRows
-        this.batchSelectedCount = nextRows.filter((entry) => !!entry.checked).length
-        this.batchTotalCount = nextRows.length
-        this.source = 'vue'
-        this.updatedAtUnixMs = Date.now()
       }
 
       void metaService.toggleBatchDataset(normalizedPath, nextChecked)

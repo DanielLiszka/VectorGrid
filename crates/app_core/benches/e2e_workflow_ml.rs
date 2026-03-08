@@ -9,7 +9,7 @@ use ta_app_core::{
     meta_group_key_for_request, meta_select_from_artifacts, predict_ml_confidence_for_group,
     run_composite_cpu_optimization_blocking_with_candles,
     run_composite_validation_blocking_with_candles, train_ml_confidence_model_from_meta_artifacts,
-    CompositeCpuRequest, CompositeParams, CompositeValidationRequest, HoldoutAggregate,
+    Backend, CompositeCpuRequest, CompositeParams, CompositeValidationRequest, HoldoutAggregate,
     HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode,
     MetaScoreWeights, MetaSelectionRequest, MlConfidenceScope, MlConfidenceTrainConfig,
 };
@@ -301,6 +301,10 @@ fn run_full_workflow_once(
         }
 
         let opt_req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
             data_id: label.to_string(),
             fast_range: (5, 60, 5),
             slow_range: (20, 220, 10),
@@ -334,6 +338,8 @@ fn run_full_workflow_once(
                 fast_len: p.fast_len,
                 slow_len: p.slow_len,
                 halftrend: halftrend.clone(),
+                asr: None,
+                vemr: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,

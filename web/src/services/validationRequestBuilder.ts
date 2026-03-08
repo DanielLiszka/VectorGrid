@@ -40,6 +40,8 @@ interface ValidationCandidateLike {
   slow_len: number
   fast_ma_params?: unknown
   slow_ma_params?: unknown
+  asr?: unknown
+  vemr?: unknown
   strategy?: unknown
   halftrend_filter?: unknown
   halftrend?: unknown
@@ -93,6 +95,9 @@ function normalizeText(value: unknown): string {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Asr') return 'Asr'
+  if (kind === 'Vcc') return 'Vcc'
+  if (kind === 'Vemr') return 'Vemr'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -107,10 +112,7 @@ function kindFromReq(req: Record<string, unknown>): string {
 
 function isDoubleLikeKind(kind: string): boolean {
   const nextKind = normalizeText(kind)
-  return nextKind === 'DoubleMa'
-    || nextKind === 'CompositeTrend'
-    || nextKind === 'RegimeHybrid'
-    || nextKind === 'BreakoutMomentum'
+  return nextKind === 'DoubleMa' || nextKind === 'CompositeTrend' || nextKind === 'RegimeHybrid' || nextKind === 'BreakoutMomentum'
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -126,10 +128,7 @@ function parseProbabilityGate(value: unknown): number | null {
   return Math.max(0, Math.min(1, parsed))
 }
 
-function normalizeCrossDatasets(
-  value: unknown,
-  maxDatasets: number,
-): Array<{ csv_path: string; label: string }> {
+function normalizeCrossDatasets(value: unknown, maxDatasets: number): Array<{ csv_path: string; label: string }> {
   if (maxDatasets <= 0 || !Array.isArray(value)) return []
   const out: Array<{ csv_path: string; label: string }> = []
   for (const entry of value) {
@@ -139,7 +138,7 @@ function normalizeCrossDatasets(
     if (!csv_path) continue
     out.push({
       csv_path,
-      label: normalizeText(row.label),
+      label: normalizeText(row.label)
     })
     if (out.length >= maxDatasets) break
   }
@@ -162,16 +161,12 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   const rowsFiltered = Array.isArray(inputs.topRowsFiltered) ? inputs.topRowsFiltered : []
   const rowsAll = Array.isArray(inputs.topRows) ? inputs.topRows : []
   const useFiltered = inputs.useFiltered !== false
-  const baseRows = (useFiltered && rowsFiltered.length) ? rowsFiltered : rowsAll
+  const baseRows = useFiltered && rowsFiltered.length ? rowsFiltered : rowsAll
   if (!baseRows.length) throw new Error('No Top rows available. Go to the Top tab and run an optimization.')
 
   const candidatesRaw = baseRows.slice(0, maxCandidates)
-  const fastMaTypeFallback = Array.isArray(currentRunReq.fast_ma_types)
-    ? normalizeText(currentRunReq.fast_ma_types[0])
-    : ''
-  const slowMaTypeFallback = Array.isArray(currentRunReq.slow_ma_types)
-    ? normalizeText(currentRunReq.slow_ma_types[0])
-    : ''
+  const fastMaTypeFallback = Array.isArray(currentRunReq.fast_ma_types) ? normalizeText(currentRunReq.fast_ma_types[0]) : ''
+  const slowMaTypeFallback = Array.isArray(currentRunReq.slow_ma_types) ? normalizeText(currentRunReq.slow_ma_types[0]) : ''
 
   const candidates = candidatesRaw
     .map((row): ValidationCandidateLike | null => {
@@ -196,16 +191,42 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
           fast_ma_params: fast_ma_params || undefined,
           slow_ma_params: slow_ma_params || undefined,
           strategy,
-          halftrend_filter: halftrend_filter || undefined,
+          halftrend_filter: halftrend_filter || undefined
         }
       }
 
-      const halftrend = kind === 'CompositeMo'
-        ? (asRecord(p.halftrend) || null)
-        : (asRecord(currentRunReq.halftrend) || null)
-      const signal_mode = kind === 'CompositeMo'
-        ? normalizeText(p.signal_mode || p.signalMode || currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate')
-        : normalizeText(currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate')
+      if (kind === 'Asr') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const asr = asRecord(p.asr) || asRecord(currentRunReq.asr) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          asr,
+          strategy
+        }
+      }
+
+      if (kind === 'Vemr') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const vemr = asRecord(p.vemr) || asRecord(currentRunReq.vemr) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          vemr,
+          strategy
+        }
+      }
+
+      const halftrend = kind === 'CompositeMo' ? asRecord(p.halftrend) || null : asRecord(currentRunReq.halftrend) || null
+      const signal_mode = kind === 'CompositeMo' ? normalizeText(p.signal_mode || p.signalMode || currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate') : normalizeText(currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate')
 
       return {
         fast_ma_type,
@@ -213,12 +234,10 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
         fast_len,
         slow_len,
         halftrend: halftrend || undefined,
-        macz: kind === 'CompositeMo' ? (p.macz || {}) : (currentRunReq.macz || {}),
-        ott: kind === 'CompositeMo' ? (p.ott || {}) : (currentRunReq.ott || {}),
+        macz: kind === 'CompositeMo' ? p.macz || {} : currentRunReq.macz || {},
+        ott: kind === 'CompositeMo' ? p.ott || {} : currentRunReq.ott || {},
         signal_mode,
-        strategy: kind === 'CompositeMo'
-          ? (p.strategy || currentRunReq.strategy || {})
-          : (currentRunReq.strategy || {}),
+        strategy: kind === 'CompositeMo' ? p.strategy || currentRunReq.strategy || {} : currentRunReq.strategy || {}
       }
     })
     .filter((candidate): candidate is ValidationCandidateLike => {
@@ -226,6 +245,8 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       if (!candidate.fast_ma_type || !candidate.slow_ma_type) return false
       if (candidate.fast_len <= 0 || candidate.slow_len <= 0) return false
       if (isDoubleLikeKind(kind)) return true
+      if (kind === 'Asr') return true
+      if (kind === 'Vemr') return true
       return !!candidate.halftrend
     })
 
@@ -233,43 +254,41 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
 
   const walk_forward = inputs.wfEnable
     ? {
-      window_bars: Math.max(64, Math.floor(num(inputs.wfWindow, 20000))),
-      step_bars: Math.max(1, Math.floor(num(inputs.wfStep, 20000))),
-    }
+        window_bars: Math.max(64, Math.floor(num(inputs.wfWindow, 20000))),
+        step_bars: Math.max(1, Math.floor(num(inputs.wfStep, 20000)))
+      }
     : null
 
   const perturb = inputs.perturbEnable
     ? {
-      iterations: Math.max(0, Math.floor(num(inputs.perturbIters, 8))),
-      pct_min: Math.max(0, num(inputs.perturbMin, 0.015)),
-      pct_max: Math.max(0, num(inputs.perturbMax, 0.06)),
-      flip_bool_prob: 0.02,
-    }
+        iterations: Math.max(0, Math.floor(num(inputs.perturbIters, 8))),
+        pct_min: Math.max(0, num(inputs.perturbMin, 0.015)),
+        pct_max: Math.max(0, num(inputs.perturbMax, 0.06)),
+        flip_bool_prob: 0.02
+      }
     : null
 
-  const trade_bootstrap = inputs.mcEnable
-    ? { simulations: Math.max(0, Math.floor(num(inputs.mcSims, 500))) }
-    : null
+  const trade_bootstrap = inputs.mcEnable ? { simulations: Math.max(0, Math.floor(num(inputs.mcSims, 500))) } : null
 
   const cscv_pbo = inputs.cscvEnable
     ? (() => {
-      let slices = Math.max(4, Math.floor(num(inputs.cscvSlices, 16)))
-      if ((slices & 1) === 1) slices = Math.max(4, slices - 1)
-      return { slices, max_combinations: 50000, threshold: 0.0 }
-    })()
+        let slices = Math.max(4, Math.floor(num(inputs.cscvSlices, 16)))
+        if ((slices & 1) === 1) slices = Math.max(4, slices - 1)
+        return { slices, max_combinations: 50000, threshold: 0.0 }
+      })()
     : null
 
   const cross_ticker = inputs.crossEnable
     ? (() => {
-      const max_datasets = Math.max(0, Math.floor(num(inputs.crossMax, 6)))
-      if (max_datasets <= 0) return null
-      const datasets = normalizeCrossDatasets(inputs.crossDatasets, max_datasets)
-      if (!datasets.length) return null
-      return {
-        max_datasets,
-        datasets,
-      }
-    })()
+        const max_datasets = Math.max(0, Math.floor(num(inputs.crossMax, 6)))
+        if (max_datasets <= 0) return null
+        const datasets = normalizeCrossDatasets(inputs.crossDatasets, max_datasets)
+        if (!datasets.length) return null
+        return {
+          max_datasets,
+          datasets
+        }
+      })()
     : null
 
   return {
@@ -286,6 +305,6 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
     seed,
     max_candidates: maxCandidates,
     min_psr,
-    min_dsr,
+    min_dsr
   }
 }

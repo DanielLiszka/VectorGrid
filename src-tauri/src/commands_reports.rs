@@ -3173,6 +3173,8 @@ mod tests {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
+            asr: None,
+            vemr: None,
             macz: ta_app_core::composite_cpu::MaczGateParams::default(),
             ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -59,28 +60,15 @@ const rowLabel = computed(() => {
 })
 
 watch(
-  csvPath,
-  (value) => {
-    const next = String(value || '')
-    if (csvPathDraft.value !== next) csvPathDraft.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  marketDataDir,
-  (value) => {
-    const next = String(value || '')
-    if (marketDataDirDraft.value !== next) marketDataDirDraft.value = next
-  },
-  { immediate: true },
-)
-
-watch(
-  dataTimeframe,
-  (value) => {
-    const next = String(value || '')
-    if (timeframeDraft.value !== next) timeframeDraft.value = next
+  () => [
+    String(csvPath.value || ''),
+    String(marketDataDir.value || ''),
+    String(dataTimeframe.value || ''),
+  ] as const,
+  ([nextCsvPath, nextMarketDataDir, nextTimeframe]) => {
+    if (csvPathDraft.value !== nextCsvPath) csvPathDraft.value = nextCsvPath
+    if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
+    if (timeframeDraft.value !== nextTimeframe) timeframeDraft.value = nextTimeframe
   },
   { immediate: true },
 )
@@ -88,6 +76,8 @@ watch(
 function setInputValue(id: string, nextValue: string): void {
   dataStore.setInputField(id, nextValue)
 }
+
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 function setSelectValue(id: string, nextValue: string): void {
   dataStore.setSelectField(id, nextValue)
@@ -102,6 +92,7 @@ function openPolygonModal(): void {
 }
 
 function loadCsvFromDraft(): void {
+  flushQueuedInputValuesNow()
   dataStore.loadCsv(String(csvPathDraft.value || '').trim())
 }
 
@@ -110,6 +101,7 @@ function applyTimeframeFromDraft(): void {
 }
 
 function setMarketDataDirFromDraft(): void {
+  flushQueuedInputValuesNow()
   dataStore.setMarketDataDir(String(marketDataDirDraft.value || '').trim(), !!marketDataMoveExisting.value)
 }
 
@@ -144,6 +136,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  flushQueuedInputValuesNow()
   if (panelRoot.value) {
     delete panelRoot.value.dataset.vueData
     panelRoot.value = null
@@ -168,7 +161,8 @@ onBeforeUnmount(() => {
             type="text"
             :value="csvPathDraft"
             placeholder="C:\\path\\to\\candles.csv"
-            @input="csvPathDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('csvPath', csvPathDraft)"
+            @input="csvPathDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('csvPath', csvPathDraft)"
+            @change="commitInputValue('csvPath', csvPathDraft)"
           />
           <div class="actions">
             <button type="button" :disabled="!canBrowseCsv" @click="browseCsv">Browse</button>
@@ -217,7 +211,8 @@ onBeforeUnmount(() => {
             type="text"
             :value="marketDataDirDraft"
             placeholder="Default (AppData)"
-            @input="marketDataDirDraft = String(($event.target as HTMLInputElement).value || ''); setInputValue('marketDataDir', marketDataDirDraft)"
+            @input="marketDataDirDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('marketDataDir', marketDataDirDraft)"
+            @change="commitInputValue('marketDataDir', marketDataDirDraft)"
           />
           <div class="actions">
             <button type="button" :disabled="!canBrowseMarketDataDir" @click="dataStore.browseMarketDataDir()">Browse</button>

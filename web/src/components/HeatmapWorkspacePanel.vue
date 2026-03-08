@@ -57,10 +57,21 @@ const rangeOptions = computed(() => resolvedOptions(heatmapRangeOptions.value as
 const showTopOptions = computed(() => resolvedOptions(heatmapShowTopOptions.value as OptionItem[], heatmapShowTop.value, heatmapShowTop.value || 'true'))
 const showCrosshairOptions = computed(() => resolvedOptions(heatmapShowCrosshairOptions.value as OptionItem[], heatmapShowCrosshair.value, heatmapShowCrosshair.value || 'true'))
 
-watch(heatmapColor, (v) => { const next = String(v || 'cividis'); if (colorDraft.value !== next) colorDraft.value = next }, { immediate: true })
-watch(heatmapRange, (v) => { const next = String(v || 'q2_98'); if (rangeDraft.value !== next) rangeDraft.value = next }, { immediate: true })
-watch(heatmapShowTop, (v) => { const next = String(v || 'true'); if (showTopDraft.value !== next) showTopDraft.value = next }, { immediate: true })
-watch(heatmapShowCrosshair, (v) => { const next = String(v || 'true'); if (showCrosshairDraft.value !== next) showCrosshairDraft.value = next }, { immediate: true })
+watch(
+  () => [
+    String(heatmapColor.value || 'cividis'),
+    String(heatmapRange.value || 'q2_98'),
+    String(heatmapShowTop.value || 'true'),
+    String(heatmapShowCrosshair.value || 'true'),
+  ] as const,
+  ([nextColor, nextRange, nextShowTop, nextShowCrosshair]) => {
+    if (colorDraft.value !== nextColor) colorDraft.value = nextColor
+    if (rangeDraft.value !== nextRange) rangeDraft.value = nextRange
+    if (showTopDraft.value !== nextShowTop) showTopDraft.value = nextShowTop
+    if (showCrosshairDraft.value !== nextShowCrosshair) showCrosshairDraft.value = nextShowCrosshair
+  },
+  { immediate: true },
+)
 
 function setSelectValue(id: string, nextValue: string): void {
   analysisStore.setSelectField(id, nextValue)

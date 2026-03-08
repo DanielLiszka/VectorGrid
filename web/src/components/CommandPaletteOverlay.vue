@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
@@ -296,6 +297,11 @@ function closePalette(): void {
   commandPaletteStore.closePalette()
 }
 
+function onOpenChange(nextOpen: boolean): void {
+  if (nextOpen) return
+  closePalette()
+}
+
 function runCommand(command: PaletteCommand): void {
   if (!command.enabled) return
   command.run()
@@ -308,8 +314,35 @@ function runSelected(): void {
   runCommand(command)
 }
 
+function focusableElements(root: HTMLElement): HTMLElement[] {
+  const selectors =
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  return Array.from(root.querySelectorAll<HTMLElement>(selectors)).filter((el) => !el.hasAttribute('disabled'))
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (!open.value) return
+  if (event.key === 'Tab') {
+    const targetRootNode = event.target instanceof HTMLElement ? event.target.closest('.cmdPaletteDialog') : null
+    const currentRootNode = event.currentTarget instanceof HTMLElement ? event.currentTarget.closest('.cmdPaletteDialog') : null
+    const targetRoot = targetRootNode instanceof HTMLElement ? targetRootNode : null
+    const currentRoot = currentRootNode instanceof HTMLElement ? currentRootNode : null
+    const root = targetRoot ?? currentRoot ?? null
+    if (!root) return
+    const focusables = focusableElements(root)
+    if (!focusables.length) {
+      event.preventDefault()
+      return
+    }
+
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const currentIndex = active ? focusables.indexOf(active) : -1
+    const step = event.shiftKey ? -1 : 1
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + step + focusables.length) % focusables.length
+    event.preventDefault()
+    focusables[nextIndex]?.focus()
+    return
+  }
   if (event.key === 'Escape') {
     event.preventDefault()
     closePalette()
@@ -333,14 +366,17 @@ function onKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="cmdPaletteModal" @keydown.capture="onKeydown">
-      <button type="button" class="cmdPaletteBackdrop" aria-label="Close command palette" @click="closePalette"></button>
-      <section class="cmdPaletteDialog" role="dialog" aria-modal="true" aria-label="Command palette">
+  <DialogRoot :open="open" @update:open="onOpenChange">
+    <DialogPortal>
+      <DialogOverlay class="cmdPaletteBackdrop" />
+      <DialogContent class="cmdPaletteDialog" aria-label="Command palette" @keydown.capture="onKeydown">
         <header class="head">
-          <div class="title">Command Palette</div>
+          <DialogTitle class="title">Command Palette</DialogTitle>
           <button type="button" class="closeBtn" @click="closePalette">x</button>
         </header>
+        <DialogDescription class="srOnly">
+          Search commands, navigate workflow views, and execute supported actions.
+        </DialogDescription>
         <input
           ref="inputRef"
           type="text"
@@ -369,30 +405,26 @@ function onKeydown(event: KeyboardEvent): void {
           </button>
           <div v-if="!filteredCommands.length" class="empty">No matching commands.</div>
         </div>
-      </section>
-    </div>
-  </Teleport>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
 </template>
 
 <style scoped>
-.cmdPaletteModal {
+.cmdPaletteBackdrop {
   position: fixed;
   inset: 0;
   z-index: 9998;
-}
-
-.cmdPaletteBackdrop {
-  position: absolute;
-  inset: 0;
   border: 0;
   background: color-mix(in oklab, var(--bg) 25%, #000);
 }
 
 .cmdPaletteDialog {
-  position: absolute;
+  position: fixed;
   top: 16%;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 9999;
   width: min(760px, calc(100vw - 24px));
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -491,5 +523,17 @@ kbd {
   color: var(--muted);
   font-size: 0.8rem;
   padding: 0.6rem;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

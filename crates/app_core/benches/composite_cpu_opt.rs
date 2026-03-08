@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ta_app_core::CompositeCpuRequest;
+use ta_app_core::{Backend, CompositeCpuRequest};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
@@ -42,6 +42,10 @@ fn bench_composite_cpu_grid(c: &mut Criterion) {
     group.sample_size(10);
 
     let req = CompositeCpuRequest {
+        backend: Backend::CpuOnly,
+        asr: None,
+        vcc: None,
+        vemr: None,
         data_id: "bench".to_string(),
         fast_range: (5, 80, 1),
         slow_range: (90, 250, 1),
@@ -96,6 +100,10 @@ fn bench_composite_cpu_prescan_gpu_kernel(c: &mut Criterion) {
     group.sample_size(10);
 
     let req = CompositeCpuRequest {
+        backend: Backend::CpuOnly,
+        asr: None,
+        vcc: None,
+        vemr: None,
         data_id: "bench".to_string(),
         fast_range: (5, 400, 1),
         slow_range: (10, 800, 1),
