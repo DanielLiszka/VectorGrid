@@ -148,6 +148,40 @@ fn breakout_strategy_for_kernel() -> StrategyConfig {
     s
 }
 
+fn marrt_strategy_for_kernel() -> StrategyConfig {
+    StrategyConfig::default()
+}
+
+fn vfct_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.volume_flow_confirm_enable = true;
+    s
+}
+
+fn pit_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.pressure_impulse_trend_enable = true;
+    s
+}
+
+fn set_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.slope_efficiency_trend_enable = true;
+    s
+}
+
+fn mts_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.momentum_triple_stack_enable = true;
+    s
+}
+
+fn orc_strategy_for_kernel() -> StrategyConfig {
+    let mut s = StrategyConfig::default();
+    s.oscillator_reversion_confluence_enable = true;
+    s
+}
+
 fn expand_range_u16((start, end, step): (u32, u32, u32)) -> Vec<u16> {
     let push_checked = |out: &mut Vec<u16>, v: u32| {
         if v <= u16::MAX as u32 {
@@ -833,6 +867,12 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
     ];
 
     let strategy_cases: &[(&str, fn() -> StrategyConfig)] = &[
+        ("marrt", marrt_strategy_for_kernel),
+        ("pit", pit_strategy_for_kernel),
+        ("set", set_strategy_for_kernel),
+        ("mts", mts_strategy_for_kernel),
+        ("orc", orc_strategy_for_kernel),
+        ("vfct", vfct_strategy_for_kernel),
         ("trend_quality", trend_quality_strategy_for_kernel),
         ("regime_hybrid", regime_hybrid_strategy_for_kernel),
         ("breakout_momentum", breakout_strategy_for_kernel),
@@ -898,11 +938,12 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
                 group.bench_function(&name, |b| {
                     b.iter(|| {
                         let req2 = req.clone();
-                        let candles = if strategy_label == "breakout_momentum" {
-                            &breakout_candles
-                        } else {
-                            &trend_candles
-                        };
+                        let candles =
+                            if strategy_label == "breakout_momentum" || strategy_label == "vfct" {
+                                &breakout_candles
+                            } else {
+                                &trend_candles
+                            };
                         let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
                             req2, candles, &cancel, None,
                         )
@@ -930,6 +971,12 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
 
     let strategy_cases: &[(&str, fn() -> StrategyConfig)] = &[
         ("double_ma", StrategyConfig::default),
+        ("marrt", marrt_strategy_for_kernel),
+        ("pit", pit_strategy_for_kernel),
+        ("set", set_strategy_for_kernel),
+        ("mts", mts_strategy_for_kernel),
+        ("orc", orc_strategy_for_kernel),
+        ("vfct", vfct_strategy_for_kernel),
         ("trend_quality", trend_quality_strategy_for_kernel),
         ("regime_hybrid", regime_hybrid_strategy_for_kernel),
         ("breakout_momentum", breakout_strategy_for_kernel),
@@ -981,11 +1028,12 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
                 group.bench_function(&name, |b| {
                     b.iter(|| {
                         let req2 = req.clone();
-                        let candles = if strategy_label == "breakout_momentum" {
-                            &breakout_candles
-                        } else {
-                            &trend_candles
-                        };
+                        let candles =
+                            if strategy_label == "breakout_momentum" || strategy_label == "vfct" {
+                                &breakout_candles
+                            } else {
+                                &trend_candles
+                            };
                         run_with_dynamic_strategy_opt_env(dynamic_enabled, || {
                             let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
                                 req2, candles, &cancel, None,

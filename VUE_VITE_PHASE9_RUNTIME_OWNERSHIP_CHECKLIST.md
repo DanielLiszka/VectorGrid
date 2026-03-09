@@ -41,7 +41,7 @@ Move remaining runtime ownership out of `web/src/legacy/app.js` and into Vue/Pin
 - `data/polygon compatibility controllers` (CSV load, market-data-dir, polygon cache/download modal handlers): `retain temporarily` (still primary command orchestrators invoked by Vue stores); target split into `dataStore` + data service composables.
 - `optimize/validation orchestration` (run/cancel/validate lifecycle, readiness/progress rendering): `retain temporarily` (still command orchestration owner); target split into `optimizeStore` + `validationStore` runtime services.
 - `analysis/meta rendering controllers` (top/drill/heatmap/meta batch lifecycle + compatibility snapshots): `retain temporarily` (still computes/feeds several legacy-rendered surfaces); target staged migration into `analysisStore` service adapters.
-- `execution/distributed controllers` (live runner, worker control, status output orchestration): `retain temporarily` (still command-lifecycle owner); target staged split into `executionStore` + `distributedStore` services.
+- `execution controllers` (live runner, worker control, status output orchestration): `retain temporarily` (still command-lifecycle owner); target staged split into `executionStore services.
 - `settings/history persistence adapters` (settings serialization, history artifact/saved-run loaders): `wrap` (Vue store owns UI state, legacy remains adapter for persisted compatibility formats); target progressive extraction into typed store persistence modules.
 
 ## Workstream A: Bootstrap Ownership
@@ -75,7 +75,7 @@ Move remaining runtime ownership out of `web/src/legacy/app.js` and into Vue/Pin
 - data
 - optimize/validate
 - analysis/meta
-- execution/distributed
+- execution
 - history/settings
 - [x] Re-home orchestration into stores/services where safe.
 - [x] Convert legacy handlers to thin compatibility adapters or remove when unused.
@@ -86,12 +86,9 @@ Move remaining runtime ownership out of `web/src/legacy/app.js` and into Vue/Pin
 - [x] Eliminate brittle bridge dependencies on hidden DOM behavior when equivalent runtime signals exist.
 - [x] Keep bridge snapshots deterministic and low-churn (coalesced sync only).
 
-## Latest Slice Log (2026-02-21: Execution + Distributed Runtime Ownership)
+## Latest Slice Log (2026-02-21: Execution Runtime Ownership)
 
-- [x] `executionDistributedBridge` capability flags (`can*`) moved from hidden button disabled-state reads to runtime attributes (`data-running`, `data-exec-busy`).
 - [x] Added explicit execution busy runtime signal emission in legacy runtime (`document.documentElement.dataset.execBusy` via `setExecBusy(...)`).
-- [x] Removed legacy hidden execution/distributed button listener registration paths; runtime handlers are now called via direct Vue store runtime wrappers only.
-- [x] Bridge observers remain coalesced and deterministic; button mutation observers were removed for execution/distributed slices.
 
 ## Latest Slice Log (2026-02-21: Optimize + Validation Runtime Ownership)
 
@@ -189,7 +186,6 @@ Move remaining runtime ownership out of `web/src/legacy/app.js` and into Vue/Pin
 - [x] Analysis top/pareto/drill/heatmap interactions.
 - [x] Meta batch + ML + stage4 flows.
 - [x] Execution live/runner controls.
-- [x] Distributed worker + run/cancel flows.
 
 ## Exit Criteria (Phase 9A Done)
 
@@ -197,3 +193,4 @@ Move remaining runtime ownership out of `web/src/legacy/app.js` and into Vue/Pin
 - [x] Legacy runtime acts only as compatibility adapter for unavoidable remaining paths.
 - [x] No remaining direct ownership blockers for deleting large parts of `legacy/app.js`.
 - [x] All validation gates green with documented snapshots.
+

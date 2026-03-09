@@ -22,14 +22,14 @@ Primary target flow:
 - Keep CPU-only environments fully supported.
 - Preserve backend command behavior (`invoke(...)`) and core run artifacts.
 - Avoid breaking keyboard-centric usage (`Ctrl+K`, run/validate/export shortcuts).
-- Maintain existing power-user capabilities: distributed, batch, meta, debug.
+- Maintain existing power-user capabilities: batch, meta, and debug.
 
 ## 3) Current-State Findings (From Existing UI)
 
 Observed structure:
 
 - Workflow tabs: `data`, `optimize`, `validate`, `analyze`, `history`, `settings` (`dist/app.js`).
-- Controls tabs: `data`, `opt`, `strategy`, `advanced`, `distributed` (`dist/index.html`).
+- Controls tabs: `data`, `opt`, `strategy`, `advanced` (`dist/index.html`).
 - Results tabs: `overview`, `top`, `pareto`, `validate`, `drill`, `heatmap`, `history`, `meta`, `debug` (`dist/index.html`).
 
 Main usability issues:
@@ -60,7 +60,7 @@ Guided Workspace becomes the default home for 90% of usage:
 
 Pro Workspace contains advanced and low-frequency tools:
 
-- Distributed runs, debug JSON, deep parameter controls, specialist toggles.
+- Debug JSON, deep parameter controls, and specialist toggles.
 
 This preserves all features while dramatically lowering cognitive load in the default path.
 
@@ -98,7 +98,6 @@ Sub-steps displayed as a stepper:
 
 ### 5.4 Pro Tools
 
-- Distributed worker/leader flows.
 - Deep optimization controls.
 - Debug JSON and diagnostics.
 
@@ -168,7 +167,6 @@ Note on wording:
 | Batch runs | Yes | Aggregate Analysis | Guided batch panel |
 | Meta selection/holdout/grouping | Yes | Aggregate Analysis | Structured form with presets |
 | ML confidence meta tooling | Yes | Aggregate Analysis -> Advanced | Hidden behind "Experimental" section |
-| Distributed worker/leader | Yes | Pro Tools -> Distributed | Advanced panel |
 | Debug output | Yes | Pro Tools -> Debug | Text view with copy/export |
 | Theme/window effects | Yes | Settings | Compact appearance panel |
 
@@ -229,7 +227,7 @@ Motion/feedback:
 3. Validate and export report.
 4. Save/tag run and rerun from library.
 5. Run aggregate analysis filtered by strategy/timeframe/tag.
-6. Find and use distributed tools.
+6. Find and use debug/diagnostic tools.
 
 ### 10.4 Success thresholds
 
@@ -289,7 +287,7 @@ Compatibility strategy:
 
 ### Phase 4 - Pro tools consolidation
 
-- Move distributed/debug/deep controls to Pro Tools.
+- Move debug/deep controls to Pro Tools.
 - Ensure discoverability via command palette and direct links from relevant contexts.
 
 ### Phase 5 - Visual polish pass
@@ -341,7 +339,7 @@ Risk: New terminology confuses existing users.
 
 1. Should aggregate analysis live as a separate top-level workspace, or under Run Library as a tab?
 2. Should cross-timeframe analysis be first-class in V1 redesign, or a V2 extension?
-3. Should distributed tooling be hidden by default unless enabled in settings?
+3. Should advanced tooling be hidden by default unless enabled in settings?
 4. Should we keep window effects in the main header or move fully into Settings?
 
 ## 16) Immediate Next Step

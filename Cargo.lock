@@ -4984,9 +4984,9 @@ dependencies = [
 
 [[package]]
 name = "vector-ta"
-version = "0.1.5"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64eb0f245b95864ea19351b3648a7a80ce143b7005a164c85d4713365f3e6ccf"
+checksum = "0877bd394970de62f5f5aa92ff4b496e26b35c37dcb537a1fb771e6f81ff6689"
 dependencies = [
  "aligned-vec",
  "anyhow",

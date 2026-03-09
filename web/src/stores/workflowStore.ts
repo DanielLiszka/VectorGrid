@@ -180,6 +180,15 @@ function resolveTabs(
   return { controls, results }
 }
 
+function tabAllowed(kind: 'controls' | 'results', workflow: string, tab: string): boolean {
+  const allowed = allowedTabs(workflow)
+  const next = kind === 'controls' ? normalizeControls(tab) : normalizeResults(tab)
+  if (!next) return false
+  return kind === 'controls'
+    ? allowed.controls.includes(next)
+    : allowed.results.includes(next)
+}
+
 function rememberWorkflowTabs(workflow: string, controls: string, results: string): void {
   const wf = normalizeWorkflow(workflow)
   if (!wf) return
@@ -194,22 +203,25 @@ function inferWorkflowFromTabs(controlsTab: string, resultsTab: string, currentW
 
   if (results === 'validate') return 'validate'
   if (results === 'history') return 'history'
-  if (results === 'meta' || results === 'debug') return 'settings'
+  if (results === 'meta') {
+    return normalizeWorkflow(currentWorkflow) === 'finalize' ? 'finalize' : 'settings'
+  }
+  if (results === 'debug') return 'settings'
   if (results === 'drill') return 'analyze'
   if (controls === 'data' && (!results || results === 'overview')) return 'data'
   if (normalizeWorkflow(currentWorkflow) === 'data') return 'optimize'
   return normalizeWorkflow(currentWorkflow) || 'optimize'
 }
 
-function workspaceFromWorkflow(workflow: string, controlsTab: string, resultsTab: string, keepSettingsOverride = false): string {
+function workspaceFromWorkflow(workflow: string, resultsTab: string, keepSettingsOverride = false): string {
   const wf = normalizeWorkflow(workflow) || DEFAULT_WORKFLOW
   if (wf === 'history') return 'library'
   if (wf === 'settings') {
-    const controls = normalizeControls(controlsTab)
     const results = normalizeResults(resultsTab)
-    if (controls === 'distributed' || results === 'debug') return 'pro'
+    if (results === 'debug') return 'pro'
     return 'aggregate'
   }
+  if (wf === 'finalize') return 'workflow'
   if (keepSettingsOverride && wf === 'data') return 'settings'
   return 'workflow'
 }
@@ -242,6 +254,8 @@ function deriveSubtitle(state: Pick<WorkflowState, 'workspace' | 'workflow' | 'w
     if (resultsLabel && results !== 'overview') view = view ? `${view} • ${resultsLabel}` : resultsLabel
   } else if (workspace === 'workflow' && workflow === 'analyze') {
     view = tabLabel('results', results)
+  } else if (workspace === 'workflow' && workflow === 'finalize') {
+    view = 'Meta + ML'
   } else if (workspace === 'aggregate' || workspace === 'pro') {
     const controlsLabel = tabLabel('controls', controls)
     const resultsLabel = tabLabel('results', results)
@@ -331,8 +345,8 @@ export const useWorkflowStore = defineStore('workflow', {
       const shouldInferWorkspace = !!explicitControls || !!explicitResults || workflow !== this.workflow
       const workspace = explicitWorkspace
         || (shouldInferWorkspace
-          ? workspaceFromWorkflow(workflow, controls, results, keepSettingsOverride)
-          : (this.workspace || workspaceFromWorkflow(workflow, controls, results, keepSettingsOverride)))
+          ? workspaceFromWorkflow(workflow, results, keepSettingsOverride)
+          : (this.workspace || workspaceFromWorkflow(workflow, results, keepSettingsOverride)))
 
       const explicitStep = normalizeStep(snapshot.workflowStep)
       const step = explicitStep || (workflow !== this.workflow ? workflowStep(workflow) : (this.workflowStep || workflowStep(workflow)))
@@ -390,7 +404,7 @@ export const useWorkflowStore = defineStore('workflow', {
         if (this.workflow !== 'settings') rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
         nextWorkflow = 'settings'
         nextStep = workflowStep('settings')
-        nextControls = 'distributed'
+        nextControls = 'advanced'
         nextResults = 'debug'
       } else if (nextWorkspace === 'settings') {
         if (this.workflow !== 'data') rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
@@ -426,7 +440,7 @@ export const useWorkflowStore = defineStore('workflow', {
       const prevControls = this.controlsTab
       const prevResults = this.resultsTab
 
-      let nextWorkspace = workspaceFromWorkflow(nextWorkflow, this.controlsTab, this.resultsTab, keepSettingsOverride)
+      let nextWorkspace = workspaceFromWorkflow(nextWorkflow, this.resultsTab, keepSettingsOverride)
       let nextStep = workflowStep(nextWorkflow)
       let nextControls = this.controlsTab
       let nextResults = this.resultsTab
@@ -435,7 +449,7 @@ export const useWorkflowStore = defineStore('workflow', {
         nextControls = 'advanced'
         nextResults = 'meta'
       } else if (nextWorkspace === 'pro') {
-        nextControls = 'distributed'
+        nextControls = 'advanced'
         nextResults = 'debug'
       } else if (nextWorkspace === 'settings') {
         nextControls = 'data'
@@ -484,42 +498,18 @@ export const useWorkflowStore = defineStore('workflow', {
     selectControlsTab(tab: string, options?: WorkflowCommitOptions): void {
       const nextTab = normalizeControls(tab)
       if (!nextTab || this.controlsTab === nextTab) return
-
-      const prevWorkflow = this.workflow
-      const prevControls = this.controlsTab
-      const prevResults = this.resultsTab
-      const inferredWorkflow = inferWorkflowFromTabs(nextTab, this.resultsTab, this.workflow)
+      if (!tabAllowed('controls', this.workflow, nextTab)) return
 
       this.controlsTab = nextTab
-      if (inferredWorkflow !== this.workflow) {
-        rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
-        this.workflow = inferredWorkflow
-        this.workflowStep = workflowStep(inferredWorkflow)
-      }
-
-      const keepSettingsOverride = this.workspace === 'settings' && this.workflow === 'data'
-      this.workspace = workspaceFromWorkflow(this.workflow, this.controlsTab, this.resultsTab, keepSettingsOverride)
       this.commitState('vue', true, options)
     },
 
     selectResultsTab(tab: string, options?: WorkflowCommitOptions): void {
       const nextTab = normalizeResults(tab)
       if (!nextTab || this.resultsTab === nextTab) return
-
-      const prevWorkflow = this.workflow
-      const prevControls = this.controlsTab
-      const prevResults = this.resultsTab
-      const inferredWorkflow = inferWorkflowFromTabs(this.controlsTab, nextTab, this.workflow)
+      if (!tabAllowed('results', this.workflow, nextTab)) return
 
       this.resultsTab = nextTab
-      if (inferredWorkflow !== this.workflow) {
-        rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
-        this.workflow = inferredWorkflow
-        this.workflowStep = workflowStep(inferredWorkflow)
-      }
-
-      const keepSettingsOverride = this.workspace === 'settings' && this.workflow === 'data'
-      this.workspace = workspaceFromWorkflow(this.workflow, this.controlsTab, this.resultsTab, keepSettingsOverride)
       this.commitState('vue', true, options)
     },
 

@@ -463,10 +463,9 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
     if strategy.uses_execution_overlays()
         || strategy.stop_loss_pct().is_some()
         || strategy.take_profit_pct().is_some()
-        || strategy.trailing_stop_pct().is_some()
     {
         return Err(
-            "VEMR GPU kernel currently supports strategy execution without overlays/stop-loss/take-profit/trailing-stop."
+            "VEMR GPU kernel currently supports strategy execution without overlays/stop-loss/take-profit."
                 .to_string(),
         );
     }
@@ -492,7 +491,6 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
             .ok_or_else(|| "VEMR GPU runtime missing".to_string())?;
         rt.set_current()?;
 
-        let d_close = DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
         let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(signals.cols) }
             .map_err(|e| e.to_string())?;
         let d_combo_z = DeviceBuffer::from_slice(combos.z_row_index).map_err(|e| e.to_string())?;
@@ -504,6 +502,8 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
         let d_out =
             unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
 
+        let d_close =
+            DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
         launch_compute_log_returns_f32(rt, device_id, &d_close, &mut d_lr, signals.cols)?;
 
         let kernel = rt

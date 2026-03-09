@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 
-use ta_app_core::{read_candles_from_csv_compat, Backend, DoubleMaRequest};
+use ta_app_core::{
+    parse_timeframe_label, read_candles_from_csv_compat, resample_candles, Backend, DoubleMaRequest,
+};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
@@ -80,9 +82,6 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = BackendArg::Cpu)]
     backend: BackendArg,
 
-    #[arg(long, default_value_t = 0)]
-    device_id: u32,
-
     #[arg(long, default_value = "sma")]
     fast_ma: String,
 
@@ -91,6 +90,9 @@ struct Cli {
 
     #[arg(long, default_value = "close")]
     ma_source: String,
+
+    #[arg(long)]
+    timeframe: Option<String>,
 
     #[arg(long, default_value = "5:50:1")]
     fast_period: U32Range,
@@ -112,6 +114,12 @@ struct Cli {
 
     #[arg(long, default_value_t = 6.0)]
     alma_sigma: f64,
+
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    long_only: bool,
+
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    allow_flip: bool,
 
     #[arg(long, default_value_t = false)]
     include_all: bool,
@@ -157,7 +165,7 @@ fn make_synth_candles(len: usize) -> Candles {
 fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
-    let candles = if let Some(path) = cli.csv.as_ref() {
+    let mut candles = if let Some(path) = cli.csv.as_ref() {
         read_candles_from_csv_compat(
             path.to_str()
                 .ok_or_else(|| "invalid csv path".to_string())?,
@@ -166,20 +174,17 @@ fn main() -> Result<(), String> {
         make_synth_candles(cli.synth_len)
     };
 
+    if let Some(raw_tf) = cli.timeframe.as_deref() {
+        let tf = parse_timeframe_label(raw_tf)?;
+        candles = resample_candles(&candles, tf.interval_ms)?;
+    }
+
     let backend = match cli.backend {
-        BackendArg::Auto => Backend::Auto {
-            device_id: cli.device_id,
-        },
+        BackendArg::Auto => Backend::Auto { device_id: 0 },
         BackendArg::Cpu => Backend::CpuOnly,
-        BackendArg::GpuSweep => Backend::GpuOnly {
-            device_id: cli.device_id,
-        },
-        BackendArg::GpuHybridKernel => Backend::GpuHybridKernel {
-            device_id: cli.device_id,
-        },
-        BackendArg::GpuKernel => Backend::GpuKernel {
-            device_id: cli.device_id,
-        },
+        BackendArg::GpuSweep => Backend::GpuOnly { device_id: 0 },
+        BackendArg::GpuHybridKernel => Backend::GpuHybridKernel { device_id: 0 },
+        BackendArg::GpuKernel => Backend::GpuKernel { device_id: 0 },
     };
 
     let objective = match cli.objective {
@@ -240,6 +245,10 @@ fn main() -> Result<(), String> {
         })
     };
 
+    let mut strategy = StrategyConfig::default();
+    strategy.long_only = cli.long_only;
+    strategy.allow_flip = cli.allow_flip;
+
     let req = DoubleMaRequest {
         backend,
         data_id: "cli".to_string(),
@@ -264,13 +273,14 @@ fn main() -> Result<(), String> {
         slow_ma_params,
         fast_ma_param_sweeps: None,
         slow_ma_param_sweeps: None,
-        strategy: StrategyConfig::default(),
+        strategy,
         halftrend_filter,
         objective,
         mode: OptimizationMode::Grid,
         top_k: Some(cli.top_k),
         include_all: Some(cli.include_all),
         heatmap_bins: Some(cli.heatmap_bins),
+        constraints: None,
         vdps: None,
     };
 

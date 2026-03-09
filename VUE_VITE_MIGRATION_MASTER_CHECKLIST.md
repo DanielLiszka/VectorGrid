@@ -17,7 +17,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 - [x] Legacy UI runtime ported into Vite source (`web/src/legacy/template.html`, `web/src/legacy/app.js`, `web/src/styles/app.css`).
 - [x] Vue-first runtime shell completed (`web/index.html` minimal entry + `web/src/App.vue` app shell + hidden compatibility-root host in `web/src/components/LegacyCompatibilityRoots.vue`).
 - [x] Legacy runtime bridge entrypoint established (`initLegacyApp()` called from Vue host) to reduce implicit boot coupling.
-- [x] Legacy action bridge added (`window.__VTA_LEGACY_ACTIONS__`) and adopted by run/validation/distributed Vue panels to reduce hidden button-id coupling while preserving legacy behavior.
 - [x] Vue workspace panels/context docks now route button-triggered legacy actions through shared `invokeLegacyButton()` helper, removing direct DOM click boilerplate from component code.
 - [x] Settings workspace action set (`btnSettings*`) promoted to named legacy actions and registered in the bridge (`settings.*`) to decouple Vue settings UX from hidden settings button wiring.
 - [x] Settings market-data-dir set flow now supports structured `settings.setMarketDataDir` payloads (dir + move-existing) from Vue panels, reducing hidden-input coupling in settings UX.
@@ -35,7 +34,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 - [x] Additional feature-domain bridges added: optimize + validation + strategy + advanced context synced into Pinia (`optimizeStore`, `validationStore`, `strategyStore`, `advancedStore`).
 - [x] Workflow/navigation bridge added: legacy workspace/workflow state synced into Pinia (`workflowStore`) with Vue quick-switch panel.
 - [x] Analysis/history/settings bridges added: legacy context synced into Pinia (`analysisStore`, `historyStore`, `settingsStore`).
-- [x] Execution/distributed bridges added: legacy context synced into Pinia (`executionStore`, `distributedStore`) with Vue overlays for live runner + distributed controls.
 - [x] Run footer context bridged into Pinia (`optimizeStore`) with Vue-native run/cancel footer panel (`RunFooterPanel`) mounted into the legacy controls footer host.
 - [x] Data tab UI migrated to a Vue-native panel (`DataWorkspacePanel`) mounted into the legacy controls tab host; legacy Data DOM remains hidden for behavior compatibility.
 - [x] Optimize tab UI migrated to a Vue-native panel (`OptimizeWorkspacePanel`) mounted into the legacy controls tab host; core controls and MA-parameter hosts render in Vue while existing MA-parameter rendering logic renders into those Vue hosts.
@@ -52,7 +50,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 - [x] Debug tab output migrated to a Vue-native panel (`DebugWorkspacePanel`) mounted into the legacy results tab host.
 - [x] Settings workspace non-execution panes migrated to a Vue-native panel (`SettingsWorkspacePanel`) mounted into the legacy settings host; legacy non-execution Settings DOM remains hidden while the migrated execution pane remains mounted.
 - [x] History tab UI migrated to a Vue-native panel (`HistoryWorkspacePanel`) mounted into the legacy tab host; legacy History DOM remains hidden for behavior compatibility.
-- [x] Distributed tab UI migrated to a Vue-native panel (`DistributedWorkspacePanel`) mounted into the legacy tab host; legacy Distributed DOM remains hidden for behavior compatibility.
 - [x] Execution settings pane UI migrated to a Vue-native panel (`ExecutionWorkspacePanel`) mounted into the legacy settings host; legacy Execution DOM remains hidden for behavior compatibility.
 - [x] Execution panel now renders broker order rows in Vue (`executionStore.orderRows`) and hosts the legacy execution chart renderer in Vue mode (`#execTvChartVue`/`#execTvChartMetaVue` preferred by legacy runtime).
 - [x] Keyboard shortcut parity now runs through Vue (`GlobalShortcutBridge`) while preserving legacy command/action execution paths; legacy global shortcut registration is disabled via startup flag for cutover safety.
@@ -71,7 +68,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 - [x] Normalized Tauri runtime error model added (`TauriRuntimeError`) and applied to invoke/event wrappers.
 - [x] Global invoke instrumentation added to track all command executions.
 - [x] Typed Tauri event wrapper added (`web/src/tauri/events.ts`) and used by instrumentation.
-- [x] Progress/event subscriptions wired for `double_ma_progress`, `distributed_progress`, `live_execution_runner_event`, `polygon_live_status`, `polygon_live_bar`.
 - [x] Vue task/progress overlay implemented (`web/src/App.vue`) with cancellation actions.
 - [x] Task center lifecycle/status model expanded to include `idle|queued|running|cancelling|success|failed|cancelled`, with persistent timeline and toast notifications.
 - [x] Storage compatibility adapter added (`web/src/utils/storage.ts`) with schema versioning + startup migration (`runStorageMigrations()` in `web/src/main.ts`).
@@ -125,7 +121,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 - [x] Workspace tabs: `workflow`, `library`, `aggregate`, `pro`, `settings`
 - [x] Workflow steps: `data`, `optimize`, `validate`, `analyze`
 - [x] Legacy workflow tabs: `data`, `optimize`, `validate`, `analyze`, `history`, `settings`
-- [x] Controls tabs: `data`, `opt`, `strategy`, `advanced`, `distributed`
 - [x] Results tabs: `overview`, `top`, `pareto`, `validate`, `drill`, `heatmap`, `history`, `meta`, `debug`
 - [x] Modals: Polygon downloader, command palette
 - [x] Execution panel and chart overlays
@@ -142,7 +137,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 ### 1.5 Event channels already used
 
 - [x] `double_ma_progress`
-- [x] `distributed_progress`
 - [x] `live_execution_runner_event`
 - [x] `polygon_live_bar`
 - [x] `polygon_live_status`
@@ -218,12 +212,6 @@ Primary UX goal: better user feedback for long-running tasks (progress, status, 
 - [x] `get_gpu_status`
 - [x] `list_cuda_devices`
 
-#### Distributed
-- [x] `distributed_start_worker_server`
-- [x] `distributed_stop_worker_server`
-- [x] `distributed_worker_server_status`
-- [x] `distributed_run_double_ma_assets`
-- [x] `distributed_run_double_ma_tiled`
 
 #### Reports
 - [x] `build_report_xlsx`
@@ -383,7 +371,6 @@ Use an incremental "strangler" migration:
 - [x] `historyStore` (legacy DOM bridge-backed)
 - [x] `settingsStore` (legacy DOM bridge-backed)
 - [x] `executionStore` (legacy DOM bridge-backed)
-- [x] `distributedStore` (legacy DOM bridge-backed)
 - [x] Keep chart objects and large arrays out of deep reactivity (`markRaw`, `shallowRef`).
 - [x] Add persistence adapter preserving existing keys (1.6 list).
 - [x] Add storage schema versioning + migration helpers.
@@ -400,7 +387,6 @@ Use an incremental "strangler" migration:
 - [x] Add toast/snackbar notifications for completion and errors.
 - [x] Normalize progress event payload adapters for:
 - [x] `double_ma_progress`
-- [x] `distributed_progress`
 - [x] `live_execution_runner_event`
 - [x] `polygon_live_status`
 - [x] Throttle high-frequency UI updates (target ~4-10Hz for logs/progress).
@@ -439,9 +425,6 @@ Use an incremental "strangler" migration:
 - [x] meta/stage4 artifact flows
 - [x] batch summary persistence
 
-### Slice F: Distributed + Execution Runner
-- [x] distributed worker server controls
-- [x] asset/tiled distributed runs
 - [x] live execution runner controls + status stream
 - [x] broker order table refresh + chart overlay
 
@@ -515,7 +498,6 @@ Progress notes:
 - [x] Workflow subtitle is now tracked in runtime state (`CURRENT_WORKFLOW_SUBTITLE`) and emitted via workflow snapshot events, removing strict dependency on reading `#workflowSubtitle` DOM text for Vue workflow-store sync.
 - [x] `legacy/template.html` is now a hidden compatibility-root fragment (no `html/head/body` wrappers or inline startup-script ownership); `App.vue` mounts `LegacyCompatibilityRoots` instead of `LegacyHost`.
 - [x] `execution.setField` now applies core execution field updates directly in runtime (no synthetic input/change dispatch for those fields) and emits `vta:execution-snapshot` so the execution bridge can sync immediately.
-- [x] `distributed.setField` now applies distributed field updates directly in runtime (no synthetic input/change dispatch for those fields) and emits `vta:distributed-snapshot` so the distributed bridge can sync immediately.
 - [x] `data.setField` now applies core data field updates directly in runtime (`csvPath`, `marketDataDir`, `dataTimeframe`, `marketDataMoveExisting`, `autoRestoreDataset`) and emits `vta:data-snapshot` so the data bridge can sync immediately.
 - [x] `history.setField` now applies history selector/search/tag updates directly in runtime (`historySelect`, `savedRunsSelect`, `savedRunsSearch`, `savedRunsTags`) and emits `vta:history-snapshot` so the history bridge can sync immediately.
 - [x] `optimize.setField` now applies optimize field updates directly in runtime (`strategyKind`/backend/device/objective/mode/ranges/MA types) with explicit side-effect updates (run-plan, pairs-preview, MA param refresh, backend constraints) and emits `vta:optimize-snapshot`.
@@ -568,11 +550,8 @@ Progress notes:
 - [x] Vue component direct `invokeLegacyAction(...)` callsites currently reduced to `26` after execution-panel/dock action-store migration.
 - [x] Latest frontend build after execution store action migration: `legacy-app` ~`524.36 kB` (gzip ~`137.60 kB`), `legacy-core` ~`23.30 kB` (gzip ~`8.03 kB`), `legacy-template` ~`169.29 kB` (gzip ~`45.71 kB`).
 - [x] Analysis surface command + field mutation dispatch moved into typed `analysisStore` actions (`set*Field`, top-table controls, overview actions, heatmap export, drill rerender, meta/batch/ML/stage4 action groups); `TopWorkspacePanel`/`OverviewWorkspacePanel`/`HeatmapWorkspacePanel`/`DrillWorkspacePanel`/`ParetoWorkspacePanel`/`MetaWorkspacePanel` no longer call `invokeLegacyAction` directly.
-- [x] Strategy/Advanced/Distributed surfaces now dispatch through typed stores (`strategyStore`, `advancedStore`, `distributedStore`), and `StrategyWorkspacePanel`/`AdvancedWorkspacePanel`/`DistributedWorkspacePanel`/`DistributedContextDock` no longer call `invokeLegacyAction` directly.
 - [x] `HistoryContextDock` command dispatch moved into typed `historyStore` actions; context dock no longer calls `invokeLegacyAction` directly.
-- [x] Added store action tests for newly migrated domains: `analysisStore.actions.test.ts` (expanded), `advancedStore.actions.test.ts`, `distributedStore.actions.test.ts`, `strategyStore.actions.test.ts`.
 - [x] Added component action-ownership parity test (`web/src/legacy/componentActionOwnership.test.ts`) to enforce no direct `invokeLegacyAction(...)` calls inside Vue component files.
-- [x] Vue component direct `invokeLegacyAction(...)` callsites currently reduced to `0` in `web/src/components` after analysis/meta/strategy/advanced/distributed/history context migration.
 - [x] Latest frontend build after full component action-store migration: `legacy-app` ~`527.55 kB` (gzip ~`138.14 kB`), `legacy-core` ~`23.30 kB` (gzip ~`8.03 kB`), `legacy-template` ~`169.29 kB` (gzip ~`45.71 kB`).
 - [x] Legacy template decommission pass removed unreferenced compatibility IDs (`legacyCompatibilityRoot`, `savedRunDetailCard`) from `web/src/legacy/template.html`; parity test suite remains green.
 - [x] Latest frontend build after template ID cleanup: `legacy-app` ~`527.55 kB` (gzip ~`138.14 kB`), `legacy-core` ~`23.30 kB` (gzip ~`8.03 kB`), `legacy-template` ~`169.24 kB` (gzip ~`45.68 kB`).
@@ -627,14 +606,12 @@ Progress notes:
 - [x] `workflowStore` now owns normalized tab runtime state (`controlsTab`, `resultsTab`, `aggregateTab`) in addition to workspace/workflow/workflow-step, with typed workflow actions updating these fields before compatibility dispatch.
 - [x] Workflow bridge snapshot payloads now include controls/results/aggregate tab attributes from root runtime state, so Vue tab ownership remains synchronized even when legacy-originated transitions occur.
 - [x] `App.vue` lazy-panel activation and `VueWorkspaceShell.vue` tab rendering now source active controls/results tabs from `workflowStore` rather than domain-bridge `activeControlsTab` / `activeResultsTab` fan-in.
-- [x] Workspace panel visibility gates for Data/Optimize/Strategy/Advanced/Distributed and Overview/Top/Pareto/Validate/Drill/Heatmap/Meta/Debug now consume `workflowStore` controls/results tabs, reducing UI visibility coupling to per-domain legacy snapshot timing.
 - [x] Latest frontend validation after workflow-tab ownership migration: `npm --prefix web run typecheck`, `npm --prefix web run test` (`27` files / `85` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
 - [x] Latest frontend build after workflow-tab ownership migration: `legacy-app` ~`524.31 kB` (gzip ~`137.70 kB`), `legacy-core` ~`23.61 kB` (gzip ~`8.07 kB`), `legacy-template` ~`168.33 kB` (gzip ~`45.33 kB`).
 - [x] Workflow runtime ownership migrated into `workflowStore`: `selectWorkspace`/`selectWorkflow`/`selectWorkflowStep`/`selectControlsTab`/`selectResultsTab`/`selectAggregateTab` now run Vue-native workspace/workflow/tab state-machine transitions (including localStorage + root `data-*` sync) without dispatching `workflow.set*` legacy runtime actions.
 - [x] Vue startup now initializes workflow runtime attrs from store state (`workflowStore.syncRuntimeState()` in `App.vue`), so compatibility bridges consume Vue-owned root tab/workspace attributes from first render.
 - [x] Workflow bridge now runs in Vue-owner mode: incoming `vta:workflow-snapshot` events only hydrate tab/subtitle fields (`controlsTab`/`resultsTab`/`aggregateTab`/`workflowSubtitle`) and no longer overwrite Vue-owned workspace/workflow/workflow-step state.
 - [x] Settings navigation actions are now Vue-native: `settingsStore.gotoLibrary()` / `settingsStore.gotoAggregate()` route through `workflowStore.selectWorkspace(...)` instead of `settings.goto*` legacy runtime actions.
-- [x] Remaining context-dock tab display/visibility dependencies moved to workflow store (`AnalysisContextDock` and `DistributedContextDock` now read `workflowStore.resultsTab` / `workflowStore.controlsTab`).
 - [x] Remaining non-legacy runtime `invokeLegacyAction(...)` callsites reduced from `12` files to `11` files after removing workflow-store and settings-navigation legacy dispatch dependencies.
 - [x] Added/updated Vue ownership regression tests for this slice: `workflowStore.test.ts`, `workflowBootstrap.test.ts`, and `settingsStore.actions.test.ts`.
 - [x] Latest frontend validation after Vue workflow state-machine migration: `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run test` (`27` files / `86` tests), and `npm --prefix web run build` all passing.
@@ -709,12 +686,6 @@ Progress notes:
 - [x] Latest frontend validation after strategy-action decommission slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`27` files / `86` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
 - [x] Latest frontend build after strategy-action decommission slice: `legacy-app` ~`523.07 kB` (gzip ~`137.91 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.55 kB` (gzip ~`45.17 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
 - [x] `web/src/legacy/app.js` line count reduced from `17076` to `17024` after removing legacy strategy-field action ownership.
-- [x] Distributed field mutation ownership moved to Vue runtime-compatible DOM events in `distributedStore`: `setInputField` now dispatches native `input` events and `setSelectField` dispatches native `change` events against compatibility controls instead of `invokeLegacyAction('distributed.setField', ...)`.
-- [x] Removed `distributed.setField` from typed legacy action unions (`web/src/legacy/actions.ts`) and decommissioned the legacy runtime handler/registry path in `web/src/legacy/app.js` (`DISTRIBUTED_TEXT_FIELDS`, `handleDistributedSetFieldAction`, and registry entry removed).
-- [x] Updated distributed store action test coverage for DOM-event dispatch semantics (`distributedStore.actions.test.ts`) using explicit document harness stubs while preserving legacy-action coverage for distributed run controls.
-- [x] Latest frontend validation after distributed field-action decommission slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`27` files / `86` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
-- [x] Latest frontend build after distributed field-action decommission slice: `legacy-app` ~`522.18 kB` (gzip ~`137.79 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.55 kB` (gzip ~`45.17 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
-- [x] `web/src/legacy/app.js` line count reduced from `18834` to `18803` after removing distributed field-action runtime ownership in this slice.
 - [x] Execution field mutation ownership moved to Vue runtime-compatible DOM events in `executionStore`: text/select setters now dispatch native `input`/`change` events and checkbox setter dispatches native `change` against compatibility controls instead of `invokeLegacyAction('execution.setField', ...)`.
 - [x] Removed `execution.setField` from typed legacy action unions (`web/src/legacy/actions.ts`) and decommissioned the legacy runtime handler/registry path in `web/src/legacy/app.js` (`EXECUTION_TEXT_FIELDS`, `EXECUTION_CHECK_FIELDS`, `handleExecutionSetFieldAction`, and registry entry removed).
 - [x] Updated execution store action test coverage for DOM-event dispatch semantics (`executionStore.actions.test.ts`) using explicit document harness stubs while preserving legacy-action coverage for execution control/run actions.
@@ -788,7 +759,6 @@ Progress notes:
 - [x] Validation after controls/results wrapper ID cleanup: `npm --prefix web run typecheck`, `npm --prefix web run test` (`28` files / `90` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
 - [x] Build after controls/results wrapper ID cleanup: `legacy-app` ~`514.35 kB` (gzip ~`136.36 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.43 kB` (gzip ~`45.11 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
 - [x] Removed dead `#resultsTabBar` runtime selector branch from `web/src/legacy/app.js` (results tab bar compatibility markup is already decommissioned); heatmap fallback now relies only on headless tab state + Vue-owned tab surface.
-- [x] `initMarketDataDirUi` and `initDistributedUi` now skip legacy hidden-button click listener registration when Vue workflow ownership is active; Vue store actions continue using typed runtime action dispatch without duplicate DOM listener ownership.
 - [x] Extended static parity guard assertions in `web/src/legacy/uiSurfaceParity.test.ts` to enforce no residual `resultsTabBar` runtime coupling inside `web/src/legacy/app.js`.
 - [x] Validation after legacy hidden-button listener/runtime selector decommission slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`28` files / `90` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
 - [x] Build after legacy hidden-button listener/runtime selector decommission slice: `legacy-app` ~`514.03 kB` (gzip ~`136.22 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.43 kB` (gzip ~`45.11 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
@@ -842,12 +812,6 @@ Progress notes:
 - [x] Build after execution action-registry decommission slice: `legacy-app` ~`515.89 kB` (gzip ~`136.87 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.43 kB` (gzip ~`45.11 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
 - [x] Current `web/src/legacy/app.js` line count snapshot after execution action-registry decommission slice: `18356`.
 - [x] Non-legacy runtime `invokeLegacyAction(...)` callsites across `web/src` reduced from `89` to `81` in this slice.
-- [x] Distributed action ownership moved off legacy action registry: `distributedStore` control actions (`generateToken`, worker start/stop/status, polygon fill/current CSV, run assets/tiles, cancel) now call direct runtime wrappers.
-- [x] Added explicit distributed direct-runtime exports in `web/src/legacy/app.js` (`invokeLegacyDistributed*Runtime`) and removed `distributed.*` action entries from `LEGACY_ACTION_REGISTRY`.
-- [x] Updated action/store tests for this slice: expanded `web/src/legacy/actions.test.ts` (distributed wrapper coverage) and updated `web/src/stores/distributedStore.actions.test.ts` for direct distributed-runtime dispatch expectations.
-- [x] Validation after distributed action-registry decommission slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`28` files / `104` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
-- [x] Build after distributed action-registry decommission slice: `legacy-app` ~`517.63 kB` (gzip ~`137.03 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.43 kB` (gzip ~`45.11 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
-- [x] Current `web/src/legacy/app.js` line count snapshot after distributed action-registry decommission slice: `18383`.
 - [x] Non-legacy runtime `invokeLegacyAction(...)` callsites across `web/src` reduced from `81` to `72` in this slice.
 - [x] History action ownership moved off legacy action registry: `historyStore` session/saved-run actions now call direct runtime wrappers (`invokeLegacyHistory*Runtime`) instead of `invokeLegacyAction('history.*')`.
 - [x] Added explicit history direct-runtime exports in `web/src/legacy/app.js` (`invokeLegacyHistory*Runtime`) and removed `history.*` action entries from `LEGACY_ACTION_REGISTRY`.
@@ -874,7 +838,6 @@ Progress notes:
 - [x] Current `web/src/legacy/app.js` line count snapshot after final action-registry decommission slices: `18752`.
 - [x] Non-test runtime `invokeLegacyAction(...)` callsites across `web/src` reduced from `51` to `1` (compatibility shim in `web/src/legacy/actions.ts`).
 - [x] Removed compatibility legacy action shim from runtime bridge: deleted `invokeLegacyAction`/`LegacyActionName` bridge path from `web/src/legacy/actions.ts` and removed `invokeLegacyRuntimeAction(...)` from `web/src/legacy/app.js`.
-- [x] Updated remaining store/action test harnesses to stop importing/mocking `invokeLegacyAction` (`dataStore.actions.test.ts`, `optimizeStore.actions.test.ts`, `validationStore.actions.test.ts`, `historyStore.actions.test.ts`, `executionStore.actions.test.ts`, `settingsStore.actions.test.ts`, `distributedStore.actions.test.ts`, `legacy/actions.test.ts`).
 - [x] Validation after compatibility-shim removal slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`28` files / `104` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
 - [x] Build after compatibility-shim removal slice: `legacy-app` ~`530.60 kB` (gzip ~`137.95 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`167.43 kB` (gzip ~`45.11 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
 - [x] Current `web/src/legacy/app.js` line count snapshot after compatibility-shim removal slice: `18581`.
@@ -890,13 +853,6 @@ Progress notes:
 - [x] Validation after Data listener/runtime cleanup slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`28` files / `104` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
 - [x] Build after Data listener/runtime cleanup slice: `legacy-app` ~`528.99 kB` (gzip ~`137.55 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`166.73 kB` (gzip ~`45.01 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
 - [x] Current `web/src/legacy/app.js` line count snapshot after Data listener/runtime cleanup slice: `18559`.
-- [x] Hidden legacy Execution/Distributed action controls removed from compatibility template (`btnExec*` and `btnDist*` sets), keeping Vue panels/context docks as the only action surfaces for those domains.
-- [x] `executionDistributedBridge` now derives capability flags from runtime state attributes (`data-running`, `data-exec-busy`) instead of hidden button disabled-state observers; removed `DIST_BUTTON_IDS`/`EXEC_BUTTON_IDS` bridge observer coupling.
-- [x] Added explicit execution runtime signal attribute updates in `setExecBusy(...)` (`document.documentElement.dataset.execBusy`) and removed dead hidden button disabled/listener wiring in `web/src/legacy/app.js` (setRunning id list coupling, distributed hidden-button listeners in `initDistributedUi`, execution hidden click listeners).
-- [x] Updated parity guard assertions in `web/src/legacy/uiSurfaceParity.test.ts` to enforce continued absence of removed hidden Execution/Distributed action button IDs.
-- [x] Validation after hidden Execution/Distributed template decommission slice: `npm --prefix web run typecheck`, `npm --prefix web run test` (`28` files / `104` tests), `npm --prefix web run lint`, and `npm --prefix web run build` all passing.
-- [x] Build after hidden Execution/Distributed template decommission slice: `legacy-app` ~`514.36 kB` (gzip ~`134.16 kB`), `legacy-core` ~`23.62 kB` (gzip ~`8.07 kB`), `legacy-template` ~`165.32 kB` (gzip ~`44.74 kB`), `assets/index-*.css` ~`37.43 kB` (gzip ~`7.97 kB`).
-- [x] Current `web/src/legacy/app.js` line count snapshot after Execution/Distributed listener-runtime cleanup slice: `18517`.
 - [x] Hidden legacy Optimize/Validation action controls removed from compatibility template (`btnApplyPreset`, `btnPresetKernelSmaAlma`, `btnRefreshGpuStatus`, `btnGpuParityCheck`, `btnRun`, `btnCancel`, `btnValidate`, `btnCrossRefresh`, `btnCrossSelectAll`, `btnCrossSelectNone`, `btnCrossSelectMatch`, `btnExportValidationCsv`, `btnExportValidationJson`, `btnExportReportJson`, `btnExportReportXlsx`).
 - [x] `optimizeValidationBridge` capability derivation moved off hidden button disabled-state and now reads runtime-owned attributes (`data-opt-can-*`, `data-val-can-*`, `data-running`); removed optimize/validation button observer/listener coupling from the bridge.
 - [x] Added explicit optimize/validation runtime flags in `web/src/legacy/app.js` at owning update points (`updateRunReadinessUi`, `updateValidateTabUi`, `updateStrategyUi`, `updateValidationExportButtons`, `updateCrossMeta`) and removed dead hidden listener wiring for removed optimize/validation controls.
@@ -994,7 +950,6 @@ web/
       analysis.ts
       history.ts
       settings.ts
-      distributed.ts
       execution.ts
       tasks.ts
     features/
@@ -1004,7 +959,6 @@ web/
       analyze/
       history/
       settings/
-      distributed/
       execution/
     components/
       charts/

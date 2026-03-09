@@ -187,10 +187,9 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
     if strategy.uses_execution_overlays()
         || strategy.stop_loss_pct().is_some()
         || strategy.take_profit_pct().is_some()
-        || strategy.trailing_stop_pct().is_some()
     {
         return Err(
-            "VCC GPU kernel currently supports strategy execution without overlays/stop-loss/take-profit/trailing-stop."
+            "VCC GPU kernel currently supports strategy execution without overlays/stop-loss/take-profit."
                 .to_string(),
         );
     }

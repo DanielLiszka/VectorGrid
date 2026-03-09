@@ -2,11 +2,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
+import { useAnalysisStore } from '../stores/analysisStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
+import { useTaskStore } from '../stores/taskStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 
+const analysisStore = useAnalysisStore()
 const commandActionStore = useCommandActionStore()
 const optimizeStore = useOptimizeStore()
+const taskStore = useTaskStore()
+const workflowStore = useWorkflowStore()
 const {
   runDisabled,
   canCancel,
@@ -17,6 +23,9 @@ const {
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(optimizeStore)
+const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } = storeToRefs(analysisStore)
+const { activeById, activeOrder, centerStatus, history, overallProgress, toasts } = storeToRefs(taskStore)
+const { resultsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
@@ -32,11 +41,52 @@ const hasRunActivity = computed(() => {
   return String(progressMeta.value || '').trim().length > 0
 })
 const showDetails = computed(() => hasRunActivity.value || footerExpanded.value)
+const idleCompact = computed(() => !showDetails.value && !hasRunActivity.value)
 const footerSummary = computed(() => {
   const badges = runReadinessBadges.value.filter((badge) => String(badge || '').trim().length > 0)
   if (hasRunActivity.value && String(progressMeta.value || '').trim()) return String(progressMeta.value || '').trim()
   if (badges.length > 0) return badges.slice(0, 2).join(' · ')
   return String(runReadinessHint.value || '').trim() || 'Ready to run once data and strategy inputs are configured.'
+})
+const activeTasks = computed(() =>
+  activeOrder.value
+    .map((id) => activeById.value[id])
+    .filter((task): task is NonNullable<typeof task> => !!task)
+    .slice(0, 2),
+)
+const runningCount = computed(() => activeTasks.value.length)
+const analysisSummary = computed(() => {
+  const title = String(bestTitle.value || '').trim()
+  const meta = String(bestMeta.value || '').trim()
+  if (title && title !== '—' && title !== '-') return `${title}${meta && meta !== '—' && meta !== '-' ? ` · ${meta}` : ''}`
+  return 'No scored run yet.'
+})
+const taskSummary = computed(() => {
+  if (activeTasks.value.length > 0) {
+    const task = activeTasks.value[0]
+    if (!task) return 'Task running.'
+    return task.message || task.phase || task.label || 'Task running.'
+  }
+  const toast = toasts.value[0]
+  if (toast) return String(toast.message || '').trim() || 'Recent task update.'
+  const latest = history.value[0]
+  if (latest) return `${latest.label} · ${latest.status}`
+  return 'No active commands.'
+})
+const overallProgressLabel = computed(() => {
+  const overall = overallProgress.value
+  if (!overall) return '—'
+  return `${overall.pct.toFixed(0)}% · ${overall.label}`
+})
+const taskStatusLabel = computed(() => {
+  const status = String(centerStatus.value || 'idle').trim()
+  if (status === 'running') return 'Running'
+  if (status === 'queued') return 'Queued'
+  if (status === 'cancelling') return 'Cancelling'
+  if (status === 'success') return 'Done'
+  if (status === 'failed') return 'Failed'
+  if (status === 'cancelled') return 'Cancelled'
+  return 'Idle'
 })
 
 function runOptimizationAction(): void {
@@ -75,7 +125,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport v-if="mountReady" to="#runFooterVueShellMount">
-    <section class="runFooterVueRoot" :class="{ compact: !showDetails }">
+    <section class="runFooterVueRoot" :class="{ compact: !showDetails, idleCompact }">
       <div class="primaryRow">
         <header class="head">
           <div class="eyebrow">Run Control</div>
@@ -108,6 +158,20 @@ onBeforeUnmount(() => {
           </div>
           <div class="metaLine mono">{{ runReadinessHint }}</div>
         </section>
+
+        <section class="summaryCard">
+          <div class="summaryLabel">Insights</div>
+          <div class="metaLine mono">{{ analysisSummary }}</div>
+          <div class="status mono">Tab {{ resultsTab || 'overview' }} · Top {{ topRows }} · Drill {{ drillStatus }}</div>
+          <div class="status mono">Heatmap {{ heatmapMeta }}</div>
+        </section>
+
+        <section class="summaryCard">
+          <div class="summaryLabel">Tasks</div>
+          <div class="metaLine mono">{{ taskStatusLabel }} · {{ runningCount }} active</div>
+          <div class="status mono">{{ overallProgressLabel }}</div>
+          <div class="status mono">{{ taskSummary }}</div>
+        </section>
       </div>
     </section>
   </Teleport>
@@ -121,6 +185,34 @@ onBeforeUnmount(() => {
 
 .runFooterVueRoot.compact {
   gap: 0;
+}
+
+.runFooterVueRoot.idleCompact .primaryRow {
+  align-items: center;
+}
+
+.runFooterVueRoot.idleCompact .eyebrow {
+  font-size: 0.64rem;
+}
+
+.runFooterVueRoot.idleCompact .title {
+  font-size: 0.9rem;
+}
+
+.runFooterVueRoot.idleCompact .meta {
+  display: none;
+}
+
+.runFooterVueRoot.idleCompact .summaryPill {
+  margin-top: 0.1rem;
+  padding: 0.22rem 0.52rem;
+  font-size: 0.72rem;
+}
+
+.runFooterVueRoot.idleCompact .actions button {
+  min-height: 2.05rem;
+  padding: 0.42rem 0.68rem;
+  font-size: 0.76rem;
 }
 
 .primaryRow {
@@ -196,7 +288,7 @@ onBeforeUnmount(() => {
 
 .summaryGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
@@ -204,7 +296,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: color-mix(in oklab, var(--panel) 86%, var(--surface));
+  background: color-mix(in oklab, var(--panel) 98%, var(--surface));
   padding: 0.7rem 0.8rem;
   display: grid;
   gap: 0.45rem;
@@ -213,8 +305,8 @@ onBeforeUnmount(() => {
 .summaryCardPrimary {
   background: linear-gradient(
     135deg,
-    color-mix(in oklab, var(--accent-soft) 72%, var(--panel)),
-    color-mix(in oklab, var(--panel) 90%, var(--surface))
+    color-mix(in oklab, var(--accent-soft) 38%, var(--panel)),
+    color-mix(in oklab, var(--panel) 98%, var(--surface))
   );
 }
 

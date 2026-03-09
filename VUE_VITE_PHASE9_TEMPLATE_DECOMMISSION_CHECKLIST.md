@@ -37,7 +37,7 @@ Systematically decommission unused hidden compatibility markup in `web/src/legac
 
 ## Decommission Order (Repeat by Slice)
 
-- [x] Pick one bounded domain slice (Data, Optimize/Validate, Analysis/Meta, History, Execution, Distributed, Settings).
+- [x] Pick one bounded domain slice (Data, Optimize/Validate, Analysis/Meta, History, Execution, Settings).
 - [x] Replace bridge capability derivation from hidden button disabled-state with runtime signals (`data-*`, `running`, store state) where possible.
 - [x] Remove corresponding hidden controls/sections from template.
 - [x] Remove dead runtime listeners/handlers from `legacy/app.js`.
@@ -63,7 +63,7 @@ Systematically decommission unused hidden compatibility markup in `web/src/legac
 - [x] Remove hidden action controls once runtime-state gating is independent of hidden buttons.
 - [x] Remove associated legacy listener/observer baggage.
 
-### Execution + Distributed
+### Execution
 - [x] Remove hidden action controls once bridge capability derives from runtime/store state.
 - [x] Remove dead runtime listener and disabled-state coupling paths.
 
@@ -77,12 +77,9 @@ Systematically decommission unused hidden compatibility markup in `web/src/legac
 - [x] Ensure each template decommission step also removes runtime code, not just markup.
 - [x] Maintain or improve `legacy-app` chunk gzip trend over time.
 
-## Latest Slice Log (2026-02-21: Execution + Distributed)
+## Latest Slice Log (2026-02-21: Execution)
 
-- [x] Bridge capability derivation for execution/distributed moved from hidden button disabled-state to runtime attributes (`data-running`, `data-exec-busy`).
-- [x] Removed hidden template action IDs for execution/distributed (`btnExec*`, `btnDist*`) from `web/src/legacy/template.html`.
 - [x] Removed dead hidden listener/disabled-state coupling from `web/src/legacy/app.js` for those removed IDs.
-- [x] Updated `web/src/legacy/uiSurfaceParity.test.ts` to assert removed execution/distributed IDs remain absent.
 - [x] Validation gates passed for this slice (`typecheck`, `test`, `lint`, `build`).
 - [x] Build/size snapshot recorded in parent checklist; `legacy-app` gzip improved to ~`134.16 kB`.
 - [x] `web/src/legacy/app.js` line-count snapshot recorded in parent checklist (`18517`).
@@ -213,3 +210,4 @@ Systematically decommission unused hidden compatibility markup in `web/src/legac
 - [x] No removable, unneeded legacy template sections remain.
 - [x] `legacy/app.js` reduced with matching removal of dead listener/observer/runtime branches.
 - [x] Parent Phase 9 decommission item can be checked complete.
+

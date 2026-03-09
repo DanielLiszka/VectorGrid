@@ -47,6 +47,7 @@ fn make_vcc_req(
         asr: None,
         vcc: Some(VccStrategyParams::default()),
         vemr: None,
+        rocb: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,

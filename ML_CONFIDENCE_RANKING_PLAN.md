@@ -26,7 +26,7 @@ The confidence ranking is **advisory-only**: it never replaces validation/holdou
 
 - Predicting future profitability; the target is **robustness under our own evaluation protocol**, not market forecasting.
 - Replacing “statistics-first” selection gates (PBO/CSCV/DSR, pass-rates, quantiles, etc.).
-- Distributed training or GPU‑accelerated ML.
+- GPU-accelerated ML training.
 
 ---
 
@@ -334,4 +334,3 @@ Finance leakage / CV discipline (background):
 Rust ML crates (implementation options):
 - `smartcore`: https://docs.rs/smartcore/latest/smartcore/
 - `linfa-logistic`: https://docs.rs/linfa-logistic/latest/linfa_logistic/
-

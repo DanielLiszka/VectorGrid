@@ -45,6 +45,7 @@ fn make_asr_req(
         asr: Some(AsrStrategyParams::default()),
         vcc: None,
         vemr: None,
+        rocb: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,

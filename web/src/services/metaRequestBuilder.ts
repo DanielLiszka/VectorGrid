@@ -14,7 +14,7 @@ function num(value: unknown, fallback: number): number {
 }
 
 function supportsHoldout(strategyKind: string): boolean {
-  return strategyKind === 'CompositeCpu' || strategyKind === 'CompositeMo' || strategyKind === 'DoubleMa' || strategyKind === 'Asr' || strategyKind === 'Vemr' || strategyKind === 'CompositeTrend' || strategyKind === 'RegimeHybrid' || strategyKind === 'BreakoutMomentum'
+  return strategyKind === 'CompositeCpu' || strategyKind === 'CompositeMo' || strategyKind === 'DoubleMa' || strategyKind === 'Pit' || strategyKind === 'Set' || strategyKind === 'Mts' || strategyKind === 'Orc' || strategyKind === 'Marrt' || strategyKind === 'Vfct' || strategyKind === 'Rocb' || strategyKind === 'Asr' || strategyKind === 'Vcc' || strategyKind === 'Vemr' || strategyKind === 'CompositeTrend' || strategyKind === 'RegimeHybrid' || strategyKind === 'BreakoutMomentum'
 }
 
 export interface MetaSelectionBuildInputs {

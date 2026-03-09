@@ -4,15 +4,21 @@ import {
   applyTimeframe,
   browseCsv,
   browseMarketDataDir,
+  clearPolygonApiKey,
   closePolygon,
+  downloadPolygonDataset,
+  getPolygonCacheInfo,
   getMarketDataDirInfo,
   listSampleCsvs,
   loadCsv,
   loadSampleCsv,
   openMarketDataDir,
   openPolygon,
+  repairPolygonDataset,
   resetMarketDataDir,
+  setPolygonApiKey,
   setMarketDataDir,
+  validatePolygonDataset,
 } from './dataService'
 
 vi.mock('../tauri/invoke', () => ({
@@ -219,38 +225,112 @@ describe('dataService market-data directory actions', () => {
     await expect(setMarketDataDir('   ', true)).rejects.toThrow('Enter a market data folder path first.')
   })
 
-  it('toggles polygon modal via direct DOM control', async () => {
-    class FakeElement {
-      classList = {
-        _set: new Set<string>(),
-        add: (value: string) => {
-          this.classList._set.add(value)
+  it('keeps polygon open/close actions as non-throwing Vue workflow hooks', async () => {
+    await openPolygon()
+    await closePolygon()
+    expect(invokeCommandMock).not.toHaveBeenCalled()
+  })
+
+  it('manages Polygon cache info and API key commands', async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        cache_dir: 'C:/polygon',
+        has_api_key: true,
+        datasets: [{ csv_path: 'C:/polygon/AAPL_1m.csv', display_symbol: 'AAPL', polygon_ticker: 'AAPL', timeframe: '1m', row_count: 10 }],
+      })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        cache_dir: 'C:/polygon',
+        has_api_key: true,
+        datasets: [],
+      })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        cache_dir: 'C:/polygon',
+        has_api_key: false,
+        datasets: [],
+      })
+
+    const info = await getPolygonCacheInfo()
+    const saved = await setPolygonApiKey(' secret ')
+    const cleared = await clearPolygonApiKey()
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'polygon_get_cache_info')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'polygon_set_api_key', { apiKey: 'secret' })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'polygon_get_cache_info')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(4, 'polygon_clear_api_key')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(5, 'polygon_get_cache_info')
+    expect(info.hasApiKey).toBe(true)
+    expect(saved.hasApiKey).toBe(true)
+    expect(cleared.hasApiKey).toBe(false)
+  })
+
+  it('downloads, validates, and repairs Polygon datasets via backend commands', async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        csv_path: 'C:/polygon/AAPL_1m.csv',
+        downloaded_bars: 1234,
+        used_cache_only: false,
+        base_load: {
+          id: 'poly-1-base',
+          meta: { len: 1234, timeframe: '1m', has_close: true },
+          cache_hit: false,
+          cache_path: 'C:/cache/poly-1-base.bin',
         },
-        remove: (value: string) => {
-          this.classList._set.delete(value)
+        id: 'poly-1',
+        meta: {
+          len: 96,
+          timeframe: '15m',
+          has_close: true,
         },
-        contains: (value: string) => this.classList._set.has(value),
-      }
-      focus(): void {}
-    }
-    vi.stubGlobal('HTMLElement', FakeElement as unknown as typeof HTMLElement)
-    const modal = new FakeElement()
-    const symbol = new FakeElement()
-    vi.stubGlobal('document', {
-      body: { style: { overflow: '' } },
-      getElementById: (id: string) => {
-        if (id === 'polygonModal') return modal
-        if (id === 'polygonSymbol') return symbol
-        if (id === 'polygonApiKey') return null
-        return null
+        cache_hit: false,
+        cache_path: 'C:/cache/poly-1.bin',
+      })
+      .mockResolvedValueOnce({
+        csv_path: 'C:/polygon/AAPL_1m.csv',
+        display_symbol: 'AAPL',
+        polygon_ticker: 'AAPL',
+        timeframe: '1m',
+        row_count: 1234,
+        integrity: { parse_errors: 0, duplicates: 1, out_of_order: 0, same_day_gaps_gt_2min: 0, checked_utc_ms: 1700000000000 },
+      })
+      .mockResolvedValueOnce({
+        csv_path: 'C:/polygon/AAPL_1m.csv',
+        display_symbol: 'AAPL',
+        polygon_ticker: 'AAPL',
+        timeframe: '1m',
+        row_count: 1234,
+        integrity: { parse_errors: 0, duplicates: 0, out_of_order: 0, same_day_gaps_gt_2min: 0, checked_utc_ms: 1700000000000 },
+      })
+
+    const download = await downloadPolygonDataset({
+      market: 'stocks',
+      symbol: 'aapl',
+      from: '2024-01-01',
+      to: '2024-01-31',
+      adjusted: true,
+      timeframe: '15m',
+    })
+    const validated = await validatePolygonDataset(' C:/polygon/AAPL_1m.csv ')
+    const repaired = await repairPolygonDataset(' C:/polygon/AAPL_1m.csv ')
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'polygon_download_1m_and_load', {
+      req: {
+        market: 'stocks',
+        symbol: 'AAPL',
+        from: '2024-01-01',
+        to: '2024-01-31',
+        adjusted: true,
+        timeframe: '15m',
       },
     })
-
-    await openPolygon()
-    expect(modal.classList.contains('open')).toBe(true)
-
-    await closePolygon()
-    expect(modal.classList.contains('open')).toBe(false)
-    vi.unstubAllGlobals()
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'polygon_validate_dataset', { csvPath: 'C:/polygon/AAPL_1m.csv' })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'polygon_repair_dataset', { csvPath: 'C:/polygon/AAPL_1m.csv' })
+    expect(download.downloadedBars).toBe(1234)
+    expect(download.baseLoad.dataId).toBe('poly-1-base')
+    expect(download.load.dataId).toBe('poly-1')
+    expect(download.load.meta.timeframe).toBe('15m')
+    expect(validated.integrity?.duplicates).toBe(1)
+    expect(repaired.integrity?.duplicates).toBe(0)
   })
 })

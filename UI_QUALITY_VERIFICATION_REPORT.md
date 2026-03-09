@@ -49,7 +49,7 @@ The following require live in-app interaction and were not fully executable in t
 - Panel drag-resize interaction
 - Polygon modal download/load flow
 - End-to-end optimization/validation/report export interaction
-- Batch/distributed runtime behavior
+- Batch runtime behavior
 - Responsive visual inspection at 1280x720 and below
 
 These map directly to `UI_REGRESSION_CHECKLIST.md` and should be executed in a live desktop session.

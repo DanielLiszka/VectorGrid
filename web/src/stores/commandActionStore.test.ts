@@ -20,6 +20,7 @@ vi.mock('../services/analysisService', () => ({
 
 vi.mock('../services/dataService', () => ({
   browseCsv: vi.fn(async () => null),
+  getPolygonCacheInfo: vi.fn(async () => ({ cacheDir: 'C:/polygon', hasApiKey: false, datasets: [] })),
   loadCsv: vi.fn(async () => ({
     path: 'C:/tmp/aapl.csv',
     dataId: 'data-1',

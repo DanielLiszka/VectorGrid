@@ -31,6 +31,45 @@ interface MarketDataDirInfoResponse {
   polygon_cache_dir?: unknown
 }
 
+interface PolygonDatasetIntegrityResponse {
+  checked_utc_ms?: unknown
+  parse_errors?: unknown
+  duplicates?: unknown
+  out_of_order?: unknown
+  same_day_gaps_gt_2min?: unknown
+}
+
+interface PolygonDatasetMetaResponse {
+  market?: unknown
+  display_symbol?: unknown
+  polygon_ticker?: unknown
+  timeframe?: unknown
+  csv_path?: unknown
+  min_ts?: unknown
+  max_ts?: unknown
+  last_updated_utc_ms?: unknown
+  row_count?: unknown
+  adjusted?: unknown
+  integrity?: unknown
+}
+
+interface PolygonCacheInfoResponse {
+  cache_dir?: unknown
+  has_api_key?: unknown
+  datasets?: unknown
+}
+
+interface PolygonDownloadAndLoadResponse {
+  csv_path?: unknown
+  downloaded_bars?: unknown
+  used_cache_only?: unknown
+  base_load?: unknown
+  id?: unknown
+  meta?: unknown
+  cache_hit?: unknown
+  cache_path?: unknown
+}
+
 interface SampleCsvEntry {
   label?: unknown
   path?: unknown
@@ -98,6 +137,51 @@ export interface MarketDataDirOpenResult {
   openedWith: 'open_path' | 'reveal_path'
 }
 
+export interface PolygonDatasetIntegritySummary {
+  checkedUtcMs: number
+  parseErrors: number
+  duplicates: number
+  outOfOrder: number
+  sameDayGapsGt2Min: number
+}
+
+export interface PolygonDatasetSummary {
+  market: string
+  displaySymbol: string
+  polygonTicker: string
+  timeframe: string
+  csvPath: string
+  minTs: number
+  maxTs: number
+  lastUpdatedUtcMs: number
+  rowCount: number
+  adjusted: boolean
+  integrity: PolygonDatasetIntegritySummary | null
+}
+
+export interface PolygonCacheInfoSummary {
+  cacheDir: string
+  hasApiKey: boolean
+  datasets: PolygonDatasetSummary[]
+}
+
+export interface PolygonDownloadRequestSummary {
+  market: string
+  symbol: string
+  from: string
+  to: string
+  adjusted: boolean
+  timeframe: string
+}
+
+export interface PolygonDownloadAndLoadSummary {
+  csvPath: string
+  downloadedBars: number
+  usedCacheOnly: boolean
+  baseLoad: DataLoadResult
+  load: DataLoadResult
+}
+
 function buildMarketDataDirHint(summary: MarketDataDirInfoSummary): string {
   const polygonCache = summary.polygonCacheDir || '—'
   if (summary.configuredRootDir) {
@@ -151,22 +235,58 @@ function normalizeLoadPriceDataResponse(raw: unknown, path: string): DataLoadRes
   }
 }
 
+function normalizePolygonDatasetIntegrity(raw: unknown): PolygonDatasetIntegritySummary | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as PolygonDatasetIntegrityResponse
+  return {
+    checkedUtcMs: normalizeUnixTs(row.checked_utc_ms),
+    parseErrors: normalizeInteger(row.parse_errors),
+    duplicates: normalizeInteger(row.duplicates),
+    outOfOrder: normalizeInteger(row.out_of_order),
+    sameDayGapsGt2Min: normalizeInteger(row.same_day_gaps_gt_2min),
+  }
+}
+
+function normalizePolygonDatasetMeta(raw: unknown): PolygonDatasetSummary | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as PolygonDatasetMetaResponse
+  const csvPath = normalizeText(row.csv_path)
+  if (!csvPath) return null
+  return {
+    market: normalizeText(row.market),
+    displaySymbol: normalizeText(row.display_symbol),
+    polygonTicker: normalizeText(row.polygon_ticker),
+    timeframe: normalizeText(row.timeframe) || '1m',
+    csvPath,
+    minTs: normalizeUnixTs(row.min_ts),
+    maxTs: normalizeUnixTs(row.max_ts),
+    lastUpdatedUtcMs: normalizeUnixTs(row.last_updated_utc_ms),
+    rowCount: normalizeInteger(row.row_count),
+    adjusted: Boolean(row.adjusted),
+    integrity: normalizePolygonDatasetIntegrity(row.integrity),
+  }
+}
+
+function normalizePolygonCacheInfo(raw: unknown): PolygonCacheInfoSummary {
+  const info = (raw && typeof raw === 'object' ? raw : {}) as PolygonCacheInfoResponse
+  const rows = Array.isArray(info.datasets) ? info.datasets : []
+  const datasets: PolygonDatasetSummary[] = []
+  for (const row of rows) {
+    const normalized = normalizePolygonDatasetMeta(row)
+    if (normalized) datasets.push(normalized)
+  }
+  return {
+    cacheDir: normalizeText(info.cache_dir),
+    hasApiKey: Boolean(info.has_api_key),
+    datasets,
+  }
+}
+
 function fileBasename(path: string): string {
   const normalized = normalizeText(path).replace(/\\/g, '/')
   if (!normalized) return ''
   const parts = normalized.split('/')
   return normalizeText(parts[parts.length - 1] || '')
-}
-
-function queryById<T extends Element>(id: string): T | null {
-  if (typeof document === 'undefined') return null
-  const byQuery = typeof document.querySelector === 'function'
-    ? document.querySelector(`[id="${id}"]`)
-    : null
-  if (byQuery) return byQuery as T
-  const getById = (document as unknown as { getElementById?: (nextId: string) => Element | null }).getElementById
-  if (typeof getById !== 'function') return null
-  return (getById.call(document, id) as T | null) ?? null
 }
 
 export async function getMarketDataDirInfo(): Promise<MarketDataDirInfoSummary> {
@@ -205,21 +325,11 @@ export async function browseCsv(): Promise<DataLoadResult | null> {
 }
 
 export async function openPolygon(): Promise<void> {
-  const modal = queryById<HTMLElement>('polygonModal')
-  if (!(modal instanceof HTMLElement)) return
-  modal.classList.add('open')
-  if (document.body) document.body.style.overflow = 'hidden'
-  const focusEl = queryById<HTMLElement>('polygonSymbol') ?? queryById<HTMLElement>('polygonApiKey')
-  if (focusEl instanceof HTMLElement && typeof focusEl.focus === 'function') {
-    focusEl.focus()
-  }
+  return undefined
 }
 
 export async function closePolygon(): Promise<void> {
-  const modal = queryById<HTMLElement>('polygonModal')
-  if (!(modal instanceof HTMLElement)) return
-  modal.classList.remove('open')
-  if (document.body) document.body.style.overflow = ''
+  return undefined
 }
 
 export async function loadCsv(path?: string): Promise<DataLoadResult> {
@@ -291,4 +401,68 @@ export async function loadSampleCsv(index: number, path?: string): Promise<DataL
     // Keep sample-load action non-throwing to match legacy runtime behavior.
     return null
   }
+}
+
+export async function getPolygonCacheInfo(): Promise<PolygonCacheInfoSummary> {
+  const raw = await invokeCommand('polygon_get_cache_info')
+  return normalizePolygonCacheInfo(raw)
+}
+
+export async function setPolygonApiKey(apiKey: string): Promise<PolygonCacheInfoSummary> {
+  const normalizedKey = normalizeText(apiKey)
+  if (!normalizedKey) throw new Error('Enter a Polygon API key.')
+  await invokeCommand('polygon_set_api_key', { apiKey: normalizedKey })
+  return getPolygonCacheInfo()
+}
+
+export async function clearPolygonApiKey(): Promise<PolygonCacheInfoSummary> {
+  await invokeCommand('polygon_clear_api_key')
+  return getPolygonCacheInfo()
+}
+
+export async function downloadPolygonDataset(inputs: PolygonDownloadRequestSummary): Promise<PolygonDownloadAndLoadSummary> {
+  const market = normalizeText(inputs.market || 'stocks') || 'stocks'
+  const symbol = normalizeText(inputs.symbol).toUpperCase()
+  const from = normalizeText(inputs.from)
+  const to = normalizeText(inputs.to)
+  const timeframe = normalizeText(inputs.timeframe || '1m') || '1m'
+  if (!symbol) throw new Error('Enter a symbol.')
+  if (!from) throw new Error('Choose a start date.')
+  if (!to) throw new Error('Choose an end date.')
+  const raw = (await invokeCommand('polygon_download_1m_and_load', {
+    req: {
+      market,
+      symbol,
+      from,
+      to,
+      adjusted: !!inputs.adjusted,
+      timeframe,
+    },
+  })) as unknown
+  const row = (raw && typeof raw === 'object' ? raw : {}) as PolygonDownloadAndLoadResponse
+  return {
+    csvPath: normalizeText(row.csv_path),
+    downloadedBars: normalizeInteger(row.downloaded_bars),
+    usedCacheOnly: Boolean(row.used_cache_only),
+    baseLoad: normalizeLoadPriceDataResponse(row.base_load, normalizeText(row.csv_path)),
+    load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
+  }
+}
+
+export async function validatePolygonDataset(csvPath: string): Promise<PolygonDatasetSummary> {
+  const path = normalizeText(csvPath)
+  if (!path) throw new Error('Select a Polygon dataset first.')
+  const raw = await invokeCommand('polygon_validate_dataset', { csvPath: path })
+  const normalized = normalizePolygonDatasetMeta(raw)
+  if (!normalized) throw new Error('Polygon validation returned an invalid dataset.')
+  return normalized
+}
+
+export async function repairPolygonDataset(csvPath: string): Promise<PolygonDatasetSummary> {
+  const path = normalizeText(csvPath)
+  if (!path) throw new Error('Select a Polygon dataset first.')
+  const raw = await invokeCommand('polygon_repair_dataset', { csvPath: path })
+  const normalized = normalizePolygonDatasetMeta(raw)
+  if (!normalized) throw new Error('Polygon repair returned an invalid dataset.')
+  return normalized
 }

@@ -1,4 +1,4 @@
-export const WORKFLOW_TABS = ['data', 'optimize', 'validate', 'analyze', 'history', 'settings'] as const
+export const WORKFLOW_TABS = ['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'] as const
 export type WorkflowTab = (typeof WORKFLOW_TABS)[number]
 export const WORKFLOW_TAB_SET: ReadonlySet<string> = new Set(WORKFLOW_TABS)
 
@@ -7,6 +7,7 @@ export const WORKFLOW_DEFAULTS = {
   optimize: { controls: 'opt', results: 'overview' },
   validate: { controls: 'opt', results: 'validate' },
   analyze: { controls: 'opt', results: 'drill' },
+  finalize: { controls: 'advanced', results: 'meta' },
   history: { controls: 'data', results: 'history' },
   settings: { controls: 'advanced', results: 'meta' },
 } as const
@@ -16,8 +17,9 @@ export const WORKFLOW_ALLOWED = {
   optimize: { controls: ['opt', 'strategy', 'advanced'], results: ['overview', 'top', 'pareto', 'heatmap'] },
   validate: { controls: ['opt'], results: ['validate'] },
   analyze: { controls: ['opt'], results: ['overview', 'top', 'pareto', 'drill', 'heatmap'] },
+  finalize: { controls: ['advanced'], results: ['meta'] },
   history: { controls: ['data'], results: ['history'] },
-  settings: { controls: ['advanced', 'distributed'], results: ['meta', 'debug'] },
+  settings: { controls: ['advanced'], results: ['meta', 'debug'] },
 } as const
 
 export const WORKFLOW_SUBTITLES = {
@@ -25,15 +27,16 @@ export const WORKFLOW_SUBTITLES = {
   optimize: 'Configure strategy + search space, then run an optimization.',
   validate: 'Run robustness checks on the current run’s candidates.',
   analyze: 'Inspect results via drilldown curves and heatmaps.',
+  finalize: 'Run post-meta ML confidence and Stage 4 final ranking on saved meta artifacts.',
   history: 'Review, compare, and rerun saved optimizations.',
-  settings: 'Advanced tools (distributed runs, meta selection, debug).',
+  settings: 'Advanced tools, meta selection, and debug output.',
 } as const
 
 export const WORKSPACE_TABS = ['workflow', 'library', 'aggregate', 'pro', 'settings'] as const
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number]
 export const WORKSPACE_TAB_SET: ReadonlySet<string> = new Set(WORKSPACE_TABS)
 
-export const WORKFLOW_STEPS = ['data', 'optimize', 'validate', 'analyze'] as const
+export const WORKFLOW_STEPS = ['data', 'optimize', 'validate', 'analyze', 'finalize'] as const
 export type WorkflowStep = (typeof WORKFLOW_STEPS)[number]
 export const WORKFLOW_STEP_SET: ReadonlySet<string> = new Set(WORKFLOW_STEPS)
 
@@ -46,17 +49,18 @@ export const WORKFLOW_STEP_SUBTITLES = {
   optimize: 'Strategy setup: configure ranges, backend, and run optimization.',
   validate: 'Validation: run robustness checks on the selected optimization.',
   analyze: 'Summary: inspect top results, Pareto, drilldown, and heatmap.',
+  finalize: 'Stage 5: apply ML confidence, run Stage 4 ranking, and manage saved finalizer artifacts.',
 } as const
 
 export const WORKSPACE_SUBTITLES = {
-  workflow: 'Guided pipeline for data -> optimize -> validate -> summary.',
+  workflow: 'Guided pipeline for data -> optimize -> validate -> summary -> finalizer.',
   library: 'Browse, compare, and rerun saved optimization artifacts.',
   aggregate: 'Aggregate many runs into robust shortlist recommendations.',
-  pro: 'Distributed compute, advanced controls, and debug output.',
+  pro: 'Advanced controls and debug output.',
   settings: 'Application preferences and storage configuration.',
 } as const
 
-export const CONTROLS_TAB_VALUES = ['data', 'opt', 'strategy', 'advanced', 'distributed'] as const
+export const CONTROLS_TAB_VALUES = ['data', 'opt', 'strategy', 'advanced'] as const
 export type ControlsTab = (typeof CONTROLS_TAB_VALUES)[number]
 export const CONTROLS_TAB_SET: ReadonlySet<string> = new Set(CONTROLS_TAB_VALUES)
 
@@ -70,7 +74,6 @@ export const TAB_LABELS = {
     opt: 'Optimize',
     strategy: 'Strategy',
     advanced: 'Advanced',
-    distributed: 'Distributed',
   },
   results: {
     overview: 'Overview',

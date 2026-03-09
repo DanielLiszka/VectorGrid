@@ -191,7 +191,6 @@ pub fn composite_desired_position(
 struct ExecutionOverlayParams {
     cooldown_bars: usize,
     persistence_bars: usize,
-    trailing_log: Option<f64>,
 }
 
 impl ExecutionOverlayParams {
@@ -200,7 +199,6 @@ impl ExecutionOverlayParams {
         Self {
             cooldown_bars: cfg.cooldown_bars(),
             persistence_bars: cfg.signal_persistence_bars().max(1),
-            trailing_log: cfg.trailing_stop_pct().map(|pct| (1.0 - pct).ln()),
         }
     }
 }
@@ -210,7 +208,6 @@ struct ExecutionOverlayState {
     cooldown_left: usize,
     pending_sign: i32,
     pending_count: usize,
-    trade_peak_log_ret: f64,
 }
 
 #[inline]
@@ -270,35 +267,10 @@ fn overlay_apply_entry_cooldown(sign: i32, current_pos: i32, state: &ExecutionOv
 }
 
 #[inline]
-fn overlay_on_trade_open(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
-    state.trade_peak_log_ret = trade_log_ret;
-}
-
-#[inline]
 fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionOverlayParams) {
     if params.cooldown_bars > 0 {
         state.cooldown_left = params.cooldown_bars;
     }
-    state.trade_peak_log_ret = 0.0;
-}
-
-#[inline]
-fn overlay_update_trade_peak(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
-    if trade_log_ret > state.trade_peak_log_ret {
-        state.trade_peak_log_ret = trade_log_ret;
-    }
-}
-
-#[inline]
-fn overlay_hit_trailing_stop(
-    trade_log_ret: f64,
-    params: &ExecutionOverlayParams,
-    state: &ExecutionOverlayState,
-) -> bool {
-    let Some(trail_log) = params.trailing_log else {
-        return false;
-    };
-    state.trade_peak_log_ret > 0.0 && trade_log_ret <= state.trade_peak_log_ret + trail_log
 }
 
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
@@ -480,7 +452,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
@@ -535,7 +507,6 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
                     overlay_on_trade_close(&mut overlay_state, &overlays);
                 } else {
                     trade_log_ret = if has_commission { log_comm } else { 0.0 };
-                    overlay_on_trade_open(&mut overlay_state, trade_log_ret);
                 }
             } else if !cfg.allow_flip {
                 if has_commission {
@@ -552,7 +523,6 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
                 trades = trades.saturating_add(2);
                 pos = sign;
                 trade_log_ret = if has_commission { log_comm } else { 0.0 };
-                overlay_on_trade_open(&mut overlay_state, trade_log_ret);
             }
         }
 
@@ -563,11 +533,9 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
 
         if risk_enabled && pos_bar != 0 {
             trade_log_ret += step_log_ret;
-            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
             let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
-            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
-            if hit_stop || hit_take || hit_trailing {
+            if hit_stop || hit_take {
                 if has_commission {
                     log_eq += log_comm;
                 }
@@ -772,7 +740,7 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
 
     let n_steps = n_total.saturating_sub(start_t);
     let bins = clamp_bins(bins, n_steps);
@@ -853,7 +821,6 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
                     cur_entry_t = t;
                     cur_dir = sign;
                     cur_log_ret = if has_commission { log_comm } else { 0.0 };
-                    overlay_on_trade_open(&mut overlay_state, cur_log_ret);
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
@@ -897,7 +864,6 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
                 cur_entry_t = t;
                 cur_dir = sign;
                 cur_log_ret = if has_commission { log_comm } else { 0.0 };
-                overlay_on_trade_open(&mut overlay_state, cur_log_ret);
                 pos = sign;
             }
         }
@@ -905,13 +871,11 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
         log_eq += (pos as f64) * lr[t];
         if cur_dir != 0 {
             cur_log_ret += (pos as f64) * lr[t];
-            overlay_update_trade_peak(&mut overlay_state, cur_log_ret);
         }
         if risk_enabled && cur_dir != 0 {
             let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
-            let hit_trailing = overlay_hit_trailing_stop(cur_log_ret, &overlays, &overlay_state);
-            if hit_stop || hit_take || hit_trailing {
+            if hit_stop || hit_take {
                 if has_commission {
                     log_eq += log_comm;
                     cur_log_ret += log_comm;

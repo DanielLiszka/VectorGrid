@@ -115,6 +115,10 @@ function mockInvokeDefaults(): void {
         result: {
           strategy_kind: 'CompositeMo',
           timeframe: '1m',
+          source_meta_json_path: 'C:/runs/vectorbt_meta.json',
+          model_path: 'C:/models/meta_model.json',
+          model_healthy: true,
+          model_trained_now: false,
           groups_selected: 1,
           groups_scored: 1,
           groups_considered: 2,
@@ -250,6 +254,7 @@ describe('meta service', () => {
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
+    expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorbt_meta.json')
   })
 
   it('preserves Asr strategy kind for meta selection request', async () => {
@@ -295,6 +300,26 @@ describe('meta service', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('train_ml_confidence_model', {
       scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
       cfg: null,
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('apply_ml_confidence_model', {
+      scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
+      groups: expect.any(Array),
+    })
+  })
+
+  it('runs ML autopilot after meta when enabled and ML ranking is active', async () => {
+    const analysisStore = useAnalysisStore()
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: 'CompositeMo',
+      metaTimeframe: '1m',
+      metaUseMlConfidence: true,
+      metaMlAutopilot: true,
+    })
+
+    await runMeta()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('ml_confidence_model_status', {
+      scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
     })
     expect(invokeCommandMock).toHaveBeenCalledWith('apply_ml_confidence_model', {
       scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },

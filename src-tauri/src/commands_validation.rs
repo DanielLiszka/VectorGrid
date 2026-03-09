@@ -4,6 +4,7 @@ use super::{
     DoubleMaValidationRequest, DoubleMaValidationResult, OffsetProgressSink, TauriProgressSink,
 };
 use crate::state::AppState;
+use crate::state::LoadedDataContext;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,6 +17,95 @@ trait CrossTickerValidationResultExt {
     fn candidates(&self) -> &Vec<Self::Candidate>;
     fn candidates_mut(&mut self) -> &mut Vec<Self::Candidate>;
     fn set_cross_ticker_summary(&mut self, summary: ta_app_core::CrossTickerValidationSummary);
+}
+
+fn normalize_timeframe_label(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    ta_app_core::parse_timeframe_label(trimmed)
+        .map(|tf| tf.label)
+        .unwrap_or_else(|_| trimmed.to_ascii_lowercase())
+}
+
+fn normalize_path_key(raw: &str) -> String {
+    raw.trim().replace('/', "\\").to_ascii_lowercase()
+}
+
+fn normalize_strategy_kind(raw: &str) -> String {
+    match raw.trim() {
+        "Pit" => "Pit".to_string(),
+        "Set" => "Set".to_string(),
+        "Mts" => "Mts".to_string(),
+        "Orc" => "Orc".to_string(),
+        "Marrt" => "Marrt".to_string(),
+        "Vfct" => "Vfct".to_string(),
+        "Rocb" => "Rocb".to_string(),
+        "Asr" => "Asr".to_string(),
+        "Vcc" => "Vcc".to_string(),
+        "Vemr" => "Vemr".to_string(),
+        "CompositeCpu" => "CompositeCpu".to_string(),
+        "CompositeMo" => "CompositeMo".to_string(),
+        "CompositeTrend" => "CompositeTrend".to_string(),
+        "RegimeHybrid" => "RegimeHybrid".to_string(),
+        "BreakoutMomentum" => "BreakoutMomentum".to_string(),
+        _ => "DoubleMa".to_string(),
+    }
+}
+
+fn validate_validation_context(
+    ctx: Option<&ta_app_core::ValidationArtifactContext>,
+    loaded: &LoadedDataContext,
+    allowed_strategy_kinds: &[&str],
+) -> Result<(), String> {
+    let Some(ctx) = ctx else {
+        return Err("validation_context is required".to_string());
+    };
+
+    let strategy_kind = normalize_strategy_kind(&ctx.strategy_kind);
+    if !allowed_strategy_kinds
+        .iter()
+        .any(|kind| normalize_strategy_kind(kind) == strategy_kind)
+    {
+        return Err(format!(
+            "validation strategy_kind '{}' is incompatible with this validation command",
+            ctx.strategy_kind.trim()
+        ));
+    }
+
+    if let Some(expected_csv_path) = ctx.csv_path.as_deref() {
+        let expected = normalize_path_key(expected_csv_path);
+        let actual = normalize_path_key(&loaded.csv_path);
+        if !expected.is_empty() && !actual.is_empty() && expected != actual {
+            let label = ctx
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(expected_csv_path.trim());
+            return Err(format!(
+                "validation requires dataset '{label}' ({expected_csv_path}), but loaded data id points to '{}'",
+                loaded.csv_path
+            ));
+        }
+    }
+
+    if let Some(expected_timeframe) = ctx.timeframe.as_deref() {
+        let expected = normalize_timeframe_label(expected_timeframe);
+        let actual = loaded
+            .timeframe
+            .as_deref()
+            .map(normalize_timeframe_label)
+            .unwrap_or_default();
+        if !expected.is_empty() && !actual.is_empty() && expected != actual {
+            return Err(format!(
+                "validation requires timeframe '{expected}', but loaded data id has timeframe '{actual}'"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 impl CrossTickerValidationResultExt for CompositeValidationResult {
@@ -177,6 +267,12 @@ pub async fn run_composite_validation(
 ) -> Result<CompositeValidationResult, String> {
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
+    let loaded = state.get_loaded_data_context(&req.data_id)?;
+    validate_validation_context(
+        req.validation_context.as_ref(),
+        &loaded,
+        &["Asr", "Vcc", "Vemr", "Rocb", "CompositeCpu", "CompositeMo"],
+    )?;
     let candles = state.get_candles(&req.data_id)?;
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
@@ -261,6 +357,7 @@ pub(crate) fn apply_cross_ticker_validation(
             iterative: iterative_cfg.clone(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         },
         ta_app_core::run_composite_validation_blocking_with_candles,
     )
@@ -274,6 +371,12 @@ pub async fn run_double_ma_validation(
 ) -> Result<DoubleMaValidationResult, String> {
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
+    let loaded = state.get_loaded_data_context(&req.data_id)?;
+    validate_validation_context(
+        req.validation_context.as_ref(),
+        &loaded,
+        &["DoubleMa", "Pit", "Set", "Mts", "Orc", "Marrt", "Vfct", "CompositeTrend", "RegimeHybrid", "BreakoutMomentum"],
+    )?;
     let candles = state.get_candles(&req.data_id)?;
 
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
@@ -358,6 +461,7 @@ fn apply_cross_ticker_validation_double_ma(
             iterative: iterative_cfg.clone(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         },
         ta_app_core::run_double_ma_validation_blocking_with_candles,
     )
@@ -553,6 +657,193 @@ mod tests {
         ta_app_core::read_candles_from_csv_compat(path.to_str().expect("path utf8")).expect("csv")
     }
 
+    fn loaded_ctx(path: &str, timeframe: Option<&str>) -> LoadedDataContext {
+        LoadedDataContext {
+            csv_path: path.to_string(),
+            label: "loaded".to_string(),
+            timeframe: timeframe.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn validation_context_rejects_dataset_mismatch() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "DoubleMa".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        let err = validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\MSFT.csv", Some("15m")),
+            &["DoubleMa"],
+        )
+        .expect_err("dataset mismatch should fail");
+        assert!(err.contains("requires dataset 'AAPL'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validation_context_rejects_timeframe_mismatch() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "CompositeCpu".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("1h".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        let err = validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["CompositeCpu", "CompositeTrend"],
+        )
+        .expect_err("timeframe mismatch should fail");
+        assert!(err.contains("requires timeframe '1h'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validation_context_rejects_strategy_command_mismatch() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "CompositeMo".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        let err = validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa"],
+        )
+        .expect_err("strategy mismatch should fail");
+        assert!(err.contains("incompatible"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validation_context_accepts_matching_context() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "CompositeTrend".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["CompositeCpu", "CompositeTrend", "RegimeHybrid"],
+        )
+        .expect("matching validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_pit_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Pit".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa", "Pit"],
+        )
+        .expect("matching Pit validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_marrt_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Marrt".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa", "Marrt"],
+        )
+        .expect("matching Marrt validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_set_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Set".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa", "Set"],
+        )
+        .expect("matching Set validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_mts_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Mts".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa", "Mts"],
+        )
+        .expect("matching Mts validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_orc_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Orc".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa", "Orc"],
+        )
+        .expect("matching Orc validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_vfct_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Vfct".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa", "Vfct"],
+        )
+        .expect("matching Vfct validation context should pass");
+    }
+
+    #[test]
+    fn validation_context_accepts_rocb_for_composite_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "Rocb".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["CompositeCpu", "Rocb"],
+        )
+        .expect("matching Rocb validation context should pass");
+    }
+
     #[test]
     fn cross_ticker_headless_double_ma_smoke_applies_stats() {
         let candles = load_candles(&data_csv("AAPL.csv"));
@@ -583,6 +874,7 @@ mod tests {
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
         let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
             req, &candles, &cancel, None,
@@ -651,7 +943,9 @@ mod tests {
                     atr_period: 100,
                 },
                 asr: None,
+                vcc: None,
                 vemr: None,
+                rocb: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -668,6 +962,7 @@ mod tests {
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
         let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
             req, &candles, &cancel, None,

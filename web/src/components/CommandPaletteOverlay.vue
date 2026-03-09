@@ -204,6 +204,17 @@ const commands = computed<PaletteCommand[]>(() => {
       },
     },
     {
+      id: 'go_step_finalize',
+      name: 'Go to Workflow Step 5 (Finalizer)',
+      desc: 'Switch to the post-meta ML and Stage 4 workflow step.',
+      keys: [],
+      keywords: ['navigate', 'workflow', 'finalize', 'stage4', 'ml', 'meta'],
+      enabled: true,
+      run: () => {
+        setWorkflowStepIfNeeded('finalize')
+      },
+    },
+    {
       id: 'go_workspace_library',
       name: 'Go to Run Library',
       desc: 'Switch to saved run library workspace.',
@@ -228,9 +239,9 @@ const commands = computed<PaletteCommand[]>(() => {
     {
       id: 'go_workspace_pro',
       name: 'Go to Pro Tools',
-      desc: 'Switch to pro/distributed workspace.',
+      desc: 'Switch to pro/debug workspace.',
       keys: [],
-      keywords: ['navigate', 'pro', 'distributed'],
+      keywords: ['navigate', 'pro', 'debug'],
       enabled: true,
       run: () => {
         setWorkspaceIfNeeded('pro')

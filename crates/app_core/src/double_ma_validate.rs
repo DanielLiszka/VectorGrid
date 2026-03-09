@@ -1,6 +1,7 @@
 use crate::composite_validate::{
     CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
-    TradeBootstrapConfig, TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
+    TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
+    WalkForwardConfigOptional, WalkForwardStats,
 };
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
@@ -77,6 +78,8 @@ pub struct DoubleMaValidationRequest {
     pub min_psr: Option<f64>,
     #[serde(default)]
     pub min_dsr: Option<f64>,
+    #[serde(default)]
+    pub validation_context: Option<ValidationArtifactContext>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -666,9 +669,6 @@ fn perturb_params(
     if rng.gen_bool(flip_bool_prob) {
         p.strategy.allow_flip = !p.strategy.allow_flip;
     }
-    if rng.gen_bool(flip_bool_prob) {
-        p.strategy.trade_on_next_bar = !p.strategy.trade_on_next_bar;
-    }
 
     repair_params(&mut p);
     p
@@ -741,9 +741,6 @@ pub fn run_double_ma_validation_blocking_with_candles(
         cscv_cfg.as_ref(),
         candles.close.len(),
         |_, p, rng| {
-            let mut p2 = p.clone();
-            repair_params(&mut p2);
-
             let series = build_candidate_series(
                 candles,
                 &lr,
@@ -751,7 +748,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
                 &ma_source,
                 fast_ma_params.as_ref(),
                 slow_ma_params.as_ref(),
-                &p2,
+                p,
             )?;
             let series_start_t = series.start_t;
 
@@ -770,7 +767,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
 
             let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
                 crate::validation_pipeline::compute_perturb_stats(
-                    &p2,
+                    p,
                     cfg,
                     cancel,
                     rng,
@@ -829,7 +826,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
 
             Ok((
                 DoubleMaValidationCandidateResult {
-                    params: p2,
+                    params: p.clone(),
                     in_sample,
                     iterative_in_sample,
                     iterative_delta,
@@ -984,6 +981,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -1084,6 +1082,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -1130,6 +1129,7 @@ mod tests {
             },
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -1219,6 +1219,7 @@ mod tests {
                 },
                 min_psr: None,
                 min_dsr: None,
+                validation_context: None,
             };
 
             let vec_res = run_double_ma_validation_blocking_with_candles(
@@ -1366,6 +1367,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let a =
@@ -1420,6 +1422,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let baseline = run_double_ma_validation_blocking_with_candles(
@@ -1442,6 +1445,51 @@ mod tests {
             assert!(cand.psr.unwrap_or(0.0) >= 0.80);
             assert!(cand.dsr.unwrap_or(0.0) >= 0.60);
         }
+    }
+
+    #[test]
+    fn double_ma_validation_rejects_invalid_candidate_params() {
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "invalid".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 0,
+                slow_len: 0,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig {
+                    fee_bps: f64::NAN,
+                    spread_bps: 0.0,
+                    slippage_bps: 0.0,
+                    commission: f64::NAN,
+                    ..StrategyConfig::default()
+                },
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 1,
+            max_candidates: 1,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            validation_context: None,
+        };
+
+        let err = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("invalid candidates must fail validation");
+        assert!(!err.is_empty());
     }
 
     #[test]
@@ -1551,6 +1599,7 @@ mod tests {
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
                 min_dsr: None,
+                validation_context: None,
             };
 
             let val =

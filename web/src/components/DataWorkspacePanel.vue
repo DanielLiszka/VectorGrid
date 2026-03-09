@@ -34,6 +34,27 @@ const {
   canResetMarketDataDir,
   canOpenMarketDataDir,
   canApplyTimeframe,
+  polygonOpen,
+  polygonApiKey,
+  polygonMarket,
+  polygonSymbol,
+  polygonFrom,
+  polygonTo,
+  polygonTimeframe,
+  polygonAdjusted,
+  polygonCacheDir,
+  polygonHasApiKey,
+  polygonDatasets,
+  polygonSelectedPath,
+  polygonSelectedMeta,
+  polygonCacheMeta,
+  canPolygonRefresh,
+  canPolygonSaveApiKey,
+  canPolygonClearApiKey,
+  canPolygonDownload,
+  canPolygonLoadSelected,
+  canPolygonValidateSelected,
+  canPolygonRepairSelected,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(dataStore)
@@ -41,10 +62,19 @@ const { controlsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
+const polygonSymbolInput = ref<HTMLInputElement | null>(null)
+const polygonApiKeyInput = ref<HTMLInputElement | null>(null)
 
 const csvPathDraft = ref('')
 const marketDataDirDraft = ref('')
 const timeframeDraft = ref('')
+const polygonApiKeyDraft = ref('')
+const polygonMarketDraft = ref('stocks')
+const polygonSymbolDraft = ref('')
+const polygonFromDraft = ref('')
+const polygonToDraft = ref('')
+const polygonTimeframeDraft = ref('1m')
+const polygonSelectedPathDraft = ref('')
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'data')
 
@@ -77,13 +107,37 @@ watch(
     String(csvPath.value || ''),
     String(marketDataDir.value || ''),
     String(dataTimeframe.value || ''),
+    String(polygonApiKey.value || ''),
+    String(polygonMarket.value || 'stocks'),
+    String(polygonSymbol.value || ''),
+    String(polygonFrom.value || ''),
+    String(polygonTo.value || ''),
+    String(polygonTimeframe.value || '1m'),
+    String(polygonSelectedPath.value || ''),
   ] as const,
-  ([nextCsvPath, nextMarketDataDir, nextTimeframe]) => {
+  ([nextCsvPath, nextMarketDataDir, nextTimeframe, nextPolygonApiKey, nextPolygonMarket, nextPolygonSymbol, nextPolygonFrom, nextPolygonTo, nextPolygonTimeframe, nextPolygonSelectedPath]) => {
     if (csvPathDraft.value !== nextCsvPath) csvPathDraft.value = nextCsvPath
     if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
     if (timeframeDraft.value !== nextTimeframe) timeframeDraft.value = nextTimeframe
+    if (polygonApiKeyDraft.value !== nextPolygonApiKey) polygonApiKeyDraft.value = nextPolygonApiKey
+    if (polygonMarketDraft.value !== nextPolygonMarket) polygonMarketDraft.value = nextPolygonMarket
+    if (polygonSymbolDraft.value !== nextPolygonSymbol) polygonSymbolDraft.value = nextPolygonSymbol
+    if (polygonFromDraft.value !== nextPolygonFrom) polygonFromDraft.value = nextPolygonFrom
+    if (polygonToDraft.value !== nextPolygonTo) polygonToDraft.value = nextPolygonTo
+    if (polygonTimeframeDraft.value !== nextPolygonTimeframe) polygonTimeframeDraft.value = nextPolygonTimeframe
+    if (polygonSelectedPathDraft.value !== nextPolygonSelectedPath) polygonSelectedPathDraft.value = nextPolygonSelectedPath
   },
   { immediate: true },
+)
+
+watch(
+  () => Boolean(polygonOpen.value),
+  async (open) => {
+    if (!open) return
+    await nextTick()
+    const focusTarget = polygonSymbolInput.value ?? polygonApiKeyInput.value
+    focusTarget?.focus()
+  },
 )
 
 function setInputValue(id: string, nextValue: string): void {
@@ -100,7 +154,11 @@ function browseCsv(): void {
   dataStore.browseCsv()
 }
 
-function openPolygonModal(): void {
+function togglePolygonSection(): void {
+  if (polygonOpen.value) {
+    dataStore.closePolygon()
+    return
+  }
   dataStore.openPolygon()
 }
 
@@ -122,6 +180,10 @@ function setCheckboxValue(id: string, checked: boolean): void {
   dataStore.setCheckboxField(id, checked)
 }
 
+function setPolygonCheckboxValue(id: string, checked: boolean): void {
+  dataStore.setCheckboxField(id, checked)
+}
+
 function applyRecentPath(path: string): void {
   const nextValue = String(path || '').trim()
   if (!nextValue) return
@@ -131,6 +193,11 @@ function applyRecentPath(path: string): void {
 
 function loadSampleCsv(path: string, index: number): void {
   dataStore.loadSampleCsv(index, path)
+}
+
+function selectPolygonDataset(path: string): void {
+  polygonSelectedPathDraft.value = String(path || '').trim()
+  setInputValue('polygonSelectedPath', polygonSelectedPathDraft.value)
 }
 
 function resolveMount(): void {
@@ -190,7 +257,7 @@ onBeforeUnmount(() => {
           />
           <div class="actions">
             <button type="button" :disabled="!canBrowseCsv" @click="browseCsv">Browse</button>
-            <button type="button" :disabled="!canPolygonOpen" @click="openPolygonModal">Polygon</button>
+            <button type="button" :disabled="!canPolygonOpen" @click="togglePolygonSection">{{ polygonOpen ? 'Hide Polygon' : 'Polygon' }}</button>
             <button type="button" class="primary" :disabled="!canLoadCsv" @click="loadCsvFromDraft">Load CSV</button>
             <button type="button" :disabled="!canClearData" @click="dataStore.clearData()">Clear</button>
           </div>
@@ -228,6 +295,161 @@ onBeforeUnmount(() => {
           >
             {{ sample.label }}
           </button>
+        </div>
+      </section>
+
+      <section class="pane paneProminent" v-if="polygonOpen">
+        <div class="paneHeader">
+          <div>
+            <div class="sectionEyebrow">Market Download</div>
+            <h3>Polygon</h3>
+          </div>
+          <div class="actions">
+            <button type="button" :disabled="!canPolygonRefresh" @click="dataStore.refreshPolygon()">Refresh cache</button>
+            <button type="button" @click="dataStore.closePolygon()">Close</button>
+          </div>
+        </div>
+        <div class="muted mono">{{ polygonCacheMeta }}</div>
+
+        <div class="gridTwo">
+          <div>
+            <label for="vuePolygonApiKey">API key</label>
+            <div class="inputWithActions">
+              <input
+                id="vuePolygonApiKey"
+                ref="polygonApiKeyInput"
+                type="password"
+                :value="polygonApiKeyDraft"
+                placeholder="Paste Polygon API key"
+                @input="polygonApiKeyDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('polygonApiKey', polygonApiKeyDraft)"
+                @change="commitInputValue('polygonApiKey', polygonApiKeyDraft)"
+              />
+              <div class="actions">
+                <button type="button" :disabled="!canPolygonSaveApiKey" @click="dataStore.savePolygonApiKey()">Save key</button>
+                <button type="button" :disabled="!canPolygonClearApiKey" @click="dataStore.clearPolygonApiKey()">Clear key</button>
+              </div>
+            </div>
+            <div class="muted mono">{{ polygonHasApiKey ? 'API key saved in local Polygon cache settings.' : 'Save an API key to enable download and live Polygon workflows.' }}</div>
+          </div>
+
+          <div>
+            <label for="vuePolygonCacheDir">Cache folder</label>
+            <input id="vuePolygonCacheDir" type="text" :value="polygonCacheDir" readonly />
+            <div class="muted mono">Downloaded 1m data is cached here and reused automatically.</div>
+          </div>
+        </div>
+
+        <div class="gridTwo">
+          <div>
+            <label for="vuePolygonMarket">Market</label>
+            <select
+              id="vuePolygonMarket"
+              :value="polygonMarketDraft"
+              @change="polygonMarketDraft = String(($event.target as HTMLSelectElement).value || 'stocks'); setSelectValue('polygonMarket', polygonMarketDraft)"
+            >
+              <option value="stocks">Stocks</option>
+              <option value="fx">FX</option>
+              <option value="crypto">Crypto</option>
+            </select>
+          </div>
+          <div>
+            <label for="vuePolygonTimeframe">Timeframe</label>
+            <select
+              id="vuePolygonTimeframe"
+              :value="polygonTimeframeDraft"
+              @change="polygonTimeframeDraft = String(($event.target as HTMLSelectElement).value || '1m'); setSelectValue('polygonTimeframe', polygonTimeframeDraft)"
+            >
+              <option value="1m">1m</option>
+              <option value="2m">2m</option>
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+              <option value="30m">30m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="gridTwo">
+          <div>
+            <label for="vuePolygonSymbol">Symbol</label>
+            <input
+              id="vuePolygonSymbol"
+              ref="polygonSymbolInput"
+              type="text"
+              :value="polygonSymbolDraft"
+              placeholder="AAPL"
+              @input="polygonSymbolDraft = String(($event.target as HTMLInputElement).value || '').toUpperCase(); queueInputValue('polygonSymbol', polygonSymbolDraft)"
+              @change="commitInputValue('polygonSymbol', polygonSymbolDraft)"
+            />
+          </div>
+          <div class="rowInline">
+            <label class="inlineCheck">
+              <input
+                type="checkbox"
+                :checked="polygonAdjusted"
+                @change="setPolygonCheckboxValue('polygonAdjusted', ($event.target as HTMLInputElement).checked)"
+              />
+              Adjusted prices
+            </label>
+          </div>
+        </div>
+
+        <div class="gridTwo">
+          <div>
+            <label for="vuePolygonFrom">From</label>
+            <input
+              id="vuePolygonFrom"
+              type="date"
+              :value="polygonFromDraft"
+              @input="polygonFromDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('polygonFrom', polygonFromDraft)"
+              @change="commitInputValue('polygonFrom', polygonFromDraft)"
+            />
+          </div>
+          <div>
+            <label for="vuePolygonTo">To</label>
+            <input
+              id="vuePolygonTo"
+              type="date"
+              :value="polygonToDraft"
+              @input="polygonToDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('polygonTo', polygonToDraft)"
+              @change="commitInputValue('polygonTo', polygonToDraft)"
+            />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="primary" :disabled="!canPolygonDownload" @click="dataStore.downloadPolygonDataset()">Download and load</button>
+        </div>
+
+        <div class="pane subtlePane">
+          <div class="paneHeader">
+            <div>
+              <div class="sectionEyebrow">Cache</div>
+              <h3>Cached datasets</h3>
+            </div>
+          </div>
+          <div v-if="polygonDatasets.length" class="stackList">
+            <button
+              v-for="dataset in polygonDatasets"
+              :key="`polygon_dataset_${dataset.csvPath}`"
+              type="button"
+              class="listCard"
+              :data-selected="polygonSelectedPath === dataset.csvPath ? '1' : '0'"
+              @click="selectPolygonDataset(dataset.csvPath)"
+            >
+              <span class="mono">{{ dataset.displaySymbol || dataset.polygonTicker || dataset.csvPath }}</span>
+              <span class="muted mono">{{ dataset.timeframe }} · {{ dataset.rowCount }} rows</span>
+            </button>
+          </div>
+          <div v-else class="muted">No cached Polygon datasets yet. Save a key, choose a symbol/date range, then download.</div>
+          <div class="muted mono">{{ polygonSelectedMeta }}</div>
+          <div class="actions">
+            <button type="button" :disabled="!canPolygonLoadSelected" @click="dataStore.loadPolygonDataset(polygonSelectedPathDraft)">Load selected</button>
+            <button type="button" :disabled="!canPolygonValidateSelected" @click="dataStore.validatePolygonDataset(polygonSelectedPathDraft)">Validate selected</button>
+            <button type="button" :disabled="!canPolygonRepairSelected" @click="dataStore.repairPolygonDataset(polygonSelectedPathDraft)">Repair selected</button>
+          </div>
         </div>
       </section>
 
@@ -473,6 +695,12 @@ onBeforeUnmount(() => {
   gap: 0.5rem 0.8rem;
 }
 
+.gridTwo {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem 0.8rem;
+}
+
 .k {
   display: block;
   font-size: 0.68rem;
@@ -523,6 +751,35 @@ onBeforeUnmount(() => {
   background: var(--surface2);
 }
 
+.subtlePane {
+  margin-top: 0.7rem;
+  background: color-mix(in oklab, var(--surface2) 82%, white 18%);
+}
+
+.stackList {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+  margin-bottom: 0.55rem;
+}
+
+.listCard {
+  width: 100%;
+  display: grid;
+  justify-items: start;
+  gap: 0.18rem;
+  text-align: left;
+  border: 1px solid color-mix(in oklab, var(--border) 85%, transparent);
+  border-radius: 0.8rem;
+  padding: 0.65rem 0.8rem;
+  background: color-mix(in oklab, var(--surface) 88%, white 12%);
+}
+
+.listCard[data-selected='1'] {
+  border-color: color-mix(in oklab, var(--accent) 70%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 24%, transparent);
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.8rem;
@@ -543,6 +800,10 @@ onBeforeUnmount(() => {
   }
 
   .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .gridTwo {
     grid-template-columns: 1fr;
   }
 

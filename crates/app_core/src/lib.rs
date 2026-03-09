@@ -6,6 +6,7 @@ pub mod composite_cpu;
 pub mod composite_mo;
 pub mod composite_validate;
 pub mod cscv_pbo;
+pub mod cuda_device;
 pub mod csv_compat;
 pub mod double_ma;
 pub mod double_ma_validate;
@@ -22,6 +23,7 @@ pub mod ml_confidence;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;
+pub mod rocb;
 pub mod sharpe_stats;
 pub mod stats_common;
 pub mod strategy_dynamic;
@@ -39,6 +41,8 @@ pub mod vemr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vemr_gpu_kernel;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod rocb_gpu_kernel;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) mod vram_ma;
 pub use ta_strategies::composite_cpu::CompositeSignalMode;
 
@@ -46,6 +50,7 @@ pub use ta_strategies::double_ma::DoubleMaCurves;
 pub use ta_strategies::records::{TradeRecord, TradeRecords};
 
 pub use csv_compat::read_candles_from_csv_compat;
+pub use cuda_device::{preferred_cuda_device, preferred_cuda_device_id, PreferredCudaDevice};
 pub use timeframe::{parse_timeframe_label, resample_candles, TimeframeSpec};
 
 pub use double_ma::{
@@ -64,6 +69,7 @@ pub use composite_cpu::{
 };
 
 pub use asr::AsrStrategyParams;
+pub use rocb::RocbStrategyParams;
 pub use vcc::VccStrategyParams;
 pub use vemr::VemrStrategyParams;
 
@@ -78,7 +84,7 @@ pub use composite_validate::{
     run_composite_validation_blocking_with_candles, CompositeParams, CompositeValidationRequest,
     CompositeValidationResult, CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta,
     CrossTickerGateConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig,
-    TradeBootstrapConfig, WalkForwardConfigOptional,
+    TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
 };
 
 pub use double_ma_validate::{

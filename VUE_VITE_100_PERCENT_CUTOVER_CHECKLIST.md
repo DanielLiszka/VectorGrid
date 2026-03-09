@@ -87,7 +87,6 @@ Exit criteria:
 - [x] `historyService`
 - [x] `settingsService`
 - [x] `executionService`
-- [x] `distributedService`
 - [x] `metaService`
 - [x] Move command payload/response normalization into these services.
 - [x] Add unit tests for each service command path and error normalization.
@@ -104,7 +103,6 @@ Exit criteria:
 - [x] `web/src/stores/historyStore.ts` migrated off `../legacy/actions`.
 - [x] `web/src/stores/settingsStore.ts` migrated off `../legacy/actions` (no direct import present in current implementation).
 - [x] `web/src/stores/executionStore.ts` migrated off `../legacy/actions`.
-- [x] `web/src/stores/distributedStore.ts` migrated off `../legacy/actions`.
 - [x] `web/src/stores/advancedStore.ts` migrated off `../legacy/actions` (or folded into service-backed modules).
 
 Exit criteria:
@@ -128,7 +126,6 @@ Exit criteria:
 - [x] Replace `dataContextBridge` with direct store/service updates.
 - [x] Replace `optimizeValidationBridge` with direct store/service updates.
 - [x] Replace `analysisHistorySettingsBridge` with direct store/service updates.
-- [x] Replace `executionDistributedBridge` with direct store/service updates.
 - [x] Replace `strategyContextBridge` with direct store/service updates.
 - [x] Replace `advancedContextBridge` with direct store/service updates.
 - [x] Replace `workflowBridge` with direct workflow store ownership.
@@ -146,7 +143,6 @@ Exit criteria:
 - [x] Remove direct DOM writes from `executionStore`.
 - [x] Remove direct DOM writes from `strategyStore`.
 - [x] Remove direct DOM writes from `optimizeStore`.
-- [x] Remove direct DOM writes from `distributedStore`.
 - [x] Remove direct DOM writes from `settingsStore`.
 - [x] Remove direct DOM writes from `analysisStore`.
 - [x] Remove direct DOM writes from `historyStore`.
@@ -201,9 +197,8 @@ Exit criteria:
 ### Meta + Stage4 + ML
 - [x] Batch flows, meta selection, stage4 actions, ML actions parity preserved.
 
-### Execution + Distributed
+### Execution
 - [x] Runner control and status parity preserved.
-- [x] Distributed worker start/stop/status/run/cancel parity preserved.
 
 ## Performance Checklist (Frontend)
 

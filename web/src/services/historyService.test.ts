@@ -20,7 +20,6 @@ import { invokeCommand } from '../tauri/invoke'
 import { HISTORY_KEY, SETTINGS_KEY } from '../utils/core/storageKeys'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useAdvancedStore } from '../stores/advancedStore'
-import { useDistributedStore } from '../stores/distributedStore'
 import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
@@ -208,7 +207,6 @@ describe('historyService', () => {
         objective: 'Sharpe',
         valAutoRun: true,
         execMode: 'live',
-        distLeaderMode: 'tiles',
         settingsThemeSelect: 'dark',
       },
     })
@@ -229,7 +227,6 @@ describe('historyService', () => {
     expect(useOptimizeStore().objective).toBe('Sharpe')
     expect(useValidationStore().autoRun).toBe(true)
     expect(useExecutionStore().mode).toBe('live')
-    expect(useDistributedStore().leaderMode).toBe('tiles')
     expect(useSettingsStore().theme).toBe('dark')
   })
 

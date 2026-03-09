@@ -2,6 +2,7 @@ import { getActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
 import { requestCancelCurrentRun } from './runControlService'
 import { runValidation as runValidationAction } from './validationService'
+import { refreshAnalysisFromWorkflowRun } from './analysisService'
 import { applyWorkflowArtifactsPayload } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { computeConfigFingerprint } from '../utils/core/artifactIdentity'
@@ -17,16 +18,18 @@ interface GpuStatusResponse {
   built_with_cuda?: unknown
   built_with_cuda_backtest_kernel?: unknown
   cuda_available?: unknown
-  last_used_backend?: unknown
-  last_used_device_id?: unknown
+  auto_device_name?: unknown
+  auto_device_memory_bytes?: unknown
+  auto_device_error?: unknown
 }
 
 export interface GpuStatusSummary {
   builtWithCuda: boolean
   builtWithCudaBacktestKernel: boolean
   cudaAvailable: boolean
-  lastUsedBackend: string
-  lastUsedDeviceId: string
+  autoDeviceName: string
+  autoDeviceMemoryBytes: number | null
+  deviceMeta: string
   text: string
 }
 
@@ -93,7 +96,6 @@ type DoubleMaParityBackend = 'GpuKernel'
 
 interface DoubleMaRequestOverrides {
   backend?: unknown
-  deviceId?: unknown
   fastStart?: unknown
   fastEnd?: unknown
   fastStep?: unknown
@@ -108,8 +110,6 @@ interface DoubleMaRequestOverrides {
   fastMaParamSweeps?: unknown
   slowMaParamSweeps?: unknown
 }
-
-export interface BuildDoubleMaRequestOptions extends DoubleMaRequestOverrides {}
 
 let movingAverageSupportMapCache: Record<string, Record<string, unknown>> | null = null
 
@@ -192,7 +192,6 @@ const PRESET_PROFILES: Record<string, PresetProfile> = {
 
 const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   backend: { storeId: 'optimize', key: 'backend' },
-  deviceId: { storeId: 'optimize', key: 'deviceId' },
   fastStart: { storeId: 'optimize', key: 'fastStart' },
   fastEnd: { storeId: 'optimize', key: 'fastEnd' },
   fastStep: { storeId: 'optimize', key: 'fastStep' },
@@ -300,7 +299,6 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   epsRel: { storeId: 'strategy', key: 'epsRel' },
   stopLossPct: { storeId: 'strategy', key: 'stopLossPct' },
   takeProfitPct: { storeId: 'strategy', key: 'takeProfitPct' },
-  trailingStopPct: { storeId: 'strategy', key: 'trailingStopPct' },
   cooldownBars: { storeId: 'strategy', key: 'cooldownBars' },
   signalPersistenceBars: { storeId: 'strategy', key: 'signalPersistenceBars' },
   compositeSignalMode: { storeId: 'strategy', key: 'compositeSignalMode' },
@@ -366,6 +364,21 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   vccSqueezeKcMult: { storeId: 'strategy', key: 'vccSqueezeKcMult' },
   vccConfirmBars: { storeId: 'strategy', key: 'vccConfirmBars' },
   vccMaxTradeBars: { storeId: 'strategy', key: 'vccMaxTradeBars' },
+  pitEfiPeriod: { storeId: 'strategy', key: 'pitEfiPeriod' },
+  pitVoscShortPeriod: { storeId: 'strategy', key: 'pitVoscShortPeriod' },
+  pitVoscLongPeriod: { storeId: 'strategy', key: 'pitVoscLongPeriod' },
+  pitCfoPeriod: { storeId: 'strategy', key: 'pitCfoPeriod' },
+  pitCfoScalar: { storeId: 'strategy', key: 'pitCfoScalar' },
+  pitConfirmBars: { storeId: 'strategy', key: 'pitConfirmBars' },
+  vfctObvSmoothPeriod: { storeId: 'strategy', key: 'vfctObvSmoothPeriod' },
+  vfctMfiPeriod: { storeId: 'strategy', key: 'vfctMfiPeriod' },
+  vfctMfiLongMin: { storeId: 'strategy', key: 'vfctMfiLongMin' },
+  vfctMfiShortMax: { storeId: 'strategy', key: 'vfctMfiShortMax' },
+  vfctConfirmBars: { storeId: 'strategy', key: 'vfctConfirmBars' },
+  rocbChannelPeriod: { storeId: 'strategy', key: 'rocbChannelPeriod' },
+  rocbAtrPeriod: { storeId: 'strategy', key: 'rocbAtrPeriod' },
+  rocbAtrStopMult: { storeId: 'strategy', key: 'rocbAtrStopMult' },
+  rocbMaxTradeBars: { storeId: 'strategy', key: 'rocbMaxTradeBars' },
   vemrZPeriod: { storeId: 'strategy', key: 'vemrZPeriod' },
   vemrZMaType: { storeId: 'strategy', key: 'vemrZMaType' },
   vemrZNbdev: { storeId: 'strategy', key: 'vemrZNbdev' },
@@ -415,36 +428,46 @@ function normalizeStatusText(raw: unknown): GpuStatusSummary {
   const builtWithCuda = !!status.built_with_cuda
   const builtWithCudaBacktestKernel = !!status.built_with_cuda_backtest_kernel
   const cudaAvailable = !!status.cuda_available
-  const lastUsedBackend = String(status.last_used_backend || '-').trim() || '-'
-  const lastUsedDeviceId = String(status.last_used_device_id || '-').trim() || '-'
   const text =
     `GPU: build=${builtWithCuda ? 'cuda' : 'cpu-only'} | ` +
     `kernel=${builtWithCudaBacktestKernel ? 'on' : 'off'} | ` +
-    `cuda_available=${cudaAvailable ? 'true' : 'false'} | ` +
-    `last_used=${lastUsedBackend}/${lastUsedDeviceId}`
+    `cuda_available=${cudaAvailable ? 'true' : 'false'}`
+  const autoDeviceName = normalizeText(status.auto_device_name)
+  const autoDeviceMemoryBytes = Number(status.auto_device_memory_bytes)
+  const autoDeviceError = normalizeText(status.auto_device_error)
+  const hasAutoDeviceMemory = Number.isFinite(autoDeviceMemoryBytes) && autoDeviceMemoryBytes > 0
 
   return {
     builtWithCuda,
     builtWithCudaBacktestKernel,
     cudaAvailable,
-    lastUsedBackend,
-    lastUsedDeviceId,
+    autoDeviceName,
+    autoDeviceMemoryBytes: hasAutoDeviceMemory ? autoDeviceMemoryBytes : null,
+    deviceMeta: builtWithCuda && cudaAvailable
+      ? (
+          autoDeviceName
+            ? `Automatic CUDA device: ${autoDeviceName}${hasAutoDeviceMemory ? ` (${formatMemoryLabel(autoDeviceMemoryBytes)})` : ''}.`
+            : (autoDeviceError || 'CUDA is available; the app will choose a single local device automatically.')
+        )
+      : 'CUDA device selection is unavailable; the app will use CPU-safe routing.',
     text,
   }
+}
+
+function formatMemoryLabel(bytesValue: unknown): string {
+  const bytes = Number(bytesValue)
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  const gib = bytes / (1024 ** 3)
+  if (gib >= 10) return `${gib.toFixed(0)} GB`
+  if (gib >= 1) return `${gib.toFixed(1)} GB`
+  const mib = bytes / (1024 ** 2)
+  return `${mib.toFixed(0)} MB`
 }
 
 function parseNonNegativeInt(value: unknown, fallback: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(0, Math.floor(parsed))
-}
-
-function parseRiskPct(value: unknown): number | null {
-  const raw = Number(value)
-  if (!Number.isFinite(raw) || raw <= 0) return null
-  const frac = raw > 1 ? raw / 100 : raw
-  if (!Number.isFinite(frac) || frac <= 0 || frac >= 1) return null
-  return frac
 }
 
 function dispatchInputLikeEvents(target: EventTarget | null): void {
@@ -617,6 +640,14 @@ function updateParityStatus(meta: string, statusLine: string): void {
   writeDomTextContent('status', statusLine)
 }
 
+function applyGpuSummaryToOptimizeStore(summary: GpuStatusSummary): void {
+  patchStoreState('optimize', {
+    gpuStatus: summary.text,
+    gpuDeviceMeta: summary.deviceMeta,
+  })
+  writeDomTextContent('gpuStatus', summary.text)
+}
+
 export async function applyPreset(): Promise<void> {
   const optimizeStore = readPiniaStoreState('optimize')
   if (normalizeBoolean(optimizeStore?.canCancel)) return
@@ -713,8 +744,7 @@ export async function presetKernel(): Promise<void> {
 
   try {
     const summary = await refreshGpuStatus()
-    patchStoreState('optimize', { gpuStatus: summary.text })
-    writeDomTextContent('gpuStatus', summary.text)
+    applyGpuSummaryToOptimizeStore(summary)
   } catch {
     // keep preset application non-throwing (legacy-compatible behavior)
   }
@@ -730,8 +760,8 @@ export async function runGpuParityCheck(): Promise<void> {
   if (normalizeBoolean(optimizeStore?.canCancel)) return
 
   const strategyKind = normalizeText(optimizeStore?.strategyKind || 'DoubleMa') || 'DoubleMa'
-  if (strategyKind !== 'DoubleMa') {
-    updateParityStatus('Parity: switch Strategy to Double MA to run the check.', 'Parity unavailable: switch strategy.')
+  if (strategyKind !== 'DoubleMa' && strategyKind !== 'Pit' && strategyKind !== 'Set' && strategyKind !== 'Mts' && strategyKind !== 'Orc' && strategyKind !== 'Marrt' && strategyKind !== 'Vfct') {
+    updateParityStatus('Parity: switch Strategy to Double MA, MARRT, or VFCT to run the check.', 'Parity unavailable: switch strategy.')
     return
   }
 
@@ -740,8 +770,7 @@ export async function runGpuParityCheck(): Promise<void> {
   let statusSummary: GpuStatusSummary
   try {
     statusSummary = await refreshGpuStatus()
-    patchStoreState('optimize', { gpuStatus: statusSummary.text })
-    writeDomTextContent('gpuStatus', statusSummary.text)
+    applyGpuSummaryToOptimizeStore(statusSummary)
   } catch (error) {
     updateParityStatus(`Parity: failed (${String(error || '')})`, 'Parity check failed.')
     return
@@ -762,8 +791,7 @@ export async function runGpuParityCheck(): Promise<void> {
   const exitMode = readStoreTextInputValue('exitMode') || 'cross'
   const cooldownBars = parseNonNegativeInt(readStoreTextInputValue('cooldownBars'), 0)
   const signalPersistenceBars = Math.max(1, parseNonNegativeInt(readStoreTextInputValue('signalPersistenceBars'), 1))
-  const trailingStopPct = parseRiskPct(readStoreTextInputValue('trailingStopPct'))
-  const hasExecutionOverlays = cooldownBars > 0 || signalPersistenceBars > 1 || trailingStopPct != null
+  const hasExecutionOverlays = cooldownBars > 0 || signalPersistenceBars > 1
 
   let gpuBackend: DoubleMaParityBackend | null = null
   const supportsKernel =
@@ -798,8 +826,6 @@ export async function runGpuParityCheck(): Promise<void> {
   const s0 = Math.max(s0raw, f0 + 1)
   const f1 = f0 + 2
   const s1 = s0 + 3
-  const deviceId = readStoreTextInputValue('deviceId')
-
   let cpuReq: Record<string, unknown> | null = null
   let gpuReq: Record<string, unknown> | null = null
   try {
@@ -825,7 +851,6 @@ export async function runGpuParityCheck(): Promise<void> {
     gpuReq = await buildAutoDoubleMaRequest(context, {
       ...tinyRangeOverrides,
       backend: gpuBackend,
-      deviceId,
     })
   } catch (error) {
     updateParityStatus(`Parity: failed (${String(error || '')})`, 'Parity check failed.')
@@ -866,8 +891,7 @@ export async function runGpuParityCheck(): Promise<void> {
 
   try {
     const summary = await refreshGpuStatus()
-    patchStoreState('optimize', { gpuStatus: summary.text })
-    writeDomTextContent('gpuStatus', summary.text)
+    applyGpuSummaryToOptimizeStore(summary)
   } catch {
     // keep parity action completion non-throwing
   }
@@ -896,6 +920,13 @@ function normalizeDataId(value: unknown): string {
 
 type OptimizeStrategyKind =
   | 'DoubleMa'
+  | 'Pit'
+  | 'Set'
+  | 'Mts'
+  | 'Orc'
+  | 'Marrt'
+  | 'Vfct'
+  | 'Rocb'
   | 'Asr'
   | 'Vcc'
   | 'Vemr'
@@ -907,6 +938,13 @@ type OptimizeStrategyKind =
 
 function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Pit') return 'Pit'
+  if (kind === 'Set') return 'Set'
+  if (kind === 'Mts') return 'Mts'
+  if (kind === 'Orc') return 'Orc'
+  if (kind === 'Marrt') return 'Marrt'
+  if (kind === 'Vfct') return 'Vfct'
+  if (kind === 'Rocb') return 'Rocb'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -921,7 +959,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
 function resolveOptimizationCommand(kindRaw: unknown): 'run_double_ma_optimization' | 'run_composite_cpu_optimization' | 'run_composite_mo_optimization' {
   const kind = normalizeStrategyKindRaw(kindRaw)
   if (kind === 'CompositeMo') return 'run_composite_mo_optimization'
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
     return 'run_composite_cpu_optimization'
   }
   return 'run_double_ma_optimization'
@@ -969,7 +1007,8 @@ function deriveCurrentDataMetaFromDataStore(): Record<string, unknown> | null {
   if (!dataStore) return null
   const fields = normalizeDataFields(dataStore.dataFields)
   const len = Number(dataStore.dataLen)
-  const timeframe = normalizeText(dataStore.dataTimeframe)
+  const baseMeta = asRecord(dataStore.baseDataMeta)
+  const timeframe = normalizeText(dataStore.dataTimeframe || baseMeta?.timeframe)
   const hasMeta = fields.size > 0 || (Number.isFinite(len) && len >= 0) || !!timeframe
   if (!hasMeta) return null
 
@@ -1108,7 +1147,6 @@ async function buildAutoDoubleMaRequest(
     context,
     maSupportMap,
     backend: overrides.backend ?? readStoreTextInputValue('backend'),
-    deviceId: overrides.deviceId ?? readStoreTextInputValue('deviceId'),
     fastStart: overrides.fastStart ?? readStoreTextInputValue('fastStart'),
     fastEnd: overrides.fastEnd ?? readStoreTextInputValue('fastEnd'),
     fastStep: overrides.fastStep ?? readStoreTextInputValue('fastStep'),
@@ -1132,13 +1170,23 @@ async function buildAutoDoubleMaRequest(
     epsRel: readStoreTextInputValue('epsRel'),
     stopLossPct: readStoreTextInputValue('stopLossPct'),
     takeProfitPct: readStoreTextInputValue('takeProfitPct'),
-    trailingStopPct: readStoreTextInputValue('trailingStopPct'),
     cooldownBars: readStoreTextInputValue('cooldownBars'),
     signalPersistenceBars: readStoreTextInputValue('signalPersistenceBars'),
     exitMode: readStoreTextInputValue('exitMode'),
     kaufmanStopPeriod: readStoreTextInputValue('kaufmanStopPeriod'),
     kaufmanStopMult: readStoreTextInputValue('kaufmanStopMult'),
     kaufmanStopMaType: readStoreTextInputValue('kaufmanStopMaType'),
+    pitEfiPeriod: readStoreTextInputValue('pitEfiPeriod'),
+    pitVoscShortPeriod: readStoreTextInputValue('pitVoscShortPeriod'),
+    pitVoscLongPeriod: readStoreTextInputValue('pitVoscLongPeriod'),
+    pitCfoPeriod: readStoreTextInputValue('pitCfoPeriod'),
+    pitCfoScalar: readStoreTextInputValue('pitCfoScalar'),
+    pitConfirmBars: readStoreTextInputValue('pitConfirmBars'),
+    vfctObvSmoothPeriod: readStoreTextInputValue('vfctObvSmoothPeriod'),
+    vfctMfiPeriod: readStoreTextInputValue('vfctMfiPeriod'),
+    vfctMfiLongMin: readStoreTextInputValue('vfctMfiLongMin'),
+    vfctMfiShortMax: readStoreTextInputValue('vfctMfiShortMax'),
+    vfctConfirmBars: readStoreTextInputValue('vfctConfirmBars'),
     longOnly: readStoreCheckboxValue('longOnly'),
     allowFlip: readStoreCheckboxValue('allowFlip'),
     tradeOnNext: readStoreCheckboxValue('tradeOnNext'),
@@ -1161,24 +1209,6 @@ async function buildAutoDoubleMaRequest(
     vdpsQualityCheckMaxPairs: readStoreTextInputValue('vdpsQualityCheckMaxPairs'),
     vdpsQualityCheckTopK: readStoreTextInputValue('vdpsQualityCheckTopK'),
   })
-}
-
-export async function buildDoubleMaRequestFromVueStores(
-  options: BuildDoubleMaRequestOptions = {},
-): Promise<Record<string, unknown>> {
-  const context = readOptimizeBuildContextFromVueStores()
-  if (!context) {
-    throw new Error('Load data first, then configure strategy/optimization settings.')
-  }
-  const kind = normalizeText(context.strategy_kind)
-  if (kind !== 'DoubleMa') {
-    throw new Error("Distributed run supports Double MA only. Switch Strategy to 'Double MA crossover'.")
-  }
-  const req = await buildAutoDoubleMaRequest(context, options)
-  if (!req) {
-    throw new Error('Unable to build Double MA request from current Vue state.')
-  }
-  return req
 }
 
 export async function buildOptimizationRequestFromVueStores(): Promise<Record<string, unknown>> {
@@ -1205,17 +1235,16 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
   const fastParamState: MaParamsAndSweeps = storeMaParamState?.fast ?? emptyParamState
   const slowParamState: MaParamsAndSweeps = storeMaParamState?.slow ?? emptyParamState
 
-  if (kind === 'DoubleMa') {
+  if (kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct') {
     return buildAutoDoubleMaRequest(context)
   }
 
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
     const maSupportMap = await getMovingAverageSupportMap()
     return buildCompositeCpuOptimizationRequest({
       context,
       maSupportMap,
       backend: readStoreTextInputValue('backend'),
-      deviceId: readStoreTextInputValue('deviceId'),
       fastStart: readStoreTextInputValue('fastStart'),
       fastEnd: readStoreTextInputValue('fastEnd'),
       fastStep: readStoreTextInputValue('fastStep'),
@@ -1253,7 +1282,6 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
       epsRel: readStoreTextInputValue('epsRel'),
       stopLossPct: readStoreTextInputValue('stopLossPct'),
       takeProfitPct: readStoreTextInputValue('takeProfitPct'),
-      trailingStopPct: readStoreTextInputValue('trailingStopPct'),
       cooldownBars: readStoreTextInputValue('cooldownBars'),
       signalPersistenceBars: readStoreTextInputValue('signalPersistenceBars'),
       exitMode: readStoreTextInputValue('exitMode'),
@@ -1367,7 +1395,6 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
       epsRel: readStoreTextInputValue('epsRel'),
       stopLossPct: readStoreTextInputValue('stopLossPct'),
       takeProfitPct: readStoreTextInputValue('takeProfitPct'),
-      trailingStopPct: readStoreTextInputValue('trailingStopPct'),
       cooldownBars: readStoreTextInputValue('cooldownBars'),
       signalPersistenceBars: readStoreTextInputValue('signalPersistenceBars'),
       exitMode: readStoreTextInputValue('exitMode'),
@@ -1452,7 +1479,6 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
       moOttPercentHigh: readStoreTextInputValue('moOttPercentHigh'),
       moOttPercentStep: readStoreTextInputValue('moOttPercentStep'),
       moOttMaTypes: readStoreTextInputValue('moOttMaTypes'),
-      deviceId: readStoreTextInputValue('deviceId'),
     })
   }
 
@@ -1489,11 +1515,14 @@ function buildRunDatasetContextState(): {
   const dataStore = readPiniaStoreState('data')
   const dataMeta = deriveCurrentDataMetaFromDataStore()
   const label = normalizeText(dataStore?.datasetLabel)
-  const timeframe = normalizeText(dataStore?.dataTimeframe)
+  const baseMeta = asRecord(dataStore?.baseDataMeta)
+  const timeframe = normalizeText(dataStore?.dataTimeframe || baseMeta?.timeframe)
   const source = normalizeText(dataStore?.datasetContext)
+  const symbol = normalizeText(dataStore?.polygonSymbol || label)
 
   const datasetCtx: Record<string, unknown> = {}
   if (label && label !== '—') datasetCtx.label = label
+  if (symbol && symbol !== '—') datasetCtx.symbol = symbol
   if (timeframe) {
     datasetCtx.timeframe = timeframe
     datasetCtx.base_timeframe = timeframe
@@ -1560,6 +1589,7 @@ function applyVueRunArtifacts(
   artifactPath: string,
   csvPath: string,
 ): void {
+  const datasetMeta = buildDatasetMetaForArtifact(csvPath, buildRunDatasetContextState())
   applyWorkflowArtifactsPayload(
     {
       currentRun: {
@@ -1567,6 +1597,7 @@ function applyVueRunArtifacts(
         artifact_path: artifactPath,
         report_xlsx_path: '',
         csv_path: csvPath,
+        dataset_meta: datasetMeta,
         tags: [],
         req,
         res,
@@ -1635,6 +1666,7 @@ export async function runOptimization(options: OptimizeRunOptions = {}): Promise
 
     const persisted = await persistRunArtifact(req, res, runTs)
     applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath)
+    refreshAnalysisFromWorkflowRun()
 
     if (switchTab) selectWorkflowResultsTab('top', false)
 
@@ -1653,8 +1685,7 @@ export async function runOptimization(options: OptimizeRunOptions = {}): Promise
 
     try {
       const summary = await refreshGpuStatus()
-      patchStoreState('optimize', { gpuStatus: summary.text })
-      writeDomTextContent('gpuStatus', summary.text)
+      applyGpuSummaryToOptimizeStore(summary)
     } catch {
       // Keep run completion non-throwing if status refresh is unavailable.
     }

@@ -46,6 +46,13 @@ function normalizeText(value: unknown): string {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Pit') return 'Pit'
+  if (kind === 'Set') return 'Set'
+  if (kind === 'Mts') return 'Mts'
+  if (kind === 'Orc') return 'Orc'
+  if (kind === 'Marrt') return 'Marrt'
+  if (kind === 'Vfct') return 'Vfct'
+  if (kind === 'Rocb') return 'Rocb'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -59,7 +66,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
 
 function isDoubleLikeKind(kindRaw: unknown): boolean {
   const kind = normalizeStrategyKindRaw(kindRaw)
-  return kind === 'DoubleMa' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 }
 
 function resolveValidationCommand(runReq: unknown): 'run_double_ma_validation' | 'run_composite_validation' {
@@ -105,6 +112,7 @@ interface WorkflowRunArtifactSnapshot {
   artifactPath: string
   reportXlsxPath: string
   csvPath: string
+  datasetMeta: Record<string, unknown> | null
   tags: string[]
   req: unknown
   res: unknown
@@ -358,6 +366,11 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
     artifactPath: normalizeText(row.artifactPath ?? row.artifact_path),
     reportXlsxPath: normalizeText(row.reportXlsxPath ?? row.report_xlsx_path),
     csvPath: normalizeText(row.csvPath ?? row.csv_path),
+    datasetMeta: row.datasetMeta && typeof row.datasetMeta === 'object'
+      ? row.datasetMeta as Record<string, unknown>
+      : (row.dataset_meta && typeof row.dataset_meta === 'object'
+        ? row.dataset_meta as Record<string, unknown>
+        : null),
     tags: normalizeStringList(row.tags),
     req: row.req ?? null,
     res: row.res ?? null
@@ -500,7 +513,8 @@ function buildRunDatasetContextState(): {
     fields.add(key)
   }
   const len = Number(dataStore?.dataLen)
-  const timeframe = normalizeText(dataStore?.dataTimeframe)
+  const baseMeta = asRecord(dataStore?.baseDataMeta)
+  const timeframe = normalizeText(dataStore?.dataTimeframe || baseMeta?.timeframe)
   const dataMeta: Record<string, unknown> = {
     has_open: fields.has('open'),
     has_high: fields.has('high'),
@@ -514,7 +528,9 @@ function buildRunDatasetContextState(): {
   const datasetCtx: Record<string, unknown> = {}
   const label = normalizeText(dataStore?.datasetLabel)
   const source = normalizeText(dataStore?.datasetContext)
+  const symbol = normalizeText(dataStore?.polygonSymbol || label)
   if (label && label !== '—') datasetCtx.label = label
+  if (symbol && symbol !== '—') datasetCtx.symbol = symbol
   if (source && source !== '—') datasetCtx.source = source
   if (timeframe) {
     datasetCtx.timeframe = timeframe
@@ -528,6 +544,56 @@ function buildRunDatasetContextState(): {
     currentBaseDataMeta: dataMeta,
     currentBaseDatasetCtx: datasetCtx,
     currentDatasetCtx: datasetCtx
+  }
+}
+
+function canonicalLower(value: unknown): string {
+  return normalizeText(value).toLowerCase()
+}
+
+function firstNonEmptyText(...values: unknown[]): string {
+  for (const value of values) {
+    const next = normalizeText(value)
+    if (next) return next
+  }
+  return ''
+}
+
+function assertValidationRunMatchesCurrentDataset(
+  run: WorkflowRunArtifactSnapshot,
+  runReq: Record<string, unknown>,
+): void {
+  const datasetMeta = run.datasetMeta
+  const expectedCsvPath = normalizePath(normalizeText(datasetMeta?.csv_path ?? run.csvPath))
+  const expectedTimeframe = canonicalLower(
+    firstNonEmptyText(datasetMeta?.timeframe, datasetMeta?.derived_timeframe, datasetMeta?.base_timeframe),
+  )
+  if (!expectedCsvPath && !expectedTimeframe) return
+
+  const dataStore = readPiniaStoreState('data')
+  const currentCsvPath = normalizePath(normalizeText(dataStore?.csvPath))
+  if (expectedCsvPath && !currentCsvPath) {
+    throw new Error('Load the same dataset used by the optimization artifact before running validation.')
+  }
+
+  if (expectedCsvPath && currentCsvPath !== expectedCsvPath) {
+    const expectedLabel = firstNonEmptyText(datasetMeta?.symbol, datasetMeta?.label, expectedCsvPath)
+    throw new Error(`Validation requires the optimization dataset ${expectedLabel} (${expectedCsvPath}).`)
+  }
+
+  const currentTimeframe = canonicalLower(
+    firstNonEmptyText(dataStore?.dataTimeframe, asRecord(dataStore?.baseDataMeta)?.timeframe),
+  )
+  if (currentTimeframe && expectedTimeframe && currentTimeframe !== expectedTimeframe) {
+    throw new Error(`Validation requires timeframe ${expectedTimeframe}; current dataset is ${currentTimeframe}.`)
+  }
+
+  const artifactStrategy = normalizeStrategyKindRaw(runReq.strategy_kind ?? runReq.strategyKind)
+  const runtimeStrategy = normalizeStrategyKindRaw(run.req && typeof run.req === 'object'
+    ? (run.req as Record<string, unknown>).strategy_kind ?? (run.req as Record<string, unknown>).strategyKind
+    : '')
+  if (runtimeStrategy && artifactStrategy !== runtimeStrategy) {
+    throw new Error(`Validation requires strategy ${runtimeStrategy}; current run context is ${artifactStrategy}.`)
   }
 }
 
@@ -955,6 +1021,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     throw new Error(message)
   }
   const runSnapshot = readRunSnapshotFromStore()
+  const workflowRun = readWorkflowRunArtifactFromStore()
   const runReq = asRecord(runSnapshot?.req ?? buildContext.currentRunReq)
   const runRes = runSnapshot?.res ?? buildContext.currentRunRes
   if (!runReq || !runRes) {
@@ -966,10 +1033,22 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     writeDomTextContent('status', message)
     throw new Error(message)
   }
+  if (!workflowRun) {
+    const message = 'Run artifact is unavailable. Re-run optimization first.'
+    patchValidationStoreState({
+      statusLine: message,
+      validationHint: message
+    })
+    writeDomTextContent('status', message)
+    throw new Error(message)
+  }
+  assertValidationRunMatchesCurrentDataset(workflowRun, runReq)
 
   const buildInputs: Parameters<typeof buildValidationRequest>[0] = {
     currentRunReq: runReq,
     currentRunRes: runRes,
+    runDatasetMeta: workflowRun.datasetMeta,
+    runCsvPath: workflowRun.csvPath,
     topRows: buildContext.topRows,
     topRowsFiltered: buildContext.topRowsFiltered,
     candidates: readStoreTextInputValue('valCandidates'),

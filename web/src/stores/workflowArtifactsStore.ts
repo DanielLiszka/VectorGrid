@@ -6,6 +6,7 @@ export interface WorkflowRunArtifact {
   artifactPath: string
   reportXlsxPath: string
   csvPath: string
+  datasetMeta: Record<string, unknown> | null
   tags: string[]
   req: unknown
   res: unknown
@@ -69,15 +70,23 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     reportXlsxPath?: unknown
     csv_path?: unknown
     csvPath?: unknown
+    dataset_meta?: unknown
+    datasetMeta?: unknown
     tags?: unknown
     req?: unknown
     res?: unknown
   }
+  const datasetMeta = row.dataset_meta && typeof row.dataset_meta === 'object'
+    ? row.dataset_meta as Record<string, unknown>
+    : (row.datasetMeta && typeof row.datasetMeta === 'object'
+      ? row.datasetMeta as Record<string, unknown>
+      : null)
   return markRaw({
     ts: normalizeText(row.ts),
     artifactPath: normalizeText(row.artifact_path ?? row.artifactPath),
     reportXlsxPath: normalizeText(row.report_xlsx_path ?? row.reportXlsxPath),
     csvPath: normalizeText(row.csv_path ?? row.csvPath),
+    datasetMeta: markRawUnknown(datasetMeta),
     tags: markRaw(normalizeTags(row.tags)),
     req: markRawUnknown(row.req ?? null),
     res: markRawUnknown(row.res ?? null),

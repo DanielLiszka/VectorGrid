@@ -99,9 +99,6 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = BackendArg::Cpu)]
     backend: BackendArg,
 
-    #[arg(long, default_value_t = 0)]
-    device_id: u32,
-
     #[arg(long, default_value = "sma")]
     fast_ma: String,
 
@@ -193,13 +190,13 @@ struct Cli {
     halftrend_atr_period: u32,
 }
 
-fn to_backend(arg: BackendArg, device_id: u32) -> Backend {
+fn to_backend(arg: BackendArg) -> Backend {
     match arg {
-        BackendArg::Auto => Backend::Auto { device_id },
+        BackendArg::Auto => Backend::Auto { device_id: 0 },
         BackendArg::Cpu => Backend::CpuOnly,
-        BackendArg::GpuSweep => Backend::GpuOnly { device_id },
-        BackendArg::GpuHybridKernel => Backend::GpuHybridKernel { device_id },
-        BackendArg::GpuKernel => Backend::GpuKernel { device_id },
+        BackendArg::GpuSweep => Backend::GpuOnly { device_id: 0 },
+        BackendArg::GpuHybridKernel => Backend::GpuHybridKernel { device_id: 0 },
+        BackendArg::GpuKernel => Backend::GpuKernel { device_id: 0 },
     }
 }
 
@@ -288,7 +285,7 @@ fn main() -> Result<(), String> {
         return Err("perturb_pct_min must be <= perturb_pct_max".to_string());
     }
 
-    let backend = to_backend(cli.backend, cli.device_id);
+    let backend = to_backend(cli.backend);
     let objective = to_objective(cli.objective);
 
     let fast_ma_params = alma_params_if_needed(&cli.fast_ma, cli.alma_offset, cli.alma_sigma);
@@ -437,6 +434,7 @@ fn main() -> Result<(), String> {
         iterative: iterative_cfg.clone(),
         min_psr: None,
         min_dsr: None,
+        validation_context: None,
     };
 
     println!("Running validation...");

@@ -13,7 +13,17 @@ use crate::double_ma::{
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
+use crate::rocb::{
+    build_rocb_desired_positions, compute_rocb_breakout_signals, compute_rocb_risk_signals,
+    compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbBreakoutSignals,
+    RocbRiskSignals, RocbStrategyParams,
+};
 use crate::validation_pipeline::ValidationPostCandidate;
+use crate::vcc::{
+    build_vcc_desired_positions, compute_vcc_fast_signals, compute_vcc_start_t,
+    compute_vcc_trend_signals, resolve_vcc_periods, validate_vcc_params, VccFastSignals,
+    VccStrategyParams, VccTrendSignals,
+};
 use crate::vemr::{
     build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
     compute_vemr_start_t, resolve_vemr_periods, validate_vemr_params, VemrFastSignals,
@@ -29,6 +39,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
+#[cfg(feature = "cuda")]
+use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CompositeParams {
     pub fast_ma_type: String,
@@ -39,7 +52,11 @@ pub struct CompositeParams {
     #[serde(default)]
     pub asr: Option<AsrStrategyParams>,
     #[serde(default)]
+    pub vcc: Option<VccStrategyParams>,
+    #[serde(default)]
     pub vemr: Option<VemrStrategyParams>,
+    #[serde(default)]
+    pub rocb: Option<RocbStrategyParams>,
     #[serde(default)]
     pub macz: MaczGateParams,
     #[serde(default)]
@@ -60,6 +77,18 @@ fn default_seed() -> u64 {
 
 fn default_max_candidates() -> usize {
     32
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ValidationArtifactContext {
+    #[serde(default)]
+    pub strategy_kind: String,
+    #[serde(default)]
+    pub csv_path: Option<String>,
+    #[serde(default)]
+    pub timeframe: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -238,6 +267,8 @@ pub struct CompositeValidationRequest {
     pub min_psr: Option<f64>,
     #[serde(default)]
     pub min_dsr: Option<f64>,
+    #[serde(default)]
+    pub validation_context: Option<ValidationArtifactContext>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -404,7 +435,25 @@ struct AsrCandidateSeries<'a> {
     cfg: StrategyConfig,
 }
 
+struct VccCandidateSeries<'a> {
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    n: usize,
+    lr: &'a [f64],
+    desired: Vec<i32>,
+    start_t: usize,
+    cfg: StrategyConfig,
+}
+
 struct VemrCandidateSeries<'a> {
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    n: usize,
+    lr: &'a [f64],
+    desired: Vec<i32>,
+    start_t: usize,
+    cfg: StrategyConfig,
+}
+
+struct RocbCandidateSeries<'a> {
     candles: &'a vector_ta::utilities::data_loader::Candles,
     n: usize,
     lr: &'a [f64],
@@ -416,7 +465,9 @@ struct VemrCandidateSeries<'a> {
 enum CandidateSeries<'a> {
     Composite(CompositeCandidateSeries<'a>),
     Asr(AsrCandidateSeries<'a>),
+    Vcc(VccCandidateSeries<'a>),
     Vemr(VemrCandidateSeries<'a>),
+    Rocb(RocbCandidateSeries<'a>),
 }
 
 fn build_candidate_series<'a>(
@@ -428,17 +479,62 @@ fn build_candidate_series<'a>(
     fast_ma_params: Option<&HashMap<String, f64>>,
     slow_ma_params: Option<&HashMap<String, f64>>,
     params: &CompositeParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<CandidateSeries<'a>, String> {
-    let custom_strategy_count =
-        usize::from(params.asr.is_some()) + usize::from(params.vemr.is_some());
+    let custom_strategy_count = usize::from(params.asr.is_some())
+        + usize::from(params.vcc.is_some())
+        + usize::from(params.vemr.is_some())
+        + usize::from(params.rocb.is_some());
     if custom_strategy_count > 1 {
-        return Err("Select only one of ASR or VEMR strategy config.".to_string());
+        return Err("Select only one of ASR, VCC, VEMR, or ROCB strategy config.".to_string());
     }
     if let Some(asr_cfg) = params.asr.as_ref() {
-        return build_asr_candidate_series(candles, lr, ott_prices, ma_source, params, asr_cfg);
+        return build_asr_candidate_series(
+            candles,
+            lr,
+            ott_prices,
+            ma_source,
+            params,
+            asr_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs,
+        );
+    }
+    if let Some(vcc_cfg) = params.vcc.as_ref() {
+        return build_vcc_candidate_series(
+            candles,
+            lr,
+            ott_prices,
+            ma_source,
+            params,
+            vcc_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs,
+        );
     }
     if let Some(vemr_cfg) = params.vemr.as_ref() {
-        return build_vemr_candidate_series(candles, lr, ott_prices, ma_source, params, vemr_cfg);
+        return build_vemr_candidate_series(
+            candles,
+            lr,
+            ott_prices,
+            ma_source,
+            params,
+            vemr_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs,
+        );
+    }
+    if let Some(rocb_cfg) = params.rocb.as_ref() {
+        return build_rocb_candidate_series(
+            candles,
+            lr,
+            ott_prices,
+            ma_source,
+            params,
+            rocb_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs,
+        );
     }
     build_composite_candidate_series(
         candles,
@@ -594,6 +690,7 @@ fn build_asr_candidate_series<'a>(
     ma_source: &str,
     params: &CompositeParams,
     asr_cfg: &AsrStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<CandidateSeries<'a>, String> {
     validate_strategy_cfg(&params.strategy)?;
     validate_asr_params(asr_cfg)?;
@@ -624,26 +721,35 @@ fn build_asr_candidate_series<'a>(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
+    #[cfg(feature = "cuda")]
+    let backend = if prepared_cuda_inputs.is_some() {
+        Backend::Auto { device_id: 0 }
+    } else {
+        Backend::CpuOnly
+    };
+    #[cfg(not(feature = "cuda"))]
+    let backend = Backend::CpuOnly;
+
     let periods = resolve_asr_periods(asr_cfg, params.fast_len, params.slow_len);
     let fast_signals: AsrFastSignals = compute_asr_fast_signals(
         candles,
         ma_source,
-        &Backend::CpuOnly,
+        &backend,
         asr_cfg,
         periods.squeeze,
         #[cfg(feature = "cuda")]
-        None,
+        prepared_cuda_inputs,
     )?;
     let slow_signals: AsrSlowSignals = compute_asr_slow_signals(
         candles,
         ma_source,
-        &Backend::CpuOnly,
+        &backend,
         asr_cfg,
         periods.trend,
         periods.er,
         periods.z,
         #[cfg(feature = "cuda")]
-        None,
+        prepared_cuda_inputs,
     )?;
     let kaufman: AsrKaufmanStops = compute_asr_kaufman_stops(candles, &params.strategy)?;
     let max_period = usize::from(
@@ -687,6 +793,104 @@ fn build_asr_candidate_series<'a>(
     }))
 }
 
+fn build_vcc_candidate_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    ma_source: &str,
+    params: &CompositeParams,
+    vcc_cfg: &VccStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CandidateSeries<'a>, String> {
+    validate_strategy_cfg(&params.strategy)?;
+    validate_vcc_params(vcc_cfg)?;
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    if lr.len() != n || ott_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+
+    let fast_ma = params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = params.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("fast/slow MA type cannot be empty".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
+    if close.len() != n || ma_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_source =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let backend = if prepared_cuda_inputs.is_some() {
+        Backend::Auto { device_id: 0 }
+    } else {
+        Backend::CpuOnly
+    };
+    #[cfg(not(feature = "cuda"))]
+    let backend = Backend::CpuOnly;
+
+    let periods = resolve_vcc_periods(vcc_cfg, params.fast_len, params.slow_len);
+    let fast_signals: VccFastSignals = compute_vcc_fast_signals(
+        candles,
+        ma_source,
+        &backend,
+        vcc_cfg,
+        periods.squeeze,
+        periods.momentum,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let trend_signals: VccTrendSignals = compute_vcc_trend_signals(
+        candles,
+        ma_source,
+        &backend,
+        periods.trend,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let max_period = usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
+    let start_t = compute_vcc_start_t(
+        first_valid_close,
+        first_valid_source,
+        fast_signals.first_valid,
+        trend_signals.first_valid,
+        max_period,
+        params.strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup".to_string());
+    }
+
+    let desired = build_vcc_desired_positions(
+        close,
+        &fast_signals,
+        &trend_signals,
+        start_t,
+        &params.strategy,
+        vcc_cfg,
+    );
+
+    Ok(CandidateSeries::Vcc(VccCandidateSeries {
+        candles,
+        n,
+        lr,
+        desired,
+        start_t,
+        cfg: params.strategy.clone(),
+    }))
+}
+
 fn build_vemr_candidate_series<'a>(
     candles: &'a vector_ta::utilities::data_loader::Candles,
     lr: &'a [f64],
@@ -694,6 +898,7 @@ fn build_vemr_candidate_series<'a>(
     ma_source: &str,
     params: &CompositeParams,
     vemr_cfg: &VemrStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<CandidateSeries<'a>, String> {
     validate_strategy_cfg(&params.strategy)?;
     validate_vemr_params(vemr_cfg)?;
@@ -724,24 +929,33 @@ fn build_vemr_candidate_series<'a>(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
+    #[cfg(feature = "cuda")]
+    let backend = if prepared_cuda_inputs.is_some() {
+        Backend::Auto { device_id: 0 }
+    } else {
+        Backend::CpuOnly
+    };
+    #[cfg(not(feature = "cuda"))]
+    let backend = Backend::CpuOnly;
+
     let periods = resolve_vemr_periods(vemr_cfg, params.fast_len, params.slow_len);
     let fast_signals: VemrFastSignals = compute_vemr_fast_signals(
         candles,
         ma_source,
-        &Backend::CpuOnly,
+        &backend,
         vemr_cfg,
         periods.z,
         periods.bb,
         #[cfg(feature = "cuda")]
-        None,
+        prepared_cuda_inputs,
     )?;
     let risk_signals: VemrRiskSignals = compute_vemr_risk_signals(
         candles,
         ma_source,
-        &Backend::CpuOnly,
+        &backend,
         periods.atr,
         #[cfg(feature = "cuda")]
-        None,
+        prepared_cuda_inputs,
     )?;
     let max_period = usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
     let start_t = compute_vemr_start_t(
@@ -766,6 +980,98 @@ fn build_vemr_candidate_series<'a>(
     );
 
     Ok(CandidateSeries::Vemr(VemrCandidateSeries {
+        candles,
+        n,
+        lr,
+        desired,
+        start_t,
+        cfg: params.strategy.clone(),
+    }))
+}
+
+fn build_rocb_candidate_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    ma_source: &str,
+    params: &CompositeParams,
+    rocb_cfg: &RocbStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CandidateSeries<'a>, String> {
+    validate_strategy_cfg(&params.strategy)?;
+    validate_rocb_params(rocb_cfg)?;
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    if lr.len() != n || ott_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+
+    let fast_ma = params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = params.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("fast/slow MA type cannot be empty".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    if close.len() != n || high.len() != n || low.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_high =
+        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let first_valid_low =
+        first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let backend = if prepared_cuda_inputs.is_some() {
+        Backend::Auto { device_id: 0 }
+    } else {
+        Backend::CpuOnly
+    };
+    #[cfg(not(feature = "cuda"))]
+    let backend = Backend::CpuOnly;
+
+    let periods = resolve_rocb_periods(rocb_cfg, params.fast_len, params.slow_len);
+    let breakout: RocbBreakoutSignals = compute_rocb_breakout_signals(
+        candles,
+        ma_source,
+        &backend,
+        periods.channel,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let risk: RocbRiskSignals = compute_rocb_risk_signals(
+        candles,
+        ma_source,
+        &backend,
+        periods.atr,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let start_t = compute_rocb_start_t(
+        first_valid_close,
+        first_valid_high,
+        first_valid_low,
+        breakout.first_valid,
+        risk.first_valid,
+        params.strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup".to_string());
+    }
+
+    let desired =
+        build_rocb_desired_positions(close, &breakout, &risk, start_t, &params.strategy, rocb_cfg);
+
+    Ok(CandidateSeries::Rocb(RocbCandidateSeries {
         candles,
         n,
         lr,
@@ -812,7 +1118,23 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
             end_t.min(series.n),
             &series.cfg,
         ),
+        CandidateSeries::Vcc(series) => eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            &series.desired,
+            start_t,
+            end_t.min(series.n),
+            &series.cfg,
+        ),
         CandidateSeries::Vemr(series) => eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            &series.desired,
+            start_t,
+            end_t.min(series.n),
+            &series.cfg,
+        ),
+        CandidateSeries::Rocb(series) => eval_asr_metrics_window_from_desired(
             series.candles,
             series.lr,
             &series.desired,
@@ -852,7 +1174,29 @@ fn trades_for_series(series: &CandidateSeries<'_>) -> Vec<Trade> {
             )
             .trades
         }
+        CandidateSeries::Vcc(series) => {
+            eval_asr_curves_from_desired(
+                series.candles,
+                series.lr,
+                &series.desired,
+                series.start_t,
+                &series.cfg,
+                1,
+            )
+            .trades
+        }
         CandidateSeries::Vemr(series) => {
+            eval_asr_curves_from_desired(
+                series.candles,
+                series.lr,
+                &series.desired,
+                series.start_t,
+                &series.cfg,
+                1,
+            )
+            .trades
+        }
+        CandidateSeries::Rocb(series) => {
             eval_asr_curves_from_desired(
                 series.candles,
                 series.lr,
@@ -925,7 +1269,31 @@ fn desired_positions_for_series(
             }
             out
         }
+        CandidateSeries::Vcc(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            let mut out: Vec<i32> = vec![0; n];
+            if start_t >= end_t || n == 0 {
+                return out;
+            }
+            for t in start_t..end_t {
+                out[t] = *series.desired.get(t).unwrap_or(&0);
+            }
+            out
+        }
         CandidateSeries::Vemr(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            let mut out: Vec<i32> = vec![0; n];
+            if start_t >= end_t || n == 0 {
+                return out;
+            }
+            for t in start_t..end_t {
+                out[t] = *series.desired.get(t).unwrap_or(&0);
+            }
+            out
+        }
+        CandidateSeries::Rocb(series) => {
             let n = series.n;
             let end_t = end_t.min(n);
             let mut out: Vec<i32> = vec![0; n];
@@ -1031,7 +1399,57 @@ fn slice_return_stats_for_series(
             }
             out
         }
+        CandidateSeries::Vcc(series) => {
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
+            }
+
+            for t in start_t..end_t {
+                let slice_idx = (t - start_t) / slice_bars;
+                if slice_idx >= slices {
+                    break;
+                }
+                let pos = series.desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                let lr_t = series.lr[t];
+                let step_r = if pos == 0 {
+                    0.0
+                } else {
+                    (pos as f64) * lr_t.exp_m1()
+                };
+                out[slice_idx].sum += step_r;
+                out[slice_idx].sumsq += step_r * step_r;
+            }
+            out
+        }
         CandidateSeries::Vemr(series) => {
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
+            }
+
+            for t in start_t..end_t {
+                let slice_idx = (t - start_t) / slice_bars;
+                if slice_idx >= slices {
+                    break;
+                }
+                let pos = series.desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                let lr_t = series.lr[t];
+                let step_r = if pos == 0 {
+                    0.0
+                } else {
+                    (pos as f64) * lr_t.exp_m1()
+                };
+                out[slice_idx].sum += step_r;
+                out[slice_idx].sumsq += step_r * step_r;
+            }
+            out
+        }
+        CandidateSeries::Rocb(series) => {
             let end_t = start_t
                 .saturating_add(slice_bars.saturating_mul(slices))
                 .min(series.n);
@@ -1063,7 +1481,9 @@ fn series_n(series: &CandidateSeries<'_>) -> usize {
     match series {
         CandidateSeries::Composite(series) => series.n,
         CandidateSeries::Asr(series) => series.n,
+        CandidateSeries::Vcc(series) => series.n,
         CandidateSeries::Vemr(series) => series.n,
+        CandidateSeries::Rocb(series) => series.n,
     }
 }
 
@@ -1071,7 +1491,9 @@ fn series_start_t(series: &CandidateSeries<'_>) -> usize {
     match series {
         CandidateSeries::Composite(series) => series.start_t,
         CandidateSeries::Asr(series) => series.start_t,
+        CandidateSeries::Vcc(series) => series.start_t,
         CandidateSeries::Vemr(series) => series.start_t,
+        CandidateSeries::Rocb(series) => series.start_t,
     }
 }
 
@@ -1079,7 +1501,9 @@ fn series_lr<'a>(series: &'a CandidateSeries<'a>) -> &'a [f64] {
     match series {
         CandidateSeries::Composite(series) => series.lr,
         CandidateSeries::Asr(series) => series.lr,
+        CandidateSeries::Vcc(series) => series.lr,
         CandidateSeries::Vemr(series) => series.lr,
+        CandidateSeries::Rocb(series) => series.lr,
     }
 }
 
@@ -1087,7 +1511,9 @@ fn series_cfg<'a>(series: &'a CandidateSeries<'a>) -> &'a StrategyConfig {
     match series {
         CandidateSeries::Composite(series) => &series.cfg,
         CandidateSeries::Asr(series) => &series.cfg,
+        CandidateSeries::Vcc(series) => &series.cfg,
         CandidateSeries::Vemr(series) => &series.cfg,
+        CandidateSeries::Rocb(series) => &series.cfg,
     }
 }
 
@@ -1190,6 +1616,43 @@ fn repair_params(p: &mut CompositeParams) {
         }
         if vemr.max_trade_bars == 0 {
             vemr.max_trade_bars = 80;
+        }
+    }
+    if let Some(vcc) = p.vcc.as_mut() {
+        if vcc.squeeze_period == 0 {
+            vcc.squeeze_period = 20;
+        }
+        if vcc.momentum_period == 0 {
+            vcc.momentum_period = 20;
+        }
+        if vcc.momentum_bb_period == 0 {
+            vcc.momentum_bb_period = 20;
+        }
+        if vcc.trend_period == 0 {
+            vcc.trend_period = 6;
+        }
+        if !vcc.squeeze_bb_mult.is_finite() || vcc.squeeze_bb_mult <= 0.0 {
+            vcc.squeeze_bb_mult = 2.0;
+        }
+        if !vcc.squeeze_kc_mult.is_finite() || vcc.squeeze_kc_mult <= 0.0 {
+            vcc.squeeze_kc_mult = 1.5;
+        }
+        if vcc.max_trade_bars == 0 {
+            vcc.max_trade_bars = 120;
+        }
+    }
+    if let Some(rocb) = p.rocb.as_mut() {
+        if rocb.channel_period == 0 {
+            rocb.channel_period = 20;
+        }
+        if rocb.atr_period == 0 {
+            rocb.atr_period = 14;
+        }
+        if !rocb.atr_stop_mult.is_finite() || rocb.atr_stop_mult <= 0.0 {
+            rocb.atr_stop_mult = 2.0;
+        }
+        if rocb.max_trade_bars == 0 {
+            rocb.max_trade_bars = 80;
         }
     }
 
@@ -1312,6 +1775,42 @@ fn perturb_params(
             vemr.require_band_touch = !vemr.require_band_touch;
         }
     }
+    if let Some(rocb) = p.rocb.as_mut() {
+        rocb.channel_period = apply_pct_u16(rocb.channel_period, rand_mult(rng, pct_min, pct_max));
+        rocb.atr_period = apply_pct_u16(rocb.atr_period, rand_mult(rng, pct_min, pct_max));
+        rocb.atr_stop_mult = apply_pct_f64(rocb.atr_stop_mult, rand_mult(rng, pct_min, pct_max));
+        rocb.max_trade_bars = apply_pct_u16(rocb.max_trade_bars, rand_mult(rng, pct_min, pct_max));
+        if rng.gen_bool(flip_bool_prob) {
+            rocb.map_fast_to_channel_period = !rocb.map_fast_to_channel_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            rocb.map_slow_to_atr_period = !rocb.map_slow_to_atr_period;
+        }
+    }
+    if let Some(vcc) = p.vcc.as_mut() {
+        vcc.squeeze_period = apply_pct_u16(vcc.squeeze_period, rand_mult(rng, pct_min, pct_max));
+        vcc.momentum_period = apply_pct_u16(vcc.momentum_period, rand_mult(rng, pct_min, pct_max));
+        vcc.momentum_bb_period =
+            apply_pct_u16(vcc.momentum_bb_period, rand_mult(rng, pct_min, pct_max));
+        vcc.trend_period = apply_pct_u16(vcc.trend_period, rand_mult(rng, pct_min, pct_max));
+        vcc.squeeze_bb_mult = apply_pct_f64(vcc.squeeze_bb_mult, rand_mult(rng, pct_min, pct_max));
+        vcc.squeeze_kc_mult = apply_pct_f64(vcc.squeeze_kc_mult, rand_mult(rng, pct_min, pct_max));
+        vcc.confirm_bars = apply_pct_u16(vcc.confirm_bars.max(1), rand_mult(rng, pct_min, pct_max))
+            .saturating_sub(1);
+        vcc.max_trade_bars = apply_pct_u16(vcc.max_trade_bars, rand_mult(rng, pct_min, pct_max));
+        if rng.gen_bool(flip_bool_prob) {
+            vcc.map_fast_to_squeeze_period = !vcc.map_fast_to_squeeze_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            vcc.map_fast_to_momentum_period = !vcc.map_fast_to_momentum_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            vcc.map_slow_to_trend_period = !vcc.map_slow_to_trend_period;
+        }
+        if rng.gen_bool(flip_bool_prob) {
+            vcc.require_momentum_accel = !vcc.require_momentum_accel;
+        }
+    }
 
     // Strategy config
     p.strategy.fee_bps = apply_pct_f64(p.strategy.fee_bps, rand_mult(rng, pct_min, pct_max)).abs();
@@ -1326,9 +1825,6 @@ fn perturb_params(
     }
     if rng.gen_bool(flip_bool_prob) {
         p.strategy.allow_flip = !p.strategy.allow_flip;
-    }
-    if rng.gen_bool(flip_bool_prob) {
-        p.strategy.trade_on_next_bar = !p.strategy.trade_on_next_bar;
     }
 
     repair_params(&mut p);
@@ -1389,6 +1885,8 @@ pub fn run_composite_validation_blocking_with_candles(
     let iterative_cfg = req.iterative.clone();
     let min_psr = crate::validation_stats::sanitize_probability_gate(req.min_psr);
     let min_dsr = crate::validation_stats::sanitize_probability_gate(req.min_dsr);
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles(candles, &ma_source).ok();
 
     let (out, cscv_pbo) = crate::validation_core::run_validation_candidates(
         &req.candidates,
@@ -1402,9 +1900,6 @@ pub fn run_composite_validation_blocking_with_candles(
         cscv_cfg.as_ref(),
         candles.close.len(),
         |_, p, rng| {
-            let mut p2 = p.clone();
-            repair_params(&mut p2);
-
             let series = build_candidate_series(
                 candles,
                 &lr,
@@ -1413,7 +1908,9 @@ pub fn run_composite_validation_blocking_with_candles(
                 &ma_source,
                 fast_ma_params.as_ref(),
                 slow_ma_params.as_ref(),
-                &p2,
+                p,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
             )?;
             let start_t0 = series_start_t(&series);
             let n_total = series_n(&series);
@@ -1432,7 +1929,7 @@ pub fn run_composite_validation_blocking_with_candles(
 
             let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
                 crate::validation_pipeline::compute_perturb_stats(
-                    &p2,
+                    p,
                     cfg,
                     cancel,
                     rng,
@@ -1447,6 +1944,8 @@ pub fn run_composite_validation_blocking_with_candles(
                             fast_ma_params.as_ref(),
                             slow_ma_params.as_ref(),
                             pp,
+                            #[cfg(feature = "cuda")]
+                            prepared_cuda_inputs.as_ref(),
                         )?;
                         Ok(eval_metrics_window(&s2, series_start_t(&s2), series_n(&s2)))
                     },
@@ -1492,7 +1991,7 @@ pub fn run_composite_validation_blocking_with_candles(
 
             Ok((
                 CompositeValidationCandidateResult {
-                    params: p2,
+                    params: p.clone(),
                     in_sample,
                     iterative_in_sample,
                     iterative_delta,
@@ -1521,6 +2020,8 @@ pub fn run_composite_validation_blocking_with_candles(
                 fast_ma_params.as_ref(),
                 slow_ma_params.as_ref(),
                 &cand.params,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
             )?;
             Ok(slice_return_stats_for_series(
                 &series,
@@ -1591,7 +2092,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1623,6 +2126,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -1653,7 +2157,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: Some(AsrStrategyParams::default()),
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1680,6 +2186,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -1707,7 +2214,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: Some(VemrStrategyParams::default()),
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1734,10 +2243,68 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
             .expect("vemr validation run");
+        assert_eq!(res.candidates.len(), 1);
+        let c = &res.candidates[0];
+        assert!(c.in_sample.sharpe.is_finite());
+        assert!(c.robust_score.is_finite());
+        assert!(c.walk_forward.as_ref().map(|w| w.windows).unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn vcc_validation_smoke_runs_and_returns_stats() {
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len: 12,
+            slow_len: 48,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: Some(VccStrategyParams::default()),
+            vemr: None,
+            rocb: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "vcc-test".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 600,
+                step_bars: 300,
+            }),
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 13,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vcc validation run");
         assert_eq!(res.candidates.len(), 1);
         let c = &res.candidates[0];
         assert!(c.in_sample.sharpe.is_finite());
@@ -1780,7 +2347,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_validation_repairs_invalid_params_and_caps_candidates() {
+    fn composite_validation_rejects_invalid_candidate_params() {
         let candles = make_trending_candles(2048);
         let cancel = AtomicBool::new(false);
 
@@ -1795,7 +2362,9 @@ mod tests {
                 atr_period: 0,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams {
                 fast_length: 0,
                 slow_length: 0,
@@ -1841,7 +2410,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1865,39 +2436,12 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
-        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
-            .expect("validation run");
-        assert_eq!(res.candidates.len(), 1);
-
-        let p = &res.candidates[0].params;
-        assert!(p.fast_len > 0);
-        assert!(p.slow_len > p.fast_len);
-        assert!(p.halftrend.amplitude > 0);
-        assert!(p.halftrend.atr_period > 0);
-        assert!(p.halftrend.channel_deviation.is_finite());
-        assert!(p.macz.fast_length > 0);
-        assert!(p.macz.slow_length > p.macz.fast_length);
-        assert!(p.macz.signal_length > 0);
-        assert!(p.macz.lengthz > 0);
-        assert!(p.macz.length_stdev > 0);
-        assert!(p.macz.a.is_finite());
-        assert!(p.macz.b.is_finite());
-        assert!((0.0..1.0).contains(&p.macz.gamma));
-        assert!(p.ott.period > 0);
-        assert!(p.ott.percent.is_finite());
-        assert!(!p.ott.ma_type.trim().is_empty());
-        assert!(p.strategy.commission.is_finite());
-        assert!((0.0..1.0).contains(&p.strategy.commission));
-        assert!(p.strategy.fee_bps.is_finite());
-        assert!(p.strategy.fee_bps >= 0.0);
-        assert!(p.strategy.spread_bps.is_finite());
-        assert!(p.strategy.spread_bps >= 0.0);
-        assert!(p.strategy.slippage_bps.is_finite());
-        assert!(p.strategy.slippage_bps >= 0.0);
-        assert!(p.strategy.eps_rel.is_finite());
-        assert!(p.strategy.eps_rel >= 0.0);
+        let err = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("invalid candidates must fail validation");
+        assert!(!err.is_empty());
     }
 
     #[test]
@@ -1916,7 +2460,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -1940,6 +2486,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -1970,7 +2517,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -2004,6 +2553,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -2035,7 +2585,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -2062,6 +2614,7 @@ mod tests {
             },
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
@@ -2094,6 +2647,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "opt-comp".to_string(),
             fast_range: (5, 9, 1),
             slow_range: (18, 28, 2),
@@ -2131,7 +2685,9 @@ mod tests {
                 slow_len: p.slow_len,
                 halftrend: halftrend.clone(),
                 asr: None,
+                vcc: None,
                 vemr: None,
+                rocb: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode,
@@ -2159,6 +2715,7 @@ mod tests {
             },
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let vec_res = run_composite_validation_blocking_with_candles(
@@ -2282,7 +2839,9 @@ mod tests {
                 slow_len: pt.params.slow_len,
                 halftrend: pt.params.halftrend.clone(),
                 asr: None,
+                vcc: None,
                 vemr: None,
+                rocb: None,
                 macz: pt.params.macz.clone(),
                 ott: pt.params.ott.clone(),
                 signal_mode: pt.params.signal_mode,
@@ -2311,6 +2870,7 @@ mod tests {
             },
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let vec_res = run_composite_validation_blocking_with_candles(
@@ -2375,7 +2935,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -2407,6 +2969,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let a =
@@ -2444,7 +3007,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -2468,6 +3033,7 @@ mod tests {
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let baseline = run_composite_validation_blocking_with_candles(

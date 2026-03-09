@@ -2,11 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDebounceFn } from '@vueuse/core'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import { useHistoryStore } from '../stores/historyStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const historyStore = useHistoryStore()
 const workflowStore = useWorkflowStore()
+const { historyStage } = useUiReadiness()
 const {
   sessionOptions,
   sessionSelectedValue,
@@ -184,7 +186,19 @@ onBeforeUnmount(() => {
         <div class="meta mono">{{ savedRunCount }} saved · {{ stamp }}</div>
       </header>
 
-      <div class="grid">
+      <section v-if="historyStage === 'no_data'" class="emptyState">
+        <div class="emptyTitle">Run Library is empty.</div>
+        <div class="emptyBody">Save or rerun an optimization to build a library of artifacts you can inspect here.</div>
+        <div class="muted mono">{{ statusLine }}</div>
+      </section>
+
+      <section v-else-if="historyStage === 'results_available_no_selection'" class="emptyState">
+        <div class="emptyTitle">Select a saved run to inspect.</div>
+        <div class="emptyBody">Your run library has artifacts available. Pick one from Saved Runs to inspect metadata, compare outputs, or rerun it.</div>
+        <div class="muted mono">{{ savedRunsMeta }}</div>
+      </section>
+
+      <div v-if="historyStage !== 'no_data'" class="grid">
         <section class="pane">
           <h3>Session History</h3>
           <label for="vueHistorySelect">Run history</label>
@@ -262,7 +276,7 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <section class="detailCard">
+      <section v-if="historyStage === 'ready'" class="detailCard">
         <div class="detailTitle">{{ savedRunDetailTitle }}</div>
         <div class="detailMeta muted">{{ savedRunDetailMeta }}</div>
         <div class="detailGrid">

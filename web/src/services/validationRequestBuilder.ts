@@ -10,6 +10,8 @@ interface ValidationCrossDatasetInput {
 interface ValidationBuildInputs {
   currentRunReq?: unknown
   currentRunRes?: unknown
+  runDatasetMeta?: unknown
+  runCsvPath?: unknown
   topRows?: ValidationRowLike[]
   topRowsFiltered?: ValidationRowLike[]
   useFiltered?: boolean
@@ -41,7 +43,9 @@ interface ValidationCandidateLike {
   fast_ma_params?: unknown
   slow_ma_params?: unknown
   asr?: unknown
+  vcc?: unknown
   vemr?: unknown
+  rocb?: unknown
   strategy?: unknown
   halftrend_filter?: unknown
   halftrend?: unknown
@@ -82,6 +86,12 @@ export interface ValidationRequestPayload {
   max_candidates: number
   min_psr: number | null
   min_dsr: number | null
+  validation_context: {
+    strategy_kind: string
+    csv_path: string | null
+    timeframe: string | null
+    label: string | null
+  }
 }
 
 function num(value: unknown, fallback: number): number {
@@ -95,6 +105,13 @@ function normalizeText(value: unknown): string {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Pit') return 'Pit'
+  if (kind === 'Set') return 'Set'
+  if (kind === 'Mts') return 'Mts'
+  if (kind === 'Orc') return 'Orc'
+  if (kind === 'Marrt') return 'Marrt'
+  if (kind === 'Vfct') return 'Vfct'
+  if (kind === 'Rocb') return 'Rocb'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -112,7 +129,7 @@ function kindFromReq(req: Record<string, unknown>): string {
 
 function isDoubleLikeKind(kind: string): boolean {
   const nextKind = normalizeText(kind)
-  return nextKind === 'DoubleMa' || nextKind === 'CompositeTrend' || nextKind === 'RegimeHybrid' || nextKind === 'BreakoutMomentum'
+  return nextKind === 'DoubleMa' || nextKind === 'Pit' || nextKind === 'Set' || nextKind === 'Mts' || nextKind === 'Orc' || nextKind === 'Marrt' || nextKind === 'Vfct' || nextKind === 'CompositeTrend' || nextKind === 'RegimeHybrid' || nextKind === 'BreakoutMomentum'
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -145,6 +162,14 @@ function normalizeCrossDatasets(value: unknown, maxDatasets: number): Array<{ cs
   return out
 }
 
+function firstNonEmptyText(...values: unknown[]): string {
+  for (const value of values) {
+    const next = normalizeText(value)
+    if (next) return next
+  }
+  return ''
+}
+
 export function buildValidationRequest(inputs: ValidationBuildInputs): ValidationRequestPayload {
   const currentRunReq = asRecord(inputs.currentRunReq)
   if (!currentRunReq || !inputs.currentRunRes) throw new Error('Run an optimization first.')
@@ -157,6 +182,13 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   const seed = Math.max(0, Math.floor(num(inputs.seed, 1)))
   const min_psr = parseProbabilityGate(inputs.minPsr)
   const min_dsr = parseProbabilityGate(inputs.minDsr)
+  const datasetMeta = asRecord(inputs.runDatasetMeta)
+  const validation_context = {
+    strategy_kind: kind,
+    csv_path: firstNonEmptyText(datasetMeta?.csv_path, inputs.runCsvPath) || null,
+    timeframe: firstNonEmptyText(datasetMeta?.timeframe, datasetMeta?.derived_timeframe, datasetMeta?.base_timeframe) || null,
+    label: firstNonEmptyText(datasetMeta?.symbol, datasetMeta?.label, inputs.runCsvPath) || null,
+  }
 
   const rowsFiltered = Array.isArray(inputs.topRowsFiltered) ? inputs.topRowsFiltered : []
   const rowsAll = Array.isArray(inputs.topRows) ? inputs.topRows : []
@@ -210,6 +242,21 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
         }
       }
 
+      if (kind === 'Vcc') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const vcc = asRecord(p.vcc) || asRecord(currentRunReq.vcc) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          vcc,
+          strategy
+        }
+      }
+
       if (kind === 'Vemr') {
         const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
         const vemr = asRecord(p.vemr) || asRecord(currentRunReq.vemr) || {}
@@ -221,6 +268,21 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
           fast_ma_params: asRecord(p.fast_ma_params) || undefined,
           slow_ma_params: asRecord(p.slow_ma_params) || undefined,
           vemr,
+          strategy
+        }
+      }
+
+      if (kind === 'Rocb') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const rocb = asRecord(p.rocb) || asRecord(currentRunReq.rocb) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          rocb,
           strategy
         }
       }
@@ -246,7 +308,9 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       if (candidate.fast_len <= 0 || candidate.slow_len <= 0) return false
       if (isDoubleLikeKind(kind)) return true
       if (kind === 'Asr') return true
+      if (kind === 'Vcc') return true
       if (kind === 'Vemr') return true
+      if (kind === 'Rocb') return true
       return !!candidate.halftrend
     })
 
@@ -305,6 +369,7 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
     seed,
     max_candidates: maxCandidates,
     min_psr,
-    min_dsr
+    min_dsr,
+    validation_context
   }
 }

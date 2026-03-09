@@ -36,8 +36,16 @@ pub struct LoadPriceDataResponse {
     pub cache_path: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadedDataContext {
+    pub csv_path: String,
+    pub label: String,
+    pub timeframe: Option<String>,
+}
+
 pub struct AppState {
     pub candles: Mutex<HashMap<String, Candles>>,
+    loaded_data_context: Mutex<HashMap<String, LoadedDataContext>>,
     running: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     live_candle_stream: Mutex<Option<LiveCandleStreamTask>>,
@@ -62,6 +70,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             candles: Mutex::new(HashMap::new()),
+            loaded_data_context: Mutex::new(HashMap::new()),
             running: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
             live_candle_stream: Mutex::new(None),
@@ -109,6 +118,18 @@ impl AppState {
             .map_err(|_| "failed to lock candles map".to_string())?;
         let id = format!("data-{}", map.len() + 1);
         map.insert(id.clone(), candles);
+        let mut ctx_map = self
+            .loaded_data_context
+            .lock()
+            .map_err(|_| "failed to lock loaded-data context map".to_string())?;
+        ctx_map.insert(
+            id.clone(),
+            LoadedDataContext {
+                csv_path: path.to_string(),
+                label: dataset_label_from_path(path),
+                timeframe: meta.timeframe.clone(),
+            },
+        );
         Ok(LoadPriceDataResponse {
             id,
             meta,
@@ -135,6 +156,7 @@ impl AppState {
                 .lock()
                 .map_err(|_| "failed to lock candles map".to_string())?;
             if let Some(c) = map.get(&out_id) {
+                let ctx = self.get_loaded_data_context(&out_id).ok();
                 let (min_ts, max_ts) = min_max_ts(&c.timestamp);
                 let meta = PriceDataMeta {
                     len: c.close.len(),
@@ -153,12 +175,15 @@ impl AppState {
                     id: out_id,
                     meta,
                     cache_hit: true,
-                    cache_path: String::new(),
+                    cache_path: ctx
+                        .map(|loaded| loaded.csv_path)
+                        .unwrap_or_default(),
                 });
             }
         }
 
         let base = self.get_candles(base_data_id)?;
+        let base_ctx = self.get_loaded_data_context(base_data_id)?;
         let derived = ta_app_core::resample_candles(&base, tf.interval_ms)?;
         let (min_ts, max_ts) = min_max_ts(&derived.timestamp);
         let meta = PriceDataMeta {
@@ -180,6 +205,18 @@ impl AppState {
             .lock()
             .map_err(|_| "failed to lock candles map".to_string())?;
         map.insert(out_id.clone(), derived);
+        let mut ctx_map = self
+            .loaded_data_context
+            .lock()
+            .map_err(|_| "failed to lock loaded-data context map".to_string())?;
+        ctx_map.insert(
+            out_id.clone(),
+            LoadedDataContext {
+                csv_path: base_ctx.csv_path,
+                label: base_ctx.label,
+                timeframe: meta.timeframe.clone(),
+            },
+        );
 
         Ok(LoadPriceDataResponse {
             id: out_id,
@@ -194,6 +231,16 @@ impl AppState {
             .candles
             .lock()
             .map_err(|_| "failed to lock candles map".to_string())?;
+        map.get(id)
+            .cloned()
+            .ok_or_else(|| format!("unknown data id: {id}"))
+    }
+
+    pub fn get_loaded_data_context(&self, id: &str) -> Result<LoadedDataContext, String> {
+        let map = self
+            .loaded_data_context
+            .lock()
+            .map_err(|_| "failed to lock loaded-data context map".to_string())?;
         map.get(id)
             .cloned()
             .ok_or_else(|| format!("unknown data id: {id}"))
@@ -375,6 +422,20 @@ impl AppState {
             active: true,
         }))
     }
+}
+
+fn dataset_label_from_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let as_path = Path::new(trimmed);
+    as_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 pub struct BackgroundTaskState {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -26,6 +27,7 @@ interface TopRow {
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
+const { topStage } = useUiReadiness()
 const {
   filterMinPnl,
   filterMinSharpe,
@@ -56,6 +58,7 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'top')
 const renderedColumns = computed<TopColumn[]>(() => topColumns.value as TopColumn[])
 const renderedRows = computed<TopRow[]>(() => topTableRows.value as TopRow[])
 const hasTopResults = computed(() => Number(topRows.value || 0) > 0)
+const topDisabledForRun = computed(() => String(topFilterMeta.value || '').toLowerCase().includes('top k disabled'))
 const filtersActive = computed(() =>
   [
     minPnlDraft.value,
@@ -65,11 +68,22 @@ const filtersActive = computed(() =>
     minExposureDraft.value,
   ].some((value) => String(value || '').trim().length > 0),
 )
-const emptyTitle = computed(() => (filtersActive.value ? 'No rows match the current filters.' : 'No ranked runs yet.'))
+const emptyTitle = computed(() => {
+  if (topStage.value === 'no_data') return 'Load data to unlock ranked results.'
+  if (topStage.value === 'data_loaded_no_run') return 'No ranked runs yet.'
+  if (topDisabledForRun.value) return 'This run returned only the best winner.'
+  return filtersActive.value ? 'No rows match the current filters.' : 'No ranked runs yet.'
+})
 const emptyBody = computed(() =>
-  filtersActive.value
-    ? 'Broaden or clear the active filters to repopulate the ranking table.'
-    : 'Run an optimization or load prior analysis results to populate the ranked table.',
+  topStage.value === 'no_data'
+    ? 'Load a dataset first, then run an optimization to populate the ranking table.'
+    : topStage.value === 'data_loaded_no_run'
+      ? 'Your dataset is ready. Run an optimization or load prior analysis results to populate the ranked table.'
+      : topDisabledForRun.value
+        ? 'Increase Advanced > Top K above 0 and rerun optimization to populate the ranked shortlist table.'
+      : filtersActive.value
+        ? 'Broaden or clear the active filters to repopulate the ranking table.'
+        : 'Run an optimization or load prior analysis results to populate the ranked table.',
 )
 const {
   scrollElementRef: tableScrollElementRef,
@@ -157,7 +171,7 @@ onBeforeUnmount(() => {
         <div class="meta mono">{{ topRows }} rows · {{ stamp }}</div>
       </header>
 
-      <section class="pane">
+      <section v-if="topStage === 'ready'" class="pane">
         <div class="gridFive">
           <div>
             <label for="vueFilterMinPnl">Min PnL</label>
@@ -219,14 +233,14 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div v-if="!hasTopResults" class="emptyState topEmptyState">
+        <div v-if="topStage !== 'ready' || !hasTopResults" class="emptyState topEmptyState">
           <div class="emptyTitle">{{ emptyTitle }}</div>
           <div class="emptyBody">{{ emptyBody }}</div>
-          <div v-if="filtersActive || canClearTopFilters" class="emptyActions">
+          <div v-if="topStage === 'ready' && (filtersActive || canClearTopFilters)" class="emptyActions">
             <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
           </div>
           <div class="muted mono">{{ topFilterMeta || statusLine }}</div>
-          <div v-if="topSelectionGuardrail" class="muted mono">{{ topSelectionGuardrail }}</div>
+          <div v-if="topStage === 'ready' && topSelectionGuardrail" class="muted mono">{{ topSelectionGuardrail }}</div>
         </div>
 
         <div v-else ref="tableScrollElementRef" class="tableWrap">

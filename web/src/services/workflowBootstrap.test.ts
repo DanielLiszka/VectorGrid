@@ -106,4 +106,38 @@ describe('workflow bootstrap service', () => {
     expect(store.workspace).toBe('aggregate')
     expect(store.aggregateTab).toBe('compare')
   })
+
+  it('restores local tabs without changing the selected workflow location', () => {
+    installStorage({
+      vta_workspace_tab_v1: 'workflow',
+      vta_workflow_step_v1: 'optimize',
+      vectorbt_controls_tab_v1: 'strategy',
+      vectorbt_results_tab_v1: 'top',
+    })
+
+    applyWorkflowBootstrapFromStorage()
+    const store = useWorkflowStore()
+    expect(store.workspace).toBe('workflow')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workflowStep).toBe('optimize')
+    expect(store.controlsTab).toBe('strategy')
+    expect(store.resultsTab).toBe('top')
+  })
+
+  it('restores the finalizer workflow step from storage', () => {
+    installStorage({
+      vta_workspace_tab_v1: 'workflow',
+      vta_workflow_step_v1: 'finalize',
+      vectorbt_controls_tab_v1: 'advanced',
+      vectorbt_results_tab_v1: 'meta',
+    })
+
+    applyWorkflowBootstrapFromStorage()
+    const store = useWorkflowStore()
+    expect(store.workspace).toBe('workflow')
+    expect(store.workflowStep).toBe('finalize')
+    expect(store.workflow).toBe('finalize')
+    expect(store.controlsTab).toBe('advanced')
+    expect(store.resultsTab).toBe('meta')
+  })
 })

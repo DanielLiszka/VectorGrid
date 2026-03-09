@@ -16,7 +16,14 @@ use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
 #[cfg(feature = "cuda")]
+use vector_ta::cuda::{CudaSqueezeMomentum, CudaTtmSqueeze, CudaTtmTrend, DeviceArrayF32};
+#[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
+#[cfg(feature = "cuda")]
+use vector_ta::indicators::{
+    squeeze_momentum::SqueezeMomentumBatchRange, ttm_squeeze::TtmSqueezeBatchRange,
+    ttm_trend::TtmTrendBatchRange,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VccStrategyParams {
@@ -125,8 +132,52 @@ pub struct VccTrendSignals {
 }
 
 #[cfg(feature = "cuda")]
+#[allow(dead_code)]
+enum VccDeviceMatrixOwner {
+    Dispatch(DeviceMatrixF32),
+    Raw(DeviceArrayF32),
+}
+
+#[cfg(feature = "cuda")]
+pub struct VccOwnedDeviceMatrix {
+    pub device_ptr: u64,
+    pub rows: usize,
+    pub cols: usize,
+    owner: VccDeviceMatrixOwner,
+}
+
+#[cfg(feature = "cuda")]
+impl VccOwnedDeviceMatrix {
+    #[allow(dead_code)]
+    fn from_dispatch(matrix: DeviceMatrixF32) -> Self {
+        Self {
+            device_ptr: matrix.device_ptr,
+            rows: matrix.rows,
+            cols: matrix.cols,
+            owner: VccDeviceMatrixOwner::Dispatch(matrix),
+        }
+    }
+
+    fn from_raw(matrix: DeviceArrayF32) -> Self {
+        Self {
+            device_ptr: matrix.device_ptr(),
+            rows: matrix.rows,
+            cols: matrix.cols,
+            owner: VccDeviceMatrixOwner::Raw(matrix),
+        }
+    }
+
+    fn keepalive_tag(&self) -> u8 {
+        match self.owner {
+            VccDeviceMatrixOwner::Dispatch(_) => 0,
+            VccDeviceMatrixOwner::Raw(_) => 1,
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
 pub struct VccPeriodSweepDevice {
-    pub matrix: DeviceMatrixF32,
+    pub matrix: VccOwnedDeviceMatrix,
     pub period_start: u16,
     pub period_end: u16,
     pub period_step: u16,
@@ -148,6 +199,7 @@ impl VccPeriodSweepDevice {
     }
 
     pub fn row_ptr_for_period(&self, period: u16) -> Option<u64> {
+        let _ = self.matrix.keepalive_tag();
         let row = self.row_index_for_period(period)?;
         let cols = self.matrix.cols as u64;
         let offset = (row as u64)
@@ -237,11 +289,12 @@ fn cuda_series_to_f64(
 }
 
 #[cfg(feature = "cuda")]
+#[allow(dead_code)]
 fn cuda_series_to_device_f32(
     out: crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput,
-) -> Result<DeviceMatrixF32, String> {
+) -> Result<VccOwnedDeviceMatrix, String> {
     match out.series {
-        DynamicIndicatorCudaSeries::DeviceF32(v) => Ok(v),
+        DynamicIndicatorCudaSeries::DeviceF32(v) => Ok(VccOwnedDeviceMatrix::from_dispatch(v)),
         DynamicIndicatorCudaSeries::HostF32(_) => {
             Err("VCC expected CUDA DeviceF32 output".to_string())
         }
@@ -302,6 +355,7 @@ fn compute_indicator_f64(
 }
 
 #[cfg(feature = "cuda")]
+#[allow(dead_code)]
 fn compute_indicator_period_sweep_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
@@ -355,58 +409,159 @@ fn compute_indicator_period_sweep_cuda_device(
 }
 
 #[cfg(feature = "cuda")]
+fn compute_vcc_ttm_squeeze_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &VccStrategyParams,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<VccPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = TtmSqueezeBatchRange {
+        length: (usize::from(start), usize::from(end), usize::from(step)),
+        bb_mult: (cfg.squeeze_bb_mult, cfg.squeeze_bb_mult, 0.0),
+        kc_high: (1.0, 1.0, 0.0),
+        kc_mid: (cfg.squeeze_kc_mult, cfg.squeeze_kc_mult, 0.0),
+        kc_low: (2.0, 2.0, 0.0),
+    };
+    let wrapper = CudaTtmSqueeze::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.hlc_first_valid();
+    let (_momentum, squeeze) = wrapper
+        .ttm_squeeze_batch_dev_from_device_inputs(
+            prepared_inputs.high_device().buffer(),
+            prepared_inputs.low_device().buffer(),
+            prepared_inputs.close_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| {
+            wrapper.ttm_squeeze_batch_dev(
+                prepared_inputs.high(),
+                prepared_inputs.low(),
+                prepared_inputs.close(),
+                &sweep,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(VccPeriodSweepDevice {
+        matrix: VccOwnedDeviceMatrix::from_raw(squeeze),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_vcc_squeeze_momentum_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &VccStrategyParams,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<VccPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = SqueezeMomentumBatchRange {
+        length_bb: (
+            usize::from(cfg.momentum_bb_period.max(1)),
+            usize::from(cfg.momentum_bb_period.max(1)),
+            0,
+        ),
+        mult_bb: (cfg.squeeze_bb_mult, cfg.squeeze_bb_mult, 0.0),
+        length_kc: (usize::from(start), usize::from(end), usize::from(step)),
+        mult_kc: (cfg.squeeze_kc_mult, cfg.squeeze_kc_mult, 0.0),
+    };
+    let wrapper = CudaSqueezeMomentum::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.hlc_first_valid();
+    let (_squeeze, momentum, _signal) = wrapper
+        .squeeze_momentum_batch_dev_from_device_inputs(
+            prepared_inputs.high_device().buffer(),
+            prepared_inputs.low_device().buffer(),
+            prepared_inputs.close_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| {
+            wrapper.squeeze_momentum_batch_dev(
+                prepared_inputs.high(),
+                prepared_inputs.low(),
+                prepared_inputs.close(),
+                &sweep,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(VccPeriodSweepDevice {
+        matrix: VccOwnedDeviceMatrix::from_raw(momentum),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_vcc_ttm_trend_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<VccPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = TtmTrendBatchRange {
+        period: (usize::from(start), usize::from(end), usize::from(step)),
+    };
+    let wrapper = CudaTtmTrend::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.hlc_first_valid();
+    let matrix = wrapper
+        .ttm_trend_batch_dev_from_device_inputs(
+            prepared_inputs.high_device().buffer(),
+            prepared_inputs.low_device().buffer(),
+            prepared_inputs.close_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| {
+            wrapper.ttm_trend_batch_dev(prepared_inputs.source(), prepared_inputs.close(), &sweep)
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(VccPeriodSweepDevice {
+        matrix: VccOwnedDeviceMatrix::from_raw(matrix),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
 pub fn compute_vcc_ttm_squeeze_sweep_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     cfg: &VccStrategyParams,
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<VccPeriodSweepDevice, String> {
-    // Prefer squeeze_momentum's squeeze-state output to avoid launching a separate
-    // ttm_squeeze batch kernel. Fall back to legacy ttm_squeeze if unavailable.
-    let base_params = vec![IndicatorParamKV {
-        key: "bb_mult".to_string(),
-        value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-    }];
-
-    let squeeze_momentum_params = vec![
-        IndicatorParamKV {
-            key: "length_bb".to_string(),
-            value: IndicatorParamValue::Int(i64::from(cfg.momentum_bb_period.max(1))),
-        },
-        IndicatorParamKV {
-            key: "mult_bb".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-        },
-        IndicatorParamKV {
-            key: "mult_kc".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_kc_mult),
-        },
-    ];
-
-    match compute_indicator_period_sweep_cuda_device(
+    compute_vcc_ttm_squeeze_sweep_cuda_direct(
         prepared_inputs,
-        "squeeze_momentum",
-        "squeeze",
-        "length_kc",
+        cfg,
         period_start,
         period_end,
         period_step,
-        squeeze_momentum_params.as_slice(),
-    ) {
-        Ok(sweep) => Ok(sweep),
-        Err(_) => compute_indicator_period_sweep_cuda_device(
-            prepared_inputs,
-            "ttm_squeeze",
-            "squeeze",
-            "length",
-            period_start,
-            period_end,
-            period_step,
-            base_params.as_slice(),
-        ),
-    }
+        device_id,
+    )
 }
 
 fn compute_vcc_squeeze_state_series(
@@ -478,32 +633,15 @@ pub fn compute_vcc_squeeze_momentum_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<VccPeriodSweepDevice, String> {
-    let base_params = vec![
-        IndicatorParamKV {
-            key: "length_bb".to_string(),
-            value: IndicatorParamValue::Int(i64::from(cfg.momentum_bb_period.max(1))),
-        },
-        IndicatorParamKV {
-            key: "mult_bb".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-        },
-        IndicatorParamKV {
-            key: "mult_kc".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_kc_mult),
-        },
-    ];
-
-    compute_indicator_period_sweep_cuda_device(
+    compute_vcc_squeeze_momentum_sweep_cuda_direct(
         prepared_inputs,
-        "squeeze_momentum",
-        "momentum",
-        "length_kc",
+        cfg,
         period_start,
         period_end,
         period_step,
-        base_params.as_slice(),
+        device_id,
     )
 }
 
@@ -543,17 +681,14 @@ pub fn compute_vcc_ttm_trend_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<VccPeriodSweepDevice, String> {
-    compute_indicator_period_sweep_cuda_device(
+    compute_vcc_ttm_trend_sweep_cuda_direct(
         prepared_inputs,
-        "ttm_trend",
-        "value",
-        "period",
         period_start,
         period_end,
         period_step,
-        &[],
+        device_id,
     )
 }
 

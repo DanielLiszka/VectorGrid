@@ -456,6 +456,7 @@ function tryBuildAutoMetaStage4Request(): Record<string, unknown> | null {
   return buildMetaStage4Request({
     strategyKind: readStoreTextInputValue('metaStrategyKind'),
     timeframe: readStoreTextInputValue('metaTimeframe'),
+    sourceMetaPath: currentMetaSourcePath(),
     topK: readStoreTextInputValue('metaStage4TopK'),
     minMlConfidence: readStoreTextInputValue('metaStage4MinConf'),
     metaWeight: readStoreTextInputValue('metaStage4MetaWeight'),
@@ -486,6 +487,13 @@ function currentMetaScope(): { strategy_kind: string; timeframe: string } {
     strategy_kind: strategy,
     timeframe
   }
+}
+
+function currentMetaSourcePath(): string {
+  const activeMetaPath = normalizePath(LAST_META_RUN?.meta_json_path)
+  if (activeMetaPath) return activeMetaPath
+  const selectedSavedPath = normalizePath(selectedMetaSavedEntry()?.path)
+  return selectedSavedPath
 }
 
 function normalizeMlScope(scopeValue: unknown): {
@@ -599,6 +607,7 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const groups = asRecordArray(result?.selected_groups)
   const decisionCounts = asRecord(result?.decision_counts) ?? {}
   const path = normalizePath(resp?.stage4_json_path)
+  const sourceMetaPath = normalizePath(result?.source_meta_json_path)
 
   if (!result || groups.length === 0) {
     patchAnalysisStore({
@@ -611,6 +620,7 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
 
   const lines: string[] = []
   lines.push(`scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} min_ml=${fmtFixed(result.min_ml_confidence, 3)}`)
+  lines.push(`source_meta=${sourceMetaPath ? fileBasename(sourceMetaPath) : '—'} model=${normalizeText(result.model_path) ? fileBasename(normalizeText(result.model_path)) : '—'} healthy=${normalizeBoolean(result.model_healthy) ? 'yes' : 'no'} trained_now=${normalizeBoolean(result.model_trained_now) ? 'yes' : 'no'}`)
   lines.push(`weights(meta/ml/unc)=${fmtFixed(result.meta_weight, 3)}/${fmtFixed(result.ml_weight, 3)}/${fmtFixed(result.uncertainty_weight, 3)} buckets(accept/review/reject)=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}`)
   lines.push(`policy accept>=${fmtFixed(result.accept_confidence, 3)} review>=${fmtFixed(result.review_confidence, 3)} max_accept_unc=${fmtFixed(result.max_accept_uncertainty, 3)}`)
 
@@ -644,6 +654,36 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   })
 
   updateMetaStage4Buttons()
+}
+
+async function maybeRunMetaMlAutopilot(): Promise<void> {
+  const store = getAnalysisStore()
+  if (!store?.metaMlAutopilot) return
+
+  const scope = currentMetaScope()
+  if (!normalizeText(scope.timeframe)) return
+
+  await mlRefresh({ scope })
+
+  const status = asRecord(LAST_META_ML_STATUS) ?? {}
+  const modelMeta = asRecord(asRecord(status.model)?.meta) ?? {}
+  const modelExists = normalizeBoolean(status.exists)
+  const modelHealthy = normalizeBoolean(modelMeta.healthy)
+  const modelStale = normalizeBoolean(status.stale)
+  const retrainRecommended = normalizeBoolean(status.retrain_recommended)
+
+  if (!modelExists || !modelHealthy || modelStale || retrainRecommended) {
+    await mlTrain({ scope })
+    return
+  }
+
+  const hasMetaGroups = asRecordArray(asRecord(LAST_META_RUN?.result)?.groups).length > 0
+  if (store.metaUseMlConfidence && hasMetaGroups) {
+    await mlApply({ scope })
+    return
+  }
+
+  setStatusLine('Meta analysis complete. ML autopilot verified the current model.')
 }
 
 function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind: string; timeframe: string }): string {
@@ -1019,6 +1059,13 @@ function isCancellationError(error: unknown): boolean {
 
 function normalizeStrategyKind(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Pit') return 'Pit'
+  if (kind === 'Set') return 'Set'
+  if (kind === 'Mts') return 'Mts'
+  if (kind === 'Orc') return 'Orc'
+  if (kind === 'Marrt') return 'Marrt'
+  if (kind === 'Vfct') return 'Vfct'
+  if (kind === 'Rocb') return 'Rocb'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -2240,6 +2287,7 @@ export async function runMeta(options: MetaRunOptions = {}): Promise<void> {
 
     renderMetaSelection(response)
     await refreshSavedInternal(normalizePath(response.meta_json_path))
+    await maybeRunMetaMlAutopilot()
     if (options.switchTab !== false) {
       selectMetaResultsTab()
     }

@@ -67,6 +67,7 @@ describe('strategy store actions', () => {
     store.setInputField('breakoutMacdFast', '12')
     store.setCheckboxField('trendUseAdx', true)
     store.setCheckboxField('longOnly', false)
+    store.setCheckboxField('tradeOnNext', false)
 
     expect(harness.fields.feeBps?.value).toBe('0')
     expect(harness.fields.exitMode?.value).toBe('cross')
@@ -82,6 +83,7 @@ describe('strategy store actions', () => {
     expect(store.breakoutMacdFast).toBe('12')
     expect(store.trendUseAdx).toBe(true)
     expect(store.longOnly).toBe(false)
+    expect(store.tradeOnNext).toBe(true)
     expect(store.source).toBe('vue')
     expect(store.updatedAtUnixMs).toBeGreaterThan(0)
     expect(harness.eventsById.feeBps).toBeUndefined()

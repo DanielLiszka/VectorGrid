@@ -61,10 +61,7 @@ describe('GlobalShortcutBridge', () => {
     const actionStore = useCommandActionStore(pinia)
     const closePolygonSpy = vi.spyOn(dataStore, 'closePolygon')
     const clearDrillSpy = vi.spyOn(actionStore, 'clearDrillTradeSelection')
-    const modal = document.createElement('div')
-    modal.id = 'polygonModal'
-    modal.className = 'open'
-    document.body.appendChild(modal)
+    dataStore.polygonOpen = true
 
     const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
     dispatchKeydown({ key: 'Escape' })

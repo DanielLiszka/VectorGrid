@@ -255,7 +255,6 @@ Use one entry per completed slice.
   - `web/src/stores/advancedStore.ts`
   - `web/src/stores/analysisStore.ts`
   - `web/src/stores/dataStore.ts`
-  - `web/src/stores/distributedStore.ts`
   - `web/src/stores/executionStore.ts`
   - `web/src/stores/historyStore.ts`
   - `web/src/stores/optimizeStore.ts`
@@ -355,7 +354,6 @@ Use one entry per completed slice.
   - `web/src/main.ts`
   - `web/src/components/DataWorkspacePanel.vue`
   - `web/src/components/DebugWorkspacePanel.vue`
-  - `web/src/components/DistributedWorkspacePanel.vue`
   - `web/src/components/DrillWorkspacePanel.vue`
   - `web/src/components/ExecutionWorkspacePanel.vue`
   - `web/src/components/GlobalShortcutBridge.vue`

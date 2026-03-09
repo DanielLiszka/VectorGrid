@@ -2,10 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import { applyRecommendedOptimizationDefaults } from '../services/recommendedOptimizationDefaults'
 import { useAdvancedStore, type AdvancedOption } from '../stores/advancedStore'
+import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { describeStrategyOptimizationCapabilities } from '../utils/strategyOptimizationCapabilities'
 
 const advancedStore = useAdvancedStore()
+const optimizeStore = useOptimizeStore()
 const workflowStore = useWorkflowStore()
 const {
   maSource,
@@ -44,6 +48,12 @@ const includeAllDraft = ref('false')
 const exportPathDraft = ref('')
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'advanced')
+const strategyCapabilities = computed(() => describeStrategyOptimizationCapabilities(optimizeStore.strategyKind))
+const showModeControl = computed(() => strategyCapabilities.value.usesGlobalMode)
+const showHeatmapControl = computed(() => strategyCapabilities.value.supportsHeatmap)
+const showTopKControl = computed(() => strategyCapabilities.value.supportsTopK)
+const showIncludeAllControl = computed(() => strategyCapabilities.value.supportsIncludeAll)
+const showExportControl = computed(() => strategyCapabilities.value.supportsExportAll)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -408,6 +418,7 @@ onMounted(async () => {
   window.setTimeout(() => {
     adoptLegacyAdvancedBlocks()
     seedLegacyAdvancedInputsToStore()
+    applyRecommendedOptimizationDefaults()
     syncLegacyAdvancedInputsFromStore()
     bindLegacyAdvancedInputs()
     syncLegacyAdvancedSelectOptions()
@@ -476,21 +487,27 @@ onBeforeUnmount(() => {
           </div>
 
           <div>
-            <label for="vueMode">Mode</label>
-            <select
-              id="vueMode"
-              :value="modeDraft"
-              @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'Grid'); setSelectValue('mode', modeDraft)"
-            >
-              <option
-                v-for="option in modeOptionItems"
-                :key="`mode_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
+            <template v-if="showModeControl">
+              <label for="vueMode">Mode</label>
+              <select
+                id="vueMode"
+                :value="modeDraft"
+                @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'Grid'); setSelectValue('mode', modeDraft)"
               >
-                {{ option.label }}
-              </option>
-            </select>
+                <option
+                  v-for="option in modeOptionItems"
+                  :key="`mode_${option.value}_${option.label}`"
+                  :value="option.value"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </template>
+            <template v-else>
+              <label>Mode</label>
+              <div class="muted mono">{{ strategyCapabilities.modeSummary }}</div>
+            </template>
           </div>
         </div>
       </section>
@@ -498,7 +515,7 @@ onBeforeUnmount(() => {
       <section class="pane">
         <h3>Output shaping</h3>
         <div class="gridThree">
-          <div>
+          <div v-if="showHeatmapControl">
             <label for="vueHeatmapBins">Heatmap bins (0 = off)</label>
             <input
               id="vueHeatmapBins"
@@ -510,7 +527,7 @@ onBeforeUnmount(() => {
               @change="commitInputValue('heatmapBins', heatmapBinsDraft)"
             />
           </div>
-          <div>
+          <div v-if="showTopKControl">
             <label for="vueTopK">Return top K (0 = best only)</label>
             <input
               id="vueTopK"
@@ -522,7 +539,7 @@ onBeforeUnmount(() => {
               @change="commitInputValue('topK', topKDraft)"
             />
           </div>
-          <div>
+          <div v-if="showIncludeAllControl">
             <label for="vueIncludeAll">Return all results</label>
             <select
               id="vueIncludeAll"
@@ -541,17 +558,22 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <label for="vueExportAllCsvPath">Export per-pair metrics CSV path (optional)</label>
-        <div class="pathRow">
-          <input
-            id="vueExportAllCsvPath"
-            type="text"
-            :value="exportPathDraft"
-            placeholder="C:\\path\\to\\all_pairs.csv"
-            @input="exportPathDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('exportAllCsvPath', exportPathDraft)"
-            @change="commitInputValue('exportAllCsvPath', exportPathDraft)"
-          />
-          <button type="button" :disabled="!canBrowseExportAll" @click="advancedStore.browseExportAll()">Browse</button>
+        <template v-if="showExportControl">
+          <label for="vueExportAllCsvPath">Export per-pair metrics CSV path (optional)</label>
+          <div class="pathRow">
+            <input
+              id="vueExportAllCsvPath"
+              type="text"
+              :value="exportPathDraft"
+              placeholder="C:\\path\\to\\all_pairs.csv"
+              @input="exportPathDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('exportAllCsvPath', exportPathDraft)"
+              @change="commitInputValue('exportAllCsvPath', exportPathDraft)"
+            />
+            <button type="button" :disabled="!canBrowseExportAll" @click="advancedStore.browseExportAll()">Browse</button>
+          </div>
+        </template>
+        <div v-if="!showHeatmapControl || !showTopKControl || !showIncludeAllControl || !showExportControl" class="muted mono">
+          {{ strategyCapabilities.outputSummary }}
         </div>
       </section>
 

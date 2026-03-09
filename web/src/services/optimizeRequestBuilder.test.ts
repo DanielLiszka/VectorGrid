@@ -14,7 +14,6 @@ describe('optimizeRequestBuilder', () => {
         current_data_meta: { has_close: true },
       },
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -38,7 +37,6 @@ describe('optimizeRequestBuilder', () => {
       epsRel: '0.001',
       stopLossPct: '0.01',
       takeProfitPct: '0.03',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -72,7 +70,7 @@ describe('optimizeRequestBuilder', () => {
       strategy: {
         long_only: true,
         allow_flip: true,
-        trade_on_next_bar: false,
+        trade_on_next_bar: true,
       },
       constraints: {
         min_trades: 5,
@@ -100,6 +98,264 @@ describe('optimizeRequestBuilder', () => {
     expect(req).toBeNull()
   })
 
+  it('preserves Marrt strategy kind on the double-ma request path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Marrt',
+        data_id: 'data-ribbon',
+        current_data_meta: { has_close: true, has_volume: true },
+      },
+      maSupportMap: {
+        alma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+        vwma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'alma',
+      slowMaType: 'vwma',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '10',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exitMode: 'cross',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+    })
+
+    expect(req).toBeTruthy()
+    expect(req?.strategy_kind).toBe('Marrt')
+  })
+
+  it('preserves Set strategy kind and emits slope-efficiency config on the double-ma path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Set',
+        data_id: 'data-set',
+        current_data_meta: { has_close: true, has_high: true, has_low: true },
+      },
+      maSupportMap: {
+        sma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'sma',
+      slowMaType: 'sma',
+      maSource: 'close',
+      exitMode: 'cross',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+    })
+
+    expect(req?.strategy_kind).toBe('Set')
+    expect(req?.strategy).toMatchObject({
+      slope_efficiency_trend_enable: true,
+      set_linearreg_period: 34,
+      set_angle_min_deg: 2.0,
+      set_er_period: 14,
+      set_er_min: 0.3,
+      set_chop_period: 14,
+      set_chop_max: 45.0,
+    })
+  })
+
+  it('preserves Pit strategy kind and emits pressure-impulse config on the double-ma path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Pit',
+        data_id: 'data-pit',
+        current_data_meta: { has_open: true, has_close: true, has_high: true, has_low: true, has_volume: true },
+      },
+      maSupportMap: {
+        sma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'sma',
+      slowMaType: 'sma',
+      maSource: 'close',
+      pitEfiPeriod: '11',
+      pitVoscShortPeriod: '4',
+      pitVoscLongPeriod: '12',
+      pitCfoPeriod: '7',
+      pitCfoScalar: '80',
+      pitConfirmBars: '3',
+      exitMode: 'cross',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+    })
+
+    expect(req?.strategy_kind).toBe('Pit')
+    expect(req?.strategy).toMatchObject({
+      pressure_impulse_trend_enable: true,
+      pit_efi_period: 11,
+      pit_vosc_short_period: 4,
+      pit_vosc_long_period: 12,
+      pit_cfo_period: 7,
+      pit_cfo_scalar: 80,
+      pit_confirm_bars: 3,
+    })
+  })
+
+  it('preserves Mts strategy kind and emits momentum-stack config on the double-ma path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Mts',
+        data_id: 'data-mts',
+        current_data_meta: { has_close: true },
+      },
+      maSupportMap: {
+        sma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'sma',
+      slowMaType: 'sma',
+      maSource: 'close',
+      exitMode: 'cross',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+    })
+
+    expect(req?.strategy_kind).toBe('Mts')
+    expect(req?.strategy).toMatchObject({
+      momentum_triple_stack_enable: true,
+      mts_roc_period: 10,
+      mts_mom_period: 20,
+      mts_ppo_fast_period: 12,
+      mts_ppo_slow_period: 26,
+    })
+  })
+
+  it('preserves Orc strategy kind and emits oscillator-reversion config on the double-ma path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Orc',
+        data_id: 'data-orc',
+        current_data_meta: { has_close: true, has_high: true, has_low: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '9',
+      fastStep: '2',
+      slowStart: '20',
+      slowEnd: '30',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+    })
+
+    expect(req?.strategy_kind).toBe('Orc')
+    expect(req?.strategy).toMatchObject({
+      oscillator_reversion_confluence_enable: true,
+      orc_rsi_period: 14,
+      orc_stoch_fastk_period: 5,
+      orc_stoch_fastd_period: 3,
+      orc_willr_period: 14,
+    })
+  })
+
+  it('rejects unsupported MA types for Marrt', () => {
+    expect(() => buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Marrt',
+        data_id: 'data-ribbon',
+        current_data_meta: { has_close: true },
+      },
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'kama',
+      slowMaType: 'alma',
+      maSource: 'close',
+    })).toThrow('MARRT currently supports only sma, ema, alma, wma, zlema, and vwma.')
+  })
+
+  it('preserves Vfct strategy kind and emits volume-flow config on the double-ma path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Vfct',
+        data_id: 'data-vfct',
+        current_data_meta: { has_close: true, has_high: true, has_low: true, has_volume: true },
+      },
+      maSupportMap: {
+        vwma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'vwma',
+      slowMaType: 'vwma',
+      maSource: 'close',
+      vfctObvSmoothPeriod: '21',
+      vfctMfiPeriod: '14',
+      vfctMfiLongMin: '55',
+      vfctMfiShortMax: '45',
+      vfctConfirmBars: '2',
+      exitMode: 'cross',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+    })
+
+    expect(req?.strategy_kind).toBe('Vfct')
+    expect(req?.strategy).toMatchObject({
+      volume_flow_confirm_enable: true,
+      volume_flow_obv_smooth_period: 21,
+      volume_flow_mfi_period: 14,
+      volume_flow_mfi_long_min: 55,
+      volume_flow_mfi_short_max: 45,
+      volume_flow_confirm_bars: 2,
+    })
+  })
+
+  it('rejects unsupported MA types for Vfct', () => {
+    expect(() => buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'Vfct',
+        data_id: 'data-vfct',
+        current_data_meta: { has_close: true, has_high: true, has_low: true, has_volume: true },
+      },
+      fastStart: '5',
+      fastEnd: '10',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '20',
+      fastMaType: 'ema',
+      slowMaType: 'vwma',
+      maSource: 'close',
+    })).toThrow('VFCT currently supports only vwma fast/slow trend lines.')
+  })
+
   it('normalizes legacy GpuHybridKernel backend to unified GpuKernel payload', () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -112,7 +368,6 @@ describe('optimizeRequestBuilder', () => {
         alma: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
       },
       backend: 'GpuHybridKernel',
-      deviceId: '1',
       fastStart: '5',
       fastEnd: '7',
       fastStep: '1',
@@ -131,10 +386,9 @@ describe('optimizeRequestBuilder', () => {
       exitMode: 'cross',
       cooldownBars: '0',
       signalPersistenceBars: '1',
-      trailingStopPct: '',
     })
     expect(req).toBeTruthy()
-    expect(req?.backend).toEqual({ backend: 'GpuKernel', device_id: 1 })
+    expect(req?.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
   })
 
   it('enforces includeAll combo guardrail', () => {
@@ -211,7 +465,6 @@ describe('optimizeRequestBuilder', () => {
       epsRel: '0.001',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -245,7 +498,7 @@ describe('optimizeRequestBuilder', () => {
       strategy: {
         long_only: true,
         allow_flip: true,
-        trade_on_next_bar: false,
+        trade_on_next_bar: true,
       },
     })
   })
@@ -300,7 +553,6 @@ describe('optimizeRequestBuilder', () => {
       epsRel: '0.001',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -350,7 +602,6 @@ describe('optimizeRequestBuilder', () => {
         },
       },
       backend: 'GpuKernel',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -388,7 +639,6 @@ describe('optimizeRequestBuilder', () => {
       epsRel: '0.001',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -448,7 +698,6 @@ describe('optimizeRequestBuilder', () => {
         },
       },
       backend: 'GpuKernel',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -487,7 +736,6 @@ describe('optimizeRequestBuilder', () => {
       epsRel: '0.001',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -538,6 +786,70 @@ describe('optimizeRequestBuilder', () => {
       atr_stop_mult: 2.1,
       confirm_bars: 2,
       max_trade_bars: 130,
+    })
+  })
+
+  it('builds a ROCB request through the composite CPU builder path', () => {
+    const req = buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: 'Rocb',
+        data_id: 'data-rocb',
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      topK: '20',
+      includeAll: 'false',
+      compositeSignalMode: 'hard_gate',
+      halfTrendAmplitude: '2',
+      halfTrendAtrPeriod: '100',
+      halfTrendChannelDev: '2.0',
+      maczFastLength: '12',
+      maczSlowLength: '25',
+      maczSignalLength: '9',
+      maczLengthZ: '20',
+      maczLengthStdev: '25',
+      maczGamma: '0.02',
+      maczA: '1',
+      maczB: '1',
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: '2',
+      ottPercent: '1.4',
+      ottMaType: 'VAR',
+      rocbMapFastToChannelPeriod: false,
+      rocbMapSlowToAtrPeriod: false,
+      rocbChannelPeriod: '22',
+      rocbAtrPeriod: '16',
+      rocbAtrStopMult: '2.3',
+      rocbMaxTradeBars: '90',
+    })
+
+    expect(req).toBeTruthy()
+    expect(req?.strategy_kind).toBe('Rocb')
+    expect(req?.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req?.rocb).toMatchObject({
+      map_fast_to_channel_period: false,
+      map_slow_to_atr_period: false,
+      channel_period: 22,
+      atr_period: 16,
+      atr_stop_mult: 2.3,
+      max_trade_bars: 90,
     })
   })
 
@@ -602,7 +914,6 @@ describe('optimizeRequestBuilder', () => {
       epsRel: '0.001',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -631,7 +942,7 @@ describe('optimizeRequestBuilder', () => {
       strategy: {
         long_only: true,
         allow_flip: true,
-        trade_on_next_bar: false,
+        trade_on_next_bar: true,
       },
     })
     expect(Array.isArray((req as { search_space?: { params?: unknown[] } }).search_space?.params)).toBe(true)

@@ -12,6 +12,7 @@ import {
 import { requestCancelCurrentRun } from './runControlService'
 import { invokeCommand } from '../tauri/invoke'
 import { runValidation as runValidationAction } from './validationService'
+import { useAnalysisStore } from '../stores/analysisStore'
 
 vi.mock('./runControlService', () => ({
   requestCancelCurrentRun: vi.fn(async () => ({
@@ -30,8 +31,8 @@ vi.mock('../tauri/invoke', () => ({
     built_with_cuda: true,
     built_with_cuda_backtest_kernel: true,
     cuda_available: true,
-    last_used_backend: 'GpuKernel',
-    last_used_device_id: '0',
+    auto_device_name: 'NVIDIA RTX 4090',
+    auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
   })),
 }))
 const runValidationActionMock = vi.mocked(runValidationAction)
@@ -46,8 +47,8 @@ function installDefaultInvokeCommandMock(): void {
         built_with_cuda: true,
         built_with_cuda_backtest_kernel: true,
         cuda_available: true,
-        last_used_backend: 'GpuKernel',
-        last_used_device_id: '0',
+        auto_device_name: 'NVIDIA RTX 4090',
+        auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
       }
     }
     if (command === 'list_moving_averages') {
@@ -160,15 +161,23 @@ describe('optimizeService', () => {
     expect(optimize.slowMaType).toBe('alma')
     expect(optimize.statusLine).toBe('Applied preset: GPU kernel (SMA/ALMA)')
     expect(optimize.gpuStatus).toContain('build=cuda')
+    expect(optimize.gpuDeviceMeta).toContain('Automatic CUDA device')
     expect(advanced.maSource).toBe('close')
     expect(invokeCommandMock).toHaveBeenCalledWith('get_gpu_status')
+  })
+
+  it('refreshes GPU status with automatic CUDA device selection', async () => {
+    const summary = await refreshGpuStatus()
+
+    expect(summary.autoDeviceName).toBe('NVIDIA RTX 4090')
+    expect(summary.autoDeviceMemoryBytes).toBe(24 * 1024 * 1024 * 1024)
+    expect(summary.deviceMeta).toContain('Automatic CUDA device')
   })
 
   it('runs CPU↔GPU parity check via Tauri commands', async () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'DoubleMa',
       canCancel: false,
-      deviceId: '0',
       backend: 'Auto',
       fastStart: '5',
       fastEnd: '9',
@@ -196,7 +205,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       cooldownBars: '0',
       signalPersistenceBars: '1',
-      trailingStopPct: '',
       exitMode: 'cross',
       kaufmanStopPeriod: '22',
       kaufmanStopMult: '2.0',
@@ -223,8 +231,8 @@ describe('optimizeService', () => {
           built_with_cuda: true,
           built_with_cuda_backtest_kernel: true,
           cuda_available: true,
-          last_used_backend: 'GpuKernel',
-          last_used_device_id: '0',
+          auto_device_name: 'NVIDIA RTX 4090',
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
         }
       }
       if (command === 'list_moving_averages') {
@@ -256,12 +264,14 @@ describe('optimizeService', () => {
     expect(optimize.gpuParityMeta).toContain('Parity: OK')
     expect(optimize.gpuParityMeta).toContain('gpu=GpuKernel')
     expect(optimize.statusLine).toBe('Parity check OK.')
+    expect(optimize.gpuDeviceMeta).toContain('Automatic CUDA device')
     expect(invokeCommandMock).toHaveBeenCalledWith('run_double_ma_optimization', expect.any(Object))
   })
 
   it('runs optimization command path and validation service dispatch', async () => {
+    const analysis = useAnalysisStore()
     await runOptimization({
-      request: { strategy_kind: 'DoubleMa', data_id: 'data-1' },
+      request: { strategy_kind: 'DoubleMa', data_id: 'data-1', top_k: 20, heatmap_bins: 32 },
     })
     await runValidation()
 
@@ -269,6 +279,8 @@ describe('optimizeService', () => {
     expect(command).toBe('run_double_ma_optimization')
     expect((args.req as { strategy_kind?: string } | undefined)?.strategy_kind).toBe('DoubleMa')
     expect(invokeCommandMock).toHaveBeenCalledWith('save_run_artifact', expect.any(Object))
+    expect(analysis.topRows).toBeGreaterThan(0)
+    expect(String(analysis.bestTitle || '')).toContain('vs')
     expect(runValidationActionMock).toHaveBeenCalled()
   })
 
@@ -313,8 +325,8 @@ describe('optimizeService', () => {
           built_with_cuda: true,
           built_with_cuda_backtest_kernel: true,
           cuda_available: true,
-          last_used_backend: 'GpuKernel',
-          last_used_device_id: '0',
+          auto_device_name: 'NVIDIA RTX 4090',
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
         }
       }
       return {}
@@ -349,7 +361,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'DoubleMa',
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -378,7 +389,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -407,6 +417,76 @@ describe('optimizeService', () => {
     expect(req.data_id).toBe('data-456')
     expect(req.fast_ma_types).toEqual(['sma'])
     expect(req.slow_ma_types).toEqual(['ema'])
+  })
+
+  it('auto-builds PIT request parameters from Vue strategy store fields', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'Pit',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      pitEfiPeriod: '21',
+      pitVoscShortPeriod: '6',
+      pitVoscLongPeriod: '27',
+      pitCfoPeriod: '11',
+      pitCfoScalar: '150.0',
+      pitConfirmBars: '3',
+      dmConstraintMinTrades: '',
+      dmConstraintMaxDd: '',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-pit',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '200000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const req = firstOptimizationRunRequest()
+    const strategy = (req.strategy && typeof req.strategy === 'object') ? req.strategy as Record<string, unknown> : {}
+    expect(req.strategy_kind).toBe('Pit')
+    expect(strategy.pressure_impulse_trend_enable).toBe(true)
+    expect(strategy.pit_efi_period).toBe(21)
+    expect(strategy.pit_vosc_short_period).toBe(6)
+    expect(strategy.pit_vosc_long_period).toBe(27)
+    expect(strategy.pit_cfo_period).toBe(11)
+    expect(strategy.pit_cfo_scalar).toBe(150)
+    expect(strategy.pit_confirm_bars).toBe(3)
   })
 
   it('auto-builds CompositeCpu optimization request from Vue stores', async () => {
@@ -453,7 +533,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -537,7 +616,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -577,7 +655,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'Vcc',
       backend: 'GpuKernel',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -620,7 +697,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -678,7 +754,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'Vemr',
       backend: 'GpuKernel',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -721,7 +796,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -820,7 +894,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -855,7 +928,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'DoubleMa',
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -883,7 +955,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -912,7 +983,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'DoubleMa',
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -940,7 +1010,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -977,7 +1046,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'DoubleMa',
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -1009,7 +1077,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -1042,7 +1109,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'DoubleMa',
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -1074,7 +1140,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -1107,7 +1172,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'CompositeCpu',
       backend: 'Auto',
-      deviceId: '0',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -1181,7 +1245,6 @@ describe('optimizeService', () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'CompositeMo',
       backend: 'Auto',
-      deviceId: '2',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -1219,7 +1282,6 @@ describe('optimizeService', () => {
       epsRel: '0',
       stopLossPct: '',
       takeProfitPct: '',
-      trailingStopPct: '',
       cooldownBars: '0',
       signalPersistenceBars: '1',
       exitMode: 'cross',
@@ -1272,9 +1334,10 @@ describe('optimizeService', () => {
     expect(status.builtWithCuda).toBe(true)
     expect(status.builtWithCudaBacktestKernel).toBe(true)
     expect(status.cudaAvailable).toBe(true)
-    expect(status.lastUsedBackend).toBe('GpuKernel')
-    expect(status.lastUsedDeviceId).toBe('0')
+    expect(status.autoDeviceName).toBe('NVIDIA RTX 4090')
+    expect(status.autoDeviceMemoryBytes).toBe(24 * 1024 * 1024 * 1024)
     expect(status.text).toContain('build=cuda')
     expect(status.text).toContain('kernel=on')
+    expect(status.deviceMeta).toContain('Automatic CUDA device')
   })
 })

@@ -1,21 +1,17 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import AnalysisContextDock from './components/AnalysisContextDock.vue'
 import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
 import CommandPaletteOverlay from './components/CommandPaletteOverlay.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import RunFooterPanel from './components/RunFooterPanel.vue'
-import TaskCenterOverlay from './components/TaskCenterOverlay.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import WorkflowQuickSwitch from './components/WorkflowQuickSwitch.vue'
-import { useDistributedStore } from './stores/distributedStore'
 import { useWorkflowStore } from './stores/workflowStore'
 
 const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/AdvancedWorkspacePanel.vue'))
 const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataWorkspacePanel.vue'))
 const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
-const DistributedWorkspacePanel = defineAsyncComponent(() => import('./components/DistributedWorkspacePanel.vue'))
 const DrillWorkspacePanel = defineAsyncComponent(() => import('./components/DrillWorkspacePanel.vue'))
 const ExecutionWorkspacePanel = defineAsyncComponent(() => import('./components/ExecutionWorkspacePanel.vue'))
 const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/HeatmapWorkspacePanel.vue'))
@@ -29,11 +25,9 @@ const StrategyWorkspacePanel = defineAsyncComponent(() => import('./components/S
 const TopWorkspacePanel = defineAsyncComponent(() => import('./components/TopWorkspacePanel.vue'))
 const ValidationWorkspacePanel = defineAsyncComponent(() => import('./components/ValidationWorkspacePanel.vue'))
 
-const distributedStore = useDistributedStore()
 const workflowStore = useWorkflowStore()
 workflowStore.syncRuntimeState()
 
-const { isRunning: distributedIsRunning } = storeToRefs(distributedStore)
 const { controlsTab, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
 
 const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
@@ -60,11 +54,6 @@ const dataPanelActive = computed(() => activeControlsTab.value === 'data')
 const optimizePanelActive = computed(() => activeControlsTab.value === 'opt')
 const strategyPanelActive = computed(() => activeControlsTab.value === 'strategy')
 const advancedPanelActive = computed(() => activeControlsTab.value === 'advanced')
-const distributedPanelActive = computed(() => {
-  const ws = String(workspace.value || '').trim()
-  const wf = String(workflow.value || '').trim()
-  return ws === 'workflow' && wf === 'optimize' && (activeControlsTab.value === 'distributed' || distributedIsRunning.value)
-})
 const overviewPanelActive = computed(() => activeResultsTab.value === 'overview')
 const topPanelActive = computed(() => activeResultsTab.value === 'top')
 const paretoPanelActive = computed(() => activeResultsTab.value === 'pareto')
@@ -78,7 +67,6 @@ type LazyPanelKey =
   | 'advanced'
   | 'data'
   | 'debug'
-  | 'distributed'
   | 'drill'
   | 'execution'
   | 'heatmap'
@@ -96,7 +84,6 @@ const mountedPanels = reactive<Record<LazyPanelKey, boolean>>({
   advanced: false,
   data: false,
   debug: false,
-  distributed: false,
   drill: false,
   execution: false,
   heatmap: false,
@@ -124,7 +111,6 @@ function mountWhenActive(panel: LazyPanelKey, source: () => boolean): void {
 mountWhenActive('advanced', () => advancedPanelActive.value)
 mountWhenActive('data', () => dataPanelActive.value)
 mountWhenActive('debug', () => debugPanelActive.value)
-mountWhenActive('distributed', () => distributedPanelActive.value)
 mountWhenActive('drill', () => drillPanelActive.value)
 mountWhenActive('execution', () => settingsWorkspaceActive.value)
 mountWhenActive('heatmap', () => heatmapPanelActive.value)
@@ -143,13 +129,10 @@ mountWhenActive('validation', () => validationPanelActive.value)
   <VueWorkspaceShell />
   <CommandPaletteOverlay />
   <GlobalShortcutBridge />
-  <TaskCenterOverlay />
   <AppRuntimeBanner />
-  <AnalysisContextDock />
   <AdvancedWorkspacePanel v-if="mountedPanels.advanced" />
   <DataWorkspacePanel v-if="mountedPanels.data" />
   <DebugWorkspacePanel v-if="mountedPanels.debug" />
-  <DistributedWorkspacePanel v-if="mountedPanels.distributed" />
   <DrillWorkspacePanel v-if="mountedPanels.drill" />
   <ExecutionWorkspacePanel v-if="mountedPanels.execution" />
   <HeatmapWorkspacePanel v-if="mountedPanels.heatmap" />

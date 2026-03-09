@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useValidationStore } from '../stores/validationStore'
@@ -31,6 +32,7 @@ interface CrossDatasetItem {
 
 const validationStore = useValidationStore()
 const workflowStore = useWorkflowStore()
+const { validationStage } = useUiReadiness()
 const {
   validationHint,
   validationMeta,
@@ -108,6 +110,7 @@ const crossMaxDraft = ref('6')
 const crossSearchDraft = ref('')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'validate')
+const showValidationResults = computed(() => validationStage.value === 'ready')
 const renderedColumns = computed<ValidationColumn[]>(() => validationColumns.value as ValidationColumn[])
 const renderedRows = computed<ValidationRow[]>(() => validationRows.value as ValidationRow[])
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
@@ -300,6 +303,28 @@ onBeforeUnmount(() => {
         <div class="meta mono">{{ tableRowCount }} rows · {{ stamp }}</div>
       </header>
 
+      <section v-if="validationStage !== 'ready'" class="emptyState">
+        <div class="emptyTitle">
+          {{
+            validationStage === 'no_data'
+              ? 'Load data before running validation.'
+              : validationStage === 'data_loaded_no_run'
+                ? 'Run an optimization before validation.'
+                : 'Validation is ready to run.'
+          }}
+        </div>
+        <div class="emptyBody">
+          {{
+            validationStage === 'no_data'
+              ? 'Validation works on shortlisted optimization candidates, so the first step is loading a dataset.'
+              : validationStage === 'data_loaded_no_run'
+                ? 'Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks.'
+                : 'Optimization results are available. Run validation to populate robustness tables, reports, and exports.'
+          }}
+        </div>
+        <div class="muted mono">{{ statusLine }}</div>
+      </section>
+
       <section class="pane">
         <div class="muted">{{ validationHint }}</div>
         <div class="gridFive">
@@ -377,7 +402,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="pane">
+      <section v-if="showValidationResults" class="pane">
         <h3>Options</h3>
         <div class="checks">
           <label>
@@ -600,7 +625,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="pane">
+      <section v-if="showValidationResults" class="pane">
         <div class="metaLine mono">{{ validationMeta }}</div>
         <div class="metaLine mono">{{ validationShortlistMeta }}</div>
         <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
@@ -640,7 +665,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="pane">
+      <section v-if="showValidationResults" class="pane">
         <h3>Raw JSON</h3>
         <pre class="mono preview">{{ validationOutputPreview }}</pre>
       </section>

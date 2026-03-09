@@ -22,6 +22,7 @@ const wfItems = [
   { key: 'optimize', label: 'Optimize' },
   { key: 'validate', label: 'Validate' },
   { key: 'analyze', label: 'Analyze' },
+  { key: 'finalize', label: 'Finalizer' },
 ] as const
 
 const stepItems = [
@@ -29,6 +30,7 @@ const stepItems = [
   { key: 'optimize', label: '2' },
   { key: 'validate', label: '3' },
   { key: 'analyze', label: '4' },
+  { key: 'finalize', label: '5' },
 ] as const
 
 const subtitle = computed(() => workflowSubtitle.value || '—')

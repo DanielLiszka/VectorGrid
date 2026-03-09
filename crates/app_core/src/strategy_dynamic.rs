@@ -1,7 +1,8 @@
 use crate::composite_cpu::{compute_macz_hist, compute_ott_line};
 use crate::double_ma::{
     compute_halftrend_trend, compute_kaufman_stop_series, compute_log_returns_f64,
-    eval_metrics_f64_with_exit_mode, strategy_cfg_for_optimization, KaufmanStopSeries,
+    eval_metrics_f64_with_exit_mode, strategy_cfg_for_optimization,
+    validate_strategy_cfg_for_optimization, KaufmanStopSeries,
 };
 use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cpu, DynamicIndicatorComputeOutput,
@@ -200,6 +201,7 @@ pub fn compile_dynamic_plan_for_double_ma_config(
     halftrend_filter: Option<&crate::double_ma::HalfTrendRegimeFilter>,
     backend: StrategyPlanBackend,
 ) -> Result<CompiledStrategyPlan, String> {
+    validate_strategy_cfg_for_optimization(strategy)?;
     let ir = build_static_strategy_ir(
         StrategyProfileKind::DoubleMa,
         StaticStrategyIrInput::from_double_ma(
@@ -228,6 +230,7 @@ pub fn compile_dynamic_plan_for_composite_cpu_config(
     signal_mode: CompositeSignalMode,
     backend: StrategyPlanBackend,
 ) -> Result<CompiledStrategyPlan, String> {
+    validate_strategy_cfg_for_optimization(strategy)?;
     let strategy = strategy_cfg_for_optimization(strategy.clone());
     let profile = composite_profile_from_strategy_flags(&strategy);
     let ir = build_static_strategy_ir(
@@ -521,7 +524,15 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
         let mut slot_outputs: HashMap<String, DynamicIndicatorComputeOutput> = HashMap::new();
         let mut cache: HashMap<String, DynamicIndicatorComputeOutput> = HashMap::new();
         let dataset_sig = dataset_cache_signature(candles, ma_source);
-        let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles(candles, ma_source);
+        let prepared_cuda_inputs =
+            match PreparedCudaIndicatorInputs::from_candles(candles, ma_source) {
+                Ok(v) => v,
+                Err(_) => {
+                    return prepare_dynamic_indicator_slot_series_cpu_with_controls(
+                        plan, candles, ma_source, cancel, progress,
+                    );
+                }
+            };
         let total = plan
             .indicator_plan
             .iter()
@@ -926,6 +937,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (10, 10, 1),
             slow_range: (30, 30, 1),
@@ -1141,6 +1153,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (10, 10, 1),
             slow_range: (30, 30, 1),

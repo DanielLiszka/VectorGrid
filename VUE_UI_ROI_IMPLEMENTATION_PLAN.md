@@ -114,7 +114,7 @@ Goal: reduce custom utility code and stabilize high-frequency UI updates.
 
 ### Checklist
 
-- [ ] Standardize debounced/throttled UI updates: (partial: task center persistence + top results filters + history saved-runs search/tags + optimize range fields + strategy cost/risk inputs + data/execution/distributed/settings/advanced inputs + validation/meta panel inputs now use `useDebounceFn`; repeated live event streams now dedupe-throttle)
+- [ ] Standardize debounced/throttled UI updates: (partial: task center persistence + top results filters + history saved-runs search/tags + optimize range fields + strategy cost/risk inputs + data/execution/settings/advanced inputs + validation/meta panel inputs now use `useDebounceFn`; repeated live event streams now dedupe-throttle)
   - `useDebounceFn` for text/filter inputs.
   - `useThrottleFn` for high-frequency progress/UI event rendering.
 - [x] Standardize resize handling with `useResizeObserver` for chart/table containers.
@@ -323,7 +323,6 @@ Run as an opt-in pilot only, not full migration.
   - `web/src/components/SettingsWorkspacePanel.vue`
   - `web/src/components/AdvancedWorkspacePanel.vue`
   - `web/src/components/ExecutionWorkspacePanel.vue`
-  - `web/src/components/DistributedWorkspacePanel.vue`
   - `web/src/components/OptimizeWorkspacePanel.vue`
   - `web/src/components/StrategyWorkspacePanel.vue`
   - `web/src/components/ValidationWorkspacePanel.vue`
@@ -346,7 +345,6 @@ Run as an opt-in pilot only, not full migration.
 - Refactored debounce-heavy panels to use shared non-reactive queued writer (Map-backed) instead of per-keystroke object cloning:
   - `web/src/components/DataWorkspacePanel.vue`
   - `web/src/components/ExecutionWorkspacePanel.vue`
-  - `web/src/components/DistributedWorkspacePanel.vue`
   - `web/src/components/OptimizeWorkspacePanel.vue`
   - `web/src/components/StrategyWorkspacePanel.vue`
   - `web/src/components/ValidationWorkspacePanel.vue`
@@ -410,17 +408,15 @@ Run as an opt-in pilot only, not full migration.
   - `npm --prefix web run build`
   - `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` (pass; 359ms vs 345ms baseline threshold still green)
 
-### 2026-02-27 - Workstream 4 data/execution/distributed input debounce pass
+### 2026-02-27 - Workstream 4 data/execution/settings input debounce pass
 
 - Refactored high-frequency input writes:
   - `web/src/components/DataWorkspacePanel.vue`
   - `web/src/components/ExecutionWorkspacePanel.vue`
-  - `web/src/components/DistributedWorkspacePanel.vue`
 - Behavior changes:
   - Data panel `csvPath` and `marketDataDir` now debounce keystroke writes, with immediate commit on `change`.
   - Execution panel order/risk/API/manual inputs now debounce keystroke writes with immediate `change` commit.
-  - Distributed panel worker/leader/assets/tiles inputs now debounce keystroke writes with immediate `change` commit.
-  - Execution and distributed action buttons now flush pending queued inputs before invoking backend commands.
+  - Execution action buttons now flush pending queued inputs before invoking backend commands.
   - Pending queued values flush on unmount in all three panels.
 - Validation:
   - `npm --prefix web run typecheck`
@@ -677,3 +673,4 @@ Run as an opt-in pilot only, not full migration.
 - Reka UI getting started: https://reka-ui.com/docs/overview/getting-started
 - UnoCSS docs: https://unocss.dev/
 - Lightweight Charts docs: https://tradingview.github.io/lightweight-charts/
+

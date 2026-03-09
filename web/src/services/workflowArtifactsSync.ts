@@ -1,5 +1,6 @@
 import { invokeCommand } from '../tauri/invoke'
 import { applyWorkflowArtifactsPayload } from '../stores/workflowArtifactsStore'
+import { refreshAnalysisFromWorkflowRun } from './analysisService'
 
 type WorkflowArtifactsSource = 'legacy-runtime' | 'vue'
 
@@ -46,6 +47,7 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
         artifact_path: latestPath,
         report_xlsx_path: normalizeText(artifact.report_xlsx_path ?? latest?.report_xlsx_path),
         csv_path: normalizeText(artifact.csv_path ?? latest?.csv_path),
+        dataset_meta: asRecord(artifact.dataset_meta),
         tags: normalizeTags(artifact.tags ?? latest?.tags),
         req: artifact.req ?? null,
         res: artifact.res ?? null,
@@ -59,7 +61,9 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
         : null,
     }
 
-    return applyWorkflowArtifactsPayload(payload, source)
+    const applied = applyWorkflowArtifactsPayload(payload, source)
+    if (applied) refreshAnalysisFromWorkflowRun()
+    return applied
   } catch {
     return false
   }

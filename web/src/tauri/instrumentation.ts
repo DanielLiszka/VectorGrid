@@ -1,5 +1,4 @@
 import {
-  applyDistributedProgress,
   applyDoubleMaProgress,
   beginTrackedCommand,
   completeTrackedCommand,
@@ -7,7 +6,6 @@ import {
   recordPolygonLiveBarEvent,
   recordLiveExecutionRunnerEvent,
   recordPolygonLiveStatusEvent,
-  type DistributedProgressPayload,
   type DoubleMaProgressPayload,
   type LiveExecutionRunnerEventPayload,
   type PolygonLiveBarEventPayload,
@@ -19,7 +17,6 @@ type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unk
 
 export const INSTRUMENTED_EVENT_CHANNELS = [
   'double_ma_progress',
-  'distributed_progress',
   'live_execution_runner_event',
   'polygon_live_status',
   'polygon_live_bar',
@@ -66,19 +63,6 @@ function normalizeDoubleMa(payload: unknown): DoubleMaProgressPayload | null {
     processed_pairs: asNumber(rec.processed_pairs),
     total_pairs: asNumber(rec.total_pairs),
     phase: asString(rec.phase),
-  }
-}
-
-function normalizeDistributed(payload: unknown): DistributedProgressPayload | null {
-  const rec = asRecord(payload)
-  if (!rec) return null
-  return {
-    mode: asString(rec.mode),
-    completed: asNumber(rec.completed),
-    total: asNumber(rec.total),
-    successes: asNumber(rec.successes),
-    failures: asNumber(rec.failures),
-    last: asString(rec.last),
   }
 }
 
@@ -198,10 +182,6 @@ async function subscribeProgressEvents(): Promise<void> {
   await attachListener('double_ma_progress', (payload) => {
     const p = normalizeDoubleMa(payload)
     if (p) applyDoubleMaProgress(p)
-  })
-  await attachListener('distributed_progress', (payload) => {
-    const p = normalizeDistributed(payload)
-    if (p) applyDistributedProgress(p)
   })
   await attachListener('live_execution_runner_event', (payload) => {
     const p = normalizeRunnerEvent(payload)

@@ -26,7 +26,6 @@ Tauri desktop app for brute-force double moving-average optimization (and future
 - Vue-native Debug results tab panel in `web/src/components/DebugWorkspacePanel.vue` (debug JSON output now renders via Vue panel state)
 - Vue-native Settings workspace panel in `web/src/components/SettingsWorkspacePanel.vue`
 - Vue-native History tab panel in `web/src/components/HistoryWorkspacePanel.vue`
-- Vue-native Distributed tab panel in `web/src/components/DistributedWorkspacePanel.vue`
 - Vue-native Execution settings pane in `web/src/components/ExecutionWorkspacePanel.vue` (includes Vue-rendered broker orders table + chart host)
 
 ## First-time setup

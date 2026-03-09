@@ -3174,7 +3174,9 @@ mod tests {
                 atr_period: 100,
             },
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz: ta_app_core::composite_cpu::MaczGateParams::default(),
             ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -3198,6 +3200,7 @@ mod tests {
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let mut res = ta_app_core::run_composite_validation_blocking_with_candles(

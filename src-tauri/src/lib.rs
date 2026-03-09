@@ -1,21 +1,17 @@
 pub mod commands;
 pub mod data_cache;
-pub mod distributed;
 pub mod ma_registry;
 pub mod polygon;
 pub mod settings;
 pub mod state;
 
 use commands::*;
-use distributed::DistributedState;
-use distributed::*;
 use state::AppState;
 use state::BackgroundTaskState;
 
 pub fn run_tauri() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .manage(DistributedState::default())
         .manage(BackgroundTaskState::default())
         .setup(|app| {
             let window_cfg = app.config().app.windows.get(0).cloned().ok_or_else(|| {
@@ -64,11 +60,6 @@ pub fn run_tauri() {
             run_composite_mo_optimization,
             run_composite_validation,
             run_double_ma_validation,
-            distributed_start_worker_server,
-            distributed_stop_worker_server,
-            distributed_worker_server_status,
-            distributed_run_double_ma_assets,
-            distributed_run_double_ma_tiled,
             build_report_xlsx,
             build_validation_shortlist_csv,
             save_report_xlsx,
@@ -101,8 +92,7 @@ pub fn run_tauri() {
             list_moving_averages,
             list_dynamic_indicators,
             list_gpu_speedups,
-            get_gpu_status,
-            list_cuda_devices
+            get_gpu_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

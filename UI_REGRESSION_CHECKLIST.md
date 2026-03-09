@@ -80,17 +80,9 @@ Use this after UI changes to confirm we didn’t break core workflows.
 - Start batch run, stop requested works, retry failed works.
 - Reveal batch summary works.
 
-## Distributed
-
-- Worker start/stop/status works (local).
-- Leader “run assets” flow works (connects to workers, aggregates).
-- Leader “tiled” flow works (splits search-space, aggregates).
-- Cancel distributed run works.
-
 ## Keyboard shortcuts / command palette (if enabled)
 
 - `Ctrl+K` opens command palette; typing filters actions; Enter runs.
 - `Esc` closes command palette (and Polygon modal if open).
 - `Ctrl+O` triggers CSV browse.
 - `Ctrl+Enter` triggers Run optimization (when available).
-

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
@@ -7,6 +8,8 @@ import {
   drillClearTradeSelection,
   drillNextTrade,
   drillPrevTrade,
+  refreshAnalysisFromWorkflowRun,
+  refreshParetoFromWorkflowRun,
   refreshTopTableFromWorkflowRun,
   rerenderDrill,
   selectTopRow,
@@ -53,8 +56,28 @@ function seedWorkflowRun(payload: { ts?: string; artifactPath?: string; req?: un
 describe('analysis service', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    vi.restoreAllMocks()
     vi.clearAllMocks()
     if (typeof document !== 'undefined') document.body.innerHTML = ''
+    if (typeof HTMLCanvasElement !== 'undefined') {
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => ({
+        clearRect: () => undefined,
+        fillRect: () => undefined,
+        strokeRect: () => undefined,
+        beginPath: () => undefined,
+        arc: () => undefined,
+        fill: () => undefined,
+        stroke: () => undefined,
+        fillText: () => undefined,
+        moveTo: () => undefined,
+        lineTo: () => undefined,
+        save: () => undefined,
+        restore: () => undefined,
+        translate: () => undefined,
+        rotate: () => undefined,
+        createLinearGradient: () => ({ addColorStop: () => undefined }),
+      }) as never)
+    }
     invokeCommandMock.mockResolvedValue({
       ts: '2026-02-26T11:59:00.000Z',
       run: {
@@ -86,9 +109,9 @@ describe('analysis service', () => {
 
     const sharpeCol = store.topColumns.find((column) => column.key === 'sharpe')
     expect(String(sharpeCol?.sort || '')).toBe('desc')
-    expect(String(store.topTableRows[0]?.cells?.[5]?.text || '')).toBe('1.200000')
-    expect(String(store.topTableRows[1]?.cells?.[5]?.text || '')).toBe('0.800000')
-    expect(String(store.topTableRows[2]?.cells?.[5]?.text || '')).toBe('0.500000')
+    expect(String(store.topTableRows[0]?.cells?.[5]?.text || '')).toBe('1.2')
+    expect(String(store.topTableRows[1]?.cells?.[5]?.text || '')).toBe('0.8')
+    expect(String(store.topTableRows[2]?.cells?.[5]?.text || '')).toBe('0.5')
     expect(store.topTableRows[0]?.selected).toBe(true)
     expect(store.source).toBe('vue')
   })
@@ -209,6 +232,70 @@ describe('analysis service', () => {
     expect(String(store.topFilterMeta || '')).toBe('showing 1/2 rows')
     expect(Array.isArray(store.topColumns)).toBe(true)
     expect(Array.isArray(store.topTableRows)).toBe(true)
+  })
+
+  it('does not fabricate ranked rows when top_k is disabled for the run', () => {
+    seedWorkflowRun({
+      req: { strategy_kind: 'DoubleMa', objective: 'Sharpe', top_k: 0 },
+      res: {
+        num_combos: 136605,
+        best_params: { fast_ma_type: 'sma', fast_len: 8, slow_ma_type: 'alma', slow_len: 20 },
+        best_metrics: { pnl: 0.3, sharpe: 1.8, max_dd: 0.1, trades: 40, exposure: 0.5 },
+        top: [],
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshTopTableFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(store.topRows).toBe(0)
+    expect(String(store.topFilterMeta || '')).toContain('Top K disabled')
+    expect(String(store.topSelectionGuardrail || '')).toContain('Top K above 0')
+  })
+
+  it('marks heatmap as disabled when heatmap_bins is 0', () => {
+    seedWorkflowRun({
+      req: { strategy_kind: 'DoubleMa', objective: 'Sharpe', top_k: 20, heatmap_bins: 0 },
+      res: {
+        best_params: { fast_ma_type: 'sma', fast_len: 8, slow_ma_type: 'alma', slow_len: 20 },
+        best_metrics: { pnl: 0.3, sharpe: 1.8, max_dd: 0.1, trades: 40, exposure: 0.5 },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(store.heatmapWrapVisible).toBe(false)
+    expect(store.canHeatmapExportPng).toBe(false)
+    expect(String(store.heatmapMeta || '')).toContain('heatmap_bins=0')
+    expect(String(store.heatmapStatusLine || '')).toContain('Heatmap bins')
+  })
+
+  it('renders pareto scatter into the Vue canvas host when mounted', () => {
+    document.body.innerHTML = `
+      <div id="paretoWrapVue" style="display:none"></div>
+      <div id="paretoMetaVue">-</div>
+      <canvas id="paretoCanvasVue" width="1024" height="240"></canvas>
+    `
+    seedWorkflowRun({
+      req: { strategy_kind: 'DoubleMa', objective: 'Sharpe', top_k: 20 },
+      res: {
+        top: [
+          [{ fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'alma', slow_len: 20 }, { pnl: -0.1, sharpe: -0.2, max_dd: 0.4, trades: 10, exposure: 0.4 }],
+          [{ fast_ma_type: 'sma', fast_len: 8, slow_ma_type: 'alma', slow_len: 24 }, { pnl: 0.05, sharpe: 0.3, max_dd: 0.2, trades: 18, exposure: 0.5 }],
+        ],
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshParetoFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(store.paretoWrapVisible).toBe(true)
+    expect(String(store.paretoMeta || '')).toContain('2 points')
+    expect((document.querySelector('#paretoWrapVue') as HTMLElement | null)?.style.display).toBe('block')
   })
 
   it('sets and clears baseline from Vue stores when run context is available', async () => {

@@ -28,14 +28,26 @@ use crate::double_ma::{
     cpu_tile_sizes, estimate_pairs_fast_lt_slow, expand_u16_range, first_finite_idx,
     lookup_ma_info, ma_matrix_cpu_f64, resolve_alma_params_for_side,
     run_double_ma_optimization_blocking_with_candles, strategy_cfg_for_optimization,
-    validate_ma_kind, validate_strategy_cfg, Backend, BackendOptimizationResult, BackendUsed,
-    DoubleMaParamsResolved, DoubleMaRequest, HalfTrendRegimeFilter, LocalStabilityPoint,
-    LocalStabilityResult, LocalStabilitySummary, OptimizationModeResolved,
+    validate_ma_kind, validate_strategy_cfg_for_optimization, Backend, BackendOptimizationResult,
+    BackendUsed, DoubleMaParamsResolved, DoubleMaRequest, HalfTrendRegimeFilter,
+    LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary, OptimizationModeResolved,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
 use crate::progress::ProgressSink;
 use crate::request_normalization::{normalize_heatmap_bins, normalize_topk_include_all};
+use crate::rocb::{
+    build_rocb_desired_positions, compute_rocb_breakout_signals, compute_rocb_risk_signals,
+    compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbStrategyParams,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::rocb::{
+    compute_rocb_atr_sweep_cuda_device, compute_rocb_donchian_output_sweep_cuda_device,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::rocb_gpu_kernel::{
+    eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
+};
 use crate::vcc::{
     build_vcc_desired_positions, compute_vcc_fast_signals, compute_vcc_start_t,
     compute_vcc_trend_signals, resolve_vcc_periods, validate_vcc_params, VccStrategyParams,
@@ -190,6 +202,8 @@ pub struct CompositeCpuRequest {
     pub vcc: Option<VccStrategyParams>,
     #[serde(default)]
     pub vemr: Option<VemrStrategyParams>,
+    #[serde(default)]
+    pub rocb: Option<RocbStrategyParams>,
     pub objective: ObjectiveKind,
     pub mode: OptimizationMode,
     /// Optional stage-0 prescan (double-MA optimization) to narrow MA-length ranges before running
@@ -234,6 +248,8 @@ pub struct CompositeCpuDrilldownRequest {
     pub vcc: Option<VccStrategyParams>,
     #[serde(default)]
     pub vemr: Option<VemrStrategyParams>,
+    #[serde(default)]
+    pub rocb: Option<RocbStrategyParams>,
     pub bins: Option<usize>,
 }
 
@@ -285,6 +301,8 @@ pub struct CompositeCpuLocalStabilityRequest {
     pub vcc: Option<VccStrategyParams>,
     #[serde(default)]
     pub vemr: Option<VemrStrategyParams>,
+    #[serde(default)]
+    pub rocb: Option<RocbStrategyParams>,
     pub objective: ObjectiveKind,
     pub radius: Option<u16>,
     pub step: Option<u16>,
@@ -339,10 +357,11 @@ fn run_asr_optimization(
 ) -> Result<BackendOptimizationResult, String> {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
-        if !matches!(req.backend, Backend::CpuOnly) {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
             let backend_label = asr_backend_label(&req.backend).to_string();
             if vector_ta::cuda::cuda_available() {
-                let device_id = match &req.backend {
+                let device_id = match &normalized_backend {
                     Backend::Auto { device_id }
                     | Backend::GpuOnly { device_id }
                     | Backend::GpuHybridKernel { device_id }
@@ -404,7 +423,7 @@ fn run_asr_optimization_gpu(
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let asr_cfg = req.asr.clone().unwrap_or_default();
     validate_asr_params(&asr_cfg)?;
@@ -464,7 +483,12 @@ fn run_asr_optimization_gpu(
     let fv_ma =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles(candles, &ma_source);
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &strategy, device_id)?;
     if kaufman.long.rows != 1
@@ -804,7 +828,7 @@ fn run_asr_optimization_cpu(
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let asr_cfg = req.asr.clone().unwrap_or_default();
     validate_asr_params(&asr_cfg)?;
@@ -871,9 +895,7 @@ fn run_asr_optimization_cpu(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        Some(PreparedCudaIndicatorInputs::from_candles(
-            candles, &ma_source,
-        ))
+        PreparedCudaIndicatorInputs::from_candles(candles, &ma_source).ok()
     };
 
     let mut fast_cache: HashMap<u16, crate::asr::AsrFastSignals> = HashMap::new();
@@ -1076,10 +1098,11 @@ fn run_vcc_optimization(
 ) -> Result<BackendOptimizationResult, String> {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
-        if !matches!(req.backend, Backend::CpuOnly) {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
             let backend_label = asr_backend_label(&req.backend).to_string();
             if vector_ta::cuda::cuda_available() {
-                let device_id = match &req.backend {
+                let device_id = match &normalized_backend {
                     Backend::Auto { device_id }
                     | Backend::GpuOnly { device_id }
                     | Backend::GpuHybridKernel { device_id }
@@ -1141,7 +1164,7 @@ fn run_vcc_optimization_gpu(
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let vcc_cfg = req.vcc.clone().unwrap_or_default();
     validate_vcc_params(&vcc_cfg)?;
@@ -1201,7 +1224,12 @@ fn run_vcc_optimization_gpu(
     let fv_ma =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles(candles, &ma_source);
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut fast_keys: Vec<(u16, u16)> = fast_periods
         .iter()
@@ -1487,7 +1515,7 @@ fn run_vcc_optimization_cpu(
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let vcc_cfg = req.vcc.clone().unwrap_or_default();
     validate_vcc_params(&vcc_cfg)?;
@@ -1731,10 +1759,11 @@ fn run_vemr_optimization(
 ) -> Result<BackendOptimizationResult, String> {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
-        if !matches!(req.backend, Backend::CpuOnly) {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
             let backend_label = asr_backend_label(&req.backend).to_string();
             if vector_ta::cuda::cuda_available() {
-                let device_id = match &req.backend {
+                let device_id = match &normalized_backend {
                     Backend::Auto { device_id }
                     | Backend::GpuOnly { device_id }
                     | Backend::GpuHybridKernel { device_id }
@@ -1797,7 +1826,7 @@ fn run_vemr_optimization_gpu(
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let vemr_cfg = req.vemr.clone().unwrap_or_default();
     validate_vemr_params(&vemr_cfg)?;
@@ -1856,7 +1885,12 @@ fn run_vemr_optimization_gpu(
     let fv_ma =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles(candles, &ma_source);
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut fast_keys: Vec<(u16, u16)> = fast_periods
         .iter()
@@ -2255,7 +2289,7 @@ fn run_vemr_optimization_impl(
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let vemr_cfg = req.vemr.clone().unwrap_or_default();
     validate_vemr_params(&vemr_cfg)?;
@@ -2319,9 +2353,7 @@ fn run_vemr_optimization_impl(
     let prepared_cuda_inputs = if matches!(indicator_backend, Backend::CpuOnly) {
         None
     } else {
-        Some(PreparedCudaIndicatorInputs::from_candles(
-            candles, &ma_source,
-        ))
+        PreparedCudaIndicatorInputs::from_candles(candles, &ma_source).ok()
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
@@ -2527,7 +2559,7 @@ fn run_asr_drilldown(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let asr_cfg = req.asr.clone().unwrap_or_default();
     validate_asr_params(&asr_cfg)?;
@@ -2546,10 +2578,7 @@ fn run_asr_drilldown(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        Some(PreparedCudaIndicatorInputs::from_candles(
-            candles,
-            &req.ma_source,
-        ))
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
     };
 
     let periods = resolve_asr_periods(&asr_cfg, fast_len, slow_len);
@@ -2642,7 +2671,7 @@ fn run_vemr_drilldown(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let vemr_cfg = req.vemr.clone().unwrap_or_default();
     validate_vemr_params(&vemr_cfg)?;
@@ -2661,10 +2690,7 @@ fn run_vemr_drilldown(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        Some(PreparedCudaIndicatorInputs::from_candles(
-            candles,
-            &req.ma_source,
-        ))
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
     };
 
     let periods = resolve_vemr_periods(&vemr_cfg, fast_len, slow_len);
@@ -2745,7 +2771,7 @@ fn run_asr_local_stability(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let asr_cfg = req.asr.clone().unwrap_or_default();
     validate_asr_params(&asr_cfg)?;
@@ -2764,10 +2790,7 @@ fn run_asr_local_stability(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        Some(PreparedCudaIndicatorInputs::from_candles(
-            candles,
-            &req.ma_source,
-        ))
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
     };
 
     let radius = req.radius.unwrap_or(1).min(32);
@@ -2980,7 +3003,7 @@ fn run_vemr_local_stability(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
     let vemr_cfg = req.vemr.clone().unwrap_or_default();
     validate_vemr_params(&vemr_cfg)?;
@@ -2999,10 +3022,7 @@ fn run_vemr_local_stability(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        Some(PreparedCudaIndicatorInputs::from_candles(
-            candles,
-            &req.ma_source,
-        ))
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
     };
 
     let radius = req.radius.unwrap_or(1).min(32);
@@ -3172,6 +3192,690 @@ fn run_vemr_local_stability(
     })
 }
 
+fn run_rocb_optimization(
+    req: CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<BackendOptimizationResult, String> {
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
+            let backend_label = asr_backend_label(&req.backend).to_string();
+            if vector_ta::cuda::cuda_available() {
+                let device_id = match &normalized_backend {
+                    Backend::Auto { device_id }
+                    | Backend::GpuOnly { device_id }
+                    | Backend::GpuHybridKernel { device_id }
+                    | Backend::GpuKernel { device_id } => *device_id,
+                    Backend::CpuOnly => 0,
+                };
+                match run_rocb_optimization_gpu(&req, candles, cancel, progress, device_id) {
+                    Ok(mut gpu_res) => {
+                        if matches!(req.backend, Backend::Auto { .. }) {
+                            gpu_res.backend_route = Some("Auto->GpuKernel".to_string());
+                        } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
+                            gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
+                        }
+                        return Ok(gpu_res);
+                    }
+                    Err(err) => {
+                        let mut cpu_res =
+                            run_rocb_optimization_cpu(req, candles, cancel, progress)?;
+                        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+                        cpu_res.backend_fallback_reason = Some(err);
+                        return Ok(cpu_res);
+                    }
+                }
+            }
+
+            let mut cpu_res = run_rocb_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason =
+                Some("CUDA unavailable; falling back to CPU ROCB optimization.".to_string());
+            return Ok(cpu_res);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    {
+        if !matches!(req.backend, Backend::CpuOnly) {
+            let backend_label = asr_backend_label(&req.backend).to_string();
+            let mut cpu_res = run_rocb_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason = Some(
+                "ROCB GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
+                    .to_string(),
+            );
+            return Ok(cpu_res);
+        }
+    }
+
+    run_rocb_optimization_cpu(req, candles, cancel, progress)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn run_rocb_optimization_gpu(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    device_id: u32,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let rocb_cfg = req.rocb.clone().unwrap_or_default();
+    validate_rocb_params(&rocb_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    if matches!(
+        req.mode,
+        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
+    ) {
+        return Err("ROCB strategy currently supports mode=Grid only.".to_string());
+    }
+    let mode_used = OptimizationModeResolved::Grid;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    let prepared_cuda_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
+            .map_err(|e| e.to_string())?;
+
+    let mut channel_keys: Vec<u16> = fast_periods
+        .iter()
+        .map(|&fast_len| resolve_rocb_periods(&rocb_cfg, fast_len, 1).channel)
+        .collect();
+    channel_keys.sort_unstable();
+    channel_keys.dedup();
+    if channel_keys.is_empty() {
+        return Err("ROCB channel period set is empty".to_string());
+    }
+
+    let channel_min = *channel_keys.first().unwrap_or(&1);
+    let channel_max = *channel_keys.last().unwrap_or(&channel_min);
+    let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        &["upper", "upperband", "value"],
+        channel_min,
+        channel_max,
+        1,
+    )?;
+    let lower_sweep = compute_rocb_donchian_output_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        &["lower", "lowerband"],
+        channel_min,
+        channel_max,
+        1,
+    )?;
+    if upper_sweep.matrix.cols != n || lower_sweep.matrix.cols != n {
+        return Err("ROCB donchian sweep column mismatch".to_string());
+    }
+    if upper_sweep.matrix.rows != lower_sweep.matrix.rows {
+        return Err("ROCB donchian sweep row mismatch".to_string());
+    }
+
+    let mut channel_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(channel_keys.len());
+    let mut channel_first_valid_lookup: HashMap<u16, usize> =
+        HashMap::with_capacity(channel_keys.len());
+    for period in channel_keys.iter().copied() {
+        let upper_row = upper_sweep
+            .row_index_for_period(period)
+            .ok_or_else(|| format!("ROCB upper donchian row missing for period={period}"))?;
+        if lower_sweep.row_index_for_period(period).is_none() {
+            return Err(format!(
+                "ROCB lower donchian row missing for period={period}"
+            ));
+        }
+        let row_i = i32::try_from(upper_row)
+            .map_err(|_| "ROCB channel row exceeds i32 range".to_string())?;
+        channel_row_lookup.insert(period, row_i);
+        channel_first_valid_lookup.insert(period, upper_sweep.first_valid_for_period(period));
+    }
+
+    let mut atr_keys: Vec<u16> = slow_periods
+        .iter()
+        .map(|&slow_len| resolve_rocb_periods(&rocb_cfg, 1, slow_len).atr)
+        .collect();
+    atr_keys.sort_unstable();
+    atr_keys.dedup();
+    if atr_keys.is_empty() {
+        return Err("ROCB ATR period set is empty".to_string());
+    }
+    let atr_min = *atr_keys.first().unwrap_or(&1);
+    let atr_max = *atr_keys.last().unwrap_or(&atr_min);
+    let atr_sweep = compute_rocb_atr_sweep_cuda_device(&prepared_cuda_inputs, atr_min, atr_max, 1)?;
+    if atr_sweep.matrix.cols != n {
+        return Err("ROCB ATR sweep column mismatch".to_string());
+    }
+
+    let mut atr_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(atr_keys.len());
+    let mut atr_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(atr_keys.len());
+    for period in atr_keys.iter().copied() {
+        let row = atr_sweep
+            .row_index_for_period(period)
+            .ok_or_else(|| format!("ROCB ATR row missing for period={period}"))?;
+        let row_i = i32::try_from(row).map_err(|_| "ROCB ATR row exceeds i32 range".to_string())?;
+        atr_row_lookup.insert(period, row_i);
+        atr_first_valid_lookup.insert(period, atr_sweep.first_valid_for_period(period));
+    }
+
+    let mut combo_channel_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_atr_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_params: Vec<DoubleMaParams> = Vec::with_capacity(total_pairs);
+
+    emit_progress(progress, 0, total_pairs, "rocb_optimize");
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let periods = resolve_rocb_periods(&rocb_cfg, fast_len, slow_len);
+            let channel_row = *channel_row_lookup
+                .get(&periods.channel)
+                .ok_or_else(|| "ROCB channel row lookup miss".to_string())?;
+            let atr_row = *atr_row_lookup
+                .get(&periods.atr)
+                .ok_or_else(|| "ROCB ATR row lookup miss".to_string())?;
+            let channel_first_valid = *channel_first_valid_lookup
+                .get(&periods.channel)
+                .ok_or_else(|| "ROCB channel first_valid lookup miss".to_string())?;
+            let atr_first_valid = *atr_first_valid_lookup
+                .get(&periods.atr)
+                .ok_or_else(|| "ROCB ATR first_valid lookup miss".to_string())?;
+            let start_t = compute_rocb_start_t(
+                fv_close,
+                fv_high,
+                fv_low,
+                channel_first_valid,
+                atr_first_valid,
+                strategy.trade_on_next_bar,
+            );
+            if start_t >= n {
+                continue;
+            }
+
+            combo_channel_row_idx.push(channel_row);
+            combo_atr_row_idx.push(atr_row);
+            combo_start_t.push(
+                i32::try_from(start_t).map_err(|_| "ROCB start_t exceeds i32 range".to_string())?,
+            );
+            combo_params.push(DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+
+            if (combo_params.len() & 0x03ff) == 0 {
+                emit_progress(progress, combo_params.len(), total_pairs, "rocb_optimize");
+            }
+        }
+    }
+    emit_progress(progress, combo_params.len(), total_pairs, "rocb_optimize");
+
+    if combo_params.is_empty() {
+        return Err("ROCB grid search produced no valid parameter combinations".to_string());
+    }
+
+    let signals = RocbGpuDeviceSignalMatrices {
+        close_f32: prepared_cuda_inputs.close(),
+        cols: n,
+        upper_row_major_ptr: upper_sweep.matrix.device_ptr,
+        lower_row_major_ptr: lower_sweep.matrix.device_ptr,
+        channel_rows: upper_sweep.matrix.rows,
+        channel_stride: upper_sweep.matrix.cols,
+        atr_row_major_ptr: atr_sweep.matrix.device_ptr,
+        atr_rows: atr_sweep.matrix.rows,
+        atr_stride: atr_sweep.matrix.cols,
+    };
+    let combos = RocbGpuComboBatch {
+        channel_row_index: &combo_channel_row_idx,
+        atr_row_index: &combo_atr_row_idx,
+        start_t: &combo_start_t,
+    };
+
+    let start = std::time::Instant::now();
+    let metrics = eval_rocb_metrics_gpu_kernel_device_rows(
+        device_id, &signals, &combos, &strategy, &rocb_cfg,
+    )?;
+    if metrics.len() != combo_params.len() {
+        return Err("ROCB GPU kernel output length mismatch".to_string());
+    }
+
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+    for (i, (params, m)) in combo_params
+        .into_iter()
+        .zip(metrics.into_iter())
+        .enumerate()
+    {
+        agg.push(params, m);
+        if (i & 0x03ff) == 0 {
+            emit_progress(progress, i + 1, total_pairs, "rocb_optimize");
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "rocb_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "ROCB grid search produced no result".to_string())?;
+    let best_params = resolve_params(&result.best_params);
+    let best_metrics = result.best_metrics.clone();
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| (resolve_params(p), m.clone()))
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| (resolve_params(p), m.clone()))
+            .collect::<Vec<_>>()
+    });
+    let runtime_ms = start.elapsed().as_millis() as u64;
+
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics,
+        mode_used,
+        backend_used: BackendUsed::Gpu,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms,
+        top,
+        all,
+        heatmap: result.heatmap.clone(),
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
+}
+
+fn run_rocb_optimization_cpu(
+    req: CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<BackendOptimizationResult, String> {
+    run_rocb_optimization_impl(
+        &req,
+        candles,
+        cancel,
+        progress,
+        &Backend::CpuOnly,
+        BackendUsed::Cpu,
+    )
+}
+
+fn run_rocb_optimization_impl(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    indicator_backend: &Backend,
+    backend_used: BackendUsed,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let rocb_cfg = req.rocb.clone().unwrap_or_default();
+    validate_rocb_params(&rocb_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    if matches!(
+        req.mode,
+        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
+    ) {
+        return Err("ROCB strategy currently supports mode=Grid only.".to_string());
+    }
+    let mode_used = OptimizationModeResolved::Grid;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if !matches!(indicator_backend, Backend::CpuOnly) {
+        Some(
+            PreparedCudaIndicatorInputs::from_candles_on_device(
+                candles,
+                "close",
+                match indicator_backend {
+                    Backend::Auto { device_id }
+                    | Backend::GpuOnly { device_id }
+                    | Backend::GpuHybridKernel { device_id }
+                    | Backend::GpuKernel { device_id } => *device_id as usize,
+                    Backend::CpuOnly => 0,
+                },
+            )
+            .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
+    let mut breakout_cache: HashMap<u16, crate::rocb::RocbBreakoutSignals> = HashMap::new();
+    let mut risk_cache: HashMap<u16, crate::rocb::RocbRiskSignals> = HashMap::new();
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+
+    let mut processed = 0usize;
+    emit_progress(progress, 0, total_pairs, "rocb_optimize");
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let periods = resolve_rocb_periods(&rocb_cfg, fast_len, slow_len);
+            let breakout = if let Some(v) = breakout_cache.get(&periods.channel) {
+                v
+            } else {
+                let built = compute_rocb_breakout_signals(
+                    candles,
+                    "close",
+                    indicator_backend,
+                    periods.channel,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
+                breakout_cache.insert(periods.channel, built);
+                breakout_cache
+                    .get(&periods.channel)
+                    .ok_or_else(|| "ROCB breakout cache insert failed".to_string())?
+            };
+            let risk = if let Some(v) = risk_cache.get(&periods.atr) {
+                v
+            } else {
+                let built = compute_rocb_risk_signals(
+                    candles,
+                    "close",
+                    indicator_backend,
+                    periods.atr,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
+                risk_cache.insert(periods.atr, built);
+                risk_cache
+                    .get(&periods.atr)
+                    .ok_or_else(|| "ROCB risk cache insert failed".to_string())?
+            };
+
+            let start_t = compute_rocb_start_t(
+                fv_close,
+                fv_high,
+                fv_low,
+                breakout.first_valid,
+                risk.first_valid,
+                strategy.trade_on_next_bar,
+            );
+            if start_t >= n {
+                continue;
+            }
+
+            let desired =
+                build_rocb_desired_positions(close, breakout, risk, start_t, &strategy, &rocb_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            agg.push(
+                DoubleMaParams {
+                    fast_len,
+                    slow_len,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                metrics,
+            );
+            processed += 1;
+            if (processed & 0x03ff) == 0 {
+                emit_progress(progress, processed, total_pairs, "rocb_optimize");
+            }
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "rocb_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "ROCB grid search produced no result".to_string())?;
+    let best_params = DoubleMaParamsResolved {
+        fast_len: result.best_params.fast_len,
+        slow_len: result.best_params.slow_len,
+        fast_ma_type: fast_ma.clone(),
+        slow_ma_type: slow_ma.clone(),
+        fast_ma_params: req.fast_ma_params.clone(),
+        slow_ma_params: req.slow_ma_params.clone(),
+    };
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| {
+            (
+                DoubleMaParamsResolved {
+                    fast_len: p.fast_len,
+                    slow_len: p.slow_len,
+                    fast_ma_type: fast_ma.clone(),
+                    slow_ma_type: slow_ma.clone(),
+                    fast_ma_params: req.fast_ma_params.clone(),
+                    slow_ma_params: req.slow_ma_params.clone(),
+                },
+                m.clone(),
+            )
+        })
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| {
+                (
+                    DoubleMaParamsResolved {
+                        fast_len: p.fast_len,
+                        slow_len: p.slow_len,
+                        fast_ma_type: fast_ma.clone(),
+                        slow_ma_type: slow_ma.clone(),
+                        fast_ma_params: req.fast_ma_params.clone(),
+                        slow_ma_params: req.slow_ma_params.clone(),
+                    },
+                    m.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics: result.best_metrics,
+        mode_used,
+        backend_used,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms: 0,
+        top,
+        all,
+        heatmap: result.heatmap.clone(),
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
+}
+
 pub fn run_composite_cpu_optimization_blocking_with_candles(
     req: CompositeCpuRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -3180,9 +3884,10 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
 ) -> Result<BackendOptimizationResult, String> {
     let custom_strategy_count = usize::from(req.asr.is_some())
         + usize::from(req.vcc.is_some())
-        + usize::from(req.vemr.is_some());
+        + usize::from(req.vemr.is_some())
+        + usize::from(req.rocb.is_some());
     if custom_strategy_count > 1 {
-        return Err("Select only one of ASR, VCC, or VEMR strategy config.".to_string());
+        return Err("Select only one of ASR, VCC, VEMR, or ROCB strategy config.".to_string());
     }
     if req.asr.is_some() {
         return run_asr_optimization(req, candles, cancel, progress);
@@ -3193,12 +3898,15 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     if req.vemr.is_some() {
         return run_vemr_optimization(req, candles, cancel, progress);
     }
+    if req.rocb.is_some() {
+        return run_rocb_optimization(req, candles, cancel, progress);
+    }
 
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     let strategy = strategy_cfg_for_optimization(req.strategy.clone());
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
@@ -3544,9 +4252,10 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
 ) -> Result<CompositeCpuDrilldownResult, String> {
     let custom_strategy_count = usize::from(req.asr.is_some())
         + usize::from(req.vcc.is_some())
-        + usize::from(req.vemr.is_some());
+        + usize::from(req.vemr.is_some())
+        + usize::from(req.rocb.is_some());
     if custom_strategy_count > 1 {
-        return Err("Select only one of ASR, VCC, or VEMR strategy config.".to_string());
+        return Err("Select only one of ASR, VCC, VEMR, or ROCB strategy config.".to_string());
     }
     if req.vemr.is_some() {
         return run_vemr_drilldown(req, candles);
@@ -3556,6 +4265,9 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     }
     if req.asr.is_some() {
         return run_asr_drilldown(req, candles);
+    }
+    if req.rocb.is_some() {
+        return Err("ROCB drilldown is not implemented yet.".to_string());
     }
 
     let n = candles.close.len();
@@ -3579,7 +4291,7 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     validate_macz_params(&req.macz)?;
     validate_ott_params(&req.ott)?;
     if req.macz.use_volume && !candles.fields.volume {
@@ -3790,9 +4502,10 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
 ) -> Result<LocalStabilityResult, String> {
     let custom_strategy_count = usize::from(req.asr.is_some())
         + usize::from(req.vcc.is_some())
-        + usize::from(req.vemr.is_some());
+        + usize::from(req.vemr.is_some())
+        + usize::from(req.rocb.is_some());
     if custom_strategy_count > 1 {
-        return Err("Select only one of ASR, VCC, or VEMR strategy config.".to_string());
+        return Err("Select only one of ASR, VCC, VEMR, or ROCB strategy config.".to_string());
     }
     if req.vemr.is_some() {
         return run_vemr_local_stability(req, candles);
@@ -3802,6 +4515,9 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
     }
     if req.asr.is_some() {
         return run_asr_local_stability(req, candles);
+    }
+    if req.rocb.is_some() {
+        return Err("ROCB local stability is not implemented yet.".to_string());
     }
 
     let n = candles.close.len();
@@ -3828,7 +4544,7 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
         ));
     }
 
-    validate_strategy_cfg(&req.strategy)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
     validate_macz_params(&req.macz)?;
     validate_ott_params(&req.ott)?;
     if req.macz.use_volume && !candles.fields.volume {
@@ -4754,6 +5470,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 7, 1),
             slow_range: (10, 11, 1),
@@ -4811,6 +5528,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 7, 1),
             slow_range: (10, 11, 1),
@@ -4924,6 +5642,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 7, 1),
             slow_range: (10, 11, 1),
@@ -4966,6 +5685,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 7, 1),
             slow_range: (10, 11, 1),
@@ -5010,6 +5730,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 7, 1),
             slow_range: (10, 11, 1),
@@ -5043,73 +5764,6 @@ mod tests {
     }
 
     #[test]
-    fn composite_cpu_optimization_ignores_trailing_stop() {
-        let candles = make_trending_candles(5000);
-        let cancel = AtomicBool::new(false);
-
-        let base_req = CompositeCpuRequest {
-            backend: crate::double_ma::Backend::CpuOnly,
-            asr: None,
-            vcc: None,
-            vemr: None,
-            data_id: "test".to_string(),
-            fast_range: (5, 5, 0),
-            slow_range: (20, 20, 0),
-            fast_ma_types: vec!["sma".to_string()],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            fast_ma_params: None,
-            slow_ma_params: None,
-            strategy: StrategyConfig::default(),
-            halftrend: HalfTrendRegimeFilter {
-                amplitude: 2,
-                channel_deviation: 2.0,
-                atr_period: 100,
-            },
-            macz: MaczGateParams::default(),
-            ott: OttGateParams::default(),
-            signal_mode: CompositeSignalMode::HardGate,
-            objective: ObjectiveKind::Pnl,
-            mode: OptimizationMode::Grid,
-            gpu_prescan: None,
-            top_k: Some(1),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-        };
-
-        let base = run_composite_cpu_optimization_blocking_with_candles(
-            base_req.clone(),
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("composite cpu base run");
-
-        let mut trailing_req = base_req;
-        trailing_req.strategy.trailing_stop_pct = Some(0.02);
-        let with_trailing = run_composite_cpu_optimization_blocking_with_candles(
-            trailing_req,
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("composite cpu trailing run");
-
-        assert_eq!(
-            with_trailing.best_params.fast_len,
-            base.best_params.fast_len
-        );
-        assert_eq!(
-            with_trailing.best_params.slow_len,
-            base.best_params.slow_len
-        );
-        assert_eq!(with_trailing.best_metrics.trades, base.best_metrics.trades);
-        assert!((with_trailing.best_metrics.pnl - base.best_metrics.pnl).abs() < 1e-12);
-        assert!((with_trailing.best_metrics.sharpe - base.best_metrics.sharpe).abs() < 1e-12);
-        assert!((with_trailing.best_metrics.max_dd - base.best_metrics.max_dd).abs() < 1e-12);
-    }
-
-    #[test]
     fn composite_cpu_prescan_can_narrow_ranges() {
         let candles = make_trending_candles(5000);
         let cancel = AtomicBool::new(false);
@@ -5119,6 +5773,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 50, 1),
             slow_range: (20, 200, 1),
@@ -5173,6 +5828,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             fast_range: (5, 50, 1),
             slow_range: (20, 200, 1),
@@ -5225,6 +5881,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             params: DoubleMaParamsResolved {
                 fast_len: 10,
@@ -5282,6 +5939,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             params: DoubleMaParamsResolved {
                 fast_len: 9,
@@ -5749,6 +6407,7 @@ mod tests {
             asr: Some(AsrStrategyParams::default()),
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             params: DoubleMaParamsResolved {
                 fast_len: 8,
@@ -5790,6 +6449,7 @@ mod tests {
             asr: Some(AsrStrategyParams::default()),
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: "test".to_string(),
             params: DoubleMaParamsResolved {
                 fast_len: 8,
@@ -5830,6 +6490,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: Some(VemrStrategyParams::default()),
+            rocb: None,
             data_id: "test".to_string(),
             params: DoubleMaParamsResolved {
                 fast_len: 8,
@@ -5871,6 +6532,7 @@ mod tests {
             asr: None,
             vcc: None,
             vemr: Some(VemrStrategyParams::default()),
+            rocb: None,
             data_id: "test".to_string(),
             params: DoubleMaParamsResolved {
                 fast_len: 8,

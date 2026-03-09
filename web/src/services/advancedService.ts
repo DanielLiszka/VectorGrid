@@ -54,7 +54,6 @@ function defaultCompositeMoSearchSpace(): CompositeMoSearchSpace {
       { name: 'strategy_eps_rel', domain: { FloatRange: { low: 0.0, high: 0.005, log: false } } },
       { name: 'strategy_long_only', domain: 'Bool' },
       { name: 'strategy_allow_flip', domain: 'Bool' },
-      { name: 'strategy_trade_on_next_bar', domain: 'Bool' },
     ],
   }
 }

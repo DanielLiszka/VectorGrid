@@ -5,24 +5,12 @@ pub struct GpuStatus {
     pub built_with_cuda: bool,
     pub built_with_cuda_backtest_kernel: bool,
     pub cuda_available: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CudaDeviceInfo {
-    pub device_id: u32,
-    pub name: String,
-    pub total_memory_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ListCudaDevicesResponse {
-    pub built_with_cuda: bool,
-    pub cuda_available: bool,
-    pub devices: Vec<CudaDeviceInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recommended_device_id: Option<u32>,
+    pub auto_device_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub auto_device_memory_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_device_error: Option<String>,
 }
 
 #[cfg(feature = "cuda")]
@@ -37,74 +25,24 @@ fn cuda_available_now() -> bool {
 
 #[tauri::command]
 pub fn get_gpu_status() -> Result<GpuStatus, String> {
+    let (auto_device_name, auto_device_memory_bytes, auto_device_error) =
+        match ta_app_core::preferred_cuda_device() {
+            Ok(Some(device)) => (
+                Some(device.name),
+                Some(device.total_memory_bytes),
+                None,
+            ),
+            Ok(None) => (None, None, None),
+            Err(error) => (None, None, Some(error)),
+        };
     Ok(GpuStatus {
         built_with_cuda: cfg!(feature = "cuda"),
         built_with_cuda_backtest_kernel: cfg!(feature = "cuda-backtest-kernel"),
         cuda_available: cuda_available_now(),
+        auto_device_name,
+        auto_device_memory_bytes,
+        auto_device_error,
     })
-}
-
-#[cfg(feature = "cuda")]
-fn list_cuda_devices_impl() -> Result<ListCudaDevicesResponse, String> {
-    if !cuda_available_now() {
-        return Ok(ListCudaDevicesResponse {
-            built_with_cuda: true,
-            cuda_available: false,
-            devices: Vec::new(),
-            recommended_device_id: None,
-            error: Some("CUDA runtime not available (cuda_available() == false)".to_string()),
-        });
-    }
-
-    use cust::{device::Device, prelude::CudaFlags};
-
-    cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
-
-    let n = Device::num_devices().map_err(|e| e.to_string())?;
-    let mut devices: Vec<CudaDeviceInfo> = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let dev = Device::get_device(i).map_err(|e| e.to_string())?;
-        let name = dev.name().map_err(|e| e.to_string())?;
-        let mem = dev.total_memory().map_err(|e| e.to_string())?;
-        devices.push(CudaDeviceInfo {
-            device_id: i as u32,
-            name,
-            total_memory_bytes: mem as u64,
-        });
-    }
-
-    let mut recommended: Option<u32> = None;
-    let mut best_mem: u64 = 0;
-    for d in &devices {
-        if recommended.is_none() || d.total_memory_bytes > best_mem {
-            recommended = Some(d.device_id);
-            best_mem = d.total_memory_bytes;
-        }
-    }
-
-    Ok(ListCudaDevicesResponse {
-        built_with_cuda: true,
-        cuda_available: true,
-        devices,
-        recommended_device_id: recommended,
-        error: None,
-    })
-}
-
-#[cfg(not(feature = "cuda"))]
-fn list_cuda_devices_impl() -> Result<ListCudaDevicesResponse, String> {
-    Ok(ListCudaDevicesResponse {
-        built_with_cuda: false,
-        cuda_available: false,
-        devices: Vec::new(),
-        recommended_device_id: None,
-        error: Some("App not built with CUDA feature".to_string()),
-    })
-}
-
-#[tauri::command]
-pub fn list_cuda_devices() -> Result<ListCudaDevicesResponse, String> {
-    list_cuda_devices_impl()
 }
 
 #[tauri::command]

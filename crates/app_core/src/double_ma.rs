@@ -21,7 +21,24 @@ use crate::request_normalization::{
 use vector_ta::cuda::{
     cuda_available,
     moving_averages::{CudaAlma, CudaMaData, CudaMaSelector},
+    CudaDeviceCloseVolumeRef,
 };
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use vector_ta::indicators::dispatch::{
+    compute_cuda_device, CudaOutputTarget, IndicatorCudaDeviceDataRef, IndicatorCudaDeviceRequest,
+    IndicatorCudaSeries,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use vector_ta::utilities::enums::Kernel;
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::dynamic_indicator_adapter::{
+    compute_dynamic_indicator_cuda_from_device_matrix_row,
+    compute_dynamic_indicator_cuda_with_inputs, device_slice_ref_from_matrix_row,
+    DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "backend")]
@@ -51,6 +68,108 @@ fn backend_kind_label(backend: &Backend) -> &'static str {
         Backend::GpuHybridKernel { .. } => "GpuHybridKernel",
         Backend::GpuKernel { .. } => "GpuKernel",
     }
+}
+
+impl Backend {
+    fn with_resolved_preferred_cuda_device(
+        self,
+        preferred_device_id: Result<Option<u32>, String>,
+    ) -> Result<Self, String> {
+        let preferred_device_id = preferred_device_id?;
+        Ok(match self {
+            Self::Auto { .. } => Self::Auto {
+                device_id: preferred_device_id.unwrap_or(0),
+            },
+            Self::CpuOnly => Self::CpuOnly,
+            Self::GpuOnly { .. } => Self::GpuOnly {
+                device_id: preferred_device_id.unwrap_or(0),
+            },
+            Self::GpuHybridKernel { .. } => Self::GpuHybridKernel {
+                device_id: preferred_device_id.unwrap_or(0),
+            },
+            Self::GpuKernel { .. } => Self::GpuKernel {
+                device_id: preferred_device_id.unwrap_or(0),
+            },
+        })
+    }
+
+    pub fn with_preferred_cuda_device(self) -> Result<Self, String> {
+        self.with_resolved_preferred_cuda_device(
+            crate::preferred_cuda_device().map(|device| device.map(|row| row.device_id)),
+        )
+    }
+}
+
+fn gpu_kernel_topk_supported(top_k: usize, include_all: bool) -> bool {
+    if include_all {
+        return true;
+    }
+    let topk_select = if top_k == 0 { 1 } else { top_k };
+    topk_select <= 256
+}
+
+fn gpu_kernel_blockers_for_request(
+    fast_ma: &str,
+    slow_ma: &str,
+    strategy: &StrategyConfig,
+    regime_filter_present: bool,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if strategy_uses_kaufman_stop_exit(strategy) {
+        blockers.push("kaufman-stop exit is not supported by GPU kernel path".to_string());
+    }
+    if strategy.uses_execution_overlays() {
+        blockers.push(
+            "execution overlays (cooldown/persistence) are not supported by GPU kernel path"
+                .to_string(),
+        );
+    }
+    if regime_filter_present && !kernel_regime_filters_enabled() {
+        blockers
+            .push("regime filter provided while kernel regime filters are disabled".to_string());
+    }
+    if matches!(objective, ObjectiveKind::Sortino | ObjectiveKind::Omega) {
+        blockers.push(format!(
+            "objective {objective:?} is not supported by GPU kernel path"
+        ));
+    }
+    if !gpu_kernel_topk_supported(top_k, include_all) {
+        blockers.push(
+            "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
+        );
+    }
+    #[cfg(feature = "cuda")]
+    {
+        if !cuda_available() {
+            blockers.push("CUDA runtime is unavailable".to_string());
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        blockers.push("CUDA feature is not enabled in this build".to_string());
+    }
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        if !crate::vram_ma::supports_vram_kernel_ma(fast_ma) {
+            blockers.push(format!(
+                "fast MA '{fast_ma}' is not supported by GPU kernel path"
+            ));
+        }
+        if !crate::vram_ma::supports_vram_kernel_ma(slow_ma) {
+            blockers.push(format!(
+                "slow MA '{slow_ma}' is not supported by GPU kernel path"
+            ));
+        }
+    }
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    {
+        let _ = (fast_ma, slow_ma);
+        blockers.push("GPU kernel backend is not enabled in this build".to_string());
+    }
+    blockers
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1076,7 +1195,6 @@ pub(crate) fn desired_positions_with_exit_mode(
 struct ExecutionOverlayParams {
     cooldown_bars: usize,
     persistence_bars: usize,
-    trailing_log: Option<f64>,
 }
 
 impl ExecutionOverlayParams {
@@ -1085,7 +1203,6 @@ impl ExecutionOverlayParams {
         Self {
             cooldown_bars: cfg.cooldown_bars(),
             persistence_bars: cfg.signal_persistence_bars().max(1),
-            trailing_log: cfg.trailing_stop_pct().map(|pct| (1.0 - pct).ln()),
         }
     }
 }
@@ -1095,7 +1212,6 @@ struct ExecutionOverlayState {
     cooldown_left: usize,
     pending_sign: i32,
     pending_count: usize,
-    trade_peak_log_ret: f64,
 }
 
 #[inline]
@@ -1155,35 +1271,10 @@ fn overlay_apply_entry_cooldown(sign: i32, current_pos: i32, state: &ExecutionOv
 }
 
 #[inline]
-fn overlay_on_trade_open(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
-    state.trade_peak_log_ret = trade_log_ret;
-}
-
-#[inline]
 fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionOverlayParams) {
     if params.cooldown_bars > 0 {
         state.cooldown_left = params.cooldown_bars;
     }
-    state.trade_peak_log_ret = 0.0;
-}
-
-#[inline]
-fn overlay_update_trade_peak(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
-    if trade_log_ret > state.trade_peak_log_ret {
-        state.trade_peak_log_ret = trade_log_ret;
-    }
-}
-
-#[inline]
-fn overlay_hit_trailing_stop(
-    trade_log_ret: f64,
-    params: &ExecutionOverlayParams,
-    state: &ExecutionOverlayState,
-) -> bool {
-    let Some(trail_log) = params.trailing_log else {
-        return false;
-    };
-    state.trade_peak_log_ret > 0.0 && trade_log_ret <= state.trade_peak_log_ret + trail_log
 }
 
 fn build_trade_stats(trades: &[Trade]) -> Option<TradeStats> {
@@ -1304,7 +1395,7 @@ where
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
@@ -1345,7 +1436,6 @@ where
             trades = trades.saturating_add(1);
             pos = sign;
             trade_log_ret = if has_commission { log_comm } else { 0.0 };
-            overlay_on_trade_open(&mut overlay_state, trade_log_ret);
         }
 
         if pos != 0 {
@@ -1376,11 +1466,9 @@ where
 
         if risk_enabled && pos_bar != 0 {
             trade_log_ret += step_log_ret;
-            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
             let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
-            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
-            if hit_stop || hit_take || hit_trailing {
+            if hit_stop || hit_take {
                 if has_commission {
                     log_eq += log_comm;
                 }
@@ -1583,7 +1671,7 @@ fn eval_double_ma_curves_kaufman_f64(
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
 
     let n_steps = n_total.saturating_sub(start_t);
     let bins = {
@@ -1645,7 +1733,6 @@ fn eval_double_ma_curves_kaufman_f64(
             cur_entry_t = t;
             cur_dir = sign;
             cur_log_ret = if has_commission { log_comm } else { 0.0 };
-            overlay_on_trade_open(&mut overlay_state, cur_log_ret);
         }
 
         if pos != 0 && cur_dir != 0 {
@@ -1682,14 +1769,12 @@ fn eval_double_ma_curves_kaufman_f64(
         log_eq += (pos_bar as f64) * lr[t];
         if cur_dir != 0 {
             cur_log_ret += (pos_bar as f64) * lr[t];
-            overlay_update_trade_peak(&mut overlay_state, cur_log_ret);
         }
 
         if risk_enabled && cur_dir != 0 {
             let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
-            let hit_trailing = overlay_hit_trailing_stop(cur_log_ret, &overlays, &overlay_state);
-            if hit_stop || hit_take || hit_trailing {
+            if hit_stop || hit_take {
                 if has_commission {
                     log_eq += log_comm;
                     cur_log_ret += log_comm;
@@ -1828,7 +1913,7 @@ where
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
@@ -1874,7 +1959,6 @@ where
                     overlay_on_trade_close(&mut overlay_state, &overlays);
                 } else {
                     trade_log_ret = if has_commission { log_comm } else { 0.0 };
-                    overlay_on_trade_open(&mut overlay_state, trade_log_ret);
                 }
             } else if !cfg.allow_flip {
                 if has_commission {
@@ -1891,7 +1975,6 @@ where
                 trades = trades.saturating_add(2);
                 pos = sign;
                 trade_log_ret = if has_commission { log_comm } else { 0.0 };
-                overlay_on_trade_open(&mut overlay_state, trade_log_ret);
             }
         }
 
@@ -1902,11 +1985,9 @@ where
 
         if risk_enabled && pos_bar != 0 {
             trade_log_ret += step_log_ret;
-            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
             let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
-            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
-            if hit_stop || hit_take || hit_trailing {
+            if hit_stop || hit_take {
                 if has_commission {
                     log_eq += log_comm;
                 }
@@ -2108,7 +2189,7 @@ fn eval_double_ma_curves_cross_overlay_f64(
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_log.is_some() || take_log.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_log.is_some() || take_log.is_some();
 
     let n_steps = n_total.saturating_sub(start_t);
     let bins = {
@@ -2186,7 +2267,6 @@ fn eval_double_ma_curves_cross_overlay_f64(
                     cur_entry_t = t;
                     cur_dir = sign;
                     cur_log_ret = if has_commission { log_comm } else { 0.0 };
-                    overlay_on_trade_open(&mut overlay_state, cur_log_ret);
                 }
                 pos = if sign == 0 { 0 } else { sign };
             } else if !cfg.allow_flip {
@@ -2230,7 +2310,6 @@ fn eval_double_ma_curves_cross_overlay_f64(
                 cur_entry_t = t;
                 cur_dir = sign;
                 cur_log_ret = if has_commission { log_comm } else { 0.0 };
-                overlay_on_trade_open(&mut overlay_state, cur_log_ret);
                 pos = sign;
             }
         }
@@ -2239,13 +2318,11 @@ fn eval_double_ma_curves_cross_overlay_f64(
         log_eq += (pos_bar as f64) * lr[t];
         if cur_dir != 0 {
             cur_log_ret += (pos_bar as f64) * lr[t];
-            overlay_update_trade_peak(&mut overlay_state, cur_log_ret);
         }
         if risk_enabled && cur_dir != 0 {
             let hit_stop = stop_log.is_some_and(|th| cur_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| cur_log_ret >= th);
-            let hit_trailing = overlay_hit_trailing_stop(cur_log_ret, &overlays, &overlay_state);
-            if hit_stop || hit_take || hit_trailing {
+            if hit_stop || hit_take {
                 if has_commission {
                     log_eq += log_comm;
                     cur_log_ret += log_comm;
@@ -2914,6 +2991,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     }
 
     let requested_backend = req.backend.clone();
+    let normalized_backend = requested_backend.clone().with_preferred_cuda_device()?;
     let fast = req.fast_range;
     let slow = req.slow_range;
 
@@ -2929,7 +3007,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let halftrend_filter = req.halftrend_filter;
     let constraints = sanitize_double_ma_constraints(req.constraints)?;
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    validate_strategy_cfg(&strategy)?;
+    validate_strategy_cfg_for_optimization(&strategy)?;
     let strategy = strategy_cfg_for_optimization(strategy);
 
     if fast_ma_types.len() != 1 || slow_ma_types.len() != 1 {
@@ -2994,14 +3072,16 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     let close = vector_ta::utilities::data_loader::source_type(candles, "close");
     let n = close.len();
-
-    let halftrend_trend: Option<Vec<f64>> =
-        compute_combined_regime_filter(candles, &ma_source, &strategy, halftrend_filter.as_ref())?;
-    if let Some(trend) = halftrend_trend.as_ref() {
-        if trend.len() != n {
-            return Err("regime trend series length mismatch".to_string());
-        }
-    }
+    let regime_filter_expected = halftrend_filter.is_some()
+        || strategy.uses_pressure_impulse_trend_filter()
+        || strategy.uses_slope_efficiency_trend_filter()
+        || strategy.uses_momentum_triple_stack_filter()
+        || strategy.uses_oscillator_reversion_confluence_filter()
+        || strategy.uses_trend_quality_filter()
+        || strategy.uses_breakout_momentum_filter()
+        || strategy.uses_regime_hybrid_filter()
+        || strategy.uses_volume_flow_confirm_filter();
+    let mut host_regime_filter_cache: Option<Option<Vec<f64>>> = None;
 
     let start = std::time::Instant::now();
     let objective = req.objective;
@@ -3066,7 +3146,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let mut backend_fallback_reason: Option<String> = None;
     let indicator_route_plan_summary = build_indicator_route_plan_summary(&fast_ma, &slow_ma);
 
-    let mut backend = match req.backend {
+    let mut backend = match normalized_backend {
         Backend::Auto { device_id } => {
             let export_requested = export_all_csv_path.is_some();
 
@@ -3083,23 +3163,20 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             #[cfg(not(feature = "cuda"))]
             let cuda_ok = false;
 
-            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-            let kernel_supported = !strategy_uses_kaufman_stop_exit(&strategy)
-                && !strategy.uses_execution_overlays()
-                && (kernel_regime_filters_enabled() || halftrend_trend.is_none())
-                && cuda_available()
-                && crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str())
-                && crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str());
-            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-            let kernel_supported = false;
+            let kernel_blockers = gpu_kernel_blockers_for_request(
+                fast_ma.as_str(),
+                slow_ma.as_str(),
+                &strategy,
+                regime_filter_expected,
+                objective,
+                top_k,
+                include_all,
+            );
+            let kernel_supported = kernel_blockers.is_empty();
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
             let hybrid_supported = cuda_available() && hybrid_backend_enabled();
             #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
             let hybrid_supported = false;
-
-            let kernel_preferred = kernel_supported
-                && crate::ma_policy::prefers_gpu_kernel_ma(fast_ma.as_str())
-                && crate::ma_policy::prefers_gpu_kernel_ma(slow_ma.as_str());
 
             if export_requested && !kernel_supported {
                 return Err(
@@ -3107,7 +3184,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 );
             }
 
-            if kernel_preferred || (export_requested && kernel_supported) {
+            if kernel_supported {
                 Backend::GpuKernel { device_id }
             } else if hybrid_supported {
                 Backend::GpuHybridKernel { device_id }
@@ -3145,16 +3222,16 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     };
     if let Some(device_id) = kernel_device_id {
         let export_requested = export_all_csv_path.is_some();
-
-        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-        let kernel_supported = !strategy_uses_kaufman_stop_exit(&strategy)
-            && !strategy.uses_execution_overlays()
-            && (kernel_regime_filters_enabled() || halftrend_trend.is_none())
-            && cuda_available()
-            && crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str())
-            && crate::vram_ma::supports_vram_kernel_ma(slow_ma.as_str());
-        #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-        let kernel_supported = false;
+        let kernel_blockers = gpu_kernel_blockers_for_request(
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+            &strategy,
+            regime_filter_expected,
+            objective,
+            top_k,
+            include_all,
+        );
+        let kernel_supported = kernel_blockers.is_empty();
 
         if export_requested && !kernel_supported {
             return Err(
@@ -3189,7 +3266,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             merge_optional_note(
                 &mut backend_fallback_reason,
                 Some(format!(
-                    "Requested GpuKernel is unavailable for fast='{fast_ma}' slow='{slow_ma}' under current strategy/kernel constraints; using {resolved}."
+                    "Requested GpuKernel is unavailable for fast='{fast_ma}' slow='{slow_ma}' under current strategy/kernel constraints; using {resolved}. Reasons: {}",
+                    kernel_blockers.join("; ")
                 )),
             );
         }
@@ -3259,21 +3337,21 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
     }
 
-    let run_grid = |fast_periods: &[u16],
-                    slow_periods: &[u16],
-                    top_k: usize,
-                    include_all: bool,
-                    heatmap_bins: usize,
-                    export_all_csv_path: Option<&str>,
-                    total_pairs: usize,
-                    fast_ma_params: Option<&HashMap<String, f64>>,
-                    slow_ma_params: Option<&HashMap<String, f64>>,
-                    fast_alma_offset: f64,
-                    fast_alma_sigma: f64,
-                    slow_alma_offset: f64,
-                    slow_alma_sigma: f64,
-                    constraints: Option<&DoubleMaConstraints>,
-                    progress: Option<&dyn ProgressSink>|
+    let mut run_grid = |fast_periods: &[u16],
+                        slow_periods: &[u16],
+                        top_k: usize,
+                        include_all: bool,
+                        heatmap_bins: usize,
+                        export_all_csv_path: Option<&str>,
+                        total_pairs: usize,
+                        fast_ma_params: Option<&HashMap<String, f64>>,
+                        slow_ma_params: Option<&HashMap<String, f64>>,
+                        fast_alma_offset: f64,
+                        fast_alma_sigma: f64,
+                        slow_alma_offset: f64,
+                        slow_alma_sigma: f64,
+                        constraints: Option<&DoubleMaConstraints>,
+                        progress: Option<&dyn ProgressSink>|
      -> Result<
         (
             OptimizationResult,
@@ -3290,11 +3368,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             GpuHybridKernel { device_id: u32 },
         }
 
-        let run_gpu_grid = |dispatch: GpuGridDispatch| match dispatch {
+        let mut run_gpu_grid = |dispatch: GpuGridDispatch| match dispatch {
             GpuGridDispatch::GpuOnly { device_id } => {
                 if export_all_csv_path.is_some() {
                     return Err("export_all_csv_path is currently supported only for the GPU (kernel) backend".to_string());
                 }
+                let regime_filter = ensure_combined_regime_filter_cached(
+                    &mut host_regime_filter_cache,
+                    candles,
+                    &ma_source,
+                    &strategy,
+                    halftrend_filter.as_ref(),
+                    n,
+                )?;
                 let result = optimize_double_ma_gpu_sweep_tiled(
                     candles,
                     device_id,
@@ -3305,7 +3391,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     &ma_source,
                     fast_ma_params,
                     slow_ma_params,
-                    halftrend_trend.as_deref(),
+                    regime_filter,
                     &strategy,
                     objective,
                     top_k,
@@ -3323,35 +3409,253 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 Ok((result, BackendUsed::Gpu, None, None, None))
             }
             GpuGridDispatch::GpuKernel { device_id } => {
-                let result = optimize_double_ma_gpu_kernel_tiled(
-                    candles,
-                    device_id,
-                    fast_periods,
-                    slow_periods,
-                    &fast_ma,
-                    &slow_ma,
-                    &ma_source,
-                    fast_ma_params,
-                    slow_ma_params,
-                    halftrend_trend.as_deref(),
-                    &strategy,
-                    objective,
-                    top_k,
-                    include_all,
-                    fast_alma_offset,
-                    fast_alma_sigma,
-                    slow_alma_offset,
-                    slow_alma_sigma,
-                    constraints,
-                    export_all_csv_path,
-                    total_pairs,
-                    heatmap_bins,
-                    cancel,
-                    progress,
-                )?;
+                let result = if strategy.uses_pressure_impulse_trend_filter() {
+                    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+                    {
+                        let regime_filter = build_pressure_impulse_trend_regime_device(
+                            candles, &ma_source, device_id, &strategy,
+                        )?;
+                        optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                            candles,
+                            device_id,
+                            fast_periods,
+                            slow_periods,
+                            &fast_ma,
+                            &slow_ma,
+                            &ma_source,
+                            fast_ma_params,
+                            slow_ma_params,
+                            &regime_filter,
+                            &strategy,
+                            objective,
+                            top_k,
+                            include_all,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            export_all_csv_path,
+                            total_pairs,
+                            heatmap_bins,
+                            cancel,
+                            progress,
+                        )?
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+                    {
+                        return Err(
+                            "PIT GPU kernel backend requires `cuda,cuda-backtest-kernel`"
+                                .to_string(),
+                        );
+                    }
+                } else if strategy.uses_volume_flow_confirm_filter() {
+                    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+                    {
+                        let regime_filter = build_volume_flow_confirmation_regime_device(
+                            candles, device_id, &strategy,
+                        )?;
+                        optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                            candles,
+                            device_id,
+                            fast_periods,
+                            slow_periods,
+                            &fast_ma,
+                            &slow_ma,
+                            &ma_source,
+                            fast_ma_params,
+                            slow_ma_params,
+                            &regime_filter,
+                            &strategy,
+                            objective,
+                            top_k,
+                            include_all,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            export_all_csv_path,
+                            total_pairs,
+                            heatmap_bins,
+                            cancel,
+                            progress,
+                        )?
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+                    {
+                        return Err(
+                            "VFCT GPU kernel backend requires `cuda,cuda-backtest-kernel`"
+                                .to_string(),
+                        );
+                    }
+                } else if strategy.uses_slope_efficiency_trend_filter() {
+                    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+                    {
+                        let regime_filter = build_slope_efficiency_trend_regime_device(
+                            candles, &ma_source, device_id, &strategy,
+                        )?;
+                        optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                            candles,
+                            device_id,
+                            fast_periods,
+                            slow_periods,
+                            &fast_ma,
+                            &slow_ma,
+                            &ma_source,
+                            fast_ma_params,
+                            slow_ma_params,
+                            &regime_filter,
+                            &strategy,
+                            objective,
+                            top_k,
+                            include_all,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            export_all_csv_path,
+                            total_pairs,
+                            heatmap_bins,
+                            cancel,
+                            progress,
+                        )?
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+                    {
+                        return Err(
+                            "SET GPU kernel backend requires `cuda,cuda-backtest-kernel`"
+                                .to_string(),
+                        );
+                    }
+                } else if strategy.uses_momentum_triple_stack_filter() {
+                    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+                    {
+                        let regime_filter = build_momentum_triple_stack_regime_device(
+                            candles, &ma_source, device_id, &strategy,
+                        )?;
+                        optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                            candles,
+                            device_id,
+                            fast_periods,
+                            slow_periods,
+                            &fast_ma,
+                            &slow_ma,
+                            &ma_source,
+                            fast_ma_params,
+                            slow_ma_params,
+                            &regime_filter,
+                            &strategy,
+                            objective,
+                            top_k,
+                            include_all,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            export_all_csv_path,
+                            total_pairs,
+                            heatmap_bins,
+                            cancel,
+                            progress,
+                        )?
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+                    {
+                        return Err(
+                            "MTS GPU kernel backend requires `cuda,cuda-backtest-kernel`"
+                                .to_string(),
+                        );
+                    }
+                } else if strategy.uses_oscillator_reversion_confluence_filter() {
+                    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+                    {
+                        let regime_filter = build_oscillator_reversion_confluence_regime_device(
+                            candles, &ma_source, device_id, &strategy,
+                        )?;
+                        optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                            candles,
+                            device_id,
+                            fast_periods,
+                            slow_periods,
+                            &fast_ma,
+                            &slow_ma,
+                            &ma_source,
+                            fast_ma_params,
+                            slow_ma_params,
+                            &regime_filter,
+                            &strategy,
+                            objective,
+                            top_k,
+                            include_all,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            export_all_csv_path,
+                            total_pairs,
+                            heatmap_bins,
+                            cancel,
+                            progress,
+                        )?
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+                    {
+                        return Err(
+                            "ORC GPU kernel backend requires `cuda,cuda-backtest-kernel`"
+                                .to_string(),
+                        );
+                    }
+                } else {
+                    let regime_filter = ensure_combined_regime_filter_cached(
+                        &mut host_regime_filter_cache,
+                        candles,
+                        &ma_source,
+                        &strategy,
+                        halftrend_filter.as_ref(),
+                        n,
+                    )?;
+                    optimize_double_ma_gpu_kernel_tiled(
+                        candles,
+                        device_id,
+                        fast_periods,
+                        slow_periods,
+                        &fast_ma,
+                        &slow_ma,
+                        &ma_source,
+                        fast_ma_params,
+                        slow_ma_params,
+                        regime_filter,
+                        &strategy,
+                        objective,
+                        top_k,
+                        include_all,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        constraints,
+                        export_all_csv_path,
+                        total_pairs,
+                        heatmap_bins,
+                        cancel,
+                        progress,
+                    )?
+                };
                 Ok((result, BackendUsed::Gpu, None, None, None))
             }
             GpuGridDispatch::GpuHybridKernel { device_id } => {
+                let regime_filter = ensure_combined_regime_filter_cached(
+                    &mut host_regime_filter_cache,
+                    candles,
+                    &ma_source,
+                    &strategy,
+                    halftrend_filter.as_ref(),
+                    n,
+                )?;
                 let (result, timing, backend_used, route_note, fallback_reason) =
                     optimize_double_ma_gpu_hybrid_kernel_phase1(
                         candles,
@@ -3363,7 +3667,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         &ma_source,
                         fast_ma_params,
                         slow_ma_params,
-                        halftrend_trend.as_deref(),
+                        regime_filter,
                         &strategy,
                         objective,
                         top_k,
@@ -3395,6 +3699,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 if export_all_csv_path.is_some() {
                     return Err("export_all_csv_path is currently supported only for the GPU (kernel) backend".to_string());
                 }
+                let regime_filter = ensure_combined_regime_filter_cached(
+                    &mut host_regime_filter_cache,
+                    candles,
+                    &ma_source,
+                    &strategy,
+                    halftrend_filter.as_ref(),
+                    n,
+                )?;
                 let result = optimize_double_ma_cpu_tiled(
                     candles,
                     fast_periods,
@@ -3404,7 +3716,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     &ma_source,
                     fast_ma_params,
                     slow_ma_params,
-                    halftrend_trend.as_deref(),
+                    regime_filter,
                     &strategy,
                     objective,
                     top_k,
@@ -3447,14 +3759,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         fallback_reason: Option<String>,
     }
 
-    let run_mode_for_params = |fast_ma_params: Option<&HashMap<String, f64>>,
-                               slow_ma_params: Option<&HashMap<String, f64>>,
-                               fast_alma_offset: f64,
-                               fast_alma_sigma: f64,
-                               slow_alma_offset: f64,
-                               slow_alma_sigma: f64,
-                               constraints: Option<&DoubleMaConstraints>,
-                               progress: Option<&dyn ProgressSink>|
+    let mut run_mode_for_params = |fast_ma_params: Option<&HashMap<String, f64>>,
+                                   slow_ma_params: Option<&HashMap<String, f64>>,
+                                   fast_alma_offset: f64,
+                                   fast_alma_sigma: f64,
+                                   slow_alma_offset: f64,
+                                   slow_alma_sigma: f64,
+                                   constraints: Option<&DoubleMaConstraints>,
+                                   progress: Option<&dyn ProgressSink>|
      -> Result<ModeRunResult, String> {
         match mode_used {
             OptimizationModeResolved::Grid => {
@@ -4392,6 +4704,16 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     {
         let profile = if strategy.breakout_momentum_enable {
             "breakout_momentum"
+        } else if strategy.pressure_impulse_trend_enable {
+            "pit"
+        } else if strategy.slope_efficiency_trend_enable {
+            "set"
+        } else if strategy.momentum_triple_stack_enable {
+            "mts"
+        } else if strategy.oscillator_reversion_confluence_enable {
+            "orc"
+        } else if strategy.volume_flow_confirm_enable {
+            "vfct"
         } else if strategy.regime_hybrid_enable {
             "regime_hybrid"
         } else if strategy.trend_quality_enable {
@@ -4981,6 +5303,12 @@ pub(crate) fn validate_ma_kind(ma_type: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> {
+    if !cfg.trade_on_next_bar {
+        return Err(
+            "trade_on_next_bar=false is not permitted because same-bar execution produces optimistic and inaccurate benchmark results.".to_string(),
+        );
+    }
+
     let cost_fields = [cfg.fee_bps, cfg.spread_bps, cfg.slippage_bps];
     for (k, v) in ["fee_bps", "spread_bps", "slippage_bps"]
         .iter()
@@ -4989,6 +5317,17 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
         if !v.is_finite() || *v < 0.0 {
             return Err(format!("{k} must be finite and >= 0"));
         }
+    }
+    let bps_commission = cfg.commission_from_bps();
+    let has_bps_costs = cost_fields.iter().any(|v| *v > 0.0);
+    if cfg.commission.is_finite()
+        && cfg.commission > 0.0
+        && has_bps_costs
+        && (cfg.commission - bps_commission).abs() > 1e-12
+    {
+        return Err(
+            "commission conflicts with fee_bps/spread_bps/slippage_bps; use one consistent effective commission.".to_string(),
+        );
     }
 
     let effective_commission = cfg.effective_commission();
@@ -5004,7 +5343,6 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
     for (k, v) in [
         ("stop_loss_pct", cfg.stop_loss_pct),
         ("take_profit_pct", cfg.take_profit_pct),
-        ("trailing_stop_pct", cfg.trailing_stop_pct),
     ] {
         if let Some(pct) = v {
             if !pct.is_finite() || pct <= 0.0 || pct >= 1.0 {
@@ -5118,6 +5456,113 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
         }
     }
 
+    if cfg.uses_volume_flow_confirm_filter() {
+        if cfg.volume_flow_obv_smooth_period() == 0 {
+            return Err("volume_flow_obv_smooth_period must be > 0".to_string());
+        }
+        if cfg.volume_flow_mfi_period() == 0 {
+            return Err("volume_flow_mfi_period must be > 0".to_string());
+        }
+        let long_min = cfg.volume_flow_mfi_long_min();
+        if !long_min.is_finite() || !(0.0..=100.0).contains(&long_min) {
+            return Err("volume_flow_mfi_long_min must be finite and in [0, 100]".to_string());
+        }
+        let short_max = cfg.volume_flow_mfi_short_max();
+        if !short_max.is_finite() || !(0.0..=100.0).contains(&short_max) {
+            return Err("volume_flow_mfi_short_max must be finite and in [0, 100]".to_string());
+        }
+        if short_max > long_min {
+            return Err(
+                "volume_flow_mfi_short_max must be <= volume_flow_mfi_long_min".to_string(),
+            );
+        }
+        if cfg.volume_flow_confirm_bars() == 0 {
+            return Err("volume_flow_confirm_bars must be > 0".to_string());
+        }
+    }
+
+    if cfg.uses_pressure_impulse_trend_filter() {
+        if cfg.pit_efi_period() == 0 {
+            return Err("pit_efi_period must be > 0".to_string());
+        }
+        if cfg.pit_vosc_short_period() == 0 {
+            return Err("pit_vosc_short_period must be > 0".to_string());
+        }
+        if cfg.pit_vosc_long_period() == 0 {
+            return Err("pit_vosc_long_period must be > 0".to_string());
+        }
+        if cfg.pit_vosc_short_period() >= cfg.pit_vosc_long_period() {
+            return Err("pit_vosc_short_period must be < pit_vosc_long_period".to_string());
+        }
+        if cfg.pit_cfo_period() == 0 {
+            return Err("pit_cfo_period must be > 0".to_string());
+        }
+        let scalar = cfg.pit_cfo_scalar();
+        if !scalar.is_finite() || scalar <= 0.0 {
+            return Err("pit_cfo_scalar must be finite and > 0".to_string());
+        }
+        if cfg.pit_confirm_bars() == 0 {
+            return Err("pit_confirm_bars must be > 0".to_string());
+        }
+    }
+
+    if cfg.uses_slope_efficiency_trend_filter() {
+        if cfg.set_linearreg_period() == 0 {
+            return Err("set_linearreg_period must be > 0".to_string());
+        }
+        let angle_min = cfg.set_angle_min_deg();
+        if !angle_min.is_finite() || angle_min <= 0.0 {
+            return Err("set_angle_min_deg must be finite and > 0".to_string());
+        }
+        if cfg.set_er_period() == 0 {
+            return Err("set_er_period must be > 0".to_string());
+        }
+        let er_min = cfg.set_er_min();
+        if !er_min.is_finite() || !(0.0..=1.0).contains(&er_min) {
+            return Err("set_er_min must be finite and in [0, 1]".to_string());
+        }
+        if cfg.set_chop_period() == 0 {
+            return Err("set_chop_period must be > 0".to_string());
+        }
+        let chop_max = cfg.set_chop_max();
+        if !chop_max.is_finite() || !(0.0..=100.0).contains(&chop_max) {
+            return Err("set_chop_max must be finite and in [0, 100]".to_string());
+        }
+    }
+
+    if cfg.uses_momentum_triple_stack_filter() {
+        if cfg.mts_roc_period() == 0 {
+            return Err("mts_roc_period must be > 0".to_string());
+        }
+        if cfg.mts_mom_period() == 0 {
+            return Err("mts_mom_period must be > 0".to_string());
+        }
+        if cfg.mts_ppo_fast_period() == 0 {
+            return Err("mts_ppo_fast_period must be > 0".to_string());
+        }
+        if cfg.mts_ppo_slow_period() == 0 {
+            return Err("mts_ppo_slow_period must be > 0".to_string());
+        }
+        if cfg.mts_ppo_fast_period() >= cfg.mts_ppo_slow_period() {
+            return Err("mts_ppo_fast_period must be < mts_ppo_slow_period".to_string());
+        }
+    }
+
+    if cfg.uses_oscillator_reversion_confluence_filter() {
+        if cfg.orc_rsi_period() == 0 {
+            return Err("orc_rsi_period must be > 0".to_string());
+        }
+        if cfg.orc_stoch_fastk_period() == 0 {
+            return Err("orc_stoch_fastk_period must be > 0".to_string());
+        }
+        if cfg.orc_stoch_fastd_period() == 0 {
+            return Err("orc_stoch_fastd_period must be > 0".to_string());
+        }
+        if cfg.orc_willr_period() == 0 {
+            return Err("orc_willr_period must be > 0".to_string());
+        }
+    }
+
     if cfg.uses_regime_hybrid_filter() {
         if cfg.regime_hybrid_adx_period() == 0 {
             return Err("regime_hybrid_adx_period must be > 0".to_string());
@@ -5150,13 +5595,81 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
                 .to_string(),
         );
     }
+    if cfg.uses_volume_flow_confirm_filter()
+        && (cfg.uses_trend_quality_filter()
+            || cfg.uses_pressure_impulse_trend_filter()
+            || cfg.uses_slope_efficiency_trend_filter()
+            || cfg.uses_regime_hybrid_filter()
+            || cfg.uses_breakout_momentum_filter())
+    {
+        return Err(
+            "volume_flow_confirm_enable is not compatible with other double-MA regime profiles"
+                .to_string(),
+        );
+    }
+    if cfg.uses_pressure_impulse_trend_filter()
+        && (cfg.uses_trend_quality_filter()
+            || cfg.uses_slope_efficiency_trend_filter()
+            || cfg.uses_momentum_triple_stack_filter()
+            || cfg.uses_oscillator_reversion_confluence_filter()
+            || cfg.uses_regime_hybrid_filter()
+            || cfg.uses_breakout_momentum_filter()
+            || cfg.uses_volume_flow_confirm_filter())
+    {
+        return Err(
+            "pressure_impulse_trend_enable is not compatible with other double-MA regime profiles"
+                .to_string(),
+        );
+    }
+    if cfg.uses_slope_efficiency_trend_filter()
+        && (cfg.uses_trend_quality_filter()
+            || cfg.uses_pressure_impulse_trend_filter()
+            || cfg.uses_momentum_triple_stack_filter()
+            || cfg.uses_regime_hybrid_filter()
+            || cfg.uses_breakout_momentum_filter()
+            || cfg.uses_volume_flow_confirm_filter())
+    {
+        return Err(
+            "slope_efficiency_trend_enable is not compatible with other double-MA regime profiles"
+                .to_string(),
+        );
+    }
+    if cfg.uses_momentum_triple_stack_filter()
+        && (cfg.uses_trend_quality_filter()
+            || cfg.uses_pressure_impulse_trend_filter()
+            || cfg.uses_slope_efficiency_trend_filter()
+            || cfg.uses_oscillator_reversion_confluence_filter()
+            || cfg.uses_regime_hybrid_filter()
+            || cfg.uses_breakout_momentum_filter()
+            || cfg.uses_volume_flow_confirm_filter())
+    {
+        return Err(
+            "momentum_triple_stack_enable is not compatible with other double-MA regime profiles"
+                .to_string(),
+        );
+    }
+    if cfg.uses_oscillator_reversion_confluence_filter()
+        && (cfg.uses_trend_quality_filter()
+            || cfg.uses_pressure_impulse_trend_filter()
+            || cfg.uses_slope_efficiency_trend_filter()
+            || cfg.uses_momentum_triple_stack_filter()
+            || cfg.uses_regime_hybrid_filter()
+            || cfg.uses_breakout_momentum_filter()
+            || cfg.uses_volume_flow_confirm_filter())
+    {
+        return Err(
+            "oscillator_reversion_confluence_enable is not compatible with other double-MA regime profiles"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
-pub(crate) fn strategy_cfg_for_optimization(mut cfg: StrategyConfig) -> StrategyConfig {
-    // Grid backtests are bar-close based, so trailing-stop behavior can be misleading without
-    // intrabar modeling. Keep trailing available in validation/live flows, but disable it here.
-    cfg.trailing_stop_pct = None;
+pub(crate) fn validate_strategy_cfg_for_optimization(cfg: &StrategyConfig) -> Result<(), String> {
+    validate_strategy_cfg(cfg)
+}
+
+pub(crate) fn strategy_cfg_for_optimization(cfg: StrategyConfig) -> StrategyConfig {
     cfg
 }
 
@@ -5631,6 +6144,973 @@ pub(crate) fn compute_breakout_momentum_regime(
     Ok(Some(regime))
 }
 
+pub(crate) fn compute_volume_flow_confirmation_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    if !strategy.uses_volume_flow_confirm_filter() {
+        return Ok(None);
+    }
+    if !candles.fields.high || !candles.fields.low || !candles.fields.volume {
+        return Err(
+            "volume_flow_confirm_enable requires 'high', 'low', and 'volume' candle columns"
+                .to_string(),
+        );
+    }
+
+    let n = candles.close.len();
+    let obv = vector_ta::indicators::obv::obv(&vector_ta::indicators::obv::ObvInput::from_candles(
+        candles,
+        vector_ta::indicators::obv::ObvParams::default(),
+    ))
+    .map_err(|e| format!("vfct obv failed: {e}"))?;
+    let obv_ma = vector_ta::indicators::moving_averages::ma::ma(
+        "ema",
+        vector_ta::indicators::moving_averages::ma::MaData::Slice(&obv.values),
+        strategy.volume_flow_obv_smooth_period(),
+    )
+    .map_err(|e| format!("vfct obv smoothing failed: {e}"))?;
+    let mfi = vector_ta::indicators::mfi::mfi(&vector_ta::indicators::mfi::MfiInput::from_candles(
+        candles,
+        "hlc3",
+        vector_ta::indicators::mfi::MfiParams {
+            period: Some(strategy.volume_flow_mfi_period()),
+        },
+    ))
+    .map_err(|e| format!("vfct mfi failed: {e}"))?;
+
+    if obv.values.len() != n || obv_ma.len() != n || mfi.values.len() != n {
+        return Err("vfct indicator length mismatch".to_string());
+    }
+
+    let confirm_bars = strategy.volume_flow_confirm_bars();
+    let long_min = strategy.volume_flow_mfi_long_min();
+    let short_max = strategy.volume_flow_mfi_short_max();
+
+    let mut regime = vec![f64::NAN; n];
+    let mut long_count = 0usize;
+    let mut short_count = 0usize;
+    for i in 0..n {
+        let obv_v = obv.values[i];
+        let obv_s = obv_ma[i];
+        let mfi_v = mfi.values[i];
+
+        if !obv_v.is_finite() || !obv_s.is_finite() || !mfi_v.is_finite() {
+            long_count = 0;
+            short_count = 0;
+            continue;
+        }
+
+        let long_ok = obv_v > obv_s && mfi_v >= long_min;
+        let short_ok = obv_v < obv_s && mfi_v <= short_max;
+
+        long_count = if long_ok {
+            long_count.saturating_add(1)
+        } else {
+            0
+        };
+        short_count = if short_ok {
+            short_count.saturating_add(1)
+        } else {
+            0
+        };
+
+        let long_active = long_count >= confirm_bars;
+        let short_active = short_count >= confirm_bars;
+        regime[i] = if long_active && !short_active {
+            0.0
+        } else if short_active && !long_active {
+            1.0
+        } else {
+            f64::NAN
+        };
+    }
+
+    Ok(Some(regime))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn regime_device_matrix_from_output(
+    label: &str,
+    output: crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput,
+) -> Result<(vector_ta::indicators::dispatch::DeviceMatrixF32, usize), String> {
+    let warmup = output.warmup.unwrap_or(0);
+    match output.series {
+        DynamicIndicatorCudaSeries::DeviceF32(matrix) => Ok((matrix, warmup)),
+        DynamicIndicatorCudaSeries::HostF32(_) => Err(format!(
+            "regime builder {label} unexpectedly returned host output instead of device output"
+        )),
+    }
+}
+
+pub(crate) fn compute_pressure_impulse_trend_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    if !strategy.uses_pressure_impulse_trend_filter() {
+        return Ok(None);
+    }
+    if !candles.fields.open || !candles.fields.high || !candles.fields.low || !candles.fields.volume
+    {
+        return Err(
+            "pressure_impulse_trend_enable requires 'open', 'high', 'low', and 'volume' candle columns"
+                .to_string(),
+        );
+    }
+
+    let n = candles.close.len();
+    let efi = vector_ta::indicators::efi::efi(&vector_ta::indicators::efi::EfiInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::efi::EfiParams {
+            period: Some(strategy.pit_efi_period()),
+        },
+    ))
+    .map_err(|e| format!("pit efi failed: {e}"))?
+    .values;
+    let bop = vector_ta::indicators::bop::bop(&vector_ta::indicators::bop::BopInput::from_candles(
+        candles,
+        vector_ta::indicators::bop::BopParams::default(),
+    ))
+    .map_err(|e| format!("pit bop failed: {e}"))?
+    .values;
+    let vosc =
+        vector_ta::indicators::vosc::vosc(&vector_ta::indicators::vosc::VoscInput::from_candles(
+            candles,
+            "volume",
+            vector_ta::indicators::vosc::VoscParams {
+                short_period: Some(strategy.pit_vosc_short_period()),
+                long_period: Some(strategy.pit_vosc_long_period()),
+            },
+        ))
+        .map_err(|e| format!("pit vosc failed: {e}"))?
+        .values;
+    let acosc = vector_ta::indicators::acosc::acosc(
+        &vector_ta::indicators::acosc::AcoscInput::from_candles(
+            candles,
+            vector_ta::indicators::acosc::AcoscParams::default(),
+        ),
+    )
+    .map_err(|e| format!("pit acosc failed: {e}"))?
+    .osc;
+    let cfo = vector_ta::indicators::cfo::cfo(&vector_ta::indicators::cfo::CfoInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::cfo::CfoParams {
+            period: Some(strategy.pit_cfo_period()),
+            scalar: Some(strategy.pit_cfo_scalar()),
+        },
+    ))
+    .map_err(|e| format!("pit cfo failed: {e}"))?
+    .values;
+
+    if efi.len() != n || bop.len() != n || vosc.len() != n || acosc.len() != n || cfo.len() != n {
+        return Err("pit indicator length mismatch".to_string());
+    }
+
+    let confirm_bars = strategy.pit_confirm_bars();
+    let mut regime = vec![f64::NAN; n];
+    let mut long_count = 0usize;
+    let mut short_count = 0usize;
+    for i in 0..n {
+        let efi_v = efi[i];
+        let bop_v = bop[i];
+        let vosc_v = vosc[i];
+        let acosc_v = acosc[i];
+        let cfo_v = cfo[i];
+        if !efi_v.is_finite()
+            || !bop_v.is_finite()
+            || !vosc_v.is_finite()
+            || !acosc_v.is_finite()
+            || !cfo_v.is_finite()
+        {
+            long_count = 0;
+            short_count = 0;
+            continue;
+        }
+
+        let long_votes = usize::from(efi_v > 0.0)
+            + usize::from(bop_v > 0.0)
+            + usize::from(vosc_v > 0.0)
+            + usize::from(acosc_v > 0.0)
+            + usize::from(cfo_v > 0.0);
+        let short_votes = usize::from(efi_v < 0.0)
+            + usize::from(bop_v < 0.0)
+            + usize::from(vosc_v < 0.0)
+            + usize::from(acosc_v < 0.0)
+            + usize::from(cfo_v < 0.0);
+        let long_ok = long_votes >= 3;
+        let short_ok = short_votes >= 3;
+
+        long_count = if long_ok {
+            long_count.saturating_add(1)
+        } else {
+            0
+        };
+        short_count = if short_ok {
+            short_count.saturating_add(1)
+        } else {
+            0
+        };
+
+        let long_active = long_count >= confirm_bars;
+        let short_active = short_count >= confirm_bars;
+        regime[i] = if long_active && !short_active {
+            0.0
+        } else if short_active && !long_active {
+            1.0
+        } else {
+            f64::NAN
+        };
+    }
+
+    Ok(Some(regime))
+}
+
+pub(crate) fn compute_slope_efficiency_trend_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    if !strategy.uses_slope_efficiency_trend_filter() {
+        return Ok(None);
+    }
+    if !candles.fields.high || !candles.fields.low {
+        return Err(
+            "slope_efficiency_trend_enable requires 'high' and 'low' candle columns".to_string(),
+        );
+    }
+
+    let n = candles.close.len();
+    let angle = vector_ta::indicators::linearreg_angle::linearreg_angle(
+        &vector_ta::indicators::linearreg_angle::Linearreg_angleInput::from_candles(
+            candles,
+            ma_source,
+            vector_ta::indicators::linearreg_angle::Linearreg_angleParams {
+                period: Some(strategy.set_linearreg_period()),
+            },
+        ),
+    )
+    .map_err(|e| format!("set linearreg_angle failed: {e}"))?
+    .values;
+    let er = vector_ta::indicators::er::er(&vector_ta::indicators::er::ErInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::er::ErParams {
+            period: Some(strategy.set_er_period()),
+        },
+    ))
+    .map_err(|e| format!("set er failed: {e}"))?
+    .values;
+    let chop =
+        vector_ta::indicators::chop::chop(&vector_ta::indicators::chop::ChopInput::from_candles(
+            candles,
+            vector_ta::indicators::chop::ChopParams {
+                period: Some(strategy.set_chop_period()),
+                ..Default::default()
+            },
+        ))
+        .map_err(|e| format!("set chop failed: {e}"))?
+        .values;
+
+    if angle.len() != n || er.len() != n || chop.len() != n {
+        return Err("set indicator length mismatch".to_string());
+    }
+
+    let angle_min = strategy.set_angle_min_deg();
+    let er_min = strategy.set_er_min();
+    let chop_max = strategy.set_chop_max();
+    let mut regime = vec![f64::NAN; n];
+    for i in 0..n {
+        let angle_v = angle[i];
+        let er_v = er[i];
+        let chop_v = chop[i];
+        if !angle_v.is_finite() || !er_v.is_finite() || !chop_v.is_finite() {
+            continue;
+        }
+        let long_ok = angle_v >= angle_min && er_v >= er_min && chop_v <= chop_max;
+        let short_ok = angle_v <= -angle_min && er_v >= er_min && chop_v <= chop_max;
+        regime[i] = if long_ok && !short_ok {
+            0.0
+        } else if short_ok && !long_ok {
+            1.0
+        } else {
+            f64::NAN
+        };
+    }
+    Ok(Some(regime))
+}
+
+pub(crate) fn compute_momentum_triple_stack_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    if !strategy.uses_momentum_triple_stack_filter() {
+        return Ok(None);
+    }
+
+    let n = candles.close.len();
+    let roc = vector_ta::indicators::roc::roc(&vector_ta::indicators::roc::RocInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::roc::RocParams {
+            period: Some(strategy.mts_roc_period()),
+        },
+    ))
+    .map_err(|e| format!("mts roc failed: {e}"))?
+    .values;
+    let mom = vector_ta::indicators::mom::mom(&vector_ta::indicators::mom::MomInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::mom::MomParams {
+            period: Some(strategy.mts_mom_period()),
+        },
+    ))
+    .map_err(|e| format!("mts mom failed: {e}"))?
+    .values;
+    let ppo = vector_ta::indicators::ppo::ppo(&vector_ta::indicators::ppo::PpoInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::ppo::PpoParams {
+            fast_period: Some(strategy.mts_ppo_fast_period()),
+            slow_period: Some(strategy.mts_ppo_slow_period()),
+            ma_type: Some("ema".to_string()),
+        },
+    ))
+    .map_err(|e| format!("mts ppo failed: {e}"))?
+    .values;
+
+    if roc.len() != n || mom.len() != n || ppo.len() != n {
+        return Err("mts indicator length mismatch".to_string());
+    }
+
+    let mut regime = vec![f64::NAN; n];
+    for i in 0..n {
+        let roc_v = roc[i];
+        let mom_v = mom[i];
+        let ppo_v = ppo[i];
+        if !roc_v.is_finite() || !mom_v.is_finite() || !ppo_v.is_finite() {
+            continue;
+        }
+        let long_ok = roc_v > 0.0 && mom_v > 0.0 && ppo_v > 0.0;
+        let short_ok = roc_v < 0.0 && mom_v < 0.0 && ppo_v < 0.0;
+        regime[i] = if long_ok && !short_ok {
+            0.0
+        } else if short_ok && !long_ok {
+            1.0
+        } else {
+            f64::NAN
+        };
+    }
+    Ok(Some(regime))
+}
+
+pub(crate) fn compute_oscillator_reversion_confluence_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+) -> Result<Option<Vec<f64>>, String> {
+    if !strategy.uses_oscillator_reversion_confluence_filter() {
+        return Ok(None);
+    }
+    if !candles.fields.high || !candles.fields.low {
+        return Err(
+            "oscillator_reversion_confluence_enable requires 'high' and 'low' candle columns"
+                .to_string(),
+        );
+    }
+
+    let n = candles.close.len();
+    let rsi = vector_ta::indicators::rsi::rsi(&vector_ta::indicators::rsi::RsiInput::from_candles(
+        candles,
+        ma_source,
+        vector_ta::indicators::rsi::RsiParams {
+            period: Some(strategy.orc_rsi_period()),
+        },
+    ))
+    .map_err(|e| format!("orc rsi failed: {e}"))?
+    .values;
+    let stoch = vector_ta::indicators::stochf::stochf(
+        &vector_ta::indicators::stochf::StochfInput::from_candles(
+            candles,
+            vector_ta::indicators::stochf::StochfParams {
+                fastk_period: Some(strategy.orc_stoch_fastk_period()),
+                fastd_period: Some(strategy.orc_stoch_fastd_period()),
+                fastd_matype: Some(0),
+            },
+        ),
+    )
+    .map_err(|e| format!("orc stochf failed: {e}"))?;
+    let willr = vector_ta::indicators::willr::willr(
+        &vector_ta::indicators::willr::WillrInput::from_candles(
+            candles,
+            vector_ta::indicators::willr::WillrParams {
+                period: Some(strategy.orc_willr_period()),
+            },
+        ),
+    )
+    .map_err(|e| format!("orc willr failed: {e}"))?
+    .values;
+
+    if rsi.len() != n || stoch.k.len() != n || willr.len() != n {
+        return Err("orc indicator length mismatch".to_string());
+    }
+
+    let mut regime = vec![f64::NAN; n];
+    for i in 0..n {
+        let rsi_v = rsi[i];
+        let stoch_v = stoch.k[i];
+        let willr_v = willr[i];
+        if !rsi_v.is_finite() || !stoch_v.is_finite() || !willr_v.is_finite() {
+            continue;
+        }
+        let oversold_votes = usize::from(rsi_v <= 30.0)
+            + usize::from(stoch_v <= 20.0)
+            + usize::from(willr_v <= -80.0);
+        let overbought_votes = usize::from(rsi_v >= 70.0)
+            + usize::from(stoch_v >= 80.0)
+            + usize::from(willr_v >= -20.0);
+        let long_ok = oversold_votes >= 2;
+        let short_ok = overbought_votes >= 2;
+        regime[i] = if long_ok && !short_ok {
+            0.0
+        } else if short_ok && !long_ok {
+            1.0
+        } else {
+            f64::NAN
+        };
+    }
+    Ok(Some(regime))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) fn build_pressure_impulse_trend_regime_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: u32,
+    strategy: &StrategyConfig,
+) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
+    if !strategy.uses_pressure_impulse_trend_filter() {
+        return Err("pit device regime requested for a non-pit strategy".to_string());
+    }
+    if !candles.fields.open || !candles.fields.high || !candles.fields.low || !candles.fields.volume
+    {
+        return Err(
+            "pressure_impulse_trend_enable requires 'open', 'high', 'low', and 'volume' candle columns"
+                .to_string(),
+        );
+    }
+
+    let prepared_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
+            .map_err(|e| format!("pit cuda input prep failed: {e}"))?;
+
+    let efi_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "efi",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.pit_efi_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("pit efi failed: {e}"))?;
+    let (efi_matrix, efi_warmup_raw) = regime_device_matrix_from_output("pit efi", efi_output)?;
+    let efi_warmup = efi_warmup_raw.max(
+        prepared_inputs
+            .close_volume_first_valid()
+            .saturating_add(strategy.pit_efi_period().saturating_sub(1)),
+    );
+
+    let bop_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "bop",
+        Some("value"),
+        &[],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("pit bop failed: {e}"))?;
+    let (bop_matrix, bop_warmup) = regime_device_matrix_from_output("pit bop", bop_output)?;
+
+    let vosc_output = compute_cuda_device(IndicatorCudaDeviceRequest {
+        indicator_id: "vosc",
+        output_id: Some("value"),
+        data: IndicatorCudaDeviceDataRef::Slice {
+            values: prepared_inputs.volume_device().as_view(),
+        },
+        params: &[
+            vector_ta::indicators::dispatch::ParamKV {
+                key: "short_period",
+                value: vector_ta::indicators::dispatch::ParamValue::Int(
+                    strategy.pit_vosc_short_period() as i64,
+                ),
+            },
+            vector_ta::indicators::dispatch::ParamKV {
+                key: "long_period",
+                value: vector_ta::indicators::dispatch::ParamValue::Int(
+                    strategy.pit_vosc_long_period() as i64,
+                ),
+            },
+        ],
+        kernel: Kernel::Auto,
+        target: CudaOutputTarget::DeviceF32,
+    })
+    .map_err(|e| format!("pit vosc failed: {e}"))?;
+    let vosc_output = crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput {
+        output_id: vosc_output.output_id,
+        series: match vosc_output.series {
+            IndicatorCudaSeries::DeviceF32(matrix) => DynamicIndicatorCudaSeries::DeviceF32(matrix),
+            IndicatorCudaSeries::HostF32(values) => DynamicIndicatorCudaSeries::HostF32(values),
+        },
+        warmup: vosc_output.warmup,
+        rows: vosc_output.rows,
+        cols: vosc_output.cols,
+        pattern_ids: vosc_output.pattern_ids,
+    };
+    let (vosc_matrix, vosc_warmup) = regime_device_matrix_from_output("pit vosc", vosc_output)?;
+
+    let acosc_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "acosc",
+        Some("osc"),
+        &[],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("pit acosc failed: {e}"))?;
+    let (acosc_matrix, acosc_warmup) =
+        regime_device_matrix_from_output("pit acosc", acosc_output)?;
+
+    let cfo_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "cfo",
+        Some("value"),
+        &[
+            IndicatorParamKV {
+                key: "period".to_string(),
+                value: IndicatorParamValue::Int(strategy.pit_cfo_period() as i64),
+            },
+            IndicatorParamKV {
+                key: "scalar".to_string(),
+                value: IndicatorParamValue::Float(strategy.pit_cfo_scalar()),
+            },
+        ],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("pit cfo failed: {e}"))?;
+    let (cfo_matrix, cfo_warmup_raw) = regime_device_matrix_from_output("pit cfo", cfo_output)?;
+    let cfo_warmup = cfo_warmup_raw.max(
+        prepared_inputs
+            .source_first_valid()
+            .saturating_add(strategy.pit_cfo_period().saturating_sub(1)),
+    );
+
+    let efi_row = device_slice_ref_from_matrix_row(&efi_matrix, 0)
+        .map_err(|e| format!("pit efi device row build failed: {e}"))?;
+    let bop_row = device_slice_ref_from_matrix_row(&bop_matrix, 0)
+        .map_err(|e| format!("pit bop device row build failed: {e}"))?;
+    let vosc_row = device_slice_ref_from_matrix_row(&vosc_matrix, 0)
+        .map_err(|e| format!("pit vosc device row build failed: {e}"))?;
+    let acosc_row = device_slice_ref_from_matrix_row(&acosc_matrix, 0)
+        .map_err(|e| format!("pit acosc device row build failed: {e}"))?;
+    let cfo_row = device_slice_ref_from_matrix_row(&cfo_matrix, 0)
+        .map_err(|e| format!("pit cfo device row build failed: {e}"))?;
+    let first_valid = prepared_inputs
+        .ohlcv_first_valid()
+        .max(prepared_inputs.source_first_valid())
+        .max(efi_warmup)
+        .max(bop_warmup)
+        .max(vosc_warmup)
+        .max(acosc_warmup)
+        .max(cfo_warmup);
+
+    crate::gpu_backtest_kernel::build_pit_regime_filter(
+        device_id,
+        efi_row,
+        bop_row,
+        vosc_row,
+        acosc_row,
+        cfo_row,
+        first_valid,
+        strategy.pit_confirm_bars(),
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) fn build_slope_efficiency_trend_regime_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: u32,
+    strategy: &StrategyConfig,
+) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
+    if !strategy.uses_slope_efficiency_trend_filter() {
+        return Err("set device regime requested for a non-set strategy".to_string());
+    }
+    if !candles.fields.high || !candles.fields.low {
+        return Err(
+            "slope_efficiency_trend_enable requires 'high' and 'low' candle columns".to_string(),
+        );
+    }
+
+    let prepared_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
+            .map_err(|e| format!("set cuda input prep failed: {e}"))?;
+
+    let angle_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "linearreg_angle",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.set_linearreg_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("set linearreg_angle failed: {e}"))?;
+    let (angle_matrix, angle_warmup) =
+        regime_device_matrix_from_output("set linearreg_angle", angle_output)?;
+
+    let er_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "er",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.set_er_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("set er failed: {e}"))?;
+    let (er_matrix, er_warmup) = regime_device_matrix_from_output("set er", er_output)?;
+
+    let chop_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "chop",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.set_chop_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("set chop failed: {e}"))?;
+    let (chop_matrix, chop_warmup) = regime_device_matrix_from_output("set chop", chop_output)?;
+
+    let angle_row = device_slice_ref_from_matrix_row(&angle_matrix, 0)
+        .map_err(|e| format!("set angle device row build failed: {e}"))?;
+    let er_row = device_slice_ref_from_matrix_row(&er_matrix, 0)
+        .map_err(|e| format!("set er device row build failed: {e}"))?;
+    let chop_row = device_slice_ref_from_matrix_row(&chop_matrix, 0)
+        .map_err(|e| format!("set chop device row build failed: {e}"))?;
+    let first_valid = prepared_inputs
+        .hlc_first_valid()
+        .max(prepared_inputs.source_first_valid())
+        .max(angle_warmup)
+        .max(er_warmup)
+        .max(chop_warmup);
+
+    crate::gpu_backtest_kernel::build_set_regime_filter(
+        device_id,
+        angle_row,
+        er_row,
+        chop_row,
+        first_valid,
+        strategy.set_angle_min_deg() as f32,
+        strategy.set_er_min() as f32,
+        strategy.set_chop_max() as f32,
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) fn build_momentum_triple_stack_regime_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: u32,
+    strategy: &StrategyConfig,
+) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
+    if !strategy.uses_momentum_triple_stack_filter() {
+        return Err("mts device regime requested for a non-mts strategy".to_string());
+    }
+
+    let prepared_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
+            .map_err(|e| format!("mts cuda input prep failed: {e}"))?;
+
+    let roc_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "roc",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.mts_roc_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("mts roc failed: {e}"))?;
+    let (roc_matrix, roc_warmup) = regime_device_matrix_from_output("mts roc", roc_output)?;
+
+    let mom_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "mom",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.mts_mom_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("mts mom failed: {e}"))?;
+    let (mom_matrix, mom_warmup) = regime_device_matrix_from_output("mts mom", mom_output)?;
+
+    let ppo_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "ppo",
+        Some("value"),
+        &[
+            IndicatorParamKV {
+                key: "fast_period".to_string(),
+                value: IndicatorParamValue::Int(strategy.mts_ppo_fast_period() as i64),
+            },
+            IndicatorParamKV {
+                key: "slow_period".to_string(),
+                value: IndicatorParamValue::Int(strategy.mts_ppo_slow_period() as i64),
+            },
+            IndicatorParamKV {
+                key: "ma_type".to_string(),
+                value: IndicatorParamValue::EnumString("ema".to_string()),
+            },
+        ],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("mts ppo failed: {e}"))?;
+    let (ppo_matrix, ppo_warmup) = regime_device_matrix_from_output("mts ppo", ppo_output)?;
+
+    let roc_row = device_slice_ref_from_matrix_row(&roc_matrix, 0)
+        .map_err(|e| format!("mts roc device row build failed: {e}"))?;
+    let mom_row = device_slice_ref_from_matrix_row(&mom_matrix, 0)
+        .map_err(|e| format!("mts mom device row build failed: {e}"))?;
+    let ppo_row = device_slice_ref_from_matrix_row(&ppo_matrix, 0)
+        .map_err(|e| format!("mts ppo device row build failed: {e}"))?;
+    let first_valid = prepared_inputs
+        .source_first_valid()
+        .max(roc_warmup)
+        .max(mom_warmup)
+        .max(ppo_warmup);
+
+    crate::gpu_backtest_kernel::build_mts_regime_filter(
+        device_id,
+        roc_row,
+        mom_row,
+        ppo_row,
+        first_valid,
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) fn build_oscillator_reversion_confluence_regime_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: u32,
+    strategy: &StrategyConfig,
+) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
+    if !strategy.uses_oscillator_reversion_confluence_filter() {
+        return Err("orc device regime requested for a non-orc strategy".to_string());
+    }
+    if !candles.fields.high || !candles.fields.low {
+        return Err(
+            "oscillator_reversion_confluence_enable requires 'high' and 'low' candle columns"
+                .to_string(),
+        );
+    }
+
+    let prepared_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
+            .map_err(|e| format!("orc cuda input prep failed: {e}"))?;
+
+    let rsi_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "rsi",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.orc_rsi_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("orc rsi failed: {e}"))?;
+    let (rsi_matrix, rsi_warmup) = regime_device_matrix_from_output("orc rsi", rsi_output)?;
+
+    let stoch_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "stochf",
+        Some("k"),
+        &[
+            IndicatorParamKV {
+                key: "fastk_period".to_string(),
+                value: IndicatorParamValue::Int(strategy.orc_stoch_fastk_period() as i64),
+            },
+            IndicatorParamKV {
+                key: "fastd_period".to_string(),
+                value: IndicatorParamValue::Int(strategy.orc_stoch_fastd_period() as i64),
+            },
+        ],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("orc stochf failed: {e}"))?;
+    let (stoch_matrix, stoch_warmup) =
+        regime_device_matrix_from_output("orc stochf", stoch_output)?;
+
+    let willr_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "willr",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.orc_willr_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("orc willr failed: {e}"))?;
+    let (willr_matrix, willr_warmup) = regime_device_matrix_from_output("orc willr", willr_output)?;
+
+    let rsi_row = device_slice_ref_from_matrix_row(&rsi_matrix, 0)
+        .map_err(|e| format!("orc rsi device row build failed: {e}"))?;
+    let stoch_row = device_slice_ref_from_matrix_row(&stoch_matrix, 0)
+        .map_err(|e| format!("orc stoch device row build failed: {e}"))?;
+    let willr_row = device_slice_ref_from_matrix_row(&willr_matrix, 0)
+        .map_err(|e| format!("orc willr device row build failed: {e}"))?;
+    let first_valid = prepared_inputs
+        .hlc_first_valid()
+        .max(prepared_inputs.source_first_valid())
+        .max(rsi_warmup)
+        .max(stoch_warmup)
+        .max(willr_warmup);
+
+    crate::gpu_backtest_kernel::build_orc_regime_filter(
+        device_id,
+        rsi_row,
+        stoch_row,
+        willr_row,
+        first_valid,
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) fn build_volume_flow_confirmation_regime_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    device_id: u32,
+    strategy: &StrategyConfig,
+) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
+    if !strategy.uses_volume_flow_confirm_filter() {
+        return Err("vfct device regime requested for a non-vfct strategy".to_string());
+    }
+    if !candles.fields.high || !candles.fields.low || !candles.fields.volume {
+        return Err(
+            "volume_flow_confirm_enable requires 'high', 'low', and 'volume' candle columns"
+                .to_string(),
+        );
+    }
+
+    let prepared_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "hlc3", device_id as usize)
+            .map_err(|e| format!("vfct cuda input prep failed: {e}"))?;
+    let obv_data = CudaDeviceCloseVolumeRef::new(
+        prepared_inputs.close_device().as_view(),
+        prepared_inputs.volume_device().as_view(),
+    )
+    .map_err(|e| format!("vfct obv device input build failed: {e}"))?;
+    let obv_output = compute_cuda_device(IndicatorCudaDeviceRequest {
+        indicator_id: "obv",
+        output_id: Some("value"),
+        data: IndicatorCudaDeviceDataRef::CloseVolume(obv_data),
+        params: &[],
+        kernel: Kernel::Auto,
+        target: CudaOutputTarget::DeviceF32,
+    })
+    .map_err(|e| format!("vfct obv failed: {e}"))?;
+    let obv_output = crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput {
+        output_id: obv_output.output_id,
+        series: match obv_output.series {
+            IndicatorCudaSeries::DeviceF32(matrix) => DynamicIndicatorCudaSeries::DeviceF32(matrix),
+            IndicatorCudaSeries::HostF32(values) => DynamicIndicatorCudaSeries::HostF32(values),
+        },
+        warmup: obv_output.warmup,
+        rows: obv_output.rows,
+        cols: obv_output.cols,
+        pattern_ids: obv_output.pattern_ids,
+    };
+    let (obv_matrix, obv_warmup) = regime_device_matrix_from_output("obv", obv_output)?;
+
+    let obv_smooth_output = compute_dynamic_indicator_cuda_from_device_matrix_row(
+        "ema",
+        Some("value"),
+        &obv_matrix,
+        0,
+        obv_warmup,
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.volume_flow_obv_smooth_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("vfct obv smoothing failed: {e}"))?;
+    let (obv_smooth_matrix, obv_smooth_warmup) =
+        regime_device_matrix_from_output("obv smoothing", obv_smooth_output)?;
+
+    let mfi_output = compute_dynamic_indicator_cuda_with_inputs(
+        &prepared_inputs,
+        "mfi",
+        Some("value"),
+        &[IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(strategy.volume_flow_mfi_period() as i64),
+        }],
+        Kernel::Auto,
+        CudaOutputTarget::DeviceF32,
+    )
+    .map_err(|e| format!("vfct mfi failed: {e}"))?;
+    let (mfi_matrix, mfi_warmup) = regime_device_matrix_from_output("mfi", mfi_output)?;
+
+    let obv_row = device_slice_ref_from_matrix_row(&obv_matrix, 0)
+        .map_err(|e| format!("vfct obv device row build failed: {e}"))?;
+    let obv_smooth_row = device_slice_ref_from_matrix_row(&obv_smooth_matrix, 0)
+        .map_err(|e| format!("vfct obv smoothing device row build failed: {e}"))?;
+    let mfi_row = device_slice_ref_from_matrix_row(&mfi_matrix, 0)
+        .map_err(|e| format!("vfct mfi device row build failed: {e}"))?;
+    let first_valid = prepared_inputs
+        .close_volume_first_valid()
+        .max(obv_warmup)
+        .max(obv_smooth_warmup)
+        .max(mfi_warmup);
+
+    crate::gpu_backtest_kernel::build_vfct_regime_filter(
+        device_id,
+        obv_row,
+        obv_smooth_row,
+        mfi_row,
+        first_valid,
+        strategy.volume_flow_mfi_long_min() as f32,
+        strategy.volume_flow_mfi_short_max() as f32,
+        strategy.volume_flow_confirm_bars(),
+    )
+}
+
 pub(crate) fn compute_combined_regime_filter(
     candles: &vector_ta::utilities::data_loader::Candles,
     ma_source: &str,
@@ -5649,8 +7129,39 @@ pub(crate) fn compute_combined_regime_filter(
     };
     let trend_quality = compute_trend_quality_regime(candles, ma_source, strategy)?;
     let breakout = compute_breakout_momentum_regime(candles, ma_source, strategy)?;
+    let pit = compute_pressure_impulse_trend_regime(candles, ma_source, strategy)?;
+    let set = compute_slope_efficiency_trend_regime(candles, ma_source, strategy)?;
+    let mts = compute_momentum_triple_stack_regime(candles, ma_source, strategy)?;
+    let orc = compute_oscillator_reversion_confluence_regime(candles, ma_source, strategy)?;
+    let vfct = compute_volume_flow_confirmation_regime(candles, strategy)?;
     let merged = merge_regime_filters(halftrend_trend, trend_quality)?;
-    merge_regime_filters(merged, breakout)
+    let merged = merge_regime_filters(merged, breakout)?;
+    let merged = merge_regime_filters(merged, pit)?;
+    let merged = merge_regime_filters(merged, set)?;
+    let merged = merge_regime_filters(merged, mts)?;
+    let merged = merge_regime_filters(merged, orc)?;
+    merge_regime_filters(merged, vfct)
+}
+
+fn ensure_combined_regime_filter_cached<'a>(
+    cache: &'a mut Option<Option<Vec<f64>>>,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+    expected_len: usize,
+) -> Result<Option<&'a [f64]>, String> {
+    if cache.is_none() {
+        let regime =
+            compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
+        if let Some(trend) = regime.as_ref() {
+            if trend.len() != expected_len {
+                return Err("regime trend series length mismatch".to_string());
+            }
+        }
+        *cache = Some(regime);
+    }
+    Ok(cache.as_ref().and_then(|regime| regime.as_deref()))
 }
 
 pub(crate) fn resolve_alma_params_for_side(
@@ -7428,7 +8939,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     }
     if strategy.uses_execution_overlays() {
         kernel_blockers.push(
-            "execution overlays (cooldown/persistence/trailing stop) are not supported by GPU kernel path"
+            "execution overlays (cooldown/persistence) are not supported by GPU kernel path"
                 .to_string(),
         );
     }
@@ -7522,36 +9033,232 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     let (result, backend_used, kernel_eval_ms) = if kernel_blockers.is_empty() {
         emit_progress(progress, 0, 1, "hybrid_kernel");
         let kernel_t0 = std::time::Instant::now();
-        let res = optimize_double_ma_gpu_kernel_tiled_with_precomputed(
-            candles,
-            device_id,
-            fast_periods,
-            slow_periods,
-            fast_ma_type,
-            slow_ma_type,
-            ma_source,
-            fast_ma_params,
-            slow_ma_params,
-            regime_filter,
-            strategy,
-            objective,
-            top_k,
-            include_all,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
-            fast_precomputed_host.as_deref(),
-            fast_precomputed_cols,
-            slow_precomputed_host.as_deref(),
-            slow_precomputed_cols,
-            constraints,
-            export_all_csv_path,
-            total_pairs,
-            heatmap_bins,
-            cancel,
-            progress,
-        )?;
+        let res = if strategy.uses_pressure_impulse_trend_filter() {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            {
+                let device_regime = build_pressure_impulse_trend_regime_device(
+                    candles, ma_source, device_id, strategy,
+                )?;
+                optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    fast_ma_type,
+                    slow_ma_type,
+                    ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    &device_regime,
+                    strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    export_all_csv_path,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?
+            }
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            {
+                return Err(
+                    "PIT GPU kernel backend requires `cuda,cuda-backtest-kernel`".to_string(),
+                );
+            }
+        } else if strategy.uses_volume_flow_confirm_filter() {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            {
+                let device_regime =
+                    build_volume_flow_confirmation_regime_device(candles, device_id, strategy)?;
+                optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    fast_ma_type,
+                    slow_ma_type,
+                    ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    &device_regime,
+                    strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    export_all_csv_path,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?
+            }
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            {
+                return Err(
+                    "VFCT GPU kernel backend requires `cuda,cuda-backtest-kernel`".to_string(),
+                );
+            }
+        } else if strategy.uses_slope_efficiency_trend_filter() {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            {
+                let device_regime = build_slope_efficiency_trend_regime_device(
+                    candles, ma_source, device_id, strategy,
+                )?;
+                optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    fast_ma_type,
+                    slow_ma_type,
+                    ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    &device_regime,
+                    strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    export_all_csv_path,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?
+            }
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            {
+                return Err(
+                    "SET GPU kernel backend requires `cuda,cuda-backtest-kernel`".to_string(),
+                );
+            }
+        } else if strategy.uses_momentum_triple_stack_filter() {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            {
+                let device_regime = build_momentum_triple_stack_regime_device(
+                    candles, ma_source, device_id, strategy,
+                )?;
+                optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    fast_ma_type,
+                    slow_ma_type,
+                    ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    &device_regime,
+                    strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    export_all_csv_path,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?
+            }
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            {
+                return Err(
+                    "MTS GPU kernel backend requires `cuda,cuda-backtest-kernel`".to_string(),
+                );
+            }
+        } else if strategy.uses_oscillator_reversion_confluence_filter() {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            {
+                let device_regime = build_oscillator_reversion_confluence_regime_device(
+                    candles, ma_source, device_id, strategy,
+                )?;
+                optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+                    candles,
+                    device_id,
+                    fast_periods,
+                    slow_periods,
+                    fast_ma_type,
+                    slow_ma_type,
+                    ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    &device_regime,
+                    strategy,
+                    objective,
+                    top_k,
+                    include_all,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    constraints,
+                    export_all_csv_path,
+                    total_pairs,
+                    heatmap_bins,
+                    cancel,
+                    progress,
+                )?
+            }
+            #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+            {
+                return Err(
+                    "ORC GPU kernel backend requires `cuda,cuda-backtest-kernel`".to_string(),
+                );
+            }
+        } else {
+            optimize_double_ma_gpu_kernel_tiled_with_precomputed(
+                candles,
+                device_id,
+                fast_periods,
+                slow_periods,
+                fast_ma_type,
+                slow_ma_type,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                regime_filter,
+                strategy,
+                objective,
+                top_k,
+                include_all,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                fast_precomputed_host.as_deref(),
+                fast_precomputed_cols,
+                slow_precomputed_host.as_deref(),
+                slow_precomputed_cols,
+                constraints,
+                export_all_csv_path,
+                total_pairs,
+                heatmap_bins,
+                cancel,
+                progress,
+            )?
+        };
         (
             res,
             BackendUsed::Gpu,
@@ -7770,6 +9477,71 @@ fn optimize_double_ma_gpu_kernel_tiled(
         slow_alma_sigma,
         None,
         None,
+        None,
+        None,
+        constraints,
+        export_all_csv_path,
+        total_pairs,
+        heatmap_bins,
+        cancel,
+        progress,
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    device_id: u32,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: &crate::gpu_backtest_kernel::DeviceRegimeFilter,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    constraints: Option<&DoubleMaConstraints>,
+    export_all_csv_path: Option<&str>,
+    total_pairs: usize,
+    heatmap_bins: usize,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<OptimizationResult, String> {
+    if !cuda_available() {
+        return Err("CUDA device not available (cuda_available() == false)".to_string());
+    }
+
+    crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
+        candles,
+        fast_periods,
+        slow_periods,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        Some(crate::gpu_backtest_kernel::RegimeFilterInput::DeviceF32(
+            regime_filter,
+        )),
+        strategy,
+        objective,
+        top_k,
+        include_all,
+        crate::gpu_backtest_kernel::KernelConfig {
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+        },
         None,
         None,
         constraints,
@@ -8073,11 +9845,81 @@ mod tests {
         s
     }
 
+    fn vfct_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.volume_flow_confirm_enable = true;
+        s.volume_flow_obv_smooth_period = 8;
+        s.volume_flow_mfi_period = 10;
+        s.volume_flow_mfi_long_min = 52.0;
+        s.volume_flow_mfi_short_max = 48.0;
+        s.volume_flow_confirm_bars = 1;
+        s
+    }
+
+    fn marrt_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s
+    }
+
+    fn pit_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.pressure_impulse_trend_enable = true;
+        s.pit_efi_period = 8;
+        s.pit_vosc_short_period = 4;
+        s.pit_vosc_long_period = 9;
+        s.pit_cfo_period = 6;
+        s.pit_cfo_scalar = 100.0;
+        s.pit_confirm_bars = 2;
+        s
+    }
+
+    fn set_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.slope_efficiency_trend_enable = true;
+        s.set_linearreg_period = 16;
+        s.set_angle_min_deg = 0.15;
+        s.set_er_period = 10;
+        s.set_er_min = 0.02;
+        s.set_chop_period = 10;
+        s.set_chop_max = 90.0;
+        s
+    }
+
+    fn mts_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.momentum_triple_stack_enable = true;
+        s.mts_roc_period = 6;
+        s.mts_mom_period = 10;
+        s.mts_ppo_fast_period = 4;
+        s.mts_ppo_slow_period = 9;
+        s
+    }
+
+    fn orc_strategy_for_kernel() -> StrategyConfig {
+        let mut s = StrategyConfig::default();
+        s.long_only = false;
+        s.oscillator_reversion_confluence_enable = true;
+        s.orc_rsi_period = 5;
+        s.orc_stoch_fastk_period = 5;
+        s.orc_stoch_fastd_period = 3;
+        s.orc_willr_period = 5;
+        s
+    }
+
     fn double_like_kernel_strategy_cases() -> Vec<(&'static str, StrategyConfig)> {
         vec![
             ("composite_trend", trend_quality_strategy_for_kernel()),
             ("regime_hybrid", regime_hybrid_strategy_for_kernel()),
             ("breakout_momentum", breakout_strategy_for_kernel()),
+            ("pit", pit_strategy_for_kernel()),
+            ("set", set_strategy_for_kernel()),
+            ("mts", mts_strategy_for_kernel()),
+            ("orc", orc_strategy_for_kernel()),
         ]
     }
 
@@ -8125,6 +9967,39 @@ mod tests {
             Some("GpuHybridKernel")
         );
         assert_eq!(canonical.get("device_id").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[test]
+    fn preferred_cuda_device_resolution_error_is_not_masked() {
+        let err = Backend::GpuKernel { device_id: 0 }
+            .with_resolved_preferred_cuda_device(Err("boom".to_string()))
+            .expect_err("preferred-device error should propagate");
+        assert!(err.contains("boom"));
+    }
+
+    #[test]
+    fn kernel_preflight_flags_sortino_and_large_topk_before_kernel_route() {
+        let blockers = gpu_kernel_blockers_for_request(
+            "sma",
+            "sma",
+            &StrategyConfig::default(),
+            false,
+            ObjectiveKind::Sortino,
+            300,
+            false,
+        );
+        assert!(
+            blockers
+                .iter()
+                .any(|entry| entry.contains("objective Sortino")),
+            "missing sortino blocker: {blockers:?}"
+        );
+        assert!(
+            blockers
+                .iter()
+                .any(|entry| entry.contains("top_k too large")),
+            "missing top_k blocker: {blockers:?}"
+        );
     }
 
     #[test]
@@ -8613,6 +10488,48 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn auto_backend_prefers_gpu_kernel_when_kernel_route_is_supported() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4_096);
+        let cancel = AtomicBool::new(false);
+        let mut alma_params: HashMap<String, f64> = HashMap::new();
+        alma_params.insert("offset".to_string(), 0.85);
+        alma_params.insert("sigma".to_string(), 6.0);
+        let req = DoubleMaRequest {
+            backend: Backend::Auto { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 12, 1),
+            slow_range: (10, 24, 2),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: Some(alma_params.clone()),
+            slow_ma_params: Some(alma_params),
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("auto backend alma run");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
+    }
+
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     #[test]
     fn gpu_hybrid_phase1_cpu_fallback_surfaces_route_metadata() {
@@ -8858,6 +10775,61 @@ mod tests {
             res.backend_route.is_none(),
             "expected no route fallback, got {:?}",
             res.backend_route
+        );
+        assert!(
+            res.backend_fallback_reason.is_none(),
+            "expected no fallback reason, got {:?}",
+            res.backend_fallback_reason
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_vfct_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_breakout_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 8, 1),
+            slow_range: (12, 16, 1),
+            fast_ma_types: vec!["vwma".to_string()],
+            slow_ma_types: vec!["vwma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: vfct_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid vfct run");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
         );
         assert!(
             res.backend_fallback_reason.is_none(),
@@ -9494,7 +11466,7 @@ mod tests {
         let candles = make_trending_candles(1800);
         let cancel = AtomicBool::new(false);
         let mut strategy = StrategyConfig::default();
-        strategy.trailing_stop_pct = Some(0.02);
+        strategy.cooldown_bars = 2;
 
         let req = DoubleMaRequest {
             backend: Backend::GpuHybridKernel { device_id: 0 },
@@ -10367,6 +12339,468 @@ mod tests {
     }
 
     #[test]
+    fn cpu_vfct_small_grid_runs() {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["vwma".to_string()],
+            slow_ma_types: vec!["vwma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: vfct_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu vfct run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn cpu_set_small_grid_runs() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: set_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu set run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn cpu_pit_small_grid_runs() {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: pit_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu pit run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn cpu_marrt_small_grid_runs() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: marrt_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu marrt run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn cpu_mts_small_grid_runs() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: mts_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu mts run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn cpu_orc_small_grid_runs() {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: orc_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu orc run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_vfct_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["vwma".to_string()],
+            slow_ma_types: vec!["vwma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: vfct_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu vfct run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_pit_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: pit_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu pit run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_set_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: set_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu set run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_marrt_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: marrt_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu marrt run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_mts_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: mts_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu mts run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_orc_small_grid_runs() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (10, 11, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: orc_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu orc run");
+
+        assert_eq!(res.num_combos, 6);
+        assert!(!res.top.is_empty());
+    }
+
+    #[test]
     fn cpu_grid_applies_tp_sl_when_enabled() {
         let candles = make_trending_candles(4000);
         let cancel = AtomicBool::new(false);
@@ -10421,63 +12855,6 @@ mod tests {
     }
 
     #[test]
-    fn cpu_grid_ignores_trailing_stop_in_optimization() {
-        let candles = make_trending_candles(4000);
-        let cancel = AtomicBool::new(false);
-
-        let base_req = DoubleMaRequest {
-            backend: Backend::CpuOnly,
-            data_id: "test".to_string(),
-            fast_range: (5, 5, 0),
-            slow_range: (20, 20, 0),
-            fast_ma_types: vec!["sma".to_string()],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            export_all_csv_path: None,
-            fast_ma_params: None,
-            slow_ma_params: None,
-            fast_ma_param_sweeps: None,
-            slow_ma_param_sweeps: None,
-            strategy: StrategyConfig::default(),
-            halftrend_filter: None,
-            objective: ObjectiveKind::Pnl,
-            mode: OptimizationMode::Grid,
-            top_k: Some(1),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-            constraints: None,
-            vdps: None,
-        };
-
-        let base = run_double_ma_optimization_blocking_with_candles(
-            base_req.clone(),
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("cpu base run");
-
-        let mut trailing_req = base_req;
-        trailing_req.strategy.trailing_stop_pct = Some(0.02);
-        let with_trailing =
-            run_double_ma_optimization_blocking_with_candles(trailing_req, &candles, &cancel, None)
-                .expect("cpu trailing run");
-
-        assert_eq!(
-            with_trailing.best_params.fast_len,
-            base.best_params.fast_len
-        );
-        assert_eq!(
-            with_trailing.best_params.slow_len,
-            base.best_params.slow_len
-        );
-        assert_eq!(with_trailing.best_metrics.trades, base.best_metrics.trades);
-        assert!((with_trailing.best_metrics.pnl - base.best_metrics.pnl).abs() < 1e-12);
-        assert!((with_trailing.best_metrics.sharpe - base.best_metrics.sharpe).abs() < 1e-12);
-        assert!((with_trailing.best_metrics.max_dd - base.best_metrics.max_dd).abs() < 1e-12);
-    }
-
-    #[test]
     fn validate_strategy_cfg_accepts_bps_derived_costs() {
         let cfg = StrategyConfig {
             long_only: true,
@@ -10497,6 +12874,16 @@ mod tests {
     }
 
     #[test]
+    fn validate_strategy_cfg_rejects_same_bar_execution() {
+        let cfg = StrategyConfig {
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+        let err = validate_strategy_cfg(&cfg).expect_err("same-bar execution must fail");
+        assert!(err.contains("trade_on_next_bar=false"));
+    }
+
+    #[test]
     fn validate_strategy_cfg_rejects_negative_bps() {
         let cfg = StrategyConfig {
             fee_bps: -0.1,
@@ -10504,16 +12891,6 @@ mod tests {
         };
         let err = validate_strategy_cfg(&cfg).expect_err("negative fee_bps must fail");
         assert!(err.contains("fee_bps"));
-    }
-
-    #[test]
-    fn validate_strategy_cfg_rejects_invalid_trailing_stop_pct() {
-        let cfg = StrategyConfig {
-            trailing_stop_pct: Some(1.2),
-            ..StrategyConfig::default()
-        };
-        let err = validate_strategy_cfg(&cfg).expect_err("trailing_stop_pct > 1 must fail");
-        assert!(err.contains("trailing_stop_pct"));
     }
 
     #[test]
@@ -10538,6 +12915,19 @@ mod tests {
         let err =
             validate_strategy_cfg(&cfg).expect_err("regime_hybrid + breakout_momentum must fail");
         assert!(err.contains("regime_hybrid_enable"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_mixed_cost_models_when_they_disagree() {
+        let cfg = StrategyConfig {
+            commission: 0.0002,
+            fee_bps: 1.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            ..StrategyConfig::default()
+        };
+        let err = validate_strategy_cfg(&cfg).expect_err("conflicting commission model must fail");
+        assert!(err.contains("commission conflicts"));
     }
 
     #[test]
@@ -10615,6 +13005,264 @@ mod tests {
             "breakout regime should emit directional windows"
         );
         assert!(longs > 0, "breakout regime should include long windows");
+    }
+
+    #[test]
+    fn volume_flow_confirmation_regime_produces_directional_windows() {
+        let candles = make_breakout_candles(1500);
+        let regime = compute_volume_flow_confirmation_regime(&candles, &vfct_strategy_for_kernel())
+            .expect("compute vfct regime")
+            .expect("vfct regime enabled");
+        let finite = regime.iter().filter(|v| v.is_finite()).count();
+        let longs = regime
+            .iter()
+            .filter(|v| v.to_bits() == 0.0_f64.to_bits())
+            .count();
+        assert!(finite > 0, "vfct regime should emit directional windows");
+        assert!(longs > 0, "vfct regime should include long windows");
+    }
+
+    #[test]
+    fn slope_efficiency_trend_regime_produces_directional_windows() {
+        let candles = make_trending_candles(1500);
+        let regime =
+            compute_slope_efficiency_trend_regime(&candles, "close", &set_strategy_for_kernel())
+                .expect("compute set regime")
+                .expect("set regime enabled");
+        let finite = regime.iter().filter(|v| v.is_finite()).count();
+        let longs = regime
+            .iter()
+            .filter(|v| v.to_bits() == 0.0_f64.to_bits())
+            .count();
+        assert!(finite > 0, "set regime should emit directional windows");
+        assert!(longs > 0, "set regime should include long windows");
+    }
+
+    #[test]
+    fn pressure_impulse_trend_regime_produces_directional_windows() {
+        let candles = make_breakout_candles(1500);
+        let regime = compute_pressure_impulse_trend_regime(&candles, "close", &pit_strategy_for_kernel())
+            .expect("compute pit regime")
+            .expect("pit regime enabled");
+        let finite = regime.iter().filter(|v| v.is_finite()).count();
+        let directions = regime
+            .iter()
+            .filter(|v| v.to_bits() == 0.0_f64.to_bits() || v.to_bits() == 1.0_f64.to_bits())
+            .count();
+        assert!(finite > 0, "pit regime should emit directional windows");
+        assert!(directions > 0, "pit regime should include directional states");
+    }
+
+    #[test]
+    fn momentum_triple_stack_regime_produces_directional_windows() {
+        let candles = make_trending_candles(1500);
+        let regime =
+            compute_momentum_triple_stack_regime(&candles, "close", &mts_strategy_for_kernel())
+                .expect("compute mts regime")
+                .expect("mts regime enabled");
+        let finite = regime.iter().filter(|v| v.is_finite()).count();
+        let longs = regime
+            .iter()
+            .filter(|v| v.to_bits() == 0.0_f64.to_bits())
+            .count();
+        assert!(finite > 0, "mts regime should emit directional windows");
+        assert!(longs > 0, "mts regime should include long windows");
+    }
+
+    #[test]
+    fn oscillator_reversion_confluence_regime_produces_directional_windows() {
+        let candles = make_breakout_candles(1500);
+        let regime = compute_oscillator_reversion_confluence_regime(
+            &candles,
+            "close",
+            &orc_strategy_for_kernel(),
+        )
+        .expect("compute orc regime")
+        .expect("orc regime enabled");
+        let finite = regime.iter().filter(|v| v.is_finite()).count();
+        let directions = regime
+            .iter()
+            .filter(|v| v.to_bits() == 0.0_f64.to_bits() || v.to_bits() == 1.0_f64.to_bits())
+            .count();
+        assert!(finite > 0, "orc regime should emit directional windows");
+        assert!(
+            directions > 0,
+            "orc regime should include directional states"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vfct_device_regime_matches_cpu_regime_small() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_breakout_candles(512);
+        let strategy = vfct_strategy_for_kernel();
+        let cpu_regime = compute_volume_flow_confirmation_regime(&candles, &strategy)
+            .expect("compute cpu vfct regime")
+            .expect("vfct regime enabled");
+        let device_regime = build_volume_flow_confirmation_regime_device(&candles, 0, &strategy)
+            .expect("build device vfct regime");
+        let device_values =
+            crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
+                .expect("download device vfct regime");
+
+        assert_eq!(cpu_regime.len(), device_values.len());
+        for (idx, (cpu, gpu)) in cpu_regime.iter().zip(device_values.iter()).enumerate() {
+            if cpu.is_nan() {
+                assert!(
+                    gpu.is_nan(),
+                    "expected NaN at idx={idx}, got {gpu} from device regime"
+                );
+            } else {
+                assert!(
+                    (*cpu - (*gpu as f64)).abs() <= 1e-6,
+                    "cpu/device vfct regime mismatch at idx={idx}: cpu={cpu} gpu={gpu}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn pit_device_regime_matches_cpu_regime_small() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_breakout_candles(512);
+        let strategy = pit_strategy_for_kernel();
+        let cpu_regime = compute_pressure_impulse_trend_regime(&candles, "close", &strategy)
+            .expect("compute cpu pit regime")
+            .expect("pit regime enabled");
+        let device_regime = build_pressure_impulse_trend_regime_device(&candles, "close", 0, &strategy)
+            .expect("build device pit regime");
+        let device_values =
+            crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
+                .expect("download device pit regime");
+
+        assert_eq!(cpu_regime.len(), device_values.len());
+        for (idx, (cpu, gpu)) in cpu_regime.iter().zip(device_values.iter()).enumerate() {
+            if cpu.is_nan() {
+                assert!(
+                    gpu.is_nan(),
+                    "expected NaN at idx={idx}, got {gpu} from device regime"
+                );
+            } else {
+                assert!(
+                    (*cpu - (*gpu as f64)).abs() <= 1e-6,
+                    "cpu/device pit regime mismatch at idx={idx}: cpu={cpu} gpu={gpu}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn set_device_regime_matches_cpu_regime_small() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(512);
+        let strategy = set_strategy_for_kernel();
+        let cpu_regime = compute_slope_efficiency_trend_regime(&candles, "close", &strategy)
+            .expect("compute cpu set regime")
+            .expect("set regime enabled");
+        let device_regime =
+            build_slope_efficiency_trend_regime_device(&candles, "close", 0, &strategy)
+                .expect("build device set regime");
+        let device_values =
+            crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
+                .expect("download device set regime");
+
+        assert_eq!(cpu_regime.len(), device_values.len());
+        for (idx, (cpu, gpu)) in cpu_regime.iter().zip(device_values.iter()).enumerate() {
+            if cpu.is_nan() {
+                assert!(
+                    gpu.is_nan(),
+                    "expected NaN at idx={idx}, got {gpu} from device regime"
+                );
+            } else {
+                assert!(
+                    (*cpu - (*gpu as f64)).abs() <= 1e-6,
+                    "cpu/device set regime mismatch at idx={idx}: cpu={cpu} gpu={gpu}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn mts_device_regime_matches_cpu_regime_small() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(512);
+        let strategy = mts_strategy_for_kernel();
+        let cpu_regime = compute_momentum_triple_stack_regime(&candles, "close", &strategy)
+            .expect("compute cpu mts regime")
+            .expect("mts regime enabled");
+        let device_regime =
+            build_momentum_triple_stack_regime_device(&candles, "close", 0, &strategy)
+                .expect("build device mts regime");
+        let device_values =
+            crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
+                .expect("download device mts regime");
+
+        assert_eq!(cpu_regime.len(), device_values.len());
+        for (idx, (cpu, gpu)) in cpu_regime.iter().zip(device_values.iter()).enumerate() {
+            if cpu.is_nan() {
+                assert!(
+                    gpu.is_nan(),
+                    "expected NaN at idx={idx}, got {gpu} from device regime"
+                );
+            } else {
+                assert!(
+                    (*cpu - (*gpu as f64)).abs() <= 1e-6,
+                    "cpu/device mts regime mismatch at idx={idx}: cpu={cpu} gpu={gpu}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn orc_device_regime_matches_cpu_regime_small() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_breakout_candles(512);
+        let strategy = orc_strategy_for_kernel();
+        let cpu_regime =
+            compute_oscillator_reversion_confluence_regime(&candles, "close", &strategy)
+                .expect("compute cpu orc regime")
+                .expect("orc regime enabled");
+        let device_regime =
+            build_oscillator_reversion_confluence_regime_device(&candles, "close", 0, &strategy)
+                .expect("build device orc regime");
+        let device_values =
+            crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
+                .expect("download device orc regime");
+
+        assert_eq!(cpu_regime.len(), device_values.len());
+        for (idx, (cpu, gpu)) in cpu_regime.iter().zip(device_values.iter()).enumerate() {
+            if cpu.is_nan() {
+                assert!(
+                    gpu.is_nan(),
+                    "expected NaN at idx={idx}, got {gpu} from device regime"
+                );
+            } else {
+                assert!(
+                    (*cpu - (*gpu as f64)).abs() <= 1e-6,
+                    "cpu/device orc regime mismatch at idx={idx}: cpu={cpu} gpu={gpu}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -12557,6 +15205,84 @@ mod tests {
         let batched =
             run_double_ma_optimization_blocking_with_candles(base_req, &candles, &cancel, None)
                 .expect("batched gpu-kernel run");
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+        }
+
+        assert_eq!(single.num_combos, batched.num_combos);
+        assert_eq!(single.best_params.fast_len, batched.best_params.fast_len);
+        assert_eq!(single.best_params.slow_len, batched.best_params.slow_len);
+
+        let h1 = single.heatmap.expect("single heatmap");
+        let h2 = batched.heatmap.expect("batched heatmap");
+        assert_eq!(h1.bins_fast, h2.bins_fast);
+        assert_eq!(h1.bins_slow, h2.bins_slow);
+        assert_eq!(h1.fast_min, h2.fast_min);
+        assert_eq!(h1.fast_max, h2.fast_max);
+        assert_eq!(h1.slow_min, h2.slow_min);
+        assert_eq!(h1.slow_max, h2.slow_max);
+        assert_eq!(h1.values, h2.values);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_batched_matches_unbatched_best_params_vfct() {
+        if !cuda_available() {
+            return;
+        }
+
+        use std::sync::{Mutex, OnceLock};
+
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let prev = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
+
+        let candles = make_breakout_candles(20_000);
+        let cancel = AtomicBool::new(false);
+
+        let base_req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 80, 1),
+            slow_range: (10, 160, 1),
+            fast_ma_types: vec!["vwma".to_string()],
+            slow_ma_types: vec!["vwma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: vfct_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(10),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "8192");
+        let single = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("unbatched gpu-kernel vfct run");
+
+        std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", "64");
+        let batched =
+            run_double_ma_optimization_blocking_with_candles(base_req, &candles, &cancel, None)
+                .expect("batched gpu-kernel vfct run");
 
         match prev {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),

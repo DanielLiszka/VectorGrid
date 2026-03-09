@@ -5,6 +5,7 @@ import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useStrategyStore, type StrategyOption } from '../stores/strategyStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { describeExecutionRisk } from '../utils/executionRisk'
 
 const strategyStore = useStrategyStore()
 const optimizeStore = useOptimizeStore()
@@ -23,7 +24,6 @@ const {
   takeProfitPct,
   cooldownBars,
   signalPersistenceBars,
-  trailingStopPct,
   dmConstraintMinTrades,
   dmConstraintMaxDd,
   exitMode,
@@ -55,6 +55,21 @@ const {
   vccSqueezeKcMult,
   vccConfirmBars,
   vccMaxTradeBars,
+  pitEfiPeriod,
+  pitVoscShortPeriod,
+  pitVoscLongPeriod,
+  pitCfoPeriod,
+  pitCfoScalar,
+  pitConfirmBars,
+  vfctObvSmoothPeriod,
+  vfctMfiPeriod,
+  vfctMfiLongMin,
+  vfctMfiShortMax,
+  vfctConfirmBars,
+  rocbChannelPeriod,
+  rocbAtrPeriod,
+  rocbAtrStopMult,
+  rocbMaxTradeBars,
   vemrZPeriod,
   vemrZMaType,
   vemrZNbdev,
@@ -71,10 +86,14 @@ const {
   vccMapFastToMomentumPeriod,
   vccMapSlowToTrendPeriod,
   vccRequireMomentumAccel,
+  rocbMapFastToChannelPeriod,
+  rocbMapSlowToAtrPeriod,
   vemrMapFastToZPeriod,
   vemrMapFastToBbPeriod,
   vemrMapSlowToAtrPeriod,
   vemrRequireBandTouch,
+  longOnly,
+  tradeOnNext,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(strategyStore)
@@ -150,7 +169,6 @@ const slDraft = ref('')
 const tpDraft = ref('')
 const cooldownDraft = ref('0')
 const persistenceDraft = ref('1')
-const trailingDraft = ref('')
 const minTradesDraft = ref('')
 const maxDdDraft = ref('')
 const exitModeDraft = ref('cross')
@@ -180,6 +198,21 @@ const vccSqueezeBbMultDraft = ref('2.0')
 const vccSqueezeKcMultDraft = ref('1.5')
 const vccConfirmBarsDraft = ref('0')
 const vccMaxTradeBarsDraft = ref('120')
+const pitEfiPeriodDraft = ref('13')
+const pitVoscShortPeriodDraft = ref('5')
+const pitVoscLongPeriodDraft = ref('20')
+const pitCfoPeriodDraft = ref('9')
+const pitCfoScalarDraft = ref('100.0')
+const pitConfirmBarsDraft = ref('2')
+const vfctObvSmoothPeriodDraft = ref('21')
+const vfctMfiPeriodDraft = ref('14')
+const vfctMfiLongMinDraft = ref('55')
+const vfctMfiShortMaxDraft = ref('45')
+const vfctConfirmBarsDraft = ref('1')
+const rocbChannelPeriodDraft = ref('20')
+const rocbAtrPeriodDraft = ref('14')
+const rocbAtrStopMultDraft = ref('2.0')
+const rocbMaxTradeBarsDraft = ref('80')
 const vemrZPeriodDraft = ref('20')
 const vemrZMaTypeDraft = ref('sma')
 const vemrZNbdevDraft = ref('1.0')
@@ -197,16 +230,25 @@ const visible = computed(() => String(controlsTab.value || '').trim() === 'strat
 const strategyKindNormalized = computed(() => String(strategyKind.value || 'DoubleMa').trim() || 'DoubleMa')
 const isDoubleLikeKind = computed(() => {
   const kind = strategyKindNormalized.value
-  return kind === 'DoubleMa' || kind === 'Asr' || kind === 'Vemr' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'Asr' || kind === 'Vemr' || kind === 'Rocb' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 })
 const showDmConstraints = computed(() => isDoubleLikeKind.value)
 const showAsrControls = computed(() => strategyKindNormalized.value === 'Asr')
 const showVccControls = computed(() => strategyKindNormalized.value === 'Vcc')
+const showPitControls = computed(() => strategyKindNormalized.value === 'Pit')
+const showVfctControls = computed(() => strategyKindNormalized.value === 'Vfct')
+const showRocbControls = computed(() => strategyKindNormalized.value === 'Rocb')
 const showVemrControls = computed(() => strategyKindNormalized.value === 'Vemr')
 const showKaufmanFields = computed(() => {
   const mode = String(exitMode.value || 'cross').trim() || 'cross'
   return showAsrControls.value || (isDoubleLikeKind.value && mode === 'kaufman_stop')
 })
+const executionRisk = computed(() =>
+  describeExecutionRisk({
+    longOnly: longOnly.value,
+    tradeOnNext: tradeOnNext.value,
+  }),
+)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -236,7 +278,6 @@ watch(
     String(takeProfitPct.value || ''),
     String(cooldownBars.value || '0'),
     String(signalPersistenceBars.value || '1'),
-    String(trailingStopPct.value || ''),
     String(dmConstraintMinTrades.value || ''),
     String(dmConstraintMaxDd.value || ''),
     String(kaufmanStopPeriod.value || '22'),
@@ -265,6 +306,21 @@ watch(
     String(vccSqueezeKcMult.value || '1.5'),
     String(vccConfirmBars.value || '0'),
     String(vccMaxTradeBars.value || '120'),
+    String(pitEfiPeriod.value || '13'),
+    String(pitVoscShortPeriod.value || '5'),
+    String(pitVoscLongPeriod.value || '20'),
+    String(pitCfoPeriod.value || '9'),
+    String(pitCfoScalar.value || '100.0'),
+    String(pitConfirmBars.value || '2'),
+    String(vfctObvSmoothPeriod.value || '21'),
+    String(vfctMfiPeriod.value || '14'),
+    String(vfctMfiLongMin.value || '55'),
+    String(vfctMfiShortMax.value || '45'),
+    String(vfctConfirmBars.value || '1'),
+    String(rocbChannelPeriod.value || '20'),
+    String(rocbAtrPeriod.value || '14'),
+    String(rocbAtrStopMult.value || '2.0'),
+    String(rocbMaxTradeBars.value || '80'),
     String(vemrZPeriod.value || '20'),
     String(vemrZMaType.value || 'sma'),
     String(vemrZNbdev.value || '1.0'),
@@ -289,7 +345,6 @@ watch(
     nextTakeProfitPct,
     nextCooldownBars,
     nextSignalPersistenceBars,
-    nextTrailingStopPct,
     nextDmConstraintMinTrades,
     nextDmConstraintMaxDd,
     nextKaufmanStopPeriod,
@@ -318,6 +373,21 @@ watch(
     nextVccSqueezeKcMult,
     nextVccConfirmBars,
     nextVccMaxTradeBars,
+    nextPitEfiPeriod,
+    nextPitVoscShortPeriod,
+    nextPitVoscLongPeriod,
+    nextPitCfoPeriod,
+    nextPitCfoScalar,
+    nextPitConfirmBars,
+    nextVfctObvSmoothPeriod,
+    nextVfctMfiPeriod,
+    nextVfctMfiLongMin,
+    nextVfctMfiShortMax,
+    nextVfctConfirmBars,
+    nextRocbChannelPeriod,
+    nextRocbAtrPeriod,
+    nextRocbAtrStopMult,
+    nextRocbMaxTradeBars,
     nextVemrZPeriod,
     nextVemrZMaType,
     nextVemrZNbdev,
@@ -341,7 +411,6 @@ watch(
     if (tpDraft.value !== nextTakeProfitPct) tpDraft.value = nextTakeProfitPct
     if (cooldownDraft.value !== nextCooldownBars) cooldownDraft.value = nextCooldownBars
     if (persistenceDraft.value !== nextSignalPersistenceBars) persistenceDraft.value = nextSignalPersistenceBars
-    if (trailingDraft.value !== nextTrailingStopPct) trailingDraft.value = nextTrailingStopPct
     if (minTradesDraft.value !== nextDmConstraintMinTrades) minTradesDraft.value = nextDmConstraintMinTrades
     if (maxDdDraft.value !== nextDmConstraintMaxDd) maxDdDraft.value = nextDmConstraintMaxDd
     if (kaufmanPeriodDraft.value !== nextKaufmanStopPeriod) kaufmanPeriodDraft.value = nextKaufmanStopPeriod
@@ -370,6 +439,21 @@ watch(
     if (vccSqueezeKcMultDraft.value !== nextVccSqueezeKcMult) vccSqueezeKcMultDraft.value = nextVccSqueezeKcMult
     if (vccConfirmBarsDraft.value !== nextVccConfirmBars) vccConfirmBarsDraft.value = nextVccConfirmBars
     if (vccMaxTradeBarsDraft.value !== nextVccMaxTradeBars) vccMaxTradeBarsDraft.value = nextVccMaxTradeBars
+    if (pitEfiPeriodDraft.value !== nextPitEfiPeriod) pitEfiPeriodDraft.value = nextPitEfiPeriod
+    if (pitVoscShortPeriodDraft.value !== nextPitVoscShortPeriod) pitVoscShortPeriodDraft.value = nextPitVoscShortPeriod
+    if (pitVoscLongPeriodDraft.value !== nextPitVoscLongPeriod) pitVoscLongPeriodDraft.value = nextPitVoscLongPeriod
+    if (pitCfoPeriodDraft.value !== nextPitCfoPeriod) pitCfoPeriodDraft.value = nextPitCfoPeriod
+    if (pitCfoScalarDraft.value !== nextPitCfoScalar) pitCfoScalarDraft.value = nextPitCfoScalar
+    if (pitConfirmBarsDraft.value !== nextPitConfirmBars) pitConfirmBarsDraft.value = nextPitConfirmBars
+    if (vfctObvSmoothPeriodDraft.value !== nextVfctObvSmoothPeriod) vfctObvSmoothPeriodDraft.value = nextVfctObvSmoothPeriod
+    if (vfctMfiPeriodDraft.value !== nextVfctMfiPeriod) vfctMfiPeriodDraft.value = nextVfctMfiPeriod
+    if (vfctMfiLongMinDraft.value !== nextVfctMfiLongMin) vfctMfiLongMinDraft.value = nextVfctMfiLongMin
+    if (vfctMfiShortMaxDraft.value !== nextVfctMfiShortMax) vfctMfiShortMaxDraft.value = nextVfctMfiShortMax
+    if (vfctConfirmBarsDraft.value !== nextVfctConfirmBars) vfctConfirmBarsDraft.value = nextVfctConfirmBars
+    if (rocbChannelPeriodDraft.value !== nextRocbChannelPeriod) rocbChannelPeriodDraft.value = nextRocbChannelPeriod
+    if (rocbAtrPeriodDraft.value !== nextRocbAtrPeriod) rocbAtrPeriodDraft.value = nextRocbAtrPeriod
+    if (rocbAtrStopMultDraft.value !== nextRocbAtrStopMult) rocbAtrStopMultDraft.value = nextRocbAtrStopMult
+    if (rocbMaxTradeBarsDraft.value !== nextRocbMaxTradeBars) rocbMaxTradeBarsDraft.value = nextRocbMaxTradeBars
     if (vemrZPeriodDraft.value !== nextVemrZPeriod) vemrZPeriodDraft.value = nextVemrZPeriod
     if (vemrZMaTypeDraft.value !== nextVemrZMaType) vemrZMaTypeDraft.value = nextVemrZMaType
     if (vemrZNbdevDraft.value !== nextVemrZNbdev) vemrZNbdevDraft.value = nextVemrZNbdev
@@ -406,6 +490,11 @@ const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueu
 
 function setSelectValue(id: string, nextValue: string): void {
   strategyStore.setSelectField(id, nextValue)
+}
+
+function setSaferExecutionDefaults(): void {
+  strategyStore.setCheckboxField('tradeOnNext', true)
+  strategyStore.setCheckboxField('longOnly', true)
 }
 
 function queryLegacyById<T extends Element>(id: string): T | null {
@@ -469,12 +558,18 @@ function syncLegacyStrategyVisibility(): void {
   setElementDisabled('breakoutAdxPeriod', !(isBreakoutMomentum && readChecked('breakoutUseAdx')))
   setElementDisabled('breakoutAdxMin', !(isBreakoutMomentum && readChecked('breakoutUseAdx')))
   setElementDisabled('allowFlip', useKaufmanExit)
+  setElementDisabled('tradeOnNext', true)
 
   const allowFlip = queryLegacyById<HTMLInputElement>('allowFlip')
   if (allowFlip) {
     allowFlip.title = useKaufmanExit
       ? 'Allow flip is ignored when Exit mode = Kaufman-stop.'
       : 'Allow switching long↔short on opposite signals (when Long-only is off).'
+  }
+  const tradeOnNext = queryLegacyById<HTMLInputElement>('tradeOnNext')
+  if (tradeOnNext) {
+    tradeOnNext.checked = true
+    tradeOnNext.title = 'Same-bar execution is disabled because it produces optimistic and inaccurate benchmark results.'
   }
 }
 
@@ -490,6 +585,11 @@ function seedLegacyStrategyInputsToStore(): void {
   for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
     const el = queryLegacyById<HTMLInputElement>(id)
     if (!el) continue
+    if (id === 'tradeOnNext') {
+      el.checked = true
+      strategyStore.setCheckboxField(id, true)
+      continue
+    }
     const storeValue = !!storeMap[id]
     if (storeValue !== !!el.checked) strategyStore.setCheckboxField(id, !!el.checked)
   }
@@ -507,6 +607,10 @@ function syncLegacyStrategyInputsFromStore(): void {
   for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
     const el = queryLegacyById<HTMLInputElement>(id)
     if (!el) continue
+    if (id === 'tradeOnNext') {
+      if (!el.checked) el.checked = true
+      continue
+    }
     const nextChecked = !!storeMap[id]
     if (!!el.checked === nextChecked) continue
     el.checked = nextChecked
@@ -543,6 +647,7 @@ function bindLegacyStrategyInputs(): void {
   for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
     const el = queryLegacyById<HTMLInputElement>(id)
     if (!el) continue
+    if (id === 'tradeOnNext') continue
     const handler = (event: Event) => onCheckboxChange(id, event.target)
     el.addEventListener('input', handler)
     el.addEventListener('change', handler)
@@ -618,6 +723,14 @@ onBeforeUnmount(() => {
         <div class="title">Strategy Controls</div>
         <div class="meta mono">{{ stamp }}</div>
       </header>
+
+      <section v-if="executionRisk" class="riskNotice">
+        <div class="riskTitle">{{ executionRisk.title }}</div>
+        <div class="riskBody">{{ executionRisk.body }}</div>
+        <div class="actions" style="margin-top: 0.75rem;">
+          <button type="button" class="primary" @click="setSaferExecutionDefaults()">Use safer execution defaults</button>
+        </div>
+      </section>
 
       <section class="pane">
         <h3>Execution cost model</h3>
@@ -734,18 +847,6 @@ onBeforeUnmount(() => {
               :value="tpDraft"
               @input="tpDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('takeProfitPct', tpDraft)"
               @change="commitInputValue('takeProfitPct', tpDraft)"
-            />
-          </div>
-          <div>
-            <label for="vueTrailingStopPct">Trailing stop (optional)</label>
-            <input
-              id="vueTrailingStopPct"
-              type="number"
-              min="0"
-              step="0.0001"
-              :value="trailingDraft"
-              @input="trailingDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('trailingStopPct', trailingDraft)"
-              @change="commitInputValue('trailingStopPct', trailingDraft)"
             />
           </div>
         </div>
@@ -1007,6 +1108,103 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <section class="pane" v-if="showPitControls">
+        <h3>PIT parameters</h3>
+        <p class="muted">PIT builds a pressure-impulse regime from EFI, BOP, VOSC, ACOSC, and CFO before feeding the VRAM-resident optimizer.</p>
+        <div class="rowThree">
+          <div>
+            <label for="vuePitEfiPeriod">EFI period</label>
+            <input id="vuePitEfiPeriod" type="number" min="1" step="1" :value="pitEfiPeriodDraft" @input="pitEfiPeriodDraft = String(($event.target as HTMLInputElement).value || '13'); queueInputValue('pitEfiPeriod', pitEfiPeriodDraft)" @change="commitInputValue('pitEfiPeriod', pitEfiPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vuePitVoscShortPeriod">VOSC short period</label>
+            <input id="vuePitVoscShortPeriod" type="number" min="1" step="1" :value="pitVoscShortPeriodDraft" @input="pitVoscShortPeriodDraft = String(($event.target as HTMLInputElement).value || '5'); queueInputValue('pitVoscShortPeriod', pitVoscShortPeriodDraft)" @change="commitInputValue('pitVoscShortPeriod', pitVoscShortPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vuePitVoscLongPeriod">VOSC long period</label>
+            <input id="vuePitVoscLongPeriod" type="number" min="2" step="1" :value="pitVoscLongPeriodDraft" @input="pitVoscLongPeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('pitVoscLongPeriod', pitVoscLongPeriodDraft)" @change="commitInputValue('pitVoscLongPeriod', pitVoscLongPeriodDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vuePitCfoPeriod">CFO period</label>
+            <input id="vuePitCfoPeriod" type="number" min="1" step="1" :value="pitCfoPeriodDraft" @input="pitCfoPeriodDraft = String(($event.target as HTMLInputElement).value || '9'); queueInputValue('pitCfoPeriod', pitCfoPeriodDraft)" @change="commitInputValue('pitCfoPeriod', pitCfoPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vuePitCfoScalar">CFO scalar</label>
+            <input id="vuePitCfoScalar" type="number" min="0.0001" step="0.1" :value="pitCfoScalarDraft" @input="pitCfoScalarDraft = String(($event.target as HTMLInputElement).value || '100.0'); queueInputValue('pitCfoScalar', pitCfoScalarDraft)" @change="commitInputValue('pitCfoScalar', pitCfoScalarDraft)" />
+          </div>
+          <div>
+            <label for="vuePitConfirmBars">Confirm bars</label>
+            <input id="vuePitConfirmBars" type="number" min="1" step="1" :value="pitConfirmBarsDraft" @input="pitConfirmBarsDraft = String(($event.target as HTMLInputElement).value || '2'); queueInputValue('pitConfirmBars', pitConfirmBarsDraft)" @change="commitInputValue('pitConfirmBars', pitConfirmBarsDraft)" />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" v-if="showVfctControls">
+        <h3>VFCT parameters</h3>
+        <p class="muted">VFCT currently uses `vwma` trend lines plus OBV/MFI confirmation. Volume-backed OHLCV data is required.</p>
+        <div class="rowThree">
+          <div>
+            <label for="vueVfctObvSmoothPeriod">OBV smooth period</label>
+            <input id="vueVfctObvSmoothPeriod" type="number" min="1" step="1" :value="vfctObvSmoothPeriodDraft" @input="vfctObvSmoothPeriodDraft = String(($event.target as HTMLInputElement).value || '21'); queueInputValue('vfctObvSmoothPeriod', vfctObvSmoothPeriodDraft)" @change="commitInputValue('vfctObvSmoothPeriod', vfctObvSmoothPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVfctMfiPeriod">MFI period</label>
+            <input id="vueVfctMfiPeriod" type="number" min="1" step="1" :value="vfctMfiPeriodDraft" @input="vfctMfiPeriodDraft = String(($event.target as HTMLInputElement).value || '14'); queueInputValue('vfctMfiPeriod', vfctMfiPeriodDraft)" @change="commitInputValue('vfctMfiPeriod', vfctMfiPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVfctConfirmBars">Confirm bars</label>
+            <input id="vueVfctConfirmBars" type="number" min="1" step="1" :value="vfctConfirmBarsDraft" @input="vfctConfirmBarsDraft = String(($event.target as HTMLInputElement).value || '1'); queueInputValue('vfctConfirmBars', vfctConfirmBarsDraft)" @change="commitInputValue('vfctConfirmBars', vfctConfirmBarsDraft)" />
+          </div>
+        </div>
+        <div class="rowTwo">
+          <div>
+            <label for="vueVfctMfiLongMin">MFI long min</label>
+            <input id="vueVfctMfiLongMin" type="number" min="0" max="100" step="0.5" :value="vfctMfiLongMinDraft" @input="vfctMfiLongMinDraft = String(($event.target as HTMLInputElement).value || '55'); queueInputValue('vfctMfiLongMin', vfctMfiLongMinDraft)" @change="commitInputValue('vfctMfiLongMin', vfctMfiLongMinDraft)" />
+          </div>
+          <div>
+            <label for="vueVfctMfiShortMax">MFI short max</label>
+            <input id="vueVfctMfiShortMax" type="number" min="0" max="100" step="0.5" :value="vfctMfiShortMaxDraft" @input="vfctMfiShortMaxDraft = String(($event.target as HTMLInputElement).value || '45'); queueInputValue('vfctMfiShortMax', vfctMfiShortMaxDraft)" @change="commitInputValue('vfctMfiShortMax', vfctMfiShortMaxDraft)" />
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" v-if="showRocbControls">
+        <h3>ROCB parameters</h3>
+        <p class="muted">ROCB builds an N-bar channel breakout and ATR risk overlay on the GPU, then feeds that regime into the existing optimizer.</p>
+        <div class="rowTwo">
+          <label class="checkboxRow" for="vueRocbMapFastToChannelPeriod">
+            <input id="vueRocbMapFastToChannelPeriod" type="checkbox" :checked="Boolean(rocbMapFastToChannelPeriod)" @change="strategyStore.setCheckboxField('rocbMapFastToChannelPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map fast length to channel period</span>
+          </label>
+          <label class="checkboxRow" for="vueRocbMapSlowToAtrPeriod">
+            <input id="vueRocbMapSlowToAtrPeriod" type="checkbox" :checked="Boolean(rocbMapSlowToAtrPeriod)" @change="strategyStore.setCheckboxField('rocbMapSlowToAtrPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map slow length to ATR period</span>
+          </label>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueRocbChannelPeriod">Channel period</label>
+            <input id="vueRocbChannelPeriod" type="number" min="1" step="1" :disabled="Boolean(rocbMapFastToChannelPeriod)" :value="rocbChannelPeriodDraft" @input="rocbChannelPeriodDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('rocbChannelPeriod', rocbChannelPeriodDraft)" @change="commitInputValue('rocbChannelPeriod', rocbChannelPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueRocbAtrPeriod">ATR period</label>
+            <input id="vueRocbAtrPeriod" type="number" min="1" step="1" :disabled="Boolean(rocbMapSlowToAtrPeriod)" :value="rocbAtrPeriodDraft" @input="rocbAtrPeriodDraft = String(($event.target as HTMLInputElement).value || '14'); queueInputValue('rocbAtrPeriod', rocbAtrPeriodDraft)" @change="commitInputValue('rocbAtrPeriod', rocbAtrPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueRocbAtrStopMult">ATR stop mult</label>
+            <input id="vueRocbAtrStopMult" type="number" min="0.0001" step="0.1" :value="rocbAtrStopMultDraft" @input="rocbAtrStopMultDraft = String(($event.target as HTMLInputElement).value || '2.0'); queueInputValue('rocbAtrStopMult', rocbAtrStopMultDraft)" @change="commitInputValue('rocbAtrStopMult', rocbAtrStopMultDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueRocbMaxTradeBars">Max trade bars</label>
+            <input id="vueRocbMaxTradeBars" type="number" min="1" step="1" :value="rocbMaxTradeBarsDraft" @input="rocbMaxTradeBarsDraft = String(($event.target as HTMLInputElement).value || '80'); queueInputValue('rocbMaxTradeBars', rocbMaxTradeBarsDraft)" @change="commitInputValue('rocbMaxTradeBars', rocbMaxTradeBarsDraft)" />
+          </div>
+        </div>
+      </section>
+
       <section class="pane" v-if="showVemrControls">
         <h3>VEMR parameters</h3>
         <div class="rowTwo">
@@ -1126,6 +1324,26 @@ onBeforeUnmount(() => {
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
   min-width: 0;
+}
+
+.riskNotice {
+  border: 1px solid color-mix(in oklab, var(--warning) 45%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--warning) 12%, var(--panel-footer));
+  padding: 0.8rem 0.9rem;
+}
+
+.riskTitle {
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--warning);
+}
+
+.riskBody {
+  margin-top: 0.35rem;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .pane h3 {

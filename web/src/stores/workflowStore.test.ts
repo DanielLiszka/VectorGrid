@@ -41,19 +41,41 @@ describe('workflow store actions', () => {
     expect(store.resultsTab).toBe('drill')
   })
 
-  it('infers workflow from tab selection changes', () => {
+  it('selects the finalizer workflow step with meta results', () => {
     const store = useWorkflowStore()
-    store.selectResultsTab('validate')
-    expect(store.workflow).toBe('validate')
+
+    store.selectWorkflowStep('finalize')
+
     expect(store.workspace).toBe('workflow')
+    expect(store.workflowStep).toBe('finalize')
+    expect(store.workflow).toBe('finalize')
+    expect(store.controlsTab).toBe('advanced')
+    expect(store.resultsTab).toBe('meta')
+  })
 
-    store.selectResultsTab('history')
-    expect(store.workflow).toBe('history')
-    expect(store.workspace).toBe('library')
+  it('keeps controls and results tab changes local to the current workflow', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('optimize')
+    store.selectResultsTab('top')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workspace).toBe('workflow')
+    expect(store.resultsTab).toBe('top')
 
-    store.selectResultsTab('meta')
-    expect(store.workflow).toBe('settings')
-    expect(store.workspace).toBe('aggregate')
+    store.selectControlsTab('strategy')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workspace).toBe('workflow')
+    expect(store.controlsTab).toBe('strategy')
+  })
+
+  it('ignores tabs that are not allowed in the current workflow', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('data')
+
+    store.selectResultsTab('top')
+    store.selectControlsTab('strategy')
+
+    expect(store.resultsTab).toBe('overview')
+    expect(store.controlsTab).toBe('data')
   })
 
   it('moves into aggregate workspace when aggregate tab is selected', () => {

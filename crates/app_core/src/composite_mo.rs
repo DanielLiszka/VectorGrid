@@ -2,8 +2,9 @@ use crate::composite_cpu::{MaczGateParams, OttGateParams};
 use crate::double_ma::{
     compute_halftrend_trend, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
     resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles,
-    strategy_cfg_for_optimization, validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed,
-    DoubleMaRequest, HalfTrendRegimeFilter,
+    strategy_cfg_for_optimization, validate_ma_kind, validate_strategy_cfg,
+    validate_strategy_cfg_for_optimization, Backend, BackendUsed, DoubleMaRequest,
+    HalfTrendRegimeFilter,
 };
 use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
 use crate::progress::ProgressSink;
@@ -439,7 +440,6 @@ struct ParamIdx {
     strategy_eps_rel: Option<usize>,
     strategy_long_only: Option<usize>,
     strategy_allow_flip: Option<usize>,
-    strategy_trade_on_next_bar: Option<usize>,
 }
 
 fn find_param(space: &SearchSpace, name: &str) -> Option<usize> {
@@ -705,6 +705,11 @@ fn default_ott() -> OttGateParams {
 }
 
 fn build_param_indices(space: &SearchSpace) -> Result<ParamIdx, String> {
+    if find_param(space, "strategy_trade_on_next_bar").is_some() {
+        return Err(
+            "search_space param 'strategy_trade_on_next_bar' is not permitted because same-bar execution is disabled.".to_string(),
+        );
+    }
     let Some(fast_len) = find_param(space, "fast_len") else {
         return Err("search_space is missing required param 'fast_len'".to_string());
     };
@@ -741,7 +746,6 @@ fn build_param_indices(space: &SearchSpace) -> Result<ParamIdx, String> {
         strategy_eps_rel: find_param(space, "strategy_eps_rel"),
         strategy_long_only: find_param(space, "strategy_long_only"),
         strategy_allow_flip: find_param(space, "strategy_allow_flip"),
-        strategy_trade_on_next_bar: find_param(space, "strategy_trade_on_next_bar"),
     })
 }
 
@@ -761,7 +765,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     // Multiobjective mode currently ignores OptimizationMode; this is a placeholder for later.
     let _ = req.mode;
 
-    validate_strategy_cfg(&req.base_strategy)?;
+    validate_strategy_cfg_for_optimization(&req.base_strategy)?;
     req.base_strategy = strategy_cfg_for_optimization(req.base_strategy.clone());
     validate_objectives(&req.objectives)?;
     let signal_mode = req.signal_mode;
@@ -839,7 +843,10 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         };
 
         if let (Some(fast_range), Some(slow_range)) = (fast_range, slow_range) {
-            let device_id = cfg.device_id.unwrap_or(0);
+            let device_id = crate::preferred_cuda_device()
+                .map_err(|err| format!("failed to resolve preferred CUDA device: {err}"))?
+                .map(|device| device.device_id)
+                .unwrap_or(0);
 
             let mut scan_objectives: Vec<ObjectiveKind> = Vec::new();
             match cfg.objectives {
@@ -1657,11 +1664,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         if let Some(i) = idx.strategy_allow_flip {
             if let Ok(v) = get_bool(values, i) {
                 strategy.allow_flip = v;
-            }
-        }
-        if let Some(i) = idx.strategy_trade_on_next_bar {
-            if let Ok(v) = get_bool(values, i) {
-                strategy.trade_on_next_bar = v;
             }
         }
         if validate_strategy_cfg(&strategy).is_err() {
@@ -2945,66 +2947,4 @@ mod tests {
         assert!(!res.pareto.is_empty());
     }
 
-    #[test]
-    fn composite_mo_optimization_clears_trailing_stop_from_params() {
-        let candles = make_trending_candles(2000);
-        let cancel = AtomicBool::new(false);
-
-        let req = CompositeMoRequest {
-            data_id: "test".to_string(),
-            fast_ma_type: "sma".to_string(),
-            slow_ma_type: "sma".to_string(),
-            ma_source: "close".to_string(),
-            fast_ma_params: None,
-            slow_ma_params: None,
-            base_strategy: StrategyConfig {
-                trailing_stop_pct: Some(0.02),
-                ..StrategyConfig::default()
-            },
-            signal_mode: CompositeSignalMode::HardGate,
-            search_space: SearchSpace {
-                params: vec![
-                    ta_optimizer::mo::ParamDef {
-                        name: "fast_len".to_string(),
-                        domain: ParamDomain::IntRange {
-                            low: 5,
-                            high: 7,
-                            step: 1,
-                            log: false,
-                        },
-                    },
-                    ta_optimizer::mo::ParamDef {
-                        name: "slow_len".to_string(),
-                        domain: ParamDomain::IntRange {
-                            low: 10,
-                            high: 12,
-                            step: 1,
-                            log: false,
-                        },
-                    },
-                ],
-            },
-            objectives: CompositeMoObjectives {
-                maximize: ObjectiveKind::Sharpe,
-                minimize: ObjectiveKind::MaxDrawdown,
-            },
-            sampler: CompositeMoSampler::Random {
-                config: RandomMoConfig {
-                    seed: 13,
-                    trials: 20,
-                },
-            },
-            constraints: None,
-            gpu_prescan: None,
-            mode: None,
-        };
-
-        let res = run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
-            .expect("composite mo run");
-        assert!(!res.pareto.is_empty());
-        assert!(res
-            .pareto
-            .iter()
-            .all(|p| p.params.strategy.trailing_stop_pct.is_none()));
-    }
 }

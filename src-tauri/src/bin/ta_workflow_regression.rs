@@ -152,6 +152,7 @@ fn evaluate_holdout_light(
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
 
         let val_res =
@@ -308,6 +309,7 @@ fn run_workflow_once(
             asr: None,
             vcc: None,
             vemr: None,
+            rocb: None,
             data_id: label.to_string(),
             fast_range: (5, 60, 5),
             slow_range: (20, 220, 10),
@@ -340,7 +342,9 @@ fn run_workflow_once(
                 slow_len: p.slow_len,
                 halftrend: halftrend.clone(),
                 asr: None,
+                vcc: None,
                 vemr: None,
+                rocb: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -368,6 +372,7 @@ fn run_workflow_once(
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            validation_context: None,
         };
         let val_res =
             run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;

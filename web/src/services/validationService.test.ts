@@ -152,6 +152,50 @@ describe('validationService', () => {
 
   })
 
+  it('rejects validation when the current dataset does not match the optimization artifact', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '8',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/MSFT.csv',
+      dataTimeframe: '15m',
+      baseDataMeta: { timeframe: '15m' },
+      datasetLabel: 'MSFT',
+      datasetContext: 'source=csv',
+      dataFields: ['open', 'high', 'low', 'close', 'volume'],
+      dataLen: '1000',
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-08T18:00:00Z',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: { csv_path: 'C:/data/AAPL.csv', timeframe: '15m', label: 'AAPL', symbol: 'AAPL' },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-aapl',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [{ params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 10, slow_len: 40 } }],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await expect(runValidation({ switchTab: false })).rejects.toThrow('Validation requires the optimization dataset')
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('run_double_ma_validation', expect.anything())
+  })
+
   it('routes ASR validation through composite validation command', async () => {
     ;(pinia.state.value as Record<string, unknown>).validation = {
       candidates: '8',

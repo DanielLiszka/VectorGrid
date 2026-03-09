@@ -12,7 +12,7 @@ const PORT = 4179
 const WORKSPACES = ['workflow', 'library', 'aggregate', 'pro', 'settings']
 const WORKFLOW_STEPS = ['data', 'optimize', 'validate', 'analyze']
 const LEGACY_WORKFLOW_TABS = ['data', 'optimize', 'validate', 'analyze', 'history', 'settings']
-const CONTROLS_TABS = ['data', 'opt', 'strategy', 'advanced', 'distributed']
+const CONTROLS_TABS = ['data', 'opt', 'strategy', 'advanced']
 const RESULTS_TABS = ['overview', 'top', 'pareto', 'validate', 'drill', 'heatmap', 'history', 'meta', 'debug']
 
 function mimeType(file) {

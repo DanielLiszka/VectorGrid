@@ -244,6 +244,126 @@ fn default_breakout_adx_min() -> f64 {
     20.0
 }
 
+fn default_volume_flow_confirm_enable() -> bool {
+    false
+}
+
+fn default_volume_flow_obv_smooth_period() -> u16 {
+    21
+}
+
+fn default_volume_flow_mfi_period() -> u16 {
+    14
+}
+
+fn default_volume_flow_mfi_long_min() -> f64 {
+    55.0
+}
+
+fn default_volume_flow_mfi_short_max() -> f64 {
+    45.0
+}
+
+fn default_volume_flow_confirm_bars() -> u16 {
+    1
+}
+
+fn default_slope_efficiency_trend_enable() -> bool {
+    false
+}
+
+fn default_set_linearreg_period() -> u16 {
+    34
+}
+
+fn default_set_angle_min_deg() -> f64 {
+    2.0
+}
+
+fn default_set_er_period() -> u16 {
+    14
+}
+
+fn default_set_er_min() -> f64 {
+    0.3
+}
+
+fn default_set_chop_period() -> u16 {
+    14
+}
+
+fn default_set_chop_max() -> f64 {
+    45.0
+}
+
+fn default_momentum_triple_stack_enable() -> bool {
+    false
+}
+
+fn default_mts_roc_period() -> u16 {
+    10
+}
+
+fn default_mts_mom_period() -> u16 {
+    20
+}
+
+fn default_mts_ppo_fast_period() -> u16 {
+    12
+}
+
+fn default_mts_ppo_slow_period() -> u16 {
+    26
+}
+
+fn default_oscillator_reversion_confluence_enable() -> bool {
+    false
+}
+
+fn default_pressure_impulse_trend_enable() -> bool {
+    false
+}
+
+fn default_pit_efi_period() -> u16 {
+    13
+}
+
+fn default_pit_vosc_short_period() -> u16 {
+    5
+}
+
+fn default_pit_vosc_long_period() -> u16 {
+    20
+}
+
+fn default_pit_cfo_period() -> u16 {
+    9
+}
+
+fn default_pit_cfo_scalar() -> f64 {
+    100.0
+}
+
+fn default_pit_confirm_bars() -> u16 {
+    2
+}
+
+fn default_orc_rsi_period() -> u16 {
+    14
+}
+
+fn default_orc_stoch_fastk_period() -> u16 {
+    5
+}
+
+fn default_orc_stoch_fastd_period() -> u16 {
+    3
+}
+
+fn default_orc_willr_period() -> u16 {
+    14
+}
+
 fn default_cooldown_bars() -> u16 {
     0
 }
@@ -339,12 +459,70 @@ pub struct StrategyConfig {
     pub breakout_adx_period: u16,
     #[serde(default = "default_breakout_adx_min")]
     pub breakout_adx_min: f64,
+    #[serde(default = "default_volume_flow_confirm_enable")]
+    pub volume_flow_confirm_enable: bool,
+    #[serde(default = "default_volume_flow_obv_smooth_period")]
+    pub volume_flow_obv_smooth_period: u16,
+    #[serde(default = "default_volume_flow_mfi_period")]
+    pub volume_flow_mfi_period: u16,
+    #[serde(default = "default_volume_flow_mfi_long_min")]
+    pub volume_flow_mfi_long_min: f64,
+    #[serde(default = "default_volume_flow_mfi_short_max")]
+    pub volume_flow_mfi_short_max: f64,
+    #[serde(default = "default_volume_flow_confirm_bars")]
+    pub volume_flow_confirm_bars: u16,
+    #[serde(default = "default_slope_efficiency_trend_enable")]
+    pub slope_efficiency_trend_enable: bool,
+    #[serde(default = "default_set_linearreg_period")]
+    pub set_linearreg_period: u16,
+    #[serde(default = "default_set_angle_min_deg")]
+    pub set_angle_min_deg: f64,
+    #[serde(default = "default_set_er_period")]
+    pub set_er_period: u16,
+    #[serde(default = "default_set_er_min")]
+    pub set_er_min: f64,
+    #[serde(default = "default_set_chop_period")]
+    pub set_chop_period: u16,
+    #[serde(default = "default_set_chop_max")]
+    pub set_chop_max: f64,
+    #[serde(default = "default_momentum_triple_stack_enable")]
+    pub momentum_triple_stack_enable: bool,
+    #[serde(default = "default_mts_roc_period")]
+    pub mts_roc_period: u16,
+    #[serde(default = "default_mts_mom_period")]
+    pub mts_mom_period: u16,
+    #[serde(default = "default_mts_ppo_fast_period")]
+    pub mts_ppo_fast_period: u16,
+    #[serde(default = "default_mts_ppo_slow_period")]
+    pub mts_ppo_slow_period: u16,
+    #[serde(default = "default_oscillator_reversion_confluence_enable")]
+    pub oscillator_reversion_confluence_enable: bool,
+    #[serde(default = "default_pressure_impulse_trend_enable")]
+    pub pressure_impulse_trend_enable: bool,
+    #[serde(default = "default_pit_efi_period")]
+    pub pit_efi_period: u16,
+    #[serde(default = "default_pit_vosc_short_period")]
+    pub pit_vosc_short_period: u16,
+    #[serde(default = "default_pit_vosc_long_period")]
+    pub pit_vosc_long_period: u16,
+    #[serde(default = "default_pit_cfo_period")]
+    pub pit_cfo_period: u16,
+    #[serde(default = "default_pit_cfo_scalar")]
+    pub pit_cfo_scalar: f64,
+    #[serde(default = "default_pit_confirm_bars")]
+    pub pit_confirm_bars: u16,
+    #[serde(default = "default_orc_rsi_period")]
+    pub orc_rsi_period: u16,
+    #[serde(default = "default_orc_stoch_fastk_period")]
+    pub orc_stoch_fastk_period: u16,
+    #[serde(default = "default_orc_stoch_fastd_period")]
+    pub orc_stoch_fastd_period: u16,
+    #[serde(default = "default_orc_willr_period")]
+    pub orc_willr_period: u16,
     #[serde(default = "default_cooldown_bars")]
     pub cooldown_bars: u16,
     #[serde(default = "default_signal_persistence_bars")]
     pub signal_persistence_bars: u16,
-    #[serde(default)]
-    pub trailing_stop_pct: Option<f64>,
     /// Compatibility fallback. When positive, this takes precedence over bps fields.
     pub commission: f64,
     pub eps_rel: f64,
@@ -397,9 +575,38 @@ impl Default for StrategyConfig {
             breakout_use_adx: false,
             breakout_adx_period: 14,
             breakout_adx_min: 20.0,
+            volume_flow_confirm_enable: false,
+            volume_flow_obv_smooth_period: 21,
+            volume_flow_mfi_period: 14,
+            volume_flow_mfi_long_min: 55.0,
+            volume_flow_mfi_short_max: 45.0,
+            volume_flow_confirm_bars: 1,
+            slope_efficiency_trend_enable: false,
+            set_linearreg_period: 34,
+            set_angle_min_deg: 2.0,
+            set_er_period: 14,
+            set_er_min: 0.3,
+            set_chop_period: 14,
+            set_chop_max: 45.0,
+            momentum_triple_stack_enable: false,
+            mts_roc_period: 10,
+            mts_mom_period: 20,
+            mts_ppo_fast_period: 12,
+            mts_ppo_slow_period: 26,
+            oscillator_reversion_confluence_enable: false,
+            pressure_impulse_trend_enable: false,
+            pit_efi_period: 13,
+            pit_vosc_short_period: 5,
+            pit_vosc_long_period: 20,
+            pit_cfo_period: 9,
+            pit_cfo_scalar: 100.0,
+            pit_confirm_bars: 2,
+            orc_rsi_period: 14,
+            orc_stoch_fastk_period: 5,
+            orc_stoch_fastd_period: 3,
+            orc_willr_period: 14,
             cooldown_bars: 0,
             signal_persistence_bars: 1,
-            trailing_stop_pct: None,
             commission: 0.0,
             eps_rel: 0.0,
         }
@@ -460,11 +667,6 @@ impl StrategyConfig {
     }
 
     #[inline]
-    pub fn trailing_stop_pct(&self) -> Option<f64> {
-        Self::clean_risk_pct(self.trailing_stop_pct)
-    }
-
-    #[inline]
     pub fn cooldown_bars(&self) -> usize {
         self.cooldown_bars as usize
     }
@@ -476,9 +678,7 @@ impl StrategyConfig {
 
     #[inline]
     pub fn uses_execution_overlays(&self) -> bool {
-        self.cooldown_bars() > 0
-            || self.signal_persistence_bars() > 1
-            || self.trailing_stop_pct().is_some()
+        self.cooldown_bars() > 0 || self.signal_persistence_bars() > 1
     }
 
     #[inline]
@@ -725,6 +925,147 @@ impl StrategyConfig {
         } else {
             20.0
         }
+    }
+
+    #[inline]
+    pub fn uses_volume_flow_confirm_filter(&self) -> bool {
+        self.volume_flow_confirm_enable
+    }
+
+    #[inline]
+    pub fn volume_flow_obv_smooth_period(&self) -> usize {
+        self.volume_flow_obv_smooth_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn volume_flow_mfi_period(&self) -> usize {
+        self.volume_flow_mfi_period.max(1) as usize
+    }
+
+    #[inline]
+    pub fn volume_flow_mfi_long_min(&self) -> f64 {
+        let x = self.volume_flow_mfi_long_min;
+        if x.is_finite() {
+            x.clamp(0.0, 100.0)
+        } else {
+            55.0
+        }
+    }
+
+    #[inline]
+    pub fn volume_flow_mfi_short_max(&self) -> f64 {
+        let x = self.volume_flow_mfi_short_max;
+        if x.is_finite() {
+            x.clamp(0.0, 100.0)
+        } else {
+            45.0
+        }
+    }
+
+    #[inline]
+    pub fn volume_flow_confirm_bars(&self) -> usize {
+        self.volume_flow_confirm_bars.max(1) as usize
+    }
+
+    pub fn uses_slope_efficiency_trend_filter(&self) -> bool {
+        self.slope_efficiency_trend_enable
+    }
+
+    pub fn set_linearreg_period(&self) -> usize {
+        self.set_linearreg_period.max(1) as usize
+    }
+
+    pub fn set_angle_min_deg(&self) -> f64 {
+        let x = self.set_angle_min_deg;
+        if x.is_finite() { x } else { 2.0 }
+    }
+
+    pub fn set_er_period(&self) -> usize {
+        self.set_er_period.max(1) as usize
+    }
+
+    pub fn set_er_min(&self) -> f64 {
+        let x = self.set_er_min;
+        if x.is_finite() { x } else { 0.3 }
+    }
+
+    pub fn set_chop_period(&self) -> usize {
+        self.set_chop_period.max(1) as usize
+    }
+
+    pub fn set_chop_max(&self) -> f64 {
+        let x = self.set_chop_max;
+        if x.is_finite() { x } else { 45.0 }
+    }
+
+    pub fn uses_momentum_triple_stack_filter(&self) -> bool {
+        self.momentum_triple_stack_enable
+    }
+
+    pub fn mts_roc_period(&self) -> usize {
+        self.mts_roc_period.max(1) as usize
+    }
+
+    pub fn mts_mom_period(&self) -> usize {
+        self.mts_mom_period.max(1) as usize
+    }
+
+    pub fn mts_ppo_fast_period(&self) -> usize {
+        self.mts_ppo_fast_period.max(1) as usize
+    }
+
+    pub fn mts_ppo_slow_period(&self) -> usize {
+        self.mts_ppo_slow_period.max(1) as usize
+    }
+
+    pub fn uses_oscillator_reversion_confluence_filter(&self) -> bool {
+        self.oscillator_reversion_confluence_enable
+    }
+
+    pub fn uses_pressure_impulse_trend_filter(&self) -> bool {
+        self.pressure_impulse_trend_enable
+    }
+
+    pub fn pit_efi_period(&self) -> usize {
+        self.pit_efi_period.max(1) as usize
+    }
+
+    pub fn pit_vosc_short_period(&self) -> usize {
+        self.pit_vosc_short_period.max(1) as usize
+    }
+
+    pub fn pit_vosc_long_period(&self) -> usize {
+        let min_long = (self.pit_vosc_short_period() + 1) as u16;
+        self.pit_vosc_long_period.max(min_long) as usize
+    }
+
+    pub fn pit_cfo_period(&self) -> usize {
+        self.pit_cfo_period.max(1) as usize
+    }
+
+    pub fn pit_cfo_scalar(&self) -> f64 {
+        let x = self.pit_cfo_scalar;
+        if x.is_finite() && x > 0.0 { x } else { 100.0 }
+    }
+
+    pub fn pit_confirm_bars(&self) -> usize {
+        self.pit_confirm_bars.max(1) as usize
+    }
+
+    pub fn orc_rsi_period(&self) -> usize {
+        self.orc_rsi_period.max(1) as usize
+    }
+
+    pub fn orc_stoch_fastk_period(&self) -> usize {
+        self.orc_stoch_fastk_period.max(1) as usize
+    }
+
+    pub fn orc_stoch_fastd_period(&self) -> usize {
+        self.orc_stoch_fastd_period.max(1) as usize
+    }
+
+    pub fn orc_willr_period(&self) -> usize {
+        self.orc_willr_period.max(1) as usize
     }
 }
 

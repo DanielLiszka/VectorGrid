@@ -31,11 +31,6 @@ export const TAURI_COMMANDS = [
   'run_composite_mo_optimization',
   'run_composite_validation',
   'run_double_ma_validation',
-  'distributed_start_worker_server',
-  'distributed_stop_worker_server',
-  'distributed_worker_server_status',
-  'distributed_run_double_ma_assets',
-  'distributed_run_double_ma_tiled',
   'build_report_xlsx',
   'build_validation_shortlist_csv',
   'save_report_xlsx',
@@ -69,7 +64,6 @@ export const TAURI_COMMANDS = [
   'list_dynamic_indicators',
   'list_gpu_speedups',
   'get_gpu_status',
-  'list_cuda_devices',
 ] as const
 
 const TAURI_COMMAND_SET = new Set<string>(TAURI_COMMANDS)

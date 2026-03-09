@@ -1,6 +1,8 @@
 import { getActivePinia } from 'pinia'
 import { markRaw } from 'vue'
 import { useLightweightChart } from '../composables/useLightweightChart'
+import { useDataStore } from '../stores/dataStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import { invokeCommand } from '../tauri/invoke'
 
@@ -22,6 +24,15 @@ type TopFilterValues = {
 }
 
 interface AnalysisStoreState {
+  bestKicker?: unknown
+  bestTitle?: unknown
+  bestMeta?: unknown
+  paretoX?: unknown
+  paretoY?: unknown
+  paretoXOptions?: unknown
+  paretoYOptions?: unknown
+  paretoWrapVisible?: unknown
+  paretoMeta?: unknown
   topColumns?: unknown
   topTableRows?: unknown
   topRows?: unknown
@@ -30,6 +41,18 @@ interface AnalysisStoreState {
   drillStatus?: unknown
   stabilityStatus?: unknown
   stabilityMeta?: unknown
+  heatmapWrapVisible?: unknown
+  heatmapColor?: unknown
+  heatmapColorOptions?: unknown
+  heatmapRange?: unknown
+  heatmapRangeOptions?: unknown
+  heatmapShowTop?: unknown
+  heatmapShowTopOptions?: unknown
+  heatmapShowCrosshair?: unknown
+  heatmapShowCrosshairOptions?: unknown
+  canHeatmapExportPng?: unknown
+  heatmapMeta?: unknown
+  heatmapStatusLine?: unknown
   filterMinPnl?: unknown
   filterMinSharpe?: unknown
   filterMaxDd?: unknown
@@ -39,6 +62,7 @@ interface AnalysisStoreState {
   topSelectionGuardrail?: unknown
   compareSummary?: unknown
   bestSummary?: unknown
+  bestStats?: unknown
   statusLine?: unknown
   source?: unknown
   updatedAtUnixMs?: unknown
@@ -68,6 +92,16 @@ interface TopRowModel {
   params: Record<string, unknown>
   metrics: Record<string, unknown>
   mo?: { maximize_value?: number; minimize_value?: number; violation?: number }
+}
+
+interface HeatmapModel {
+  binsFast: number
+  binsSlow: number
+  fastMin: number
+  fastMax: number
+  slowMin: number
+  slowMax: number
+  values: Array<number | null>
 }
 
 export interface AnalysisExecutionTopRowSnapshot {
@@ -164,6 +198,7 @@ let drillTvHalftrendSeries: any = null
 let drillTvMaczSeries: any = null
 let drillTvRenderFrame = 0
 let drillTvPendingPayload: DrillTvRenderPayload | null = null
+let heatmapHoverCell: { col: number; row: number } | null = null
 
 function text(v: unknown): string {
   return String(v ?? '').trim()
@@ -209,6 +244,53 @@ function fmtPct(v: unknown, digits = 2): string {
   return `${(n * 100).toFixed(Math.max(0, Math.floor(digits)))}%`
 }
 
+function trimFixed(src: string): string {
+  return src.replace(/(\.\d*?[1-9])0+$/u, '$1').replace(/\.0+$/u, '')
+}
+
+function fmtDisplay(v: unknown, digits = 4): string {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '-'
+  const abs = Math.abs(n)
+  if (abs === 0) return '0'
+  const precision = Math.max(0, Math.floor(digits))
+  const zeroThreshold = 1 / (10 ** Math.max(1, precision))
+  if (abs < zeroThreshold) return '0'
+  if (abs >= 1_000_000) {
+    return n.toLocaleString(undefined, {
+      maximumFractionDigits: Math.min(2, precision),
+      minimumFractionDigits: 0,
+    })
+  }
+  return trimFixed(n.toFixed(precision))
+}
+
+function fmtPctDisplay(v: unknown, digits = 2): string {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '-'
+  return `${fmtDisplay(n * 100, digits)}%`
+}
+
+function requestedTopK(req: Record<string, unknown>): number {
+  return Math.max(0, Math.floor(num(req.top_k ?? req.topK, 0)))
+}
+
+function requestedHeatmapBins(req: Record<string, unknown>): number {
+  return Math.max(0, Math.floor(num(req.heatmap_bins ?? req.heatmapBins, 0)))
+}
+
+function objectiveScoreKey(objective: string): string {
+  const obj = text(objective || 'Sharpe')
+  if (obj === 'Pnl') return 'pnl'
+  if (obj === 'Sharpe') return 'sharpe'
+  if (obj === 'Sortino') return 'sortino'
+  if (obj === 'Calmar') return 'calmar'
+  if (obj === 'Omega') return 'omega'
+  if (obj === 'Volatility') return 'volatility'
+  if (obj === 'MaxDrawdown') return 'max_dd'
+  return 'sharpe'
+}
+
 function formatDrillMetricsSummary(metricsRaw: Record<string, unknown>): string {
   const metrics = asRecord(metricsRaw)
   if (!Object.keys(metrics).length) return ''
@@ -229,6 +311,12 @@ function parseIndex(v: unknown): number {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = text(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'Pit') return 'Pit'
+  if (kind === 'Set') return 'Set'
+  if (kind === 'Mts') return 'Mts'
+  if (kind === 'Marrt') return 'Marrt'
+  if (kind === 'Vfct') return 'Vfct'
+  if (kind === 'Rocb') return 'Rocb'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -242,7 +330,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
 
 function isDoubleLikeKind(kindRaw: unknown): boolean {
   const kind = normalizeStrategyKindRaw(kindRaw)
-  return kind === 'DoubleMa' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 }
 
 function markAnalysisVue(store: AnalysisStoreState): void {
@@ -379,8 +467,9 @@ function requestCacheKey(command: string, req: Record<string, unknown>): string 
   }
 }
 
-function collectTopRows(res: Record<string, unknown>): TopRowModel[] {
+function collectTopRows(res: Record<string, unknown>, options: { allowBestFallback?: boolean } = {}): TopRowModel[] {
   const out: TopRowModel[] = []
+  const allowBestFallback = options.allowBestFallback !== false
   const pareto = Array.isArray(res.pareto) ? res.pareto : null
   if (pareto) {
     const pts = pareto.map((entry) => {
@@ -427,7 +516,7 @@ function collectTopRows(res: Record<string, unknown>): TopRowModel[] {
       metrics: asRecord(row[1])
     })
   }
-  if (!out.length) {
+  if (!out.length && allowBestFallback) {
     const p = asRecord(res.best_params)
     const m = asRecord(res.best_metrics)
     if (Object.keys(p).length && Object.keys(m).length) out.push({ rank: 1, params: p, metrics: m })
@@ -567,7 +656,7 @@ function cacheSet(cache: Map<string, unknown>, key: string, value: unknown, max 
 function buildTopRowModelsForCurrentFilters(store: AnalysisStoreState, req: Record<string, unknown>, res: Record<string, unknown>): TopRowModel[] {
   const objective = objectiveOf(req)
   const sort = readSortState(store)
-  const collected = collectTopRows(res)
+  const collected = collectTopRows(res, { allowBestFallback: requestedTopK(req) !== 0 })
   const sorted = sortRows(collected, sort.key, sort.dir, objective)
   const filters = readFilters(store)
   return applyTopFilters(sorted, filters)
@@ -882,9 +971,12 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   const res = asRecord(run.res)
   if (!Object.keys(res).length) return false
 
+  refreshOverviewFromWorkflowRunStore(store, req, res)
+
   const objective = objectiveOf(req)
   const sort = readSortState(store)
-  const collected = collectTopRows(res)
+  const topK = requestedTopK(req)
+  const collected = collectTopRows(res, { allowBestFallback: topK !== 0 })
   const sorted = sortRows(collected, sort.key, sort.dir, objective)
   const filters = readFilters(store)
   const filtered = buildTopRowModelsForCurrentFilters(store, req, res)
@@ -910,34 +1002,34 @@ export function refreshTopTableFromWorkflowRun(): boolean {
             className: 'left mono',
             title: ''
           },
-          { text: fmt(m.pnl, 6), className: 'mono', title: '' },
-          { text: fmtPct(m.pnl, 2), className: 'mono', title: '' },
-          { text: fmt(m.sharpe, 6), className: 'mono', title: '' },
-          { text: fmt(m.max_dd, 6), className: 'mono', title: '' },
+          { text: fmtDisplay(m.pnl, 4), className: 'mono', title: fmt(m.pnl, 6) },
+          { text: fmtPctDisplay(m.pnl, 2), className: 'mono', title: fmtPct(m.pnl, 2) },
+          { text: fmtDisplay(m.sharpe, 4), className: 'mono', title: fmt(m.sharpe, 6) },
+          { text: fmtDisplay(m.max_dd, 4), className: 'mono', title: fmt(m.max_dd, 6) },
           { text: String(num(m.trades, 0)), className: 'mono', title: '' },
-          { text: fmt(m.exposure, 4), className: 'mono', title: '' }
+          { text: fmtDisplay(m.exposure, 4), className: 'mono', title: fmt(m.exposure, 4) }
         ]
         if (!mo)
           cells.push({
-            text: fmt(scoreOf(m, objective), 6),
+            text: fmtDisplay(scoreOf(m, objective), 4),
             className: 'mono',
-            title: ''
+            title: fmt(scoreOf(m, objective), 6)
           })
         else {
           cells.push({
-            text: fmt(d.maximize_value, 6),
+            text: fmtDisplay(d.maximize_value, 4),
             className: 'mono',
-            title: ''
+            title: fmt(d.maximize_value, 6)
           })
           cells.push({
-            text: fmt(d.minimize_value, 6),
+            text: fmtDisplay(d.minimize_value, 4),
             className: 'mono',
-            title: ''
+            title: fmt(d.minimize_value, 6)
           })
           cells.push({
-            text: fmt(d.violation, 6),
+            text: fmtDisplay(d.violation, 4),
             className: 'mono',
-            title: ''
+            title: fmt(d.violation, 6)
           })
         }
         return { selected: index === selectedIndex, cells }
@@ -958,9 +1050,36 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   store.topColumns = topColumnsFor(req, res, sort)
   store.topTableRows = rows
   store.topRows = filtered.length
-  store.topFilterMeta = `showing ${filtered.length}/${sorted.length} rows`
-  store.topSelectionGuardrail = filtered.length ? (hasValidationResult() ? `Validation context loaded for ${text(req.strategy_kind ?? req.strategyKind) || 'DoubleMa'}. Final selection should still include holdout/meta confirmation.` : 'Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust.') : '—'
+  if (!filtered.length && topK === 0 && !Array.isArray(res.pareto)) {
+    const combos = combosOf(res)
+    store.topFilterMeta = combos > 0
+      ? `Top K disabled for this run (top_k=0). Evaluated ${combos} combinations; only the best candidate was returned.`
+      : 'Top K disabled for this run (top_k=0). Only the best candidate was returned.'
+    store.topSelectionGuardrail = 'Set Advanced > Top K above 0, then rerun optimization to inspect a ranked shortlist.'
+  } else {
+    store.topFilterMeta = `showing ${filtered.length}/${sorted.length} rows`
+    store.topSelectionGuardrail = filtered.length
+      ? (hasValidationResult()
+        ? `Validation context loaded for ${text(req.strategy_kind ?? req.strategyKind) || 'DoubleMa'}. Final selection should still include holdout/meta confirmation.`
+        : 'Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust.')
+      : '—'
+  }
   store.canClearTopFilters = Object.keys(filters).length > 0
+  markAnalysisVue(store)
+  return true
+}
+
+export function refreshAnalysisFromWorkflowRun(): boolean {
+  const store = readAnalysisStore()
+  const run = readWorkflowRun()
+  if (!store || !run) return false
+  const req = asRecord(run.req)
+  const res = asRecord(run.res)
+  if (!Object.keys(res).length) return false
+  refreshOverviewFromWorkflowRunStore(store, req, res)
+  refreshTopTableFromWorkflowRun()
+  refreshParetoFromWorkflowRun()
+  refreshHeatmapFromWorkflowRun()
   markAnalysisVue(store)
   return true
 }
@@ -983,6 +1102,59 @@ function runtimeMsOf(res: Record<string, unknown>): number {
   return num(res.runtime_ms, 0)
 }
 
+function formatBestTitle(params: Record<string, unknown>): string {
+  const fastType = text(params.fast_ma_type).toUpperCase() || '?'
+  const fastLen = num(params.fast_len, 0)
+  const slowType = text(params.slow_ma_type).toUpperCase() || '?'
+  const slowLen = num(params.slow_len, 0)
+  return `${fastType} ${fastLen > 0 ? fastLen : '?'} vs ${slowType} ${slowLen > 0 ? slowLen : '?'}`
+}
+
+function buildBestStats(metrics: Record<string, unknown>): Array<{ label: string; value: string; tone: string }> {
+  return [
+    { label: 'PnL', value: fmt(metrics.pnl, 6), tone: 'positive' },
+    { label: 'Return', value: fmtPct(metrics.pnl, 2), tone: 'neutral' },
+    { label: 'Sharpe', value: fmt(metrics.sharpe, 6), tone: 'positive' },
+    { label: 'Max DD', value: fmt(metrics.max_dd, 6), tone: 'danger' },
+    { label: 'Trades', value: String(num(metrics.trades, 0)), tone: 'neutral' },
+    { label: 'Exposure', value: fmt(metrics.exposure, 4), tone: 'neutral' }
+  ].filter((entry) => entry.value && entry.value !== '-')
+}
+
+function refreshOverviewFromWorkflowRunStore(store: AnalysisStoreState, req: Record<string, unknown>, res: Record<string, unknown>): void {
+  const best = pickBest(res, req)
+  const params = best.params || {}
+  const metrics = best.metrics || {}
+  const strategyKind = text(req.strategy_kind ?? req.strategyKind) || 'DoubleMa'
+  const objective = objectiveOf(req)
+  const comboCount = combosOf(res)
+  const runtimeMs = runtimeMsOf(res)
+  const metaParts = [
+    `strategy=${strategyKind}`,
+    objective ? `objective=${objective}` : '',
+    comboCount > 0 ? `combos=${comboCount}` : '',
+    runtimeMs > 0 ? `runtime=${runtimeMs}ms` : ''
+  ].filter((part) => part.length > 0)
+
+  store.bestKicker = isMo(req, res) ? 'Pareto leader' : 'Best candidate'
+  store.bestTitle = formatBestTitle(params)
+  store.bestMeta = metaParts.join(' · ') || 'Optimization result loaded.'
+  store.bestStats = markRawEntity(buildBestStats(metrics))
+  store.bestSummary = [
+    `strategy=${strategyKind}`,
+    `title=${formatBestTitle(params)}`,
+    objective ? `objective=${objective}` : '',
+    `pnl=${fmt(metrics.pnl, 6)}`,
+    `return=${fmtPct(metrics.pnl, 2)}`,
+    `sharpe=${fmt(metrics.sharpe, 6)}`,
+    `max_dd=${fmt(metrics.max_dd, 6)}`,
+    `trades=${num(metrics.trades, 0)}`,
+    `exposure=${fmt(metrics.exposure, 4)}`,
+    comboCount > 0 ? `combos=${comboCount}` : '',
+    runtimeMs > 0 ? `runtime_ms=${runtimeMs}` : ''
+  ].filter((part) => part.length > 0).join('\n')
+}
+
 function pickBest(res: Record<string, unknown>, req: Record<string, unknown>): { params: Record<string, unknown>; metrics: Record<string, unknown> } {
   if (isMo(req, res) && Array.isArray(res.pareto) && res.pareto.length > 0) {
     const rows = collectTopRows(res)
@@ -999,6 +1171,571 @@ function pickBest(res: Record<string, unknown>, req: Record<string, unknown>): {
   const top = Array.isArray(res.top) ? res.top : []
   const first = Array.isArray(top[0]) ? (top[0] as unknown[]) : []
   return { params: asRecord(first[0]), metrics: asRecord(first[1]) }
+}
+
+function paretoAxisOptionsFor(req: Record<string, unknown>, res: Record<string, unknown>): Array<{ value: string; label: string; disabled: boolean }> {
+  const base = [
+    { value: 'pnl', label: 'PnL', disabled: false },
+    { value: 'sharpe', label: 'Sharpe', disabled: false },
+    { value: 'max_dd', label: 'Max DD', disabled: false },
+    { value: 'trades', label: 'Trades', disabled: false },
+    { value: 'exposure', label: 'Exposure', disabled: false },
+    { value: 'score', label: 'Score', disabled: false },
+  ]
+  if (isMo(req, res)) {
+    return [
+      ...base,
+      { value: 'maximize_value', label: 'Max objective', disabled: false },
+      { value: 'minimize_value', label: 'Min objective', disabled: false },
+      { value: 'violation', label: 'Violation', disabled: false },
+    ]
+  }
+  return base
+}
+
+function paretoAxisValue(row: TopRowModel, req: Record<string, unknown>, keyRaw: unknown): number {
+  const key = text(keyRaw || 'pnl') || 'pnl'
+  if (key === 'maximize_value') return num(row.mo?.maximize_value, Number.NaN)
+  if (key === 'minimize_value') return num(row.mo?.minimize_value, Number.NaN)
+  if (key === 'violation') return num(row.mo?.violation, Number.NaN)
+  if (key === 'score') return scoreOf(row.metrics || {}, objectiveOf(req))
+  return num((row.metrics || {})[key], Number.NaN)
+}
+
+function renderParetoCanvas(store: AnalysisStoreState, req: Record<string, unknown>, res: Record<string, unknown>): boolean {
+  const wrap = byIds<HTMLElement>(['paretoWrapVue'])
+  const metaEl = byIds<HTMLElement>(['paretoMetaVue'])
+  const canvas = byIds<HTMLCanvasElement>(['paretoCanvasVue'])
+  if (!wrap || !metaEl || !canvas) return false
+
+  const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 512)
+  const xKey = text(store.paretoX || 'max_dd') || 'max_dd'
+  const yKey = text(store.paretoY || 'pnl') || 'pnl'
+  const points = rows
+    .map((row, index) => ({
+      index,
+      row,
+      x: paretoAxisValue(row, req, xKey),
+      y: paretoAxisValue(row, req, yKey),
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+
+  if (!points.length) {
+    wrap.style.display = 'none'
+    store.paretoWrapVisible = false
+    store.paretoMeta = 'Pareto scatter unavailable for this run.'
+    metaEl.textContent = text(store.paretoMeta)
+    return true
+  }
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
+  const width = canvas.width
+  const height = canvas.height
+  const padding = { left: 56, right: 18, top: 18, bottom: 34 }
+  const plotWidth = Math.max(1, width - padding.left - padding.right)
+  const plotHeight = Math.max(1, height - padding.top - padding.bottom)
+  const xs = points.map((point) => point.x)
+  const ys = points.map((point) => point.y)
+  let xMin = Math.min(...xs)
+  let xMax = Math.max(...xs)
+  let yMin = Math.min(...ys)
+  let yMax = Math.max(...ys)
+  if (xMin === xMax) { xMin -= 1; xMax += 1 }
+  if (yMin === yMax) { yMin -= 1; yMax += 1 }
+
+  const xPad = (xMax - xMin) * 0.08
+  const yPad = (yMax - yMin) * 0.08
+  xMin -= xPad
+  xMax += xPad
+  yMin -= yPad
+  yMax += yPad
+
+  const toX = (value: number): number => padding.left + (((value - xMin) / Math.max(1e-12, xMax - xMin)) * plotWidth)
+  const toY = (value: number): number => padding.top + (plotHeight - (((value - yMin) / Math.max(1e-12, yMax - yMin)) * plotHeight))
+
+  ctx.clearRect(0, 0, width, height)
+  ctx.fillStyle = 'rgba(248, 250, 252, 0.02)'
+  ctx.fillRect(padding.left, padding.top, plotWidth, plotHeight)
+  ctx.strokeStyle = 'rgba(118, 140, 166, 0.32)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(padding.left, padding.top, plotWidth, plotHeight)
+
+  ctx.font = '11px ui-monospace, monospace'
+  ctx.fillStyle = 'rgba(118, 140, 166, 0.92)'
+  ctx.fillText(xKey, width - padding.right - 48, height - 8)
+  ctx.save()
+  ctx.translate(13, padding.top + (plotHeight / 2))
+  ctx.rotate(-Math.PI / 2)
+  ctx.fillText(yKey, 0, 0)
+  ctx.restore()
+  ctx.fillText(fmtDisplay(xMin, 3), padding.left, height - 8)
+  ctx.fillText(fmtDisplay(xMax, 3), width - padding.right - 42, height - 8)
+  ctx.fillText(fmtDisplay(yMax, 3), 8, padding.top + 4)
+  ctx.fillText(fmtDisplay(yMin, 3), 8, padding.top + plotHeight)
+
+  const frontier = [...points].sort((left, right) => left.x - right.x)
+  ctx.strokeStyle = 'rgba(82, 164, 255, 0.55)'
+  ctx.lineWidth = 1.25
+  ctx.beginPath()
+  frontier.forEach((point, index) => {
+    const x = toX(point.x)
+    const y = toY(point.y)
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.stroke()
+
+  const clickable: Array<{ x: number; y: number; row: TopRowModel }> = []
+  for (const point of points) {
+    const x = toX(point.x)
+    const y = toY(point.y)
+    clickable.push({ x, y, row: point.row })
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.88)'
+    ctx.beginPath()
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  canvas.onclick = (event: MouseEvent) => {
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const px = ((event.clientX - rect.left) / rect.width) * width
+    const py = ((event.clientY - rect.top) / rect.height) * height
+    let best: { row: TopRowModel; dist: number } | null = null
+    for (const point of clickable) {
+      const dx = point.x - px
+      const dy = point.y - py
+      const dist = Math.sqrt((dx * dx) + (dy * dy))
+      if (!best || dist < best.dist) best = { row: point.row, dist }
+    }
+    if (!best || best.dist > 18) return
+    const pinia = getActivePinia()
+    if (pinia) {
+      const workflowStore = useWorkflowStore(pinia)
+      workflowStore.selectResultsTab('drill', { persist: false })
+    }
+    void runVueDrillPipeline(0, best.row)
+  }
+
+  wrap.style.display = 'block'
+  store.paretoWrapVisible = true
+  store.paretoMeta = `${points.length} points • x=${xKey} (${fmtDisplay(xMin, 3)} to ${fmtDisplay(xMax, 3)}) • y=${yKey} (${fmtDisplay(yMin, 3)} to ${fmtDisplay(yMax, 3)})`
+  metaEl.textContent = text(store.paretoMeta)
+  return true
+}
+
+export function refreshParetoFromWorkflowRun(): boolean {
+  const store = readAnalysisStore()
+  const run = readWorkflowRun()
+  if (!store || !run) return false
+  const req = asRecord(run.req)
+  const res = asRecord(run.res)
+  if (!Object.keys(res).length) return false
+  const options = paretoAxisOptionsFor(req, res)
+  store.paretoXOptions = options
+  store.paretoYOptions = options
+  const validKeys = new Set(options.map((option) => option.value))
+  if (!validKeys.has(text(store.paretoX))) store.paretoX = isMo(req, res) ? 'maximize_value' : 'max_dd'
+  if (!validKeys.has(text(store.paretoY))) store.paretoY = isMo(req, res) ? 'minimize_value' : 'pnl'
+  const ok = renderParetoCanvas(store, req, res)
+  markAnalysisVue(store)
+  return ok
+}
+
+function readHeatmapModel(res: Record<string, unknown>): HeatmapModel | null {
+  const heatmap = asRecord(res.heatmap)
+  if (!Object.keys(heatmap).length) return null
+  const binsFast = Math.max(0, Math.floor(num(heatmap.bins_fast, 0)))
+  const binsSlow = Math.max(0, Math.floor(num(heatmap.bins_slow, 0)))
+  const fastMin = Math.max(0, Math.floor(num(heatmap.fast_min, 0)))
+  const fastMax = Math.max(0, Math.floor(num(heatmap.fast_max, 0)))
+  const slowMin = Math.max(0, Math.floor(num(heatmap.slow_min, 0)))
+  const slowMax = Math.max(0, Math.floor(num(heatmap.slow_max, 0)))
+  const rawValues = Array.isArray(heatmap.values) ? heatmap.values : []
+  if (binsFast <= 0 || binsSlow <= 0 || !rawValues.length) return null
+  return {
+    binsFast,
+    binsSlow,
+    fastMin,
+    fastMax,
+    slowMin,
+    slowMax,
+    values: rawValues.map((value) => {
+      if (value == null) return null
+      const next = Number(value)
+      return Number.isFinite(next) ? next : null
+    }),
+  }
+}
+
+function finiteHeatmapValues(model: HeatmapModel): number[] {
+  const out: number[] = []
+  for (const value of model.values) {
+    if (typeof value === 'number' && Number.isFinite(value)) out.push(value)
+  }
+  return out
+}
+
+function quantile(sorted: number[], p: number): number {
+  if (!sorted.length) return 0
+  const clamped = Math.max(0, Math.min(1, p))
+  const pos = (sorted.length - 1) * clamped
+  const base = Math.floor(pos)
+  const frac = pos - base
+  const left = sorted[base] ?? sorted[0] ?? 0
+  const right = sorted[Math.min(sorted.length - 1, base + 1)] ?? left
+  return left + ((right - left) * frac)
+}
+
+function resolveHeatmapRange(values: number[]): { min: number; max: number; label: string } {
+  if (!values.length) return { min: -1, max: 1, label: 'zero-centered' }
+  const magnitudes = values.map((value) => Math.abs(value)).sort((a, b) => a - b)
+  const maxAbs = Math.max(1e-12, quantile(magnitudes, 0.98), magnitudes[magnitudes.length - 1] ?? 1)
+  return { min: -maxAbs, max: maxAbs, label: 'zero-centered' }
+}
+
+function heatmapPalette(): { negative: string; zero: string; positive: string } {
+  return {
+    negative: '#b91c1c',
+    zero: '#2563eb',
+    positive: '#15803d',
+  }
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const normalized = hex.replace('#', '').trim()
+  const chunk = normalized.length === 3
+    ? normalized.split('').map((value) => `${value}${value}`).join('')
+    : normalized.padStart(6, '0').slice(0, 6)
+  const numValue = Number.parseInt(chunk, 16)
+  return {
+    r: (numValue >> 16) & 0xff,
+    g: (numValue >> 8) & 0xff,
+    b: numValue & 0xff,
+  }
+}
+
+function rgbToCss(rgb: { r: number; g: number; b: number }, alpha = 1): string {
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${Math.max(0, Math.min(1, alpha))})`
+}
+
+function sampleHeatmapColor(value: number, maxAbs: number, palette: { negative: string; zero: string; positive: string }): string {
+  const anchor = Math.max(1e-12, Math.abs(maxAbs))
+  const zero = hexToRgb(palette.zero)
+  if (value <= 0) {
+    const neg = hexToRgb(palette.negative)
+    const ratio = Math.max(0, Math.min(1, Math.abs(value) / anchor))
+    return rgbToCss({
+      r: Math.round(zero.r + ((neg.r - zero.r) * ratio)),
+      g: Math.round(zero.g + ((neg.g - zero.g) * ratio)),
+      b: Math.round(zero.b + ((neg.b - zero.b) * ratio)),
+    })
+  }
+  const pos = hexToRgb(palette.positive)
+  const ratio = Math.max(0, Math.min(1, value / anchor))
+  return rgbToCss({
+    r: Math.round(zero.r + ((pos.r - zero.r) * ratio)),
+    g: Math.round(zero.g + ((pos.g - zero.g) * ratio)),
+    b: Math.round(zero.b + ((pos.b - zero.b) * ratio)),
+  })
+}
+
+function heatmapIndex(model: HeatmapModel, logicalRow: number, col: number): number {
+  return (logicalRow * model.binsFast) + col
+}
+
+function fastForHeatmapCol(model: HeatmapModel, col: number): number {
+  if (model.binsFast <= 1) return model.fastMin
+  const ratio = col / Math.max(1, model.binsFast - 1)
+  return Math.round(model.fastMin + ((model.fastMax - model.fastMin) * ratio))
+}
+
+function slowForHeatmapLogicalRow(model: HeatmapModel, logicalRow: number): number {
+  if (model.binsSlow <= 1) return model.slowMin
+  const ratio = logicalRow / Math.max(1, model.binsSlow - 1)
+  return Math.round(model.slowMin + ((model.slowMax - model.slowMin) * ratio))
+}
+
+function heatmapColForFast(model: HeatmapModel, fast: number): number {
+  if (model.binsFast <= 1 || model.fastMax <= model.fastMin) return 0
+  const ratio = (fast - model.fastMin) / Math.max(1, model.fastMax - model.fastMin)
+  return Math.max(0, Math.min(model.binsFast - 1, Math.round(ratio * (model.binsFast - 1))))
+}
+
+function heatmapLogicalRowForSlow(model: HeatmapModel, slow: number): number {
+  if (model.binsSlow <= 1 || model.slowMax <= model.slowMin) return 0
+  const ratio = (slow - model.slowMin) / Math.max(1, model.slowMax - model.slowMin)
+  return Math.max(0, Math.min(model.binsSlow - 1, Math.round(ratio * (model.binsSlow - 1))))
+}
+
+function renderHeatmapLegend(min: number, max: number, palette: { negative: string; zero: string; positive: string }): void {
+  const legend = byIds<HTMLCanvasElement>(['heatmapLegendVue'])
+  if (!legend) return
+  const ctx = legend.getContext('2d')
+  if (!ctx) return
+  const width = legend.width
+  const height = legend.height
+  const gradient = ctx.createLinearGradient(0, 0, width, 0)
+  gradient.addColorStop(0, palette.negative)
+  gradient.addColorStop(0.5, palette.zero)
+  gradient.addColorStop(1, palette.positive)
+  ctx.clearRect(0, 0, width, height)
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, width, height)
+  const minLabel = byIds<HTMLElement>(['heatmapLegendMinVue'])
+  const midLabel = byIds<HTMLElement>(['heatmapLegendMidVue'])
+  const maxLabel = byIds<HTMLElement>(['heatmapLegendMaxVue'])
+  if (minLabel) minLabel.textContent = fmtDisplay(min, 4)
+  if (midLabel) midLabel.textContent = fmtDisplay((min + max) / 2, 4)
+  if (maxLabel) maxLabel.textContent = fmtDisplay(max, 4)
+}
+
+function heatmapMarkerRows(res: Record<string, unknown>, model: HeatmapModel): Array<{ col: number; drawRow: number; label: string }> {
+  const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 8)
+  const out: Array<{ col: number; drawRow: number; label: string }> = []
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i]
+    if (!row) continue
+    const fast = Math.max(0, Math.floor(num(row.params.fast_len, 0)))
+    const slow = Math.max(0, Math.floor(num(row.params.slow_len, 0)))
+    if (fast <= 0 || slow <= 0) continue
+    const col = heatmapColForFast(model, fast)
+    const logicalRow = heatmapLogicalRowForSlow(model, slow)
+    out.push({
+      col,
+      drawRow: model.binsSlow - 1 - logicalRow,
+      label: String(i + 1),
+    })
+  }
+  return out
+}
+
+function hideHeatmapTooltip(): void {
+  const tooltip = byIds<HTMLElement>(['heatmapTooltipVue'])
+  if (tooltip) tooltip.style.display = 'none'
+}
+
+function buildHeatmapCellParams(req: Record<string, unknown>, model: HeatmapModel, col: number, logicalRow: number): Record<string, unknown> {
+  const fast = fastForHeatmapCol(model, col)
+  const slowBase = slowForHeatmapLogicalRow(model, logicalRow)
+  const slow = Math.max(slowBase, fast + 1)
+  return {
+    fast_len: fast,
+    fast_ma_type: text(Array.isArray(req.fast_ma_types) ? req.fast_ma_types[0] : req.fast_ma_type) || '?',
+    slow_len: slow,
+    slow_ma_type: text(Array.isArray(req.slow_ma_types) ? req.slow_ma_types[0] : req.slow_ma_type) || '?',
+    fast_ma_params: req.fast_ma_params ?? req.fastMaParams ?? null,
+    slow_ma_params: req.slow_ma_params ?? req.slowMaParams ?? null,
+  }
+}
+
+function renderHeatmapCanvas(store: AnalysisStoreState, req: Record<string, unknown>, res: Record<string, unknown>): boolean {
+  const model = readHeatmapModel(res)
+  const wrap = byIds<HTMLElement>(['heatmapWrapVue'])
+  const hint = byIds<HTMLElement>(['heatmapEmptyHintVue'])
+  const meta = byIds<HTMLElement>(['heatmapMetaVue'])
+  const canvas = byIds<HTMLCanvasElement>(['heatmapCanvasVue'])
+  const overlay = byIds<HTMLCanvasElement>(['heatmapOverlayVue'])
+  const tooltip = byIds<HTMLElement>(['heatmapTooltipVue'])
+  if (!wrap || !hint || !meta || !canvas || !overlay || !tooltip) return false
+
+  const topK = requestedTopK(req)
+  const heatmapBins = requestedHeatmapBins(req)
+  if (!model) {
+    wrap.style.display = 'none'
+    hint.style.display = 'block'
+    store.heatmapWrapVisible = false
+    store.canHeatmapExportPng = false
+    store.heatmapStatusLine = heatmapBins <= 0
+      ? 'Heatmap disabled for this run. Increase Advanced > Heatmap bins above 0, then rerun optimization.'
+      : 'No heatmap payload was returned for this run.'
+    store.heatmapMeta = heatmapBins <= 0
+      ? 'Heatmap disabled for this run (heatmap_bins=0).'
+      : 'Heatmap data unavailable for this run.'
+    if (meta) meta.textContent = text(store.heatmapMeta)
+    hideHeatmapTooltip()
+    return true
+  }
+
+  const finite = finiteHeatmapValues(model)
+  if (!finite.length) {
+    wrap.style.display = 'none'
+    hint.style.display = 'block'
+    store.heatmapWrapVisible = false
+    store.canHeatmapExportPng = false
+    store.heatmapMeta = 'Heatmap payload was returned, but it contained no populated cells.'
+    store.heatmapStatusLine = 'Heatmap unavailable for this run.'
+    meta.textContent = text(store.heatmapMeta)
+    hideHeatmapTooltip()
+    return true
+  }
+
+  const range = resolveHeatmapRange(finite)
+  const palette = heatmapPalette()
+  const width = canvas.width
+  const height = canvas.height
+  const ctx = canvas.getContext('2d')
+  const overlayCtx = overlay.getContext('2d')
+  if (!ctx || !overlayCtx) return false
+
+  const cellW = width / Math.max(1, model.binsFast)
+  const cellH = height / Math.max(1, model.binsSlow)
+
+  ctx.clearRect(0, 0, width, height)
+  for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
+    const drawRow = model.binsSlow - 1 - logicalRow
+    for (let col = 0; col < model.binsFast; col += 1) {
+      const value = model.values[heatmapIndex(model, logicalRow, col)]
+      const x = col * cellW
+      const y = drawRow * cellH
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        ctx.fillStyle = 'rgba(82, 96, 118, 0.12)'
+        ctx.fillRect(x, y, cellW, cellH)
+        continue
+      }
+      ctx.fillStyle = sampleHeatmapColor(value, Math.max(Math.abs(range.min), Math.abs(range.max)), palette)
+      ctx.fillRect(x, y, cellW, cellH)
+    }
+  }
+
+  const markers = heatmapMarkerRows(res, model)
+  const paintOverlay = (): void => {
+    overlayCtx.clearRect(0, 0, width, height)
+    for (const marker of markers) {
+      const cx = ((marker.col + 0.5) * cellW)
+      const cy = ((marker.drawRow + 0.5) * cellH)
+      overlayCtx.fillStyle = 'rgba(248, 250, 252, 0.95)'
+      overlayCtx.beginPath()
+      overlayCtx.arc(cx, cy, Math.max(3, Math.min(cellW, cellH) * 0.18), 0, Math.PI * 2)
+      overlayCtx.fill()
+      overlayCtx.strokeStyle = 'rgba(15, 23, 42, 0.95)'
+      overlayCtx.lineWidth = 1
+      overlayCtx.stroke()
+      overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.95)'
+      overlayCtx.font = '11px ui-monospace, monospace'
+      overlayCtx.fillText(marker.label, cx + 5, cy - 5)
+    }
+
+    if (!heatmapHoverCell) return
+    const hoverX = heatmapHoverCell.col * cellW
+    const hoverY = heatmapHoverCell.row * cellH
+    overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.95)'
+    overlayCtx.lineWidth = 1.5
+    overlayCtx.strokeRect(hoverX + 0.5, hoverY + 0.5, Math.max(0, cellW - 1), Math.max(0, cellH - 1))
+    overlayCtx.beginPath()
+    overlayCtx.moveTo(hoverX + (cellW / 2), 0)
+    overlayCtx.lineTo(hoverX + (cellW / 2), height)
+    overlayCtx.moveTo(0, hoverY + (cellH / 2))
+    overlayCtx.lineTo(width, hoverY + (cellH / 2))
+    overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.28)'
+    overlayCtx.stroke()
+  }
+
+  paintOverlay()
+
+  overlay.onmouseleave = () => {
+    heatmapHoverCell = null
+    hideHeatmapTooltip()
+    paintOverlay()
+  }
+
+  overlay.onmousemove = (event: MouseEvent) => {
+    const rect = overlay.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const col = Math.max(0, Math.min(model.binsFast - 1, Math.floor(((event.clientX - rect.left) / rect.width) * model.binsFast)))
+    const drawRow = Math.max(0, Math.min(model.binsSlow - 1, Math.floor(((event.clientY - rect.top) / rect.height) * model.binsSlow)))
+    const logicalRow = model.binsSlow - 1 - drawRow
+    const value = model.values[heatmapIndex(model, logicalRow, col)]
+    heatmapHoverCell = { col, row: drawRow }
+    const fast = fastForHeatmapCol(model, col)
+    const slow = slowForHeatmapLogicalRow(model, logicalRow)
+    tooltip.style.display = 'block'
+    tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`
+    tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`
+    tooltip.textContent = `${text(Array.isArray(req.fast_ma_types) ? req.fast_ma_types[0] : req.fast_ma_type).toUpperCase() || 'FAST'} ${fast} · ${text(Array.isArray(req.slow_ma_types) ? req.slow_ma_types[0] : req.slow_ma_type).toUpperCase() || 'SLOW'} ${slow} · ${objectiveOf(req)} ${fmtDisplay(value, 4)}`
+    paintOverlay()
+  }
+
+  overlay.onclick = (event: MouseEvent) => {
+    const rect = overlay.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const col = Math.max(0, Math.min(model.binsFast - 1, Math.floor(((event.clientX - rect.left) / rect.width) * model.binsFast)))
+    const drawRow = Math.max(0, Math.min(model.binsSlow - 1, Math.floor(((event.clientY - rect.top) / rect.height) * model.binsSlow)))
+    const logicalRow = model.binsSlow - 1 - drawRow
+    const value = model.values[heatmapIndex(model, logicalRow, col)]
+    if (typeof value !== 'number' || !Number.isFinite(value)) return
+    const params = buildHeatmapCellParams(req, model, col, logicalRow)
+    const objective = objectiveOf(req)
+    const metrics: Record<string, unknown> = { [objectiveScoreKey(objective)]: value }
+    const pinia = getActivePinia()
+    if (pinia) {
+      const workflowStore = useWorkflowStore(pinia)
+      workflowStore.selectResultsTab('drill', { persist: false })
+    }
+    void runVueDrillPipeline(0, { rank: 1, params, metrics })
+  }
+
+  wrap.style.display = 'block'
+  hint.style.display = 'none'
+  renderHeatmapLegend(range.min, range.max, palette)
+  store.heatmapWrapVisible = true
+  store.canHeatmapExportPng = true
+  store.heatmapMeta = `${objectiveOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label}`
+  store.heatmapStatusLine = topK === 0
+    ? 'Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only.'
+    : 'Heatmap ready. Hover for values and click a populated cell to drill down.'
+  meta.textContent = text(store.heatmapMeta)
+  return true
+}
+
+export function refreshHeatmapFromWorkflowRun(): boolean {
+  const store = readAnalysisStore()
+  const run = readWorkflowRun()
+  if (!store || !run) return false
+  const req = asRecord(run.req)
+  const res = asRecord(run.res)
+  if (!Object.keys(res).length) return false
+
+  store.heatmapColor = 'diverging_zero'
+  store.heatmapRange = 'zero_centered'
+  store.heatmapShowTop = 'true'
+  store.heatmapShowCrosshair = 'true'
+  store.heatmapColorOptions = [
+    { value: 'diverging_zero', label: 'Diverging zero-centered', disabled: false },
+  ]
+  store.heatmapRangeOptions = [
+    { value: 'zero_centered', label: 'Zero-centered', disabled: false },
+  ]
+  store.heatmapShowTopOptions = [
+    { value: 'true', label: 'Show markers', disabled: false },
+  ]
+  store.heatmapShowCrosshairOptions = [
+    { value: 'true', label: 'Show crosshair', disabled: false },
+  ]
+
+  const requestedBins = requestedHeatmapBins(req)
+  const model = readHeatmapModel(res)
+  if (requestedBins <= 0) {
+    store.heatmapWrapVisible = false
+    store.canHeatmapExportPng = false
+    store.heatmapMeta = 'Heatmap disabled for this run (heatmap_bins=0).'
+    store.heatmapStatusLine = 'Increase Advanced > Heatmap bins above 0, then rerun optimization to generate a heatmap.'
+  } else if (model) {
+    store.heatmapWrapVisible = true
+    store.canHeatmapExportPng = true
+    store.heatmapMeta = `${objectiveOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax}`
+    store.heatmapStatusLine = 'Heatmap available.'
+  } else {
+    store.heatmapWrapVisible = false
+    store.canHeatmapExportPng = false
+    store.heatmapMeta = 'Heatmap data unavailable for this run.'
+    store.heatmapStatusLine = 'No heatmap payload was returned for this run.'
+  }
+
+  const ok = renderHeatmapCanvas(store, req, res)
+  markAnalysisVue(store)
+  return ok
 }
 
 function stableStringify(value: unknown): string {
@@ -2195,9 +2932,13 @@ export async function exportTopCsv(): Promise<void> {
     setStatus(store, 'No result to export yet.')
     return
   }
+  if (requestedTopK(req) === 0 && !Array.isArray(res.pareto)) {
+    setStatus(store, 'Top CSV unavailable for this run because Top K was set to 0.')
+    return
+  }
   const objective = objectiveOf(req)
   const sort = store ? readSortState(store) : { key: 'rank', dir: 'asc' as const }
-  const rows = applyTopFilters(sortRows(collectTopRows(res), sort.key, sort.dir, objective), store ? readFilters(store) : {})
+  const rows = applyTopFilters(sortRows(collectTopRows(res, { allowBestFallback: false }), sort.key, sort.dir, objective), store ? readFilters(store) : {})
   const seed = startEq(req)
   const lines = ['rank,fast_ma,fast_len,slow_ma,slow_len,pnl,pnl_pct,final_equity,sharpe,max_dd,trades,exposure,net_exposure,score,params_json']
   for (const row of rows) {
@@ -2359,9 +3100,9 @@ export async function rerenderDrill(): Promise<void> {
 }
 
 export async function drillClearTradeSelection(): Promise<void> {
-  if (typeof document !== 'undefined') {
-    const polygonModal = byIds<HTMLElement>(['polygonModal'])
-    if (polygonModal?.classList.contains('open')) return
+  const pinia = getActivePinia()
+  if (pinia && useDataStore(pinia).polygonOpen) {
+    return
   }
   if (clearDrillTradeSelectionDom()) {
     setStatus(readAnalysisStore(), 'Cleared trade selection.')

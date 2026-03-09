@@ -3,7 +3,6 @@ import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { useAdvancedStore } from './advancedStore'
 import { useAnalysisStore } from './analysisStore'
 import { useDataStore } from './dataStore'
-import { useDistributedStore } from './distributedStore'
 import { useExecutionStore } from './executionStore'
 import { useHistoryStore } from './historyStore'
 import { useOptimizeStore } from './optimizeStore'
@@ -56,7 +55,7 @@ describe('domain stores', () => {
     expect(store.datasetLabel).toBe('AAPL')
     expect(store.dataTimeframe).toBe('5m')
     expect(store.dataFields).toContain('close')
-    expect(store.canApplyTimeframe).toBe(false)
+    expect(store.canApplyTimeframe).toBe(true)
     expect(store.statusLine).toBe('Loaded.')
     expect(store.source).toBe('vue')
   })
@@ -69,7 +68,6 @@ describe('domain stores', () => {
       strategyHint: 'Double MA crossover',
       presetProfile: 'Balanced',
       backend: 'CpuOnly',
-      deviceId: '0',
       fastStep: '1',
       slowStep: '2',
       pairsPreview: 'Pairs: 100',
@@ -87,7 +85,6 @@ describe('domain stores', () => {
     expect(store.strategyHint).toContain('Double')
     expect(store.presetProfile).toBe('Balanced')
     expect(store.backend).toBe('CpuOnly')
-    expect(store.deviceId).toBe('0')
     expect(store.fastStep).toBe('1')
     expect(store.slowStep).toBe('2')
     expect(store.pairsPreview).toContain('100')
@@ -521,22 +518,6 @@ describe('domain stores', () => {
     expect(store.exitMode).toBe('kaufman_stop')
     expect(store.kaufmanStopMaType).toBe('ema')
     expect(store.dmConstraintsVisible).toBe(false)
-  })
-
-  it('applies distributed snapshot from legacy bridge', () => {
-    const store = useDistributedStore()
-    store.applyLegacySnapshot({
-      activeControlsTab: 'distributed',
-      leaderMode: 'tiles',
-      workersCount: 3,
-      assetPathCount: 21,
-      canCancel: true,
-    })
-    expect(store.activeControlsTab).toBe('distributed')
-    expect(store.leaderMode).toBe('tiles')
-    expect(store.workersCount).toBe(3)
-    expect(store.assetPathCount).toBe(21)
-    expect(store.canCancel).toBe(true)
   })
 
   it('applies execution snapshot from legacy bridge', () => {

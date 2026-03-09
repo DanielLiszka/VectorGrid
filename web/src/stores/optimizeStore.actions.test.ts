@@ -33,9 +33,10 @@ const defaultGpuStatusSummary: GpuStatusSummary = {
   builtWithCuda: true,
   builtWithCudaBacktestKernel: true,
   cudaAvailable: true,
-  lastUsedBackend: 'GpuKernel',
-  lastUsedDeviceId: '0',
-  text: 'GPU: build=cuda | kernel=on | cuda_available=true | last_used=GpuKernel/0',
+  autoDeviceName: 'NVIDIA RTX 4090',
+  autoDeviceMemoryBytes: 24 * 1024 * 1024 * 1024,
+  deviceMeta: 'Automatic CUDA device: NVIDIA RTX 4090 (24 GB).',
+  text: 'GPU: build=cuda | kernel=on | cuda_available=true',
 }
 
 interface LegacyField {

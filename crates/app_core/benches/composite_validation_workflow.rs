@@ -62,7 +62,9 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
             slow_len,
             halftrend,
             asr: None,
+            vcc: None,
             vemr: None,
+            rocb: None,
             macz,
             ott,
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -101,6 +103,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        validation_context: None,
     };
 
     group.bench_function("wf_only", |b| {

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useUiReadiness } from '../composables/useUiReadiness'
+import { refreshParetoFromWorkflowRun } from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -12,13 +14,13 @@ interface OptionItem {
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
+const { paretoStage } = useUiReadiness()
 const {
   paretoX,
   paretoY,
   paretoXOptions,
   paretoYOptions,
   paretoMeta,
-  paretoWrapVisible,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(analysisStore)
@@ -76,10 +78,14 @@ function resolveMount(): void {
 onMounted(async () => {
   await nextTick()
   resolveMount()
-  // Ask legacy render path to repaint once Vue chart host exists.
-  window.setTimeout(() => {
-    setSelectValue('paretoX', xDraft.value || 'max_dd')
-  }, 0)
+  await nextTick()
+  refreshParetoFromWorkflowRun()
+})
+
+watch(visible, async (nextVisible) => {
+  if (!nextVisible) return
+  await nextTick()
+  refreshParetoFromWorkflowRun()
 })
 
 onBeforeUnmount(() => {
@@ -98,7 +104,7 @@ onBeforeUnmount(() => {
         <div class="meta mono">{{ stamp }}</div>
       </header>
 
-      <section class="pane">
+      <section v-if="paretoStage === 'ready'" class="pane">
         <div class="gridTwo">
           <div>
             <label for="vueParetoX">X axis</label>
@@ -137,13 +143,24 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="metaLine mono">{{ paretoMeta }}</div>
-        <div class="metaLine mono">Chart visible: {{ paretoWrapVisible ? 'yes' : 'no' }}</div>
       </section>
 
       <section class="pane">
         <h3>Pareto Chart</h3>
-        <div id="paretoEmptyHintVue" class="muted" style="font-size: 0.8rem;">Run an optimization to generate Pareto points.</div>
-        <div id="paretoWrapVue" style="margin-top: 0.75rem; display: none;">
+        <div v-if="paretoStage !== 'ready'" class="emptyState">
+          <div class="emptyTitle">
+            {{ paretoStage === 'no_data' ? 'Load data before opening the Pareto view.' : 'Run an optimization to generate Pareto points.' }}
+          </div>
+          <div class="emptyBody">
+            {{
+              paretoStage === 'no_data'
+                ? 'The Pareto frontier appears after a dataset is loaded and scored.'
+                : 'This view compares tradeoffs between competing candidates once optimization results are available.'
+            }}
+          </div>
+          <div class="muted mono">{{ statusLine }}</div>
+        </div>
+        <div v-else id="paretoWrapVue" style="margin-top: 0.75rem; display: none;">
           <div class="muted" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="paretoMetaVue">-</div>
           <canvas id="paretoCanvasVue" class="chart" width="1024" height="240"></canvas>
           <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Click a point to drill down that parameter pair.</div>

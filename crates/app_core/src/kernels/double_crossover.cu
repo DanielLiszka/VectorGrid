@@ -16,6 +16,19 @@
 #define NEG_INF_F (-1.0f / 0.0f)
 #endif
 
+#ifndef STRAT_LONG_ONLY
+#define STRAT_LONG_ONLY              (1u<<0)
+#endif
+#ifndef STRAT_NO_FLIP
+#define STRAT_NO_FLIP                (1u<<1)
+#endif
+#ifndef STRAT_TRADE_ON_NEXT_BAR
+#define STRAT_TRADE_ON_NEXT_BAR      (1u<<2)
+#endif
+#ifndef STRAT_SIGNED_EXPOSURE
+#define STRAT_SIGNED_EXPOSURE        (1u<<4)
+#endif
+
 
 
 
@@ -24,6 +37,255 @@ static __device__ __forceinline__ int sgn_eps(float f, float s, float eps) {
         return (f > s) - (f < s);
     }
     return (f > s + eps) - (f < s - eps);
+}
+
+extern "C" __global__
+void rocb_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ upper_row_major,
+    const float* __restrict__ lower_row_major,
+    int channel_rows,
+    int channel_stride,
+    const float* __restrict__ atr_row_major,
+    int atr_rows,
+    int atr_stride,
+    const int* __restrict__ combo_channel_row_idx,
+    const int* __restrict__ combo_atr_row_idx,
+    const int* __restrict__ combo_start_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float atr_stop_mult,
+    int max_trade_bars,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int channel_row = combo_channel_row_idx[idx];
+    const int atr_row = combo_atr_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (channel_row < 0 || channel_row >= channel_rows || atr_row < 0 || atr_row >= atr_rows || start_t < 0 || start_t >= T) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ upper = upper_row_major + ((size_t)channel_row * (size_t)channel_stride);
+    const float* __restrict__ lower = lower_row_major + ((size_t)channel_row * (size_t)channel_stride);
+    const float* __restrict__ atr = atr_row_major + ((size_t)atr_row * (size_t)atr_stride);
+
+    int pos_signal = 0;
+    int bars_in_trade = 0;
+    float entry_price = NAN;
+
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const int max_trade_bars_clamped = max(max_trade_bars, 1);
+
+    for (int t = start_t; t < T; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+        int prev_t = sig_t - 1;
+
+        const float close_now = close[sig_t];
+        const float atr_now = atr[sig_t];
+        const float upper_prev = (prev_t >= 0) ? upper[prev_t] : NAN;
+        const float lower_prev = (prev_t >= 0) ? lower[prev_t] : NAN;
+
+        const int long_breakout = isfinite(close_now) && isfinite(upper_prev) && (close_now > upper_prev);
+        const int short_breakout = isfinite(close_now) && isfinite(lower_prev) && (close_now < lower_prev);
+
+        if (pos_signal == 0) {
+            bars_in_trade = 0;
+            entry_price = NAN;
+            if (long_breakout) {
+                pos_signal = 1;
+                bars_in_trade = 1;
+                entry_price = close_now;
+            } else if (!long_only && short_breakout) {
+                pos_signal = -1;
+                bars_in_trade = 1;
+                entry_price = close_now;
+            }
+        } else if (pos_signal > 0) {
+            const float stop_dist = isfinite(atr_now) ? (atr_stop_mult * atr_now) : NAN;
+            const int stop_hit = isfinite(entry_price)
+                && isfinite(stop_dist)
+                && isfinite(close_now)
+                && (close_now <= entry_price - stop_dist);
+            const int channel_exit = isfinite(close_now)
+                && isfinite(upper_prev)
+                && (close_now <= upper_prev);
+            int exit_now = stop_hit || channel_exit || (bars_in_trade >= max_trade_bars_clamped);
+
+            if (!long_only && short_breakout) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                    bars_in_trade = 1;
+                    entry_price = close_now;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+                bars_in_trade = 0;
+                entry_price = NAN;
+            } else {
+                bars_in_trade += 1;
+            }
+        } else {
+            const float stop_dist = isfinite(atr_now) ? (atr_stop_mult * atr_now) : NAN;
+            const int stop_hit = isfinite(entry_price)
+                && isfinite(stop_dist)
+                && isfinite(close_now)
+                && (close_now >= entry_price + stop_dist);
+            const int channel_exit = isfinite(close_now)
+                && isfinite(lower_prev)
+                && (close_now >= lower_prev);
+            int exit_now = stop_hit || channel_exit || (bars_in_trade >= max_trade_bars_clamped);
+
+            if (long_breakout) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                    bars_in_trade = 1;
+                    entry_price = close_now;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+                bars_in_trade = 0;
+                entry_price = NAN;
+            } else {
+                bars_in_trade += 1;
+            }
+        }
+
+        const int desired_exec = pos_signal;
+        const int pos_prev = pos_exec;
+        int trade_delta = 0;
+        if (desired_exec != pos_prev) {
+            if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
+            else trade_delta = no_flip ? 2 : 1;
+            if (desired_exec != 0) ++trades;
+        }
+
+        float step_r = 0.0f;
+        if (t > 0 && t < T) {
+            step_r += (float)pos_prev * lr[t];
+        }
+        if (trade_delta > 0) {
+            step_r += log_cost * (float)trade_delta;
+        }
+        log_eq += step_r;
+        log_peak = fmaxf(log_peak, log_eq);
+        max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+
+        ++n_obs;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_prev);
+        sum_pos += pos_prev;
+        pos_exec = desired_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
 }
 
 template <int EPS_MODE>
@@ -256,14 +518,210 @@ void compute_log_returns_f32(const float* __restrict__ prices,
     }
 }
 
+extern "C" __global__
+void build_vfct_regime_f32(const float* __restrict__ obv,
+                           const float* __restrict__ obv_smooth,
+                           const float* __restrict__ mfi,
+                           int T,
+                           int first_valid,
+                           float mfi_long_min,
+                           float mfi_short_max,
+                           int confirm_bars,
+                           float* __restrict__ out)
+{
+    const int stride = blockDim.x * gridDim.x;
+    for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += stride) {
+        if (t < first_valid || confirm_bars <= 0) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        const int start = t - (confirm_bars - 1);
+        if (start < first_valid) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        int long_active = 1;
+        int short_active = 1;
+        for (int j = start; j <= t; ++j) {
+            const float obv_v = obv[j];
+            const float obv_s_v = obv_smooth[j];
+            const float mfi_v = mfi[j];
+            const int finite = isfinite(obv_v) && isfinite(obv_s_v) && isfinite(mfi_v);
+            const int long_ok = finite && (obv_v > obv_s_v) && (mfi_v >= mfi_long_min);
+            const int short_ok = finite && (obv_v < obv_s_v) && (mfi_v <= mfi_short_max);
+            long_active &= long_ok;
+            short_active &= short_ok;
+            if (!long_active && !short_active) {
+                break;
+            }
+        }
+
+        out[t] = (long_active && !short_active) ? 0.0f
+               : (short_active && !long_active) ? 1.0f
+               : nanf("");
+    }
+}
+
+extern "C" __global__
+void build_pit_regime_f32(const float* __restrict__ efi,
+                          const float* __restrict__ bop,
+                          const float* __restrict__ vosc,
+                          const float* __restrict__ acosc,
+                          const float* __restrict__ cfo,
+                          int T,
+                          int first_valid,
+                          int confirm_bars,
+                          float* __restrict__ out)
+{
+    const int stride = blockDim.x * gridDim.x;
+    for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += stride) {
+        if (t < first_valid || confirm_bars <= 0) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        const int start = t - (confirm_bars - 1);
+        if (start < first_valid) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        int long_active = 1;
+        int short_active = 1;
+        for (int j = start; j <= t; ++j) {
+            const float efi_v = efi[j];
+            const float bop_v = bop[j];
+            const float vosc_v = vosc[j];
+            const float acosc_v = acosc[j];
+            const float cfo_v = cfo[j];
+            const int finite = isfinite(efi_v) && isfinite(bop_v) && isfinite(vosc_v)
+                && isfinite(acosc_v) && isfinite(cfo_v);
+            const int long_votes = (efi_v > 0.0f) + (bop_v > 0.0f) + (vosc_v > 0.0f)
+                + (acosc_v > 0.0f) + (cfo_v > 0.0f);
+            const int short_votes = (efi_v < 0.0f) + (bop_v < 0.0f) + (vosc_v < 0.0f)
+                + (acosc_v < 0.0f) + (cfo_v < 0.0f);
+            const int long_ok = finite && (long_votes >= 3);
+            const int short_ok = finite && (short_votes >= 3);
+            long_active &= long_ok;
+            short_active &= short_ok;
+            if (!long_active && !short_active) {
+                break;
+            }
+        }
+
+        out[t] = (long_active && !short_active) ? 0.0f
+               : (short_active && !long_active) ? 1.0f
+               : nanf("");
+    }
+}
+
+extern "C" __global__
+void build_set_regime_f32(const float* __restrict__ angle,
+                          const float* __restrict__ er,
+                          const float* __restrict__ chop,
+                          int T,
+                          int first_valid,
+                          float angle_min_deg,
+                          float er_min,
+                          float chop_max,
+                          float* __restrict__ out)
+{
+    const int stride = blockDim.x * gridDim.x;
+    for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += stride) {
+        if (t < first_valid) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        const float angle_v = angle[t];
+        const float er_v = er[t];
+        const float chop_v = chop[t];
+        const int finite = isfinite(angle_v) && isfinite(er_v) && isfinite(chop_v);
+        const int long_ok = finite && (angle_v >= angle_min_deg) && (er_v >= er_min) && (chop_v <= chop_max);
+        const int short_ok = finite && (angle_v <= -angle_min_deg) && (er_v >= er_min) && (chop_v <= chop_max);
+
+        out[t] = (long_ok && !short_ok) ? 0.0f
+               : (short_ok && !long_ok) ? 1.0f
+               : nanf("");
+    }
+}
+
+extern "C" __global__
+void build_mts_regime_f32(const float* __restrict__ roc,
+                          const float* __restrict__ mom,
+                          const float* __restrict__ ppo,
+                          int T,
+                          int first_valid,
+                          float* __restrict__ out)
+{
+    const int stride = blockDim.x * gridDim.x;
+    for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += stride) {
+        if (t < first_valid) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        const float roc_v = roc[t];
+        const float mom_v = mom[t];
+        const float ppo_v = ppo[t];
+        const int finite = isfinite(roc_v) && isfinite(mom_v) && isfinite(ppo_v);
+        const int long_ok = finite && (roc_v > 0.0f) && (mom_v > 0.0f) && (ppo_v > 0.0f);
+        const int short_ok = finite && (roc_v < 0.0f) && (mom_v < 0.0f) && (ppo_v < 0.0f);
+
+        out[t] = (long_ok && !short_ok) ? 0.0f
+               : (short_ok && !long_ok) ? 1.0f
+               : nanf("");
+    }
+}
+
+extern "C" __global__
+void build_orc_regime_f32(const float* __restrict__ rsi,
+                          const float* __restrict__ stoch_k,
+                          const float* __restrict__ willr,
+                          int T,
+                          int first_valid,
+                          float* __restrict__ out)
+{
+    const int stride = blockDim.x * gridDim.x;
+    for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += stride) {
+        if (t < first_valid) {
+            out[t] = nanf("");
+            continue;
+        }
+
+        const float rsi_v = rsi[t];
+        const float stoch_v = stoch_k[t];
+        const float willr_v = willr[t];
+        const int finite = isfinite(rsi_v) && isfinite(stoch_v) && isfinite(willr_v);
+        const int oversold_votes = (rsi_v <= 30.0f) + (stoch_v <= 20.0f) + (willr_v <= -80.0f);
+        const int overbought_votes = (rsi_v >= 70.0f) + (stoch_v >= 80.0f) + (willr_v >= -20.0f);
+        const int long_ok = finite && (oversold_votes >= 2);
+        const int short_ok = finite && (overbought_votes >= 2);
+
+        out[t] = (long_ok && !short_ok) ? 0.0f
+               : (short_ok && !long_ok) ? 1.0f
+               : nanf("");
+    }
+}
 
 
 
+
+#ifndef STRAT_LONG_ONLY
 #define STRAT_LONG_ONLY              (1u<<0)
+#endif
+#ifndef STRAT_NO_FLIP
 #define STRAT_NO_FLIP                (1u<<1)
+#endif
+#ifndef STRAT_TRADE_ON_NEXT_BAR
 #define STRAT_TRADE_ON_NEXT_BAR      (1u<<2)
+#endif
 #define STRAT_ENFORCE_FAST_LT_SLOW   (1u<<3)
+#ifndef STRAT_SIGNED_EXPOSURE
 #define STRAT_SIGNED_EXPOSURE        (1u<<4)
+#endif
 #define STRAT_STOP_LOSS              (1u<<5)
 #define STRAT_TAKE_PROFIT            (1u<<6)
 

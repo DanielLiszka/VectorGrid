@@ -17,7 +17,7 @@ const optimizeStore = useOptimizeStore()
 const { canExportCsv, canExportJson } = storeToRefs(analysisStore)
 const { canOpenLatestMetaReport, canOpenLatestReport } = storeToRefs(commandActionStore)
 const { open: commandPaletteOpen } = storeToRefs(commandPaletteStore)
-const { canBrowseCsv, canPolygonOpen } = storeToRefs(dataStore)
+const { canBrowseCsv, canPolygonOpen, polygonOpen } = storeToRefs(dataStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
 
 const canRun = computed(() => !runDisabled.value)
@@ -38,10 +38,7 @@ function closeCommandPalette(): void {
 }
 
 function isPolygonModalOpen(): boolean {
-  if (typeof document === 'undefined') return false
-  const modal = document.querySelector('#polygonModal') as HTMLElement | null
-  if (!(modal instanceof HTMLElement)) return false
-  return modal.classList.contains('open')
+  return polygonOpen.value
 }
 
 function onKeydown(e: KeyboardEvent): void {

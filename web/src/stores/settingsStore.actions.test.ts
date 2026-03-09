@@ -8,6 +8,7 @@ import { useWorkflowStore } from './workflowStore'
 
 vi.mock('../services/dataService', () => ({
   browseMarketDataDir: vi.fn(async () => ''),
+  getPolygonCacheInfo: vi.fn(async () => ({ cacheDir: 'C:/polygon', hasApiKey: false, datasets: [] })),
   openMarketDataDir: vi.fn(async () => ({ path: 'C:/default/polygon-cache', openedWith: 'open_path' })),
   openPolygon: vi.fn(async () => undefined),
   resetMarketDataDir: vi.fn(async () => ({

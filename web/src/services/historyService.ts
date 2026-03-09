@@ -6,7 +6,6 @@ import { getActivePinia } from 'pinia'
 import { useAdvancedStore } from '../stores/advancedStore'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
-import { useDistributedStore } from '../stores/distributedStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -14,6 +13,7 @@ import { useStrategyStore } from '../stores/strategyStore'
 import { useValidationStore } from '../stores/validationStore'
 import { applyTimeframe as applyDataTimeframe, loadCsv as loadDataCsv } from './dataService'
 import { runOptimization } from './optimizeService'
+import { refreshAnalysisFromWorkflowRun } from './analysisService'
 
 function normalizePath(path: string): string {
   return String(path || '').trim()
@@ -175,7 +175,6 @@ function applyPresetToVueStores(preset: Record<string, unknown>): void {
     useValidationStore(pinia),
     useAnalysisStore(pinia),
     useSettingsStore(pinia),
-    useDistributedStore(pinia),
     useExecutionStore(pinia),
   ]
 
@@ -334,7 +333,6 @@ function updateStoresFromRunRequest(req: Record<string, unknown>, csvPath: strin
   const maSource = normalizeText(req.ma_source ?? req.maSource)
   const backendRaw = asRecord(req.backend)
   const backend = normalizeText(backendRaw?.backend ?? req.backend)
-  const deviceId = normalizeText(backendRaw?.device_id ?? backendRaw?.deviceId)
   const fastRange = asRecord(req.fast_range)
   const slowRange = asRecord(req.slow_range)
   const fastTypes = normalizeStringList(req.fast_ma_types)
@@ -350,7 +348,6 @@ function updateStoresFromRunRequest(req: Record<string, unknown>, csvPath: strin
     advancedStore.mode = mode
   }
   if (backend) optimizeStore.backend = backend
-  if (deviceId) optimizeStore.deviceId = deviceId
   if (maSource) advancedStore.maSource = maSource
 
   const fastStart = asNumber(fastRange?.start)
@@ -444,6 +441,7 @@ export async function applySession(ts: string): Promise<void> {
     },
     'vue',
   )
+  refreshAnalysisFromWorkflowRun()
 }
 
 export async function exportPreset(): Promise<void> {
@@ -564,6 +562,7 @@ export async function loadSavedRun(path: string): Promise<void> {
     },
     'vue',
   )
+  refreshAnalysisFromWorkflowRun()
 }
 
 export async function applySavedRun(path: string): Promise<void> {

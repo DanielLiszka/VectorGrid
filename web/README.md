@@ -24,7 +24,7 @@ npm run gen:commands
 - `src/components/DataWorkspacePanel.vue`, `src/components/OptimizeWorkspacePanel.vue`, `src/components/StrategyWorkspacePanel.vue`, and `src/components/AdvancedWorkspacePanel.vue` own controls rendering.
 - `src/components/ValidationWorkspacePanel.vue`, `src/components/OverviewWorkspacePanel.vue`, `src/components/TopWorkspacePanel.vue`, `src/components/ParetoWorkspacePanel.vue`, `src/components/DrillWorkspacePanel.vue`, `src/components/HeatmapWorkspacePanel.vue`, `src/components/MetaWorkspacePanel.vue`, and `src/components/DebugWorkspacePanel.vue` own results rendering.
 - `src/components/TopWorkspacePanel.vue`, `src/components/ValidationWorkspacePanel.vue`, and `src/components/MetaWorkspacePanel.vue` now render result rows through a virtualized row window (spacer-row pattern) to reduce large-table render cost.
-- `src/components/HistoryWorkspacePanel.vue`, `src/components/DistributedWorkspacePanel.vue`, and `src/components/ExecutionWorkspacePanel.vue` own their workspace rendering paths.
+- `src/components/HistoryWorkspacePanel.vue` and `src/components/ExecutionWorkspacePanel.vue` own their workspace rendering paths.
 - `src/tauri/instrumentation.ts` patches Tauri invoke and subscribes to progress events.
 - `src/stores/taskStore.ts` now includes full task lifecycle status (`idle|queued|running|cancelling|success|failed|cancelled`), persistent timeline history, and toast notifications.
 - `src/tauri/runtimeError.ts` defines normalized runtime errors (`TauriRuntimeError`) used by `src/tauri/invoke.ts` and `src/tauri/events.ts` for consistent invoke/listen failure handling.

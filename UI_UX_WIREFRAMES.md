@@ -253,12 +253,7 @@ Rules:
 | Pro Tools                                                                              |
 +--------------------------------------------------------------------------------------+
 | Cards:                                                                                |
-| [Distributed Compute] [Optimization Advanced] [Debug JSON]                            |
-+--------------------------------------------------------------------------------------+
-| Distributed Compute card                                                              |
-| - worker start/stop/status                                                            |
-| - leader run assets / run tiled                                                       |
-| - cancel distributed run                                                              |
+| [Optimization Advanced] [Debug JSON]                                                  |
 +--------------------------------------------------------------------------------------+
 | Optimization Advanced card                                                            |
 | - deep controls moved out of default workflow                                         |
@@ -320,7 +315,7 @@ Implementation must preserve parity with current major surfaces:
 - Analysis tabs (overview/top/pareto/drill/heatmap).
 - History/saved runs + compare/rerun.
 - Batch + meta + holdout + ML confidence.
-- Distributed + debug.
+- Debug + advanced diagnostics.
 
 ---
 
@@ -331,7 +326,7 @@ Implementation must preserve parity with current major surfaces:
 3. Implement Validation + Summary steps.
 4. Implement Run Library.
 5. Implement Aggregate Analysis.
-6. Move advanced/distributed/debug into Pro Tools.
+6. Move advanced/debug into Pro Tools.
 7. Finalize Settings migration.
 
 This order keeps core workflow usable throughout migration.

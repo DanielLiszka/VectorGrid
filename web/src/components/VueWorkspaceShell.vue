@@ -1,16 +1,26 @@
 <script setup lang="ts">
 import { useStorage } from '@vueuse/core'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useDataStore } from '../stores/dataStore'
+import { useOptimizeStore } from '../stores/optimizeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const workflowStore = useWorkflowStore()
+const dataStore = useDataStore()
+const optimizeStore = useOptimizeStore()
+const settingsStore = useSettingsStore()
+
 const workspaceGridRef = ref<HTMLElement | null>(null)
 const viewportWidth = ref(1440)
 const splitFraction = useStorage<number>('VTA_WORKSPACE_SPLIT_V1', 0.34)
 const dividerDrag = ref<{ pointerId: number; startClientX: number; startFraction: number } | null>(null)
 
-const { controlsTab, resultsTab, workspace, workflow, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
+const { controlsTab, resultsTab, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
+const { dataId, dataLen, datasetLabel, datasetRange } = storeToRefs(dataStore)
+const { backend, progressMeta, runReadinessHint, strategyKind } = storeToRefs(optimizeStore)
+const { controlsCollapsed } = storeToRefs(settingsStore)
 
 const workspaceItems = [
   { key: 'workflow', label: 'Workflow' },
@@ -20,51 +30,89 @@ const workspaceItems = [
   { key: 'settings', label: 'Settings' },
 ] as const
 
-const workflowItems = [
-  { key: 'data', label: 'Data' },
-  { key: 'optimize', label: 'Optimize' },
-  { key: 'validate', label: 'Validate' },
-  { key: 'analyze', label: 'Analyze' },
-  { key: 'history', label: 'History' },
-  { key: 'settings', label: 'Settings' },
-] as const
-
 const workflowStepItems = [
   { key: 'data', label: '1 Data Source' },
   { key: 'optimize', label: '2 Strategy Setup' },
   { key: 'validate', label: '3 Validation' },
   { key: 'analyze', label: '4 Summary' },
+  { key: 'finalize', label: '5 Finalizer' },
 ] as const
 
-const controlsItems = [
-  { key: 'data', label: 'Data' },
-  { key: 'opt', label: 'Optimize' },
-  { key: 'strategy', label: 'Strategy' },
-  { key: 'advanced', label: 'Advanced' },
-  { key: 'distributed', label: 'Distributed' },
-] as const
+const controlsItems = {
+  data: { key: 'data', label: 'Data' },
+  opt: { key: 'opt', label: 'Optimize' },
+  strategy: { key: 'strategy', label: 'Strategy' },
+  advanced: { key: 'advanced', label: 'Advanced' },
+} as const
 
-const resultsItems = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'top', label: 'Top' },
-  { key: 'pareto', label: 'Pareto' },
-  { key: 'validate', label: 'Validate' },
-  { key: 'drill', label: 'Drilldown' },
-  { key: 'heatmap', label: 'Heatmap' },
-  { key: 'history', label: 'History' },
-  { key: 'meta', label: 'Meta' },
-  { key: 'debug', label: 'Debug' },
-] as const
+const resultsItems = {
+  overview: { key: 'overview', label: 'Overview' },
+  top: { key: 'top', label: 'Top' },
+  pareto: { key: 'pareto', label: 'Pareto' },
+  validate: { key: 'validate', label: 'Validate' },
+  drill: { key: 'drill', label: 'Drilldown' },
+  heatmap: { key: 'heatmap', label: 'Heatmap' },
+  history: { key: 'history', label: 'History' },
+  meta: { key: 'meta', label: 'Meta' },
+  debug: { key: 'debug', label: 'Debug' },
+} as const
 
-const effectiveControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
-const effectiveResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
-
-const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
-const splitLayoutActive = computed(() => !settingsWorkspaceActive.value && viewportWidth.value > 1200)
+const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
+const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
+const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
+const currentWorkflowStep = computed(() => String(workflowStep.value || '').trim() || 'data')
+const settingsWorkspaceActive = computed(() => currentWorkspace.value === 'settings')
 const shellSubtitle = computed(() => {
   const text = String(workflowSubtitle.value || '').trim()
   return text || '—'
 })
+const layoutKey = computed(() => `${currentWorkspace.value}:${currentWorkflowStep.value}`)
+
+const visibleControlsItems = computed(() => {
+  if (currentWorkspace.value === 'workflow') {
+    if (currentWorkflowStep.value === 'data') return [controlsItems.data]
+    if (currentWorkflowStep.value === 'optimize') return [controlsItems.opt, controlsItems.strategy, controlsItems.advanced]
+    if (currentWorkflowStep.value === 'finalize') return [controlsItems.advanced]
+    return []
+  }
+  if (currentWorkspace.value === 'pro') {
+    return [controlsItems.advanced]
+  }
+  return []
+})
+
+const visibleResultsItems = computed(() => {
+  if (currentWorkspace.value === 'workflow') {
+    if (currentWorkflowStep.value === 'data') return [resultsItems.overview]
+    if (currentWorkflowStep.value === 'optimize') {
+      return [resultsItems.overview, resultsItems.top, resultsItems.pareto, resultsItems.heatmap]
+    }
+    if (currentWorkflowStep.value === 'validate') return [resultsItems.validate]
+    if (currentWorkflowStep.value === 'analyze') {
+      return [resultsItems.overview, resultsItems.top, resultsItems.pareto, resultsItems.drill, resultsItems.heatmap]
+    }
+    if (currentWorkflowStep.value === 'finalize') return [resultsItems.meta]
+  }
+  if (currentWorkspace.value === 'library') return [resultsItems.history]
+  if (currentWorkspace.value === 'aggregate') return [resultsItems.meta]
+  if (currentWorkspace.value === 'pro') return [resultsItems.debug]
+  return []
+})
+
+const controlsColumnEligible = computed(() => visibleControlsItems.value.length > 0 && !settingsWorkspaceActive.value)
+const controlsColumnVisible = computed(() => controlsColumnEligible.value && !controlsCollapsed.value)
+const resultsTabsVisible = computed(() => visibleResultsItems.value.length > 1)
+const controlsTabsVisible = computed(() => controlsColumnVisible.value && visibleControlsItems.value.length > 1)
+const shellUsesSplitLayout = computed(() => {
+  if (!controlsColumnVisible.value) return false
+  return layoutKey.value === 'workflow:data' || layoutKey.value === 'workflow:optimize' || currentWorkspace.value === 'pro'
+})
+const splitLayoutActive = computed(() => shellUsesSplitLayout.value && viewportWidth.value > 1200)
+const stackedLayoutActive = computed(() => shellUsesSplitLayout.value && controlsColumnVisible.value && !splitLayoutActive.value)
+const workspaceGridClass = computed(() => ({
+  singleColumn: !controlsColumnVisible.value || !shellUsesSplitLayout.value,
+  stacked: stackedLayoutActive.value,
+}))
 const workspaceGridStyle = computed(() => {
   if (!splitLayoutActive.value) return undefined
   const fraction = clampSplitFraction(splitFraction.value)
@@ -73,28 +121,60 @@ const workspaceGridStyle = computed(() => {
   }
 })
 
+const contextItems = computed(() => {
+  const dataset = String(datasetLabel.value || '').trim()
+  const range = String(datasetRange.value || '').trim()
+  const rows = String(dataLen.value || '').trim()
+  const strategy = String(strategyKind.value || '').trim()
+  const backendLabel = String(backend.value || '').trim()
+  const status = String(progressMeta.value || '').trim() || String(runReadinessHint.value || '').trim()
+  const loaded = String(dataId.value || '').trim()
+  return [
+    { key: 'Dataset', value: dataset && dataset !== '—' ? dataset : 'No dataset' },
+    { key: 'Range', value: range && range !== '—' ? range : 'No range' },
+    { key: 'Rows', value: rows && rows !== '—' ? rows : '—' },
+    { key: 'Strategy', value: strategy || '—' },
+    { key: 'Backend', value: backendLabel || '—' },
+    { key: 'Status', value: status || 'Ready.' },
+    { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—' },
+  ]
+})
+
+watch(
+  [currentWorkspace, currentWorkflowStep, visibleControlsItems, visibleResultsItems],
+  () => {
+    const controlsKeys = visibleControlsItems.value.map((item) => String(item.key))
+    const resultsKeys = visibleResultsItems.value.map((item) => String(item.key))
+
+    if (controlsKeys.length > 0 && !controlsKeys.includes(activeControlsTab.value)) {
+      const nextControls = controlsKeys[0]
+      if (nextControls) workflowStore.selectControlsTab(nextControls, { persist: false })
+    }
+    if (resultsKeys.length > 0 && !resultsKeys.includes(activeResultsTab.value)) {
+      const nextResults = resultsKeys[0]
+      if (nextResults) workflowStore.selectResultsTab(nextResults, { persist: false })
+    }
+  },
+  { immediate: true },
+)
+
 function selectWorkspace(key: string): void {
-  if (String(workspace.value || '').trim() === key) return
+  if (currentWorkspace.value === key) return
   workflowStore.selectWorkspace(key)
 }
 
-function selectWorkflow(key: string): void {
-  if (String(workflow.value || '').trim() === key) return
-  workflowStore.selectWorkflow(key)
-}
-
 function selectWorkflowStep(key: string): void {
-  if (String(workspace.value || '').trim() === 'workflow' && String(workflowStep.value || '').trim() === key) return
+  if (currentWorkspace.value === 'workflow' && currentWorkflowStep.value === key) return
   workflowStore.selectWorkflowStep(key)
 }
 
 function selectControlsTab(key: string): void {
-  if (String(effectiveControlsTab.value || '').trim() === key) return
+  if (activeControlsTab.value === key) return
   workflowStore.selectControlsTab(key)
 }
 
 function selectResultsTab(key: string): void {
-  if (String(effectiveResultsTab.value || '').trim() === key) return
+  if (activeResultsTab.value === key) return
   workflowStore.selectResultsTab(key)
 }
 
@@ -188,7 +268,10 @@ onBeforeUnmount(() => {
   <section class="shellRoot">
     <header class="shellHeader">
       <div class="brandRow">
-        <h1>VectorTA Optimizer</h1>
+        <div class="brandBlock">
+          <h1>VectorTA Optimizer</h1>
+          <div class="headerCaption">Guided default workflow with power tools on demand.</div>
+        </div>
         <div class="subtitle mono">{{ shellSubtitle }}</div>
       </div>
 
@@ -199,53 +282,52 @@ onBeforeUnmount(() => {
           type="button"
           class="tabBtn"
           :data-workspace="item.key"
-          :class="{ active: workspace === item.key }"
+          :class="{ active: currentWorkspace === item.key }"
           @click="selectWorkspace(item.key)"
         >
           {{ item.label }}
         </button>
       </nav>
 
-      <nav id="workflowStepBar" class="tabsRow workflowStepBar" v-if="workspace === 'workflow'">
+      <nav id="workflowStepBar" class="tabsRow workflowStepBar" v-if="currentWorkspace === 'workflow'">
         <button
           v-for="item in workflowStepItems"
           :key="`step_${item.key}`"
           type="button"
           class="tabBtn"
           :data-workflow-step="item.key"
-          :class="{ active: workflowStep === item.key }"
+          :class="{ active: currentWorkflowStep === item.key }"
           @click="selectWorkflowStep(item.key)"
         >
           {{ item.label }}
         </button>
       </nav>
 
-      <nav id="workflowTabBar" class="tabsRow workflowBar">
-        <button
-          v-for="item in workflowItems"
-          :key="`wf_${item.key}`"
-          type="button"
-          class="tabBtn"
-          :data-workflow="item.key"
-          :class="{ active: workflow === item.key }"
-          @click="selectWorkflow(item.key)"
-        >
-          {{ item.label }}
-        </button>
-      </nav>
+      <section class="contextStrip" aria-label="Run context">
+        <article v-for="item in contextItems" :key="`ctx_${item.key}`" class="contextCard">
+          <div class="contextKey">{{ item.key }}</div>
+          <div class="contextValue mono">{{ item.value }}</div>
+        </article>
+      </section>
     </header>
 
     <main class="shellMain">
-      <section ref="workspaceGridRef" class="workspaceGrid" :style="workspaceGridStyle" v-show="!settingsWorkspaceActive">
-        <aside class="controlsColumn">
-          <nav id="controlsTabBar" class="tabsRow compact">
+      <section
+        ref="workspaceGridRef"
+        class="workspaceGrid"
+        :class="workspaceGridClass"
+        :style="workspaceGridStyle"
+        v-show="!settingsWorkspaceActive"
+      >
+        <aside v-show="controlsColumnVisible" class="controlsColumn">
+          <nav v-if="controlsTabsVisible" id="controlsTabBar" class="tabsRow compact">
             <button
-              v-for="item in controlsItems"
+              v-for="item in visibleControlsItems"
               :key="`controls_${item.key}`"
               type="button"
               class="tabBtn"
               :data-tab="item.key"
-              :class="{ active: effectiveControlsTab === item.key }"
+              :class="{ active: activeControlsTab === item.key }"
               @click="selectControlsTab(item.key)"
             >
               {{ item.label }}
@@ -264,9 +346,6 @@ onBeforeUnmount(() => {
           <div class="panelHost" data-vue-panel="advanced">
             <div id="advancedVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="distributed">
-            <div id="distributedVueShellMount"></div>
-          </div>
         </aside>
 
         <button
@@ -284,14 +363,14 @@ onBeforeUnmount(() => {
         </button>
 
         <section class="resultsColumn">
-          <nav id="resultsTabBar" class="tabsRow compact">
+          <nav v-if="resultsTabsVisible" id="resultsTabBar" class="tabsRow compact">
             <button
-              v-for="item in resultsItems"
+              v-for="item in visibleResultsItems"
               :key="`results_${item.key}`"
               type="button"
               class="tabBtn"
               :data-tab="item.key"
-              :class="{ active: effectiveResultsTab === item.key }"
+              :class="{ active: activeResultsTab === item.key }"
               @click="selectResultsTab(item.key)"
             >
               {{ item.label }}
@@ -357,18 +436,22 @@ onBeforeUnmount(() => {
 .shellHeader {
   border-bottom: 1px solid var(--border);
   background: var(--header-bg);
-  padding: 0.95rem 1.1rem 0.85rem;
+  padding: 0.85rem 1rem 0.8rem;
   display: grid;
-  gap: 0.55rem;
+  gap: 0.5rem;
   box-shadow: 0 10px 28px color-mix(in srgb, var(--accent-soft) 38%, transparent);
 }
 
 .brandRow {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 0.9rem;
-  padding-bottom: 0.15rem;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.brandBlock {
+  display: grid;
+  gap: 0.18rem;
 }
 
 .brandRow h1 {
@@ -377,17 +460,22 @@ onBeforeUnmount(() => {
   letter-spacing: 0.01em;
 }
 
+.headerCaption {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
 .subtitle {
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: min(48rem, 58%);
-  padding: 0.38rem 0.72rem;
+  max-width: min(42rem, 56%);
+  padding: 0.28rem 0.62rem;
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
 }
 
 .tabsRow {
@@ -410,6 +498,36 @@ onBeforeUnmount(() => {
   border-color: color-mix(in oklab, var(--accent) 64%, var(--border));
   background: color-mix(in oklab, var(--accent-soft) 68%, var(--surface2));
   box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-soft) 28%, transparent);
+}
+
+.contextStrip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.32rem;
+}
+
+.contextCard {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface) 98%, var(--panel));
+  padding: 0.34rem 0.48rem;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.contextKey {
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.contextValue {
+  font-size: 0.73rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .shellMain {
@@ -437,6 +555,15 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
+.workspaceGrid.singleColumn {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspaceGrid.stacked {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .controlsColumn,
 .resultsColumn {
   min-height: 0;
@@ -445,7 +572,6 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: 18px;
   background: var(--panel);
-  padding: 0.8rem;
   display: grid;
   align-content: start;
   gap: 0.7rem;
@@ -454,6 +580,22 @@ onBeforeUnmount(() => {
 
 .controlsColumn {
   padding: 0.95rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--accent-soft) 30%, var(--panel)),
+      color-mix(in oklab, var(--panel) 98%, var(--surface))
+    );
+}
+
+.resultsColumn {
+  padding: 0.8rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--surface) 97%, var(--panel)),
+      color-mix(in oklab, var(--panel) 98%, var(--surface2))
+    );
 }
 
 .workspaceDivider {
@@ -521,7 +663,7 @@ onBeforeUnmount(() => {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 18px;
-  background: var(--panel);
+  background: color-mix(in oklab, var(--panel) 98%, var(--surface));
   margin: 1rem;
   padding: 1rem;
   display: grid;
@@ -536,8 +678,8 @@ onBeforeUnmount(() => {
 
 #runFooterShell {
   border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel-footer) 92%, var(--surface));
-  padding: 0.7rem 1rem;
+  background: color-mix(in srgb, var(--panel-footer) 98%, var(--surface));
+  padding: 0.55rem 0.9rem;
   box-shadow: 0 -10px 24px color-mix(in srgb, var(--accent-soft) 18%, transparent);
 }
 
@@ -545,21 +687,26 @@ onBeforeUnmount(() => {
   font-family: var(--mono);
 }
 
+@media (max-width: 1400px) {
+  .contextStrip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1200px) {
-  .workspaceGrid {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto;
+  .contextStrip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .subtitle {
-    max-width: 100%;
+  .workspaceGrid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 }
 
 @media (max-width: 900px) {
   .workspaceBar,
   .workflowStepBar,
-  .workflowBar,
   .tabsRow.compact {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -569,9 +716,12 @@ onBeforeUnmount(() => {
 
   .workspaceBar .tabBtn,
   .workflowStepBar .tabBtn,
-  .workflowBar .tabBtn,
   .tabsRow.compact .tabBtn {
     flex: 0 0 auto;
+  }
+
+  .contextStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -581,8 +731,15 @@ onBeforeUnmount(() => {
   }
 
   .brandRow {
-    align-items: flex-start;
     flex-direction: column;
+  }
+
+  .subtitle {
+    max-width: 100%;
+  }
+
+  .contextStrip {
+    grid-template-columns: 1fr;
   }
 
   .workspaceGrid {

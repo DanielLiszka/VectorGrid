@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
+use vector_ta::cuda::CudaDeviceSliceF32Ref;
 use vector_ta::utilities::data_loader::{source_type, Candles};
 
 use crate::alloc_policy::alloc_uninit_copy;
@@ -714,6 +715,41 @@ pub struct PrecomputedHostMaMatrix<'a> {
     pub values_row_major: &'a [f32],
 }
 
+pub(crate) struct DeviceRegimeFilter {
+    buffer: DeviceBuffer<f32>,
+    len: usize,
+    first_valid: usize,
+    device_id: u32,
+}
+
+impl DeviceRegimeFilter {
+    #[inline]
+    fn as_device_ptr_raw(&self) -> u64 {
+        self.buffer.as_device_ptr().as_raw()
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    fn first_valid(&self) -> usize {
+        self.first_valid
+    }
+
+    #[inline]
+    fn device_id(&self) -> u32 {
+        self.device_id
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RegimeFilterInput<'a> {
+    HostF64(&'a [f64]),
+    DeviceF32(&'a DeviceRegimeFilter),
+}
+
 impl Default for KernelConfig {
     fn default() -> Self {
         Self {
@@ -724,6 +760,471 @@ impl Default for KernelConfig {
             slow_alma_sigma: 6.0,
         }
     }
+}
+
+pub(crate) fn build_vfct_regime_filter(
+    device_id: u32,
+    obv: CudaDeviceSliceF32Ref,
+    obv_smooth: CudaDeviceSliceF32Ref,
+    mfi: CudaDeviceSliceF32Ref,
+    first_valid: usize,
+    mfi_long_min: f32,
+    mfi_short_max: f32,
+    confirm_bars: usize,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = obv.len();
+    if len == 0 {
+        return Err("vfct device regime build requires a non-empty series".to_string());
+    }
+    if obv_smooth.len() != len || mfi.len() != len {
+        return Err("vfct device regime input length mismatch".to_string());
+    }
+    if obv.device_id() != device_id || obv_smooth.device_id() != device_id || mfi.device_id() != device_id {
+        return Err(format!(
+            "vfct device regime input device mismatch (expected device_id={device_id})"
+        ));
+    }
+    if confirm_bars == 0 {
+        return Err("vfct confirm_bars must be > 0".to_string());
+    }
+    if first_valid > len {
+        return Err(format!(
+            "vfct first_valid {first_valid} exceeds input len {len}"
+        ));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let regime_kernel = rt
+            .module
+            .get_function("build_vfct_regime_f32")
+            .map_err(|e| e.to_string())?;
+        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
+        let out = if kernel_async_alloc_enabled() {
+            unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(len) }
+        }
+        .map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut obv_ptr = obv.device_ptr();
+            let mut obv_smooth_ptr = obv_smooth.device_ptr();
+            let mut mfi_ptr = mfi.device_ptr();
+            let mut t_i = len as i32;
+            let mut first_valid_i = first_valid as i32;
+            let mut long_min = mfi_long_min;
+            let mut short_max = mfi_short_max;
+            let mut confirm_bars_i = confirm_bars as i32;
+            let mut out_ptr = out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut obv_ptr as *mut _ as *mut c_void,
+                &mut obv_smooth_ptr as *mut _ as *mut c_void,
+                &mut mfi_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut first_valid_i as *mut _ as *mut c_void,
+                &mut long_min as *mut _ as *mut c_void,
+                &mut short_max as *mut _ as *mut c_void,
+                &mut confirm_bars_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(
+                    &regime_kernel,
+                    (launch.grid_x, 1, 1),
+                    (launch.block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(DeviceRegimeFilter {
+            buffer: out,
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
+pub(crate) fn build_pit_regime_filter(
+    device_id: u32,
+    efi: CudaDeviceSliceF32Ref,
+    bop: CudaDeviceSliceF32Ref,
+    vosc: CudaDeviceSliceF32Ref,
+    acosc: CudaDeviceSliceF32Ref,
+    cfo: CudaDeviceSliceF32Ref,
+    first_valid: usize,
+    confirm_bars: usize,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = efi.len();
+    if len == 0 {
+        return Err("pit device regime build requires a non-empty series".to_string());
+    }
+    if bop.len() != len || vosc.len() != len || acosc.len() != len || cfo.len() != len {
+        return Err("pit device regime input length mismatch".to_string());
+    }
+    if efi.device_id() != device_id
+        || bop.device_id() != device_id
+        || vosc.device_id() != device_id
+        || acosc.device_id() != device_id
+        || cfo.device_id() != device_id
+    {
+        return Err(format!(
+            "pit device regime input device mismatch (expected device_id={device_id})"
+        ));
+    }
+    if confirm_bars == 0 {
+        return Err("pit confirm_bars must be > 0".to_string());
+    }
+    if first_valid > len {
+        return Err(format!("pit first_valid {first_valid} exceeds input len {len}"));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let regime_kernel = rt
+            .module
+            .get_function("build_pit_regime_f32")
+            .map_err(|e| e.to_string())?;
+        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
+        let out = if kernel_async_alloc_enabled() {
+            unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(len) }
+        }
+        .map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut efi_ptr = efi.device_ptr();
+            let mut bop_ptr = bop.device_ptr();
+            let mut vosc_ptr = vosc.device_ptr();
+            let mut acosc_ptr = acosc.device_ptr();
+            let mut cfo_ptr = cfo.device_ptr();
+            let mut t_i = len as i32;
+            let mut first_valid_i = first_valid as i32;
+            let mut confirm_bars_i = confirm_bars as i32;
+            let mut out_ptr = out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut efi_ptr as *mut _ as *mut c_void,
+                &mut bop_ptr as *mut _ as *mut c_void,
+                &mut vosc_ptr as *mut _ as *mut c_void,
+                &mut acosc_ptr as *mut _ as *mut c_void,
+                &mut cfo_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut first_valid_i as *mut _ as *mut c_void,
+                &mut confirm_bars_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(
+                    &regime_kernel,
+                    (launch.grid_x, 1, 1),
+                    (launch.block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(DeviceRegimeFilter {
+            buffer: out,
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
+pub(crate) fn build_set_regime_filter(
+    device_id: u32,
+    angle: CudaDeviceSliceF32Ref,
+    er: CudaDeviceSliceF32Ref,
+    chop: CudaDeviceSliceF32Ref,
+    first_valid: usize,
+    angle_min_deg: f32,
+    er_min: f32,
+    chop_max: f32,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = angle.len();
+    if len == 0 {
+        return Err("set device regime build requires a non-empty series".to_string());
+    }
+    if er.len() != len || chop.len() != len {
+        return Err("set device regime input length mismatch".to_string());
+    }
+    if angle.device_id() != device_id || er.device_id() != device_id || chop.device_id() != device_id {
+        return Err(format!(
+            "set device regime input device mismatch (expected device_id={device_id})"
+        ));
+    }
+    if first_valid > len {
+        return Err(format!(
+            "set first_valid {first_valid} exceeds input len {len}"
+        ));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let regime_kernel = rt
+            .module
+            .get_function("build_set_regime_f32")
+            .map_err(|e| e.to_string())?;
+        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
+        let out = if kernel_async_alloc_enabled() {
+            unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(len) }
+        }
+        .map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut angle_ptr = angle.device_ptr();
+            let mut er_ptr = er.device_ptr();
+            let mut chop_ptr = chop.device_ptr();
+            let mut t_i = len as i32;
+            let mut first_valid_i = first_valid as i32;
+            let mut angle_min = angle_min_deg;
+            let mut er_min_f = er_min;
+            let mut chop_max_f = chop_max;
+            let mut out_ptr = out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut angle_ptr as *mut _ as *mut c_void,
+                &mut er_ptr as *mut _ as *mut c_void,
+                &mut chop_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut first_valid_i as *mut _ as *mut c_void,
+                &mut angle_min as *mut _ as *mut c_void,
+                &mut er_min_f as *mut _ as *mut c_void,
+                &mut chop_max_f as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(
+                    &regime_kernel,
+                    (launch.grid_x, 1, 1),
+                    (launch.block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(DeviceRegimeFilter {
+            buffer: out,
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
+pub(crate) fn build_mts_regime_filter(
+    device_id: u32,
+    roc: CudaDeviceSliceF32Ref,
+    mom: CudaDeviceSliceF32Ref,
+    ppo: CudaDeviceSliceF32Ref,
+    first_valid: usize,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = roc.len();
+    if len == 0 {
+        return Err("mts device regime build requires a non-empty series".to_string());
+    }
+    if mom.len() != len || ppo.len() != len {
+        return Err("mts device regime input length mismatch".to_string());
+    }
+    if roc.device_id() != device_id || mom.device_id() != device_id || ppo.device_id() != device_id {
+        return Err(format!(
+            "mts device regime input device mismatch (expected device_id={device_id})"
+        ));
+    }
+    if first_valid > len {
+        return Err(format!(
+            "mts first_valid {first_valid} exceeds input len {len}"
+        ));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let regime_kernel = rt
+            .module
+            .get_function("build_mts_regime_f32")
+            .map_err(|e| e.to_string())?;
+        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
+        let out = if kernel_async_alloc_enabled() {
+            unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(len) }
+        }
+        .map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut roc_ptr = roc.device_ptr();
+            let mut mom_ptr = mom.device_ptr();
+            let mut ppo_ptr = ppo.device_ptr();
+            let mut t_i = len as i32;
+            let mut first_valid_i = first_valid as i32;
+            let mut out_ptr = out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut roc_ptr as *mut _ as *mut c_void,
+                &mut mom_ptr as *mut _ as *mut c_void,
+                &mut ppo_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut first_valid_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(
+                    &regime_kernel,
+                    (launch.grid_x, 1, 1),
+                    (launch.block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(DeviceRegimeFilter {
+            buffer: out,
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
+pub(crate) fn build_orc_regime_filter(
+    device_id: u32,
+    rsi: CudaDeviceSliceF32Ref,
+    stoch_k: CudaDeviceSliceF32Ref,
+    willr: CudaDeviceSliceF32Ref,
+    first_valid: usize,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = rsi.len();
+    if len == 0 {
+        return Err("orc device regime build requires a non-empty series".to_string());
+    }
+    if stoch_k.len() != len || willr.len() != len {
+        return Err("orc device regime input length mismatch".to_string());
+    }
+    if rsi.device_id() != device_id
+        || stoch_k.device_id() != device_id
+        || willr.device_id() != device_id
+    {
+        return Err(format!(
+            "orc device regime input device mismatch (expected device_id={device_id})"
+        ));
+    }
+    if first_valid > len {
+        return Err(format!(
+            "orc first_valid {first_valid} exceeds input len {len}"
+        ));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let regime_kernel = rt
+            .module
+            .get_function("build_orc_regime_f32")
+            .map_err(|e| e.to_string())?;
+        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
+        let out = if kernel_async_alloc_enabled() {
+            unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(len) }
+        }
+        .map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut rsi_ptr = rsi.device_ptr();
+            let mut stoch_ptr = stoch_k.device_ptr();
+            let mut willr_ptr = willr.device_ptr();
+            let mut t_i = len as i32;
+            let mut first_valid_i = first_valid as i32;
+            let mut out_ptr = out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut rsi_ptr as *mut _ as *mut c_void,
+                &mut stoch_ptr as *mut _ as *mut c_void,
+                &mut willr_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut first_valid_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(
+                    &regime_kernel,
+                    (launch.grid_x, 1, 1),
+                    (launch.block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(DeviceRegimeFilter {
+            buffer: out,
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn download_device_regime_filter(
+    device_id: u32,
+    regime: &DeviceRegimeFilter,
+) -> Result<Vec<f32>, String> {
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<Vec<f32>, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+        let mut host = vec![0.0f32; regime.len];
+        regime
+            .buffer
+            .copy_to(host.as_mut_slice())
+            .map_err(|e| e.to_string())?;
+        Ok(host)
+    })
 }
 
 #[inline]
@@ -2216,21 +2717,42 @@ pub fn eval_double_ma_batch_gpu_kernel(
         }
         let rt = map.get_mut(&device_id).expect("just inserted");
         rt.set_current()?;
-
-        eval_double_ma_batch_gpu_kernel_impl(
-            rt,
-            candles,
-            combos,
-            fast_range,
-            slow_range,
-            fast_ma_type,
-            slow_ma_type,
-            ma_source,
-            fast_ma_params,
-            slow_ma_params,
-            cfg,
-            strategy,
-        )
+        if strategy.uses_volume_flow_confirm_filter() {
+            let device_regime = crate::double_ma::build_volume_flow_confirmation_regime_device(
+                candles, device_id, strategy,
+            )?;
+            eval_double_ma_batch_gpu_kernel_impl(
+                rt,
+                candles,
+                combos,
+                fast_range,
+                slow_range,
+                fast_ma_type,
+                slow_ma_type,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                Some(RegimeFilterInput::DeviceF32(&device_regime)),
+                cfg,
+                strategy,
+            )
+        } else {
+            eval_double_ma_batch_gpu_kernel_impl(
+                rt,
+                candles,
+                combos,
+                fast_range,
+                slow_range,
+                fast_ma_type,
+                slow_ma_type,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                None,
+                cfg,
+                strategy,
+            )
+        }
     })
 }
 
@@ -2245,6 +2767,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     ma_source: &str,
     fast_ma_params: Option<&HashMap<String, f64>>,
     slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
     cfg: KernelConfig,
     strategy: &StrategyConfig,
 ) -> Result<Vec<Metrics>, String> {
@@ -2310,9 +2833,21 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     if low.map_or(false, |l| l.len() != n) {
         return Err("low length mismatch".to_string());
     }
-    let regime_f64 =
-        crate::double_ma::compute_combined_regime_filter(candles, ma_source, strategy, None)?;
-    let regime_f32: Option<Vec<f32>> = if let Some(regime) = regime_f64.as_ref() {
+    let host_regime_owned = if regime_filter.is_none() {
+        crate::double_ma::compute_combined_regime_filter(candles, ma_source, strategy, None)?
+    } else {
+        None
+    };
+    let host_regime_filter = match regime_filter {
+        Some(RegimeFilterInput::HostF64(values)) => Some(values),
+        None => host_regime_owned.as_deref(),
+        _ => None,
+    };
+    let device_regime_filter = match regime_filter {
+        Some(RegimeFilterInput::DeviceF32(values)) => Some(values),
+        _ => None,
+    };
+    let regime_f32: Option<Vec<f32>> = if let Some(regime) = host_regime_filter {
         if regime.len() != n {
             return Err("regime trend series length mismatch".to_string());
         }
@@ -2320,7 +2855,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     } else {
         None
     };
-    if regime_f32.is_some() && !crate::double_ma::kernel_regime_filters_enabled() {
+    if (regime_f32.is_some() || device_regime_filter.is_some())
+        && !crate::double_ma::kernel_regime_filters_enabled()
+    {
         return Err(
             "GPU kernel regime filters are disabled (set VECTORBT_KERNEL_ENABLE_REGIME_FILTERS=1 to enable)"
                 .to_string(),
@@ -2348,10 +2885,23 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         start_at = start_at.max(fv_low);
     }
-    if let Some(regime) = regime_f64.as_ref() {
+    if let Some(regime) = host_regime_filter {
         let fv_regime = first_finite_idx(regime)
             .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         start_at = start_at.max(fv_regime);
+    }
+    if let Some(regime) = device_regime_filter {
+        if regime.len() != n {
+            return Err("device regime trend series length mismatch".to_string());
+        }
+        if regime.device_id() != cfg.device_id {
+            return Err(format!(
+                "device regime filter device mismatch (expected {}, got {})",
+                cfg.device_id,
+                regime.device_id()
+            ));
+        }
+        start_at = start_at.max(regime.first_valid());
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
         .ok_or_else(|| "no index where all required series are finite".to_string())?;
@@ -2467,6 +3017,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let d_high = uploaded.high;
     let d_low = uploaded.low;
     let d_regime = uploaded.regime;
+    let d_regime_ptr = d_regime
+        .as_ref()
+        .map(|d| d.as_device_ptr().as_raw())
+        .or_else(|| device_regime_filter.map(DeviceRegimeFilter::as_device_ptr_raw));
     let d_ma_prices: &DeviceBuffer<f32> = d_ma_buf.as_ref().unwrap_or(&d_close);
 
     let vram_inputs = VramMaInputs {
@@ -2690,8 +3244,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let eps_rel = strategy_kernel.eps_rel;
     let stop_log = strategy_kernel.stop_log;
     let take_log = strategy_kernel.take_log;
-    let regime_use = if d_regime.is_some() { 1i32 } else { 0i32 };
-    let regime_use_hybrid = if d_regime.is_some() && strategy.uses_regime_hybrid_filter() {
+    let regime_use = if d_regime_ptr.is_some() { 1i32 } else { 0i32 };
+    let regime_use_hybrid = if d_regime_ptr.is_some() && strategy.uses_regime_hybrid_filter() {
         1i32
     } else {
         0i32
@@ -3340,6 +3894,56 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
+    optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
+        candles,
+        fast_periods,
+        slow_periods,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter.map(RegimeFilterInput::HostF64),
+        strategy,
+        objective,
+        top_k,
+        include_all,
+        cfg,
+        fast_precomputed,
+        slow_precomputed,
+        constraints,
+        export_all_csv_path,
+        total_pairs,
+        heatmap_bins,
+        cancel,
+        progress,
+    )
+}
+
+pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
+    candles: &Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    cfg: KernelConfig,
+    fast_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    slow_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    constraints: Option<&DoubleMaConstraints>,
+    export_all_csv_path: Option<&str>,
+    total_pairs: usize,
+    heatmap_bins: usize,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<OptimizationResult, String> {
     let device_id = cfg.device_id;
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
         let mut map = cell.borrow_mut();
@@ -3388,7 +3992,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     ma_source: &str,
     fast_ma_params: Option<&HashMap<String, f64>>,
     slow_ma_params: Option<&HashMap<String, f64>>,
-    regime_filter: Option<&[f64]>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
     top_k: usize,
@@ -3508,7 +4112,15 @@ fn optimize_double_ma_gpu_kernel_impl(
     if low.map_or(false, |l| l.len() != n) {
         return Err("low length mismatch".to_string());
     }
-    let regime_f32: Option<Vec<f32>> = if let Some(regime) = regime_filter {
+    let host_regime_filter = match regime_filter {
+        Some(RegimeFilterInput::HostF64(values)) => Some(values),
+        _ => None,
+    };
+    let device_regime_filter = match regime_filter {
+        Some(RegimeFilterInput::DeviceF32(values)) => Some(values),
+        _ => None,
+    };
+    let regime_f32: Option<Vec<f32>> = if let Some(regime) = host_regime_filter {
         if regime.len() != n {
             return Err("regime trend series length mismatch".to_string());
         }
@@ -3516,7 +4128,9 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         None
     };
-    if regime_f32.is_some() && !crate::double_ma::kernel_regime_filters_enabled() {
+    if (regime_f32.is_some() || device_regime_filter.is_some())
+        && !crate::double_ma::kernel_regime_filters_enabled()
+    {
         return Err(
             "GPU kernel regime filters are disabled (set VECTORBT_KERNEL_ENABLE_REGIME_FILTERS=1 to enable)"
                 .to_string(),
@@ -3545,10 +4159,23 @@ fn optimize_double_ma_gpu_kernel_impl(
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         start_at = start_at.max(fv_low);
     }
-    if let Some(regime) = regime_filter {
+    if let Some(regime) = host_regime_filter {
         let fv_regime = first_finite_idx(regime)
             .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         start_at = start_at.max(fv_regime);
+    }
+    if let Some(regime) = device_regime_filter {
+        if regime.len() != n {
+            return Err("device regime trend series length mismatch".to_string());
+        }
+        if regime.device_id() != cfg.device_id {
+            return Err(format!(
+                "device regime filter device mismatch (expected {}, got {})",
+                cfg.device_id,
+                regime.device_id()
+            ));
+        }
+        start_at = start_at.max(regime.first_valid());
     }
     let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
         .ok_or_else(|| "no index where all required series are finite".to_string())?;
@@ -3714,6 +4341,10 @@ fn optimize_double_ma_gpu_kernel_impl(
     let d_high = uploaded.high;
     let d_low = uploaded.low;
     let d_regime = uploaded.regime;
+    let d_regime_ptr = d_regime
+        .as_ref()
+        .map(|d| d.as_device_ptr().as_raw())
+        .or_else(|| device_regime_filter.map(DeviceRegimeFilter::as_device_ptr_raw));
     let d_ma_prices: &DeviceBuffer<f32> = d_ma_buf.as_ref().unwrap_or(&d_close);
 
     let vram_inputs = VramMaInputs {
@@ -4349,10 +4980,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut s_off = 0i32;
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                        let mut regime_ptr = d_regime
-                            .as_ref()
-                            .map(|d| d.as_device_ptr().as_raw())
-                            .unwrap_or(0);
+                        let mut regime_ptr = d_regime_ptr.unwrap_or(0);
                         let mut use_regime_i = regime_use;
                         let mut use_regime_hybrid_i = regime_use_hybrid;
                         let mut regime_entry = regime_entry_rel;

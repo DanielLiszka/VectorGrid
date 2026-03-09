@@ -84,7 +84,6 @@ In scope (initial custom strategy feature):
 
 Out of scope (initial version):
 - full validation/meta-analysis pipeline redesign for arbitrary custom strategies,
-- distributed custom strategy execution,
 - custom portfolio-level multi-strategy orchestration.
 
 Low-priority / deferred:

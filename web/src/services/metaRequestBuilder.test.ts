@@ -114,4 +114,116 @@ describe('metaRequestBuilder', () => {
       holdout_mode: 'light'
     })
   })
+
+  it('keeps holdout enabled for VCC strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Vcc',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Vcc',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Set strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Set',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Set',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Pit strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Pit',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Pit',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Mts strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Mts',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Mts',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Orc strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Orc',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Orc',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Marrt strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Marrt',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Marrt',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Vfct strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Vfct',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Vfct',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
+  it('keeps holdout enabled for Rocb strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Rocb',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Rocb',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
 })

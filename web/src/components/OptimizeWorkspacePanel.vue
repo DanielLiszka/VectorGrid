@@ -15,6 +15,7 @@ import {
   type DynamicIndicatorCatalogEntry,
 } from '../services/dynamicIndicatorCatalogService'
 import { listGpuSpeedupMap, type GpuSpeedupEntry } from '../services/gpuSpeedupsService'
+import { describeStrategyOptimizationCapabilities } from '../utils/strategyOptimizationCapabilities'
 
 type MaSide = 'fast' | 'slow'
 interface MaParamUiState {
@@ -41,8 +42,6 @@ const {
   presetOptions,
   backend,
   backendOptions,
-  deviceId,
-  deviceOptions,
   objective,
   mode,
   fastStart,
@@ -57,6 +56,7 @@ const {
   slowMaTypeOptions,
   pairsPreview,
   gpuStatus,
+  gpuDeviceMeta,
   gpuParityMeta,
   progressMeta,
   statusLine,
@@ -77,7 +77,6 @@ let panelDisposed = false
 const strategyDraft = ref('')
 const presetDraft = ref('')
 const backendDraft = ref('')
-const deviceDraft = ref('0')
 const objectiveDraft = ref('Sharpe')
 const modeDraft = ref('Grid')
 const fastStartDraft = ref('')
@@ -98,6 +97,7 @@ const maParamUiStateBySide = ref<{ fast: MaParamUiStateByMa; slow: MaParamUiStat
 const maParamTouchedBySide = ref<{ fast: Record<string, boolean>; slow: Record<string, boolean> }>({ fast: {}, slow: {} })
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'opt')
+const strategyCapabilities = computed(() => describeStrategyOptimizationCapabilities(strategyDraft.value || strategyKind.value))
 const selectedFastMaType = computed(() => String(fastTypeDraft.value || fastMaType.value || '').trim())
 const selectedSlowMaType = computed(() => String(slowTypeDraft.value || slowMaType.value || '').trim())
 const fastMaParamSchema = computed(() => maParamSchemasByMaId.value[selectedFastMaType.value] || [])
@@ -163,6 +163,9 @@ function backendOptionDisplayLabel(option: OptimizeOption): string {
 }
 
 const backendExecutionHint = computed(() => {
+  if (!strategyCapabilities.value.usesGlobalBackend) {
+    return strategyCapabilities.value.executionSummary
+  }
   const backendKind = selectedBackend.value
   if (backendKind === 'CpuOnly') {
     return 'All indicator calculations and backtest metrics are executed on CPU (fp64 path).'
@@ -172,6 +175,13 @@ const backendExecutionHint = computed(() => {
   }
   return 'Auto selects the best route for strategy constraints, MA capability, and gpu_speedups.csv policy.'
 })
+
+const showModeControl = computed(() => strategyCapabilities.value.usesGlobalMode)
+const showBackendControl = computed(() => strategyCapabilities.value.usesGlobalBackend)
+const executionSectionTitle = computed(() =>
+  showBackendControl.value ? 'Backend and GPU route' : 'Execution route',
+)
+const showGpuPresetActions = computed(() => showBackendControl.value)
 
 function supportsBackend(entry: MovingAverageCatalogEntry, backendKind: BackendKind): boolean {
   if (!entry.periodBased || !entry.singleOutput) return false
@@ -311,7 +321,6 @@ const backendOptionItems = computed(() =>
       label: backendOptionDisplayLabel(option),
     })),
 )
-const deviceOptionItems = computed(() => resolvedOptions(deviceOptions.value, deviceId.value || '0', deviceId.value || 'Auto'))
 const fastTypeOptionItems = computed(() =>
   resolvedOptions(backendAwareMaOptions.value, fastMaType.value, fastMaType.value || 'MA type', fastMaTypeOptions.value),
 )
@@ -342,7 +351,6 @@ watch(
     String(strategyKind.value || ''),
     String(presetProfile.value || ''),
     String(backend.value || ''),
-    String(deviceId.value || '0'),
     String(objective.value || 'Sharpe'),
     String(mode.value || 'Grid'),
     String(fastStart.value || ''),
@@ -358,7 +366,6 @@ watch(
     nextStrategy,
     nextPreset,
     nextBackend,
-    nextDeviceId,
     nextObjective,
     nextMode,
     nextFastStart,
@@ -373,7 +380,6 @@ watch(
     if (strategyDraft.value !== nextStrategy) strategyDraft.value = nextStrategy
     if (presetDraft.value !== nextPreset) presetDraft.value = nextPreset
     if (backendDraft.value !== nextBackend) backendDraft.value = nextBackend
-    if (deviceDraft.value !== nextDeviceId) deviceDraft.value = nextDeviceId
     if (objectiveDraft.value !== nextObjective) objectiveDraft.value = nextObjective
     if (modeDraft.value !== nextMode) modeDraft.value = nextMode
     if (fastStartDraft.value !== nextFastStart) fastStartDraft.value = nextFastStart
@@ -698,6 +704,7 @@ onMounted(async () => {
   await nextTick()
   resolveMount()
   await Promise.all([loadMaParamCatalog(), loadMaSpeedups(), loadDynamicCatalogMeta()])
+  optimizeStore.refreshGpuStatus(true)
   syncMaParamStateFromVue()
 })
 
@@ -791,17 +798,23 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div>
-            <label for="vueMode">Mode</label>
-            <select
-              id="vueMode"
-              :value="modeDraft"
-              @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'Grid'); setSelectValue('mode', modeDraft)"
-            >
-              <option value="Grid">Grid</option>
-              <option value="CoarseToFine">Coarse-to-Fine</option>
-              <option value="GpuVdps">GPU VDPS</option>
-              <option value="Auto">Auto</option>
-            </select>
+            <template v-if="showModeControl">
+              <label for="vueMode">Mode</label>
+              <select
+                id="vueMode"
+                :value="modeDraft"
+                @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'Grid'); setSelectValue('mode', modeDraft)"
+              >
+                <option value="Grid">Grid</option>
+                <option value="CoarseToFine">Coarse-to-Fine</option>
+                <option value="GpuVdps">GPU VDPS</option>
+                <option value="Auto">Auto</option>
+              </select>
+            </template>
+            <template v-else>
+              <label>Mode</label>
+              <div class="muted mono">{{ strategyCapabilities.modeSummary }}</div>
+            </template>
           </div>
         </div>
       </section>
@@ -810,50 +823,46 @@ onBeforeUnmount(() => {
         <div class="paneHeader">
           <div>
             <div class="sectionEyebrow">Execution</div>
-            <h3>Backend and GPU route</h3>
+            <h3>{{ executionSectionTitle }}</h3>
           </div>
         </div>
         <div class="gridTwo">
           <div>
-            <label for="vueBackend">Backend</label>
-            <select
-              id="vueBackend"
-              :value="backendDraft"
-              @change="backendDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('backend', backendDraft)"
-            >
-              <option
-                v-for="option in backendOptionItems"
-                :key="`backend_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
+            <template v-if="showBackendControl">
+              <label for="vueBackend">Backend</label>
+              <select
+                id="vueBackend"
+                :value="backendDraft"
+                @change="backendDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('backend', backendDraft)"
               >
-                {{ option.label }}
-              </option>
-            </select>
+                <option
+                  v-for="option in backendOptionItems"
+                  :key="`backend_${option.value}_${option.label}`"
+                  :value="option.value"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </template>
+            <template v-else>
+              <label>Backend</label>
+              <div class="muted mono">{{ strategyCapabilities.executionSummary }}</div>
+            </template>
             <div class="muted mono">{{ backendExecutionHint }}</div>
           </div>
           <div>
-            <label for="vueDevice">GPU device</label>
-            <select
-              id="vueDevice"
-              :value="deviceDraft"
-              @change="deviceDraft = String(($event.target as HTMLSelectElement).value || '0'); setSelectValue('deviceId', deviceDraft)"
-            >
-              <option
-                v-for="option in deviceOptionItems"
-                :key="`device_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
-              >
-                {{ option.label }}
-              </option>
-            </select>
+            <label>CUDA device</label>
+            <div class="muted mono">{{ gpuDeviceMeta }}</div>
           </div>
         </div>
-        <div class="actions">
+        <div v-if="showGpuPresetActions" class="actions">
           <button type="button" :disabled="!canPresetKernel" @click="optimizeStore.presetKernel()">Preset GPU kernel</button>
           <button type="button" :disabled="!canRefreshGpuStatus" @click="optimizeStore.refreshGpuStatus()">Refresh GPU status</button>
           <button type="button" :disabled="!canParityCheck" @click="optimizeStore.runGpuParityCheck()">Parity check</button>
+        </div>
+        <div v-else class="actions">
+          <button type="button" :disabled="!canRefreshGpuStatus" @click="optimizeStore.refreshGpuStatus()">Refresh GPU status</button>
         </div>
         <div class="muted mono">{{ gpuStatus }}</div>
         <div class="muted mono">{{ gpuParityMeta }}</div>

@@ -58,15 +58,6 @@ export interface DoubleMaProgressPayload {
   phase: string
 }
 
-export interface DistributedProgressPayload {
-  mode: string
-  completed: number
-  total: number
-  successes: number
-  failures: number
-  last?: string
-}
-
 export interface LiveExecutionRunnerEventPayload {
   status: string
   message: string
@@ -126,7 +117,6 @@ let nextTimelineSeq = 0
 let nextToastSeq = 0
 let lastDoubleMaPhase = ''
 let lastDoubleMaProgressAt = 0
-let lastDistributedProgressAt = 0
 let lastPolygonLiveBarAt = 0
 let lastRunnerEventAt = 0
 let lastRunnerEventSignature = ''
@@ -143,8 +133,6 @@ const PROGRESS_ELIGIBLE_COMMANDS = new Set<TauriCommand>([
   'run_composite_validation',
   'run_meta_selection',
   'run_meta_stage4_experimental',
-  'distributed_run_double_ma_assets',
-  'distributed_run_double_ma_tiled',
   'polygon_download_1m_and_load',
   'train_ml_confidence_model',
   'apply_ml_confidence_model',
@@ -162,8 +150,6 @@ const CANCEL_COMMAND_BY_COMMAND: Partial<Record<TauriCommand, TauriCommand>> = {
   run_composite_validation: 'cancel_current_run',
   run_meta_selection: 'cancel_current_run',
   run_meta_stage4_experimental: 'cancel_current_run',
-  distributed_run_double_ma_assets: 'cancel_current_run',
-  distributed_run_double_ma_tiled: 'cancel_current_run',
   compute_double_ma_drilldown: 'cancel_current_run',
   compute_composite_cpu_drilldown: 'cancel_current_run',
   compute_double_ma_local_stability: 'cancel_current_run',
@@ -571,36 +557,6 @@ export function applyDoubleMaProgress(payload: DoubleMaProgressPayload): void {
     pct,
     label: `${phase || 'Progress'} ${processed}/${total}`,
     source: 'double_ma_progress',
-    atUnixMs: now,
-  }
-}
-
-export function applyDistributedProgress(payload: DistributedProgressPayload): void {
-  const st = taskStoreSingleton()
-  const completed = Number(payload.completed || 0)
-  const total = Number(payload.total || 0)
-  const pct = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0
-  const now = Date.now()
-  const forceRefresh = completed <= 0 || (total > 0 && completed >= total)
-  if (!forceRefresh && now - lastDistributedProgressAt < PROGRESS_UPDATE_INTERVAL_MS) return
-  lastDistributedProgressAt = now
-
-  const detail = [
-    `Mode=${payload.mode || 'distributed'}`,
-    `${completed}/${total}`,
-    `ok=${Number(payload.successes || 0)}`,
-    `fail=${Number(payload.failures || 0)}`,
-  ].join(' ')
-  const target = newestProgressTask()
-  if (target) {
-    target.progressPct = pct
-    target.phase = `distributed:${payload.mode || 'run'}`
-    target.message = detail
-  }
-  st.overallProgress = {
-    pct,
-    label: detail,
-    source: 'distributed_progress',
     atUnixMs: now,
   }
 }

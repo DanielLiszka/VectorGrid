@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TopWorkspacePanel from './TopWorkspacePanel.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
+import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 function installTopPanelMountShell(): void {
@@ -39,8 +40,11 @@ describe('TopWorkspacePanel', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
     const workflowStore = useWorkflowStore(pinia)
     workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
 
     const setInputSpy = vi.spyOn(analysisStore, 'setInputField')
     const wrapper = mount(TopWorkspacePanel, {
@@ -74,8 +78,11 @@ describe('TopWorkspacePanel', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
     const workflowStore = useWorkflowStore(pinia)
     workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
 
     const setInputSpy = vi.spyOn(analysisStore, 'setInputField')
     const wrapper = mount(TopWorkspacePanel, {

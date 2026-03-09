@@ -13,7 +13,14 @@ use crate::indicator_catalog::{
 use serde::{Deserialize, Serialize};
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
+use vector_ta::cuda::{
+    atr_wrapper::DeviceArrayF32Atr, bollinger_bands_wrapper::DeviceArrayF32Bb, CudaAtr,
+    CudaBollingerBands, CudaZscore, DeviceArrayF32,
+};
+#[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
+#[cfg(feature = "cuda")]
+use vector_ta::indicators::{atr::AtrBatchRange, bollinger_bands::BollingerBandsBatchRange, zscore::ZscoreBatchRange};
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
@@ -155,8 +162,69 @@ pub struct VemrRiskSignals {
 }
 
 #[cfg(feature = "cuda")]
+#[allow(dead_code)]
+enum VemrDeviceMatrixOwner {
+    Dispatch(DeviceMatrixF32),
+    Zscore(DeviceArrayF32),
+    Bollinger(DeviceArrayF32Bb),
+    Atr(DeviceArrayF32Atr),
+}
+
+#[cfg(feature = "cuda")]
+pub struct VemrDeviceMatrix {
+    pub device_ptr: u64,
+    pub rows: usize,
+    pub cols: usize,
+    pub device_id: u32,
+    _owner: VemrDeviceMatrixOwner,
+}
+
+#[cfg(feature = "cuda")]
+impl VemrDeviceMatrix {
+    fn from_dispatch(owner: DeviceMatrixF32) -> Self {
+        Self {
+            device_ptr: owner.device_ptr,
+            rows: owner.rows,
+            cols: owner.cols,
+            device_id: owner.device_id,
+            _owner: VemrDeviceMatrixOwner::Dispatch(owner),
+        }
+    }
+
+    fn from_zscore(owner: DeviceArrayF32, device_id: u32) -> Self {
+        Self {
+            device_ptr: owner.device_ptr(),
+            rows: owner.rows,
+            cols: owner.cols,
+            device_id,
+            _owner: VemrDeviceMatrixOwner::Zscore(owner),
+        }
+    }
+
+    fn from_bollinger(owner: DeviceArrayF32Bb) -> Self {
+        Self {
+            device_ptr: owner.device_ptr(),
+            rows: owner.rows,
+            cols: owner.cols,
+            device_id: owner.device_id,
+            _owner: VemrDeviceMatrixOwner::Bollinger(owner),
+        }
+    }
+
+    fn from_atr(owner: DeviceArrayF32Atr) -> Self {
+        Self {
+            device_ptr: owner.device_ptr(),
+            rows: owner.rows,
+            cols: owner.cols,
+            device_id: owner.device_id,
+            _owner: VemrDeviceMatrixOwner::Atr(owner),
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
 pub struct VemrPeriodSweepDevice {
-    pub matrix: DeviceMatrixF32,
+    pub matrix: VemrDeviceMatrix,
     pub period_start: u16,
     pub period_end: u16,
     pub period_step: u16,
@@ -280,9 +348,9 @@ fn cuda_series_to_f64(
 #[cfg(feature = "cuda")]
 fn cuda_series_to_device_f32(
     out: crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput,
-) -> Result<DeviceMatrixF32, String> {
+) -> Result<VemrDeviceMatrix, String> {
     match out.series {
-        DynamicIndicatorCudaSeries::DeviceF32(v) => Ok(v),
+        DynamicIndicatorCudaSeries::DeviceF32(v) => Ok(VemrDeviceMatrix::from_dispatch(v)),
         DynamicIndicatorCudaSeries::HostF32(_) => {
             Err("VEMR expected CUDA DeviceF32 output".to_string())
         }
@@ -436,14 +504,171 @@ fn compute_indicator_period_sweep_cuda_device(
 }
 
 #[cfg(feature = "cuda")]
+fn compute_vemr_zscore_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &VemrStrategyParams,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<VemrPeriodSweepDevice, String> {
+    let sweep = ZscoreBatchRange {
+        period: (
+            usize::from(period_start.max(1)),
+            usize::from(period_end.max(period_start.max(1))),
+            usize::from(period_step.max(1)),
+        ),
+        ma_type: (
+            cfg.z_ma_type.clone(),
+            cfg.z_ma_type.clone(),
+            String::new(),
+        ),
+        nbdev: (cfg.z_nbdev, cfg.z_nbdev, 0.0),
+        devtype: (
+            usize::from(cfg.z_devtype),
+            usize::from(cfg.z_devtype),
+            0,
+        ),
+    };
+    let wrapper = CudaZscore::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.source_first_valid();
+    let (matrix, _) = wrapper
+        .zscore_batch_from_device_ptr(
+            prepared_inputs.source_device().buffer().as_device_ptr(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| wrapper.zscore_batch_dev(prepared_inputs.source(), &sweep))
+        .map_err(|e| e.to_string())?;
+
+    Ok(VemrPeriodSweepDevice {
+        matrix: VemrDeviceMatrix::from_zscore(matrix, device_id),
+        period_start: period_start.max(1),
+        period_end: period_end.max(period_start.max(1)),
+        period_step: period_step.max(1),
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_vemr_bollinger_output_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &VemrStrategyParams,
+    output_preferred_ids: &[&str],
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<VemrPeriodSweepDevice, String> {
+    let sweep = BollingerBandsBatchRange {
+        period: (
+            usize::from(period_start.max(1)),
+            usize::from(period_end.max(period_start.max(1))),
+            usize::from(period_step.max(1)),
+        ),
+        devup: (cfg.bb_mult, cfg.bb_mult, 0.0),
+        devdn: (cfg.bb_mult, cfg.bb_mult, 0.0),
+        matype: ("sma".to_string(), "sma".to_string(), 0),
+        devtype: (0, 0, 0),
+    };
+    let wrapper = CudaBollingerBands::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.source_first_valid();
+    let (upper, middle, lower) = wrapper
+        .bollinger_bands_batch_from_device_ptr(
+            prepared_inputs.source_device().buffer().as_device_ptr(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| wrapper.bollinger_bands_batch_dev(prepared_inputs.source(), &sweep))
+        .map_err(|e| e.to_string())?;
+
+    let matrix = if output_preferred_ids
+        .iter()
+        .any(|id| ["upper_band", "upper", "up"].contains(id))
+    {
+        VemrDeviceMatrix::from_bollinger(upper)
+    } else if output_preferred_ids
+        .iter()
+        .any(|id| ["middle_band", "middle", "mid", "basis"].contains(id))
+    {
+        VemrDeviceMatrix::from_bollinger(middle)
+    } else {
+        VemrDeviceMatrix::from_bollinger(lower)
+    };
+
+    Ok(VemrPeriodSweepDevice {
+        matrix,
+        period_start: period_start.max(1),
+        period_end: period_end.max(period_start.max(1)),
+        period_step: period_step.max(1),
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_vemr_atr_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<VemrPeriodSweepDevice, String> {
+    let sweep = AtrBatchRange {
+        length: (
+            usize::from(period_start.max(1)),
+            usize::from(period_end.max(period_start.max(1))),
+            usize::from(period_step.max(1)),
+        ),
+    };
+    let wrapper = CudaAtr::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.hlc_first_valid();
+    let matrix = wrapper
+        .atr_batch_from_device_ptrs(
+            prepared_inputs.high_device().buffer().as_device_ptr(),
+            prepared_inputs.low_device().buffer().as_device_ptr(),
+            prepared_inputs.close_device().buffer().as_device_ptr(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| {
+            wrapper.atr_batch_dev(
+                prepared_inputs.high(),
+                prepared_inputs.low(),
+                prepared_inputs.close(),
+                &sweep,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(VemrPeriodSweepDevice {
+        matrix: VemrDeviceMatrix::from_atr(matrix),
+        period_start: period_start.max(1),
+        period_end: period_end.max(period_start.max(1)),
+        period_step: period_step.max(1),
+    })
+}
+
+#[cfg(feature = "cuda")]
 pub fn compute_vemr_zscore_sweep_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     cfg: &VemrStrategyParams,
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<VemrPeriodSweepDevice, String> {
+    if cfg.z_devtype == 0 && cfg.z_ma_type.eq_ignore_ascii_case("sma") {
+        return compute_vemr_zscore_sweep_cuda_direct(
+            prepared_inputs,
+            cfg,
+            period_start,
+            period_end,
+            period_step,
+            device_id,
+        );
+    }
+
     let period_key = resolve_param_key("zscore", &["period", "length", "timeperiod"])?;
     let ma_type_key = resolve_param_key("zscore", &["ma_type", "matype", "ma"])?;
     let nbdev_key = resolve_param_key("zscore", &["nbdev", "stddev", "stdev", "deviation"])?;
@@ -485,33 +710,16 @@ fn compute_vemr_bollinger_output_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<VemrPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("bollinger_bands", &["period", "length", "timeperiod"])?;
-    let devup_key = resolve_param_key("bollinger_bands", &["devup", "upper_mult", "upper"])?;
-    let devdn_key = resolve_param_key("bollinger_bands", &["devdn", "lower_mult", "lower"])?;
-    let output_id = resolve_output_id("bollinger_bands", output_preferred_ids)?;
-
-    let base_params = vec![
-        IndicatorParamKV {
-            key: devup_key,
-            value: IndicatorParamValue::Float(cfg.bb_mult),
-        },
-        IndicatorParamKV {
-            key: devdn_key,
-            value: IndicatorParamValue::Float(cfg.bb_mult),
-        },
-    ];
-
-    compute_indicator_period_sweep_cuda_device(
+    compute_vemr_bollinger_output_sweep_cuda_direct(
         prepared_inputs,
-        "bollinger_bands",
-        output_id.as_str(),
-        period_key.as_str(),
+        cfg,
+        output_preferred_ids,
         period_start,
         period_end,
         period_step,
-        base_params.as_slice(),
+        device_id,
     )
 }
 
@@ -581,19 +789,14 @@ pub fn compute_vemr_atr_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<VemrPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("atr", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("atr", &["value", "atr"])?;
-    compute_indicator_period_sweep_cuda_device(
+    compute_vemr_atr_sweep_cuda_direct(
         prepared_inputs,
-        "atr",
-        output_id.as_str(),
-        period_key.as_str(),
         period_start,
         period_end,
         period_step,
-        &[],
+        device_id,
     )
 }
 

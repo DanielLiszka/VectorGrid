@@ -235,7 +235,15 @@ fn strategy_supports_holdout(strategy_kind: &str) -> bool {
         "CompositeCpu"
             | "CompositeMo"
             | "DoubleMa"
+            | "Pit"
+            | "Set"
+            | "Mts"
+            | "Orc"
+            | "Marrt"
+            | "Vfct"
+            | "Rocb"
             | "Asr"
+            | "Vcc"
             | "Vemr"
             | "CompositeTrend"
             | "RegimeHybrid"
@@ -246,7 +254,7 @@ fn strategy_supports_holdout(strategy_kind: &str) -> bool {
 fn strategy_uses_double_ma_validation(strategy_kind: &str) -> bool {
     matches!(
         strategy_kind,
-        "DoubleMa" | "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum"
+        "DoubleMa" | "Pit" | "Set" | "Mts" | "Orc" | "Marrt" | "Vfct" | "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum"
     )
 }
 
@@ -2040,6 +2048,7 @@ fn apply_holdout_evaluation(
                     iterative: hv_iterative.clone(),
                     min_psr: None,
                     min_dsr: None,
+                    validation_context: None,
                 };
 
                 let val_res = match ta_app_core::run_double_ma_validation_blocking_with_candles(
@@ -2129,6 +2138,7 @@ fn apply_holdout_evaluation(
                     iterative: hv_iterative.clone(),
                     min_psr: None,
                     min_dsr: None,
+                    validation_context: None,
                 };
 
                 let val_res = match ta_app_core::run_composite_validation_blocking_with_candles(
@@ -2398,8 +2408,16 @@ mod tests {
     #[test]
     fn holdout_support_includes_asr_strategy() {
         assert!(strategy_supports_holdout("Asr"));
+        assert!(strategy_supports_holdout("Vcc"));
         assert!(strategy_supports_holdout("Vemr"));
         assert!(strategy_supports_holdout("DoubleMa"));
+        assert!(strategy_supports_holdout("Pit"));
+        assert!(strategy_supports_holdout("Set"));
+        assert!(strategy_supports_holdout("Mts"));
+        assert!(strategy_supports_holdout("Orc"));
+        assert!(strategy_supports_holdout("Marrt"));
+        assert!(strategy_supports_holdout("Vfct"));
+        assert!(strategy_supports_holdout("Rocb"));
         assert!(!strategy_supports_holdout("Unknown"));
     }
 
@@ -2407,5 +2425,12 @@ mod tests {
     fn asr_routes_to_composite_validation_path() {
         assert!(!strategy_uses_double_ma_validation("Asr"));
         assert!(strategy_uses_double_ma_validation("DoubleMa"));
+        assert!(strategy_uses_double_ma_validation("Pit"));
+        assert!(strategy_uses_double_ma_validation("Set"));
+        assert!(strategy_uses_double_ma_validation("Mts"));
+        assert!(strategy_uses_double_ma_validation("Orc"));
+        assert!(strategy_uses_double_ma_validation("Marrt"));
+        assert!(strategy_uses_double_ma_validation("Vfct"));
+        assert!(!strategy_uses_double_ma_validation("Rocb"));
     }
 }

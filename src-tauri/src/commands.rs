@@ -70,10 +70,7 @@ pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,
     save_report_xlsx, SaveReportXlsxResponse,
 };
-pub use commands_system::{
-    get_gpu_status, list_cuda_devices, set_window_effect, CudaDeviceInfo, GpuStatus,
-    ListCudaDevicesResponse,
-};
+pub use commands_system::{get_gpu_status, set_window_effect, GpuStatus};
 #[allow(unused_imports)]
 pub(crate) use commands_validation::apply_cross_ticker_validation;
 pub use commands_validation::{

@@ -204,6 +204,7 @@ interface AnalysisState {
   stabilityStatus: string
   stabilityMeta: string
   heatmapMeta: string
+  heatmapStatusLine: string
   statusLine: string
   source: 'vue' | 'unknown'
   updatedAtUnixMs: number
@@ -451,7 +452,7 @@ export const useAnalysisStore = defineStore('analysis', {
     heatmapShowTopOptions: [],
     heatmapShowCrosshair: 'true',
     heatmapShowCrosshairOptions: [],
-    canHeatmapExportPng: true,
+    canHeatmapExportPng: false,
     metaStrategyKind: 'CompositeMo',
     metaStrategyOptions: [],
     metaTimeframe: '',
@@ -557,6 +558,7 @@ export const useAnalysisStore = defineStore('analysis', {
     stabilityStatus: '-',
     stabilityMeta: '-',
     heatmapMeta: '-',
+    heatmapStatusLine: 'Heatmap unavailable.',
     statusLine: 'Ready.',
     source: 'unknown',
     updatedAtUnixMs: 0,
@@ -718,6 +720,7 @@ export const useAnalysisStore = defineStore('analysis', {
       this.stabilityStatus = String(snapshot.stabilityStatus ?? this.stabilityStatus ?? '-').trim() || '-'
       this.stabilityMeta = String(snapshot.stabilityMeta ?? this.stabilityMeta ?? '-').trim() || '-'
       this.heatmapMeta = String(snapshot.heatmapMeta ?? this.heatmapMeta ?? '-').trim() || '-'
+      this.heatmapStatusLine = String(snapshot.heatmapStatusLine ?? this.heatmapStatusLine ?? 'Heatmap unavailable.').trim() || 'Heatmap unavailable.'
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
@@ -754,6 +757,12 @@ export const useAnalysisStore = defineStore('analysis', {
       if (applyVueAnalysisFieldUpdate(this, key, next)) {
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
+        if (key === 'paretoX' || key === 'paretoY') {
+          analysisService.refreshParetoFromWorkflowRun()
+        }
+        if (key === 'heatmapColor' || key === 'heatmapRange' || key === 'heatmapShowTop' || key === 'heatmapShowCrosshair') {
+          analysisService.refreshHeatmapFromWorkflowRun()
+        }
       }
     },
 

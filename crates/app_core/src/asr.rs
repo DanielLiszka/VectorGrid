@@ -19,7 +19,18 @@ use crate::dynamic_indicator_adapter::{
     DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 #[cfg(feature = "cuda")]
+use vector_ta::cuda::{
+    er_wrapper::DeviceArrayF32Er, CudaEr, CudaKaufmanstop, CudaLinearregAngle,
+    CudaSqueezeMomentum, CudaTtmSqueeze, CudaZscore, DeviceArrayF32,
+};
+#[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
+#[cfg(feature = "cuda")]
+use vector_ta::indicators::{
+    er::ErBatchRange, linearreg_angle::Linearreg_angleBatchRange,
+    squeeze_momentum::SqueezeMomentumBatchRange, ttm_squeeze::TtmSqueezeBatchRange,
+    zscore::ZscoreBatchRange,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AsrEntryMode {
@@ -243,8 +254,11 @@ pub struct AsrSlowSignalsDevice {
 }
 
 #[cfg(feature = "cuda")]
+#[allow(dead_code)]
 enum AsrDeviceMatrixOwner {
     Dispatch(DeviceMatrixF32),
+    Raw(DeviceArrayF32),
+    Er(DeviceArrayF32Er),
 }
 
 #[cfg(feature = "cuda")]
@@ -280,9 +294,35 @@ impl AsrOwnedDeviceMatrix {
         }
     }
 
+    fn from_raw(m: DeviceArrayF32) -> Self {
+        let device_ptr = m.device_ptr();
+        let rows = m.rows;
+        let cols = m.cols;
+        Self {
+            device_ptr,
+            rows,
+            cols,
+            owner: AsrDeviceMatrixOwner::Raw(m),
+        }
+    }
+
+    fn from_er(m: DeviceArrayF32Er) -> Self {
+        let device_ptr = m.device_ptr();
+        let rows = m.rows;
+        let cols = m.cols;
+        Self {
+            device_ptr,
+            rows,
+            cols,
+            owner: AsrDeviceMatrixOwner::Er(m),
+        }
+    }
+
     fn keepalive_tag(&self) -> u8 {
         match self.owner {
             AsrDeviceMatrixOwner::Dispatch(_) => 0,
+            AsrDeviceMatrixOwner::Raw(_) => 1,
+            AsrDeviceMatrixOwner::Er(_) => 2,
         }
     }
 }
@@ -586,6 +626,215 @@ fn compute_indicator_period_sweep_cuda_device(
     let (matrix, _warmup) = cuda_series_to_device_f32(out)?;
     Ok(AsrPeriodSweepDevice {
         matrix: AsrOwnedDeviceMatrix::from_dispatch(matrix),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_asr_ttm_squeeze_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &AsrStrategyParams,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<AsrPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = TtmSqueezeBatchRange {
+        length: (usize::from(start), usize::from(end), usize::from(step)),
+        bb_mult: (cfg.squeeze_bb_mult, cfg.squeeze_bb_mult, 0.0),
+        kc_high: (1.0, 1.0, 0.0),
+        kc_mid: (cfg.squeeze_kc_mult, cfg.squeeze_kc_mult, 0.0),
+        kc_low: (2.0, 2.0, 0.0),
+    };
+    let wrapper = CudaTtmSqueeze::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.hlc_first_valid();
+    let (_momentum, squeeze) = wrapper
+        .ttm_squeeze_batch_dev_from_device_inputs(
+            prepared_inputs.high_device().buffer(),
+            prepared_inputs.low_device().buffer(),
+            prepared_inputs.close_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| {
+            wrapper.ttm_squeeze_batch_dev(
+                prepared_inputs.high(),
+                prepared_inputs.low(),
+                prepared_inputs.close(),
+                &sweep,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(AsrPeriodSweepDevice {
+        matrix: AsrOwnedDeviceMatrix::from_raw(squeeze),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_asr_squeeze_momentum_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &AsrStrategyParams,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<AsrPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = SqueezeMomentumBatchRange {
+        length_bb: (usize::from(start), usize::from(start), 0),
+        mult_bb: (cfg.squeeze_bb_mult, cfg.squeeze_bb_mult, 0.0),
+        length_kc: (usize::from(start), usize::from(end), usize::from(step)),
+        mult_kc: (cfg.squeeze_kc_mult, cfg.squeeze_kc_mult, 0.0),
+    };
+    let wrapper = CudaSqueezeMomentum::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.hlc_first_valid();
+    let (_squeeze, momentum, _signal) = wrapper
+        .squeeze_momentum_batch_dev_from_device_inputs(
+            prepared_inputs.high_device().buffer(),
+            prepared_inputs.low_device().buffer(),
+            prepared_inputs.close_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| {
+            wrapper.squeeze_momentum_batch_dev(
+                prepared_inputs.high(),
+                prepared_inputs.low(),
+                prepared_inputs.close(),
+                &sweep,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(AsrPeriodSweepDevice {
+        matrix: AsrOwnedDeviceMatrix::from_raw(momentum),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_asr_linearreg_angle_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<AsrPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = Linearreg_angleBatchRange {
+        period: (usize::from(start), usize::from(end), usize::from(step)),
+    };
+    let wrapper = CudaLinearregAngle::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.source_first_valid();
+    let matrix = wrapper
+        .linearreg_angle_batch_dev_from_device_prices(
+            prepared_inputs.source_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| wrapper.linearreg_angle_batch_dev(prepared_inputs.source(), &sweep))
+        .map_err(|e| e.to_string())?;
+
+    Ok(AsrPeriodSweepDevice {
+        matrix: AsrOwnedDeviceMatrix::from_raw(matrix),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_asr_er_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<AsrPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = ErBatchRange {
+        period: (usize::from(start), usize::from(end), usize::from(step)),
+    };
+    let wrapper = CudaEr::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.source_first_valid();
+    let matrix = wrapper
+        .er_batch_dev_from_device_prices(
+            prepared_inputs.source_device().buffer(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| wrapper.er_batch_dev(prepared_inputs.source(), &sweep))
+        .map_err(|e| e.to_string())?;
+
+    Ok(AsrPeriodSweepDevice {
+        matrix: AsrOwnedDeviceMatrix::from_er(matrix),
+        period_start: start,
+        period_end: end,
+        period_step: step,
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn compute_asr_zscore_sweep_cuda_direct(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    cfg: &AsrStrategyParams,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+    device_id: u32,
+) -> Result<AsrPeriodSweepDevice, String> {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let sweep = ZscoreBatchRange {
+        period: (usize::from(start), usize::from(end), usize::from(step)),
+        ma_type: (
+            cfg.z_ma_type.clone(),
+            cfg.z_ma_type.clone(),
+            String::new(),
+        ),
+        nbdev: (cfg.z_nbdev, cfg.z_nbdev, 0.0),
+        devtype: (
+            usize::from(cfg.z_devtype),
+            usize::from(cfg.z_devtype),
+            0,
+        ),
+    };
+    let wrapper = CudaZscore::new(device_id as usize).map_err(|e| e.to_string())?;
+    let first_valid = prepared_inputs.source_first_valid();
+    let (matrix, _) = wrapper
+        .zscore_batch_from_device_ptr(
+            prepared_inputs.source_device().buffer().as_device_ptr(),
+            prepared_inputs.len(),
+            first_valid,
+            &sweep,
+        )
+        .or_else(|_| wrapper.zscore_batch_dev(prepared_inputs.source(), &sweep))
+        .map_err(|e| e.to_string())?;
+
+    Ok(AsrPeriodSweepDevice {
+        matrix: AsrOwnedDeviceMatrix::from_raw(matrix),
         period_start: start,
         period_end: end,
         period_step: step,
@@ -992,7 +1241,7 @@ pub fn compute_asr_slow_signals_cuda_device(
 pub fn compute_asr_kaufman_stops_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     strategy: &StrategyConfig,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<AsrKaufmanStopsDevice, String> {
     let params_long = vec![
         IndicatorParamKV {
@@ -1031,68 +1280,94 @@ pub fn compute_asr_kaufman_stops_cuda_device(
         },
     ];
 
-    let output_id = find_dynamic_indicator_descriptor("kaufmanstop")
-        .and_then(|d| d.outputs.first())
-        .map(|o| o.id.as_str());
+    let sweep_for_direction = |direction: &str| vector_ta::indicators::kaufmanstop::KaufmanstopBatchRange {
+        period: (
+            strategy.kaufman_stop_period().max(1) as usize,
+            strategy.kaufman_stop_period().max(1) as usize,
+            0,
+        ),
+        mult: (
+            strategy.kaufman_stop_mult(),
+            strategy.kaufman_stop_mult(),
+            0.0,
+        ),
+        direction: (direction.to_string(), direction.to_string(), 0.0),
+        ma_type: (
+            strategy.kaufman_stop_ma_type().to_string(),
+            strategy.kaufman_stop_ma_type().to_string(),
+            0.0,
+        ),
+    };
 
-    let direct_compute =
-        |params: &[IndicatorParamKV]| -> Result<(DeviceMatrixF32, Option<usize>), String> {
-            let candidates = [
-                IndicatorInputKind::HighLow,
-                IndicatorInputKind::Candles,
-                IndicatorInputKind::Ohlc,
-            ];
-            let mut last_err: Option<String> = None;
-            for kind in candidates {
-                match compute_indicator_f32_cuda_device_direct(
-                    prepared_inputs,
-                    "kaufmanstop",
-                    output_id,
-                    kind,
-                    params,
-                ) {
-                    Ok(v) => return Ok(v),
-                    Err(err) => {
-                        last_err = Some(err);
+    let direct_compute = |direction: &str| -> Result<AsrOwnedDeviceMatrix, String> {
+        let wrapper = CudaKaufmanstop::new(device_id as usize).map_err(|e| e.to_string())?;
+        let first_valid = prepared_inputs.high_low_first_valid();
+        let sweep = sweep_for_direction(direction);
+        let matrix = wrapper
+            .kaufmanstop_batch_dev_from_device_inputs(
+                prepared_inputs.high_device().buffer(),
+                prepared_inputs.low_device().buffer(),
+                prepared_inputs.len(),
+                first_valid,
+                &sweep,
+            )
+            .map(|(matrix, _)| AsrOwnedDeviceMatrix::from_raw(matrix))
+            .or_else(|_| {
+                let params = if direction.eq_ignore_ascii_case("long") {
+                    &params_long
+                } else {
+                    &params_short
+                };
+                let output_id = find_dynamic_indicator_descriptor("kaufmanstop")
+                    .and_then(|d| d.outputs.first())
+                    .map(|o| o.id.as_str());
+                if let Some(output_id) = output_id {
+                    compute_indicator_f32_cuda_device(prepared_inputs, "kaufmanstop", output_id, params)
+                        .map(|(matrix, _warmup)| AsrOwnedDeviceMatrix::from_dispatch(matrix))
+                } else {
+                    let candidates = [
+                        IndicatorInputKind::HighLow,
+                        IndicatorInputKind::Candles,
+                        IndicatorInputKind::Ohlc,
+                    ];
+                    let mut last_err: Option<String> = None;
+                    for kind in candidates {
+                        match compute_indicator_f32_cuda_device_direct(
+                            prepared_inputs,
+                            "kaufmanstop",
+                            output_id,
+                            kind,
+                            params,
+                        ) {
+                            Ok((matrix, _warmup)) => {
+                                return Ok(AsrOwnedDeviceMatrix::from_dispatch(matrix));
+                            }
+                            Err(err) => {
+                                last_err = Some(err);
+                            }
+                        }
                     }
+                    Err(last_err.unwrap_or_else(|| {
+                        "ASR kaufman-stop CUDA device dispatch failed for all input kinds"
+                            .to_string()
+                    }))
                 }
-            }
-            Err(last_err.unwrap_or_else(|| {
-                "ASR kaufman-stop CUDA device dispatch failed for all input kinds".to_string()
-            }))
-        };
+            })?;
+        Ok(matrix)
+    };
 
-    let (long, long_warmup) = if output_id.is_some() {
-        compute_indicator_f32_cuda_device(
-            prepared_inputs,
-            "kaufmanstop",
-            output_id.unwrap_or("value"),
-            &params_long,
-        )
-        .or_else(|_| direct_compute(&params_long))?
-    } else {
-        direct_compute(&params_long)?
-    };
-    let (short, short_warmup) = if output_id.is_some() {
-        compute_indicator_f32_cuda_device(
-            prepared_inputs,
-            "kaufmanstop",
-            output_id.unwrap_or("value"),
-            &params_short,
-        )
-        .or_else(|_| direct_compute(&params_short))?
-    } else {
-        direct_compute(&params_short)?
-    };
+    let long = direct_compute("long")?;
+    let short = direct_compute("short")?;
 
     if long.rows != short.rows || long.cols != short.cols {
         return Err("ASR kaufman-stop CUDA device shape mismatch".to_string());
     }
-    let first_valid = long_warmup.unwrap_or(0).max(short_warmup.unwrap_or(0));
+    let first_valid = prepared_inputs.high_low_first_valid()
+        + usize::from(strategy.kaufman_stop_period().saturating_sub(1));
 
     Ok(AsrKaufmanStopsDevice {
-        long: AsrOwnedDeviceMatrix::from_dispatch(long),
-        short: AsrOwnedDeviceMatrix::from_dispatch(short),
+        long,
+        short,
         first_valid,
     })
 }
@@ -1104,21 +1379,15 @@ pub fn compute_asr_ttm_squeeze_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
-    let base_params = vec![IndicatorParamKV {
-        key: "bb_mult".to_string(),
-        value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-    }];
-    let sweep = compute_indicator_period_sweep_cuda_device(
+    let sweep = compute_asr_ttm_squeeze_sweep_cuda_direct(
         prepared_inputs,
-        "ttm_squeeze",
-        "squeeze",
-        "length",
+        cfg,
         period_start,
         period_end,
         period_step,
-        base_params.as_slice(),
+        device_id,
     )?;
     let expected_rows = usize::from(
         (sweep
@@ -1143,34 +1412,15 @@ pub fn compute_asr_squeeze_momentum_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
-    let start = period_start.max(1);
-    let end = period_end.max(start);
-    let step = period_step.max(1);
-    let base_params = vec![
-        IndicatorParamKV {
-            key: "length_bb".to_string(),
-            value: IndicatorParamValue::Int(i64::from(start)),
-        },
-        IndicatorParamKV {
-            key: "mult_bb".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-        },
-        IndicatorParamKV {
-            key: "mult_kc".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_kc_mult),
-        },
-    ];
-    let sweep = compute_indicator_period_sweep_cuda_device(
+    let sweep = compute_asr_squeeze_momentum_sweep_cuda_direct(
         prepared_inputs,
-        "squeeze_momentum",
-        "momentum",
-        "length_kc",
-        start,
-        end,
-        step,
-        base_params.as_slice(),
+        cfg,
+        period_start,
+        period_end,
+        period_step,
+        device_id,
     )?;
     let expected_rows = usize::from(
         (sweep
@@ -1194,17 +1444,14 @@ pub fn compute_asr_linearreg_angle_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
-    let sweep = compute_indicator_period_sweep_cuda_device(
+    let sweep = compute_asr_linearreg_angle_sweep_cuda_direct(
         prepared_inputs,
-        "linearreg_angle",
-        "value",
-        "period",
         period_start,
         period_end,
         period_step,
-        &[],
+        device_id,
     )?;
     let expected_rows = usize::from(
         (sweep
@@ -1228,17 +1475,14 @@ pub fn compute_asr_er_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
-    let sweep = compute_indicator_period_sweep_cuda_device(
+    let sweep = compute_asr_er_sweep_cuda_direct(
         prepared_inputs,
-        "er",
-        "value",
-        "period",
         period_start,
         period_end,
         period_step,
-        &[],
+        device_id,
     )?;
     let expected_rows = usize::from(
         (sweep
@@ -1263,32 +1507,43 @@ pub fn compute_asr_zscore_sweep_cuda_device(
     period_start: u16,
     period_end: u16,
     period_step: u16,
-    _device_id: u32,
+    device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
-    let base_params = vec![
-        IndicatorParamKV {
-            key: "ma_type".to_string(),
-            value: IndicatorParamValue::EnumString(cfg.z_ma_type.clone()),
-        },
-        IndicatorParamKV {
-            key: "nbdev".to_string(),
-            value: IndicatorParamValue::Float(cfg.z_nbdev),
-        },
-        IndicatorParamKV {
-            key: "devtype".to_string(),
-            value: IndicatorParamValue::Int(i64::from(cfg.z_devtype)),
-        },
-    ];
-    let sweep = compute_indicator_period_sweep_cuda_device(
-        prepared_inputs,
-        "zscore",
-        "value",
-        "period",
-        period_start,
-        period_end,
-        period_step,
-        base_params.as_slice(),
-    )?;
+    let sweep = if cfg.z_devtype == 0 && cfg.z_ma_type.eq_ignore_ascii_case("sma") {
+        compute_asr_zscore_sweep_cuda_direct(
+            prepared_inputs,
+            cfg,
+            period_start,
+            period_end,
+            period_step,
+            device_id,
+        )?
+    } else {
+        let base_params = vec![
+            IndicatorParamKV {
+                key: "ma_type".to_string(),
+                value: IndicatorParamValue::EnumString(cfg.z_ma_type.clone()),
+            },
+            IndicatorParamKV {
+                key: "nbdev".to_string(),
+                value: IndicatorParamValue::Float(cfg.z_nbdev),
+            },
+            IndicatorParamKV {
+                key: "devtype".to_string(),
+                value: IndicatorParamValue::Int(i64::from(cfg.z_devtype)),
+            },
+        ];
+        compute_indicator_period_sweep_cuda_device(
+            prepared_inputs,
+            "zscore",
+            "value",
+            "period",
+            period_start,
+            period_end,
+            period_step,
+            base_params.as_slice(),
+        )?
+    };
     let expected_rows = usize::from(
         (sweep
             .period_end
@@ -1709,7 +1964,6 @@ pub fn build_asr_desired_positions(
 struct ExecutionOverlayParams {
     cooldown_bars: usize,
     persistence_bars: usize,
-    trailing_log: Option<f64>,
 }
 
 impl ExecutionOverlayParams {
@@ -1717,7 +1971,6 @@ impl ExecutionOverlayParams {
         Self {
             cooldown_bars: cfg.cooldown_bars(),
             persistence_bars: cfg.signal_persistence_bars().max(1),
-            trailing_log: cfg.trailing_stop_pct().map(|pct| (1.0 - pct).ln()),
         }
     }
 }
@@ -1727,7 +1980,6 @@ struct ExecutionOverlayState {
     cooldown_left: usize,
     pending_sign: i32,
     pending_count: usize,
-    trade_peak_log_ret: f64,
 }
 
 #[inline]
@@ -1787,35 +2039,10 @@ fn overlay_apply_entry_cooldown(sign: i32, current_pos: i32, state: &ExecutionOv
 }
 
 #[inline]
-fn overlay_on_trade_open(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
-    state.trade_peak_log_ret = trade_log_ret;
-}
-
-#[inline]
 fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionOverlayParams) {
     if params.cooldown_bars > 0 {
         state.cooldown_left = params.cooldown_bars;
     }
-    state.trade_peak_log_ret = 0.0;
-}
-
-#[inline]
-fn overlay_update_trade_peak(state: &mut ExecutionOverlayState, trade_log_ret: f64) {
-    if trade_log_ret > state.trade_peak_log_ret {
-        state.trade_peak_log_ret = trade_log_ret;
-    }
-}
-
-#[inline]
-fn overlay_hit_trailing_stop(
-    trade_log_ret: f64,
-    params: &ExecutionOverlayParams,
-    state: &ExecutionOverlayState,
-) -> bool {
-    let Some(trail_log) = params.trailing_log else {
-        return false;
-    };
-    state.trade_peak_log_ret > 0.0 && trade_log_ret <= state.trade_peak_log_ret + trail_log
 }
 
 fn clamp_pct(v: Option<f64>) -> Option<f64> {
@@ -1957,8 +2184,7 @@ fn simulate_from_desired(
     let stop_loss_pct = sim_cfg.stop_loss_pct.or(cfg.stop_loss_pct());
     let take_profit_pct = sim_cfg.take_profit_pct.or(cfg.take_profit_pct());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled =
-        stop_loss_pct.is_some() || take_profit_pct.is_some() || overlays.trailing_log.is_some();
+    let risk_enabled = stop_loss_pct.is_some() || take_profit_pct.is_some();
 
     let mut pos: i32 = 0;
     let mut entry_px: f64 = 0.0;
@@ -2025,7 +2251,6 @@ fn simulate_from_desired(
                         candles.open[t]
                     };
                     trade_log_ret = if log_cost != 0.0 { log_cost } else { 0.0 };
-                    overlay_on_trade_open(&mut overlay_state, trade_log_ret);
                     cur_entry_t = t;
                     cur_dir = desired;
                 } else {
@@ -2087,7 +2312,6 @@ fn simulate_from_desired(
                     candles.open[t]
                 };
                 trade_log_ret = if log_cost != 0.0 { log_cost } else { 0.0 };
-                overlay_on_trade_open(&mut overlay_state, trade_log_ret);
                 cur_entry_t = t;
                 cur_dir = desired;
             }
@@ -2149,30 +2373,6 @@ fn simulate_from_desired(
         log_eq += step_log;
         if risk_enabled && pos_bar != 0 && pos != 0 {
             trade_log_ret += step_log;
-            overlay_update_trade_peak(&mut overlay_state, trade_log_ret);
-            let hit_trailing = overlay_hit_trailing_stop(trade_log_ret, &overlays, &overlay_state);
-            if hit_trailing {
-                if log_cost != 0.0 {
-                    log_eq += log_cost;
-                    trade_log_ret += log_cost;
-                }
-                trades_count = trades_count.saturating_add(1);
-                if cur_dir != 0 {
-                    trades.push(Trade {
-                        entry_t: cur_entry_t,
-                        exit_t: t,
-                        direction: cur_dir,
-                        pnl: trade_log_ret.exp() - 1.0,
-                        bars: t.saturating_sub(cur_entry_t) as u32,
-                        open: false,
-                    });
-                }
-                pos = 0;
-                entry_px = 0.0;
-                cur_dir = 0;
-                trade_log_ret = 0.0;
-                overlay_on_trade_close(&mut overlay_state, &overlays);
-            }
         }
 
         let step_r = step_log.exp_m1();

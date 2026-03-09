@@ -188,6 +188,7 @@ fn main() -> Result<(), String> {
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        validation_context: None,
     };
 
     let double_res = ta_app_core::run_double_ma_validation_blocking_with_candles(
@@ -225,7 +226,9 @@ fn main() -> Result<(), String> {
             atr_period: 100,
         },
         asr: None,
+        vcc: None,
         vemr: None,
+        rocb: None,
         macz: ta_app_core::composite_cpu::MaczGateParams::default(),
         ott: ta_app_core::composite_cpu::OttGateParams::default(),
         signal_mode: CompositeSignalMode::HardGate,
@@ -261,6 +264,7 @@ fn main() -> Result<(), String> {
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        validation_context: None,
     };
     let composite_req_nvda = CompositeValidationRequest {
         data_id: "NVDA".to_string(),

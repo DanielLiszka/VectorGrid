@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -37,6 +38,7 @@ interface BatchDatasetItem {
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
+const { metaCompareStage, metaStage } = useUiReadiness()
 const {
   metaStrategyKind,
   metaStrategyOptions,
@@ -188,6 +190,7 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'meta')
 const activeAggregateTab = computed(() => String(aggregateTab.value || '').trim() || 'meta')
 const metaTabActive = computed(() => activeAggregateTab.value === 'meta')
 const compareTabActive = computed(() => activeAggregateTab.value === 'compare')
+const showMetaTooling = computed(() => metaStage.value !== 'no_data')
 const renderedColumns = computed<MetaColumn[]>(() => metaTableColumns.value as MetaColumn[])
 const renderedRows = computed<MetaRow[]>(() => metaTableRows.value as MetaRow[])
 const renderedBatchDatasets = computed<BatchDatasetItem[]>(() => batchDatasets.value as BatchDatasetItem[])
@@ -452,7 +455,25 @@ onBeforeUnmount(() => {
         <div class="meta mono">{{ activeAggregateTab }} · {{ stamp }}</div>
       </header>
 
-      <section class="pane">
+      <section v-if="metaStage === 'no_data'" class="emptyState">
+        <div class="emptyTitle">Meta Analysis needs saved runs first.</div>
+        <div class="emptyBody">Build a run library by saving optimizations, then use this workspace to generate meta artifacts, compare groups, and rank robust candidates.</div>
+        <div class="muted mono">{{ statusLine }}</div>
+      </section>
+
+      <section v-else-if="metaStage === 'data_loaded_no_run' && activeAggregateTab === 'meta'" class="emptyState">
+        <div class="emptyTitle">Saved runs are available, but no meta artifact is active yet.</div>
+        <div class="emptyBody">Configure the selection criteria below, then run meta analysis to generate grouped recommendations and reports.</div>
+        <div class="muted mono">{{ aggregateSummarySavedRuns }} saved runs available</div>
+      </section>
+
+      <section v-else-if="metaCompareStage === 'results_available_no_selection' && compareTabActive" class="emptyState">
+        <div class="emptyTitle">Select a baseline meta artifact to compare.</div>
+        <div class="emptyBody">Comparison results appear here once you choose a saved meta artifact from the compare selector.</div>
+        <div class="muted mono">{{ statusLine }}</div>
+      </section>
+
+      <section v-if="showMetaTooling" class="pane">
         <div class="subtabs">
           <button type="button" :class="{ active: activeAggregateTab === 'meta' }" @click="clickAggregateTab('meta')">Meta Selection</button>
           <button type="button" :class="{ active: activeAggregateTab === 'batch' }" @click="clickAggregateTab('batch')">Batch Generation</button>
@@ -487,7 +508,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="activeAggregateTab === 'batch'" class="pane">
+      <section v-if="showMetaTooling && activeAggregateTab === 'batch'" class="pane">
         <div class="gridFour">
           <div>
             <label for="vueBatchDatasetSearch">Search</label>
@@ -691,7 +712,7 @@ onBeforeUnmount(() => {
         <div class="metaLine mono">{{ stage4SavedMeta }}</div>
       </section>
 
-      <section v-if="metaTabActive" class="pane">
+      <section v-if="showMetaTooling && metaTabActive" class="pane">
         <h3>ML Confidence + Stage 4</h3>
         <div class="checks">
           <label>
@@ -863,7 +884,7 @@ onBeforeUnmount(() => {
         <pre class="mono preview">{{ metaStage4OutputPreview }}</pre>
       </section>
 
-      <section v-if="metaTabActive" class="pane">
+      <section v-if="showMetaTooling && metaTabActive" class="pane">
         <div class="gridFive">
           <div>
             <label for="vueMetaStrategy">Strategy</label>
@@ -936,7 +957,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="metaTabActive" class="pane">
+      <section v-if="showMetaTooling && metaTabActive" class="pane">
         <h3>Holdout + Grouping</h3>
         <div class="gridThree">
           <div>
@@ -1133,7 +1154,7 @@ onBeforeUnmount(() => {
         <pre class="mono preview">{{ metaOutputPreview }}</pre>
       </section>
 
-      <section v-if="compareTabActive" class="pane">
+      <section v-if="showMetaTooling && compareTabActive" class="pane">
         <label for="vueMetaCompareSelect">Compare meta baseline</label>
         <select
           id="vueMetaCompareSelect"

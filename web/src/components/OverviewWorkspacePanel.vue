@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useUiReadiness } from '../composables/useUiReadiness'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useHistoryStore } from '../stores/historyStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { describeExecutionRisk } from '../utils/executionRisk'
 
 const analysisStore = useAnalysisStore()
 const historyStore = useHistoryStore()
+const workflowArtifactsStore = useWorkflowArtifactsStore()
 const workflowStore = useWorkflowStore()
+const { overviewStage } = useUiReadiness()
 const {
   bestKicker,
   bestTitle,
@@ -33,6 +38,7 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(analysisStore)
 const { compareOptions, compareSelectedValue } = storeToRefs(historyStore)
+const { currentRun } = storeToRefs(workflowArtifactsStore)
 const { resultsTab } = storeToRefs(workflowStore)
 
 const mountReady = ref(false)
@@ -41,16 +47,14 @@ const panelRoot = ref<HTMLElement | null>(null)
 const compareDraft = ref('')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'overview')
-const showPendingOverview = computed(() => {
-  if (overviewEmptyVisible.value || canCopyBest.value) return false
-  const title = String(bestTitle.value || '').trim()
-  const meta = String(bestMeta.value || '').trim()
-  const summary = String(bestSummary.value || '').trim()
-  const placeholder = new Set(['', '-', '—'])
-  const statsLookEmpty =
-    bestStats.value.length === 0 ||
-    bestStats.value.every((stat) => placeholder.has(String(stat.value || '').trim()))
-  return statsLookEmpty && placeholder.has(title) && placeholder.has(meta) && placeholder.has(summary)
+const showPendingOverview = computed(() => !overviewEmptyVisible.value && overviewStage.value === 'data_loaded_no_run')
+const showReadyOverview = computed(() => overviewStage.value === 'ready')
+const executionRisk = computed(() => {
+  const req = currentRun.value?.req
+  const strategy = req && typeof req === 'object'
+    ? (req as { strategy?: unknown }).strategy ?? null
+    : null
+  return describeExecutionRisk(strategy)
 })
 
 const stamp = computed(() => {
@@ -70,6 +74,11 @@ watch(
 
 function setSelectValue(id: string, nextValue: string): void {
   analysisStore.setSelectField(id, nextValue)
+}
+
+function reviewExecutionSettings(): void {
+  workflowStore.selectWorkspace('workflow', 'optimize')
+  workflowStore.selectControlsTab('strategy', { persist: false })
 }
 
 function resolveMount(): void {
@@ -134,7 +143,15 @@ onBeforeUnmount(() => {
         <div class="muted mono">{{ statusLine }}</div>
       </section>
 
-      <section v-else class="bestCard">
+      <section v-if="showReadyOverview && executionRisk" class="riskNotice">
+        <div class="riskTitle">{{ executionRisk.title }}</div>
+        <div class="riskBody">{{ executionRisk.body }}</div>
+        <div class="actions" style="margin-top: 0.75rem;">
+          <button type="button" class="primary" @click="reviewExecutionSettings()">Review execution settings</button>
+        </div>
+      </section>
+
+      <section v-if="showReadyOverview" class="bestCard">
         <div class="bestHeader">
           <div>
             <div class="bestKicker">{{ bestKicker }}</div>
@@ -167,7 +184,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="pane">
+      <section v-if="showReadyOverview" class="pane">
         <h3>Compare</h3>
         <label for="vueCompareSelect">Baseline run</label>
         <select
@@ -225,6 +242,26 @@ onBeforeUnmount(() => {
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
   min-width: 0;
+}
+
+.riskNotice {
+  border: 1px solid color-mix(in oklab, var(--warning) 45%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--warning) 12%, var(--panel-footer));
+  padding: 0.8rem 0.9rem;
+}
+
+.riskTitle {
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--warning);
+}
+
+.riskBody {
+  margin-top: 0.35rem;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .pane h3 {

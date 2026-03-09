@@ -89,7 +89,6 @@ interface StrategyState {
   takeProfitPct: string
   cooldownBars: string
   signalPersistenceBars: string
-  trailingStopPct: string
   compositeSignalMode: string
   halfTrendAmplitude: string
   halfTrendAtrPeriod: string
@@ -153,6 +152,21 @@ interface StrategyState {
   vccSqueezeKcMult: string
   vccConfirmBars: string
   vccMaxTradeBars: string
+  pitEfiPeriod: string
+  pitVoscShortPeriod: string
+  pitVoscLongPeriod: string
+  pitCfoPeriod: string
+  pitCfoScalar: string
+  pitConfirmBars: string
+  vfctObvSmoothPeriod: string
+  vfctMfiPeriod: string
+  vfctMfiLongMin: string
+  vfctMfiShortMax: string
+  vfctConfirmBars: string
+  rocbChannelPeriod: string
+  rocbAtrPeriod: string
+  rocbAtrStopMult: string
+  rocbMaxTradeBars: string
   vemrZPeriod: string
   vemrZMaType: string
   vemrZNbdev: string
@@ -189,6 +203,8 @@ interface StrategyState {
   vccMapFastToMomentumPeriod: boolean
   vccMapSlowToTrendPeriod: boolean
   vccRequireMomentumAccel: boolean
+  rocbMapFastToChannelPeriod: boolean
+  rocbMapSlowToAtrPeriod: boolean
   vemrMapFastToZPeriod: boolean
   vemrMapFastToBbPeriod: boolean
   vemrMapSlowToAtrPeriod: boolean
@@ -210,7 +226,6 @@ const STRATEGY_TEXT_FIELDS = [
   'takeProfitPct',
   'cooldownBars',
   'signalPersistenceBars',
-  'trailingStopPct',
   'compositeSignalMode',
   'halfTrendAmplitude',
   'halfTrendAtrPeriod',
@@ -274,6 +289,21 @@ const STRATEGY_TEXT_FIELDS = [
   'vccSqueezeKcMult',
   'vccConfirmBars',
   'vccMaxTradeBars',
+  'pitEfiPeriod',
+  'pitVoscShortPeriod',
+  'pitVoscLongPeriod',
+  'pitCfoPeriod',
+  'pitCfoScalar',
+  'pitConfirmBars',
+  'vfctObvSmoothPeriod',
+  'vfctMfiPeriod',
+  'vfctMfiLongMin',
+  'vfctMfiShortMax',
+  'vfctConfirmBars',
+  'rocbChannelPeriod',
+  'rocbAtrPeriod',
+  'rocbAtrStopMult',
+  'rocbMaxTradeBars',
   'vemrZPeriod',
   'vemrZMaType',
   'vemrZNbdev',
@@ -312,6 +342,8 @@ const STRATEGY_CHECKBOX_FIELDS = [
   'vccMapFastToMomentumPeriod',
   'vccMapSlowToTrendPeriod',
   'vccRequireMomentumAccel',
+  'rocbMapFastToChannelPeriod',
+  'rocbMapSlowToAtrPeriod',
   'vemrMapFastToZPeriod',
   'vemrMapFastToBbPeriod',
   'vemrMapSlowToAtrPeriod',
@@ -333,6 +365,10 @@ function applyVueCheckboxFieldUpdate(state: StrategyState, field: string, checke
   const key = String(field || '').trim()
   if (!STRATEGY_CHECKBOX_FIELD_SET.has(key)) return false
   const typedKey = key as StrategyCheckboxField
+  if (typedKey === 'tradeOnNext') {
+    ;(state as unknown as Record<StrategyCheckboxField, boolean>)[typedKey] = true
+    return true
+  }
   ;(state as unknown as Record<StrategyCheckboxField, boolean>)[typedKey] = !!checked
   return true
 }
@@ -353,7 +389,6 @@ export const useStrategyStore = defineStore('strategy', {
     takeProfitPct: '',
     cooldownBars: '0',
     signalPersistenceBars: '1',
-    trailingStopPct: '',
     compositeSignalMode: '',
     halfTrendAmplitude: '',
     halfTrendAtrPeriod: '',
@@ -417,6 +452,21 @@ export const useStrategyStore = defineStore('strategy', {
     vccSqueezeKcMult: '1.5',
     vccConfirmBars: '0',
     vccMaxTradeBars: '120',
+    pitEfiPeriod: '13',
+    pitVoscShortPeriod: '5',
+    pitVoscLongPeriod: '20',
+    pitCfoPeriod: '9',
+    pitCfoScalar: '100.0',
+    pitConfirmBars: '2',
+    vfctObvSmoothPeriod: '21',
+    vfctMfiPeriod: '14',
+    vfctMfiLongMin: '55',
+    vfctMfiShortMax: '45',
+    vfctConfirmBars: '1',
+    rocbChannelPeriod: '20',
+    rocbAtrPeriod: '14',
+    rocbAtrStopMult: '2.0',
+    rocbMaxTradeBars: '80',
     vemrZPeriod: '20',
     vemrZMaType: 'sma',
     vemrZNbdev: '1.0',
@@ -453,6 +503,8 @@ export const useStrategyStore = defineStore('strategy', {
     vccMapFastToMomentumPeriod: true,
     vccMapSlowToTrendPeriod: true,
     vccRequireMomentumAccel: true,
+    rocbMapFastToChannelPeriod: true,
+    rocbMapSlowToAtrPeriod: true,
     vemrMapFastToZPeriod: true,
     vemrMapFastToBbPeriod: true,
     vemrMapSlowToAtrPeriod: true,
@@ -483,7 +535,6 @@ export const useStrategyStore = defineStore('strategy', {
       this.takeProfitPct = String(snapshot.takeProfitPct ?? this.takeProfitPct ?? '').trim()
       this.cooldownBars = String(snapshot.cooldownBars ?? this.cooldownBars ?? '0').trim() || '0'
       this.signalPersistenceBars = String(snapshot.signalPersistenceBars ?? this.signalPersistenceBars ?? '1').trim() || '1'
-      this.trailingStopPct = String(snapshot.trailingStopPct ?? this.trailingStopPct ?? '').trim()
       this.compositeSignalMode = String(snapshot.compositeSignalMode ?? this.compositeSignalMode ?? '').trim()
       this.halfTrendAmplitude = String(snapshot.halfTrendAmplitude ?? this.halfTrendAmplitude ?? '').trim()
       this.halfTrendAtrPeriod = String(snapshot.halfTrendAtrPeriod ?? this.halfTrendAtrPeriod ?? '').trim()
@@ -547,6 +598,21 @@ export const useStrategyStore = defineStore('strategy', {
       this.vccSqueezeKcMult = String(snapshot.vccSqueezeKcMult ?? this.vccSqueezeKcMult ?? '1.5').trim() || '1.5'
       this.vccConfirmBars = String(snapshot.vccConfirmBars ?? this.vccConfirmBars ?? '0').trim() || '0'
       this.vccMaxTradeBars = String(snapshot.vccMaxTradeBars ?? this.vccMaxTradeBars ?? '120').trim() || '120'
+      this.pitEfiPeriod = String(snapshot.pitEfiPeriod ?? this.pitEfiPeriod ?? '13').trim() || '13'
+      this.pitVoscShortPeriod = String(snapshot.pitVoscShortPeriod ?? this.pitVoscShortPeriod ?? '5').trim() || '5'
+      this.pitVoscLongPeriod = String(snapshot.pitVoscLongPeriod ?? this.pitVoscLongPeriod ?? '20').trim() || '20'
+      this.pitCfoPeriod = String(snapshot.pitCfoPeriod ?? this.pitCfoPeriod ?? '9').trim() || '9'
+      this.pitCfoScalar = String(snapshot.pitCfoScalar ?? this.pitCfoScalar ?? '100.0').trim() || '100.0'
+      this.pitConfirmBars = String(snapshot.pitConfirmBars ?? this.pitConfirmBars ?? '2').trim() || '2'
+      this.vfctObvSmoothPeriod = String(snapshot.vfctObvSmoothPeriod ?? this.vfctObvSmoothPeriod ?? '21').trim() || '21'
+      this.vfctMfiPeriod = String(snapshot.vfctMfiPeriod ?? this.vfctMfiPeriod ?? '14').trim() || '14'
+      this.vfctMfiLongMin = String(snapshot.vfctMfiLongMin ?? this.vfctMfiLongMin ?? '55').trim() || '55'
+      this.vfctMfiShortMax = String(snapshot.vfctMfiShortMax ?? this.vfctMfiShortMax ?? '45').trim() || '45'
+      this.vfctConfirmBars = String(snapshot.vfctConfirmBars ?? this.vfctConfirmBars ?? '1').trim() || '1'
+      this.rocbChannelPeriod = String(snapshot.rocbChannelPeriod ?? this.rocbChannelPeriod ?? '20').trim() || '20'
+      this.rocbAtrPeriod = String(snapshot.rocbAtrPeriod ?? this.rocbAtrPeriod ?? '14').trim() || '14'
+      this.rocbAtrStopMult = String(snapshot.rocbAtrStopMult ?? this.rocbAtrStopMult ?? '2.0').trim() || '2.0'
+      this.rocbMaxTradeBars = String(snapshot.rocbMaxTradeBars ?? this.rocbMaxTradeBars ?? '80').trim() || '80'
       this.vemrZPeriod = String(snapshot.vemrZPeriod ?? this.vemrZPeriod ?? '20').trim() || '20'
       this.vemrZMaType = String(snapshot.vemrZMaType ?? this.vemrZMaType ?? 'sma').trim() || 'sma'
       this.vemrZNbdev = String(snapshot.vemrZNbdev ?? this.vemrZNbdev ?? '1.0').trim() || '1.0'
@@ -572,7 +638,7 @@ export const useStrategyStore = defineStore('strategy', {
       this.kaufmanStopMaTypeVisible = Boolean(snapshot.kaufmanStopMaTypeVisible ?? this.kaufmanStopMaTypeVisible)
       this.longOnly = Boolean(snapshot.longOnly ?? this.longOnly)
       this.allowFlip = Boolean(snapshot.allowFlip ?? this.allowFlip)
-      this.tradeOnNext = Boolean(snapshot.tradeOnNext ?? this.tradeOnNext)
+      this.tradeOnNext = true
       this.trendUseRoc = Boolean(snapshot.trendUseRoc ?? this.trendUseRoc)
       this.trendUseAdx = Boolean(snapshot.trendUseAdx ?? this.trendUseAdx)
       this.breakoutUseAdx = Boolean(snapshot.breakoutUseAdx ?? this.breakoutUseAdx)
@@ -583,6 +649,8 @@ export const useStrategyStore = defineStore('strategy', {
       this.vccMapFastToMomentumPeriod = Boolean(snapshot.vccMapFastToMomentumPeriod ?? this.vccMapFastToMomentumPeriod)
       this.vccMapSlowToTrendPeriod = Boolean(snapshot.vccMapSlowToTrendPeriod ?? this.vccMapSlowToTrendPeriod)
       this.vccRequireMomentumAccel = Boolean(snapshot.vccRequireMomentumAccel ?? this.vccRequireMomentumAccel)
+      this.rocbMapFastToChannelPeriod = Boolean(snapshot.rocbMapFastToChannelPeriod ?? this.rocbMapFastToChannelPeriod)
+      this.rocbMapSlowToAtrPeriod = Boolean(snapshot.rocbMapSlowToAtrPeriod ?? this.rocbMapSlowToAtrPeriod)
       this.vemrMapFastToZPeriod = Boolean(snapshot.vemrMapFastToZPeriod ?? this.vemrMapFastToZPeriod)
       this.vemrMapFastToBbPeriod = Boolean(snapshot.vemrMapFastToBbPeriod ?? this.vemrMapFastToBbPeriod)
       this.vemrMapSlowToAtrPeriod = Boolean(snapshot.vemrMapSlowToAtrPeriod ?? this.vemrMapSlowToAtrPeriod)

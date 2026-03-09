@@ -18,6 +18,8 @@ vi.mock('../services/analysisService', () => ({
   exportTopCsv: vi.fn(async () => undefined),
   exportTopJson: vi.fn(async () => undefined),
   heatmapExportPng: vi.fn(async () => undefined),
+  refreshHeatmapFromWorkflowRun: vi.fn(() => true),
+  refreshParetoFromWorkflowRun: vi.fn(() => true),
   rerenderDrill: vi.fn(async () => undefined),
   refreshCompareSummary: vi.fn(async () => undefined),
   refreshTopTableFromWorkflowRun: vi.fn(() => true),
@@ -60,6 +62,7 @@ vi.mock('../services/metaService', () => ({
 
 vi.mock('../services/dataService', () => ({
   browseCsv: vi.fn(async () => null),
+  getPolygonCacheInfo: vi.fn(async () => ({ cacheDir: 'C:/polygon', hasApiKey: false, datasets: [] })),
   openPolygon: vi.fn(async () => undefined),
 }))
 
@@ -77,6 +80,8 @@ const drillPrevTradeMock = vi.mocked(analysisService.drillPrevTrade)
 const exportTopCsvMock = vi.mocked(analysisService.exportTopCsv)
 const exportTopJsonMock = vi.mocked(analysisService.exportTopJson)
 const heatmapExportPngMock = vi.mocked(analysisService.heatmapExportPng)
+const refreshHeatmapFromWorkflowRunMock = vi.mocked(analysisService.refreshHeatmapFromWorkflowRun)
+const refreshParetoFromWorkflowRunMock = vi.mocked(analysisService.refreshParetoFromWorkflowRun)
 const rerenderDrillMock = vi.mocked(analysisService.rerenderDrill)
 const refreshCompareSummaryMock = vi.mocked(analysisService.refreshCompareSummary)
 const refreshTopTableFromWorkflowRunMock = vi.mocked(analysisService.refreshTopTableFromWorkflowRun)
@@ -169,6 +174,8 @@ describe('analysis store actions', () => {
     expect(store.source).toBe('vue')
     expect(store.updatedAtUnixMs).toBeGreaterThan(0)
     expect(refreshTopTableFromWorkflowRunMock).toHaveBeenCalledTimes(2)
+    expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(1)
+    expect(refreshParetoFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(refreshCompareSummaryMock).toHaveBeenCalledTimes(1)
   })
 

@@ -17,6 +17,13 @@ export interface OptimizeOption {
 
 const STRATEGY_OPTIONS_DEFAULT: OptimizeOption[] = [
   { value: 'DoubleMa', label: 'Double MA', disabled: false },
+  { value: 'Pit', label: 'Pressure Impulse Trend (PIT)', disabled: false },
+  { value: 'Set', label: 'Slope + Efficiency Trend (SET)', disabled: false },
+  { value: 'Mts', label: 'Momentum Triple Stack (MTS)', disabled: false },
+  { value: 'Orc', label: 'Oscillator Reversion Confluence (ORC)', disabled: false },
+  { value: 'Marrt', label: 'MA Ribbon Regime Trend (MARRT)', disabled: false },
+  { value: 'Vfct', label: 'Volume Flow Confirmation Trend (VFCT)', disabled: false },
+  { value: 'Rocb', label: 'Risk Overlay Channel Breakout (ROCB)', disabled: false },
   { value: 'Asr', label: 'Adaptive Squeeze Regime (ASR)', disabled: false },
   { value: 'Vcc', label: 'Volatility Compression Confirmation (VCC)', disabled: false },
   { value: 'Vemr', label: 'Volatility Expansion Mean Reversion (VEMR)', disabled: false },
@@ -160,9 +167,6 @@ function applyVueFieldUpdate(state: OptimizeState, field: string, value: string)
     case 'backend':
       state.backend = next
       return true
-    case 'deviceId':
-      state.deviceId = next || '0'
-      return true
     case 'objective':
       state.objective = next
       return true
@@ -207,8 +211,6 @@ interface OptimizeState {
   presetOptions: OptimizeOption[]
   backend: string
   backendOptions: OptimizeOption[]
-  deviceId: string
-  deviceOptions: OptimizeOption[]
   objective: string
   mode: string
   fastStart: string
@@ -227,6 +229,7 @@ interface OptimizeState {
   slowMaParamSweeps: MaParamSweepMap | null
   pairsPreview: string
   gpuStatus: string
+  gpuDeviceMeta: string
   gpuParityMeta: string
   progressMeta: string
   runPlanMeta: string
@@ -258,8 +261,6 @@ export const useOptimizeStore = defineStore('optimize', {
     ],
     backend: 'Auto',
     backendOptions: BACKEND_OPTIONS_DEFAULT.map((option) => ({ ...option })),
-    deviceId: '0',
-    deviceOptions: [{ value: '0', label: '0 (Auto)', disabled: false }],
     objective: 'Sharpe',
     mode: 'Grid',
     fastStart: '5',
@@ -284,6 +285,7 @@ export const useOptimizeStore = defineStore('optimize', {
     slowMaParamSweeps: null,
     pairsPreview: 'Pairs: —',
     gpuStatus: 'GPU: —',
+    gpuDeviceMeta: 'CUDA device selection is automatic.',
     gpuParityMeta: 'Parity: —',
     progressMeta: '',
     runPlanMeta: 'Plan: —',
@@ -311,8 +313,6 @@ export const useOptimizeStore = defineStore('optimize', {
       this.presetOptions = normalizedOptions(snapshot.presetOptions ?? this.presetOptions ?? [])
       this.backend = normalizeBackendValue(snapshot.backend ?? this.backend ?? '')
       this.backendOptions = normalizeBackendOptions(snapshot.backendOptions ?? this.backendOptions ?? [])
-      this.deviceId = String(snapshot.deviceId ?? this.deviceId ?? '0').trim() || '0'
-      this.deviceOptions = normalizedOptions(snapshot.deviceOptions ?? this.deviceOptions ?? [])
       this.objective = String(snapshot.objective ?? this.objective ?? '').trim()
       this.mode = String(snapshot.mode ?? this.mode ?? '').trim()
       this.fastStart = String(snapshot.fastStart ?? this.fastStart ?? '').trim()
@@ -331,6 +331,7 @@ export const useOptimizeStore = defineStore('optimize', {
       this.slowMaParamSweeps = normalizeMaParamSweeps(snapshot.slowMaParamSweeps, this.slowMaParamSweeps)
       this.pairsPreview = String(snapshot.pairsPreview ?? this.pairsPreview ?? 'Pairs: —').trim() || 'Pairs: —'
       this.gpuStatus = String(snapshot.gpuStatus ?? this.gpuStatus ?? 'GPU: —').trim() || 'GPU: —'
+      this.gpuDeviceMeta = String(snapshot.gpuDeviceMeta ?? this.gpuDeviceMeta ?? 'CUDA device selection is automatic.').trim() || 'CUDA device selection is automatic.'
       this.gpuParityMeta = String(snapshot.gpuParityMeta ?? this.gpuParityMeta ?? 'Parity: —').trim() || 'Parity: —'
       this.progressMeta = String(snapshot.progressMeta ?? this.progressMeta ?? '').trim()
       this.runPlanMeta = String(snapshot.runPlanMeta ?? this.runPlanMeta ?? 'Plan: —').trim() || 'Plan: —'
@@ -389,16 +390,21 @@ export const useOptimizeStore = defineStore('optimize', {
       void presetKernelAction()
     },
 
-    refreshGpuStatus(): void {
+    refreshGpuStatus(quiet = false): void {
       void refreshGpuStatusAction()
         .then((summary) => {
           this.gpuStatus = String(summary?.text || this.gpuStatus || 'GPU: —').trim() || 'GPU: —'
-          this.statusLine = 'GPU status refreshed.'
+          this.gpuDeviceMeta = String(summary?.deviceMeta || this.gpuDeviceMeta || 'CUDA device selection is automatic.').trim() || 'CUDA device selection is automatic.'
+          if (!quiet) {
+            this.statusLine = 'GPU status refreshed.'
+          }
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
         })
         .catch((error: unknown) => {
-          this.statusLine = `GPU status refresh failed: ${String(error || '')}`.trim()
+          if (!quiet) {
+            this.statusLine = `GPU status refresh failed: ${String(error || '')}`.trim()
+          }
           this.source = 'vue'
           this.updatedAtUnixMs = Date.now()
         })

@@ -3,21 +3,29 @@ import { createPinia, setActivePinia } from 'pinia'
 import {
   applyTimeframe,
   browseCsv,
+  clearPolygonApiKey,
   type DataLoadResult,
   type DataSampleCsvSummary,
   getMarketDataDirInfo,
+  getPolygonCacheInfo,
   type MarketDataDirInfoSummary,
   type MarketDataDirOpenResult,
+  type PolygonCacheInfoSummary,
+  type PolygonDatasetSummary,
   browseMarketDataDir,
   clearData,
   closePolygon,
+  downloadPolygonDataset,
   listSampleCsvs,
   loadCsv,
   loadSampleCsv,
   openMarketDataDir,
   openPolygon,
+  repairPolygonDataset,
   resetMarketDataDir,
+  setPolygonApiKey,
   setMarketDataDir,
+  validatePolygonDataset,
 } from '../services/dataService'
 import { useDataStore } from './dataStore'
 
@@ -43,14 +51,48 @@ vi.mock('../services/dataService', () => ({
   })),
   browseCsv: vi.fn(async () => null),
   browseMarketDataDir: vi.fn(async () => ''),
+  clearPolygonApiKey: vi.fn(async () => ({
+    cacheDir: 'C:/default/polygon-cache',
+    hasApiKey: false,
+    datasets: [],
+  })),
   clearData: vi.fn(async () => undefined),
   closePolygon: vi.fn(async () => undefined),
+  downloadPolygonDataset: vi.fn(async () => ({
+    csvPath: 'C:/default/polygon-cache/AAPL_1m.csv',
+    downloadedBars: 1500,
+    usedCacheOnly: false,
+    load: {
+      path: 'C:/default/polygon-cache/AAPL_1m.csv',
+      dataId: 'poly-1',
+      cacheHit: false,
+      cachePath: 'C:/cache/poly-1.bin',
+      meta: {
+        len: 1500,
+        hasOpen: true,
+        hasHigh: true,
+        hasLow: true,
+        hasClose: true,
+        hasVolume: true,
+        minTs: 1_700_000_000,
+        maxTs: 1_700_500_000,
+        timeframe: '1m',
+        sourceSizeBytes: 123,
+        sourceMtimeUtcMs: 456,
+      },
+    },
+  })),
   getMarketDataDirInfo: vi.fn(async () => ({
     defaultRootDir: 'C:/default',
     configuredRootDir: '',
     effectiveRootDir: 'C:/default',
     polygonCacheDir: 'C:/default/polygon-cache',
     hint: 'Using default root: C:/default · Polygon cache: C:/default/polygon-cache',
+  })),
+  getPolygonCacheInfo: vi.fn(async () => ({
+    cacheDir: 'C:/default/polygon-cache',
+    hasApiKey: true,
+    datasets: [{ market: 'stocks', displaySymbol: 'AAPL', polygonTicker: 'AAPL', timeframe: '1m', csvPath: 'C:/default/polygon-cache/AAPL_1m.csv', minTs: 1700000000, maxTs: 1700005000, lastUpdatedUtcMs: 1700005000000, rowCount: 1500, adjusted: true, integrity: null }],
   })),
   listSampleCsvs: vi.fn(async () => []),
   loadCsv: vi.fn(async () => ({
@@ -75,6 +117,19 @@ vi.mock('../services/dataService', () => ({
   loadSampleCsv: vi.fn(async () => null),
   openMarketDataDir: vi.fn(async () => ({ path: 'C:/default/polygon-cache', openedWith: 'open_path' })),
   openPolygon: vi.fn(async () => undefined),
+  repairPolygonDataset: vi.fn(async () => ({
+    market: 'stocks',
+    displaySymbol: 'AAPL',
+    polygonTicker: 'AAPL',
+    timeframe: '1m',
+    csvPath: 'C:/default/polygon-cache/AAPL_1m.csv',
+    minTs: 1700000000,
+    maxTs: 1700005000,
+    lastUpdatedUtcMs: 1700005000000,
+    rowCount: 1500,
+    adjusted: true,
+    integrity: { checkedUtcMs: 1700005000000, parseErrors: 0, duplicates: 0, outOfOrder: 0, sameDayGapsGt2Min: 0 },
+  })),
   resetMarketDataDir: vi.fn(async () => ({
     defaultRootDir: 'C:/default',
     configuredRootDir: '',
@@ -89,6 +144,24 @@ vi.mock('../services/dataService', () => ({
     polygonCacheDir: 'C:/custom/polygon-cache',
     hint: 'Using custom root: C:/custom · Polygon cache: C:/custom/polygon-cache',
   })),
+  setPolygonApiKey: vi.fn(async () => ({
+    cacheDir: 'C:/default/polygon-cache',
+    hasApiKey: true,
+    datasets: [],
+  })),
+  validatePolygonDataset: vi.fn(async () => ({
+    market: 'stocks',
+    displaySymbol: 'AAPL',
+    polygonTicker: 'AAPL',
+    timeframe: '1m',
+    csvPath: 'C:/default/polygon-cache/AAPL_1m.csv',
+    minTs: 1700000000,
+    maxTs: 1700005000,
+    lastUpdatedUtcMs: 1700005000000,
+    rowCount: 1500,
+    adjusted: true,
+    integrity: { checkedUtcMs: 1700005000000, parseErrors: 0, duplicates: 1, outOfOrder: 0, sameDayGapsGt2Min: 0 },
+  })),
 }))
 
 const applyTimeframeMock = vi.mocked(applyTimeframe)
@@ -101,9 +174,15 @@ const closePolygonMock = vi.mocked(closePolygon)
 const getMarketDataDirInfoMock = vi.mocked(getMarketDataDirInfo)
 const listSampleCsvsMock = vi.mocked(listSampleCsvs)
 const browseMarketDataDirMock = vi.mocked(browseMarketDataDir)
+const clearPolygonApiKeyMock = vi.mocked(clearPolygonApiKey)
 const setMarketDataDirMock = vi.mocked(setMarketDataDir)
 const resetMarketDataDirMock = vi.mocked(resetMarketDataDir)
 const openMarketDataDirMock = vi.mocked(openMarketDataDir)
+const getPolygonCacheInfoMock = vi.mocked(getPolygonCacheInfo)
+const setPolygonApiKeyMock = vi.mocked(setPolygonApiKey)
+const downloadPolygonDatasetMock = vi.mocked(downloadPolygonDataset)
+const validatePolygonDatasetMock = vi.mocked(validatePolygonDataset)
+const repairPolygonDatasetMock = vi.mocked(repairPolygonDataset)
 
 const defaultMarketDataDirInfo: MarketDataDirInfoSummary = {
   defaultRootDir: 'C:/default',
@@ -143,6 +222,26 @@ const defaultLoadResult: DataLoadResult = {
   },
 }
 
+const defaultPolygonDataset: PolygonDatasetSummary = {
+  market: 'stocks',
+  displaySymbol: 'AAPL',
+  polygonTicker: 'AAPL',
+  timeframe: '1m',
+  csvPath: 'C:/default/polygon-cache/AAPL_1m.csv',
+  minTs: 1_700_000_000,
+  maxTs: 1_700_500_000,
+  lastUpdatedUtcMs: 1_700_005_000_000,
+  rowCount: 1500,
+  adjusted: true,
+  integrity: null,
+}
+
+const defaultPolygonCacheInfo: PolygonCacheInfoSummary = {
+  cacheDir: 'C:/default/polygon-cache',
+  hasApiKey: true,
+  datasets: [{ ...defaultPolygonDataset }],
+}
+
 async function flushAsync(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -161,9 +260,15 @@ describe('data store actions', () => {
     getMarketDataDirInfoMock.mockClear()
     listSampleCsvsMock.mockClear()
     browseMarketDataDirMock.mockClear()
+    clearPolygonApiKeyMock.mockClear()
     setMarketDataDirMock.mockClear()
     resetMarketDataDirMock.mockClear()
     openMarketDataDirMock.mockClear()
+    getPolygonCacheInfoMock.mockClear()
+    setPolygonApiKeyMock.mockClear()
+    downloadPolygonDatasetMock.mockClear()
+    validatePolygonDatasetMock.mockClear()
+    repairPolygonDatasetMock.mockClear()
 
     applyTimeframeMock.mockResolvedValue({
       ...defaultLoadResult,
@@ -182,9 +287,32 @@ describe('data store actions', () => {
     getMarketDataDirInfoMock.mockResolvedValue(defaultMarketDataDirInfo)
     listSampleCsvsMock.mockResolvedValue(defaultSampleRows)
     browseMarketDataDirMock.mockResolvedValue('')
+    clearPolygonApiKeyMock.mockResolvedValue({ ...defaultPolygonCacheInfo, hasApiKey: false, datasets: [] })
     setMarketDataDirMock.mockResolvedValue(defaultMarketDataDirInfo)
     resetMarketDataDirMock.mockResolvedValue(defaultMarketDataDirInfo)
     openMarketDataDirMock.mockResolvedValue(defaultMarketDataOpenResult)
+    getPolygonCacheInfoMock.mockResolvedValue({ ...defaultPolygonCacheInfo })
+    setPolygonApiKeyMock.mockResolvedValue({ ...defaultPolygonCacheInfo, datasets: [] })
+    downloadPolygonDatasetMock.mockResolvedValue({
+      csvPath: defaultPolygonDataset.csvPath,
+      downloadedBars: 1500,
+      usedCacheOnly: false,
+      baseLoad: { ...defaultLoadResult, path: defaultPolygonDataset.csvPath, dataId: 'poly-1-base' },
+      load: {
+        ...defaultLoadResult,
+        path: defaultPolygonDataset.csvPath,
+        dataId: 'poly-1',
+        meta: { ...defaultLoadResult.meta, timeframe: '15m', len: 100 },
+      },
+    })
+    validatePolygonDatasetMock.mockResolvedValue({
+      ...defaultPolygonDataset,
+      integrity: { checkedUtcMs: 1_700_005_000_000, parseErrors: 0, duplicates: 1, outOfOrder: 0, sameDayGapsGt2Min: 0 },
+    })
+    repairPolygonDatasetMock.mockResolvedValue({
+      ...defaultPolygonDataset,
+      integrity: { checkedUtcMs: 1_700_005_000_000, parseErrors: 0, duplicates: 0, outOfOrder: 0, sameDayGapsGt2Min: 0 },
+    })
   })
 
   it('updates Vue data state without legacy DOM mirroring', () => {
@@ -259,6 +387,73 @@ describe('data store actions', () => {
     expect(loadSampleCsvMock).toHaveBeenNthCalledWith(2, 1, ' C:/samples/aapl.csv ')
   })
 
+  it('opens, refreshes, and closes the Vue-native Polygon workflow', async () => {
+    const store = useDataStore()
+
+    store.openPolygon()
+    await flushAsync()
+    expect(store.polygonOpen).toBe(true)
+    expect(openPolygonMock).toHaveBeenCalled()
+    expect(getPolygonCacheInfoMock).toHaveBeenCalled()
+    expect(store.polygonHasApiKey).toBe(true)
+    expect(store.polygonDatasets.length).toBe(1)
+
+    store.closePolygon()
+    await flushAsync()
+    expect(store.polygonOpen).toBe(false)
+    expect(closePolygonMock).toHaveBeenCalled()
+  })
+
+  it('saves API keys and downloads/loads Polygon data through the store', async () => {
+    const store = useDataStore()
+    store.setInputField('polygonApiKey', 'secret')
+    store.setInputField('polygonSymbol', 'aapl')
+    store.setInputField('polygonFrom', '2024-01-01')
+    store.setInputField('polygonTo', '2024-01-31')
+    store.setSelectField('polygonTimeframe', '15m')
+
+    store.savePolygonApiKey()
+    await flushAsync()
+    expect(setPolygonApiKeyMock).toHaveBeenCalledWith('secret')
+    expect(store.polygonHasApiKey).toBe(true)
+
+    store.downloadPolygonDataset()
+    await flushAsync()
+    expect(downloadPolygonDatasetMock).toHaveBeenCalledWith({
+      market: 'stocks',
+      symbol: 'AAPL',
+      from: '2024-01-01',
+      to: '2024-01-31',
+      adjusted: true,
+      timeframe: '15m',
+    })
+    expect(store.dataId).toBe('poly-1')
+    expect(store.baseDataId).toBe('poly-1-base')
+    expect(store.dataTimeframe).toBe('15m')
+    expect(store.datasetContext).toContain('source=polygon')
+  })
+
+  it('validates and repairs the selected Polygon dataset', async () => {
+    const store = useDataStore()
+    store.openPolygon()
+    await flushAsync()
+
+    store.validatePolygonDataset()
+    await flushAsync()
+    expect(validatePolygonDatasetMock).toHaveBeenCalledWith(defaultPolygonDataset.csvPath)
+    expect(store.polygonSelectedMeta).toContain('dup=1')
+
+    store.repairPolygonDataset()
+    await flushAsync()
+    expect(repairPolygonDatasetMock).toHaveBeenCalledWith(defaultPolygonDataset.csvPath)
+    expect(store.polygonSelectedMeta).toContain('dup=0')
+
+    store.clearPolygonApiKey()
+    await flushAsync()
+    expect(clearPolygonApiKeyMock).toHaveBeenCalled()
+    expect(store.polygonHasApiKey).toBe(false)
+  })
+
   it('hydrates startup data using Vue-owned data bootstrap services', async () => {
     const store = useDataStore()
 
@@ -267,10 +462,12 @@ describe('data store actions', () => {
 
     expect(getMarketDataDirInfoMock).toHaveBeenCalled()
     expect(listSampleCsvsMock).toHaveBeenCalled()
+    expect(getPolygonCacheInfoMock).toHaveBeenCalled()
     expect(store.marketDataDir).toBe('')
     expect(store.marketDataDirHint).toContain('Using default root')
     expect(store.sampleCsvVisible).toBe(true)
     expect(store.sampleCsvOptions).toEqual(defaultSampleRows)
+    expect(store.polygonCacheDir).toBe(defaultPolygonCacheInfo.cacheDir)
   })
 
   it('clears data state while still calling data service clear hook', async () => {

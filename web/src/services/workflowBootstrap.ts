@@ -9,9 +9,9 @@ import {
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
-const WORKFLOW_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'history', 'settings'])
-const WORKFLOW_STEP_KEYS = new Set(['data', 'optimize', 'validate', 'analyze'])
-const CONTROLS_TAB_KEYS = new Set(['data', 'opt', 'strategy', 'advanced', 'distributed'])
+const WORKFLOW_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'])
+const WORKFLOW_STEP_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize'])
+const CONTROLS_TAB_KEYS = new Set(['data', 'opt', 'strategy', 'advanced'])
 const RESULTS_TAB_KEYS = new Set(['overview', 'top', 'pareto', 'validate', 'drill', 'heatmap', 'history', 'meta', 'debug'])
 const AGGREGATE_TAB_KEYS = new Set(['meta', 'batch', 'saved', 'compare'])
 
@@ -58,10 +58,6 @@ export function applyWorkflowBootstrapFromStorage(): void {
 
   const store = useWorkflowStore()
 
-  if (state.workflow) {
-    store.selectWorkflow(state.workflow)
-  }
-
   if (state.workspace) {
     if (state.workspace === 'workflow') {
       const candidateStep = state.workflowStep || (WORKFLOW_STEP_KEYS.has(state.workflow) ? state.workflow : '')
@@ -69,6 +65,8 @@ export function applyWorkflowBootstrapFromStorage(): void {
     } else {
       store.selectWorkspace(state.workspace)
     }
+  } else if (state.workflow) {
+    store.selectWorkflow(state.workflow)
   }
 
   if ((state.workspace === 'workflow' || (!state.workspace && store.workspace === 'workflow')) && state.workflowStep) {
