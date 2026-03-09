@@ -1,0 +1,213 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - heading "VectorTA Optimizer" [level=1] [ref=e6]
+        - generic [ref=e7]: Guided default workflow with power tools on demand.
+      - generic [ref=e8]: "Strategy setup: configure ranges, backend, and run optimization."
+    - navigation [ref=e9]:
+      - button "Workflow" [ref=e10] [cursor=pointer]
+      - button "Run Library" [ref=e11] [cursor=pointer]
+      - button "Aggregate Analysis" [ref=e12] [cursor=pointer]
+      - button "Pro Tools" [ref=e13] [cursor=pointer]
+      - button "Settings" [ref=e14] [cursor=pointer]
+    - navigation [ref=e15]:
+      - button "1 Data Source" [ref=e16] [cursor=pointer]
+      - button "2 Strategy Setup" [active] [ref=e17] [cursor=pointer]
+      - button "3 Validation" [ref=e18] [cursor=pointer]
+      - button "4 Summary" [ref=e19] [cursor=pointer]
+      - button "5 Finalizer" [ref=e20] [cursor=pointer]
+    - region "Run context" [ref=e21]:
+      - article [ref=e22]:
+        - generic [ref=e23]: Dataset
+        - generic [ref=e24]: No dataset
+      - article [ref=e25]:
+        - generic [ref=e26]: Range
+        - generic [ref=e27]: No range
+      - article [ref=e28]:
+        - generic [ref=e29]: Rows
+        - generic [ref=e30]: —
+      - article [ref=e31]:
+        - generic [ref=e32]: Strategy
+        - generic [ref=e33]: DoubleMa
+      - article [ref=e34]:
+        - generic [ref=e35]: Backend
+        - generic [ref=e36]: Auto
+      - article [ref=e37]:
+        - generic [ref=e38]: Status
+        - generic [ref=e39]: "Readiness: Load data first."
+      - article [ref=e40]:
+        - generic [ref=e41]: Loaded ID
+        - generic [ref=e42]: —
+  - main [ref=e43]:
+    - generic [ref=e44]:
+      - complementary [ref=e45]:
+        - navigation [ref=e151]:
+          - button "Optimize" [ref=e152] [cursor=pointer]
+          - button "Strategy" [ref=e153] [cursor=pointer]
+          - button "Advanced" [ref=e154] [cursor=pointer]
+        - generic [ref=e157]:
+          - generic [ref=e158]:
+            - generic [ref=e159]:
+              - generic [ref=e160]: Optimize
+              - generic [ref=e161]: Choose the strategy shape, execution route, and sweep ranges for the next run.
+            - generic [ref=e162]: 14:48:07
+          - generic "Optimization summary" [ref=e163]:
+            - generic [ref=e164]: "Strategy: Double MA"
+            - generic [ref=e165]: "Preset: Balanced"
+            - generic [ref=e166]: "Objective: Sharpe"
+            - generic [ref=e167]: "Mode: Grid"
+            - generic [ref=e168]: "Route: Auto"
+            - generic [ref=e169]: "Pairs: —"
+          - generic [ref=e170]:
+            - generic [ref=e172]:
+              - generic [ref=e173]: Setup
+              - heading "Strategy and objective" [level=3] [ref=e174]
+            - generic [ref=e175]:
+              - generic [ref=e176]:
+                - generic [ref=e177]: Strategy
+                - combobox "Strategy" [ref=e178]:
+                  - option "Double MA" [selected]
+                  - option "Pressure Impulse Trend (PIT)"
+                  - option "Slope + Efficiency Trend (SET)"
+                  - option "Momentum Triple Stack (MTS)"
+                  - option "Oscillator Reversion Confluence (ORC)"
+                  - option "MA Ribbon Regime Trend (MARRT)"
+                  - option "Volume Flow Confirmation Trend (VFCT)"
+                  - option "Risk Overlay Channel Breakout (ROCB)"
+                  - option "Adaptive Squeeze Regime (ASR)"
+                  - option "Volatility Compression Confirmation (VCC)"
+                  - option "Volatility Expansion Mean Reversion (VEMR)"
+                  - option "Composite CPU"
+                  - option "Composite Trend"
+                  - option "Regime Hybrid"
+                  - option "Breakout Momentum"
+                  - option "Composite MO"
+                - generic [ref=e179]: Double MA crossover strategy.
+              - generic [ref=e180]:
+                - generic [ref=e181]: Preset
+                - generic [ref=e182]:
+                  - combobox "Preset" [ref=e183]:
+                    - option "Quick"
+                    - option "Balanced" [selected]
+                    - option "Deep"
+                  - button "Apply preset" [ref=e184] [cursor=pointer]
+            - generic [ref=e185]:
+              - generic [ref=e186]:
+                - generic [ref=e187]: Objective
+                - combobox "Objective" [ref=e188]:
+                  - option "Sharpe" [selected]
+                  - option "Sortino"
+                  - option "Calmar"
+                  - option "Omega"
+                  - option "PnL"
+                  - option "Min drawdown"
+              - generic [ref=e189]:
+                - generic [ref=e190]: Mode
+                - combobox "Mode" [ref=e191]:
+                  - option "Grid" [selected]
+                  - option "Coarse-to-Fine"
+                  - option "GPU VDPS"
+                  - option "Auto"
+          - generic [ref=e192]:
+            - generic [ref=e194]:
+              - generic [ref=e195]: Execution
+              - heading "Backend and GPU route" [level=3] [ref=e196]
+            - generic [ref=e197]:
+              - generic [ref=e198]:
+                - generic [ref=e199]: Backend
+                - combobox "Backend" [ref=e200]:
+                  - option "Auto (recommended)" [selected]
+                  - option "CPU only (indicators + backtest on CPU)"
+                  - option "GPU unified (kernel + staged fallback)"
+                - generic [ref=e201]: Auto selects the best route for strategy constraints, MA capability, and gpu_speedups.csv policy.
+              - generic [ref=e202]:
+                - generic [ref=e203]: CUDA device
+                - generic [ref=e204]: CUDA device selection is automatic.
+            - generic [ref=e205]:
+              - button "Preset GPU kernel" [ref=e206] [cursor=pointer]
+              - button "Refresh GPU status" [ref=e207] [cursor=pointer]
+              - button "Parity check" [ref=e208] [cursor=pointer]
+            - generic [ref=e209]: "GPU: —"
+            - generic [ref=e210]: "Parity: —"
+            - generic [ref=e211]: "Dynamic indicator catalog: unavailable."
+          - generic [ref=e212]:
+            - generic [ref=e213]:
+              - generic [ref=e214]:
+                - generic [ref=e215]: Search Space
+                - heading "Fast and slow sweep ranges" [level=3] [ref=e216]
+              - generic [ref=e217]: "Pairs: —"
+            - generic [ref=e218]:
+              - generic [ref=e219]:
+                - generic [ref=e220]: Fast side
+                - generic [ref=e221]:
+                  - generic [ref=e222]:
+                    - generic [ref=e223]: Start
+                    - spinbutton "Start" [ref=e224]: "5"
+                  - generic [ref=e225]:
+                    - generic [ref=e226]: End
+                    - spinbutton "End" [ref=e227]: "20"
+                  - generic [ref=e228]:
+                    - generic [ref=e229]: Step
+                    - spinbutton "Step" [ref=e230]: "1"
+                - generic [ref=e231]: Fast MA type
+                - combobox "Fast MA type" [ref=e232]:
+                  - option "sma" [selected]
+                  - option "alma"
+              - generic [ref=e233]:
+                - generic [ref=e234]: Slow side
+                - generic [ref=e235]:
+                  - generic [ref=e236]:
+                    - generic [ref=e237]: Start
+                    - spinbutton "Start" [ref=e238]: "20"
+                  - generic [ref=e239]:
+                    - generic [ref=e240]: End
+                    - spinbutton "End" [ref=e241]: "80"
+                  - generic [ref=e242]:
+                    - generic [ref=e243]: Step
+                    - spinbutton "Step" [ref=e244]: "1"
+                - generic [ref=e245]: Slow MA type
+                - combobox "Slow MA type" [ref=e246]:
+                  - option "sma"
+                  - option "alma" [selected]
+          - generic [ref=e247]:
+            - generic [ref=e249]:
+              - generic [ref=e250]: Actions
+              - heading "Run from this panel" [level=3] [ref=e251]
+            - generic [ref=e252]:
+              - button "Run optimization" [ref=e253] [cursor=pointer]
+              - button "Run validation" [ref=e254] [cursor=pointer]
+            - generic [ref=e255]: —
+            - generic [ref=e256]: Ready.
+          - generic [ref=e257]:
+            - generic [ref=e259]:
+              - generic [ref=e260]: Advanced
+              - heading "MA parameters" [level=3] [ref=e261]
+            - generic [ref=e262]:
+              - generic [ref=e263]:
+                - generic [ref=e264]: Fast MA parameters
+                - generic [ref=e265]: No extra params for the selected MA.
+              - generic [ref=e266]:
+                - generic [ref=e267]: Slow MA parameters
+                - generic [ref=e268]: No extra params for the selected MA.
+      - button "Resize setup and results panels" [ref=e46]
+      - generic [ref=e48]:
+        - navigation [ref=e269]:
+          - button "Overview" [ref=e270] [cursor=pointer]
+          - button "Top" [ref=e271] [cursor=pointer]
+          - button "Pareto" [ref=e272] [cursor=pointer]
+          - button "Heatmap" [ref=e273] [cursor=pointer]
+        - generic [ref=e146]:
+          - generic [ref=e147]:
+            - generic [ref=e148]: Overview
+            - generic [ref=e149]: —
+          - generic [ref=e150]: Ready.
+  - generic [ref=e52]:
+    - generic [ref=e53]:
+      - generic [ref=e54]: Run Control
+      - generic [ref=e55]: Execution readiness
+      - generic [ref=e56]: "Readiness: Load data first."
+    - generic [ref=e57]:
+      - button "Show details" [ref=e58] [cursor=pointer]
+      - button "Run optimization" [ref=e59] [cursor=pointer]
+      - button "Cancel" [disabled] [ref=e60]
