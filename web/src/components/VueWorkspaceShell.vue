@@ -269,7 +269,7 @@ onBeforeUnmount(() => {
     <header class="shellHeader">
       <div class="brandRow">
         <div class="brandBlock">
-          <h1>VectorTA Optimizer</h1>
+          <h1>VectorGrid</h1>
           <div class="headerCaption">Guided default workflow with power tools on demand.</div>
         </div>
         <div class="subtitle mono">{{ shellSubtitle }}</div>

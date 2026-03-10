@@ -700,12 +700,14 @@ mod tests {
             atr: vec![f64::NAN, 1.0, 1.0, 1.0, 1.0, 1.0],
             first_valid: 1,
         };
+        let mut strategy = StrategyConfig::default();
+        strategy.trade_on_next_bar = false;
         let desired = build_rocb_desired_positions(
             close.as_slice(),
             &breakout,
             &risk,
             1,
-            &StrategyConfig::default(),
+            &strategy,
             &RocbStrategyParams::default(),
         );
         assert_eq!(desired[2], 1);

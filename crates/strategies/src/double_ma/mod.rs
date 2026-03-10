@@ -2006,44 +2006,6 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
     )
 }
 
-fn eval_double_ma_from_series(prices: &[f64], fast: &[f64], slow: &[f64]) -> Metrics {
-    let n = prices.len();
-    if n < 2 || fast.len() != n || slow.len() != n {
-        return Metrics {
-            pnl: 0.0,
-            sharpe: 0.0,
-            sortino: 0.0,
-            calmar: 0.0,
-            omega: 0.0,
-            volatility: 0.0,
-            max_dd: 0.0,
-            trades: 0,
-            exposure: 0.0,
-            net_exposure: 0.0,
-        };
-    }
-
-    let first_valid = first_finite_idx(prices).unwrap_or(0);
-    let t_sig0 = fast
-        .iter()
-        .zip(slow.iter())
-        .position(|(f, s)| f.is_finite() && s.is_finite())
-        .unwrap_or(n);
-    let start_t = t_sig0.saturating_add(if StrategyConfig::default().trade_on_next_bar {
-        1
-    } else {
-        0
-    });
-
-    eval_double_ma_from_log_returns_and_mas_f64(
-        &compute_log_returns(prices),
-        fast,
-        slow,
-        start_t.max(first_valid),
-        &StrategyConfig::default(),
-    )
-}
-
 pub fn eval_double_ma_one_with_types(
     candles: &Candles,
     params: &DoubleMaParams,

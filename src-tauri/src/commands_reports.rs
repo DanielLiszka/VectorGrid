@@ -1774,7 +1774,7 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
 
     // Title + meta.
     worksheet
-        .merge_range(0, 0, 0, 47, "VectorTA Report", &title_fmt)
+        .merge_range(0, 0, 0, 47, "VectorGrid Report", &title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
 
     worksheet
@@ -2431,7 +2431,7 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
     let _ = dashboard.set_column_width(3, 18);
 
     dashboard
-        .merge_range(0, 0, 0, 7, "VectorTA Report", &title_fmt)
+        .merge_range(0, 0, 0, 7, "VectorGrid Report", &title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
 
     dashboard

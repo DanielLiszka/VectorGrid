@@ -19,7 +19,7 @@ pub fn run_tauri() {
             })?;
 
             let data_dir = std::env::temp_dir()
-                .join("vectorta_optimizer")
+                .join("vectorgrid")
                 .join("webview2");
 
             tauri::WebviewWindowBuilder::from_config(app.handle(), &window_cfg)?

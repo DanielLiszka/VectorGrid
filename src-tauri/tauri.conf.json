@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "VectorTA Optimizer",
+  "productName": "VectorGrid",
   "version": "0.1.0",
-  "identifier": "dev.vectoralpha.vectorta.optimizer",
+  "identifier": "dev.vectoralpha.vectorgrid",
   "build": {
     "beforeDevCommand": "npm --prefix ./web run dev -- --host 127.0.0.1 --port 1420",
     "beforeBuildCommand": "npm --prefix ./web run build",
@@ -14,7 +14,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "VectorTA Optimizer",
+        "title": "VectorGrid",
         "create": false,
         "width": 1280,
         "height": 720,

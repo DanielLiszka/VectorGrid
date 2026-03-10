@@ -11,11 +11,31 @@ use ta_strategies::double_ma::{
 };
 
 use crate::alloc_policy::alloc_f64_with_prefix_uninit_tail;
+use crate::double_ma_backend::{
+    backend_kind_label, build_indicator_route_plan_summary, gpu_kernel_blockers_for_request,
+    hybrid_backend_enabled,
+};
+pub(crate) use crate::double_ma_ma_kind::{lookup_ma_info, validate_ma_kind};
+use crate::double_ma_mode::{resolve_optimization_mode, validate_optimization_mode};
+use crate::double_ma_result::{build_backend_optimization_result, BackendResultContext};
+pub(crate) use crate::double_ma_strategy::{
+    strategy_cfg_for_optimization, validate_strategy_cfg, validate_strategy_cfg_for_optimization,
+};
+use crate::double_ma_vdps::{
+    merge_vdps_telemetry, vdps_decimated_periods, vdps_inject_differential_seed_pairs,
+    vdps_inject_elite_mutation_pairs, vdps_inject_random_seed_pairs, vdps_local_anchor_axes,
+    vdps_merge_partial_results, vdps_period_window_slice, vdps_rank_candidates,
+    vdps_target_pairs,
+};
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
 use crate::request_normalization::{
     normalize_heatmap_bins, normalize_optional_path, normalize_topk_include_all,
 };
+
+#[cfg(test)]
+#[path = "double_ma_test_support.rs"]
+mod double_ma_test_support;
 
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::{
@@ -59,17 +79,6 @@ pub enum Backend {
     GpuKernel { device_id: u32 },
 }
 
-#[inline]
-fn backend_kind_label(backend: &Backend) -> &'static str {
-    match backend {
-        Backend::Auto { .. } => "Auto",
-        Backend::CpuOnly => "CpuOnly",
-        Backend::GpuOnly { .. } => "GpuOnly",
-        Backend::GpuHybridKernel { .. } => "GpuHybridKernel",
-        Backend::GpuKernel { .. } => "GpuKernel",
-    }
-}
-
 impl Backend {
     fn with_resolved_preferred_cuda_device(
         self,
@@ -98,78 +107,6 @@ impl Backend {
             crate::preferred_cuda_device().map(|device| device.map(|row| row.device_id)),
         )
     }
-}
-
-fn gpu_kernel_topk_supported(top_k: usize, include_all: bool) -> bool {
-    if include_all {
-        return true;
-    }
-    let topk_select = if top_k == 0 { 1 } else { top_k };
-    topk_select <= 256
-}
-
-fn gpu_kernel_blockers_for_request(
-    fast_ma: &str,
-    slow_ma: &str,
-    strategy: &StrategyConfig,
-    regime_filter_present: bool,
-    objective: ObjectiveKind,
-    top_k: usize,
-    include_all: bool,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    if strategy_uses_kaufman_stop_exit(strategy) {
-        blockers.push("kaufman-stop exit is not supported by GPU kernel path".to_string());
-    }
-    if strategy.uses_execution_overlays() {
-        blockers.push(
-            "execution overlays (cooldown/persistence) are not supported by GPU kernel path"
-                .to_string(),
-        );
-    }
-    if regime_filter_present && !kernel_regime_filters_enabled() {
-        blockers
-            .push("regime filter provided while kernel regime filters are disabled".to_string());
-    }
-    if matches!(objective, ObjectiveKind::Sortino | ObjectiveKind::Omega) {
-        blockers.push(format!(
-            "objective {objective:?} is not supported by GPU kernel path"
-        ));
-    }
-    if !gpu_kernel_topk_supported(top_k, include_all) {
-        blockers.push(
-            "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
-        );
-    }
-    #[cfg(feature = "cuda")]
-    {
-        if !cuda_available() {
-            blockers.push("CUDA runtime is unavailable".to_string());
-        }
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        blockers.push("CUDA feature is not enabled in this build".to_string());
-    }
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    {
-        if !crate::vram_ma::supports_vram_kernel_ma(fast_ma) {
-            blockers.push(format!(
-                "fast MA '{fast_ma}' is not supported by GPU kernel path"
-            ));
-        }
-        if !crate::vram_ma::supports_vram_kernel_ma(slow_ma) {
-            blockers.push(format!(
-                "slow MA '{slow_ma}' is not supported by GPU kernel path"
-            ));
-        }
-    }
-    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-    {
-        let _ = (fast_ma, slow_ma);
-        blockers.push("GPU kernel backend is not enabled in this build".to_string());
-    }
-    blockers
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -265,7 +202,7 @@ fn default_ma_source() -> String {
 
 const DRILL_INDICATOR_MAX_POINTS: usize = 8_000;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OptimizationModeResolved {
     Grid,
     CoarseToFine,
@@ -449,7 +386,10 @@ pub struct VdpsRungTelemetry {
     pub throughput_pairs_per_sec: f64,
 }
 
-fn objective_score(metrics: &ta_strategies::double_ma::Metrics, objective: ObjectiveKind) -> f64 {
+pub(crate) fn objective_score(
+    metrics: &ta_strategies::double_ma::Metrics,
+    objective: ObjectiveKind,
+) -> f64 {
     match objective {
         ObjectiveKind::Sharpe => metrics.sharpe,
         ObjectiveKind::Sortino => metrics.sortino,
@@ -599,208 +539,6 @@ impl VdpsResolvedConfig {
     }
 }
 
-#[inline]
-fn vdps_target_pairs(total_pairs: usize, rung_fraction: f64) -> usize {
-    if total_pairs == 0 {
-        return 0;
-    }
-    let frac = if rung_fraction.is_finite() {
-        rung_fraction.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let target = ((total_pairs as f64) * frac).ceil() as usize;
-    target.max(1).min(total_pairs)
-}
-
-fn vdps_decimated_periods(periods: &[u16], stride: usize) -> Vec<u16> {
-    if periods.is_empty() {
-        return Vec::new();
-    }
-    let step = stride.max(1);
-    let mut out: Vec<u16> =
-        Vec::with_capacity(periods.len().saturating_div(step).saturating_add(2));
-    out.push(periods[0]);
-    for (i, &p) in periods.iter().enumerate() {
-        if (i % step) == 0 {
-            out.push(p);
-        }
-    }
-    out.push(*periods.last().unwrap_or(&periods[0]));
-    out.sort_unstable();
-    out.dedup();
-    out
-}
-
-fn vdps_period_window_slice(periods: &[u16], center: u16, window: u16) -> &[u16] {
-    if periods.is_empty() {
-        return periods;
-    }
-    let lo = center.saturating_sub(window);
-    let hi = center.saturating_add(window);
-    let start = periods.partition_point(|&x| x < lo);
-    let end = periods.partition_point(|&x| x <= hi);
-    &periods[start..end]
-}
-
-fn vdps_rank_candidates(
-    mut rows: Vec<(DoubleMaParams, Metrics)>,
-    objective: ObjectiveKind,
-    limit: usize,
-) -> Vec<(DoubleMaParams, Metrics)> {
-    if rows.is_empty() || limit == 0 {
-        return Vec::new();
-    }
-    rows.sort_by(|(pa, ma), (pb, mb)| {
-        let sa = {
-            let v = objective_score(ma, objective);
-            if v.is_finite() {
-                v
-            } else {
-                f64::NEG_INFINITY
-            }
-        };
-        let sb = {
-            let v = objective_score(mb, objective);
-            if v.is_finite() {
-                v
-            } else {
-                f64::NEG_INFINITY
-            }
-        };
-        sb.total_cmp(&sa)
-            .then_with(|| ma.max_dd.total_cmp(&mb.max_dd))
-            .then_with(|| mb.trades.cmp(&ma.trades))
-            .then_with(|| pa.fast_len.cmp(&pb.fast_len))
-            .then_with(|| pa.slow_len.cmp(&pb.slow_len))
-            .then_with(|| pa.fast_ma_id.cmp(&pb.fast_ma_id))
-            .then_with(|| pa.slow_ma_id.cmp(&pb.slow_ma_id))
-    });
-    rows.dedup_by(|(pa, _), (pb, _)| {
-        pa.fast_len == pb.fast_len
-            && pa.slow_len == pb.slow_len
-            && pa.fast_ma_id == pb.fast_ma_id
-            && pa.slow_ma_id == pb.slow_ma_id
-    });
-    rows.truncate(limit.min(rows.len()));
-    rows
-}
-
-fn vdps_local_anchor_axes(
-    center_f: u16,
-    center_s: u16,
-    fast_periods: &[u16],
-    slow_periods: &[u16],
-    fast_window: u16,
-    slow_window: u16,
-    max_period_candidates: usize,
-    target_pairs: usize,
-) -> (Vec<u16>, Vec<u16>) {
-    let mut fast_candidates =
-        vdps_period_window_slice(fast_periods, center_f, fast_window).to_vec();
-    let mut slow_candidates =
-        vdps_period_window_slice(slow_periods, center_s, slow_window).to_vec();
-    if fast_candidates.is_empty() || slow_candidates.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let trim_around_center = |candidates: &mut Vec<u16>, center: u16| {
-        if candidates.len() <= max_period_candidates {
-            return;
-        }
-        candidates.sort_by_key(|&p| (p.abs_diff(center), p));
-        candidates.truncate(max_period_candidates);
-        candidates.sort_unstable();
-        candidates.dedup();
-    };
-    trim_around_center(&mut fast_candidates, center_f);
-    trim_around_center(&mut slow_candidates, center_s);
-
-    let mut thin_stride = 1usize;
-    let target_pairs = target_pairs.max(1);
-    let mut fast_sel = fast_candidates.clone();
-    let mut slow_sel = slow_candidates.clone();
-    let mut pair_count = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
-    while pair_count > target_pairs.saturating_mul(3)
-        && (fast_sel.len() > 8 || slow_sel.len() > 8)
-        && thin_stride < 128
-    {
-        thin_stride = thin_stride.saturating_add(1);
-        fast_sel = vdps_decimated_periods(&fast_candidates, thin_stride);
-        slow_sel = vdps_decimated_periods(&slow_candidates, thin_stride);
-        if !fast_sel.contains(&center_f) {
-            fast_sel.push(center_f);
-            fast_sel.sort_unstable();
-            fast_sel.dedup();
-        }
-        if !slow_sel.contains(&center_s) {
-            slow_sel.push(center_s);
-            slow_sel.sort_unstable();
-            slow_sel.dedup();
-        }
-        pair_count = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
-    }
-
-    (fast_sel, slow_sel)
-}
-
-fn vdps_merge_partial_results(
-    partials: Vec<OptimizationResult>,
-    objective: ObjectiveKind,
-    top_k: usize,
-    num_candles: usize,
-) -> Option<OptimizationResult> {
-    if partials.is_empty() {
-        return None;
-    }
-
-    let mut total_num_combos: usize = 0;
-    let mut ranked_input: Vec<(DoubleMaParams, Metrics)> = Vec::new();
-    for res in partials.into_iter() {
-        total_num_combos = total_num_combos.saturating_add(res.num_combos);
-        ranked_input.push((res.best_params.clone(), res.best_metrics.clone()));
-        ranked_input.extend(res.top.into_iter());
-    }
-
-    let ranked = vdps_rank_candidates(ranked_input, objective, top_k.max(1));
-    let (best_params, best_metrics) = ranked.first().cloned()?;
-    let top = if top_k > 0 { ranked } else { Vec::new() };
-    Some(OptimizationResult {
-        best_params,
-        best_metrics,
-        top,
-        all: None,
-        heatmap: None,
-        num_combos: total_num_combos,
-        num_candles,
-    })
-}
-
-fn vdps_inject_random_seed_pairs(
-    current: &mut Vec<(u16, u16)>,
-    fast: &[u16],
-    slow: &[u16],
-    target_count: usize,
-    rng: &mut StdRng,
-) {
-    if target_count == 0 || fast.is_empty() || slow.is_empty() {
-        return;
-    }
-    let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
-    let mut attempts: usize = 0;
-    let max_attempts = target_count.saturating_mul(32).max(128);
-    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
-        attempts = attempts.saturating_add(1);
-        let f = fast[rng.gen_range(0..fast.len())];
-        let s = slow[rng.gen_range(0..slow.len())];
-        if f >= s {
-            continue;
-        }
-        if seen.insert((f, s)) {
-            current.push((f, s));
-        }
-    }
-}
 
 #[inline]
 fn vdps_normalized_refill_mix(cfg: &VdpsResolvedConfig) -> (f64, f64, f64) {
@@ -819,17 +557,6 @@ fn vdps_normalized_refill_mix(cfg: &VdpsResolvedConfig) -> (f64, f64, f64) {
 #[inline]
 fn vdps_gpu_refill_enabled() -> bool {
     match std::env::var("VECTORBT_VDPS_GPU_REFILL") {
-        Ok(v) => {
-            let v = v.trim();
-            !(v == "0" || v.eq_ignore_ascii_case("false"))
-        }
-        Err(_) => true,
-    }
-}
-
-#[inline]
-fn hybrid_backend_enabled() -> bool {
-    match std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL") {
         Ok(v) => {
             let v = v.trim();
             !(v == "0" || v.eq_ignore_ascii_case("false"))
@@ -876,158 +603,6 @@ fn merge_optional_note(target: &mut Option<String>, incoming: Option<String>) {
     }
 }
 
-fn vdps_nearest_period(periods: &[u16], value: i32) -> Option<u16> {
-    if periods.is_empty() {
-        return None;
-    }
-    let v = value.clamp(0, u16::MAX as i32) as u16;
-    let idx = periods.partition_point(|&p| p < v);
-    if idx == 0 {
-        return periods.first().copied();
-    }
-    if idx >= periods.len() {
-        return periods.last().copied();
-    }
-    let lo = periods[idx - 1];
-    let hi = periods[idx];
-    if v.abs_diff(lo) <= v.abs_diff(hi) {
-        Some(lo)
-    } else {
-        Some(hi)
-    }
-}
-
-fn vdps_inject_elite_mutation_pairs(
-    current: &mut Vec<(u16, u16)>,
-    elite_seeds: &[(u16, u16)],
-    fast: &[u16],
-    slow: &[u16],
-    target_count: usize,
-    f_step: u16,
-    s_step: u16,
-    rng: &mut StdRng,
-) {
-    if target_count == 0 || elite_seeds.is_empty() || fast.is_empty() || slow.is_empty() {
-        return;
-    }
-    let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
-    let mut attempts: usize = 0;
-    let max_attempts = target_count.saturating_mul(48).max(192);
-    let f_delta = (f_step.max(1) as i32).saturating_mul(2);
-    let s_delta = (s_step.max(1) as i32).saturating_mul(2);
-    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
-        attempts = attempts.saturating_add(1);
-        let (base_f, base_s) = elite_seeds[rng.gen_range(0..elite_seeds.len())];
-        let cand_f = (base_f as i32).saturating_add(rng.gen_range(-f_delta..=f_delta));
-        let cand_s = (base_s as i32).saturating_add(rng.gen_range(-s_delta..=s_delta));
-        let Some(f) = vdps_nearest_period(fast, cand_f) else {
-            continue;
-        };
-        let Some(s) = vdps_nearest_period(slow, cand_s) else {
-            continue;
-        };
-        if f >= s {
-            continue;
-        }
-        if seen.insert((f, s)) {
-            current.push((f, s));
-        }
-    }
-}
-
-fn vdps_inject_differential_seed_pairs(
-    current: &mut Vec<(u16, u16)>,
-    elite_seeds: &[(u16, u16)],
-    fast: &[u16],
-    slow: &[u16],
-    target_count: usize,
-    rng: &mut StdRng,
-) {
-    if target_count == 0 || elite_seeds.len() < 3 || fast.is_empty() || slow.is_empty() {
-        return;
-    }
-    let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
-    let mut attempts: usize = 0;
-    let max_attempts = target_count.saturating_mul(64).max(256);
-    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
-        attempts = attempts.saturating_add(1);
-        let ia = rng.gen_range(0..elite_seeds.len());
-        let ib = rng.gen_range(0..elite_seeds.len());
-        let ic = rng.gen_range(0..elite_seeds.len());
-        if ia == ib || ib == ic || ia == ic {
-            continue;
-        }
-        let (a_f, a_s) = elite_seeds[ia];
-        let (b_f, b_s) = elite_seeds[ib];
-        let (c_f, c_s) = elite_seeds[ic];
-        let f_coeff = rng.gen_range(0.55..0.90);
-        let s_coeff = rng.gen_range(0.55..0.90);
-        let cand_f = (a_f as f64) + ((b_f as f64) - (c_f as f64)) * f_coeff;
-        let cand_s = (a_s as f64) + ((b_s as f64) - (c_s as f64)) * s_coeff;
-        let Some(f) = vdps_nearest_period(fast, cand_f.round() as i32) else {
-            continue;
-        };
-        let Some(s) = vdps_nearest_period(slow, cand_s.round() as i32) else {
-            continue;
-        };
-        if f >= s {
-            continue;
-        }
-        if seen.insert((f, s)) {
-            current.push((f, s));
-        }
-    }
-}
-
-fn merge_vdps_telemetry(target: &mut Option<VdpsTelemetry>, incoming: Option<VdpsTelemetry>) {
-    let Some(mut inc) = incoming else {
-        return;
-    };
-    if let Some(cur) = target.as_mut() {
-        cur.evaluated_pairs_total = cur
-            .evaluated_pairs_total
-            .saturating_add(inc.evaluated_pairs_total);
-        cur.full_grid_pairs = cur.full_grid_pairs.saturating_add(inc.full_grid_pairs);
-        cur.full_fidelity_pairs_evaluated = cur
-            .full_fidelity_pairs_evaluated
-            .saturating_add(inc.full_fidelity_pairs_evaluated);
-        cur.full_fidelity_pairs_saved = cur
-            .full_fidelity_pairs_saved
-            .saturating_add(inc.full_fidelity_pairs_saved);
-        cur.runtime_ms_total = cur.runtime_ms_total.saturating_add(inc.runtime_ms_total);
-        // Quality-audit fields are single-run diagnostics and do not aggregate cleanly
-        // across multiple MA-type sub-runs.
-        cur.quality_check_top_k_overlap = None;
-        cur.quality_check_best_score_regret = None;
-        cur.quality_check_baseline_runtime_ms = None;
-        cur.quality_check_baseline_backend = None;
-        cur.quality_check_baseline_pairs = None;
-        if cur.rungs.len() == inc.rungs.len() {
-            for (a, b) in cur.rung_stats.iter_mut().zip(inc.rung_stats.iter()) {
-                a.target_pairs = a.target_pairs.saturating_add(b.target_pairs);
-                a.evaluated_pairs = a.evaluated_pairs.saturating_add(b.evaluated_pairs);
-                a.promoted_pairs = a.promoted_pairs.saturating_add(b.promoted_pairs);
-                a.dropped_pairs = a.dropped_pairs.saturating_add(b.dropped_pairs);
-                a.fast_candidates = a.fast_candidates.saturating_add(b.fast_candidates);
-                a.slow_candidates = a.slow_candidates.saturating_add(b.slow_candidates);
-                a.runtime_ms = a.runtime_ms.saturating_add(b.runtime_ms);
-                a.throughput_pairs_per_sec = if a.runtime_ms > 0 {
-                    (a.evaluated_pairs as f64) * 1000.0 / (a.runtime_ms as f64)
-                } else {
-                    a.evaluated_pairs as f64
-                };
-                if matches!(b.backend_used, BackendUsed::Gpu) {
-                    a.backend_used = BackendUsed::Gpu;
-                }
-            }
-        } else {
-            cur.rung_stats.append(&mut inc.rung_stats);
-        }
-    } else {
-        *target = Some(inc);
-    }
-}
-
 fn merge_hybrid_timing(target: &mut Option<HybridTimingMs>, incoming: Option<HybridTimingMs>) {
     let Some(inc) = incoming else {
         return;
@@ -1045,40 +620,6 @@ fn merge_hybrid_timing(target: &mut Option<HybridTimingMs>, incoming: Option<Hyb
     } else {
         *target = Some(inc);
     }
-}
-
-fn map_hybrid_capability_label(cap: crate::ma_policy::HybridCapabilityTier) -> &'static str {
-    match cap {
-        crate::ma_policy::HybridCapabilityTier::GpuKernel => "gpu_kernel",
-        crate::ma_policy::HybridCapabilityTier::CudaOnly => "cuda_only",
-        crate::ma_policy::HybridCapabilityTier::CpuOnly => "cpu_only",
-        crate::ma_policy::HybridCapabilityTier::Unsupported => "unsupported",
-    }
-}
-
-fn map_hybrid_route_label(route: crate::ma_policy::HybridRouteTier) -> &'static str {
-    match route {
-        crate::ma_policy::HybridRouteTier::GpuKernel => "gpu_kernel",
-        crate::ma_policy::HybridRouteTier::CpuStaged => "cpu_staged",
-        crate::ma_policy::HybridRouteTier::Unsupported => "unsupported",
-    }
-}
-
-fn build_indicator_route_plan_summary(fast_ma: &str, slow_ma: &str) -> IndicatorRoutePlanSummary {
-    let plan = crate::ma_policy::plan_double_ma_hybrid_route(fast_ma, slow_ma);
-    let fast = IndicatorRouteDecisionSummary {
-        indicator_id: plan.fast.indicator_id,
-        capability: map_hybrid_capability_label(plan.fast.capability).to_string(),
-        route: map_hybrid_route_label(plan.fast.route).to_string(),
-        gpu_preferred_by_speedup: plan.fast.gpu_preferred_by_speedup,
-    };
-    let slow = IndicatorRouteDecisionSummary {
-        indicator_id: plan.slow.indicator_id,
-        capability: map_hybrid_capability_label(plan.slow.capability).to_string(),
-        route: map_hybrid_route_label(plan.slow.route).to_string(),
-        gpu_preferred_by_speedup: plan.slow.gpu_preferred_by_speedup,
-    };
-    IndicatorRoutePlanSummary { fast, slow }
 }
 
 #[inline]
@@ -2598,6 +2139,7 @@ pub(crate) fn eval_metrics_f64_with_exit_mode(
     }
 }
 
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn eval_metrics_f32_with_exit_mode(
     lr: &[f64],
     close: &[f64],
@@ -3193,41 +2735,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             total_combos
         ));
     }
-    let mode_used = match req.mode {
-        OptimizationMode::Grid => OptimizationModeResolved::Grid,
-        OptimizationMode::CoarseToFine => OptimizationModeResolved::CoarseToFine,
-        OptimizationMode::GpuVdps => OptimizationModeResolved::GpuVdps,
-        OptimizationMode::Auto => {
-            let can_adapt = !include_all && export_all_csv_path.is_none() && heatmap_bins == 0;
-            if can_adapt && total_combos > 500_000 {
-                OptimizationModeResolved::CoarseToFine
-            } else {
-                OptimizationModeResolved::Grid
-            }
-        }
-    };
-    if matches!(mode_used, OptimizationModeResolved::CoarseToFine) {
-        if include_all {
-            return Err("CoarseToFine mode requires include_all=false".to_string());
-        }
-        if heatmap_bins > 0 {
-            return Err("CoarseToFine mode currently requires heatmap_bins=0".to_string());
-        }
-        if export_all_csv_path.is_some() {
-            return Err("CoarseToFine mode cannot be used with export_all_csv_path".to_string());
-        }
-    }
-    if matches!(mode_used, OptimizationModeResolved::GpuVdps) {
-        if include_all {
-            return Err("GpuVdps mode requires include_all=false".to_string());
-        }
-        if heatmap_bins > 0 {
-            return Err("GpuVdps mode currently requires heatmap_bins=0".to_string());
-        }
-        if export_all_csv_path.is_some() {
-            return Err("GpuVdps mode does not support export_all_csv_path".to_string());
-        }
-    }
+    let mode_used = resolve_optimization_mode(
+        req.mode,
+        include_all,
+        heatmap_bins,
+        export_all_csv_path.as_deref(),
+        total_combos,
+    );
+    validate_optimization_mode(
+        &mode_used,
+        include_all,
+        heatmap_bins,
+        export_all_csv_path.as_deref(),
+    )?;
     let vdps_cfg = if matches!(mode_used, OptimizationModeResolved::GpuVdps) {
         Some(VdpsResolvedConfig::from_request(req.vdps.as_ref())?)
     } else {
@@ -4961,87 +4481,27 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         );
     }
 
-    let resolve_params = |p: &ta_strategies::double_ma::DoubleMaParams| -> DoubleMaParamsResolved {
-        let fast_ma_params = fast_param_variants
-            .get(p.fast_ma_id as usize)
-            .cloned()
-            .unwrap_or(None);
-        let slow_ma_params = slow_param_variants
-            .get(p.slow_ma_id as usize)
-            .cloned()
-            .unwrap_or(None);
-
-        DoubleMaParamsResolved {
-            fast_len: p.fast_len,
-            slow_len: p.slow_len,
-            fast_ma_type: fast_ma_label.clone(),
-            slow_ma_type: slow_ma_label.clone(),
-            fast_ma_params,
-            slow_ma_params,
-        }
-    };
-
-    let best_params = resolve_params(&result.best_params);
-    let top: Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)> = result
-        .top
-        .into_iter()
-        .map(|(p, m)| (resolve_params(&p), m))
-        .collect();
-    let all = result.all.map(|rows| {
-        rows.into_iter()
-            .map(|(p, m)| (resolve_params(&p), m))
-            .collect()
-    });
-    let heatmap = result.heatmap;
-
-    let (matrix_index, best_col, top_cols) = if matches!(mode_used, OptimizationModeResolved::Grid)
-    {
-        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
-            Ok(idx) => {
-                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
-                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
-                for (p, _) in &top {
-                    match idx.col_id(p.fast_len, p.slow_len) {
-                        Some(c) => top_cols.push(c),
-                        None => {
-                            top_cols.clear();
-                            break;
-                        }
-                    }
-                }
-                let top_cols = if top_cols.is_empty() && !top.is_empty() {
-                    None
-                } else {
-                    Some(top_cols)
-                };
-                (Some(idx), best_col, top_cols)
-            }
-            Err(_) => (None, None, None),
-        }
-    } else {
-        (None, None, None)
-    };
-
-    Ok(BackendOptimizationResult {
-        best_params,
-        best_metrics: result.best_metrics,
-        mode_used,
-        backend_used,
-        matrix_index,
-        best_col,
-        top_cols,
-        num_combos: work_items,
-        num_candles: n,
-        runtime_ms,
-        top,
-        all,
-        heatmap,
-        vdps: merged_vdps,
-        hybrid_timing_ms: merged_hybrid_timing_ms,
-        backend_route: merged_backend_route,
-        backend_fallback_reason: merged_backend_fallback_reason,
-        indicator_route_plan: Some(indicator_route_plan_summary),
-    })
+    Ok(build_backend_optimization_result(
+        result,
+        BackendResultContext {
+            mode_used,
+            backend_used,
+            fast_periods: &fast_periods,
+            slow_periods: &slow_periods,
+            fast_ma_label: &fast_ma_label,
+            slow_ma_label: &slow_ma_label,
+            fast_param_variants: &fast_param_variants,
+            slow_param_variants: &slow_param_variants,
+            num_combos: work_items,
+            num_candles: n,
+            runtime_ms,
+            vdps: merged_vdps,
+            hybrid_timing_ms: merged_hybrid_timing_ms,
+            backend_route: merged_backend_route,
+            backend_fallback_reason: merged_backend_fallback_reason,
+            indicator_route_plan: Some(indicator_route_plan_summary),
+        },
+    ))
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -5499,401 +4959,6 @@ fn emit_progress(
     phase: &'static str,
 ) {
     crate::progress::emit_double_ma_progress(progress, processed_pairs, total_pairs, phase);
-}
-
-pub(crate) fn lookup_ma_info(
-    ma_type: &str,
-) -> Option<&'static vector_ta::indicators::moving_averages::registry::MovingAverageInfo> {
-    vector_ta::indicators::moving_averages::registry::list_moving_averages()
-        .iter()
-        .find(|m| m.id.eq_ignore_ascii_case(ma_type))
-}
-
-pub(crate) fn validate_ma_kind(ma_type: &str) -> Result<(), String> {
-    let ma = ma_type.trim();
-    let info = lookup_ma_info(ma).ok_or_else(|| format!("Unknown moving average type: '{ma}'"))?;
-    if !info.period_based {
-        return Err(format!(
-            "MA '{ma}' is not period-based and cannot be used in the double-MA optimizer."
-        ));
-    }
-    if !info.single_output {
-        return Err(format!(
-            "MA '{ma}' has multiple outputs and cannot be used in the double-MA optimizer."
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> {
-    if !cfg.trade_on_next_bar {
-        return Err(
-            "trade_on_next_bar=false is not permitted because same-bar execution produces optimistic and inaccurate benchmark results.".to_string(),
-        );
-    }
-
-    let cost_fields = [cfg.fee_bps, cfg.spread_bps, cfg.slippage_bps];
-    for (k, v) in ["fee_bps", "spread_bps", "slippage_bps"]
-        .iter()
-        .zip(cost_fields.iter())
-    {
-        if !v.is_finite() || *v < 0.0 {
-            return Err(format!("{k} must be finite and >= 0"));
-        }
-    }
-    let bps_commission = cfg.commission_from_bps();
-    let has_bps_costs = cost_fields.iter().any(|v| *v > 0.0);
-    if cfg.commission.is_finite()
-        && cfg.commission > 0.0
-        && has_bps_costs
-        && (cfg.commission - bps_commission).abs() > 1e-12
-    {
-        return Err(
-            "commission conflicts with fee_bps/spread_bps/slippage_bps; use one consistent effective commission.".to_string(),
-        );
-    }
-
-    let effective_commission = cfg.effective_commission();
-    if !effective_commission.is_finite()
-        || effective_commission < 0.0
-        || effective_commission >= 1.0
-    {
-        return Err("effective commission must be finite and in [0, 1)".to_string());
-    }
-    if !cfg.eps_rel.is_finite() || cfg.eps_rel < 0.0 {
-        return Err("eps_rel must be finite and >= 0".to_string());
-    }
-    for (k, v) in [
-        ("stop_loss_pct", cfg.stop_loss_pct),
-        ("take_profit_pct", cfg.take_profit_pct),
-    ] {
-        if let Some(pct) = v {
-            if !pct.is_finite() || pct <= 0.0 || pct >= 1.0 {
-                return Err(format!("{k} must be finite and in (0, 1) when set"));
-            }
-        }
-    }
-
-    if strategy_uses_kaufman_stop_exit(cfg) {
-        if cfg.kaufman_stop_period() == 0 {
-            return Err("kaufman_stop_period must be > 0".to_string());
-        }
-        let mult = cfg.kaufman_stop_mult();
-        if !mult.is_finite() || mult <= 0.0 {
-            return Err("kaufman_stop_mult must be finite and > 0".to_string());
-        }
-        if cfg.kaufman_stop_ma_type().trim().is_empty() {
-            return Err("kaufman_stop_ma_type cannot be empty".to_string());
-        }
-    }
-
-    if cfg.uses_trend_quality_filter() || cfg.uses_regime_hybrid_filter() {
-        if cfg.trend_quality_linearreg_period() == 0 {
-            return Err("trend_quality_linearreg_period must be > 0".to_string());
-        }
-        let angle_min = cfg.trend_quality_angle_min_deg();
-        if !angle_min.is_finite() || angle_min <= 0.0 {
-            return Err("trend_quality_angle_min_deg must be finite and > 0".to_string());
-        }
-        if cfg.trend_quality_bbw_period() == 0 {
-            return Err("trend_quality_bbw_period must be > 0".to_string());
-        }
-        let bbw_mult = cfg.trend_quality_bbw_mult();
-        if !bbw_mult.is_finite() || bbw_mult <= 0.0 {
-            return Err("trend_quality_bbw_mult must be finite and > 0".to_string());
-        }
-        let bbw_min = cfg.trend_quality_bbw_min();
-        if !bbw_min.is_finite() || bbw_min < 0.0 {
-            return Err("trend_quality_bbw_min must be finite and >= 0".to_string());
-        }
-        if cfg.trend_quality_use_roc() && cfg.trend_quality_roc_period() == 0 {
-            return Err(
-                "trend_quality_roc_period must be > 0 when ROC confirmation is enabled".to_string(),
-            );
-        }
-        if cfg.trend_quality_use_adx() {
-            if cfg.trend_quality_adx_period() == 0 {
-                return Err(
-                    "trend_quality_adx_period must be > 0 when ADX confirmation is enabled"
-                        .to_string(),
-                );
-            }
-            let adx_min = cfg.trend_quality_adx_min();
-            if !adx_min.is_finite() || adx_min <= 0.0 {
-                return Err(
-                    "trend_quality_adx_min must be finite and > 0 when ADX confirmation is enabled"
-                        .to_string(),
-                );
-            }
-        }
-    }
-
-    if cfg.uses_breakout_momentum_filter() {
-        if cfg.breakout_bbands_period() == 0 {
-            return Err("breakout_bbands_period must be > 0".to_string());
-        }
-        let bb_mult = cfg.breakout_bbands_mult();
-        if !bb_mult.is_finite() || bb_mult <= 0.0 {
-            return Err("breakout_bbands_mult must be finite and > 0".to_string());
-        }
-        if cfg.breakout_confirm_bars() == 0 {
-            return Err("breakout_confirm_bars must be > 0".to_string());
-        }
-        let macd_fast = cfg.breakout_macd_fast_period();
-        let macd_slow = cfg.breakout_macd_slow_period();
-        let macd_signal = cfg.breakout_macd_signal_period();
-        if macd_fast == 0 || macd_slow == 0 || macd_signal == 0 {
-            return Err("breakout MACD periods must be > 0 (fast/slow/signal)".to_string());
-        }
-        if macd_fast >= macd_slow {
-            return Err("breakout MACD requires fast period < slow period".to_string());
-        }
-        if cfg.breakout_cmo_period() == 0 {
-            return Err("breakout_cmo_period must be > 0".to_string());
-        }
-        let cmo_min_abs = cfg.breakout_cmo_min_abs();
-        if !cmo_min_abs.is_finite() || cmo_min_abs < 0.0 {
-            return Err("breakout_cmo_min_abs must be finite and >= 0".to_string());
-        }
-        let adosc_short = cfg.breakout_adosc_short_period();
-        let adosc_long = cfg.breakout_adosc_long_period();
-        if adosc_short == 0 || adosc_long == 0 {
-            return Err("breakout ADOSC periods must be > 0".to_string());
-        }
-        if adosc_short >= adosc_long {
-            return Err("breakout ADOSC requires short period < long period".to_string());
-        }
-        if cfg.breakout_use_adx() {
-            if cfg.breakout_adx_period() == 0 {
-                return Err(
-                    "breakout_adx_period must be > 0 when breakout ADX is enabled".to_string(),
-                );
-            }
-            let adx_min = cfg.breakout_adx_min();
-            if !adx_min.is_finite() || adx_min <= 0.0 {
-                return Err(
-                    "breakout_adx_min must be finite and > 0 when breakout ADX is enabled"
-                        .to_string(),
-                );
-            }
-        }
-    }
-
-    if cfg.uses_volume_flow_confirm_filter() {
-        if cfg.volume_flow_obv_smooth_period() == 0 {
-            return Err("volume_flow_obv_smooth_period must be > 0".to_string());
-        }
-        if cfg.volume_flow_mfi_period() == 0 {
-            return Err("volume_flow_mfi_period must be > 0".to_string());
-        }
-        let long_min = cfg.volume_flow_mfi_long_min();
-        if !long_min.is_finite() || !(0.0..=100.0).contains(&long_min) {
-            return Err("volume_flow_mfi_long_min must be finite and in [0, 100]".to_string());
-        }
-        let short_max = cfg.volume_flow_mfi_short_max();
-        if !short_max.is_finite() || !(0.0..=100.0).contains(&short_max) {
-            return Err("volume_flow_mfi_short_max must be finite and in [0, 100]".to_string());
-        }
-        if short_max > long_min {
-            return Err(
-                "volume_flow_mfi_short_max must be <= volume_flow_mfi_long_min".to_string(),
-            );
-        }
-        if cfg.volume_flow_confirm_bars() == 0 {
-            return Err("volume_flow_confirm_bars must be > 0".to_string());
-        }
-    }
-
-    if cfg.uses_pressure_impulse_trend_filter() {
-        if cfg.pit_efi_period() == 0 {
-            return Err("pit_efi_period must be > 0".to_string());
-        }
-        if cfg.pit_vosc_short_period() == 0 {
-            return Err("pit_vosc_short_period must be > 0".to_string());
-        }
-        if cfg.pit_vosc_long_period() == 0 {
-            return Err("pit_vosc_long_period must be > 0".to_string());
-        }
-        if cfg.pit_vosc_short_period() >= cfg.pit_vosc_long_period() {
-            return Err("pit_vosc_short_period must be < pit_vosc_long_period".to_string());
-        }
-        if cfg.pit_cfo_period() == 0 {
-            return Err("pit_cfo_period must be > 0".to_string());
-        }
-        let scalar = cfg.pit_cfo_scalar();
-        if !scalar.is_finite() || scalar <= 0.0 {
-            return Err("pit_cfo_scalar must be finite and > 0".to_string());
-        }
-        if cfg.pit_confirm_bars() == 0 {
-            return Err("pit_confirm_bars must be > 0".to_string());
-        }
-    }
-
-    if cfg.uses_slope_efficiency_trend_filter() {
-        if cfg.set_linearreg_period() == 0 {
-            return Err("set_linearreg_period must be > 0".to_string());
-        }
-        let angle_min = cfg.set_angle_min_deg();
-        if !angle_min.is_finite() || angle_min <= 0.0 {
-            return Err("set_angle_min_deg must be finite and > 0".to_string());
-        }
-        if cfg.set_er_period() == 0 {
-            return Err("set_er_period must be > 0".to_string());
-        }
-        let er_min = cfg.set_er_min();
-        if !er_min.is_finite() || !(0.0..=1.0).contains(&er_min) {
-            return Err("set_er_min must be finite and in [0, 1]".to_string());
-        }
-        if cfg.set_chop_period() == 0 {
-            return Err("set_chop_period must be > 0".to_string());
-        }
-        let chop_max = cfg.set_chop_max();
-        if !chop_max.is_finite() || !(0.0..=100.0).contains(&chop_max) {
-            return Err("set_chop_max must be finite and in [0, 100]".to_string());
-        }
-    }
-
-    if cfg.uses_momentum_triple_stack_filter() {
-        if cfg.mts_roc_period() == 0 {
-            return Err("mts_roc_period must be > 0".to_string());
-        }
-        if cfg.mts_mom_period() == 0 {
-            return Err("mts_mom_period must be > 0".to_string());
-        }
-        if cfg.mts_ppo_fast_period() == 0 {
-            return Err("mts_ppo_fast_period must be > 0".to_string());
-        }
-        if cfg.mts_ppo_slow_period() == 0 {
-            return Err("mts_ppo_slow_period must be > 0".to_string());
-        }
-        if cfg.mts_ppo_fast_period() >= cfg.mts_ppo_slow_period() {
-            return Err("mts_ppo_fast_period must be < mts_ppo_slow_period".to_string());
-        }
-    }
-
-    if cfg.uses_oscillator_reversion_confluence_filter() {
-        if cfg.orc_rsi_period() == 0 {
-            return Err("orc_rsi_period must be > 0".to_string());
-        }
-        if cfg.orc_stoch_fastk_period() == 0 {
-            return Err("orc_stoch_fastk_period must be > 0".to_string());
-        }
-        if cfg.orc_stoch_fastd_period() == 0 {
-            return Err("orc_stoch_fastd_period must be > 0".to_string());
-        }
-        if cfg.orc_willr_period() == 0 {
-            return Err("orc_willr_period must be > 0".to_string());
-        }
-    }
-
-    if cfg.uses_regime_hybrid_filter() {
-        if cfg.regime_hybrid_adx_period() == 0 {
-            return Err("regime_hybrid_adx_period must be > 0".to_string());
-        }
-        let adx_enter = cfg.regime_hybrid_adx_enter();
-        if !adx_enter.is_finite() || adx_enter <= 0.0 {
-            return Err("regime_hybrid_adx_enter must be finite and > 0".to_string());
-        }
-        let adx_exit = cfg.regime_hybrid_adx_exit();
-        if !adx_exit.is_finite() || adx_exit <= 0.0 || adx_exit > adx_enter {
-            return Err(
-                "regime_hybrid_adx_exit must be finite, > 0, and <= regime_hybrid_adx_enter"
-                    .to_string(),
-            );
-        }
-        let rev_entry = cfg.regime_hybrid_reversion_entry_rel();
-        if !rev_entry.is_finite() || rev_entry <= 0.0 {
-            return Err("regime_hybrid_reversion_entry_rel must be finite and > 0".to_string());
-        }
-        let rev_exit = cfg.regime_hybrid_reversion_exit_rel();
-        if !rev_exit.is_finite() || rev_exit < 0.0 || rev_exit > rev_entry {
-            return Err(
-                "regime_hybrid_reversion_exit_rel must be finite, >= 0, and <= regime_hybrid_reversion_entry_rel".to_string(),
-            );
-        }
-    }
-    if cfg.uses_regime_hybrid_filter() && cfg.uses_breakout_momentum_filter() {
-        return Err(
-            "regime_hybrid_enable is not compatible with breakout_momentum_enable in double-MA flow"
-                .to_string(),
-        );
-    }
-    if cfg.uses_volume_flow_confirm_filter()
-        && (cfg.uses_trend_quality_filter()
-            || cfg.uses_pressure_impulse_trend_filter()
-            || cfg.uses_slope_efficiency_trend_filter()
-            || cfg.uses_regime_hybrid_filter()
-            || cfg.uses_breakout_momentum_filter())
-    {
-        return Err(
-            "volume_flow_confirm_enable is not compatible with other double-MA regime profiles"
-                .to_string(),
-        );
-    }
-    if cfg.uses_pressure_impulse_trend_filter()
-        && (cfg.uses_trend_quality_filter()
-            || cfg.uses_slope_efficiency_trend_filter()
-            || cfg.uses_momentum_triple_stack_filter()
-            || cfg.uses_oscillator_reversion_confluence_filter()
-            || cfg.uses_regime_hybrid_filter()
-            || cfg.uses_breakout_momentum_filter()
-            || cfg.uses_volume_flow_confirm_filter())
-    {
-        return Err(
-            "pressure_impulse_trend_enable is not compatible with other double-MA regime profiles"
-                .to_string(),
-        );
-    }
-    if cfg.uses_slope_efficiency_trend_filter()
-        && (cfg.uses_trend_quality_filter()
-            || cfg.uses_pressure_impulse_trend_filter()
-            || cfg.uses_momentum_triple_stack_filter()
-            || cfg.uses_regime_hybrid_filter()
-            || cfg.uses_breakout_momentum_filter()
-            || cfg.uses_volume_flow_confirm_filter())
-    {
-        return Err(
-            "slope_efficiency_trend_enable is not compatible with other double-MA regime profiles"
-                .to_string(),
-        );
-    }
-    if cfg.uses_momentum_triple_stack_filter()
-        && (cfg.uses_trend_quality_filter()
-            || cfg.uses_pressure_impulse_trend_filter()
-            || cfg.uses_slope_efficiency_trend_filter()
-            || cfg.uses_oscillator_reversion_confluence_filter()
-            || cfg.uses_regime_hybrid_filter()
-            || cfg.uses_breakout_momentum_filter()
-            || cfg.uses_volume_flow_confirm_filter())
-    {
-        return Err(
-            "momentum_triple_stack_enable is not compatible with other double-MA regime profiles"
-                .to_string(),
-        );
-    }
-    if cfg.uses_oscillator_reversion_confluence_filter()
-        && (cfg.uses_trend_quality_filter()
-            || cfg.uses_pressure_impulse_trend_filter()
-            || cfg.uses_slope_efficiency_trend_filter()
-            || cfg.uses_momentum_triple_stack_filter()
-            || cfg.uses_regime_hybrid_filter()
-            || cfg.uses_breakout_momentum_filter()
-            || cfg.uses_volume_flow_confirm_filter())
-    {
-        return Err(
-            "oscillator_reversion_confluence_enable is not compatible with other double-MA regime profiles"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_strategy_cfg_for_optimization(cfg: &StrategyConfig) -> Result<(), String> {
-    validate_strategy_cfg(cfg)
-}
-
-pub(crate) fn strategy_cfg_for_optimization(cfg: StrategyConfig) -> StrategyConfig {
-    cfg
 }
 
 fn sanitize_double_ma_constraints(
@@ -9864,6 +8929,13 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::double_ma_test_support::{
+        double_like_kernel_strategy_cases,
+        marrt_strategy_for_kernel, mts_strategy_for_kernel, orc_strategy_for_kernel,
+        pit_strategy_for_kernel,
+        set_strategy_for_kernel,
+        vfct_strategy_for_kernel,
+    };
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
@@ -10036,113 +9108,6 @@ mod tests {
         }
 
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
-    }
-
-    fn trend_quality_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.trend_quality_enable = true;
-        s.trend_quality_use_adx = false;
-        s
-    }
-
-    fn regime_hybrid_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.regime_hybrid_enable = true;
-        s
-    }
-
-    fn breakout_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.breakout_momentum_enable = true;
-        s.breakout_use_adx = false;
-        s.breakout_bbands_mult = 0.8;
-        s.breakout_cmo_min_abs = 0.0;
-        s.breakout_macd_fast_period = 5;
-        s.breakout_macd_slow_period = 13;
-        s.breakout_macd_signal_period = 4;
-        s.breakout_adosc_short_period = 2;
-        s.breakout_adosc_long_period = 4;
-        s
-    }
-
-    fn vfct_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.volume_flow_confirm_enable = true;
-        s.volume_flow_obv_smooth_period = 8;
-        s.volume_flow_mfi_period = 10;
-        s.volume_flow_mfi_long_min = 52.0;
-        s.volume_flow_mfi_short_max = 48.0;
-        s.volume_flow_confirm_bars = 1;
-        s
-    }
-
-    fn marrt_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s
-    }
-
-    fn pit_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.pressure_impulse_trend_enable = true;
-        s.pit_efi_period = 8;
-        s.pit_vosc_short_period = 4;
-        s.pit_vosc_long_period = 9;
-        s.pit_cfo_period = 6;
-        s.pit_cfo_scalar = 100.0;
-        s.pit_confirm_bars = 2;
-        s
-    }
-
-    fn set_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.slope_efficiency_trend_enable = true;
-        s.set_linearreg_period = 16;
-        s.set_angle_min_deg = 0.15;
-        s.set_er_period = 10;
-        s.set_er_min = 0.02;
-        s.set_chop_period = 10;
-        s.set_chop_max = 90.0;
-        s
-    }
-
-    fn mts_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.momentum_triple_stack_enable = true;
-        s.mts_roc_period = 6;
-        s.mts_mom_period = 10;
-        s.mts_ppo_fast_period = 4;
-        s.mts_ppo_slow_period = 9;
-        s
-    }
-
-    fn orc_strategy_for_kernel() -> StrategyConfig {
-        let mut s = StrategyConfig::default();
-        s.long_only = false;
-        s.oscillator_reversion_confluence_enable = true;
-        s.orc_rsi_period = 5;
-        s.orc_stoch_fastk_period = 5;
-        s.orc_stoch_fastd_period = 3;
-        s.orc_willr_period = 5;
-        s
-    }
-
-    fn double_like_kernel_strategy_cases() -> Vec<(&'static str, StrategyConfig)> {
-        vec![
-            ("composite_trend", trend_quality_strategy_for_kernel()),
-            ("regime_hybrid", regime_hybrid_strategy_for_kernel()),
-            ("breakout_momentum", breakout_strategy_for_kernel()),
-            ("pit", pit_strategy_for_kernel()),
-            ("set", set_strategy_for_kernel()),
-            ("mts", mts_strategy_for_kernel()),
-            ("orc", orc_strategy_for_kernel()),
-        ]
     }
 
     fn find_cpu_only_period_single_ma() -> Option<String> {
@@ -12284,7 +11249,7 @@ mod tests {
             slow_ma_params: None,
             fast_ma_param_sweeps: None,
             slow_ma_param_sweeps: None,
-            strategy: trend_quality_strategy_for_kernel(),
+            strategy: super::double_ma_test_support::trend_quality_strategy_for_kernel(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
             mode: OptimizationMode::Grid,

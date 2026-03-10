@@ -150,7 +150,7 @@ pub(super) fn suggest_report_path(
         .unwrap_or("unknown");
     let safe_ts = sanitize_filename_component(ts);
 
-    let base_name = format!("vectorta_report_{safe_ts}");
+    let base_name = format!("vectorgrid_report_{safe_ts}");
     let mut path = dir.join(format!("{base_name}.xlsx"));
     if !path.exists() {
         return Ok(path);

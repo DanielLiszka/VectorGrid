@@ -201,7 +201,7 @@ fn read_settings_file(cache_dir: &Path) -> Result<Option<PolygonSettings>, Strin
 fn keyring_service_name(app_identifier: &str) -> String {
     let id = app_identifier.trim();
     if id.is_empty() {
-        "vectorta_optimizer".to_string()
+        "vectorgrid".to_string()
     } else {
         format!("{id}.polygon")
     }
@@ -831,7 +831,7 @@ pub fn repair_cached_dataset(
             const MAX_GAP_REPAIR_DAYS: usize = 32;
             if gappy_days.len() <= MAX_GAP_REPAIR_DAYS {
                 if let Ok(client) = Client::builder()
-                    .user_agent("vectorta-optimizer/0.1 (tauri)")
+                    .user_agent("vectorgrid/0.1 (tauri)")
                     .timeout(std::time::Duration::from_secs(30))
                     .build()
                 {
@@ -962,7 +962,7 @@ pub fn download_1m_to_cache(
         used_cache_only = true;
     } else {
         let client = Client::builder()
-            .user_agent("vectorta-optimizer/0.1 (tauri)")
+            .user_agent("vectorgrid/0.1 (tauri)")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| e.to_string())?;

@@ -330,6 +330,21 @@ fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
     )
 }
 
+fn resolve_composite_grid_mode(
+    mode: &OptimizationMode,
+    strategy_label: &str,
+) -> Result<OptimizationModeResolved, String> {
+    if matches!(
+        mode,
+        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
+    ) {
+        return Err(format!(
+            "{strategy_label} strategy currently supports mode=Grid only."
+        ));
+    }
+    Ok(OptimizationModeResolved::Grid)
+}
+
 fn period_window_slice(periods: &[u16], center: u16, window: u16) -> &[u16] {
     let lo = center.saturating_sub(window);
     let hi = center.saturating_add(window);
@@ -429,13 +444,7 @@ fn run_asr_optimization_gpu(
     validate_asr_params(&asr_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("ASR strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "ASR")?;
 
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
@@ -834,13 +843,7 @@ fn run_asr_optimization_cpu(
     validate_asr_params(&asr_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("ASR strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "ASR")?;
 
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
@@ -1170,13 +1173,7 @@ fn run_vcc_optimization_gpu(
     validate_vcc_params(&vcc_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("VCC strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "VCC")?;
 
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
@@ -1521,13 +1518,7 @@ fn run_vcc_optimization_cpu(
     validate_vcc_params(&vcc_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("VCC strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "VCC")?;
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
 
@@ -1832,13 +1823,7 @@ fn run_vemr_optimization_gpu(
     validate_vemr_params(&vemr_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("VEMR strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "VEMR")?;
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
 
@@ -2295,13 +2280,7 @@ fn run_vemr_optimization_impl(
     validate_vemr_params(&vemr_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("VEMR strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "VEMR")?;
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
 
@@ -3273,13 +3252,7 @@ fn run_rocb_optimization_gpu(
     validate_rocb_params(&rocb_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("ROCB strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "ROCB")?;
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
 
@@ -3623,13 +3596,7 @@ fn run_rocb_optimization_impl(
     validate_rocb_params(&rocb_cfg)?;
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("ROCB strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "ROCB")?;
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
 
@@ -3911,13 +3878,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
 
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
 
-    if matches!(
-        req.mode,
-        OptimizationMode::CoarseToFine | OptimizationMode::GpuVdps
-    ) {
-        return Err("Composite strategy currently supports mode=Grid only.".to_string());
-    }
-    let mode_used = OptimizationModeResolved::Grid;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "Composite")?;
 
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
@@ -5673,6 +5634,22 @@ mod tests {
                 .expect("composite cpu run");
         assert_eq!(res.num_combos, 6);
         assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn composite_grid_mode_helper_allows_grid_and_auto_only() {
+        assert!(matches!(
+            resolve_composite_grid_mode(&OptimizationMode::Grid, "Composite"),
+            Ok(OptimizationModeResolved::Grid)
+        ));
+        assert!(matches!(
+            resolve_composite_grid_mode(&OptimizationMode::Auto, "Composite"),
+            Ok(OptimizationModeResolved::Grid)
+        ));
+
+        let err = resolve_composite_grid_mode(&OptimizationMode::GpuVdps, "Composite")
+            .expect_err("GpuVdps should be rejected");
+        assert_eq!(err, "Composite strategy currently supports mode=Grid only.");
     }
 
     #[test]

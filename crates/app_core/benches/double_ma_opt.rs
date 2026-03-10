@@ -4,6 +4,11 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use ta_app_core::double_ma::VdpsConfig;
+use ta_app_core::strategy_presets::{
+    breakout_strategy_for_kernel, marrt_strategy_for_kernel, mts_strategy_for_kernel,
+    orc_strategy_for_kernel, pit_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
+    set_strategy_for_kernel, trend_quality_strategy_for_kernel, vfct_strategy_for_kernel,
+};
 use ta_app_core::{Backend, DoubleMaRequest};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -117,69 +122,6 @@ fn epma_params_default() -> HashMap<String, f64> {
     let mut p: HashMap<String, f64> = HashMap::new();
     p.insert("offset".to_string(), 3.0);
     p
-}
-
-fn trend_quality_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.trend_quality_enable = true;
-    s.trend_quality_use_adx = false;
-    s
-}
-
-fn regime_hybrid_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.long_only = false;
-    s.regime_hybrid_enable = true;
-    s
-}
-
-fn breakout_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.long_only = false;
-    s.breakout_momentum_enable = true;
-    s.breakout_use_adx = false;
-    s.breakout_bbands_mult = 0.8;
-    s.breakout_cmo_min_abs = 0.0;
-    s.breakout_macd_fast_period = 5;
-    s.breakout_macd_slow_period = 13;
-    s.breakout_macd_signal_period = 4;
-    s.breakout_adosc_short_period = 2;
-    s.breakout_adosc_long_period = 4;
-    s
-}
-
-fn marrt_strategy_for_kernel() -> StrategyConfig {
-    StrategyConfig::default()
-}
-
-fn vfct_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.volume_flow_confirm_enable = true;
-    s
-}
-
-fn pit_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.pressure_impulse_trend_enable = true;
-    s
-}
-
-fn set_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.slope_efficiency_trend_enable = true;
-    s
-}
-
-fn mts_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.momentum_triple_stack_enable = true;
-    s
-}
-
-fn orc_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.oscillator_reversion_confluence_enable = true;
-    s
 }
 
 fn expand_range_u16((start, end, step): (u32, u32, u32)) -> Vec<u16> {

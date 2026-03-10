@@ -5,6 +5,7 @@ use super::{
 use crate::state::AppState;
 use crate::state::BackgroundTaskState;
 use tauri::Emitter;
+use ta_optimizer::OptimizationMode;
 
 #[tauri::command]
 pub fn cancel_background_task(bg: tauri::State<'_, BackgroundTaskState>) -> Result<(), String> {
@@ -54,13 +55,17 @@ impl ta_app_core::progress::ProgressSink for OffsetProgressSink {
     }
 }
 
+fn normalize_product_optimization_mode(_mode: OptimizationMode) -> OptimizationMode {
+    OptimizationMode::Grid
+}
+
 #[tauri::command]
 pub async fn run_double_ma_optimization(
     mut req: DoubleMaRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
-    req.mode = ta_optimizer::OptimizationMode::Grid;
+    req.mode = normalize_product_optimization_mode(req.mode);
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;
@@ -86,7 +91,7 @@ pub async fn run_composite_cpu_optimization(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
-    req.mode = ta_optimizer::OptimizationMode::Grid;
+    req.mode = normalize_product_optimization_mode(req.mode);
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;
@@ -104,6 +109,32 @@ pub async fn run_composite_cpu_optimization(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_product_optimization_mode;
+    use ta_optimizer::OptimizationMode;
+
+    #[test]
+    fn product_mode_normalization_forces_grid() {
+        assert_eq!(
+            normalize_product_optimization_mode(OptimizationMode::Grid),
+            OptimizationMode::Grid
+        );
+        assert_eq!(
+            normalize_product_optimization_mode(OptimizationMode::CoarseToFine),
+            OptimizationMode::Grid
+        );
+        assert_eq!(
+            normalize_product_optimization_mode(OptimizationMode::GpuVdps),
+            OptimizationMode::Grid
+        );
+        assert_eq!(
+            normalize_product_optimization_mode(OptimizationMode::Auto),
+            OptimizationMode::Grid
+        );
+    }
 }
 
 #[tauri::command]

@@ -37,7 +37,7 @@ pub(crate) fn build_meta_report_xlsx_bytes(
             .map_err(|e: XlsxError| e.to_string())?;
 
         summary
-            .merge_range(0, 0, 0, 21, "VectorTA Stage 3 Meta Analysis", &title_fmt)
+            .merge_range(0, 0, 0, 21, "VectorGrid Stage 3 Meta Analysis", &title_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
 
         summary

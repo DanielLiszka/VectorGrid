@@ -1,4 +1,4 @@
-# VectorTA Web Frontend
+# VectorGrid Web Frontend
 
 Vue + Vite frontend workspace for the Tauri desktop app.
 

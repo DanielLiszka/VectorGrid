@@ -4,6 +4,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ta_app_core::{run_double_ma_optimization_blocking_with_candles, Backend, DoubleMaRequest};
+use ta_app_core::strategy_presets::{
+    breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
+    trend_quality_strategy_for_kernel,
+};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
@@ -162,26 +166,6 @@ fn build_case_candles(kind: CandleKind) -> Candles {
 }
 
 fn strategy_cases() -> Vec<StrategyCase> {
-    let mut trend_quality = StrategyConfig::default();
-    trend_quality.trend_quality_enable = true;
-    trend_quality.trend_quality_use_adx = false;
-
-    let mut regime_hybrid = StrategyConfig::default();
-    regime_hybrid.long_only = false;
-    regime_hybrid.regime_hybrid_enable = true;
-
-    let mut breakout = StrategyConfig::default();
-    breakout.long_only = false;
-    breakout.breakout_momentum_enable = true;
-    breakout.breakout_use_adx = false;
-    breakout.breakout_bbands_mult = 0.8;
-    breakout.breakout_cmo_min_abs = 0.0;
-    breakout.breakout_macd_fast_period = 5;
-    breakout.breakout_macd_slow_period = 13;
-    breakout.breakout_macd_signal_period = 4;
-    breakout.breakout_adosc_short_period = 2;
-    breakout.breakout_adosc_long_period = 4;
-
     vec![
         StrategyCase {
             label: "double_ma_baseline",
@@ -190,17 +174,17 @@ fn strategy_cases() -> Vec<StrategyCase> {
         },
         StrategyCase {
             label: "composite_trend",
-            strategy: trend_quality,
+            strategy: trend_quality_strategy_for_kernel(),
             candles: CandleKind::Trending,
         },
         StrategyCase {
             label: "regime_hybrid",
-            strategy: regime_hybrid,
+            strategy: regime_hybrid_strategy_for_kernel(),
             candles: CandleKind::Choppy,
         },
         StrategyCase {
             label: "breakout_momentum",
-            strategy: breakout,
+            strategy: breakout_strategy_for_kernel(),
             candles: CandleKind::Breakout,
         },
     ]

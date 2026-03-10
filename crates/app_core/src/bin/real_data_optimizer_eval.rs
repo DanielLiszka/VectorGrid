@@ -10,6 +10,9 @@ use ta_app_core::{
     run_double_ma_validation_blocking_with_candles, Backend, DoubleMaParamsResolved,
     DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, ValidationEngine,
 };
+use ta_app_core::strategy_presets::{
+    breakout_strategy_for_kernel, trend_quality_strategy_for_kernel,
+};
 use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
@@ -846,28 +849,6 @@ fn alma_params_default() -> HashMap<String, f64> {
     p.insert("offset".to_string(), 0.85);
     p.insert("sigma".to_string(), 6.0);
     p
-}
-
-fn trend_quality_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.trend_quality_enable = true;
-    s.trend_quality_use_adx = false;
-    s
-}
-
-fn breakout_strategy_for_kernel() -> StrategyConfig {
-    let mut s = StrategyConfig::default();
-    s.long_only = false;
-    s.breakout_momentum_enable = true;
-    s.breakout_use_adx = false;
-    s.breakout_bbands_mult = 0.8;
-    s.breakout_cmo_min_abs = 0.0;
-    s.breakout_macd_fast_period = 5;
-    s.breakout_macd_slow_period = 13;
-    s.breakout_macd_signal_period = 4;
-    s.breakout_adosc_short_period = 2;
-    s.breakout_adosc_long_period = 4;
-    s
 }
 
 fn expand_range_u16((start, end, step): (u32, u32, u32)) -> Vec<u16> {
