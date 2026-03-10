@@ -17,7 +17,6 @@ const {
   objective,
   objectiveOptions,
   mode,
-  modeOptions,
   vdpsVisible,
   vdpsTelemetryHint,
   compositeMoVisible,
@@ -70,7 +69,7 @@ function resolvedOptions(options: AdvancedOption[], fallbackValue: string, fallb
 
 const maSourceOptionItems = computed(() => resolvedOptions(maSourceOptions.value, maSource.value, maSource.value || 'close'))
 const objectiveOptionItems = computed(() => resolvedOptions(objectiveOptions.value, objective.value, objective.value || 'Sharpe'))
-const modeOptionItems = computed(() => resolvedOptions(modeOptions.value, mode.value, mode.value || 'Grid'))
+const modeOptionItems = computed(() => [{ value: 'Grid', label: 'Grid', disabled: false }])
 const includeAllOptionItems = computed(() => resolvedOptions(includeAllOptions.value, includeAll.value, includeAll.value || 'false'))
 
 watch(

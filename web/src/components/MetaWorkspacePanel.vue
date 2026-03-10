@@ -110,6 +110,16 @@ const {
   canLoadStage4Saved,
   canRevealStage4Saved,
   canDeleteStage4Saved,
+  policyEvalSavedSearch,
+  policyEvalSavedOptions,
+  policyEvalSavedSelected,
+  policyEvalSavedTagsDraft,
+  policyEvalSavedMeta,
+  canSavePolicyEvalSavedTags,
+  canRefreshPolicyEvalSaved,
+  canLoadPolicyEvalSaved,
+  canRevealPolicyEvalSaved,
+  canDeletePolicyEvalSaved,
   metaUseMlConfidence,
   metaMlAutopilot,
   canMetaMlRefresh,
@@ -129,9 +139,12 @@ const {
   metaStage4RequireHealthy,
   metaStage4FallbackToMeta,
   canRunMetaStage4,
+  canRunMetaPolicyEval,
   canRevealMetaStage4,
   metaStage4Status,
   metaStage4OutputPreview,
+  metaPolicyEvalStatus,
+  metaPolicyEvalOutputPreview,
   canRunMeta,
   canOpenMetaReport,
   canRevealMetaFiles,
@@ -172,6 +185,9 @@ const metaSavedTagsLocalDraft = ref('')
 const stage4SavedSearchDraft = ref('')
 const stage4SavedSelectDraft = ref('')
 const stage4SavedTagsLocalDraft = ref('')
+const policyEvalSavedSearchDraft = ref('')
+const policyEvalSavedSelectDraft = ref('')
+const policyEvalSavedTagsLocalDraft = ref('')
 const metaUseMlConfidenceDraft = ref(false)
 const metaMlAutopilotDraft = ref(true)
 const metaStage4TopKDraft = ref('10')
@@ -230,7 +246,13 @@ const metaSavedSelectOptions = computed<OptionItem[]>(() => {
 const stage4SavedSelectOptions = computed<OptionItem[]>(() => {
   const options = stage4SavedOptions.value as OptionItem[]
   if (options.length > 0) return options
-  return [{ value: '', label: 'No saved Stage 4', disabled: false }]
+  return [{ value: '', label: 'No saved Stage 5', disabled: false }]
+})
+
+const policyEvalSavedSelectOptions = computed<OptionItem[]>(() => {
+  const options = policyEvalSavedOptions.value as OptionItem[]
+  if (options.length > 0) return options
+  return [{ value: '', label: 'No saved policy evaluation', disabled: false }]
 })
 
 const holdoutModeOptions: OptionItem[] = [
@@ -286,6 +308,9 @@ watch(
     String(stage4SavedSearch.value || '').trim(),
     String(stage4SavedSelected.value || '').trim(),
     String(stage4SavedTagsDraft.value || '').trim(),
+    String(policyEvalSavedSearch.value || '').trim(),
+    String(policyEvalSavedSelected.value || '').trim(),
+    String(policyEvalSavedTagsDraft.value || '').trim(),
     Boolean(metaUseMlConfidence.value),
     Boolean(metaMlAutopilot.value),
     String(metaStage4TopK.value || '10').trim() || '10',
@@ -330,6 +355,9 @@ watch(
     nextStage4SavedSearch,
     nextStage4SavedSelect,
     nextStage4SavedTags,
+    nextPolicyEvalSavedSearch,
+    nextPolicyEvalSavedSelect,
+    nextPolicyEvalSavedTags,
     nextUseMlConfidence,
     nextMlAutopilot,
     nextStage4TopK,
@@ -373,6 +401,9 @@ watch(
     if (stage4SavedSearchDraft.value !== nextStage4SavedSearch) stage4SavedSearchDraft.value = nextStage4SavedSearch
     if (stage4SavedSelectDraft.value !== nextStage4SavedSelect) stage4SavedSelectDraft.value = nextStage4SavedSelect
     if (stage4SavedTagsLocalDraft.value !== nextStage4SavedTags) stage4SavedTagsLocalDraft.value = nextStage4SavedTags
+    if (policyEvalSavedSearchDraft.value !== nextPolicyEvalSavedSearch) policyEvalSavedSearchDraft.value = nextPolicyEvalSavedSearch
+    if (policyEvalSavedSelectDraft.value !== nextPolicyEvalSavedSelect) policyEvalSavedSelectDraft.value = nextPolicyEvalSavedSelect
+    if (policyEvalSavedTagsLocalDraft.value !== nextPolicyEvalSavedTags) policyEvalSavedTagsLocalDraft.value = nextPolicyEvalSavedTags
     if (metaUseMlConfidenceDraft.value !== nextUseMlConfidence) metaUseMlConfidenceDraft.value = nextUseMlConfidence
     if (metaMlAutopilotDraft.value !== nextMlAutopilot) metaMlAutopilotDraft.value = nextMlAutopilot
     if (metaStage4TopKDraft.value !== nextStage4TopK) metaStage4TopKDraft.value = nextStage4TopK
@@ -660,7 +691,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-if="activeAggregateTab === 'saved'" class="pane">
-        <h3>Saved Stage 4</h3>
+        <h3>Saved Stage 5</h3>
         <div class="gridThree">
           <div>
             <label for="vueStage4SavedSearch">Search</label>
@@ -673,7 +704,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
-            <label for="vueStage4SavedSelect">Saved Stage 4</label>
+            <label for="vueStage4SavedSelect">Saved Stage 5</label>
             <select
               id="vueStage4SavedSelect"
               :value="stage4SavedSelectDraft"
@@ -712,8 +743,61 @@ onBeforeUnmount(() => {
         <div class="metaLine mono">{{ stage4SavedMeta }}</div>
       </section>
 
+      <section v-if="activeAggregateTab === 'saved'" class="pane">
+        <h3>Saved Policy Evaluation</h3>
+        <div class="gridThree">
+          <div>
+            <label for="vuePolicyEvalSavedSearch">Search</label>
+            <input
+              id="vuePolicyEvalSavedSearch"
+              type="text"
+              :value="policyEvalSavedSearchDraft"
+              @input="policyEvalSavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('policyEvalSavedSearch', policyEvalSavedSearchDraft)"
+              @change="commitInputValue('policyEvalSavedSearch', policyEvalSavedSearchDraft)"
+            />
+          </div>
+          <div>
+            <label for="vuePolicyEvalSavedSelect">Saved policy evaluation</label>
+            <select
+              id="vuePolicyEvalSavedSelect"
+              :value="policyEvalSavedSelectDraft"
+              @change="policyEvalSavedSelectDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('policyEvalSavedSelect', policyEvalSavedSelectDraft)"
+            >
+              <option
+                v-for="option in policyEvalSavedSelectOptions"
+                :key="`saved_policy_eval_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label for="vuePolicyEvalSavedTags">Tags</label>
+            <div class="rowAuto">
+              <input
+                id="vuePolicyEvalSavedTags"
+                type="text"
+                :value="policyEvalSavedTagsLocalDraft"
+                @input="policyEvalSavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('policyEvalSavedTags', policyEvalSavedTagsLocalDraft)"
+                @change="commitInputValue('policyEvalSavedTags', policyEvalSavedTagsLocalDraft)"
+              />
+              <button type="button" :disabled="!canSavePolicyEvalSavedTags" @click="runAction(() => analysisStore.savePolicyEvalSavedTags())">Save</button>
+            </div>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" :disabled="!canRefreshPolicyEvalSaved" @click="runAction(() => analysisStore.refreshPolicyEvalSaved())">Refresh</button>
+          <button type="button" :disabled="!canLoadPolicyEvalSaved" @click="runAction(() => analysisStore.loadPolicyEvalSaved())">Load</button>
+          <button type="button" :disabled="!canRevealPolicyEvalSaved" @click="runAction(() => analysisStore.revealPolicyEvalSaved())">Reveal file</button>
+          <button type="button" :disabled="!canDeletePolicyEvalSaved" @click="runAction(() => analysisStore.deletePolicyEvalSaved())">Delete</button>
+        </div>
+        <div class="metaLine mono">{{ policyEvalSavedMeta }}</div>
+      </section>
+
       <section v-if="showMetaTooling && metaTabActive" class="pane">
-        <h3>ML Confidence + Stage 4</h3>
+        <h3>ML Confidence + Stage 5</h3>
         <div class="checks">
           <label>
             <input
@@ -767,8 +851,9 @@ onBeforeUnmount(() => {
             />
           </div>
           <div class="actions" style="margin-top: 1.4rem;">
-            <button type="button" :disabled="!canRunMetaStage4" @click="runAction(() => analysisStore.runStage4())">Run Stage 4</button>
-            <button type="button" :disabled="!canRevealMetaStage4" @click="runAction(() => analysisStore.revealStage4())">Reveal Stage 4 file</button>
+            <button type="button" :disabled="!canRunMetaStage4" @click="runAction(() => analysisStore.runStage4())">Run Stage 5</button>
+            <button type="button" :disabled="!canRunMetaPolicyEval" @click="runAction(() => analysisStore.runMlPolicyEvaluation())">Evaluate policy</button>
+            <button type="button" :disabled="!canRevealMetaStage4" @click="runAction(() => analysisStore.revealStage4())">Reveal Stage 5 file</button>
           </div>
         </div>
 
@@ -882,6 +967,8 @@ onBeforeUnmount(() => {
 
         <div class="metaLine mono">{{ metaStage4Status }}</div>
         <pre class="mono preview">{{ metaStage4OutputPreview }}</pre>
+        <div class="metaLine mono">{{ metaPolicyEvalStatus }}</div>
+        <pre class="mono preview">{{ metaPolicyEvalOutputPreview }}</pre>
       </section>
 
       <section v-if="showMetaTooling && metaTabActive" class="pane">

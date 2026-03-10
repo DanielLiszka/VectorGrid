@@ -27,7 +27,7 @@ export const WORKFLOW_SUBTITLES = {
   optimize: 'Configure strategy + search space, then run an optimization.',
   validate: 'Run robustness checks on the current run’s candidates.',
   analyze: 'Inspect results via drilldown curves and heatmaps.',
-  finalize: 'Run post-meta ML confidence and Stage 4 final ranking on saved meta artifacts.',
+  finalize: 'Run post-meta ML confidence, Stage 5 ranking, and policy evaluation on saved meta artifacts.',
   history: 'Review, compare, and rerun saved optimizations.',
   settings: 'Advanced tools, meta selection, and debug output.',
 } as const
@@ -49,7 +49,7 @@ export const WORKFLOW_STEP_SUBTITLES = {
   optimize: 'Strategy setup: configure ranges, backend, and run optimization.',
   validate: 'Validation: run robustness checks on the selected optimization.',
   analyze: 'Summary: inspect top results, Pareto, drilldown, and heatmap.',
-  finalize: 'Stage 5: apply ML confidence, run Stage 4 ranking, and manage saved finalizer artifacts.',
+  finalize: 'Stage 5: apply ML confidence, run Stage 5 ranking, evaluate policy quality, and manage saved finalizer artifacts.',
 } as const
 
 export const WORKSPACE_SUBTITLES = {

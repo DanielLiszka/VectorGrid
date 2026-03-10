@@ -89,6 +89,24 @@ pub struct Stage4ArtifactSummary {
     pub tags: Vec<String>,
 }
 
+pub type Stage5ArtifactSummary = Stage4ArtifactSummary;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MlPolicyEvalArtifactSummary {
+    pub ts: String,
+    pub path: String,
+    pub bytes: u64,
+    pub strategy_kind: String,
+    pub timeframe: String,
+    pub artifacts_evaluated: usize,
+    pub artifacts_considered: usize,
+    pub best_policy: String,
+    pub stage5_precision_at_k: f64,
+    pub stage5_vs_meta_precision_delta: f64,
+    pub stage5_vs_ml_precision_delta: f64,
+    pub tags: Vec<String>,
+}
+
 pub(super) fn runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let dir = base.join("runs");
@@ -432,6 +450,8 @@ pub(super) fn prune_old_meta_artifacts_blocking(app: &tauri::AppHandle, keep_new
 pub(super) fn prune_old_stage4_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_stage4_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_stage4_");
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_stage5_");
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_stage5_");
 }
 
 pub(super) fn open_runs_dir_blocking(app: tauri::AppHandle) -> Result<String, String> {
@@ -838,7 +858,11 @@ pub(super) fn list_stage4_artifacts_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("vectorbt_stage4_") && !name.starts_with("vectorbt_meta_stage4_") {
+        if !name.starts_with("vectorbt_stage4_")
+            && !name.starts_with("vectorbt_meta_stage4_")
+            && !name.starts_with("vectorbt_stage5_")
+            && !name.starts_with("vectorbt_meta_stage5_")
+        {
             continue;
         }
 
@@ -858,7 +882,9 @@ pub(super) fn list_stage4_artifacts_blocking(
         };
 
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_stage4_experimental" {
+        if kind != "vectorbt_meta_stage4_experimental"
+            && kind != "vectorbt_meta_stage5_ml_confidence"
+        {
             continue;
         }
 
@@ -951,6 +977,110 @@ pub(super) fn list_stage4_artifacts_blocking(
     Ok(out)
 }
 
+pub(super) fn list_stage5_artifacts_blocking(
+    app: tauri::AppHandle,
+) -> Result<Vec<Stage5ArtifactSummary>, String> {
+    list_stage4_artifacts_blocking(app)
+}
+
+pub(super) fn list_ml_policy_eval_artifacts_blocking(
+    app: tauri::AppHandle,
+) -> Result<Vec<MlPolicyEvalArtifactSummary>, String> {
+    let dir = runs_dir(&app)?;
+    let mut out: Vec<MlPolicyEvalArtifactSummary> = Vec::new();
+
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let bytes = meta.len();
+
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+        if kind != "vectorbt_ml_confidence_policy_evaluation" {
+            continue;
+        }
+
+        let tags: Vec<String> = v
+            .get("tags")
+            .and_then(|x| x.as_array())
+            .map(|xs| {
+                xs.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        out.push(MlPolicyEvalArtifactSummary {
+            ts: v
+                .get("ts")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            path: path.to_string_lossy().to_string(),
+            bytes,
+            strategy_kind: v
+                .pointer("/res/strategy_kind")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.pointer("/req/strategy_kind").and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .to_string(),
+            timeframe: v
+                .pointer("/res/timeframe")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.pointer("/req/timeframe").and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .to_string(),
+            artifacts_evaluated: v
+                .pointer("/res/artifacts_evaluated")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0) as usize,
+            artifacts_considered: v
+                .pointer("/res/artifacts_considered")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0) as usize,
+            best_policy: v
+                .pointer("/res/best_policy")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            stage5_precision_at_k: v
+                .pointer("/res/stage5_blended/precision_at_k")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+            stage5_vs_meta_precision_delta: v
+                .pointer("/res/stage5_vs_meta_precision_delta")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+            stage5_vs_ml_precision_delta: v
+                .pointer("/res/stage5_vs_ml_precision_delta")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+            tags,
+        });
+    }
+
+    out.sort_by(|a, b| b.ts.cmp(&a.ts));
+    Ok(out)
+}
+
 pub(super) fn load_run_artifact_blocking(
     path: String,
     app: tauri::AppHandle,
@@ -989,6 +1119,8 @@ pub(super) fn update_artifact_tags_blocking(
     if kind != "vectorbt_run_artifact"
         && kind != "vectorbt_meta_selection"
         && kind != "vectorbt_meta_stage4_experimental"
+        && kind != "vectorbt_meta_stage5_ml_confidence"
+        && kind != "vectorbt_ml_confidence_policy_evaluation"
     {
         return Err(format!("unsupported artifact kind: {kind}"));
     }

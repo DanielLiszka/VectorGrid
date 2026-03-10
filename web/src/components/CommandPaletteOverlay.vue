@@ -206,9 +206,9 @@ const commands = computed<PaletteCommand[]>(() => {
     {
       id: 'go_step_finalize',
       name: 'Go to Workflow Step 5 (Finalizer)',
-      desc: 'Switch to the post-meta ML and Stage 4 workflow step.',
+      desc: 'Switch to the post-meta ML confidence and Stage 5 workflow step.',
       keys: [],
-      keywords: ['navigate', 'workflow', 'finalize', 'stage4', 'ml', 'meta'],
+      keywords: ['navigate', 'workflow', 'finalize', 'stage5', 'stage4', 'ml', 'meta'],
       enabled: true,
       run: () => {
         setWorkflowStepIfNeeded('finalize')

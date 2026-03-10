@@ -56,10 +56,11 @@ impl ta_app_core::progress::ProgressSink for OffsetProgressSink {
 
 #[tauri::command]
 pub async fn run_double_ma_optimization(
-    req: DoubleMaRequest,
+    mut req: DoubleMaRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
+    req.mode = ta_optimizer::OptimizationMode::Grid;
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;
@@ -81,10 +82,11 @@ pub async fn run_double_ma_optimization(
 
 #[tauri::command]
 pub async fn run_composite_cpu_optimization(
-    req: CompositeCpuRequest,
+    mut req: CompositeCpuRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
+    req.mode = ta_optimizer::OptimizationMode::Grid;
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;

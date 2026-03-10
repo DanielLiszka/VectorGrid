@@ -779,7 +779,10 @@ pub(crate) fn build_vfct_regime_filter(
     if obv_smooth.len() != len || mfi.len() != len {
         return Err("vfct device regime input length mismatch".to_string());
     }
-    if obv.device_id() != device_id || obv_smooth.device_id() != device_id || mfi.device_id() != device_id {
+    if obv.device_id() != device_id
+        || obv_smooth.device_id() != device_id
+        || mfi.device_id() != device_id
+    {
         return Err(format!(
             "vfct device regime input device mismatch (expected device_id={device_id})"
         ));
@@ -886,7 +889,9 @@ pub(crate) fn build_pit_regime_filter(
         return Err("pit confirm_bars must be > 0".to_string());
     }
     if first_valid > len {
-        return Err(format!("pit first_valid {first_valid} exceeds input len {len}"));
+        return Err(format!(
+            "pit first_valid {first_valid} exceeds input len {len}"
+        ));
     }
 
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
@@ -968,7 +973,10 @@ pub(crate) fn build_set_regime_filter(
     if er.len() != len || chop.len() != len {
         return Err("set device regime input length mismatch".to_string());
     }
-    if angle.device_id() != device_id || er.device_id() != device_id || chop.device_id() != device_id {
+    if angle.device_id() != device_id
+        || er.device_id() != device_id
+        || chop.device_id() != device_id
+    {
         return Err(format!(
             "set device regime input device mismatch (expected device_id={device_id})"
         ));
@@ -1055,7 +1063,8 @@ pub(crate) fn build_mts_regime_filter(
     if mom.len() != len || ppo.len() != len {
         return Err("mts device regime input length mismatch".to_string());
     }
-    if roc.device_id() != device_id || mom.device_id() != device_id || ppo.device_id() != device_id {
+    if roc.device_id() != device_id || mom.device_id() != device_id || ppo.device_id() != device_id
+    {
         return Err(format!(
             "mts device regime input device mismatch (expected device_id={device_id})"
         ));
@@ -1906,6 +1915,48 @@ fn kernel_m7_specialize_min_pairs() -> usize {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&v| v > 0)
         .unwrap_or(300_000)
+}
+
+#[inline]
+fn kernel_m7_specialize_min_pair_bars() -> Option<u64> {
+    match std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS") {
+        Ok(v) => v.trim().parse::<u64>().ok().filter(|&v| v > 0),
+        Err(_) => Some(5_000_000_000),
+    }
+}
+
+#[inline]
+fn kernel_effective_pair_bars(pair_count: usize, series_len: usize, first_valid: usize) -> u64 {
+    let effective_bars = series_len.saturating_sub(first_valid).max(1);
+    (pair_count as u64).saturating_mul(effective_bars as u64)
+}
+
+#[inline]
+fn kernel_should_use_m7_specialize(
+    pair_count: usize,
+    series_len: usize,
+    first_valid: usize,
+    is_multi_tile_workload: bool,
+    metrics_count: usize,
+    kernel_available: bool,
+) -> bool {
+    if !kernel_m7_specialize_enabled()
+        || is_multi_tile_workload
+        || metrics_count != 7
+        || !kernel_available
+    {
+        return false;
+    }
+
+    if pair_count >= kernel_m7_specialize_min_pairs() {
+        return true;
+    }
+
+    kernel_m7_specialize_min_pair_bars()
+        .map(|min_pair_bars| {
+            kernel_effective_pair_bars(pair_count, series_len, first_valid) >= min_pair_bars
+        })
+        .unwrap_or(false)
 }
 
 #[inline]
@@ -3611,11 +3662,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let use_lockstep_time = lockstep_time_enabled
                         && launch_pairs >= lockstep_time_min_pairs
                         && backtest_lockstep.is_some();
-                    let use_m7 = m7_specialize_enabled
-                        && launch_pairs >= m7_specialize_min_pairs
-                        && !is_multi_tile_workload
-                        && (METRICS_COUNT == 7)
-                        && backtest_m7.is_some();
+                    let use_m7 = kernel_should_use_m7_specialize(
+                        launch_pairs,
+                        n,
+                        first_valid,
+                        is_multi_tile_workload,
+                        METRICS_COUNT,
+                        backtest_m7.is_some(),
+                    );
                     let use_lockstep_m7 = use_lockstep_time
                         && m7_specialize_enabled
                         && launch_pairs >= m7_specialize_min_pairs
@@ -5000,11 +5054,14 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let use_lockstep_time = lockstep_time_enabled
                             && launch_pairs >= lockstep_time_min_pairs
                             && backtest_lockstep.is_some();
-                        let use_m7 = m7_specialize_enabled
-                            && launch_pairs >= m7_specialize_min_pairs
-                            && !is_multi_tile_workload
-                            && (metrics_count == 7)
-                            && backtest_m7.is_some();
+                        let use_m7 = kernel_should_use_m7_specialize(
+                            launch_pairs,
+                            n,
+                            first_valid,
+                            is_multi_tile_workload,
+                            metrics_count,
+                            backtest_m7.is_some(),
+                        );
                         let use_lockstep_m7 = use_lockstep_time
                             && m7_specialize_enabled
                             && launch_pairs >= m7_specialize_min_pairs
@@ -6400,7 +6457,10 @@ fn optimize_double_ma_gpu_kernel_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::{kernel_async_alloc_enabled, kernel_pinned_h2d_enabled};
+    use super::{
+        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_h2d_enabled,
+        kernel_should_use_m7_specialize,
+    };
     use std::sync::{Mutex, OnceLock};
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
@@ -6463,6 +6523,53 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_ASYNC_ALLOC", v),
             None => std::env::remove_var("VECTORBT_KERNEL_ASYNC_ALLOC"),
+        }
+    }
+
+    #[test]
+    fn kernel_effective_pair_bars_uses_valid_tail() {
+        assert_eq!(
+            kernel_effective_pair_bars(58_300, 200_000, 400),
+            11_636_680_000
+        );
+        assert_eq!(kernel_effective_pair_bars(10, 100, 150), 10);
+    }
+
+    #[test]
+    fn kernel_m7_gate_uses_pair_bars_for_large_long_workloads() {
+        let _guard = lock_env();
+        let prev_pairs = std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIRS").ok();
+        let prev_pair_bars = std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS").ok();
+        let prev_enabled = std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE").ok();
+
+        std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", "1");
+        std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIRS", "300000");
+        std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS");
+
+        assert!(kernel_should_use_m7_specialize(
+            58_300, 200_000, 400, false, 7, true
+        ));
+        assert!(!kernel_should_use_m7_specialize(
+            14_150, 200_000, 400, false, 7, true
+        ));
+        assert!(!kernel_should_use_m7_specialize(
+            58_300, 200_000, 400, true, 7, true
+        ));
+        assert!(!kernel_should_use_m7_specialize(
+            58_300, 200_000, 400, false, 5, true
+        ));
+
+        match prev_pairs {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIRS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIRS"),
+        }
+        match prev_pair_bars {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS"),
+        }
+        match prev_enabled {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE"),
         }
     }
 }

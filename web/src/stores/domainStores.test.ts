@@ -440,7 +440,7 @@ describe('domain stores', () => {
     expect(store.activeControlsTab).toBe('advanced')
     expect(store.maSource).toBe('hlc3')
     expect(store.objective).toBe('Sortino')
-    expect(store.mode).toBe('GpuVdps')
+    expect(store.mode).toBe('Grid')
     expect(store.vdpsVisible).toBe(true)
     expect(store.compositeMoVisible).toBe(true)
     expect(store.heatmapBins).toBe('256')

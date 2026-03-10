@@ -169,6 +169,16 @@ interface AnalysisState {
   canLoadStage4Saved: boolean
   canRevealStage4Saved: boolean
   canDeleteStage4Saved: boolean
+  policyEvalSavedSearch: string
+  policyEvalSavedOptions: { value: string; label: string; disabled: boolean }[]
+  policyEvalSavedSelected: string
+  policyEvalSavedTagsDraft: string
+  policyEvalSavedMeta: string
+  canSavePolicyEvalSavedTags: boolean
+  canRefreshPolicyEvalSaved: boolean
+  canLoadPolicyEvalSaved: boolean
+  canRevealPolicyEvalSaved: boolean
+  canDeletePolicyEvalSaved: boolean
   metaUseMlConfidence: boolean
   metaMlAutopilot: boolean
   canMetaMlRefresh: boolean
@@ -188,9 +198,12 @@ interface AnalysisState {
   metaStage4RequireHealthy: boolean
   metaStage4FallbackToMeta: boolean
   canRunMetaStage4: boolean
+  canRunMetaPolicyEval: boolean
   canRevealMetaStage4: boolean
   metaStage4Status: string
   metaStage4OutputPreview: string
+  metaPolicyEvalStatus: string
+  metaPolicyEvalOutputPreview: string
   canRunMeta: boolean
   canOpenMetaReport: boolean
   canRevealMetaFiles: boolean
@@ -334,6 +347,15 @@ function applyVueMetaTextFieldUpdate(state: AnalysisState, field: string, value:
       return true
     case 'stage4SavedTags':
       state.stage4SavedTagsDraft = next
+      return true
+    case 'policyEvalSavedSearch':
+      state.policyEvalSavedSearch = next
+      return true
+    case 'policyEvalSavedSelect':
+      state.policyEvalSavedSelected = next
+      return true
+    case 'policyEvalSavedTags':
+      state.policyEvalSavedTagsDraft = next
       return true
     case 'metaStage4TopK':
       state.metaStage4TopK = next
@@ -523,6 +545,16 @@ export const useAnalysisStore = defineStore('analysis', {
     canLoadStage4Saved: false,
     canRevealStage4Saved: false,
     canDeleteStage4Saved: false,
+    policyEvalSavedSearch: '',
+    policyEvalSavedOptions: [],
+    policyEvalSavedSelected: '',
+    policyEvalSavedTagsDraft: '',
+    policyEvalSavedMeta: '—',
+    canSavePolicyEvalSavedTags: false,
+    canRefreshPolicyEvalSaved: true,
+    canLoadPolicyEvalSaved: false,
+    canRevealPolicyEvalSaved: false,
+    canDeletePolicyEvalSaved: false,
     metaUseMlConfidence: false,
     metaMlAutopilot: true,
     canMetaMlRefresh: true,
@@ -542,9 +574,12 @@ export const useAnalysisStore = defineStore('analysis', {
     metaStage4RequireHealthy: true,
     metaStage4FallbackToMeta: true,
     canRunMetaStage4: false,
+    canRunMetaPolicyEval: false,
     canRevealMetaStage4: false,
     metaStage4Status: '—',
     metaStage4OutputPreview: '-',
+    metaPolicyEvalStatus: '—',
+    metaPolicyEvalOutputPreview: '-',
     canRunMeta: true,
     canOpenMetaReport: true,
     canRevealMetaFiles: true,
@@ -685,6 +720,16 @@ export const useAnalysisStore = defineStore('analysis', {
       this.canLoadStage4Saved = Boolean(snapshot.canLoadStage4Saved ?? this.canLoadStage4Saved)
       this.canRevealStage4Saved = Boolean(snapshot.canRevealStage4Saved ?? this.canRevealStage4Saved)
       this.canDeleteStage4Saved = Boolean(snapshot.canDeleteStage4Saved ?? this.canDeleteStage4Saved)
+      this.policyEvalSavedSearch = String(snapshot.policyEvalSavedSearch ?? this.policyEvalSavedSearch ?? '').trim()
+      this.policyEvalSavedOptions = rawArray(snapshot.policyEvalSavedOptions, this.policyEvalSavedOptions)
+      this.policyEvalSavedSelected = String(snapshot.policyEvalSavedSelected ?? this.policyEvalSavedSelected ?? '').trim()
+      this.policyEvalSavedTagsDraft = String(snapshot.policyEvalSavedTagsDraft ?? this.policyEvalSavedTagsDraft ?? '').trim()
+      this.policyEvalSavedMeta = String(snapshot.policyEvalSavedMeta ?? this.policyEvalSavedMeta ?? '—').trim() || '—'
+      this.canSavePolicyEvalSavedTags = Boolean(snapshot.canSavePolicyEvalSavedTags ?? this.canSavePolicyEvalSavedTags)
+      this.canRefreshPolicyEvalSaved = Boolean(snapshot.canRefreshPolicyEvalSaved ?? this.canRefreshPolicyEvalSaved)
+      this.canLoadPolicyEvalSaved = Boolean(snapshot.canLoadPolicyEvalSaved ?? this.canLoadPolicyEvalSaved)
+      this.canRevealPolicyEvalSaved = Boolean(snapshot.canRevealPolicyEvalSaved ?? this.canRevealPolicyEvalSaved)
+      this.canDeletePolicyEvalSaved = Boolean(snapshot.canDeletePolicyEvalSaved ?? this.canDeletePolicyEvalSaved)
       this.metaUseMlConfidence = Boolean(snapshot.metaUseMlConfidence ?? this.metaUseMlConfidence)
       this.metaMlAutopilot = Boolean(snapshot.metaMlAutopilot ?? this.metaMlAutopilot)
       this.canMetaMlRefresh = Boolean(snapshot.canMetaMlRefresh ?? this.canMetaMlRefresh)
@@ -704,9 +749,12 @@ export const useAnalysisStore = defineStore('analysis', {
       this.metaStage4RequireHealthy = Boolean(snapshot.metaStage4RequireHealthy ?? this.metaStage4RequireHealthy)
       this.metaStage4FallbackToMeta = Boolean(snapshot.metaStage4FallbackToMeta ?? this.metaStage4FallbackToMeta)
       this.canRunMetaStage4 = Boolean(snapshot.canRunMetaStage4 ?? this.canRunMetaStage4)
+      this.canRunMetaPolicyEval = Boolean(snapshot.canRunMetaPolicyEval ?? this.canRunMetaPolicyEval)
       this.canRevealMetaStage4 = Boolean(snapshot.canRevealMetaStage4 ?? this.canRevealMetaStage4)
       this.metaStage4Status = String(snapshot.metaStage4Status ?? this.metaStage4Status ?? '—').trim() || '—'
       this.metaStage4OutputPreview = String(snapshot.metaStage4OutputPreview ?? this.metaStage4OutputPreview ?? '-').trim() || '-'
+      this.metaPolicyEvalStatus = String(snapshot.metaPolicyEvalStatus ?? this.metaPolicyEvalStatus ?? '—').trim() || '—'
+      this.metaPolicyEvalOutputPreview = String(snapshot.metaPolicyEvalOutputPreview ?? this.metaPolicyEvalOutputPreview ?? '-').trim() || '-'
       this.canRunMeta = Boolean(snapshot.canRunMeta ?? this.canRunMeta)
       this.canOpenMetaReport = Boolean(snapshot.canOpenMetaReport ?? this.canOpenMetaReport)
       this.canRevealMetaFiles = Boolean(snapshot.canRevealMetaFiles ?? this.canRevealMetaFiles)
@@ -928,6 +976,26 @@ export const useAnalysisStore = defineStore('analysis', {
       void metaService.deleteStage4Saved()
     },
 
+    savePolicyEvalSavedTags(): void {
+      void metaService.savePolicyEvalSavedTags()
+    },
+
+    refreshPolicyEvalSaved(): void {
+      void metaService.refreshPolicyEvalSaved()
+    },
+
+    loadPolicyEvalSaved(): void {
+      void metaService.loadPolicyEvalSaved()
+    },
+
+    revealPolicyEvalSaved(): void {
+      void metaService.revealPolicyEvalSaved()
+    },
+
+    deletePolicyEvalSaved(): void {
+      void metaService.deletePolicyEvalSaved()
+    },
+
     mlRefresh(): void {
       void metaService.mlRefresh()
     },
@@ -946,6 +1014,10 @@ export const useAnalysisStore = defineStore('analysis', {
 
     runStage4(): void {
       void metaService.runStage4()
+    },
+
+    runMlPolicyEvaluation(): void {
+      void metaService.runMlPolicyEvaluation()
     },
 
     revealStage4(): void {

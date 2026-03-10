@@ -12,6 +12,7 @@ import {
   mlRefresh,
   mlTrain,
   runBatch,
+  runMlPolicyEvaluation,
   runMeta,
   runStage4,
   toggleBatchDataset,
@@ -108,15 +109,17 @@ function mockInvokeDefaults(): void {
       }
     }
 
-    if (command === 'run_meta_stage4_experimental') {
+    if (command === 'run_meta_stage5_ml_confidence') {
       return {
         ts: '2026-02-26T10:02:00Z',
-        stage4_json_path: 'C:/runs/vectorbt_stage4.json',
+        stage4_json_path: 'C:/runs/vectorbt_stage5.json',
+        stage5_json_path: 'C:/runs/vectorbt_stage5.json',
         result: {
           strategy_kind: 'CompositeMo',
           timeframe: '1m',
           source_meta_json_path: 'C:/runs/vectorbt_meta.json',
           model_path: 'C:/models/meta_model.json',
+          model_state: 'healthy',
           model_healthy: true,
           model_trained_now: false,
           groups_selected: 1,
@@ -132,6 +135,32 @@ function mockInvokeDefaults(): void {
             ml_uncertainty: 0.1,
             params: { fast_ma_type: 'ema', fast_len: 10, slow_ma_type: 'ema', slow_len: 20 },
           }],
+        },
+      }
+    }
+
+    if (command === 'evaluate_ml_confidence_policy') {
+      return {
+        ts: '2026-02-26T10:03:00Z',
+        eval_json_path: 'C:/runs/vectorbt_ml_policy_eval.json',
+        result: {
+          strategy_kind: 'CompositeMo',
+          timeframe: '1m',
+          artifacts_considered: 4,
+          artifacts_evaluated: 3,
+          artifacts_skipped_no_history: 1,
+          artifacts_skipped_training_failure: 0,
+          artifacts_skipped_unhealthy_model: 0,
+          artifacts_skipped_no_labels: 0,
+          top_k: 15,
+          min_ml_confidence: 0.58,
+          meta_weight: 0.6,
+          ml_weight: 0.35,
+          uncertainty_weight: 0.05,
+          meta_only: { selected_total: 3, positives_total: 2, precision_at_k: 2 / 3 },
+          ml_only: { selected_total: 3, positives_total: 1, precision_at_k: 1 / 3 },
+          stage5_blended: { selected_total: 3, positives_total: 3, precision_at_k: 1.0 },
+          warnings: [],
         },
       }
     }
@@ -199,7 +228,8 @@ function mockInvokeDefaults(): void {
     if (command === 'list_run_artifacts') return []
     if (command === 'save_batch_summary') return { path: 'C:/runs/vectorbt_batch_1.json' }
     if (command === 'list_meta_artifacts') return []
-    if (command === 'list_stage4_artifacts') return []
+    if (command === 'list_stage5_artifacts') return []
+    if (command === 'list_ml_policy_eval_artifacts') return []
     return undefined
   })
 }
@@ -250,11 +280,32 @@ describe('meta service', () => {
     await runMeta()
     await runStage4()
 
-    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_stage4_experimental')
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_stage5_ml_confidence')
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
     expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorbt_meta.json')
+  })
+
+  it('runs ML policy evaluation with auto-built request via direct invoke', async () => {
+    const analysisStore = useAnalysisStore()
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: 'CompositeMo',
+      metaTimeframe: '1m',
+      metaStage4TopK: '15',
+      metaStage4MinConf: '0.58',
+    })
+
+    await runMeta()
+    await runMlPolicyEvaluation()
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'evaluate_ml_confidence_policy')
+    expect(call).toBeTruthy()
+    expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
+    expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
+
+    expect(analysisStore.metaPolicyEvalStatus).toContain('Policy evaluation complete')
+    expect(analysisStore.metaPolicyEvalOutputPreview).toContain('stage5_blended')
   })
 
   it('preserves Asr strategy kind for meta selection request', async () => {

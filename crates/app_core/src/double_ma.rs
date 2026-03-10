@@ -482,6 +482,8 @@ const VDPS_DEFAULT_DIFFERENTIAL_RATIO: f64 = 0.40;
 const VDPS_DEFAULT_QUALITY_CHECK_MAX_PAIRS: usize = 0;
 const VDPS_DEFAULT_QUALITY_CHECK_TOP_K: usize = 20;
 const VDPS_MAX_RUNGS: usize = 16;
+const VDPS_DEFAULT_MAX_ACTIVE_ANCHORS: usize = 6;
+const VDPS_LOCAL_FRONTIER_MIN_FULL_GRID_PAIRS: usize = 750_000;
 
 #[derive(Clone, Debug)]
 struct VdpsResolvedConfig {
@@ -682,6 +684,96 @@ fn vdps_rank_candidates(
     });
     rows.truncate(limit.min(rows.len()));
     rows
+}
+
+fn vdps_local_anchor_axes(
+    center_f: u16,
+    center_s: u16,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_window: u16,
+    slow_window: u16,
+    max_period_candidates: usize,
+    target_pairs: usize,
+) -> (Vec<u16>, Vec<u16>) {
+    let mut fast_candidates =
+        vdps_period_window_slice(fast_periods, center_f, fast_window).to_vec();
+    let mut slow_candidates =
+        vdps_period_window_slice(slow_periods, center_s, slow_window).to_vec();
+    if fast_candidates.is_empty() || slow_candidates.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let trim_around_center = |candidates: &mut Vec<u16>, center: u16| {
+        if candidates.len() <= max_period_candidates {
+            return;
+        }
+        candidates.sort_by_key(|&p| (p.abs_diff(center), p));
+        candidates.truncate(max_period_candidates);
+        candidates.sort_unstable();
+        candidates.dedup();
+    };
+    trim_around_center(&mut fast_candidates, center_f);
+    trim_around_center(&mut slow_candidates, center_s);
+
+    let mut thin_stride = 1usize;
+    let target_pairs = target_pairs.max(1);
+    let mut fast_sel = fast_candidates.clone();
+    let mut slow_sel = slow_candidates.clone();
+    let mut pair_count = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
+    while pair_count > target_pairs.saturating_mul(3)
+        && (fast_sel.len() > 8 || slow_sel.len() > 8)
+        && thin_stride < 128
+    {
+        thin_stride = thin_stride.saturating_add(1);
+        fast_sel = vdps_decimated_periods(&fast_candidates, thin_stride);
+        slow_sel = vdps_decimated_periods(&slow_candidates, thin_stride);
+        if !fast_sel.contains(&center_f) {
+            fast_sel.push(center_f);
+            fast_sel.sort_unstable();
+            fast_sel.dedup();
+        }
+        if !slow_sel.contains(&center_s) {
+            slow_sel.push(center_s);
+            slow_sel.sort_unstable();
+            slow_sel.dedup();
+        }
+        pair_count = estimate_pairs_fast_lt_slow(&fast_sel, &slow_sel);
+    }
+
+    (fast_sel, slow_sel)
+}
+
+fn vdps_merge_partial_results(
+    partials: Vec<OptimizationResult>,
+    objective: ObjectiveKind,
+    top_k: usize,
+    num_candles: usize,
+) -> Option<OptimizationResult> {
+    if partials.is_empty() {
+        return None;
+    }
+
+    let mut total_num_combos: usize = 0;
+    let mut ranked_input: Vec<(DoubleMaParams, Metrics)> = Vec::new();
+    for res in partials.into_iter() {
+        total_num_combos = total_num_combos.saturating_add(res.num_combos);
+        ranked_input.push((res.best_params.clone(), res.best_metrics.clone()));
+        ranked_input.extend(res.top.into_iter());
+    }
+
+    let ranked = vdps_rank_candidates(ranked_input, objective, top_k.max(1));
+    let (best_params, best_metrics) = ranked.first().cloned()?;
+    let top = if top_k > 0 { ranked } else { Vec::new() };
+    Some(OptimizationResult {
+        best_params,
+        best_metrics,
+        top,
+        all: None,
+        heatmap: None,
+        num_combos: total_num_combos,
+        num_candles,
+    })
 }
 
 fn vdps_inject_random_seed_pairs(
@@ -4031,6 +4123,17 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         target_pairs_raw
                     };
 
+                    let rem = rung_plan.len().saturating_sub(ri);
+                    let rem_u16 = rem.min(u16::MAX as usize) as u16;
+                    let f_win = fast_step_base
+                        .saturating_mul(rem_u16)
+                        .saturating_mul(2)
+                        .max(fast_step_base);
+                    let s_win = slow_step_base
+                        .saturating_mul(rem_u16)
+                        .saturating_mul(2)
+                        .max(slow_step_base);
+
                     let (rung_fast, rung_slow) = if ri == 0 {
                         let mut stride =
                             (((total_pairs as f64) / (target_pairs as f64)).sqrt().ceil() as usize)
@@ -4113,11 +4216,6 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         }
                     };
 
-                    let rung_pairs = estimate_pairs_fast_lt_slow(&rung_fast, &rung_slow);
-                    if rung_pairs == 0 {
-                        continue;
-                    }
-
                     let survivors_target =
                         ((target_pairs as f64) / (cfg.eta as f64)).ceil() as usize;
                     let rung_top_k = if ri + 1 == rung_plan.len() {
@@ -4126,36 +4224,155 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         survivors_target.clamp(top_k.max(8), cfg.max_survivor_seeds)
                     };
 
-                    let (
-                        mut rung_res,
-                        rung_backend,
-                        rung_hybrid_timing_ms,
-                        rung_route_note,
-                        rung_fallback_reason,
-                    ) = run_grid(
-                        &rung_fast,
-                        &rung_slow,
-                        rung_top_k,
-                        false,
-                        0,
-                        None,
-                        rung_pairs,
-                        fast_ma_params,
-                        slow_ma_params,
-                        fast_alma_offset,
-                        fast_alma_sigma,
-                        slow_alma_offset,
-                        slow_alma_sigma,
-                        constraints,
-                        progress,
-                    )?;
-                    merge_hybrid_timing(&mut hybrid_timing_ms_acc, rung_hybrid_timing_ms);
-                    merge_optional_note(&mut route_note_acc, rung_route_note);
-                    merge_optional_note(&mut fallback_reason_acc, rung_fallback_reason);
+                    let mut rung_fast_unique: BTreeSet<u16> =
+                        rung_fast.iter().copied().collect::<BTreeSet<_>>();
+                    let mut rung_slow_unique: BTreeSet<u16> =
+                        rung_slow.iter().copied().collect::<BTreeSet<_>>();
+                    let mut partial_results: Vec<OptimizationResult> = Vec::new();
+                    let mut rung_backend = BackendUsed::Cpu;
+                    let mut used_anchor_windows = false;
 
-                    if matches!(rung_backend, BackendUsed::Gpu) {
-                        any_gpu = true;
+                    if ri > 0
+                        && total_pairs >= VDPS_LOCAL_FRONTIER_MIN_FULL_GRID_PAIRS
+                        && !seed_pairs.is_empty()
+                    {
+                        let anchor_cap = seed_pairs
+                            .len()
+                            .min(cfg.max_survivor_seeds)
+                            .min(VDPS_DEFAULT_MAX_ACTIVE_ANCHORS)
+                            .max(1);
+                        let target_pairs_per_anchor =
+                            ((target_pairs as f64) / (anchor_cap as f64)).ceil() as usize;
+                        let mut seen_anchor_shapes: BTreeSet<(u16, u16, usize, u16, u16, usize)> =
+                            BTreeSet::new();
+
+                        for &(anchor_f, anchor_s) in seed_pairs.iter().take(anchor_cap) {
+                            let (local_fast, local_slow) = vdps_local_anchor_axes(
+                                anchor_f,
+                                anchor_s,
+                                &fast_periods,
+                                &slow_periods,
+                                f_win,
+                                s_win,
+                                cfg.max_period_candidates,
+                                target_pairs_per_anchor,
+                            );
+                            if local_fast.is_empty() || local_slow.is_empty() {
+                                continue;
+                            }
+                            let Some(&fast_first) = local_fast.first() else {
+                                continue;
+                            };
+                            let Some(&fast_last) = local_fast.last() else {
+                                continue;
+                            };
+                            let Some(&slow_first) = local_slow.first() else {
+                                continue;
+                            };
+                            let Some(&slow_last) = local_slow.last() else {
+                                continue;
+                            };
+                            let signature = (
+                                fast_first,
+                                fast_last,
+                                local_fast.len(),
+                                slow_first,
+                                slow_last,
+                                local_slow.len(),
+                            );
+                            if !seen_anchor_shapes.insert(signature) {
+                                continue;
+                            }
+
+                            let local_pairs = estimate_pairs_fast_lt_slow(&local_fast, &local_slow);
+                            if local_pairs == 0 {
+                                continue;
+                            }
+
+                            let (
+                                local_res,
+                                local_backend,
+                                local_hybrid_timing_ms,
+                                local_route_note,
+                                local_fallback_reason,
+                            ) = run_grid(
+                                &local_fast,
+                                &local_slow,
+                                rung_top_k.max(1),
+                                false,
+                                0,
+                                None,
+                                local_pairs,
+                                fast_ma_params,
+                                slow_ma_params,
+                                fast_alma_offset,
+                                fast_alma_sigma,
+                                slow_alma_offset,
+                                slow_alma_sigma,
+                                constraints,
+                                progress,
+                            )?;
+                            merge_hybrid_timing(&mut hybrid_timing_ms_acc, local_hybrid_timing_ms);
+                            merge_optional_note(&mut route_note_acc, local_route_note);
+                            merge_optional_note(&mut fallback_reason_acc, local_fallback_reason);
+                            if matches!(local_backend, BackendUsed::Gpu) {
+                                any_gpu = true;
+                                rung_backend = BackendUsed::Gpu;
+                            }
+                            rung_fast_unique.extend(local_fast.iter().copied());
+                            rung_slow_unique.extend(local_slow.iter().copied());
+                            partial_results.push(local_res);
+                            used_anchor_windows = true;
+                        }
                     }
+
+                    if partial_results.is_empty() {
+                        let rung_pairs = estimate_pairs_fast_lt_slow(&rung_fast, &rung_slow);
+                        if rung_pairs == 0 {
+                            continue;
+                        }
+
+                        let (
+                            rung_res,
+                            single_rung_backend,
+                            rung_hybrid_timing_ms,
+                            rung_route_note,
+                            rung_fallback_reason,
+                        ) = run_grid(
+                            &rung_fast,
+                            &rung_slow,
+                            rung_top_k.max(1),
+                            false,
+                            0,
+                            None,
+                            rung_pairs,
+                            fast_ma_params,
+                            slow_ma_params,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                            constraints,
+                            progress,
+                        )?;
+                        merge_hybrid_timing(&mut hybrid_timing_ms_acc, rung_hybrid_timing_ms);
+                        merge_optional_note(&mut route_note_acc, rung_route_note);
+                        merge_optional_note(&mut fallback_reason_acc, rung_fallback_reason);
+
+                        if matches!(single_rung_backend, BackendUsed::Gpu) {
+                            any_gpu = true;
+                            rung_backend = BackendUsed::Gpu;
+                        }
+                        partial_results.push(rung_res);
+                    }
+
+                    let mut rung_res = vdps_merge_partial_results(
+                        partial_results,
+                        objective,
+                        rung_top_k.max(1),
+                        candles.close.len(),
+                    )
+                    .ok_or_else(|| "GpuVdps produced no valid rung result".to_string())?;
 
                     total_evaluated_pairs =
                         total_evaluated_pairs.saturating_add(rung_res.num_combos);
@@ -4304,12 +4521,18 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         evaluated_pairs: rung_res.num_combos,
                         promoted_pairs,
                         dropped_pairs: rung_res.num_combos.saturating_sub(promoted_pairs),
-                        fast_candidates: rung_fast.len(),
-                        slow_candidates: rung_slow.len(),
+                        fast_candidates: rung_fast_unique.len(),
+                        slow_candidates: rung_slow_unique.len(),
                         backend_used: rung_backend,
                         runtime_ms,
                         throughput_pairs_per_sec,
                     });
+                    if used_anchor_windows {
+                        merge_optional_note(
+                            &mut route_note_acc,
+                            Some("GpuVdps used anchored local frontier windows.".to_string()),
+                        );
+                    }
                     last_res = Some(rung_res);
                 }
 
@@ -6683,8 +6906,7 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
         CudaOutputTarget::DeviceF32,
     )
     .map_err(|e| format!("pit acosc failed: {e}"))?;
-    let (acosc_matrix, acosc_warmup) =
-        regime_device_matrix_from_output("pit acosc", acosc_output)?;
+    let (acosc_matrix, acosc_warmup) = regime_device_matrix_from_output("pit acosc", acosc_output)?;
 
     let cfo_output = compute_dynamic_indicator_cuda_with_inputs(
         &prepared_inputs,
@@ -11610,10 +11832,10 @@ mod tests {
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect("GpuVdps run should succeed");
-        assert_eq!(
-            res.backend_route.as_deref(),
-            Some("GpuOnly->GpuHybridKernel"),
-            "expected GpuVdps to promote GpuOnly to hybrid kernel route"
+        let route = res.backend_route.unwrap_or_default();
+        assert!(
+            route.contains("GpuOnly->GpuHybridKernel"),
+            "expected GpuVdps to promote GpuOnly to hybrid kernel route, got '{route}'"
         );
         let reason = res.backend_fallback_reason.unwrap_or_default();
         assert!(
@@ -12207,6 +12429,91 @@ mod tests {
         assert!(overlap >= 0.2, "unexpectedly low top-k overlap: {overlap}");
         assert!(baseline_pairs > 0);
         assert!(baseline_ms > 0);
+    }
+
+    #[test]
+    fn vdps_local_anchor_axes_include_center_and_trim_candidates() {
+        let fast_periods: Vec<u16> = (5..=80).collect();
+        let slow_periods: Vec<u16> = (10..=180).collect();
+        let (fast_sel, slow_sel) =
+            vdps_local_anchor_axes(34, 89, &fast_periods, &slow_periods, 10, 14, 12, 128);
+
+        assert!(fast_sel.contains(&34), "fast center missing");
+        assert!(slow_sel.contains(&89), "slow center missing");
+        assert!(fast_sel.len() <= 12);
+        assert!(slow_sel.len() <= 12);
+        assert!(!fast_sel.is_empty());
+        assert!(!slow_sel.is_empty());
+    }
+
+    #[test]
+    fn vdps_merge_partial_results_keeps_global_best() {
+        let res_a = OptimizationResult {
+            best_params: DoubleMaParams {
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            best_metrics: Metrics {
+                sharpe: 1.25,
+                ..Metrics::default()
+            },
+            top: vec![(
+                DoubleMaParams {
+                    fast_len: 10,
+                    slow_len: 30,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 1.25,
+                    ..Metrics::default()
+                },
+            )],
+            all: None,
+            heatmap: None,
+            num_combos: 64,
+            num_candles: 1000,
+        };
+        let res_b = OptimizationResult {
+            best_params: DoubleMaParams {
+                fast_len: 14,
+                slow_len: 41,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            best_metrics: Metrics {
+                sharpe: 1.75,
+                ..Metrics::default()
+            },
+            top: vec![(
+                DoubleMaParams {
+                    fast_len: 14,
+                    slow_len: 41,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 1.75,
+                    ..Metrics::default()
+                },
+            )],
+            all: None,
+            heatmap: None,
+            num_combos: 81,
+            num_candles: 1000,
+        };
+
+        let merged = vdps_merge_partial_results(vec![res_a, res_b], ObjectiveKind::Sharpe, 4, 1000)
+            .expect("merged result");
+
+        assert_eq!(
+            (merged.best_params.fast_len, merged.best_params.slow_len),
+            (14, 41)
+        );
+        assert!((merged.best_metrics.sharpe - 1.75).abs() <= 1e-9);
+        assert_eq!(merged.num_combos, 145);
     }
 
     #[test]
@@ -13041,16 +13348,20 @@ mod tests {
     #[test]
     fn pressure_impulse_trend_regime_produces_directional_windows() {
         let candles = make_breakout_candles(1500);
-        let regime = compute_pressure_impulse_trend_regime(&candles, "close", &pit_strategy_for_kernel())
-            .expect("compute pit regime")
-            .expect("pit regime enabled");
+        let regime =
+            compute_pressure_impulse_trend_regime(&candles, "close", &pit_strategy_for_kernel())
+                .expect("compute pit regime")
+                .expect("pit regime enabled");
         let finite = regime.iter().filter(|v| v.is_finite()).count();
         let directions = regime
             .iter()
             .filter(|v| v.to_bits() == 0.0_f64.to_bits() || v.to_bits() == 1.0_f64.to_bits())
             .count();
         assert!(finite > 0, "pit regime should emit directional windows");
-        assert!(directions > 0, "pit regime should include directional states");
+        assert!(
+            directions > 0,
+            "pit regime should include directional states"
+        );
     }
 
     #[test]
@@ -13137,8 +13448,9 @@ mod tests {
         let cpu_regime = compute_pressure_impulse_trend_regime(&candles, "close", &strategy)
             .expect("compute cpu pit regime")
             .expect("pit regime enabled");
-        let device_regime = build_pressure_impulse_trend_regime_device(&candles, "close", 0, &strategy)
-            .expect("build device pit regime");
+        let device_regime =
+            build_pressure_impulse_trend_regime_device(&candles, "close", 0, &strategy)
+                .expect("build device pit regime");
         let device_values =
             crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
                 .expect("download device pit regime");

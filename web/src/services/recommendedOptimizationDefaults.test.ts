@@ -26,7 +26,7 @@ describe('recommendedOptimizationDefaults', () => {
     expect(store.statusLine).toContain('Applied recommended output defaults')
   })
 
-  it('does not force grid heatmap defaults into modes that require heatmap bins off', () => {
+  it('normalizes legacy non-grid modes back to the grid heatmap defaults', () => {
     const store = useAdvancedStore()
     store.topK = '0'
     store.heatmapBins = '0'
@@ -36,7 +36,7 @@ describe('recommendedOptimizationDefaults', () => {
 
     expect(changed).toBe(true)
     expect(store.topK).toBe(RECOMMENDED_TOP_K)
-    expect(store.heatmapBins).toBe('0')
+    expect(store.heatmapBins).toBe(RECOMMENDED_HEATMAP_BINS)
   })
 
   it('leaves explicit nonzero values unchanged', () => {

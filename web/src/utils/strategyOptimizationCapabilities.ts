@@ -62,8 +62,8 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
           : 'Double MA supports CPU, Auto, and unified GPU routing.',
       modeSummary:
         kind === 'Vfct'
-          ? 'VFCT supports the same Grid, Coarse-to-Fine, GPU VDPS, and Auto mode selection used by the double-MA backend.'
-          : 'Double MA supports Grid, Coarse-to-Fine, GPU VDPS, and Auto mode selection.',
+          ? 'VFCT uses exact Grid search through the double-MA backend.'
+          : 'Double MA uses exact Grid search.',
       outputSummary:
         kind === 'Vfct'
           ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend.'

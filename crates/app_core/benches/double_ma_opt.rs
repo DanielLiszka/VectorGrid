@@ -1059,6 +1059,18 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
     }
     let candles = make_synth_candles(200_000);
     let cancel = AtomicBool::new(false);
+    let ma_cases: &[MaBenchCase] = &[
+        MaBenchCase {
+            label: "sma_sma",
+            fast_ma: "sma",
+            slow_ma: "sma",
+        },
+        MaBenchCase {
+            label: "alma_alma",
+            fast_ma: "alma",
+            slow_ma: "alma",
+        },
+    ];
     let cases: &[(&str, (u32, u32, u32), (u32, u32, u32), Option<&'static str>)] = &[
         ("large", (5, 200, 1), (10, 400, 1), None),
         (
@@ -1076,103 +1088,119 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
     ];
     let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
 
-    let mut group = c.benchmark_group("double_ma/gpu_kernel_vdps/sma_sma/200k");
-    group.measurement_time(Duration::from_secs(8));
-    group.sample_size(10);
+    for ma in ma_cases {
+        let mut group = c.benchmark_group(format!("double_ma/gpu_kernel_vdps/{}/200k", ma.label));
+        group.measurement_time(Duration::from_secs(8));
+        group.sample_size(if ma.fast_ma == "alma" || ma.slow_ma == "alma" {
+            10
+        } else {
+            20
+        });
 
-    for (label, fast_range, slow_range, budget_mb) in cases.iter().copied() {
-        match budget_mb {
-            Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
-            None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+        for (label, fast_range, slow_range, budget_mb) in cases.iter().copied() {
+            match budget_mb {
+                Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+                None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+            }
+
+            let fast_periods = expand_range_u16(fast_range);
+            let slow_periods = expand_range_u16(slow_range);
+            let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+            let grid_name = format!("{label}/grid/{pairs}pairs");
+            let vdps_name = format!("{label}/vdps/{pairs}pairs");
+            let fast_ma_params = if ma.fast_ma == "alma" {
+                Some(alma_params_default())
+            } else {
+                None
+            };
+            let slow_ma_params = if ma.slow_ma == "alma" {
+                Some(alma_params_default())
+            } else {
+                None
+            };
+
+            let grid_req = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: "bench".to_string(),
+                fast_range,
+                slow_range,
+                fast_ma_types: vec![ma.fast_ma.to_string()],
+                slow_ma_types: vec![ma.slow_ma.to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: fast_ma_params.clone(),
+                slow_ma_params: slow_ma_params.clone(),
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::Grid,
+                top_k: Some(50),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            };
+            group.bench_function(&grid_name, |b| {
+                b.iter(|| {
+                    let req2 = grid_req.clone();
+                    let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                        req2, &candles, &cancel, None,
+                    )
+                    .expect("gpu kernel grid run");
+                })
+            });
+
+            let vdps_req = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: "bench".to_string(),
+                fast_range,
+                slow_range,
+                fast_ma_types: vec![ma.fast_ma.to_string()],
+                slow_ma_types: vec![ma.slow_ma.to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params,
+                slow_ma_params,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::GpuVdps,
+                top_k: Some(50),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: Some(VdpsConfig {
+                    eta: Some(4),
+                    rungs: Some(vec![0.0625, 0.125, 0.25, 0.5, 1.0]),
+                    min_initial_pairs: Some(4096),
+                    max_survivor_seeds: Some(256),
+                    max_period_candidates: Some(384),
+                    random_injection_ratio: Some(0.10),
+                    elite_mutation_ratio: Some(0.50),
+                    differential_ratio: Some(0.40),
+                    deterministic: Some(true),
+                    seed: Some(1),
+                    quality_check_max_pairs: Some(0),
+                    quality_check_top_k: Some(20),
+                }),
+            };
+            group.bench_function(&vdps_name, |b| {
+                b.iter(|| {
+                    let req2 = vdps_req.clone();
+                    let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                        req2, &candles, &cancel, None,
+                    )
+                    .expect("gpu kernel vdps run");
+                })
+            });
         }
 
-        let fast_periods = expand_range_u16(fast_range);
-        let slow_periods = expand_range_u16(slow_range);
-        let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
-        let grid_name = format!("{label}/grid/{pairs}pairs");
-        let vdps_name = format!("{label}/vdps/{pairs}pairs");
-
-        let grid_req = DoubleMaRequest {
-            backend: Backend::GpuKernel { device_id: 0 },
-            data_id: "bench".to_string(),
-            fast_range,
-            slow_range,
-            fast_ma_types: vec!["sma".to_string()],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            export_all_csv_path: None,
-            fast_ma_params: None,
-            slow_ma_params: None,
-            fast_ma_param_sweeps: None,
-            slow_ma_param_sweeps: None,
-            strategy: StrategyConfig::default(),
-            halftrend_filter: None,
-            objective: ObjectiveKind::Sharpe,
-            mode: OptimizationMode::Grid,
-            top_k: Some(50),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-            constraints: None,
-            vdps: None,
-        };
-        group.bench_function(&grid_name, |b| {
-            b.iter(|| {
-                let req2 = grid_req.clone();
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("gpu kernel grid run");
-            })
-        });
-
-        let vdps_req = DoubleMaRequest {
-            backend: Backend::GpuKernel { device_id: 0 },
-            data_id: "bench".to_string(),
-            fast_range,
-            slow_range,
-            fast_ma_types: vec!["sma".to_string()],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            export_all_csv_path: None,
-            fast_ma_params: None,
-            slow_ma_params: None,
-            fast_ma_param_sweeps: None,
-            slow_ma_param_sweeps: None,
-            strategy: StrategyConfig::default(),
-            halftrend_filter: None,
-            objective: ObjectiveKind::Sharpe,
-            mode: OptimizationMode::GpuVdps,
-            top_k: Some(50),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-            constraints: None,
-            vdps: Some(VdpsConfig {
-                eta: Some(4),
-                rungs: Some(vec![0.0625, 0.125, 0.25, 0.5, 1.0]),
-                min_initial_pairs: Some(4096),
-                max_survivor_seeds: Some(256),
-                max_period_candidates: Some(384),
-                random_injection_ratio: Some(0.10),
-                elite_mutation_ratio: Some(0.50),
-                differential_ratio: Some(0.40),
-                deterministic: Some(true),
-                seed: Some(1),
-                quality_check_max_pairs: Some(0),
-                quality_check_top_k: Some(20),
-            }),
-        };
-        group.bench_function(&vdps_name, |b| {
-            b.iter(|| {
-                let req2 = vdps_req.clone();
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("gpu kernel vdps run");
-            })
-        });
+        group.finish();
     }
-
-    group.finish();
     match prev_budget {
         Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
         None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),

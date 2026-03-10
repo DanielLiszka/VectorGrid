@@ -387,26 +387,6 @@ function parseOptionalNonNegativeNumber(value: unknown, label: string): number |
   return parsed
 }
 
-function parseVdpsRungsInput(raw: unknown): number[] {
-  const text = normalizeText(raw)
-  if (!text) return []
-  const parts = text
-    .split(/[\s,]+/g)
-    .map((entry) => Number(entry))
-    .filter((value) => Number.isFinite(value))
-  const out: number[] = []
-  for (const value of parts) {
-    if (value > 0) out.push(Math.min(1, Math.max(0.000001, value)))
-  }
-  out.sort((a, b) => a - b)
-  const dedup: number[] = []
-  for (const value of out) {
-    const prev = dedup.length ? dedup[dedup.length - 1] : undefined
-    if (prev == null || Math.abs(prev - value) > 1e-12) dedup.push(value)
-  }
-  return dedup
-}
-
 function normalizeMaParams(value: unknown): Record<string, number> | null {
   if (!value || typeof value !== 'object') return null
   const out: Record<string, number> = {}
@@ -465,11 +445,17 @@ function normalizeBackend(value: unknown): 'Auto' | 'CpuOnly' | 'GpuKernel' {
   return 'CpuOnly'
 }
 
-function normalizeMode(value: unknown): 'Grid' | 'CoarseToFine' | 'GpuVdps' | 'Auto' {
+function normalizeMode(value: unknown): 'Grid' {
   const mode = normalizeText(value)
-  if (mode === 'CoarseToFine') return 'CoarseToFine'
-  if (mode === 'GpuVdps') return 'GpuVdps'
-  if (mode === 'Auto') return 'Auto'
+  if (
+    mode === 'CoarseToFine'
+    || mode === 'GpuProgressive'
+    || mode === 'GpuProgressiveSearch'
+    || mode === 'GpuVdps'
+    || mode === 'Auto'
+  ) {
+    return 'Grid'
+  }
   return 'Grid'
 }
 
@@ -939,64 +925,6 @@ function buildCompositeMoSampler(inputs: CompositeMoOptimizationBuildInputs): Re
   }
 }
 
-function parseVdpsConfig(inputs: DoubleMaOptimizationBuildInputs): Record<string, unknown> {
-  const eta = Math.floor(num(inputs.vdpsEta, 4))
-  if (!Number.isFinite(eta) || eta < 2 || eta > 32) throw new Error('VDPS eta must be in [2, 32].')
-
-  const rungs = parseVdpsRungsInput(inputs.vdpsRungs)
-  if (!rungs.length) throw new Error('VDPS rungs must include at least one positive fraction.')
-
-  const minInitialPairs = Math.floor(num(inputs.vdpsMinInitialPairs, 4096))
-  if (!Number.isFinite(minInitialPairs) || minInitialPairs < 1) {
-    throw new Error('VDPS min initial pairs must be >= 1.')
-  }
-  const maxSurvivorSeeds = Math.floor(num(inputs.vdpsMaxSurvivorSeeds, 256))
-  if (!Number.isFinite(maxSurvivorSeeds) || maxSurvivorSeeds < 8) {
-    throw new Error('VDPS max survivor seeds must be >= 8.')
-  }
-  const maxPeriodCandidates = Math.floor(num(inputs.vdpsMaxPeriodCandidates, 384))
-  if (!Number.isFinite(maxPeriodCandidates) || maxPeriodCandidates < 16) {
-    throw new Error('VDPS max period candidates must be >= 16.')
-  }
-  const randomInjectionRatio = num(inputs.vdpsRandomInjectionRatio, 0.1)
-  if (!Number.isFinite(randomInjectionRatio) || randomInjectionRatio < 0 || randomInjectionRatio > 1) {
-    throw new Error('VDPS random injection ratio must be in [0, 1].')
-  }
-  const eliteMutationRatio = num(inputs.vdpsEliteMutationRatio, 0.5)
-  if (!Number.isFinite(eliteMutationRatio) || eliteMutationRatio < 0 || eliteMutationRatio > 1) {
-    throw new Error('VDPS elite mutation ratio must be in [0, 1].')
-  }
-  const differentialRatio = num(inputs.vdpsDifferentialRatio, 0.4)
-  if (!Number.isFinite(differentialRatio) || differentialRatio < 0 || differentialRatio > 1) {
-    throw new Error('VDPS differential ratio must be in [0, 1].')
-  }
-  const seed = Math.max(0, Math.floor(num(inputs.vdpsSeed, 1)))
-  const deterministic = normalizeBoolean(inputs.vdpsDeterministic)
-  const qualityCheckMaxPairs = Math.floor(num(inputs.vdpsQualityCheckMaxPairs, 0))
-  if (!Number.isFinite(qualityCheckMaxPairs) || qualityCheckMaxPairs < 0) {
-    throw new Error('VDPS quality check max pairs must be >= 0.')
-  }
-  const qualityCheckTopK = Math.floor(num(inputs.vdpsQualityCheckTopK, 20))
-  if (!Number.isFinite(qualityCheckTopK) || qualityCheckTopK < 1) {
-    throw new Error('VDPS quality check top-K must be >= 1.')
-  }
-
-  return {
-    eta,
-    rungs,
-    min_initial_pairs: minInitialPairs,
-    max_survivor_seeds: maxSurvivorSeeds,
-    max_period_candidates: maxPeriodCandidates,
-    random_injection_ratio: randomInjectionRatio,
-    elite_mutation_ratio: eliteMutationRatio,
-    differential_ratio: differentialRatio,
-    deterministic,
-    seed,
-    quality_check_max_pairs: qualityCheckMaxPairs,
-    quality_check_top_k: qualityCheckTopK,
-  }
-}
-
 export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBuildInputs): Record<string, unknown> | null {
   const kind = normalizeStrategyKindRaw(inputs.context?.strategy_kind)
   if (kind !== 'DoubleMa' && kind !== 'Pit' && kind !== 'Set' && kind !== 'Mts' && kind !== 'Orc' && kind !== 'Marrt' && kind !== 'Vfct') return null
@@ -1191,25 +1119,8 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     }
   }
 
-  if (mode === 'CoarseToFine') {
-    if (includeAll) throw new Error('CoarseToFine mode requires includeAll=false.')
-    if (heatmapBins > 0) throw new Error('CoarseToFine mode currently requires heatmapBins=0.')
-    if (exportAllCsvPath) throw new Error('CoarseToFine mode cannot be used with exportAllCsvPath.')
-  }
-
   let vdps: Record<string, unknown> | null = null
-  if (mode === 'GpuVdps') {
-    if (includeAll) throw new Error('GpuVdps mode requires includeAll=false.')
-    if (heatmapBins > 0) throw new Error('GpuVdps mode currently requires heatmapBins=0.')
-    if (exportAllCsvPath) throw new Error('GpuVdps mode does not support exportAllCsvPath.')
-    if (backend === 'CpuOnly') {
-      throw new Error('GpuVdps mode requires backend=Auto/GpuKernel with CUDA available.')
-    }
-    if (hasExecutionOverlays) {
-      throw new Error('GpuVdps mode does not support cooldown/persistence overlays.')
-    }
-    vdps = parseVdpsConfig(inputs)
-  }
+  void hasExecutionOverlays
 
   const minTrades = parseOptionalNonNegativeInteger(inputs.dmConstraintMinTrades)
   const maxDrawdown = parseOptionalNonNegativeNumber(inputs.dmConstraintMaxDd, 'Max drawdown constraint')

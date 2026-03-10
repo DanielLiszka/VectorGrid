@@ -14,6 +14,17 @@ use ta_app_core::{
     MlConfidenceScope, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
 };
 use tauri::Manager;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlConfidenceModelState {
+    Missing,
+    Healthy,
+    Warning,
+    Blocked,
+    Legacy,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MlConfidenceModelStatus {
     pub exists: bool,
@@ -25,6 +36,10 @@ pub struct MlConfidenceModelStatus {
     pub newest_meta_ts_available: Option<String>,
     pub stale: bool,
     pub retrain_recommended: bool,
+    pub state: MlConfidenceModelState,
+    pub legacy_model: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_healthy: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retrain_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +61,69 @@ pub struct ApplyMlConfidenceResponse {
     pub model_path: String,
     pub confidences: Vec<Option<f64>>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MlConfidencePolicyEvaluationRequest {
+    pub strategy_kind: String,
+    #[serde(default)]
+    pub timeframe: Option<String>,
+    #[serde(default = "default_stage4_top_k")]
+    pub top_k: usize,
+    #[serde(default = "default_stage4_min_ml_confidence")]
+    pub min_ml_confidence: f64,
+    #[serde(default = "default_stage4_meta_weight")]
+    pub meta_weight: f64,
+    #[serde(default = "default_stage4_ml_weight")]
+    pub ml_weight: f64,
+    #[serde(default = "default_stage4_uncertainty_weight")]
+    pub uncertainty_weight: f64,
+    #[serde(default = "default_stage4_true")]
+    pub require_healthy_model: bool,
+    #[serde(default = "default_stage4_true")]
+    pub fallback_to_meta_if_empty: bool,
+    #[serde(default)]
+    pub label: Option<MlConfidenceLabelConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct MlConfidencePolicyArmMetrics {
+    pub evaluated_artifacts: usize,
+    pub selected_total: usize,
+    pub positives_total: usize,
+    pub precision_at_k: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MlConfidencePolicyEvaluationResult {
+    pub strategy_kind: String,
+    pub timeframe: String,
+    pub artifacts_considered: usize,
+    pub artifacts_evaluated: usize,
+    pub artifacts_skipped_no_history: usize,
+    pub artifacts_skipped_training_failure: usize,
+    pub artifacts_skipped_unhealthy_model: usize,
+    pub artifacts_skipped_no_labels: usize,
+    pub top_k: usize,
+    pub min_ml_confidence: f64,
+    pub meta_weight: f64,
+    pub ml_weight: f64,
+    pub uncertainty_weight: f64,
+    pub meta_only: MlConfidencePolicyArmMetrics,
+    pub ml_only: MlConfidencePolicyArmMetrics,
+    pub stage5_blended: MlConfidencePolicyArmMetrics,
+    pub best_policy: String,
+    pub stage5_vs_meta_precision_delta: f64,
+    pub stage5_vs_ml_precision_delta: f64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunMlConfidencePolicyEvaluationResponse {
+    pub ts: String,
+    pub eval_json_path: String,
+    pub eval_json_bytes: usize,
+    pub result: MlConfidencePolicyEvaluationResult,
 }
 
 fn default_stage4_top_k() -> usize {
@@ -124,6 +202,7 @@ pub struct MetaStage4Result {
     pub timeframe: String,
     pub source_meta_json_path: String,
     pub model_path: String,
+    pub model_state: MlConfidenceModelState,
     pub model_healthy: bool,
     pub model_trained_now: bool,
     pub groups_considered: usize,
@@ -139,6 +218,8 @@ pub struct MetaStage4Result {
     pub max_accept_uncertainty: f64,
     pub decision_counts: Stage4DecisionCounts,
     pub selected_groups: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -154,8 +235,14 @@ pub struct RunMetaStage4Response {
     pub ts: String,
     pub stage4_json_path: String,
     pub stage4_json_bytes: usize,
+    pub stage5_json_path: String,
+    pub stage5_json_bytes: usize,
     pub result: MetaStage4Result,
 }
+
+pub type MetaStage5Request = MetaStage4Request;
+pub type MetaStage5Result = MetaStage4Result;
+pub type RunMetaStage5Response = RunMetaStage4Response;
 
 fn normalize_ml_scope(mut scope: MlConfidenceScope) -> Result<MlConfidenceScope, String> {
     scope.strategy_kind = scope.strategy_kind.trim().to_string();
@@ -184,6 +271,38 @@ fn ml_confidence_model_path(
     let sk = sanitize_filename_component(&scope.strategy_kind);
     let tf = sanitize_filename_component(&scope.timeframe);
     Ok(dir.join(format!("ml_confidence_{sk}_{tf}.json")))
+}
+
+fn classify_ml_confidence_model_state(
+    exists: bool,
+    model: Option<&MlConfidenceModel>,
+    error: Option<&str>,
+    stale: bool,
+    retrain_recommended: bool,
+) -> (MlConfidenceModelState, bool, Option<bool>) {
+    if !exists {
+        return (MlConfidenceModelState::Missing, false, None);
+    }
+    if error.is_some() {
+        return (MlConfidenceModelState::Blocked, false, None);
+    }
+
+    let Some(model) = model else {
+        return (MlConfidenceModelState::Blocked, false, None);
+    };
+
+    let model_healthy = model.meta.as_ref().map(|m| m.healthy);
+    let legacy_model = model.meta.is_none();
+    let state = if legacy_model {
+        MlConfidenceModelState::Legacy
+    } else if matches!(model_healthy, Some(false)) {
+        MlConfidenceModelState::Blocked
+    } else if stale || retrain_recommended {
+        MlConfidenceModelState::Warning
+    } else {
+        MlConfidenceModelState::Healthy
+    };
+    (state, legacy_model, model_healthy)
 }
 
 fn load_meta_artifacts_with_paths_blocking(
@@ -326,7 +445,7 @@ fn ensure_path_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
 fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = run_artifacts::runs_dir(app)?;
     let safe_ts = sanitize_filename_component(ts);
-    let base_name = format!("vectorbt_stage4_{safe_ts}");
+    let base_name = format!("vectorbt_stage5_{safe_ts}");
 
     let mut path = dir.join(format!("{base_name}.json"));
     if !path.exists() {
@@ -340,6 +459,81 @@ fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<Path
         }
     }
     Ok(path)
+}
+
+fn suggest_ml_policy_eval_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = run_artifacts::runs_dir(app)?;
+    let safe_ts = sanitize_filename_component(ts);
+    let base_name = format!("vectorbt_ml_confidence_eval_{safe_ts}");
+
+    let mut path = dir.join(format!("{base_name}.json"));
+    if !path.exists() {
+        return Ok(path);
+    }
+    for i in 2..=999u32 {
+        let p = dir.join(format!("{base_name}_{i}.json"));
+        if !p.exists() {
+            path = p;
+            break;
+        }
+    }
+    Ok(path)
+}
+
+fn is_meta_selection_artifact(v: &Value) -> bool {
+    v.get("kind")
+        .and_then(|x| x.as_str())
+        .map(|kind| kind == "vectorbt_meta_selection")
+        .unwrap_or(false)
+}
+
+fn group_holdout_label(group: &Value, cfg: &MlConfidenceLabelConfig) -> Option<f64> {
+    let holdout = group.get("holdout")?;
+    let datasets = holdout
+        .get("datasets")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    if datasets < cfg.min_holdout_datasets {
+        return None;
+    }
+
+    let pass_rate = holdout.get("pass_rate").and_then(|v| v.as_f64())?;
+    let score_p10 = holdout.get("score_p10").and_then(|v| v.as_f64())?;
+    let max_dd_p90 = holdout
+        .get("max_dd_p90")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let mut ok = pass_rate >= cfg.min_holdout_pass_rate && score_p10 >= cfg.min_holdout_score_p10;
+    if let Some(dd_max) = cfg.max_holdout_max_dd_p90 {
+        ok = ok && max_dd_p90 <= dd_max;
+    }
+    Some(if ok { 1.0 } else { 0.0 })
+}
+
+#[derive(Debug, Clone)]
+struct PolicyEvalCandidate {
+    label: f64,
+    meta_score: f64,
+    ml_confidence: f64,
+    ml_logit: f64,
+    ml_uncertainty: f64,
+}
+
+fn update_policy_arm_metrics(metrics: &mut MlConfidencePolicyArmMetrics, labels: &[f64]) {
+    if labels.is_empty() {
+        return;
+    }
+    metrics.evaluated_artifacts = metrics.evaluated_artifacts.saturating_add(1);
+    metrics.selected_total = metrics.selected_total.saturating_add(labels.len());
+    metrics.positives_total = metrics
+        .positives_total
+        .saturating_add(labels.iter().filter(|&&label| label > 0.5).count());
+    metrics.precision_at_k = if metrics.selected_total == 0 {
+        0.0
+    } else {
+        metrics.positives_total as f64 / metrics.selected_total as f64
+    };
 }
 
 fn normalize_ml_threshold(raw: f64) -> f64 {
@@ -719,6 +913,14 @@ fn ml_confidence_model_status_blocking(
         }
     }
 
+    let (state, legacy_model, model_healthy) = classify_ml_confidence_model_state(
+        exists,
+        model.as_ref(),
+        error.as_deref(),
+        stale,
+        retrain_recommended,
+    );
+
     Ok(MlConfidenceModelStatus {
         exists,
         model_path,
@@ -728,6 +930,9 @@ fn ml_confidence_model_status_blocking(
         newest_meta_ts_available,
         stale,
         retrain_recommended,
+        state,
+        legacy_model,
+        model_healthy,
         retrain_reason,
         model,
         error,
@@ -969,6 +1174,316 @@ fn group_rank_score(group: &Value) -> f64 {
         .unwrap_or(f64::NEG_INFINITY)
 }
 
+fn normalize_ml_policy_evaluation_request(
+    mut req: MlConfidencePolicyEvaluationRequest,
+) -> Result<MlConfidencePolicyEvaluationRequest, String> {
+    req.strategy_kind = req.strategy_kind.trim().to_string();
+    if req.strategy_kind.is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+    let timeframe = req
+        .timeframe
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .unwrap_or_default();
+    if timeframe.is_empty() {
+        return Err("timeframe is required (e.g. '1m')".to_string());
+    }
+    req.timeframe = Some(timeframe);
+    req.top_k = req.top_k.max(1);
+    req.min_ml_confidence = normalize_ml_threshold(req.min_ml_confidence);
+    req.meta_weight = normalize_non_negative(req.meta_weight, default_stage4_meta_weight());
+    req.ml_weight = normalize_non_negative(req.ml_weight, default_stage4_ml_weight());
+    req.uncertainty_weight =
+        normalize_non_negative(req.uncertainty_weight, default_stage4_uncertainty_weight());
+    if req.meta_weight == 0.0 && req.ml_weight == 0.0 && req.uncertainty_weight == 0.0 {
+        req.meta_weight = default_stage4_meta_weight();
+        req.ml_weight = default_stage4_ml_weight();
+        req.uncertainty_weight = default_stage4_uncertainty_weight();
+    }
+    Ok(req)
+}
+
+fn select_top_labels_by_metric<F>(
+    candidates: &[PolicyEvalCandidate],
+    top_k: usize,
+    mut score_of: F,
+) -> Vec<f64>
+where
+    F: FnMut(&PolicyEvalCandidate) -> f64,
+{
+    let mut ranked: Vec<&PolicyEvalCandidate> = candidates.iter().collect();
+    ranked.sort_by(|a, b| {
+        let lhs = score_of(a);
+        let rhs = score_of(b);
+        rhs.total_cmp(&lhs)
+            .then_with(|| b.ml_confidence.total_cmp(&a.ml_confidence))
+            .then_with(|| b.meta_score.total_cmp(&a.meta_score))
+    });
+    ranked
+        .into_iter()
+        .take(top_k)
+        .map(|candidate| candidate.label)
+        .collect()
+}
+
+fn evaluate_policy_candidates(
+    req: &MlConfidencePolicyEvaluationRequest,
+    candidates: &[PolicyEvalCandidate],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let meta_labels = select_top_labels_by_metric(candidates, req.top_k, |candidate| {
+        candidate.meta_score
+    });
+    let ml_labels = select_top_labels_by_metric(candidates, req.top_k, |candidate| {
+        candidate.ml_confidence
+    });
+
+    let candidate_indices: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, candidate)| {
+            (candidate.ml_confidence >= req.min_ml_confidence).then_some(idx)
+        })
+        .collect();
+
+    let stage5_labels = if !candidate_indices.is_empty() {
+        let meta_vals: Vec<f64> = candidate_indices
+            .iter()
+            .map(|&idx| candidates[idx].meta_score)
+            .collect();
+        let ml_vals: Vec<f64> = candidate_indices
+            .iter()
+            .map(|&idx| candidates[idx].ml_logit)
+            .collect();
+        let unc_vals: Vec<f64> = candidate_indices
+            .iter()
+            .map(|&idx| candidates[idx].ml_uncertainty)
+            .collect();
+
+        let (meta_mean, meta_std) = mean_std(&meta_vals);
+        let (ml_mean, ml_std) = mean_std(&ml_vals);
+        let (unc_mean, unc_std) = mean_std(&unc_vals);
+
+        let mut ranked: Vec<(usize, f64)> = candidate_indices
+            .into_iter()
+            .map(|idx| {
+                let candidate = &candidates[idx];
+                let score = req.meta_weight * zscore(candidate.meta_score, meta_mean, meta_std)
+                    + req.ml_weight * zscore(candidate.ml_logit, ml_mean, ml_std)
+                    - req.uncertainty_weight
+                        * zscore(candidate.ml_uncertainty, unc_mean, unc_std);
+                (idx, score)
+            })
+            .collect();
+        ranked.sort_by(|(lhs_idx, lhs_score), (rhs_idx, rhs_score)| {
+            rhs_score
+                .total_cmp(lhs_score)
+                .then_with(|| {
+                    candidates[*rhs_idx]
+                        .ml_confidence
+                        .total_cmp(&candidates[*lhs_idx].ml_confidence)
+                })
+                .then_with(|| {
+                    candidates[*rhs_idx]
+                        .meta_score
+                        .total_cmp(&candidates[*lhs_idx].meta_score)
+                })
+        });
+        ranked
+            .into_iter()
+            .take(req.top_k)
+            .map(|(idx, _)| candidates[idx].label)
+            .collect()
+    } else if req.fallback_to_meta_if_empty {
+        meta_labels.clone()
+    } else {
+        Vec::new()
+    };
+
+    (meta_labels, ml_labels, stage5_labels)
+}
+
+fn run_ml_confidence_policy_evaluation_blocking(
+    req: MlConfidencePolicyEvaluationRequest,
+    app: tauri::AppHandle,
+) -> Result<RunMlConfidencePolicyEvaluationResponse, String> {
+    let req = normalize_ml_policy_evaluation_request(req)?;
+    let scope = normalize_ml_scope(MlConfidenceScope {
+        strategy_kind: req.strategy_kind.clone(),
+        timeframe: req.timeframe.clone().unwrap_or_default(),
+    })?;
+    let label_cfg = req.label.clone().unwrap_or_default();
+
+    let metas = load_meta_artifacts_blocking(&app)?;
+    let mut scoped: Vec<Value> = metas
+        .into_iter()
+        .filter(|meta| {
+            is_meta_selection_artifact(meta)
+                && extract_meta_scope(meta)
+                    .map(|(strategy_kind, timeframe)| {
+                        strategy_kind == scope.strategy_kind && timeframe == scope.timeframe
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+    scoped.sort_by(|lhs, rhs| {
+        let lhs_ts = lhs.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        let rhs_ts = rhs.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        lhs_ts.cmp(rhs_ts)
+    });
+
+    let artifacts_considered = scoped.len();
+    let mut artifacts_evaluated = 0usize;
+    let mut artifacts_skipped_no_history = 0usize;
+    let mut artifacts_skipped_training_failure = 0usize;
+    let mut artifacts_skipped_unhealthy_model = 0usize;
+    let mut artifacts_skipped_no_labels = 0usize;
+    let mut warnings: Vec<String> = Vec::new();
+
+    let mut meta_only = MlConfidencePolicyArmMetrics::default();
+    let mut ml_only = MlConfidencePolicyArmMetrics::default();
+    let mut stage5_blended = MlConfidencePolicyArmMetrics::default();
+
+    for idx in 0..scoped.len() {
+        if idx == 0 {
+            artifacts_skipped_no_history = artifacts_skipped_no_history.saturating_add(1);
+            continue;
+        }
+
+        let training_pool = &scoped[..idx];
+        let mut train_cfg = MlConfidenceTrainConfig::default();
+        train_cfg.label = label_cfg.clone();
+
+        let (model, metrics) = match ta_app_core::train_ml_confidence_model_from_meta_artifacts(
+            scope.clone(),
+            training_pool,
+            train_cfg,
+        ) {
+            Ok(v) => v,
+            Err(err) => {
+                artifacts_skipped_training_failure =
+                    artifacts_skipped_training_failure.saturating_add(1);
+                warnings.push(format!(
+                    "Skipped artifact {} due to training failure: {err}",
+                    scoped[idx]
+                        .get("ts")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                ));
+                continue;
+            }
+        };
+
+        if req.require_healthy_model && !metrics.healthy {
+            artifacts_skipped_unhealthy_model =
+                artifacts_skipped_unhealthy_model.saturating_add(1);
+            continue;
+        }
+
+        let groups = scoped[idx]
+            .pointer("/res/groups")
+            .and_then(|v| v.as_array())
+            .map(|groups| groups.as_slice())
+            .unwrap_or(&[]);
+        let mut candidates: Vec<PolicyEvalCandidate> = Vec::new();
+        for group in groups {
+            let Some(label) = group_holdout_label(group, &label_cfg) else {
+                continue;
+            };
+            let Some(probability) =
+                ta_app_core::predict_ml_confidence_for_group(&model, group).filter(|p| p.is_finite())
+            else {
+                continue;
+            };
+            let raw_meta_score = group_rank_score(group);
+            let meta_score = if raw_meta_score.is_finite() {
+                raw_meta_score
+            } else {
+                0.0
+            };
+            candidates.push(PolicyEvalCandidate {
+                label,
+                meta_score,
+                ml_confidence: probability,
+                ml_logit: stable_logit(probability),
+                ml_uncertainty: ml_uncertainty_from_prob(probability),
+            });
+        }
+
+        if candidates.is_empty() {
+            artifacts_skipped_no_labels = artifacts_skipped_no_labels.saturating_add(1);
+            continue;
+        }
+
+        let (meta_labels, ml_labels, stage5_labels) = evaluate_policy_candidates(&req, &candidates);
+        update_policy_arm_metrics(&mut meta_only, &meta_labels);
+        update_policy_arm_metrics(&mut ml_only, &ml_labels);
+        update_policy_arm_metrics(&mut stage5_blended, &stage5_labels);
+        artifacts_evaluated = artifacts_evaluated.saturating_add(1);
+    }
+
+    if artifacts_considered == 0 {
+        warnings.push("No meta-selection artifacts found for this scope.".to_string());
+    } else if artifacts_evaluated == 0 {
+        warnings.push(
+            "No scoped artifacts produced a comparable policy-evaluation result.".to_string(),
+        );
+    }
+
+    let meta_precision = meta_only.precision_at_k;
+    let ml_precision = ml_only.precision_at_k;
+    let stage5_precision = stage5_blended.precision_at_k;
+    let best_policy = if stage5_precision >= meta_precision && stage5_precision >= ml_precision {
+        "stage5_blended"
+    } else if meta_precision >= ml_precision {
+        "meta_only"
+    } else {
+        "ml_only"
+    }
+    .to_string();
+
+    let result = MlConfidencePolicyEvaluationResult {
+        strategy_kind: scope.strategy_kind.clone(),
+        timeframe: scope.timeframe.clone(),
+        artifacts_considered,
+        artifacts_evaluated,
+        artifacts_skipped_no_history,
+        artifacts_skipped_training_failure,
+        artifacts_skipped_unhealthy_model,
+        artifacts_skipped_no_labels,
+        top_k: req.top_k,
+        min_ml_confidence: req.min_ml_confidence,
+        meta_weight: req.meta_weight,
+        ml_weight: req.ml_weight,
+        uncertainty_weight: req.uncertainty_weight,
+        meta_only,
+        ml_only,
+        stage5_blended,
+        best_policy,
+        stage5_vs_meta_precision_delta: stage5_precision - meta_precision,
+        stage5_vs_ml_precision_delta: stage5_precision - ml_precision,
+        warnings,
+    };
+
+    let ts = chrono::Utc::now().to_rfc3339();
+    let out_path = suggest_ml_policy_eval_artifact_path(&ts, &app)?;
+    let payload = serde_json::json!({
+        "kind": "vectorbt_ml_confidence_policy_evaluation",
+        "ts": ts,
+        "req": req,
+        "res": result,
+    });
+    let out_bytes = serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?;
+    std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
+
+    Ok(RunMlConfidencePolicyEvaluationResponse {
+        ts,
+        eval_json_path: out_path.to_string_lossy().to_string(),
+        eval_json_bytes: out_bytes.len(),
+        result,
+    })
+}
+
 fn run_meta_stage4_experimental_blocking(
     req: MetaStage4Request,
     app: tauri::AppHandle,
@@ -1030,6 +1545,7 @@ fn run_meta_stage4_experimental_blocking(
     };
     let model_health = model.meta.as_ref().map(|m| m.healthy);
     let model_healthy = model_health.unwrap_or(false);
+    let model_state = status.state.clone();
     if should_block_stage4_for_unhealthy_model(req.require_healthy_model, model_health) {
         return Err(
             "ML model is unhealthy for this scope. Retrain with more labeled rows or disable strict healthy-model requirement."
@@ -1040,7 +1556,7 @@ fn run_meta_stage4_experimental_blocking(
         Some(true) => {}
         Some(false) => {
             warnings.push(
-                "Using an unhealthy ML model (AUC/Brier gates failed). Treat Stage 4 ranking as experimental."
+                "Using an unhealthy ML model (AUC/Brier gates failed). Treat Stage 5 ranking as experimental."
                     .to_string(),
             );
         }
@@ -1159,11 +1675,13 @@ fn run_meta_stage4_experimental_blocking(
                     serde_json::json!(final_rank),
                 );
                 obj.insert("stage4_fallback".to_string(), Value::Bool(false));
+                obj.insert("stage5_fallback".to_string(), Value::Bool(false));
             }
         }
     }
 
     let mut selected_groups: Vec<Value> = Vec::new();
+    let mut fallback_reason: Option<String> = None;
     if !candidate_indices.is_empty() {
         let mut ranked = candidate_indices;
         ranked.sort_by(|&a, &b| {
@@ -1190,6 +1708,7 @@ fn run_meta_stage4_experimental_blocking(
                 let mut g = entries[i].group.clone();
                 if let Some(obj) = g.as_object_mut() {
                     obj.insert("stage4_fallback".to_string(), Value::Bool(true));
+                    obj.insert("stage5_fallback".to_string(), Value::Bool(true));
                     if !obj
                         .get("final_rank_score")
                         .map(|v| v.is_number())
@@ -1204,10 +1723,12 @@ fn run_meta_stage4_experimental_blocking(
                 g
             })
             .collect();
-        warnings.push(format!(
+        let reason = format!(
             "No groups met min_ml_confidence={:.3}. Fell back to meta-score ranking.",
             req.min_ml_confidence
-        ));
+        );
+        fallback_reason = Some(reason.clone());
+        warnings.push(reason);
     }
 
     let mut decision_counts = Stage4DecisionCounts {
@@ -1219,6 +1740,10 @@ fn run_meta_stage4_experimental_blocking(
         if let Some(obj) = g.as_object_mut() {
             obj.insert(
                 "stage4_rank".to_string(),
+                Value::Number(serde_json::Number::from((i + 1) as u64)),
+            );
+            obj.insert(
+                "stage5_rank".to_string(),
                 Value::Number(serde_json::Number::from((i + 1) as u64)),
             );
             if !obj
@@ -1262,6 +1787,7 @@ fn run_meta_stage4_experimental_blocking(
         timeframe: scope.timeframe.clone(),
         source_meta_json_path: source_meta_path.to_string_lossy().to_string(),
         model_path: model_path.to_string_lossy().to_string(),
+        model_state,
         model_healthy,
         model_trained_now,
         groups_considered: groups.len(),
@@ -1277,12 +1803,13 @@ fn run_meta_stage4_experimental_blocking(
         max_accept_uncertainty: req.max_accept_uncertainty,
         decision_counts,
         selected_groups,
+        fallback_reason,
         warnings,
     };
 
     let out_obj = serde_json::json!({
         "version": 1,
-        "kind": "vectorbt_meta_stage4_experimental",
+        "kind": "vectorbt_meta_stage5_ml_confidence",
         "ts": ts,
         "tags": [],
         "req": req,
@@ -1297,6 +1824,8 @@ fn run_meta_stage4_experimental_blocking(
         ts,
         stage4_json_path: out_path.to_string_lossy().to_string(),
         stage4_json_bytes: out_bytes.len(),
+        stage5_json_path: out_path.to_string_lossy().to_string(),
+        stage5_json_bytes: out_bytes.len(),
         result,
     })
 }
@@ -1309,6 +1838,30 @@ pub async fn run_meta_stage4_experimental(
 ) -> Result<RunMetaStage4Response, String> {
     let _run_guard = state.try_begin_run()?;
     tauri::async_runtime::spawn_blocking(move || run_meta_stage4_experimental_blocking(req, app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn run_meta_stage5_ml_confidence(
+    req: MetaStage5Request,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<RunMetaStage5Response, String> {
+    let _run_guard = state.try_begin_run()?;
+    tauri::async_runtime::spawn_blocking(move || run_meta_stage4_experimental_blocking(req, app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn evaluate_ml_confidence_policy(
+    req: MlConfidencePolicyEvaluationRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<RunMlConfidencePolicyEvaluationResponse, String> {
+    let _run_guard = state.try_begin_run()?;
+    tauri::async_runtime::spawn_blocking(move || run_ml_confidence_policy_evaluation_blocking(req, app))
         .await
         .map_err(|e| e.to_string())?
 }

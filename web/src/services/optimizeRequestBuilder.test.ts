@@ -98,6 +98,47 @@ describe('optimizeRequestBuilder', () => {
     expect(req).toBeNull()
   })
 
+  it('normalizes removed approximate-mode aliases back to exact Grid mode', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-123',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'GpuProgressive',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+      vdpsEta: '4',
+      vdpsRungs: '0.125,0.25,0.5,1.0',
+      vdpsMinInitialPairs: '1024',
+      vdpsMaxSurvivorSeeds: '128',
+      vdpsMaxPeriodCandidates: '256',
+      vdpsRandomInjectionRatio: '0.1',
+      vdpsEliteMutationRatio: '0.5',
+      vdpsDifferentialRatio: '0.4',
+      vdpsDeterministic: true,
+      vdpsSeed: '7',
+      vdpsQualityCheckMaxPairs: '0',
+      vdpsQualityCheckTopK: '20',
+    })
+
+    expect(req).toBeTruthy()
+    expect(req?.mode).toBe('Grid')
+  })
+
   it('preserves Marrt strategy kind on the double-ma request path', () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {

@@ -31,6 +31,10 @@ export interface MetaStage4RunOptions {
   request?: unknown
 }
 
+export interface MetaMlPolicyEvaluationRunOptions {
+  request?: unknown
+}
+
 export interface MetaMlActionOptions {
   scope?: unknown
 }
@@ -119,7 +123,10 @@ const ANALYSIS_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   metaStage4UncertaintyWeight: { key: 'metaStage4UncertaintyWeight' },
   metaStage4AcceptConf: { key: 'metaStage4AcceptConf' },
   metaStage4ReviewConf: { key: 'metaStage4ReviewConf' },
-  metaStage4MaxAcceptUncertainty: { key: 'metaStage4MaxAcceptUncertainty' }
+  metaStage4MaxAcceptUncertainty: { key: 'metaStage4MaxAcceptUncertainty' },
+  policyEvalSavedSearch: { key: 'policyEvalSavedSearch' },
+  policyEvalSavedSelect: { key: 'policyEvalSavedSelected' },
+  policyEvalSavedTags: { key: 'policyEvalSavedTagsDraft' }
 }
 
 const ANALYSIS_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -150,8 +157,10 @@ const VALIDATION_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> =
 let LAST_META_RUN: Record<string, unknown> | null = null
 let LAST_META_STAGE4_RUN: Record<string, unknown> | null = null
 let LAST_META_ML_STATUS: Record<string, unknown> | null = null
+let LAST_META_ML_POLICY_EVAL: Record<string, unknown> | null = null
 let SAVED_META: Record<string, unknown>[] = []
 let SAVED_STAGE4: Record<string, unknown>[] = []
+let SAVED_POLICY_EVAL: Record<string, unknown>[] = []
 let BATCH_RUNNING = false
 let BATCH_STOP_REQUESTED = false
 let BATCH_DATASETS_CACHE: BatchDatasetEntry[] = []
@@ -217,6 +226,11 @@ function pretty(value: unknown): string {
   } catch {
     return String(value ?? '')
   }
+}
+
+function responseStage5Path(value: unknown): string {
+  const record = asRecord(value)
+  return normalizePath(record?.stage5_json_path ?? record?.stage4_json_path)
 }
 
 function parseTagsInput(value: string): string[] {
@@ -471,6 +485,24 @@ function tryBuildAutoMetaStage4Request(): Record<string, unknown> | null {
   })
 }
 
+function tryBuildAutoMetaMlPolicyEvaluationRequest(): Record<string, unknown> | null {
+  const scope = currentMetaScope()
+  const timeframe = normalizeText(scope.timeframe)
+  if (!timeframe) return null
+
+  return {
+    strategy_kind: normalizeText(scope.strategy_kind),
+    timeframe,
+    top_k: Math.max(1, Math.floor(Number(readStoreTextInputValue('metaStage4TopK') || '10'))),
+    min_ml_confidence: Number(readStoreTextInputValue('metaStage4MinConf') || '0.55'),
+    meta_weight: Number(readStoreTextInputValue('metaStage4MetaWeight') || '0.60'),
+    ml_weight: Number(readStoreTextInputValue('metaStage4MlWeight') || '0.35'),
+    uncertainty_weight: Number(readStoreTextInputValue('metaStage4UncertaintyWeight') || '0.05'),
+    require_healthy_model: readStoreCheckboxValue('metaStage4RequireHealthy'),
+    fallback_to_meta_if_empty: readStoreCheckboxValue('metaStage4FallbackToMeta')
+  }
+}
+
 function tryBuildAutoMetaMlScope(): Record<string, unknown> | null {
   return buildMetaMlScope({
     strategyKind: readStoreTextInputValue('metaStrategyKind'),
@@ -590,9 +622,12 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
 
   if (!resp || previousMetaPath !== metaPath) {
     LAST_META_STAGE4_RUN = null
+    LAST_META_ML_POLICY_EVAL = null
     patchAnalysisStore({
       metaStage4Status: '—',
       metaStage4OutputPreview: '-',
+      metaPolicyEvalStatus: '—',
+      metaPolicyEvalOutputPreview: '-',
       canRevealMetaStage4: false
     })
   }
@@ -606,7 +641,7 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const result = asRecord(resp?.result)
   const groups = asRecordArray(result?.selected_groups)
   const decisionCounts = asRecord(result?.decision_counts) ?? {}
-  const path = normalizePath(resp?.stage4_json_path)
+  const path = responseStage5Path(resp)
   const sourceMetaPath = normalizePath(result?.source_meta_json_path)
 
   if (!result || groups.length === 0) {
@@ -620,14 +655,18 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
 
   const lines: string[] = []
   lines.push(`scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} min_ml=${fmtFixed(result.min_ml_confidence, 3)}`)
-  lines.push(`source_meta=${sourceMetaPath ? fileBasename(sourceMetaPath) : '—'} model=${normalizeText(result.model_path) ? fileBasename(normalizeText(result.model_path)) : '—'} healthy=${normalizeBoolean(result.model_healthy) ? 'yes' : 'no'} trained_now=${normalizeBoolean(result.model_trained_now) ? 'yes' : 'no'}`)
+  lines.push(`source_meta=${sourceMetaPath ? fileBasename(sourceMetaPath) : '—'} model=${normalizeText(result.model_path) ? fileBasename(normalizeText(result.model_path)) : '—'} state=${normalizeText(result.model_state) || 'unknown'} healthy=${normalizeBoolean(result.model_healthy) ? 'yes' : 'no'} trained_now=${normalizeBoolean(result.model_trained_now) ? 'yes' : 'no'}`)
   lines.push(`weights(meta/ml/unc)=${fmtFixed(result.meta_weight, 3)}/${fmtFixed(result.ml_weight, 3)}/${fmtFixed(result.uncertainty_weight, 3)} buckets(accept/review/reject)=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}`)
   lines.push(`policy accept>=${fmtFixed(result.accept_confidence, 3)} review>=${fmtFixed(result.review_confidence, 3)} max_accept_unc=${fmtFixed(result.max_accept_uncertainty, 3)}`)
+  const fallbackReason = normalizeText(result.fallback_reason)
+  if (fallbackReason) {
+    lines.push(`fallback=${fallbackReason}`)
+  }
 
   for (let index = 0; index < groups.length; index += 1) {
     const row = groups[index] ?? {}
     const params = asRecord(row.params) ?? {}
-    const rank = Math.max(1, Math.floor(Number(row.stage4_rank || index + 1)))
+    const rank = Math.max(1, Math.floor(Number(row.stage5_rank ?? row.stage4_rank ?? index + 1)))
     const bucket = normalizeText(row.decision_bucket).toLowerCase() || 'reject'
     const confText = Number.isFinite(Number(row.ml_confidence)) ? `${fmtPct(row.ml_confidence, 1)}` : '-'
     const uncText = Number.isFinite(Number(row.ml_uncertainty)) ? fmtFixed(row.ml_uncertainty, 3) : '-'
@@ -649,8 +688,56 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   }
 
   patchAnalysisStore({
-    metaStage4Status: `Stage 4 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))} · file=${path ? fileBasename(path) : '—'}`,
+    metaStage4Status: `Stage 5 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))} · file=${path ? fileBasename(path) : '—'}`,
     metaStage4OutputPreview: lines.join('\n')
+  })
+
+  updateMetaStage4Buttons()
+}
+
+function renderMlPolicyEvaluation(resp: Record<string, unknown> | null): void {
+  LAST_META_ML_POLICY_EVAL = resp
+  const result = asRecord(resp?.result)
+  const path = normalizePath(resp?.eval_json_path)
+
+  if (!result) {
+    patchAnalysisStore({
+      metaPolicyEvalStatus: '—',
+      metaPolicyEvalOutputPreview: '-'
+    })
+    updateMetaStage4Buttons()
+    return
+  }
+
+  const metaOnly = asRecord(result.meta_only) ?? {}
+  const mlOnly = asRecord(result.ml_only) ?? {}
+  const stage5Blended = asRecord(result.stage5_blended) ?? {}
+  const warnings = Array.isArray(result.warnings) ? result.warnings : []
+  const bestPolicy = normalizeText(result.best_policy) || '—'
+  const deltaVsMeta = Number(result.stage5_vs_meta_precision_delta)
+  const deltaVsMl = Number(result.stage5_vs_ml_precision_delta)
+
+  const lines = [
+    `scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} evaluated=${Math.max(0, Math.floor(Number(result.artifacts_evaluated || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} top_k=${Math.max(0, Math.floor(Number(result.top_k || 0)))}`,
+    `skipped(no_history/train_fail/unhealthy/no_labels)=${Math.max(0, Math.floor(Number(result.artifacts_skipped_no_history || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_skipped_training_failure || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_skipped_unhealthy_model || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_skipped_no_labels || 0)))}`,
+    `meta_only: precision@k=${fmtPct(metaOnly.precision_at_k, 1)} positives=${Math.max(0, Math.floor(Number(metaOnly.positives_total || 0)))}/${Math.max(0, Math.floor(Number(metaOnly.selected_total || 0)))}`,
+    `ml_only: precision@k=${fmtPct(mlOnly.precision_at_k, 1)} positives=${Math.max(0, Math.floor(Number(mlOnly.positives_total || 0)))}/${Math.max(0, Math.floor(Number(mlOnly.selected_total || 0)))}`,
+    `stage5_blended: precision@k=${fmtPct(stage5Blended.precision_at_k, 1)} positives=${Math.max(0, Math.floor(Number(stage5Blended.positives_total || 0)))}/${Math.max(0, Math.floor(Number(stage5Blended.selected_total || 0)))}`,
+    `best_policy=${bestPolicy} delta_vs_meta=${Number.isFinite(deltaVsMeta) ? fmtPct(deltaVsMeta, 1) : '-'} delta_vs_ml=${Number.isFinite(deltaVsMl) ? fmtPct(deltaVsMl, 1) : '-'}`
+  ]
+
+  if (warnings.length > 0) {
+    lines.push(
+      `warnings=${warnings.length}: ${warnings
+        .map((item) => normalizeText(item))
+        .filter((item) => item.length > 0)
+        .join(' | ')}`
+    )
+  }
+
+  patchAnalysisStore({
+    metaPolicyEvalStatus: `Policy evaluation complete: evaluated=${Math.max(0, Math.floor(Number(result.artifacts_evaluated || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · best=${bestPolicy} · stage5_precision=${fmtPct(stage5Blended.precision_at_k, 1)} · file=${path ? fileBasename(path) : '—'}`,
+    metaPolicyEvalOutputPreview: lines.join('\n')
   })
 
   updateMetaStage4Buttons()
@@ -695,13 +782,16 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   const stale = normalizeBoolean(status.stale)
   const retrain = normalizeBoolean(status.retrain_recommended)
   const retrainReason = normalizeText(status.retrain_reason)
+  const modelState = normalizeText(status.state) || 'missing'
+  const legacyModel = normalizeBoolean(status.legacy_model)
+  const modelHealthyFlag = status.model_healthy
 
   if (!exists) {
-    return `No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}. · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}`
+    return `No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}. · state=${modelState} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}`
   }
 
   if (errorText) {
-    return `ML model exists but failed to load: ${errorText} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}`
+    return `ML model exists but failed to load: ${errorText} · state=${modelState} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}`
   }
 
   const model = asRecord(status.model)
@@ -709,7 +799,11 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   const modelMeta = asRecord(model?.meta)
   const modelPath = normalizePath(status.model_path)
 
-  const healthy = modelMeta?.healthy === false ? 'UNHEALTHY' : modelMeta?.healthy === true ? 'healthy' : 'unknown'
+  const healthy = modelHealthyFlag === false || modelMeta?.healthy === false
+    ? 'UNHEALTHY'
+    : modelHealthyFlag === true || modelMeta?.healthy === true
+      ? 'healthy'
+      : 'unknown'
   const target = normalizeText(modelMeta?.target)
   const trainedRows = Number(modelMeta?.trained_rows)
   const auc = Number(modelMeta?.cv_auc)
@@ -717,9 +811,10 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   const brier = Number.isFinite(brierRaw) ? brierRaw : Number(modelMeta?.cv_brier)
   const baselineBrier = Number(modelMeta?.baseline_brier)
 
-  const parts = [`Model: ${fileBasename(modelPath) || modelPath || 'model.json'}`, `bytes=${Math.max(0, Math.floor(Number(status.bytes || 0)))}`, healthy]
+  const parts = [`Model: ${fileBasename(modelPath) || modelPath || 'model.json'}`, `bytes=${Math.max(0, Math.floor(Number(status.bytes || 0)))}`, `state=${modelState}`, healthy]
 
   if (target) parts.push(`target=${target}`)
+  if (legacyModel) parts.push('legacy')
   if (Number.isFinite(trainedRows)) parts.push(`trained_rows=${Math.max(0, Math.floor(trainedRows))}`)
   if (Number.isFinite(auc)) parts.push(`cv_auc=${auc.toFixed(3)}`)
   if (Number.isFinite(brier)) parts.push(`cv_brier=${brier.toFixed(4)}`)
@@ -761,10 +856,11 @@ function updateMetaStage4Buttons(): void {
   const hasTf = !!normalizeText(currentMetaScope().timeframe)
   const result = asRecord(LAST_META_RUN?.result)
   const groups = asRecordArray(result?.groups)
-  const stage4Path = normalizePath(LAST_META_STAGE4_RUN?.stage4_json_path)
+  const stage4Path = responseStage5Path(LAST_META_STAGE4_RUN)
   patchAnalysisStore({
     canRunMetaStage4: hasTf && groups.length > 0,
-    canRevealMetaStage4: !!stage4Path
+    canRevealMetaStage4: !!stage4Path,
+    canRunMetaPolicyEval: hasTf
   })
 }
 
@@ -790,6 +886,25 @@ function filterStage4Saved(items: Record<string, unknown>[], query: string): Rec
   return items.filter((item) => {
     const tags = Array.isArray(item.tags) ? item.tags.map((tag) => normalizeText(tag).toLowerCase()).join(' ') : ''
     const haystack = [normalizeText(item.ts).toLowerCase(), normalizeText(item.strategy_kind).toLowerCase(), normalizeText(item.timeframe).toLowerCase(), normalizeText(item.source_meta_json_path).toLowerCase(), tags].join(' ')
+    return terms.every((term) => haystack.includes(term))
+  })
+}
+
+function filterPolicyEvalSaved(items: Record<string, unknown>[], query: string): Record<string, unknown>[] {
+  const q = normalizeText(query).toLowerCase()
+  if (!q) return items
+  const terms = q.split(/\s+/).filter((token) => token.length > 0)
+  if (terms.length === 0) return items
+
+  return items.filter((item) => {
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => normalizeText(tag).toLowerCase()).join(' ') : ''
+    const haystack = [
+      normalizeText(item.ts).toLowerCase(),
+      normalizeText(item.strategy_kind).toLowerCase(),
+      normalizeText(item.timeframe).toLowerCase(),
+      normalizeText(item.best_policy).toLowerCase(),
+      tags
+    ].join(' ')
     return terms.every((term) => haystack.includes(term))
   })
 }
@@ -941,12 +1056,12 @@ function updateStage4SavedState(preferredPath = ''): void {
       ]
         .filter((part) => part.length > 0)
         .join(' • ')
-    : `saved Stage 4: ${filtered.length}/${SAVED_STAGE4.length}`
+    : `saved Stage 5: ${filtered.length}/${SAVED_STAGE4.length}`
 
   const options = [
     {
       value: '',
-      label: filtered.length > 0 ? 'Select a saved Stage 4 run...' : 'No Stage 4 runs yet',
+      label: filtered.length > 0 ? 'Select a saved Stage 5 run...' : 'No Stage 5 runs yet',
       disabled: false
     },
     ...filtered.map((entry) => {
@@ -982,6 +1097,82 @@ function updateStage4SavedState(preferredPath = ''): void {
   })
 }
 
+function updatePolicyEvalSavedState(preferredPath = ''): void {
+  const store = getAnalysisStore()
+  if (!store) return
+
+  const filtered = filterPolicyEvalSaved(SAVED_POLICY_EVAL, store.policyEvalSavedSearch)
+  let selectedPath = normalizePath(preferredPath || store.policyEvalSavedSelected)
+  if (selectedPath && !filtered.some((entry) => normalizePath(entry.path) === selectedPath)) {
+    selectedPath = ''
+  }
+
+  const selectedEntry = SAVED_POLICY_EVAL.find((entry) => normalizePath(entry.path) === selectedPath) ?? null
+  const selectedTags =
+    selectedEntry && Array.isArray(selectedEntry.tags)
+      ? selectedEntry.tags
+          .map((tag) => normalizeText(tag))
+          .filter((tag) => tag.length > 0)
+          .join(', ')
+      : ''
+
+  const policyEvalSavedMeta = selectedEntry
+    ? [
+        `ts=${normalizeText(selectedEntry.ts)}`,
+        `strategy=${normalizeText(selectedEntry.strategy_kind) || '—'}`,
+        normalizeText(selectedEntry.timeframe) ? `tf=${normalizeText(selectedEntry.timeframe)}` : '',
+        `evaluated=${Math.max(0, Math.floor(Number(selectedEntry.artifacts_evaluated || 0)))}/${Math.max(0, Math.floor(Number(selectedEntry.artifacts_considered || 0)))}`,
+        normalizeText(selectedEntry.best_policy) ? `best=${normalizeText(selectedEntry.best_policy)}` : '',
+        `stage5_p@k=${fmtPct(selectedEntry.stage5_precision_at_k, 1)}`,
+        Number.isFinite(Number(selectedEntry.stage5_vs_meta_precision_delta)) ? `vs_meta=${fmtPct(selectedEntry.stage5_vs_meta_precision_delta, 1)}` : '',
+        Number.isFinite(Number(selectedEntry.stage5_vs_ml_precision_delta)) ? `vs_ml=${fmtPct(selectedEntry.stage5_vs_ml_precision_delta, 1)}` : '',
+        Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
+          ? `tags=${selectedEntry.tags
+              .map((tag) => normalizeText(tag))
+              .filter((tag) => tag.length > 0)
+              .join(',')}`
+          : '',
+        selectedEntry.bytes != null ? `bytes=${Math.max(0, Math.floor(Number(selectedEntry.bytes || 0)))}` : ''
+      ]
+        .filter((part) => part.length > 0)
+        .join(' • ')
+    : `saved policy eval: ${filtered.length}/${SAVED_POLICY_EVAL.length}`
+
+  const options = [
+    {
+      value: '',
+      label: filtered.length > 0 ? 'Select a saved policy evaluation...' : 'No policy evaluations yet',
+      disabled: false
+    },
+    ...filtered.map((entry) => {
+      const ts = normalizeText(entry.ts) || 'unknown'
+      const kind = normalizeText(entry.strategy_kind)
+      const tf = normalizeText(entry.timeframe)
+      const best = normalizeText(entry.best_policy) || '—'
+      const evaluated = Math.max(0, Math.floor(Number(entry.artifacts_evaluated || 0)))
+      const considered = Math.max(0, Math.floor(Number(entry.artifacts_considered || 0)))
+      const tfHint = tf ? ` | ${tf}` : ''
+      return {
+        value: normalizePath(entry.path),
+        label: `${ts} | ${kind}${tfHint} | best=${best} | eval=${evaluated}/${considered} | p@k=${fmtPct(entry.stage5_precision_at_k, 1)}`,
+        disabled: false
+      }
+    })
+  ]
+
+  patchAnalysisStore({
+    policyEvalSavedOptions: markRaw(options),
+    policyEvalSavedSelected: selectedPath,
+    policyEvalSavedTagsDraft: selectedTags,
+    policyEvalSavedMeta,
+    canRefreshPolicyEvalSaved: true,
+    canLoadPolicyEvalSaved: !!selectedEntry,
+    canRevealPolicyEvalSaved: !!selectedEntry,
+    canDeletePolicyEvalSaved: !!selectedEntry,
+    canSavePolicyEvalSavedTags: !!selectedEntry
+  })
+}
+
 async function refreshSavedInternal(preferredPath = ''): Promise<void> {
   const rows = (await invokeCommand('list_meta_artifacts')) as unknown
   SAVED_META = asRecordArray(rows)
@@ -989,9 +1180,15 @@ async function refreshSavedInternal(preferredPath = ''): Promise<void> {
 }
 
 async function refreshStage4SavedInternal(preferredPath = ''): Promise<void> {
-  const rows = (await invokeCommand('list_stage4_artifacts')) as unknown
+  const rows = (await invokeCommand('list_stage5_artifacts')) as unknown
   SAVED_STAGE4 = asRecordArray(rows)
   updateStage4SavedState(preferredPath)
+}
+
+async function refreshPolicyEvalSavedInternal(preferredPath = ''): Promise<void> {
+  const rows = (await invokeCommand('list_ml_policy_eval_artifacts')) as unknown
+  SAVED_POLICY_EVAL = asRecordArray(rows)
+  updatePolicyEvalSavedState(preferredPath)
 }
 
 function buildMetaSelectionResponseFromArtifact(artifact: Record<string, unknown>, path: string): Record<string, unknown> {
@@ -1010,6 +1207,17 @@ function buildStage4ResponseFromArtifact(artifact: Record<string, unknown>, path
     ts: normalizeText(artifact.ts) || new Date().toISOString(),
     stage4_json_path: normalizePath(path),
     stage4_json_bytes: 0,
+    stage5_json_path: normalizePath(path),
+    stage5_json_bytes: 0,
+    result: asRecord(artifact.res)
+  }
+}
+
+function buildPolicyEvalResponseFromArtifact(artifact: Record<string, unknown>, path: string): Record<string, unknown> {
+  return {
+    ts: normalizeText(artifact.ts) || new Date().toISOString(),
+    eval_json_path: normalizePath(path),
+    eval_json_bytes: 0,
     result: asRecord(artifact.res)
   }
 }
@@ -1028,6 +1236,14 @@ function selectedStage4SavedEntry(): Record<string, unknown> | null {
   const path = normalizePath(store.stage4SavedSelected)
   if (!path) return null
   return SAVED_STAGE4.find((entry) => normalizePath(entry.path) === path) ?? null
+}
+
+function selectedPolicyEvalSavedEntry(): Record<string, unknown> | null {
+  const store = getAnalysisStore()
+  if (!store) return null
+  const path = normalizePath(store.policyEvalSavedSelected)
+  if (!path) return null
+  return SAVED_POLICY_EVAL.find((entry) => normalizePath(entry.path) === path) ?? null
 }
 
 function formatYmdUtc(value: unknown): string {
@@ -1997,7 +2213,7 @@ export async function saveStage4SavedTags(): Promise<void> {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
     if (!path) {
-      setStatusLine('Select a saved Stage 4 run first.')
+      setStatusLine('Select a saved Stage 5 run first.')
       return
     }
 
@@ -2005,7 +2221,7 @@ export async function saveStage4SavedTags(): Promise<void> {
     const tags = parseTagsInput(normalizeText(store?.stage4SavedTagsDraft))
     await invokeCommand('update_artifact_tags', { path, tags })
     await refreshStage4SavedInternal(path)
-    setStatusLine('Saved Stage 4 tags.')
+    setStatusLine('Saved Stage 5 tags.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2015,7 +2231,7 @@ export async function refreshStage4Saved(): Promise<void> {
   try {
     const store = getAnalysisStore()
     await refreshStage4SavedInternal(normalizePath(store?.stage4SavedSelected))
-    setStatusLine('Refreshed saved Stage 4 runs.')
+    setStatusLine('Refreshed saved Stage 5 runs.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2026,7 +2242,7 @@ export async function loadStage4Saved(): Promise<void> {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
     if (!path) {
-      setStatusLine('Select a saved Stage 4 run first.')
+      setStatusLine('Select a saved Stage 5 run first.')
       return
     }
 
@@ -2035,8 +2251,8 @@ export async function loadStage4Saved(): Promise<void> {
     })) as unknown
     const artifact = asRecord(artifactRaw)
     const kind = normalizeText(artifact?.kind)
-    if (kind !== 'vectorbt_meta_stage4_experimental') {
-      setStatusLine(`Not a Stage 4 artifact: kind='${kind}'`)
+    if (kind !== 'vectorbt_meta_stage4_experimental' && kind !== 'vectorbt_meta_stage5_ml_confidence') {
+      setStatusLine(`Not a Stage 5 artifact: kind='${kind}'`)
       return
     }
 
@@ -2044,7 +2260,7 @@ export async function loadStage4Saved(): Promise<void> {
     renderMetaStage4(response)
     await refreshStage4SavedInternal(path)
     selectMetaResultsTab()
-    setStatusLine(`Loaded Stage 4 run ${normalizeText(response.ts)}`)
+    setStatusLine(`Loaded Stage 5 run ${normalizeText(response.ts)}`)
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2055,11 +2271,11 @@ export async function revealStage4Saved(): Promise<void> {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
     if (!path) {
-      setStatusLine('Select a saved Stage 4 run first.')
+      setStatusLine('Select a saved Stage 5 run first.')
       return
     }
     await invokeCommand('reveal_path', { path })
-    setStatusLine('Revealed Stage 4 run.')
+    setStatusLine('Revealed Stage 5 run.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2070,7 +2286,7 @@ export async function deleteStage4Saved(): Promise<void> {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
     if (!path) {
-      setStatusLine('Select a saved Stage 4 run first.')
+      setStatusLine('Select a saved Stage 5 run first.')
       return
     }
 
@@ -2080,7 +2296,99 @@ export async function deleteStage4Saved(): Promise<void> {
       renderMetaStage4(null)
     }
     await refreshStage4SavedInternal('')
-    setStatusLine('Deleted Stage 4 run.')
+    setStatusLine('Deleted Stage 5 run.')
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function savePolicyEvalSavedTags(): Promise<void> {
+  try {
+    const entry = selectedPolicyEvalSavedEntry()
+    const path = normalizePath(entry?.path)
+    if (!path) {
+      setStatusLine('Select a saved policy evaluation first.')
+      return
+    }
+
+    const store = getAnalysisStore()
+    const tags = parseTagsInput(normalizeText(store?.policyEvalSavedTagsDraft))
+    await invokeCommand('update_artifact_tags', { path, tags })
+    await refreshPolicyEvalSavedInternal(path)
+    setStatusLine('Saved policy evaluation tags.')
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function refreshPolicyEvalSaved(): Promise<void> {
+  try {
+    const store = getAnalysisStore()
+    await refreshPolicyEvalSavedInternal(normalizePath(store?.policyEvalSavedSelected))
+    setStatusLine('Refreshed saved policy evaluations.')
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function loadPolicyEvalSaved(): Promise<void> {
+  try {
+    const entry = selectedPolicyEvalSavedEntry()
+    const path = normalizePath(entry?.path)
+    if (!path) {
+      setStatusLine('Select a saved policy evaluation first.')
+      return
+    }
+
+    const artifactRaw = (await invokeCommand('load_run_artifact', { path })) as unknown
+    const artifact = asRecord(artifactRaw)
+    const kind = normalizeText(artifact?.kind)
+    if (kind !== 'vectorbt_ml_confidence_policy_evaluation') {
+      setStatusLine(`Not a policy evaluation artifact: kind='${kind}'`)
+      return
+    }
+
+    const response = buildPolicyEvalResponseFromArtifact(artifact ?? {}, path)
+    renderMlPolicyEvaluation(response)
+    await refreshPolicyEvalSavedInternal(path)
+    selectMetaResultsTab()
+    setStatusLine(`Loaded policy evaluation ${normalizeText(response.ts)}`)
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function revealPolicyEvalSaved(): Promise<void> {
+  try {
+    const entry = selectedPolicyEvalSavedEntry()
+    const path = normalizePath(entry?.path)
+    if (!path) {
+      setStatusLine('Select a saved policy evaluation first.')
+      return
+    }
+    await invokeCommand('reveal_path', { path })
+    setStatusLine('Revealed policy evaluation.')
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function deletePolicyEvalSaved(): Promise<void> {
+  try {
+    const entry = selectedPolicyEvalSavedEntry()
+    const path = normalizePath(entry?.path)
+    if (!path) {
+      setStatusLine('Select a saved policy evaluation first.')
+      return
+    }
+
+    await invokeCommand('delete_run_artifact', { path })
+    if (normalizePath(LAST_META_ML_POLICY_EVAL?.eval_json_path) === path) {
+      LAST_META_ML_POLICY_EVAL = null
+      renderMlPolicyEvaluation(null)
+    }
+    await refreshPolicyEvalSavedInternal('')
+    setStatusLine('Deleted policy evaluation.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2224,23 +2532,23 @@ export async function runStage4(options: MetaStage4RunOptions = {}): Promise<voi
     }
 
     if (!req) {
-      setStatusLine('Missing Stage 4 request payload.')
+      setStatusLine('Missing Stage 5 request payload.')
       return
     }
 
-    const payload = (await invokeCommand('run_meta_stage4_experimental', {
+    const payload = (await invokeCommand('run_meta_stage5_ml_confidence', {
       req
     })) as unknown
     const response = asRecord(payload)
     if (!response) {
-      setStatusLine('Stage 4 returned an invalid response.')
+      setStatusLine('Stage 5 returned an invalid response.')
       return
     }
 
     renderMetaStage4(response)
-    await refreshStage4SavedInternal(normalizePath(response.stage4_json_path))
+    await refreshStage4SavedInternal(responseStage5Path(response))
     selectMetaResultsTab()
-    setStatusLine(normalizePath(response.stage4_json_path) ? `Stage 4 complete. Saved: ${normalizePath(response.stage4_json_path)}` : 'Stage 4 complete.')
+    setStatusLine(responseStage5Path(response) ? `Stage 5 complete. Saved: ${responseStage5Path(response)}` : 'Stage 5 complete.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2248,13 +2556,42 @@ export async function runStage4(options: MetaStage4RunOptions = {}): Promise<voi
 
 export async function revealStage4(): Promise<void> {
   try {
-    const path = normalizePath(LAST_META_STAGE4_RUN?.stage4_json_path)
+    const path = responseStage5Path(LAST_META_STAGE4_RUN)
     if (!path) {
-      setStatusLine('No Stage 4 artifact saved yet.')
+      setStatusLine('No Stage 5 artifact saved yet.')
       return
     }
     await invokeCommand('reveal_path', { path })
-    setStatusLine('Revealed Stage 4 artifact.')
+    setStatusLine('Revealed Stage 5 artifact.')
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function runMlPolicyEvaluation(options: MetaMlPolicyEvaluationRunOptions = {}): Promise<void> {
+  try {
+    let req = normalizeRequestPayload(options.request)
+    if (!req) {
+      req = tryBuildAutoMetaMlPolicyEvaluationRequest()
+    }
+
+    if (!req) {
+      setStatusLine('Missing ML policy evaluation request payload.')
+      return
+    }
+
+    const payload = (await invokeCommand('evaluate_ml_confidence_policy', {
+      req
+    })) as unknown
+    const response = asRecord(payload)
+    if (!response) {
+      setStatusLine('ML policy evaluation returned an invalid response.')
+      return
+    }
+
+    renderMlPolicyEvaluation(response)
+    await refreshPolicyEvalSavedInternal(normalizePath(response.eval_json_path))
+    setStatusLine(normalizePath(response.eval_json_path) ? `ML policy evaluation complete. Saved: ${normalizePath(response.eval_json_path)}` : 'ML policy evaluation complete.')
   } catch (error) {
     setErrorStatus(error)
   }

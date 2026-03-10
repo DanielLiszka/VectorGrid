@@ -806,9 +806,6 @@ onBeforeUnmount(() => {
                 @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'Grid'); setSelectValue('mode', modeDraft)"
               >
                 <option value="Grid">Grid</option>
-                <option value="CoarseToFine">Coarse-to-Fine</option>
-                <option value="GpuVdps">GPU VDPS</option>
-                <option value="Auto">Auto</option>
               </select>
             </template>
             <template v-else>

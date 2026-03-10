@@ -19,9 +19,8 @@ export function applyRecommendedOptimizationDefaults(): boolean {
     changed = true
   }
 
-  const mode = String(advancedStore.mode || '').trim() || 'Grid'
   const heatmapBins = parseNonNegativeInt(advancedStore.heatmapBins)
-  if (mode === 'Grid' && heatmapBins <= 0) {
+  if (heatmapBins <= 0) {
     advancedStore.heatmapBins = RECOMMENDED_HEATMAP_BINS
     changed = true
   }

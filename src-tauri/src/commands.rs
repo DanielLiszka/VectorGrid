@@ -28,8 +28,9 @@ pub use commands_analysis::{
     compute_double_ma_drilldown, compute_double_ma_local_stability,
 };
 pub use commands_artifacts::{
-    delete_run_artifact, list_meta_artifacts, list_run_artifacts, list_stage4_artifacts,
-    load_run_artifact, open_runs_dir, save_batch_summary, save_run_artifact, update_artifact_tags,
+    delete_run_artifact, list_meta_artifacts, list_ml_policy_eval_artifacts, list_run_artifacts,
+    list_stage4_artifacts, list_stage5_artifacts, load_run_artifact, open_runs_dir, save_batch_summary,
+    save_run_artifact, update_artifact_tags,
 };
 pub use commands_data::{
     clear_market_data_dir, get_market_data_dir_info, list_dynamic_indicators, list_gpu_speedups,
@@ -53,9 +54,13 @@ pub use commands_execution::{
 };
 pub use commands_meta::{
     apply_ml_confidence_model, delete_ml_confidence_model, ml_confidence_model_status,
-    run_meta_selection, run_meta_stage4_experimental, train_ml_confidence_model,
-    ApplyMlConfidenceResponse, MetaStage4Request, MetaStage4Result, MlConfidenceModelStatus,
-    RunMetaSelectionResponse, RunMetaStage4Response, TrainMlConfidenceResponse,
+    evaluate_ml_confidence_policy, run_meta_selection, run_meta_stage4_experimental,
+    run_meta_stage5_ml_confidence, train_ml_confidence_model, ApplyMlConfidenceResponse,
+    MetaStage4Request, MetaStage4Result, MetaStage5Request, MetaStage5Result,
+    MlConfidenceModelState, MlConfidenceModelStatus, MlConfidencePolicyArmMetrics,
+    MlConfidencePolicyEvaluationRequest, MlConfidencePolicyEvaluationResult,
+    RunMetaSelectionResponse, RunMetaStage4Response, RunMetaStage5Response,
+    RunMlConfidencePolicyEvaluationResponse, TrainMlConfidenceResponse,
 };
 pub use commands_optimize::{
     cancel_background_task, cancel_current_run, cancel_double_ma_optimization,
@@ -78,8 +83,8 @@ pub use commands_validation::{
     run_double_ma_validation, PriceBar,
 };
 pub use run_artifacts::{
-    MetaArtifactSummary, RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse,
-    Stage4ArtifactSummary,
+    MetaArtifactSummary, MlPolicyEvalArtifactSummary, RunArtifactSummary, SaveBatchSummaryResponse,
+    SaveRunArtifactResponse, Stage4ArtifactSummary, Stage5ArtifactSummary,
 };
 
 pub use ta_app_core::{

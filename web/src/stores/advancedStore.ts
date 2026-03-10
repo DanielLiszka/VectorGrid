@@ -26,6 +26,32 @@ function normalizedOptions(values: unknown): AdvancedOption[] {
   return entries
 }
 
+function normalizeOptimizationMode(value: unknown): string {
+  const mode = String(value || '').trim()
+  if (
+    mode === 'CoarseToFine'
+    || mode === 'GpuVdps'
+    || mode === 'GpuProgressive'
+    || mode === 'GpuProgressiveSearch'
+    || mode === 'Auto'
+  ) {
+    return 'Grid'
+  }
+  return mode || 'Grid'
+}
+
+function normalizeModeOptions(values: unknown): AdvancedOption[] {
+  const entries = normalizedOptions(values)
+    .map((option) => ({
+      value: normalizeOptimizationMode(option.value),
+      label: 'Grid',
+      disabled: Boolean(option.disabled),
+    }))
+    .filter((option, index, arr) => arr.findIndex((row) => row.value === option.value) === index)
+  if (entries.length > 0) return entries
+  return [{ value: 'Grid', label: 'Grid', disabled: false }]
+}
+
 interface AdvancedState {
   activeControlsTab: string
   maSource: string
@@ -376,8 +402,8 @@ export const useAdvancedStore = defineStore('advanced', {
       this.maSourceOptions = normalizedOptions(snapshot.maSourceOptions ?? this.maSourceOptions ?? [])
       this.objective = String(snapshot.objective ?? this.objective ?? 'Sharpe').trim() || 'Sharpe'
       this.objectiveOptions = normalizedOptions(snapshot.objectiveOptions ?? this.objectiveOptions ?? [])
-      this.mode = String(snapshot.mode ?? this.mode ?? 'Grid').trim() || 'Grid'
-      this.modeOptions = normalizedOptions(snapshot.modeOptions ?? this.modeOptions ?? [])
+      this.mode = normalizeOptimizationMode(snapshot.mode ?? this.mode ?? 'Grid')
+      this.modeOptions = normalizeModeOptions(snapshot.modeOptions ?? this.modeOptions ?? [])
       this.vdpsVisible = Boolean(snapshot.vdpsVisible ?? this.vdpsVisible)
       this.vdpsTelemetryHint = String(snapshot.vdpsTelemetryHint ?? this.vdpsTelemetryHint ?? 'VDPS telemetry appears after a run.').trim() || 'VDPS telemetry appears after a run.'
       this.compositeMoVisible = Boolean(snapshot.compositeMoVisible ?? this.compositeMoVisible)
