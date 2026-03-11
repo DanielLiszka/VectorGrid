@@ -172,9 +172,7 @@ pub fn validate_mkcs_params(cfg: &MkcsStrategyParams) -> Result<(), String> {
         return Err("MKCS reexpansion_threshold must be finite and > 0".to_string());
     }
     if cfg.reexpansion_threshold < cfg.compression_threshold {
-        return Err(
-            "MKCS reexpansion_threshold must be >= compression_threshold".to_string(),
-        );
+        return Err("MKCS reexpansion_threshold must be >= compression_threshold".to_string());
     }
     Ok(())
 }
@@ -505,7 +503,10 @@ pub fn compute_mkcs_compression_signals(
     )?;
     let first_valid = first_finite_idx_local(&stddev)
         .ok_or_else(|| "MKCS stddev output is all non-finite".to_string())?;
-    Ok(MkcsCompressionSignals { stddev, first_valid })
+    Ok(MkcsCompressionSignals {
+        stddev,
+        first_valid,
+    })
 }
 
 pub fn compute_mkcs_breakout_signals(
@@ -603,7 +604,11 @@ pub fn build_mkcs_desired_positions(
         return desired;
     }
 
-    let trade_offset = if strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
     let mut pos: i32 = 0;
 
     for t in start_t..n {
@@ -626,10 +631,14 @@ pub fn build_mkcs_desired_positions(
             ratio.is_finite() && ratio >= cfg.reexpansion_threshold
         };
 
-        let long_breakout =
-            compressed_prev && close_now.is_finite() && upper_prev.is_finite() && close_now > upper_prev;
-        let short_breakout =
-            compressed_prev && close_now.is_finite() && lower_prev.is_finite() && close_now < lower_prev;
+        let long_breakout = compressed_prev
+            && close_now.is_finite()
+            && upper_prev.is_finite()
+            && close_now > upper_prev;
+        let short_breakout = compressed_prev
+            && close_now.is_finite()
+            && lower_prev.is_finite()
+            && close_now < lower_prev;
 
         if pos == 0 {
             if long_breakout {
@@ -709,14 +718,8 @@ mod tests {
         strategy.trade_on_next_bar = false;
         strategy.allow_flip = true;
         let cfg = MkcsStrategyParams::default();
-        let desired = build_mkcs_desired_positions(
-            &close,
-            &compression,
-            &breakout,
-            2,
-            &strategy,
-            &cfg,
-        );
+        let desired =
+            build_mkcs_desired_positions(&close, &compression, &breakout, 2, &strategy, &cfg);
         assert_eq!(desired[3], 1);
         assert_eq!(desired[4], 0);
     }

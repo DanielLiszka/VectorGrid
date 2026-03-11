@@ -155,4 +155,10 @@ describe('optimize store actions', () => {
     expect(optionValues).toContain('GpuKernel')
     expect(store.backend).toBe('GpuKernel')
   })
+
+  it('includes the staged GPU-native expansion strategies in the selector options', () => {
+    const store = useOptimizeStore()
+    const values = store.strategyOptions.map((option) => option.value)
+    expect(values).toEqual(expect.arrayContaining(['Kqsr', 'Carm', 'Kvdf', 'Cdmc']))
+  })
 })

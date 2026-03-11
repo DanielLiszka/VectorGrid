@@ -352,10 +352,7 @@ fn main() {
         if let Some(plan) = res.indicator_route_plan.as_ref() {
             println!(
                 "indicator_route_plan=fast:{}->{} slow:{}->{}",
-                plan.fast.indicator_id,
-                plan.fast.route,
-                plan.slow.indicator_id,
-                plan.slow.route
+                plan.fast.indicator_id, plan.fast.route, plan.slow.indicator_id, plan.slow.route
             );
         }
         if let Some(reason) = res.backend_fallback_reason.as_deref() {

@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use ta_app_core::{
-    read_candles_from_csv_compat, Backend, CompositeParams, CompositeValidationRequest, CscvPboConfig,
-    DoubleMaValidationParams, DoubleMaValidationRequest, MetaClusterConfig, MetaGroupingMode,
-    MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest, ValidationEngine,
+    read_candles_from_csv_compat, Backend, CompositeParams, CompositeValidationRequest,
+    CscvPboConfig, DoubleMaValidationParams, DoubleMaValidationRequest, MetaClusterConfig,
+    MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest, ValidationEngine,
 };
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::StrategyConfig;

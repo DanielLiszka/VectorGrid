@@ -1201,6 +1201,90 @@ describe('optimizeService', () => {
     })
   })
 
+  it('routes the staged GPU-native expansion kinds through the composite CPU optimization command', async () => {
+    const cases = [
+      { kind: 'Kqsr', field: 'kqsr' },
+      { kind: 'Carm', field: 'carm' },
+      { kind: 'Kvdf', field: 'kvdf' },
+      { kind: 'Cdmc', field: 'cdmc' },
+    ] as const
+
+    for (const row of cases) {
+      invokeCommandMock.mockClear()
+      installDefaultInvokeCommandMock()
+      ;(pinia.state.value as Record<string, unknown>).optimize = {
+        strategyKind: row.kind,
+        backend: 'GpuKernel',
+        fastStart: '5',
+        fastEnd: '15',
+        fastStep: '5',
+        slowStart: '20',
+        slowEnd: '40',
+        slowStep: '10',
+        fastMaType: 'sma',
+        slowMaType: 'ema',
+      }
+      ;(pinia.state.value as Record<string, unknown>).advanced = {
+        maSource: 'close',
+        objective: 'Sharpe',
+        mode: 'Grid',
+        topK: '20',
+        includeAll: 'false',
+      }
+      ;(pinia.state.value as Record<string, unknown>).strategy = {
+        compositeSignalMode: 'hard_gate',
+        halfTrendAmplitude: '2',
+        halfTrendAtrPeriod: '100',
+        halfTrendChannelDev: '2.0',
+        maczFastLength: '12',
+        maczSlowLength: '25',
+        maczSignalLength: '9',
+        maczLengthZ: '20',
+        maczLengthStdev: '25',
+        maczGamma: '0.02',
+        maczA: '1',
+        maczB: '1',
+        maczUseVolume: false,
+        maczUseLag: false,
+        ottPeriod: '2',
+        ottPercent: '1.4',
+        ottMaType: 'VAR',
+        startingEquity: '10000',
+        costPreset: 'custom',
+        feeBps: '1',
+        spreadBps: '2',
+        slippageBps: '0',
+        epsRel: '0',
+        stopLossPct: '',
+        takeProfitPct: '',
+        cooldownBars: '0',
+        signalPersistenceBars: '1',
+        exitMode: 'cross',
+        kaufmanStopPeriod: '22',
+        kaufmanStopMult: '2.0',
+        kaufmanStopMaType: 'sma',
+        longOnly: false,
+        allowFlip: true,
+        tradeOnNext: false,
+      }
+      ;(pinia.state.value as Record<string, unknown>).data = {
+        dataId: `data-${row.kind.toLowerCase()}`,
+        dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+        dataLen: '10000',
+        dataTimeframe: '1m',
+      }
+
+      await runOptimization()
+
+      const [command, args] = firstOptimizationRunCall()
+      const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+      expect(command).toBe('run_composite_cpu_optimization')
+      expect(req.strategy_kind).toBe(row.kind)
+      expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+      expect(req[row.field]).toBeTruthy()
+    }
+  })
+
   it('auto-builds CompositeMo optimization request from Vue stores', async () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'CompositeMo',

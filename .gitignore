@@ -34,4 +34,5 @@ __pycache__/
 .venv/
 __init__.py
 codex_tmp
+codex_tmp*/
 .codex_tmp/

@@ -2835,6 +2835,22 @@ void asr_backtest_metrics_f32(
         out_metrics[base + 8] = 0.0f; // exposure
         out_metrics[base + 9] = 0.0f; // net_exposure
     }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = 0.0f; // slice_step_return_sum
+        out_metrics[base + 11] = 0.0f; // slice_step_return_sumsq
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = 0.0f; // step_return_sum
+        out_metrics[base + 11] = 0.0f; // step_return_sumsq
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = 0.0f; // step_return_sum
+        out_metrics[base + 11] = 0.0f; // step_return_sumsq
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = 0.0f; // step_return_sum
+        out_metrics[base + 11] = 0.0f; // step_return_sumsq
+    }
     if (fast_row < 0 || fast_row >= fast_rows || slow_row < 0 || slow_row >= slow_rows) return;
     if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
 
@@ -2859,6 +2875,8 @@ void asr_backtest_metrics_f32(
     int n_obs = 0;
     float mean = 0.0f;
     float m2 = 0.0f;
+    float sum_step_r = 0.0f;
+    float sumsq_step_r = 0.0f;
     float sum_neg_sq = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
@@ -3001,6 +3019,9 @@ void asr_backtest_metrics_f32(
         if (long_only && desired < 0) {
             desired = 0;
         }
+        const float slice_step_r = (desired == 0) ? 0.0f : ((float)desired) * expm1f(lr[t]);
+        sum_step_r += slice_step_r;
+        sumsq_step_r += slice_step_r * slice_step_r;
 
         if (desired != pos_exec) {
             if (pos_exec == 0 || desired == 0) {
@@ -3052,6 +3073,9 @@ void asr_backtest_metrics_f32(
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
     const float pnl = expf(log_eq) - 1.0f;
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float obs_f = (float)n_obs;
+    const float step_return_sum = (n_obs > 0) ? (mean * obs_f) : 0.0f;
+    const float step_return_sumsq = (n_obs > 0) ? (m2 + mean * mean * obs_f) : 0.0f;
 
     const float clamp_max = 1.0e6f;
     const float eps_denom = 1.0e-12f;
@@ -3100,12 +3124,17 @@ void asr_backtest_metrics_f32(
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
     }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = step_return_sum;
+        out_metrics[base + 11] = step_return_sumsq;
+    }
 }
 
 extern "C" __global__
 void vcc_backtest_metrics_f32(
     const float* __restrict__ close,
     const float* __restrict__ lr,
+    const double* __restrict__ lr64,
     int T,
     const float* __restrict__ fast_squeeze_row_major,
     const float* __restrict__ fast_momentum_row_major,
@@ -3117,6 +3146,8 @@ void vcc_backtest_metrics_f32(
     const int* __restrict__ combo_fast_row_idx,
     const int* __restrict__ combo_trend_row_idx,
     const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_metric_start_t,
+    const int* __restrict__ combo_end_t,
     int combo_count,
     unsigned int flags,
     float commission,
@@ -3124,7 +3155,8 @@ void vcc_backtest_metrics_f32(
     int confirm_bars,
     int max_trade_bars,
     int out_stride,
-    float* __restrict__ out_metrics
+    float* __restrict__ out_metrics,
+    double* __restrict__ out_slice_stats
 ) {
     const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (idx >= combo_count) return;
@@ -3132,11 +3164,14 @@ void vcc_backtest_metrics_f32(
     const int fast_row = combo_fast_row_idx[idx];
     const int trend_row = combo_trend_row_idx[idx];
     const int start_t = combo_start_t[idx];
+    const int metric_start_t = combo_metric_start_t[idx];
+    const int end_t = combo_end_t[idx];
     const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
     const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
 
     const int base = idx * out_stride;
+    const int slice_base = idx * 2;
     if (base < 0) return;
     if (out_stride >= 10) {
         out_metrics[base + 0] = 0.0f; // pnl
@@ -3150,8 +3185,13 @@ void vcc_backtest_metrics_f32(
         out_metrics[base + 8] = 0.0f; // exposure
         out_metrics[base + 9] = 0.0f; // net_exposure
     }
+    if (out_slice_stats != nullptr) {
+        out_slice_stats[slice_base + 0] = 0.0;
+        out_slice_stats[slice_base + 1] = 0.0;
+    }
     if (fast_row < 0 || fast_row >= fast_rows || trend_row < 0 || trend_row >= trend_rows) return;
-    if (start_t < 0 || start_t >= T) return;
+    if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
+    if (metric_start_t < start_t || metric_start_t > end_t) return;
 
     const float* __restrict__ squeeze = fast_squeeze_row_major + ((size_t)fast_row * (size_t)fast_stride);
     const float* __restrict__ momentum = fast_momentum_row_major + ((size_t)fast_row * (size_t)fast_stride);
@@ -3170,6 +3210,8 @@ void vcc_backtest_metrics_f32(
     int n_obs = 0;
     float mean = 0.0f;
     float m2 = 0.0f;
+    double sum_step_r = 0.0;
+    double sumsq_step_r = 0.0;
     float sum_neg_sq = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
@@ -3181,7 +3223,94 @@ void vcc_backtest_metrics_f32(
     const int confirm_bars_clamped = max(confirm_bars, 0);
     const int max_trade_bars_clamped = max(max_trade_bars, 1);
 
-    for (int t = start_t; t < T; ++t) {
+    for (int t = start_t; t < metric_start_t; ++t) {
+        const int sig_t = max(0, t - trade_on_next_bar);
+        const int prev_t = max(0, sig_t - 1);
+
+        const float squeeze_now = squeeze[sig_t];
+        const float squeeze_prev = squeeze[prev_t];
+        const float mom_now = momentum[sig_t];
+        const float mom_prev = momentum[prev_t];
+        const float mom_delta = (isfinite(mom_now) && isfinite(mom_prev)) ? (mom_now - mom_prev) : NAN;
+        const float trend_now = trend[sig_t];
+
+        const int squeeze_on_now = isfinite(squeeze_now) && squeeze_now > 0.5f;
+        const int squeeze_on_prev = isfinite(squeeze_prev) && squeeze_prev > 0.5f;
+        const int squeeze_release = squeeze_on_prev && !squeeze_on_now;
+
+        if (squeeze_release) {
+            release_confirm_left = confirm_bars_clamped;
+        } else if (release_confirm_left > 0) {
+            release_confirm_left -= 1;
+        }
+        const int release_confirmed = squeeze_release || (release_confirm_left == 0);
+
+        const int bullish_trend = isfinite(trend_now) && trend_now > 0.5f;
+        const int bearish_trend = isfinite(trend_now) && trend_now <= 0.5f;
+
+        if (pos_signal == 0) {
+            bars_in_trade = 0;
+            if (release_confirmed) {
+                int long_mom_ok = 0;
+                int short_mom_ok = 0;
+                if (require_momentum_accel) {
+                    long_mom_ok = isfinite(mom_now) && mom_now > 0.0f && isfinite(mom_delta) && mom_delta > 0.0f;
+                    short_mom_ok = isfinite(mom_now) && mom_now < 0.0f && isfinite(mom_delta) && mom_delta < 0.0f;
+                } else {
+                    long_mom_ok = isfinite(mom_now) && mom_now > 0.0f;
+                    short_mom_ok = isfinite(mom_now) && mom_now < 0.0f;
+                }
+
+                if (bullish_trend && long_mom_ok) {
+                    pos_signal = 1;
+                    bars_in_trade = 1;
+                } else if (!long_only && bearish_trend && short_mom_ok) {
+                    pos_signal = -1;
+                    bars_in_trade = 1;
+                }
+            }
+        } else {
+            int exit_now = 0;
+            if (pos_signal > 0) {
+                if (!isfinite(mom_now) || mom_now <= 0.0f || !bullish_trend) {
+                    exit_now = 1;
+                }
+            } else {
+                if (!isfinite(mom_now) || mom_now >= 0.0f || !bearish_trend) {
+                    exit_now = 1;
+                }
+            }
+
+            if (bars_in_trade >= max_trade_bars_clamped) {
+                exit_now = 1;
+            }
+
+            if (exit_now) {
+                pos_signal = 0;
+                bars_in_trade = 0;
+            } else {
+                bars_in_trade += 1;
+            }
+        }
+    }
+
+    pos_exec = 0;
+    log_eq = 0.0f;
+    log_peak = 0.0f;
+    max_log_dd = 0.0f;
+    trades = 0;
+    n_obs = 0;
+    mean = 0.0f;
+    m2 = 0.0f;
+    sum_step_r = 0.0f;
+    sumsq_step_r = 0.0f;
+    sum_neg_sq = 0.0f;
+    sum_pos_r = 0.0f;
+    sum_neg_abs_r = 0.0f;
+    sum_abs_pos = 0;
+    sum_pos = 0;
+
+    for (int t = metric_start_t; t < end_t; ++t) {
         const int sig_t = max(0, t - trade_on_next_bar);
         const int prev_t = max(0, sig_t - 1);
 
@@ -3255,6 +3384,9 @@ void vcc_backtest_metrics_f32(
         if (long_only && desired < 0) {
             desired = 0;
         }
+        const double slice_step_r = (desired == 0) ? 0.0 : ((double)desired) * expm1(lr64[t]);
+        sum_step_r += slice_step_r;
+        sumsq_step_r += slice_step_r * slice_step_r;
 
         if (desired != pos_exec) {
             if (pos_exec == 0 || desired == 0) {
@@ -3353,6 +3485,10 @@ void vcc_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_slice_stats != nullptr) {
+        out_slice_stats[slice_base + 0] = sum_step_r;
+        out_slice_stats[slice_base + 1] = sumsq_step_r;
     }
 }
 

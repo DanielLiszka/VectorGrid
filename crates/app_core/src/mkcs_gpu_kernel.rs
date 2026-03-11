@@ -181,11 +181,27 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
         sortino: if sortino.is_finite() { sortino } else { 0.0 },
         calmar: if calmar.is_finite() { calmar } else { 0.0 },
         omega: if omega.is_finite() { omega } else { 0.0 },
-        volatility: if volatility.is_finite() { volatility.max(0.0) } else { 0.0 },
-        max_dd: if max_dd.is_finite() { max_dd.max(0.0) } else { 0.0 },
-        trades: if trades_f.is_finite() && trades_f >= 0.0 { trades_f as u32 } else { 0 },
+        volatility: if volatility.is_finite() {
+            volatility.max(0.0)
+        } else {
+            0.0
+        },
+        max_dd: if max_dd.is_finite() {
+            max_dd.max(0.0)
+        } else {
+            0.0
+        },
+        trades: if trades_f.is_finite() && trades_f >= 0.0 {
+            trades_f as u32
+        } else {
+            0
+        },
         exposure: if exposure.is_finite() { exposure } else { 0.0 },
-        net_exposure: if net_exposure.is_finite() { net_exposure } else { 0.0 },
+        net_exposure: if net_exposure.is_finite() {
+            net_exposure
+        } else {
+            0.0
+        },
     }
 }
 

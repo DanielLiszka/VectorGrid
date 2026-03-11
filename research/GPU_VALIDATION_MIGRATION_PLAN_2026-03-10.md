@@ -157,8 +157,23 @@ Key files:
 
 #### CPU-bound today
 
-- plain `CompositeCpu` optimization remains CPU-bound outside of the specific custom GPU paths above
-- base composite validation remains CPU-bound
+- plain `CompositeCpu` optimization is no longer purely CPU-bound:
+  - there is now a bounded explicit `GpuKernel` optimization route for plain `CompositeCpu` when:
+    - `signal_mode=HardGate`
+    - the request explicitly asks for `GpuKernel`
+    - the MA/objective/search shape is kernel-compatible
+    - the run does not depend on prescan-subset `allowed_pairs`
+  - outside that bounded route, base composite optimization remains on the existing CPU/mixed path
+- base composite validation is no longer purely CPU-bound:
+  - plain `CompositeCpu` `signal_mode=HardGate` fixed-candidate validation now has a bounded `GpuKernel` route for:
+    - in-sample
+    - `walk_forward`
+    - `CSCV/PBO`
+    - `SPA`
+    - `reopt_walk_forward`
+    - `trade_bootstrap` with host-side bootstrap reduction
+    - `perturb` via GPU reruns of perturbed single-candidate requests
+  - cross-ticker still falls back explicitly to CPU for base composite
 - `CompositeMo` remains CPU-bound for actual optimization/evaluation, aside from optional GPU prescan/narrowing
 
 Key files:
@@ -519,18 +534,15 @@ Current implementation note:
   - `GpuKernel` / `GpuHybridKernel` / `Auto`
   - uniform candidate MA types
   - uniform strategy / halftrend / MA params across candidates
-  - `walk_forward` now runs on `GpuKernel` for the fixed-candidate path
-  - `CSCV/PBO` now runs on `GpuKernel` for the fixed-candidate path
-  - `SPA` now reuses GPU-generated slice sums on `GpuKernel` while keeping the final SPA bootstrap/reduction on host
+  - `walk_forward` now runs on `GpuKernel` and kernel-executable `GpuHybridKernel` routes for the fixed-candidate path
+  - `CSCV/PBO` now runs on `GpuKernel` and kernel-executable `GpuHybridKernel` routes for the fixed-candidate path
+  - `SPA` now reuses GPU-generated slice sums on `GpuKernel` and kernel-executable `GpuHybridKernel` routes while keeping the final SPA bootstrap/reduction on host
   - `perturb` now reuses per-sample `GpuKernel` reruns on the fixed-candidate path
-  - `walk_forward` on `GpuHybridKernel` still falls back explicitly to CPU
-  - `CSCV/PBO` on `GpuHybridKernel` still falls back explicitly to CPU
-  - `SPA` on `GpuHybridKernel` still falls back explicitly to CPU
-  - no re-opt walk-forward
+  - `reopt_walk_forward` now runs on `GpuKernel` and kernel-executable `GpuHybridKernel` routes for the fixed-candidate path
   - no trade bootstrap
   - no cross-ticker
   - vectorized validation engine only
-- unsupported combinations currently fall back explicitly to CPU validation with a route/fallback reason
+- unsupported combinations still fall back explicitly to CPU validation with a route/fallback reason
 
 Parity investigation note:
 
@@ -543,6 +555,10 @@ Parity investigation note:
   - plain fixed-candidate `walk_forward` now runs on `GpuKernel` and matches CPU within expected floating-point tolerance
   - plain fixed-candidate `CSCV/PBO` now runs on `GpuKernel` and matches CPU within expected floating-point tolerance
   - plain fixed-candidate `SPA` now reuses GPU-generated slice sums on `GpuKernel` and matches CPU within expected floating-point tolerance
+  - `CompositeTrend` ADX-on fixed-candidate `walk_forward` now runs on `GpuHybridKernel` and matches CPU within expected floating-point tolerance
+  - `BreakoutMomentum` ADX-on fixed-candidate `CSCV/PBO` now runs on `GpuHybridKernel` and matches CPU within expected floating-point tolerance
+  - `RegimeHybrid` fixed-candidate `walk_forward` and `reopt_walk_forward` now run on `GpuHybridKernel` and match CPU within expected floating-point tolerance
+  - `RegimeHybrid` fixed-candidate `CSCV/PBO` and `SPA` now have `GpuHybridKernel` route smoke coverage; parity remains more data-sensitive because slice stats are reconstructed from per-slice metrics before the shared host reducers
 - The main identified mismatch classes are:
   - validation GPU currently reuses the optimization kernel path, not the CPU validation evaluator path
   - CPU validation computes `start_t` from actual first finite MA rows; the GPU path needed explicit alignment of MA warmup and `regime_first_valid`
@@ -591,10 +607,10 @@ Deliverables:
 
 Current status:
 
-- fixed-candidate `GpuKernel` validation now covers both `CSCV/PBO` and `SPA`
+- fixed-candidate `GpuKernel` and kernel-executable `GpuHybridKernel` validation now cover both `CSCV/PBO` and `SPA`
 - the repeated slice-evaluation work is now on GPU for both features
 - final `CSCV/PBO` and `SPA` statistical reduction still remains host-side by design
-- `GpuHybridKernel` still falls back explicitly to CPU for both `CSCV/PBO` and `SPA`
+- hybrid parity evidence currently includes `BreakoutMomentum` ADX-on `CSCV/PBO`; `RegimeHybrid` `CSCV/PBO` / `SPA` currently have route-smoke coverage and remain more data-sensitive because slice stats are reconstructed before host-side final reduction
 
 ### Phase 5: GPU Re-Opt Walk-Forward
 
@@ -614,10 +630,9 @@ Deliverables:
 
 Current status:
 
-- fixed-candidate `GpuKernel` validation now covers finalist `reopt_walk_forward`
+- fixed-candidate `GpuKernel` and kernel-executable `GpuHybridKernel` validation now cover finalist `reopt_walk_forward`
 - the GPU path reuses the same windowed metric cache pattern as `walk_forward`, `CSCV/PBO`, and `SPA`
 - final `ReoptWalkForwardStats` still uses the shared host reducer for exact semantic parity
-- `GpuHybridKernel` `reopt_walk_forward` still falls back explicitly to CPU
 
 ### Phase 6: Composite Validation Reuse
 
@@ -653,17 +668,42 @@ Current status:
     - `walk_forward`
     - `CSCV/PBO`
     - `perturb`
-  - `VCC` validation now has a parity-gated `GpuKernel` path
+  - `VCC` validation now has a parity-gated mixed `GpuKernel` path
     - active when the requested CPU-canonical momentum rows remain sign-stable after `f32` roundtrip
     - explicit CPU fallback when those rows are not `fp32`-stable
+    - stable `GpuKernel` requests now cover:
+      - fixed-candidate in-sample metrics
+      - `walk_forward`
+      - `CSCV/PBO`
+      - `SPA`
+      - `reopt_walk_forward`
+      - `trade_bootstrap` with host-side bootstrap reduction
   - root cause is now clearer:
     - the CUDA `squeeze_momentum` momentum series is not CPU-parity-safe on representative workloads
     - even when momentum is replaced with a CPU-canonical row uploaded to VRAM, some gentle monotonic series still lose trades after `f32` roundtrip because the momentum/acceleration decision boundary is numerically fragile
   - current VCC approach:
     - optimization uses a parity-safe hybrid repair by feeding CPU-canonical momentum rows into the GPU evaluator
     - validation now uses the same CPU-canonical momentum rows, but only activates `GpuKernel` when the requested rows are proven `fp32`-stable
+    - `walk_forward` and `reopt_walk_forward` now use a true windowed `GpuKernel` path with canonical-start + metric-start carry-state parity on stable workloads
+    - `CSCV/PBO` and `SPA` now reuse GPU-generated VCC slice stats with parity-safe desired-position semantics, while keeping the final statistical reductions host-side
+    - the VCC kernel path now accepts canonical start, metric start, and end bounds; that carry-state parity is active for both windowed validation and GPU-generated slice stats
+    - `cross_ticker` now rides the same backend-preserving command-layer rerun path as the other composite GPU strategies; each rerun still remains parity-gated by the VCC `fp32`-stability check
+    - the checked-in prebuilt PTX now includes the VCC validation kernels so fallback non-NVCC builds keep the same VCC validation surface
   - unsupported composite validation combinations still fall back explicitly to CPU
 - GPU composite validation activation is still blocked on strategy-by-strategy parity and runtime support
+- shared base composite now has bounded but real `GpuKernel` execution on both stages:
+  - optimization has a bounded explicit `GpuKernel` route for plain `CompositeCpu` `signal_mode=HardGate` requests on kernel-compatible full-grid searches
+  - that optimization route keeps composite gate preparation host-side, uploads a device regime filter, and uses the shared double-MA `GpuKernel` scorer with a composite warmup override so pair start semantics match the CPU composite contract
+  - validation now has a matching bounded fixed-candidate `GpuKernel` route for plain `CompositeCpu` `signal_mode=HardGate`
+  - that validation route reuses the same uploaded device regime filter plus precomputed MA rows for:
+    - in-sample
+    - `walk_forward`
+    - `CSCV/PBO`
+    - `SPA`
+    - `reopt_walk_forward`
+    - `trade_bootstrap` with host-side bootstrap reduction
+    - `perturb` via GPU reruns
+  - base composite `cross_ticker` still falls back explicitly to CPU
 - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` are explicitly parity-gated:
   - their validation execution lives on the `DoubleMa` validation side, not the composite validation runtime
   - parity coverage now exists for the intended routes:
@@ -671,14 +711,16 @@ Current status:
       - `ADX off` -> `GpuKernel` in-sample parity
       - `ADX off` -> `GpuKernel` `walk_forward` parity
       - `ADX on` -> `GpuHybridKernel` in-sample parity
-      - `ADX on` advanced modes still fall back explicitly to CPU
+      - `ADX on` -> `GpuHybridKernel` `walk_forward` parity
     - `BreakoutMomentum`
       - `ADX off` -> `GpuKernel` in-sample parity
       - `ADX on` -> `GpuHybridKernel` in-sample parity
-      - `ADX on` advanced modes still fall back explicitly to CPU
+      - `ADX on` -> `GpuHybridKernel` `CSCV/PBO` parity
     - `RegimeHybrid`
-      - current `GpuHybridKernel` in-sample parity is covered
-      - advanced hybrid modes still fall back explicitly to CPU
+      - `GpuHybridKernel` in-sample parity is covered
+      - `GpuHybridKernel` `walk_forward` parity is covered
+      - `GpuHybridKernel` `reopt_walk_forward` parity is covered
+      - `GpuHybridKernel` `CSCV/PBO` and `SPA` route smoke is covered
 
 Nearest reusable backend pieces:
 
@@ -735,15 +777,18 @@ Initial support matrix:
   - `GpuKernel`
     - fixed-candidate
     - in-sample metrics
-    - only when requested CPU-canonical momentum rows are `fp32`-stable
-  - CPU fallback
-    - fixed-candidate in-sample when momentum rows are not `fp32`-stable
     - `walk_forward`
-    - `reopt_walk_forward`
     - `CSCV/PBO`
     - `SPA`
-    - `trade_bootstrap`
-    - `cross_ticker`
+    - `reopt_walk_forward`
+    - `trade_bootstrap` with host-side bootstrap reduction
+    - `cross_ticker` via command-layer repeated backend-preserving reruns, when each rerun remains `fp32`-stable
+    - only when requested CPU-canonical momentum rows are `fp32`-stable
+    - `walk_forward` and `reopt_walk_forward` are now true windowed GPU executions with carry-state parity
+    - `CSCV/PBO` and `SPA` now use GPU-generated slice stats with host-side final reductions
+  - CPU fallback
+    - fixed-candidate in-sample when momentum rows are not `fp32`-stable
+    - `cross_ticker` reruns whose requested momentum rows are not `fp32`-stable
     - `GpuHybridKernel`
 - `VEMR`
   - `GpuKernel`
@@ -758,8 +803,30 @@ Initial support matrix:
     - `cross_ticker` via command-layer repeated `GpuKernel` reruns
   - CPU fallback
     - `GpuHybridKernel`
-- base composite / `CompositeTrend` / `RegimeHybrid` / `BreakoutMomentum`
-  - CPU fallback only for validation today
+- base composite
+  - optimization
+    - bounded explicit `GpuKernel` support for plain `CompositeCpu` with `signal_mode=HardGate`
+    - current limitations:
+      - explicit `GpuKernel` request only
+      - kernel-compatible MA/objective shapes only
+      - no prescan-subset `allowed_pairs`
+      - composite gate preparation remains host-side
+  - validation
+    - bounded explicit `GpuKernel` support for plain `CompositeCpu` with `signal_mode=HardGate`
+    - current coverage:
+      - fixed-candidate in-sample
+      - `walk_forward`
+      - `CSCV/PBO`
+      - `SPA`
+      - `reopt_walk_forward`
+      - `trade_bootstrap` with host-side bootstrap reduction
+      - `perturb` via GPU reruns
+    - current limitations:
+      - `cross_ticker` still falls back explicitly to CPU
+      - composite gate preparation remains host-side
+- `CompositeTrend` / `RegimeHybrid` / `BreakoutMomentum`
+  - validation execution currently lives on the `DoubleMa` validation side
+  - `GpuKernel` / `GpuHybridKernel` coverage follows the fixed-candidate support matrix above
 
 Tasks:
 
@@ -951,7 +1018,18 @@ Verification must include both correctness and performance.
 - [x] Add CPU vs `GpuKernel` validation parity tests for `BreakoutMomentum` with ADX off.
 - [x] Add CPU vs `GpuHybridKernel` validation parity tests for `BreakoutMomentum` with ADX on.
 - [x] Add CPU vs `GpuHybridKernel` validation parity tests for `RegimeHybrid`.
+- [x] Extend `GpuHybridKernel` fixed-candidate validation to `walk_forward` on kernel-executable routes.
+- [x] Extend `GpuHybridKernel` fixed-candidate validation to `CSCV/PBO` on kernel-executable routes.
+- [x] Extend `GpuHybridKernel` fixed-candidate validation to `SPA` on kernel-executable routes with host-side final reduction.
+- [x] Extend `GpuHybridKernel` fixed-candidate validation to `reopt_walk_forward` on kernel-executable routes.
 - [x] Implement GPU-assisted base composite validation preparation where practical while keeping CPU-canonical evaluation.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to in-sample metrics.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to `walk_forward`.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to `CSCV/PBO`.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to `SPA`.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to `reopt_walk_forward`.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to `trade_bootstrap` with host-side bootstrap reduction.
+- [x] Extend base composite fixed-candidate `GpuKernel` validation to `perturb` via GPU reruns.
 - [x] Extend GPU validation to ASR fixed-candidate in-sample metrics.
 - [x] Extend GPU validation to MKCS fixed-candidate in-sample metrics.
 - [x] Extend GPU validation to MKCS fixed-candidate `walk_forward`.
@@ -971,6 +1049,13 @@ Verification must include both correctness and performance.
 - [x] Implement a parity-safe VCC validation route:
   - current route uses CPU-canonical momentum rows plus an `fp32`-stability activation gate
   - unstable momentum rows still fall back explicitly to CPU
+- [x] Extend GPU validation to VCC fixed-candidate `walk_forward` on stable `GpuKernel` routes with canonical-start + metric-start carry-state parity.
+- [x] Extend GPU validation to VCC fixed-candidate `CSCV/PBO` on stable `GpuKernel` routes with GPU-generated slice stats and host-side reduction parity.
+- [x] Extend GPU validation to VCC fixed-candidate `SPA` on stable `GpuKernel` routes with GPU-generated slice stats and host-side reduction.
+- [x] Extend GPU validation to VCC fixed-candidate `reopt_walk_forward` on stable `GpuKernel` routes with canonical-start + metric-start carry-state parity.
+- [x] Extend GPU validation to VCC fixed-candidate `trade_bootstrap` with host-side bootstrap reduction on stable `GpuKernel` routes.
+- [x] Validate VCC `cross_ticker` on the backend-preserving command-layer rerun path, with per-rerun `fp32`-stability gating unchanged.
+- [x] Refresh the checked-in VCC-capable prebuilt PTX so fallback builds keep the same validation kernel surface.
 - [x] Extend GPU validation to VEMR fixed-candidate in-sample metrics.
 - [x] Extend GPU validation to VEMR fixed-candidate `CSCV/PBO`.
 - [x] Extend GPU validation to VEMR fixed-candidate `SPA`.
@@ -990,12 +1075,29 @@ Verification must include both correctness and performance.
 
 Current practical base-composite note:
 
-- full device-side base-composite validation is still not practical without a generic composite GPU executor
-- the practical slice now implemented is GPU-assisted base-composite indicator preparation:
-  - `halftrend`
-  - `macz`
-  - `ott`
-- final desired-position generation and metrics evaluation remain CPU-canonical for base composite validation
+- full device-side generic base-composite execution is still not finished; the current route is intentionally bounded to plain `CompositeCpu` `signal_mode=HardGate`
+- the practical base-composite optimization slices now implemented are:
+  - GPU-assisted indicator preparation:
+    - `halftrend`
+    - `macz`
+    - `ott`
+  - backend-aware fast/slow MA generation in the shared CPU-canonical optimization/validation builders
+  - a bounded explicit `GpuKernel` optimization route for plain `CompositeCpu` `signal_mode=HardGate`, using:
+    - CPU-canonical composite gate construction
+    - uploaded device regime filters
+    - precomputed MA rows on the shared double-MA kernel path
+    - a composite warmup override so the GPU grid uses the same pair start semantics as the CPU composite evaluator
+- the practical base-composite validation slices now implemented reuse that same substrate for:
+  - fixed-candidate in-sample metrics
+  - `walk_forward`
+  - `CSCV/PBO`
+  - `SPA`
+  - `reopt_walk_forward`
+  - `trade_bootstrap` with host-side bootstrap reduction
+  - `perturb` via GPU reruns
+- current validation limitations for base composite:
+  - `cross_ticker` still falls back explicitly to CPU
+  - composite gate construction still starts from CPU-canonical indicator rows before the device reruns
 
 ### Phase 7: Statistical reduction split
 
@@ -2199,23 +2301,36 @@ Deliverables:
 
 ### Phase S2: frontend and request surface
 
-- [ ] Add `KQSR` to the strategy selector.
-- [ ] Add `CARM` to the strategy selector.
-- [ ] Add `KVDF` to the strategy selector.
+- [x] Add `KQSR` to the strategy selector.
+- [x] Add `CARM` to the strategy selector.
+- [x] Add `KVDF` to the strategy selector.
 - [x] Add `MKCS` to the strategy selector.
-- [ ] Add `CDMC` to the strategy selector.
-- [ ] Add request builders for all five strategies.
+- [x] Add `CDMC` to the strategy selector.
+- [x] Add request builders for all five strategies.
   - `MKCS` request shaping is implemented.
-- [ ] Add capability summaries showing `GpuKernel` + `CpuOnly` fallback.
+  - `KQSR`, `CARM`, `KVDF`, and `CDMC` now have explicit request-shaping support with documented default parameter blocks.
+  - current implementation note on March 11, 2026:
+    - `KQSR`, `CARM`, `KVDF`, and `CDMC` optimize requests are frontend-visible and deserialize cleanly in Rust.
+    - `CDMC` backend optimization still returns an explicit `not implemented yet` error.
+    - `KQSR`, `CARM`, and `KVDF` now have real CPU baselines, while their true `GpuKernel` execution is still pending.
+- [x] Add capability summaries showing `GpuKernel` + `CpuOnly` fallback.
   - `MKCS` capability summary is implemented.
+  - `KQSR`, `CARM`, `KVDF`, and `CDMC` now surface the same target-route contract, with explicit UI wording that backend execution for those four is still pending.
 
 ### Phase S3: CPU baselines
 
-- [ ] Implement CPU baseline for `KQSR`.
-- [ ] Implement CPU baseline for `CARM`.
-- [ ] Implement CPU baseline for `KVDF`.
+- [x] Implement CPU baseline for `KQSR`.
+- [x] Implement CPU baseline for `CARM`.
+- [x] Implement CPU baseline for `KVDF`.
 - [x] Implement CPU baseline for `MKCS`.
 - [ ] Implement CPU baseline for `CDMC`.
+  - current implementation note on March 11, 2026:
+    - `KQSR` now has a real CPU optimization baseline in `kqsr.rs` / `composite_cpu.rs`.
+    - `CARM` now has a real CPU optimization baseline in `carm.rs` / `composite_cpu.rs`.
+    - `KVDF` now has a real CPU optimization baseline in `kvdf.rs` / `composite_cpu.rs`.
+    - the implemented baseline maps fast/slow grid periods into `KDJ`, `sRSI`, `IFT RSI`, `QQE`, and `PRB` signal periods and evaluates CPU desired positions through the standard optimization result contract.
+    - the `CARM` baseline maps fast/slow grid periods into `Coppock`, `AO`, `ROCR`, `APO`, and `OTTO` confirmation periods and evaluates CPU desired positions through the same optimization result contract.
+    - the `KVDF` baseline maps fast/slow grid periods into `Keltner`, anchored `VWAP`, `DTI`, `DevStop`, and `FVG Trailing Stop` signals and evaluates CPU desired positions through the same optimization result contract.
 
 ### Phase S4: GPU signal staging
 
@@ -2236,6 +2351,9 @@ Deliverables:
 - [ ] Implement `GpuKernel` optimization for `CDMC`.
 - [ ] Wire clean `CpuOnly` fallback for all five.
   - `MKCS` fallback is implemented.
+  - `KQSR` now falls back cleanly to `CpuOnly` when `GpuKernel` is requested, but true `KQSR` GPU execution is still unimplemented.
+  - `CARM` now falls back cleanly to `CpuOnly` when `GpuKernel` is requested, but true `CARM` GPU execution is still unimplemented.
+  - `KVDF` now falls back cleanly to `CpuOnly` when `GpuKernel` is requested, but true `KVDF` GPU execution is still unimplemented.
 
 ### Phase S6: parity and evidence
 

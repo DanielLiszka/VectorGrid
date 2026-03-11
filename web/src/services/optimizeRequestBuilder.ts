@@ -363,7 +363,11 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Kqsr') return 'Kqsr'
+  if (kind === 'Carm') return 'Carm'
+  if (kind === 'Kvdf') return 'Kvdf'
   if (kind === 'Mkcs') return 'Mkcs'
+  if (kind === 'Cdmc') return 'Cdmc'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -1290,7 +1294,11 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     && kind !== 'Vcc'
     && kind !== 'Vemr'
     && kind !== 'Rocb'
+    && kind !== 'Kqsr'
+    && kind !== 'Carm'
+    && kind !== 'Kvdf'
     && kind !== 'Mkcs'
+    && kind !== 'Cdmc'
     && kind !== 'CompositeCpu'
   ) {
     return null
@@ -1302,8 +1310,22 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   const meta = inputs.context?.current_data_meta
   if (!meta || typeof meta !== 'object') throw new Error('Load CSV first.')
   const dataMeta = meta as Record<string, unknown>
-  if (!dataMeta.has_high || !dataMeta.has_low) {
+  const hasOpen = !!dataMeta.has_open
+  const hasHigh = !!dataMeta.has_high
+  const hasLow = !!dataMeta.has_low
+  const hasClose = !!dataMeta.has_close
+  const hasVolume = !!dataMeta.has_volume
+  if (kind === 'Kqsr' && (!hasOpen || !hasHigh || !hasLow || !hasClose)) {
+    throw new Error('KQSR requires open/high/low/close candle fields.')
+  }
+  if ((kind === 'Carm' || kind === 'Mkcs' || kind === 'CompositeCpu' || kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb') && (!hasHigh || !hasLow || !hasClose)) {
     throw new Error('Composite strategy requires high/low candle fields. Load a CSV with high+low columns.')
+  }
+  if (kind === 'Kvdf' && (!hasHigh || !hasLow || !hasClose || !hasVolume)) {
+    throw new Error('KVDF requires high/low/close/volume candle fields.')
+  }
+  if (kind === 'Cdmc' && !hasClose) {
+    throw new Error('CDMC requires close candle data.')
   }
 
   const fast: [number, number, number] = [
@@ -1326,7 +1348,18 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   if (!fastMaType) throw new Error('Select a fast MA type.')
   if (!slowMaType) throw new Error('Select a slow MA type.')
   const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
-  if (kind !== 'Asr' && kind !== 'Vcc' && kind !== 'Vemr' && kind !== 'Rocb' && kind !== 'Mkcs' && hasMovingAverageSupportData(maSupportMap)) {
+  if (
+    kind !== 'Asr'
+    && kind !== 'Vcc'
+    && kind !== 'Vemr'
+    && kind !== 'Rocb'
+    && kind !== 'Kqsr'
+    && kind !== 'Carm'
+    && kind !== 'Kvdf'
+    && kind !== 'Mkcs'
+    && kind !== 'Cdmc'
+    && hasMovingAverageSupportData(maSupportMap)
+  ) {
     if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
       throw new Error('Composite strategy is CPU-only and does not support one of the selected MA types.')
     }
@@ -1395,7 +1428,17 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   const strategy = buildStrategyConfigFromInputs(inputs, kind)
   const signalMode = normalizeCompositeSignalMode(inputs.compositeSignalMode)
   const backend = normalizeBackend(inputs.backend)
-  const backendPayload = (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs')
+  const backendPayload = (
+    kind === 'Asr'
+    || kind === 'Vcc'
+    || kind === 'Vemr'
+    || kind === 'Rocb'
+    || kind === 'Kqsr'
+    || kind === 'Carm'
+    || kind === 'Kvdf'
+    || kind === 'Mkcs'
+    || kind === 'Cdmc'
+  )
     ? (backend === 'CpuOnly' ? { backend: 'CpuOnly' } : { backend, device_id: 0 })
     : { backend: 'CpuOnly' }
 
@@ -1605,6 +1648,55 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
         reexpansion_threshold: 0.03,
       }
     : undefined
+  const kqsr = kind === 'Kqsr'
+    ? {
+        kdj_period: 14,
+        srsi_period: 14,
+        srsi_smooth: 3,
+        ift_rsi_period: 9,
+        qqe_period: 14,
+        oversold: 20,
+        overbought: 80,
+        prb_period: 20,
+        prb_threshold: 0.2,
+      }
+    : undefined
+  const carm = kind === 'Carm'
+    ? {
+        coppock_long_period: 14,
+        coppock_short_period: 11,
+        coppock_wma_period: 10,
+        ao_fast_period: 5,
+        ao_slow_period: 34,
+        rocr_period: 10,
+        apo_fast_period: 12,
+        apo_slow_period: 26,
+        otto_period: 20,
+        otto_threshold: 0,
+      }
+    : undefined
+  const kvdf = kind === 'Kvdf'
+    ? {
+        keltner_period: 20,
+        keltner_mult: 1.5,
+        vwap_anchor: 'session',
+        fvg_lookback: 20,
+        devstop_period: 14,
+        devstop_mult: 2.0,
+        dti_period: 14,
+        dti_threshold: 20,
+      }
+    : undefined
+  const cdmc = kind === 'Cdmc'
+    ? {
+        dpo_period: 20,
+        correlation_cycle_period: 20,
+        mama_fast_limit: 0.5,
+        mama_slow_limit: 0.05,
+        decycler_period: 20,
+        phase_threshold: 0,
+      }
+    : undefined
 
   return {
     strategy_kind: kind,
@@ -1627,7 +1719,11 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     vcc,
     vemr,
     rocb,
+    kqsr,
+    carm,
+    kvdf,
     mkcs,
+    cdmc,
     objective,
     mode: 'Grid',
     top_k: topK,

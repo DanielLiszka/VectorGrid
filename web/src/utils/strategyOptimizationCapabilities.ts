@@ -5,7 +5,11 @@ export type StrategyOptimizationKind =
   | 'Vcc'
   | 'Vemr'
   | 'Rocb'
+  | 'Kqsr'
+  | 'Carm'
+  | 'Kvdf'
   | 'Mkcs'
+  | 'Cdmc'
   | 'CompositeCpu'
   | 'CompositeTrend'
   | 'RegimeHybrid'
@@ -35,7 +39,11 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
     case 'Vcc':
     case 'Vemr':
     case 'Rocb':
+    case 'Kqsr':
+    case 'Carm':
+    case 'Kvdf':
     case 'Mkcs':
+    case 'Cdmc':
     case 'CompositeCpu':
     case 'CompositeTrend':
     case 'RegimeHybrid':
@@ -88,7 +96,17 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
           : 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs.',
     }
   }
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs') {
+  if (
+    kind === 'Asr'
+    || kind === 'Vcc'
+    || kind === 'Vemr'
+    || kind === 'Rocb'
+    || kind === 'Kqsr'
+    || kind === 'Carm'
+    || kind === 'Kvdf'
+    || kind === 'Mkcs'
+    || kind === 'Cdmc'
+  ) {
     return {
       kind,
       usesGlobalBackend: true,
@@ -99,6 +117,8 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
       supportsIncludeAll: true,
       executionSummary: kind === 'Mkcs'
         ? 'MKCS can use CPU or unified GPU execution, with fast/slow ranges mapped into compression and breakout periods.'
+        : kind === 'Kqsr' || kind === 'Carm' || kind === 'Kvdf' || kind === 'Cdmc'
+          ? `${kind} is staged on the GPU-native expansion track. The request surface targets GpuKernel with CpuOnly fallback, but backend optimization is not implemented yet.`
         : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
       outputSummary: `${kind} returns best/top rows, but does not emit the Double MA heatmap or per-pair CSV export.`,

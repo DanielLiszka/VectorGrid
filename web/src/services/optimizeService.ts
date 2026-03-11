@@ -927,7 +927,11 @@ type OptimizeStrategyKind =
   | 'Marrt'
   | 'Vfct'
   | 'Rocb'
+  | 'Kqsr'
+  | 'Carm'
+  | 'Kvdf'
   | 'Mkcs'
+  | 'Cdmc'
   | 'Asr'
   | 'Vcc'
   | 'Vemr'
@@ -946,7 +950,11 @@ function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Kqsr') return 'Kqsr'
+  if (kind === 'Carm') return 'Carm'
+  if (kind === 'Kvdf') return 'Kvdf'
   if (kind === 'Mkcs') return 'Mkcs'
+  if (kind === 'Cdmc') return 'Cdmc'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -961,7 +969,18 @@ function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
 function resolveOptimizationCommand(kindRaw: unknown): 'run_double_ma_optimization' | 'run_composite_cpu_optimization' | 'run_composite_mo_optimization' {
   const kind = normalizeStrategyKindRaw(kindRaw)
   if (kind === 'CompositeMo') return 'run_composite_mo_optimization'
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs' || kind === 'CompositeCpu') {
+  if (
+    kind === 'Asr'
+    || kind === 'Vcc'
+    || kind === 'Vemr'
+    || kind === 'Rocb'
+    || kind === 'Kqsr'
+    || kind === 'Carm'
+    || kind === 'Kvdf'
+    || kind === 'Mkcs'
+    || kind === 'Cdmc'
+    || kind === 'CompositeCpu'
+  ) {
     return 'run_composite_cpu_optimization'
   }
   return 'run_double_ma_optimization'
@@ -1269,7 +1288,18 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
     return buildAutoDoubleMaRequest(context)
   }
 
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs' || kind === 'CompositeCpu') {
+  if (
+    kind === 'Asr'
+    || kind === 'Vcc'
+    || kind === 'Vemr'
+    || kind === 'Rocb'
+    || kind === 'Kqsr'
+    || kind === 'Carm'
+    || kind === 'Kvdf'
+    || kind === 'Mkcs'
+    || kind === 'Cdmc'
+    || kind === 'CompositeCpu'
+  ) {
     const maSupportMap = await getMovingAverageSupportMap()
     return buildCompositeCpuOptimizationRequest({
       context,

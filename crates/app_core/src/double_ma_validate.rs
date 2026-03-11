@@ -20,9 +20,9 @@ use crate::validation_pipeline::{
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
@@ -72,14 +72,18 @@ fn resolve_validation_backend_runtime(
             BackendUsed::Cpu,
             Some("Auto->CpuOnly".to_string()),
             fallback_reason.or_else(|| {
-                Some("GPU validation runtime not implemented yet; using CPU validation.".to_string())
+                Some(
+                    "GPU validation runtime not implemented yet; using CPU validation.".to_string(),
+                )
             }),
         ),
         _ => (
             BackendUsed::Cpu,
             Some(format!("{}->CpuOnly", validation_backend_label(backend))),
             fallback_reason.or_else(|| {
-                Some("GPU validation runtime not implemented yet; using CPU validation.".to_string())
+                Some(
+                    "GPU validation runtime not implemented yet; using CPU validation.".to_string(),
+                )
             }),
         ),
     }
@@ -97,13 +101,15 @@ struct GpuFixedCandidateValidationEval {
     backend_fallback_reason: Option<String>,
 }
 
-fn validation_supports_gpu_fixed_candidates(req: &DoubleMaValidationRequest) -> Result<u32, String> {
+fn validation_supports_gpu_fixed_candidates(
+    req: &DoubleMaValidationRequest,
+) -> Result<u32, String> {
     match req.backend {
         Backend::CpuOnly => Err("CPU validation requested".to_string()),
         Backend::GpuHybridKernel { device_id } => Ok(device_id),
-        Backend::GpuOnly { .. } => {
-            Err("fixed-candidate GPU validation requires GpuKernel-compatible execution".to_string())
-        }
+        Backend::GpuOnly { .. } => Err(
+            "fixed-candidate GPU validation requires GpuKernel-compatible execution".to_string(),
+        ),
         Backend::GpuKernel { device_id } | Backend::Auto { device_id } => Ok(device_id),
     }
 }
@@ -121,7 +127,9 @@ fn gpu_validation_feature_blocker(req: &DoubleMaValidationRequest) -> Option<Str
         );
     }
     if req.cross_ticker.is_some() {
-        return Some("GPU fixed-candidate validation does not support cross_ticker yet".to_string());
+        return Some(
+            "GPU fixed-candidate validation does not support cross_ticker yet".to_string(),
+        );
     }
     if !matches!(req.validation_engine, ValidationEngine::Vectorized) {
         return Some(
@@ -164,11 +172,101 @@ fn gpu_fixed_candidate_metric_map(
 ) -> Result<GpuFixedMetricMapResult, String> {
     match req.backend {
         Backend::GpuHybridKernel { .. } => {
-            if eval_range.is_some() {
-                return Err(
-                    "GPU fixed-candidate validation does not support walk_forward on GpuHybridKernel yet"
-                        .to_string(),
-                );
+            if let Some(eval_range) = eval_range {
+                if !crate::double_ma_backend::hybrid_backend_enabled() {
+                    let res = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_in_range(
+                        candles,
+                        fast_periods,
+                        slow_periods,
+                        fast_ma_type,
+                        slow_ma_type,
+                        &req.ma_source,
+                        first_fast_params,
+                        first_slow_params,
+                        regime_filter,
+                        first_strategy,
+                        ta_optimizer::ObjectiveKind::Sharpe,
+                        combos.len(),
+                        true,
+                        crate::gpu_backtest_kernel::KernelConfig {
+                            device_id,
+                            fast_alma_offset,
+                            fast_alma_sigma,
+                            slow_alma_offset,
+                            slow_alma_sigma,
+                        },
+                        None,
+                        None,
+                        combos.len(),
+                        0,
+                        None,
+                        Some(eval_range),
+                        &AtomicBool::new(false),
+                        None,
+                    )?;
+                    let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
+                        HashMap::with_capacity(combos.len());
+                    if let Some(all) = res.all.as_ref() {
+                        for (params, metric) in all {
+                            metric_by_pair
+                                .insert((params.fast_len, params.slow_len), metric.clone());
+                        }
+                    }
+                    return Ok((
+                        metric_by_pair,
+                        BackendUsed::Gpu,
+                        Some("GpuHybridKernel->GpuKernel".to_string()),
+                        Some(
+                            "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
+                                .to_string(),
+                        ),
+                    ));
+                }
+
+                let total_pairs =
+                    crate::double_ma::estimate_pairs_fast_lt_slow(fast_periods, slow_periods);
+                let (res, _, backend_used, route_note, fallback_reason) =
+                    crate::double_ma::optimize_double_ma_gpu_hybrid_kernel_phase1(
+                        candles,
+                        device_id,
+                        fast_periods,
+                        slow_periods,
+                        fast_ma_type,
+                        slow_ma_type,
+                        &req.ma_source,
+                        first_fast_params,
+                        first_slow_params,
+                        regime_filter,
+                        first_strategy,
+                        ta_optimizer::ObjectiveKind::Sharpe,
+                        combos.len(),
+                        true,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        None,
+                        None,
+                        total_pairs,
+                        0,
+                        &AtomicBool::new(false),
+                        None,
+                        true,
+                        Some(eval_range),
+                    )?;
+                let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
+                    HashMap::with_capacity(combos.len());
+                if let Some(all) = res.all.as_ref() {
+                    for (params, metric) in all {
+                        metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
+                    }
+                }
+                return Ok((
+                    metric_by_pair,
+                    backend_used,
+                    route_note.or_else(|| Some("GpuHybridKernel".to_string())),
+                    fallback_reason,
+                ));
             }
             let res = crate::double_ma::run_double_ma_optimization_blocking_with_candles(
                 crate::double_ma::DoubleMaRequest {
@@ -246,6 +344,7 @@ fn gpu_fixed_candidate_metric_map(
                 None,
                 fast_periods.len().saturating_mul(slow_periods.len()),
                 0,
+                None,
                 eval_range,
                 &AtomicBool::new(false),
                 None,
@@ -417,13 +516,6 @@ fn compute_gpu_cscv_slice_stats_for_candidates(
     slow_alma_sigma: f64,
     cfg: &CscvPboConfig,
 ) -> Result<Option<HashMap<(u16, u16), Vec<SliceReturnStats>>>, String> {
-    if matches!(req.backend, Backend::GpuHybridKernel { .. }) {
-        return Err(
-            "GPU fixed-candidate validation does not support CSCV/PBO on GpuHybridKernel yet"
-                .to_string(),
-        );
-    }
-
     let slices = sanitize_gpu_cscv_slices(cfg.slices);
     let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
     let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
@@ -499,13 +591,6 @@ fn compute_gpu_spa_slice_sums_for_candidates(
     slow_alma_sigma: f64,
     cfg: &SpaConfigOptional,
 ) -> Result<Option<HashMap<(u16, u16), Vec<f64>>>, String> {
-    if matches!(req.backend, Backend::GpuHybridKernel { .. }) {
-        return Err(
-            "GPU fixed-candidate validation does not support SPA on GpuHybridKernel yet"
-                .to_string(),
-        );
-    }
-
     let slices = cfg.slices.max(4);
     let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
     let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
@@ -564,12 +649,6 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
     first_slow_params: Option<&HashMap<String, f64>>,
     cfg: &ReoptWalkForwardConfigOptional,
 ) -> Result<Option<ReoptWalkForwardStats>, String> {
-    if matches!(req.backend, Backend::GpuHybridKernel { .. }) {
-        return Err(
-            "GPU fixed-candidate validation does not support reopt_walk_forward on GpuHybridKernel yet"
-                .to_string(),
-        );
-    }
     if finalist_params.is_empty() || candles.close.len() < 3 {
         return Ok(None);
     }
@@ -595,20 +674,17 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
             || params.slow_ma_type.trim().to_ascii_lowercase() != slow_ma_type
         {
             return Err(
-                "GPU reopt_walk_forward currently requires uniform fast/slow MA types"
-                    .to_string(),
+                "GPU reopt_walk_forward currently requires uniform fast/slow MA types".to_string(),
             );
         }
         if !serialized_eq(&params.strategy, first_strategy)? {
             return Err(
-                "GPU reopt_walk_forward currently requires a uniform StrategyConfig"
-                    .to_string(),
+                "GPU reopt_walk_forward currently requires a uniform StrategyConfig".to_string(),
             );
         }
         if !serialized_eq(&params.halftrend_filter, first_halftrend)? {
             return Err(
-                "GPU reopt_walk_forward currently requires a uniform halftrend filter"
-                    .to_string(),
+                "GPU reopt_walk_forward currently requires a uniform halftrend filter".to_string(),
             );
         }
         if !serialized_eq(
@@ -616,8 +692,7 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
             &first_fast_effective,
         )? {
             return Err(
-                "GPU reopt_walk_forward currently requires uniform fast MA params"
-                    .to_string(),
+                "GPU reopt_walk_forward currently requires uniform fast MA params".to_string(),
             );
         }
         if !serialized_eq(
@@ -625,8 +700,7 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
             &first_slow_effective,
         )? {
             return Err(
-                "GPU reopt_walk_forward currently requires uniform slow MA params"
-                    .to_string(),
+                "GPU reopt_walk_forward currently requires uniform slow MA params".to_string(),
             );
         }
         fast_periods.insert(params.fast_len);
@@ -643,7 +717,11 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
                 params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
             )
         });
-        finalist_entries.push((key, (params.fast_len, params.slow_len), finalist_start_ts[idx]));
+        finalist_entries.push((
+            key,
+            (params.fast_len, params.slow_len),
+            finalist_start_ts[idx],
+        ));
     }
     let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
     let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
@@ -783,9 +861,17 @@ fn candidate_start_t(
     params: &DoubleMaValidationParams,
 ) -> Result<usize, String> {
     let n = candles.close.len();
-    let trade_offset = if params.strategy.trade_on_next_bar { 1 } else { 0 };
+    let trade_offset = if params.strategy.trade_on_next_bar {
+        1
+    } else {
+        0
+    };
     let ma_warmup = base_first_valid
-        .saturating_add((params.fast_len as usize).max(params.slow_len as usize).saturating_sub(1))
+        .saturating_add(
+            (params.fast_len as usize)
+                .max(params.slow_len as usize)
+                .saturating_sub(1),
+        )
         .saturating_add(trade_offset);
     let mut start_t = ma_warmup;
     let halftrend_trend = compute_combined_regime_filter(
@@ -802,7 +888,8 @@ fn candidate_start_t(
             .ok_or_else(|| "regime trend series all non-finite".to_string())?;
         start_t = start_t.max(fv_ht);
     }
-    if let Some(ks) = crate::double_ma::compute_kaufman_stop_series(candles, &params.strategy)?.as_ref()
+    if let Some(ks) =
+        crate::double_ma::compute_kaufman_stop_series(candles, &params.strategy)?.as_ref()
     {
         let fv_k_long = first_finite_idx(&ks.long)
             .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
@@ -820,12 +907,6 @@ fn try_prepare_gpu_fixed_candidate_validation(
     base_first_valid: usize,
 ) -> Result<GpuFixedCandidateValidationEval, String> {
     let device_id = validation_supports_gpu_fixed_candidates(req)?;
-    if req.reopt_walk_forward.is_some() && matches!(req.backend, Backend::GpuHybridKernel { .. }) {
-        return Err(
-            "GPU fixed-candidate validation does not support reopt_walk_forward on GpuHybridKernel yet"
-                .to_string(),
-        );
-    }
     if let Some(reason) = gpu_validation_feature_blocker(req) {
         return Err(reason);
     }
@@ -843,8 +924,14 @@ fn try_prepare_gpu_fixed_candidate_validation(
         return Err("candidate MA types cannot be empty".to_string());
     }
 
-    let first_fast_params = first.fast_ma_params.as_ref().or(req.fast_ma_params.as_ref());
-    let first_slow_params = first.slow_ma_params.as_ref().or(req.slow_ma_params.as_ref());
+    let first_fast_params = first
+        .fast_ma_params
+        .as_ref()
+        .or(req.fast_ma_params.as_ref());
+    let first_slow_params = first
+        .slow_ma_params
+        .as_ref()
+        .or(req.slow_ma_params.as_ref());
     let first_strategy = &first.strategy;
     let first_halftrend = &first.halftrend_filter;
     if let Some(reason) = gpu_validation_strategy_blocker(first_strategy) {
@@ -877,15 +964,19 @@ fn try_prepare_gpu_fixed_candidate_validation(
                     .to_string(),
             );
         }
-        if !serialized_eq(&cand.fast_ma_params.as_ref().or(req.fast_ma_params.as_ref()), &first_fast_params)?
-        {
+        if !serialized_eq(
+            &cand.fast_ma_params.as_ref().or(req.fast_ma_params.as_ref()),
+            &first_fast_params,
+        )? {
             return Err(
                 "GPU fixed-candidate validation currently requires uniform fast MA params"
                     .to_string(),
             );
         }
-        if !serialized_eq(&cand.slow_ma_params.as_ref().or(req.slow_ma_params.as_ref()), &first_slow_params)?
-        {
+        if !serialized_eq(
+            &cand.slow_ma_params.as_ref().or(req.slow_ma_params.as_ref()),
+            &first_slow_params,
+        )? {
             return Err(
                 "GPU fixed-candidate validation currently requires uniform slow MA params"
                     .to_string(),
@@ -900,7 +991,12 @@ fn try_prepare_gpu_fixed_candidate_validation(
             fast_ma_id: 0,
             slow_ma_id: 0,
         });
-        start_ts.push(candidate_start_t(candles, &req.ma_source, base_first_valid, cand)?);
+        start_ts.push(candidate_start_t(
+            candles,
+            &req.ma_source,
+            base_first_valid,
+            cand,
+        )?);
     }
 
     let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
@@ -1062,7 +1158,10 @@ fn try_prepare_gpu_fixed_candidate_validation(
     _base_first_valid: usize,
 ) -> Result<GpuFixedCandidateValidationEval, String> {
     let _ = req;
-    Err("GPU fixed-candidate validation requires cuda and cuda-backtest-kernel features".to_string())
+    Err(
+        "GPU fixed-candidate validation requires cuda and cuda-backtest-kernel features"
+            .to_string(),
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1857,7 +1956,11 @@ fn compute_gpu_perturb_stats_for_candidate(
             validation_context: None,
         };
 
-        let metric = match try_prepare_gpu_fixed_candidate_validation(&temp_req, candles, base_first_valid) {
+        let metric = match try_prepare_gpu_fixed_candidate_validation(
+            &temp_req,
+            candles,
+            base_first_valid,
+        ) {
             Ok(eval) => eval.metrics.into_iter().next().ok_or_else(|| {
                 "GPU perturb validation returned no metrics for perturbed candidate".to_string()
             })?,
@@ -1886,6 +1989,24 @@ fn compute_gpu_perturb_stats_for_candidate(
     Ok(Some(crate::validation_pipeline::summarize_perturb_stats(
         cfg, iters, &sharpes, &dds, &pnls, pnl_pos,
     )))
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_perturb_stats_for_candidate(
+    _req: &DoubleMaValidationRequest,
+    _candles: &vector_ta::utilities::data_loader::Candles,
+    _base_first_valid: usize,
+    _lr: &[f64],
+    _ma_source: &str,
+    _fast_ma_params: Option<&HashMap<String, f64>>,
+    _slow_ma_params: Option<&HashMap<String, f64>>,
+    _base: &DoubleMaValidationParams,
+    _cfg: &PerturbConfig,
+    _cancel: &AtomicBool,
+    _rng: &mut StdRng,
+) -> Result<Option<PerturbStats>, String> {
+    Ok(None)
 }
 
 pub fn run_double_ma_validation_blocking_with_candles(
@@ -1944,13 +2065,15 @@ pub fn run_double_ma_validation_blocking_with_candles(
     let spa_cfg = req.spa.clone();
     let mut gpu_validation_fallback_reason: Option<String> = None;
     let gpu_fixed_eval = match validation_supports_gpu_fixed_candidates(&req) {
-        Ok(_) => match try_prepare_gpu_fixed_candidate_validation(&req, candles, base_first_valid) {
-            Ok(eval) => Some(eval),
-            Err(err) => {
-                gpu_validation_fallback_reason = Some(err);
-                None
+        Ok(_) => {
+            match try_prepare_gpu_fixed_candidate_validation(&req, candles, base_first_valid) {
+                Ok(eval) => Some(eval),
+                Err(err) => {
+                    gpu_validation_fallback_reason = Some(err);
+                    None
+                }
             }
-        },
+        }
         Err(reason) => {
             if !matches!(req.backend, Backend::CpuOnly) {
                 gpu_validation_fallback_reason = Some(reason);
@@ -1984,13 +2107,12 @@ pub fn run_double_ma_validation_blocking_with_candles(
                     .walk_forwards
                     .as_ref()
                     .and_then(|stats| stats.get(idx).cloned());
-                let robust_score =
-                    crate::validation_pipeline::robust_score_from_metrics(
-                        &in_sample,
-                        walk_forward
-                            .as_ref()
-                            .map(|w| (w.sharpe_median, w.max_dd_worst)),
-                    );
+                let robust_score = crate::validation_pipeline::robust_score_from_metrics(
+                    &in_sample,
+                    walk_forward
+                        .as_ref()
+                        .map(|w| (w.sharpe_median, w.max_dd_worst)),
+                );
                 let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
                     compute_gpu_perturb_stats_for_candidate(
                         &req,
@@ -2319,11 +2441,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
                 gpu_eval.backend_fallback_reason.clone(),
             )
         } else {
-            resolve_validation_backend_runtime(
-                &req.backend,
-                false,
-                gpu_validation_fallback_reason,
-            )
+            resolve_validation_backend_runtime(&req.backend, false, gpu_validation_fallback_reason)
         };
     Ok(DoubleMaValidationResult {
         data_id: req.data_id,
@@ -2575,12 +2693,11 @@ mod tests {
         {
             assert!(matches!(res.backend_used, BackendUsed::Cpu));
             assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-            assert!(
-                res.backend_fallback_reason
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("requires cuda")
-            );
+            assert!(res
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("requires cuda"));
         }
     }
 
@@ -2703,9 +2820,7 @@ mod tests {
             assert_eq!(
                 cpu.track_record_bars, gpu.track_record_bars,
                 "track_record mismatch cpu={} gpu={} route={:?}",
-                cpu.track_record_bars,
-                gpu.track_record_bars,
-                gpu_res.backend_route
+                cpu.track_record_bars, gpu.track_record_bars, gpu_res.backend_route
             );
         }
     }
@@ -2857,7 +2972,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_hybrid_walk_forward_reports_cpu_fallback_route() {
+    fn double_ma_validation_gpu_hybrid_walk_forward_matches_cpu_regime_hybrid() {
         let candles = make_choppy_candles(4096);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -2870,10 +2985,15 @@ mod tests {
             regime_hybrid_reversion_exit_rel: 0.0015,
             ..StrategyConfig::default()
         };
-        let res = run_double_ma_validation_blocking_with_candles(
+        let walk_forward = Some(WalkForwardConfigOptional {
+            window_bars: 512,
+            step_bars: 256,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
             DoubleMaValidationRequest {
-                data_id: "gpu-hybrid-wf".to_string(),
-                backend: Backend::GpuHybridKernel { device_id: 0 },
+                data_id: "cpu-hybrid-wf".to_string(),
+                backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
                 fast_ma_params: None,
                 slow_ma_params: None,
@@ -2884,13 +3004,10 @@ mod tests {
                     slow_len: 30,
                     fast_ma_params: None,
                     slow_ma_params: None,
-                    strategy,
+                    strategy: strategy.clone(),
                     halftrend_filter: None,
                 }],
-                walk_forward: Some(WalkForwardConfigOptional {
-                    window_bars: 512,
-                    step_bars: 256,
-                }),
+                walk_forward: walk_forward.clone(),
                 reopt_walk_forward: None,
                 spa: None,
                 perturb: None,
@@ -2912,16 +3029,72 @@ mod tests {
             &cancel,
             None,
         )
-        .expect("gpu hybrid walk_forward fallback");
+        .expect("cpu hybrid walk_forward");
 
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
-        assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("walk_forward on GpuHybridKernel")
-        );
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-wf".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![DoubleMaValidationParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: strategy.clone(),
+                    halftrend_filter: None,
+                }],
+                walk_forward,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid walk_forward");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 5e-2);
+        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 5e-2);
+        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-5);
+        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-5);
+        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
+        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3027,13 +3200,11 @@ mod tests {
         .expect("gpu hybrid validation");
 
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
-        assert!(
-            gpu_res
-                .backend_route
-                .as_deref()
-                .unwrap_or_default()
-                .contains("GpuHybridKernel")
-        );
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             assert!(
@@ -3060,9 +3231,7 @@ mod tests {
             assert_eq!(
                 cpu.track_record_bars, gpu.track_record_bars,
                 "track_record mismatch cpu={} gpu={} route={:?}",
-                cpu.track_record_bars,
-                gpu.track_record_bars,
-                gpu_res.backend_route
+                cpu.track_record_bars, gpu.track_record_bars, gpu_res.backend_route
             );
         }
     }
@@ -3286,13 +3455,11 @@ mod tests {
         .expect("gpu hybrid validation");
 
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
-        assert!(
-            gpu_res
-                .backend_route
-                .as_deref()
-                .unwrap_or_default()
-                .contains("GpuHybridKernel")
-        );
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
@@ -3624,13 +3791,11 @@ mod tests {
         .expect("gpu hybrid validation");
 
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
-        assert!(
-            gpu_res
-                .backend_route
-                .as_deref()
-                .unwrap_or_default()
-                .contains("GpuHybridKernel")
-        );
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
@@ -3642,8 +3807,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_hybrid_walk_forward_reports_cpu_fallback_route_trend_quality_adx_on()
-    {
+    fn double_ma_validation_gpu_hybrid_walk_forward_matches_cpu_trend_quality_adx_on() {
         let candles = make_trending_candles_with_slope(4096, 0.07);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -3660,10 +3824,15 @@ mod tests {
             trend_quality_adx_min: 20.0,
             ..StrategyConfig::default()
         };
-        let res = run_double_ma_validation_blocking_with_candles(
+        let walk_forward = Some(WalkForwardConfigOptional {
+            window_bars: 512,
+            step_bars: 256,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
             DoubleMaValidationRequest {
-                data_id: "gpu-hybrid-composite-trend-wf".to_string(),
-                backend: Backend::GpuHybridKernel { device_id: 0 },
+                data_id: "cpu-hybrid-composite-trend-wf".to_string(),
+                backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
                 fast_ma_params: None,
                 slow_ma_params: None,
@@ -3674,13 +3843,10 @@ mod tests {
                     slow_len: 30,
                     fast_ma_params: None,
                     slow_ma_params: None,
-                    strategy,
+                    strategy: strategy.clone(),
                     halftrend_filter: None,
                 }],
-                walk_forward: Some(WalkForwardConfigOptional {
-                    window_bars: 512,
-                    step_bars: 256,
-                }),
+                walk_forward: walk_forward.clone(),
                 reopt_walk_forward: None,
                 spa: None,
                 perturb: None,
@@ -3702,22 +3868,77 @@ mod tests {
             &cancel,
             None,
         )
-        .expect("gpu hybrid walk_forward fallback");
+        .expect("cpu hybrid walk_forward");
 
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
-        assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("walk_forward on GpuHybridKernel")
-        );
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-composite-trend-wf".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![DoubleMaValidationParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: strategy.clone(),
+                    halftrend_filter: None,
+                }],
+                walk_forward,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid walk_forward");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 5e-2);
+        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 5e-2);
+        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-5);
+        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-5);
+        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
+        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_hybrid_cscv_reports_cpu_fallback_route_breakout_momentum_adx_on()
-    {
+    fn double_ma_validation_gpu_hybrid_cscv_matches_cpu_breakout_momentum_adx_on() {
         let candles = make_breakout_candles(5000);
         let cancel = AtomicBool::new(false);
         let mut strategy = crate::strategy_presets::breakout_strategy_for_kernel();
@@ -3725,7 +3946,66 @@ mod tests {
         strategy.breakout_adx_period = 14;
         strategy.breakout_adx_min = 20.0;
 
-        let res = run_double_ma_validation_blocking_with_candles(
+        let cscv = Some(CscvPboConfig {
+            slices: 8,
+            max_combinations: 1000,
+            threshold: 0.0,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-hybrid-breakout-cscv".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: cscv.clone(),
+                spa: None,
+                seed: 1,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu hybrid cscv");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
             DoubleMaValidationRequest {
                 data_id: "gpu-hybrid-breakout-cscv".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
@@ -3750,7 +4030,7 @@ mod tests {
                         slow_len: 42,
                         fast_ma_params: None,
                         slow_ma_params: None,
-                        strategy,
+                        strategy: strategy.clone(),
                         halftrend_filter: None,
                     },
                 ],
@@ -3759,11 +4039,7 @@ mod tests {
                 perturb: None,
                 trade_bootstrap: None,
                 cross_ticker: None,
-                cscv_pbo: Some(CscvPboConfig {
-                    slices: 8,
-                    max_combinations: 1000,
-                    threshold: 0.0,
-                }),
+                cscv_pbo: cscv,
                 spa: None,
                 seed: 1,
                 max_candidates: 32,
@@ -3780,16 +4056,47 @@ mod tests {
             &cancel,
             None,
         )
-        .expect("gpu hybrid cscv fallback");
+        .expect("gpu hybrid cscv");
 
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
+        let cpu_cscv = cpu_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
+        assert_eq!(cpu_cscv.slices, gpu_cscv.slices);
+        assert_eq!(cpu_cscv.slice_bars, gpu_cscv.slice_bars);
         assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("CSCV/PBO on GpuHybridKernel")
+            (cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-3,
+            "cscv pbo mismatch cpu={} gpu={}",
+            cpu_cscv.pbo,
+            gpu_cscv.pbo
         );
+        assert!(
+            (cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-3,
+            "cscv lambda mismatch cpu={} gpu={}",
+            cpu_cscv.lambda_p50,
+            gpu_cscv.lambda_p50
+        );
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-6);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3809,8 +4116,7 @@ mod tests {
         };
         let lr = compute_log_returns_f64(&candles.close);
         let base_first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
-            &candles,
-            "close",
+            &candles, "close",
         ))
         .expect("base first valid");
         let series = build_candidate_series(
@@ -3955,8 +4261,7 @@ mod tests {
 
         let lr = compute_log_returns_f64(&candles.close);
         let base_first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
-            &candles,
-            "close",
+            &candles, "close",
         ))
         .expect("base first valid");
         let series = build_candidate_series(
@@ -4238,8 +4543,18 @@ mod tests {
         let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
         assert_eq!(cpu_cscv.slices, gpu_cscv.slices);
         assert_eq!(cpu_cscv.slice_bars, gpu_cscv.slice_bars);
-        assert!((cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-3);
-        assert!((cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-3);
+        assert!(
+            (cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-3,
+            "cscv pbo mismatch cpu={} gpu={}",
+            cpu_cscv.pbo,
+            gpu_cscv.pbo
+        );
+        assert!(
+            (cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-3,
+            "cscv lambda mismatch cpu={} gpu={}",
+            cpu_cscv.lambda_p50,
+            gpu_cscv.lambda_p50
+        );
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
@@ -4448,7 +4763,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_hybrid_cscv_reports_cpu_fallback_route() {
+    fn double_ma_validation_gpu_hybrid_cscv_smoke_regime_hybrid() {
         let candles = make_choppy_candles(4096);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -4462,7 +4777,13 @@ mod tests {
             ..StrategyConfig::default()
         };
 
-        let res = run_double_ma_validation_blocking_with_candles(
+        let cscv = Some(CscvPboConfig {
+            slices: 8,
+            max_combinations: 1000,
+            threshold: 0.0,
+        });
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
             DoubleMaValidationRequest {
                 data_id: "gpu-hybrid-cscv".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
@@ -4487,7 +4808,7 @@ mod tests {
                         slow_len: 42,
                         fast_ma_params: None,
                         slow_ma_params: None,
-                        strategy,
+                        strategy: strategy.clone(),
                         halftrend_filter: None,
                     },
                 ],
@@ -4496,11 +4817,7 @@ mod tests {
                 perturb: None,
                 trade_bootstrap: None,
                 cross_ticker: None,
-                cscv_pbo: Some(CscvPboConfig {
-                    slices: 8,
-                    max_combinations: 1000,
-                    threshold: 0.0,
-                }),
+                cscv_pbo: cscv,
                 spa: None,
                 seed: 1,
                 max_candidates: 32,
@@ -4517,21 +4834,28 @@ mod tests {
             &cancel,
             None,
         )
-        .expect("gpu hybrid cscv fallback");
+        .expect("gpu hybrid cscv");
 
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
-        assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("CSCV/PBO on GpuHybridKernel")
-        );
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
+        assert_eq!(gpu_cscv.slices, 8);
+        assert!(gpu_cscv.slice_bars > 0);
+        assert!(gpu_cscv.pbo.is_finite());
+        assert!(gpu_cscv.lambda_p50.is_finite());
+        for gpu in &gpu_res.candidates {
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            assert!(gpu_st.is_selected_frac.is_finite());
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_hybrid_spa_reports_cpu_fallback_route() {
+    fn double_ma_validation_gpu_hybrid_spa_smoke_regime_hybrid() {
         let candles = make_choppy_candles(4096);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -4545,7 +4869,14 @@ mod tests {
             ..StrategyConfig::default()
         };
 
-        let res = run_double_ma_validation_blocking_with_candles(
+        let spa = Some(SpaConfigOptional {
+            slices: 8,
+            bootstrap_samples: 64,
+            block_length: 3,
+            benchmark: SpaBenchmarkKind::BuyAndHold,
+        });
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
             DoubleMaValidationRequest {
                 data_id: "gpu-hybrid-spa".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
@@ -4570,7 +4901,7 @@ mod tests {
                         slow_len: 42,
                         fast_ma_params: None,
                         slow_ma_params: None,
-                        strategy,
+                        strategy: strategy.clone(),
                         halftrend_filter: None,
                     },
                 ],
@@ -4580,12 +4911,7 @@ mod tests {
                 trade_bootstrap: None,
                 cross_ticker: None,
                 cscv_pbo: None,
-                spa: Some(SpaConfigOptional {
-                    slices: 8,
-                    bootstrap_samples: 64,
-                    block_length: 3,
-                    benchmark: SpaBenchmarkKind::BuyAndHold,
-                }),
+                spa,
                 seed: 3,
                 max_candidates: 32,
                 validation_engine: ValidationEngine::Vectorized,
@@ -4601,16 +4927,21 @@ mod tests {
             &cancel,
             None,
         )
-        .expect("gpu hybrid spa fallback");
+        .expect("gpu hybrid spa");
 
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
-        assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("SPA on GpuHybridKernel")
-        );
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
+        let gpu_spa = gpu_res.spa.as_ref().expect("gpu spa");
+        assert_eq!(gpu_spa.slice_count, 8);
+        assert_eq!(gpu_spa.candidate_count, 2);
+        assert!(!gpu_spa.best_candidate_key.is_empty());
+        assert!(gpu_spa.best_candidate_mean_diff.is_finite());
+        assert!(gpu_spa.best_candidate_t_stat.is_finite());
+        assert!(gpu_spa.p_value.is_finite());
     }
 
     #[test]
@@ -4789,41 +5120,35 @@ mod tests {
         assert_eq!(cpu_stats.unique_winners, gpu_stats.unique_winners);
         assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
         assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
-        assert!(
-            (cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6
-        );
+        assert!((cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6);
         assert!(
             (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
         );
-        assert!(
-            (cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6
-        );
+        assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
         assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
         assert!(
             (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
                 < 1e-6
         );
-        assert!(
-            (cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2
-        );
-        assert!(
-            (cpu_stats.forward_sharpe_worst - gpu_stats.forward_sharpe_worst).abs() < 5e-2
-        );
-        assert!(
-            (cpu_stats.forward_max_dd_median - gpu_stats.forward_max_dd_median).abs() < 1e-5
-        );
-        assert!(
-            (cpu_stats.forward_max_dd_worst - gpu_stats.forward_max_dd_worst).abs() < 1e-5
-        );
+        assert!((cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2);
+        assert!((cpu_stats.forward_sharpe_worst - gpu_stats.forward_sharpe_worst).abs() < 5e-2);
+        assert!((cpu_stats.forward_max_dd_median - gpu_stats.forward_max_dd_median).abs() < 1e-5);
+        assert!((cpu_stats.forward_max_dd_worst - gpu_stats.forward_max_dd_worst).abs() < 1e-5);
         assert!((cpu_stats.forward_pnl_median - gpu_stats.forward_pnl_median).abs() < 1e-3);
         assert!((cpu_stats.forward_pnl_worst - gpu_stats.forward_pnl_worst).abs() < 1e-3);
-        assert_eq!(cpu_stats.forward_trades_median, gpu_stats.forward_trades_median);
-        assert_eq!(cpu_stats.forward_trades_worst, gpu_stats.forward_trades_worst);
+        assert_eq!(
+            cpu_stats.forward_trades_median,
+            gpu_stats.forward_trades_median
+        );
+        assert_eq!(
+            cpu_stats.forward_trades_worst,
+            gpu_stats.forward_trades_worst
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_hybrid_reopt_walk_forward_reports_cpu_fallback_route() {
+    fn double_ma_validation_gpu_hybrid_reopt_walk_forward_matches_cpu_regime_hybrid() {
         let candles = make_choppy_candles(4096);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -4837,7 +5162,66 @@ mod tests {
             ..StrategyConfig::default()
         };
 
-        let res = run_double_ma_validation_blocking_with_candles(
+        let reopt = Some(ReoptWalkForwardConfigOptional {
+            window_bars: 1024,
+            step_bars: 512,
+            top_n_candidates: 2,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-hybrid-reopt".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: reopt.clone(),
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa: None,
+                seed: 5,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu hybrid reopt");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
             DoubleMaValidationRequest {
                 data_id: "gpu-hybrid-reopt".to_string(),
                 backend: Backend::GpuHybridKernel { device_id: 0 },
@@ -4867,11 +5251,7 @@ mod tests {
                     },
                 ],
                 walk_forward: None,
-                reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
-                    window_bars: 1024,
-                    step_bars: 512,
-                    top_n_candidates: 2,
-                }),
+                reopt_walk_forward: reopt,
                 perturb: None,
                 trade_bootstrap: None,
                 cross_ticker: None,
@@ -4892,15 +5272,44 @@ mod tests {
             &cancel,
             None,
         )
-        .expect("gpu hybrid reopt fallback");
+        .expect("gpu hybrid reopt");
 
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(gpu_res
+            .backend_route
+            .as_deref()
+            .unwrap_or_default()
+            .contains("GpuHybridKernel"));
+        let cpu_stats = cpu_res.reopt_walk_forward.as_ref().expect("cpu reopt");
+        let gpu_stats = gpu_res.reopt_walk_forward.as_ref().expect("gpu reopt");
+        assert_eq!(cpu_stats.windows, gpu_stats.windows);
+        assert_eq!(cpu_stats.top_n_candidates, gpu_stats.top_n_candidates);
+        assert_eq!(cpu_stats.unique_winners, gpu_stats.unique_winners);
+        assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
+        assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
+        assert!((cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6);
         assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("reopt_walk_forward on GpuHybridKernel")
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
+        assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
+        assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
+        assert!(
+            (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
+                < 1e-6
+        );
+        assert!((cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2);
+        assert!((cpu_stats.forward_sharpe_worst - gpu_stats.forward_sharpe_worst).abs() < 5e-2);
+        assert!((cpu_stats.forward_max_dd_median - gpu_stats.forward_max_dd_median).abs() < 1e-5);
+        assert!((cpu_stats.forward_max_dd_worst - gpu_stats.forward_max_dd_worst).abs() < 1e-5);
+        assert!((cpu_stats.forward_pnl_median - gpu_stats.forward_pnl_median).abs() < 1e-3);
+        assert!((cpu_stats.forward_pnl_worst - gpu_stats.forward_pnl_worst).abs() < 1e-3);
+        assert_eq!(
+            cpu_stats.forward_trades_median,
+            gpu_stats.forward_trades_median
+        );
+        assert_eq!(
+            cpu_stats.forward_trades_worst,
+            gpu_stats.forward_trades_worst
         );
     }
 

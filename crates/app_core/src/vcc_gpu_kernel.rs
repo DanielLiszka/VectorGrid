@@ -19,15 +19,26 @@ pub struct VccGpuDeviceSignalMatrices<'a> {
     pub fast_rows: usize,
     pub trend_rows: usize,
     pub fast_squeeze_rows: &'a [u64],
+    pub fast_squeeze_host_row_major: Option<&'a [f32]>,
     pub fast_momentum_rows: &'a [u64],
     pub fast_momentum_host_row_major: Option<&'a [f32]>,
     pub trend_rows_ptr: &'a [u64],
+    pub trend_host_row_major: Option<&'a [f32]>,
 }
 
 pub struct VccGpuComboBatch<'a> {
     pub fast_row_index: &'a [i32],
     pub trend_row_index: &'a [i32],
     pub start_t: &'a [i32],
+    pub metric_start_t: &'a [i32],
+    pub end_t: &'a [i32],
+}
+
+#[derive(Clone, Debug)]
+pub struct VccGpuMetricEval {
+    pub metrics: Metrics,
+    pub step_return_sum: f64,
+    pub step_return_sumsq: f64,
 }
 
 struct VccCudaRuntime {
@@ -102,6 +113,21 @@ fn compute_log_returns_f32(close_f64: &[f64]) -> Vec<f32> {
     out
 }
 
+#[inline]
+fn compute_log_returns_f64(close_f64: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0f64; close_f64.len()];
+    for t in 1..close_f64.len() {
+        let p = close_f64[t];
+        let pm = close_f64[t - 1];
+        out[t] = if p.is_finite() && pm.is_finite() && p > 0.0 && pm > 0.0 {
+            p.ln() - pm.ln()
+        } else {
+            0.0
+        };
+    }
+    out
+}
+
 fn validate_inputs_device_rows(
     signals: &VccGpuDeviceSignalMatrices<'_>,
     combos: &VccGpuComboBatch<'_>,
@@ -113,8 +139,15 @@ fn validate_inputs_device_rows(
     if signals.close_f64.len() != n {
         return Err("VCC GPU close length mismatch".to_string());
     }
-    if signals.fast_squeeze_rows.len() != signals.fast_rows
-    {
+    if let Some(host_rows) = signals.fast_squeeze_host_row_major {
+        let expected = signals
+            .fast_rows
+            .checked_mul(signals.cols)
+            .ok_or_else(|| "VCC GPU fast squeeze host matrix overflow".to_string())?;
+        if host_rows.len() != expected {
+            return Err("VCC GPU fast squeeze host matrix length mismatch".to_string());
+        }
+    } else if signals.fast_squeeze_rows.len() != signals.fast_rows {
         return Err("VCC GPU fast row-pointer length mismatch".to_string());
     }
     if let Some(host_rows) = signals.fast_momentum_host_row_major {
@@ -128,12 +161,24 @@ fn validate_inputs_device_rows(
     } else if signals.fast_momentum_rows.len() != signals.fast_rows {
         return Err("VCC GPU fast row-pointer length mismatch".to_string());
     }
-    if signals.trend_rows_ptr.len() != signals.trend_rows {
+    if let Some(host_rows) = signals.trend_host_row_major {
+        let expected = signals
+            .trend_rows
+            .checked_mul(signals.cols)
+            .ok_or_else(|| "VCC GPU trend host matrix overflow".to_string())?;
+        if host_rows.len() != expected {
+            return Err("VCC GPU trend host matrix length mismatch".to_string());
+        }
+    } else if signals.trend_rows_ptr.len() != signals.trend_rows {
         return Err("VCC GPU trend row-pointer length mismatch".to_string());
     }
 
     let combos_len = combos.fast_row_index.len();
-    if combos.trend_row_index.len() != combos_len || combos.start_t.len() != combos_len {
+    if combos.trend_row_index.len() != combos_len
+        || combos.start_t.len() != combos_len
+        || combos.metric_start_t.len() != combos_len
+        || combos.end_t.len() != combos_len
+    {
         return Err("VCC GPU combo vector length mismatch".to_string());
     }
     Ok(())
@@ -153,7 +198,7 @@ fn launch_pack_rows_u64_ptr_f32(
     let kernel = rt
         .module
         .get_function("pack_rows_u64_ptr_f32")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("VCC GPU missing pack_rows_u64_ptr_f32 kernel: {e}"))?;
 
     let total = rows
         .checked_mul(cols)
@@ -182,13 +227,13 @@ fn launch_pack_rows_u64_ptr_f32(
     Ok(())
 }
 
-pub fn eval_vcc_metrics_gpu_kernel_device_rows(
+pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
     device_id: u32,
     signals: &VccGpuDeviceSignalMatrices<'_>,
     combos: &VccGpuComboBatch<'_>,
     strategy: &StrategyConfig,
     vcc: &VccStrategyParams,
-) -> Result<Vec<Metrics>, String> {
+) -> Result<Vec<VccGpuMetricEval>, String> {
     validate_inputs_device_rows(signals, combos)?;
     let combo_count = combos.fast_row_index.len();
     if combo_count == 0 {
@@ -207,11 +252,15 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
 
     let close_f32: Vec<f32> = signals.close_f64.iter().map(|v| *v as f32).collect();
     let lr_f32 = compute_log_returns_f32(signals.close_f64);
+    let lr_f64 = compute_log_returns_f64(signals.close_f64);
 
     let out_stride = 10usize;
     let out_len = combo_count
         .checked_mul(out_stride)
         .ok_or_else(|| "VCC GPU metrics buffer overflow".to_string())?;
+    let slice_out_len = combo_count
+        .checked_mul(2)
+        .ok_or_else(|| "VCC GPU slice metrics buffer overflow".to_string())?;
 
     VCC_GPU_RUNTIME.with(|cell| {
         let mut runtimes = cell.borrow_mut();
@@ -227,11 +276,7 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
 
         let d_close = DeviceBuffer::from_slice(&close_f32).map_err(|e| e.to_string())?;
         let d_lr = DeviceBuffer::from_slice(&lr_f32).map_err(|e| e.to_string())?;
-
-        let d_fast_sq_rows =
-            DeviceBuffer::from_slice(signals.fast_squeeze_rows).map_err(|e| e.to_string())?;
-        let d_trend_rows =
-            DeviceBuffer::from_slice(signals.trend_rows_ptr).map_err(|e| e.to_string())?;
+        let d_lr64 = DeviceBuffer::from_slice(&lr_f64).map_err(|e| e.to_string())?;
 
         let fast_mat_len = signals
             .fast_rows
@@ -242,23 +287,36 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
             .checked_mul(signals.cols)
             .ok_or_else(|| "VCC GPU trend matrix overflow".to_string())?;
 
-        let mut d_fast_sq = unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }
-            .map_err(|e| e.to_string())?;
+        let mut d_fast_sq = if let Some(host_rows) = signals.fast_squeeze_host_row_major {
+            DeviceBuffer::from_slice(host_rows).map_err(|e| e.to_string())?
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }
+                .map_err(|e| e.to_string())?
+        };
         let mut d_fast_mom = if let Some(host_rows) = signals.fast_momentum_host_row_major {
             DeviceBuffer::from_slice(host_rows).map_err(|e| e.to_string())?
         } else {
-            unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }.map_err(|e| e.to_string())?
+            unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }
+                .map_err(|e| e.to_string())?
         };
-        let mut d_trend = unsafe { DeviceBuffer::<f32>::uninitialized(trend_mat_len) }
-            .map_err(|e| e.to_string())?;
+        let mut d_trend = if let Some(host_rows) = signals.trend_host_row_major {
+            DeviceBuffer::from_slice(host_rows).map_err(|e| e.to_string())?
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(trend_mat_len) }
+                .map_err(|e| e.to_string())?
+        };
 
-        launch_pack_rows_u64_ptr_f32(
-            rt,
-            &d_fast_sq_rows,
-            signals.fast_rows,
-            signals.cols,
-            &mut d_fast_sq,
-        )?;
+        if signals.fast_squeeze_host_row_major.is_none() {
+            let d_fast_sq_rows =
+                DeviceBuffer::from_slice(signals.fast_squeeze_rows).map_err(|e| e.to_string())?;
+            launch_pack_rows_u64_ptr_f32(
+                rt,
+                &d_fast_sq_rows,
+                signals.fast_rows,
+                signals.cols,
+                &mut d_fast_sq,
+            )?;
+        }
         if signals.fast_momentum_host_row_major.is_none() {
             let d_fast_mom_rows =
                 DeviceBuffer::from_slice(signals.fast_momentum_rows).map_err(|e| e.to_string())?;
@@ -270,26 +328,35 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
                 &mut d_fast_mom,
             )?;
         }
-        launch_pack_rows_u64_ptr_f32(
-            rt,
-            &d_trend_rows,
-            signals.trend_rows,
-            signals.cols,
-            &mut d_trend,
-        )?;
+        if signals.trend_host_row_major.is_none() {
+            let d_trend_rows =
+                DeviceBuffer::from_slice(signals.trend_rows_ptr).map_err(|e| e.to_string())?;
+            launch_pack_rows_u64_ptr_f32(
+                rt,
+                &d_trend_rows,
+                signals.trend_rows,
+                signals.cols,
+                &mut d_trend,
+            )?;
+        }
 
         let d_combo_fast =
             DeviceBuffer::from_slice(combos.fast_row_index).map_err(|e| e.to_string())?;
         let d_combo_trend =
             DeviceBuffer::from_slice(combos.trend_row_index).map_err(|e| e.to_string())?;
         let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
+        let d_combo_metric_start =
+            DeviceBuffer::from_slice(combos.metric_start_t).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
         let d_out =
             unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
+        let d_slice_out = unsafe { DeviceBuffer::<f64>::uninitialized(slice_out_len) }
+            .map_err(|e| e.to_string())?;
 
         let kernel = rt
             .module
             .get_function("vcc_backtest_metrics_f32")
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("VCC GPU missing vcc_backtest_metrics_f32 kernel: {e}"))?;
 
         let mut flags: u32 = 0;
         if strategy.long_only {
@@ -307,13 +374,17 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
 
         let mut close_ptr = d_close.as_device_ptr().as_raw();
         let mut lr_ptr = d_lr.as_device_ptr().as_raw();
+        let mut lr64_ptr = d_lr64.as_device_ptr().as_raw();
         let mut fast_sq_ptr = d_fast_sq.as_device_ptr().as_raw();
         let mut fast_mom_ptr = d_fast_mom.as_device_ptr().as_raw();
         let mut trend_ptr = d_trend.as_device_ptr().as_raw();
         let mut combo_fast_ptr = d_combo_fast.as_device_ptr().as_raw();
         let mut combo_trend_ptr = d_combo_trend.as_device_ptr().as_raw();
         let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+        let mut combo_metric_start_ptr = d_combo_metric_start.as_device_ptr().as_raw();
+        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
         let mut out_ptr = d_out.as_device_ptr().as_raw();
+        let mut slice_out_ptr = d_slice_out.as_device_ptr().as_raw();
 
         let mut t_i = signals.cols as i32;
         let mut fast_rows_i = signals.fast_rows as i32;
@@ -334,6 +405,7 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
             let args: &mut [*mut c_void] = &mut [
                 &mut close_ptr as *mut _ as *mut c_void,
                 &mut lr_ptr as *mut _ as *mut c_void,
+                &mut lr64_ptr as *mut _ as *mut c_void,
                 &mut t_i as *mut _ as *mut c_void,
                 &mut fast_sq_ptr as *mut _ as *mut c_void,
                 &mut fast_mom_ptr as *mut _ as *mut c_void,
@@ -345,6 +417,8 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
                 &mut combo_fast_ptr as *mut _ as *mut c_void,
                 &mut combo_trend_ptr as *mut _ as *mut c_void,
                 &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_metric_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
                 &mut combo_count_i as *mut _ as *mut c_void,
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,
@@ -353,6 +427,7 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
                 &mut max_trade_bars_i as *mut _ as *mut c_void,
                 &mut out_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
+                &mut slice_out_ptr as *mut _ as *mut c_void,
             ];
             rt.stream
                 .launch(&kernel, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
@@ -363,6 +438,10 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
 
         let mut host_out = vec![0.0f32; out_len];
         d_out.copy_to(&mut host_out).map_err(|e| e.to_string())?;
+        let mut host_slice_out = vec![0.0f64; slice_out_len];
+        d_slice_out
+            .copy_to(&mut host_slice_out)
+            .map_err(|e| e.to_string())?;
 
         let mut metrics = Vec::with_capacity(combo_count);
         for i in 0..combo_count {
@@ -377,31 +456,46 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
             let trades_f = host_out[base + 7];
             let exposure = host_out[base + 8] as f64;
             let net_exposure = host_out[base + 9] as f64;
+            let slice_base = i * 2;
+            let step_return_sum = host_slice_out[slice_base];
+            let step_return_sumsq = host_slice_out[slice_base + 1];
 
-            metrics.push(Metrics {
-                pnl: if pnl.is_finite() { pnl } else { 0.0 },
-                sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
-                sortino: if sortino.is_finite() { sortino } else { 0.0 },
-                calmar: if calmar.is_finite() { calmar } else { 0.0 },
-                omega: if omega.is_finite() { omega } else { 0.0 },
-                volatility: if volatility.is_finite() {
-                    volatility.max(0.0)
+            metrics.push(VccGpuMetricEval {
+                metrics: Metrics {
+                    pnl: if pnl.is_finite() { pnl } else { 0.0 },
+                    sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
+                    sortino: if sortino.is_finite() { sortino } else { 0.0 },
+                    calmar: if calmar.is_finite() { calmar } else { 0.0 },
+                    omega: if omega.is_finite() { omega } else { 0.0 },
+                    volatility: if volatility.is_finite() {
+                        volatility.max(0.0)
+                    } else {
+                        0.0
+                    },
+                    max_dd: if max_dd.is_finite() {
+                        max_dd.max(0.0)
+                    } else {
+                        0.0
+                    },
+                    trades: if trades_f.is_finite() && trades_f >= 0.0 {
+                        trades_f as u32
+                    } else {
+                        0
+                    },
+                    exposure: if exposure.is_finite() { exposure } else { 0.0 },
+                    net_exposure: if net_exposure.is_finite() {
+                        net_exposure
+                    } else {
+                        0.0
+                    },
+                },
+                step_return_sum: if step_return_sum.is_finite() {
+                    step_return_sum
                 } else {
                     0.0
                 },
-                max_dd: if max_dd.is_finite() {
-                    max_dd.max(0.0)
-                } else {
-                    0.0
-                },
-                trades: if trades_f.is_finite() && trades_f >= 0.0 {
-                    trades_f as u32
-                } else {
-                    0
-                },
-                exposure: if exposure.is_finite() { exposure } else { 0.0 },
-                net_exposure: if net_exposure.is_finite() {
-                    net_exposure
+                step_return_sumsq: if step_return_sumsq.is_finite() {
+                    step_return_sumsq.max(0.0)
                 } else {
                     0.0
                 },
@@ -409,4 +503,15 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
         }
         Ok(metrics)
     })
+}
+
+pub fn eval_vcc_metrics_gpu_kernel_device_rows(
+    device_id: u32,
+    signals: &VccGpuDeviceSignalMatrices<'_>,
+    combos: &VccGpuComboBatch<'_>,
+    strategy: &StrategyConfig,
+    vcc: &VccStrategyParams,
+) -> Result<Vec<Metrics>, String> {
+    eval_vcc_metrics_gpu_kernel_device_rows_detailed(device_id, signals, combos, strategy, vcc)
+        .map(|rows| rows.into_iter().map(|row| row.metrics).collect())
 }

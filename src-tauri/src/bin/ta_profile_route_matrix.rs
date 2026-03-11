@@ -264,6 +264,9 @@ fn main() -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(&artifact).map_err(|e| e.to_string())?;
     std::fs::write(&out_path, json).map_err(|e| e.to_string())?;
-    println!("Wrote route/runtime artifact to {}", out_path.to_string_lossy());
+    println!(
+        "Wrote route/runtime artifact to {}",
+        out_path.to_string_lossy()
+    );
     Ok(())
 }

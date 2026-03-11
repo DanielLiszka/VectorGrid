@@ -744,6 +744,38 @@ impl DeviceRegimeFilter {
     }
 }
 
+pub(crate) fn upload_host_regime_filter(
+    device_id: u32,
+    regime: &[f32],
+    first_valid: usize,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = regime.len();
+    if len == 0 {
+        return Err("device regime upload requires a non-empty series".to_string());
+    }
+    if first_valid > len {
+        return Err(format!(
+            "device regime first_valid {first_valid} exceeds input len {len}"
+        ));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+        let buffer = DeviceBuffer::from_slice(regime).map_err(|e| e.to_string())?;
+        Ok(DeviceRegimeFilter {
+            buffer,
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum RegimeFilterInput<'a> {
     HostF64(&'a [f64]),
@@ -2936,8 +2968,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         source_start_at = source_start_at.max(fv_low);
     }
-    let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, source_start_at)
-        .ok_or_else(|| "no index where all required series are finite".to_string())?;
+    let first_valid =
+        first_valid_idx_required(close, ma_prices, volume, high, low, source_start_at)
+            .ok_or_else(|| "no index where all required series are finite".to_string())?;
     let regime_first_valid = if let Some(regime) = host_regime_filter {
         first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?
     } else if let Some(regime) = device_regime_filter {
@@ -3682,14 +3715,15 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         && lockstep_time_enabled
                         && launch_pairs >= lockstep_time_min_pairs
                         && backtest_lockstep.is_some();
-                    let use_m7 = !use_windowed_eval && kernel_should_use_m7_specialize(
-                        launch_pairs,
-                        n,
-                        max_start_t,
-                        is_multi_tile_workload,
-                        METRICS_COUNT,
-                        backtest_m7.is_some(),
-                    );
+                    let use_m7 = !use_windowed_eval
+                        && kernel_should_use_m7_specialize(
+                            launch_pairs,
+                            n,
+                            max_start_t,
+                            is_multi_tile_workload,
+                            METRICS_COUNT,
+                            backtest_m7.is_some(),
+                        );
                     let use_lockstep_m7 = use_lockstep_time
                         && m7_specialize_enabled
                         && launch_pairs >= m7_specialize_min_pairs
@@ -3985,6 +4019,7 @@ pub fn optimize_double_ma_gpu_kernel(
         total_pairs,
         heatmap_bins,
         None,
+        None,
         cancel,
         progress,
     )
@@ -4009,6 +4044,7 @@ pub fn optimize_double_ma_gpu_kernel_in_range(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    first_valid_override: Option<usize>,
     eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
@@ -4034,6 +4070,7 @@ pub fn optimize_double_ma_gpu_kernel_in_range(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        first_valid_override,
         eval_range,
         cancel,
         progress,
@@ -4061,6 +4098,7 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    first_valid_override: Option<usize>,
     eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
@@ -4086,6 +4124,7 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        first_valid_override,
         eval_range,
         cancel,
         progress,
@@ -4113,6 +4152,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    first_valid_override: Option<usize>,
     eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
@@ -4149,6 +4189,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
             export_all_csv_path,
             total_pairs,
             heatmap_bins,
+            first_valid_override,
             eval_range,
             cancel,
             progress,
@@ -4178,6 +4219,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    first_valid_override: Option<usize>,
     eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
@@ -4334,8 +4376,24 @@ fn optimize_double_ma_gpu_kernel_impl(
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         start_at = start_at.max(fv_low);
     }
-    let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
-        .ok_or_else(|| "no index where all required series are finite".to_string())?;
+    let derived_first_valid =
+        first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
+            .ok_or_else(|| "no index where all required series are finite".to_string())?;
+    let first_valid = if let Some(override_idx) = first_valid_override {
+        if override_idx < derived_first_valid {
+            return Err(format!(
+                "first_valid_override {override_idx} precedes required market first_valid {derived_first_valid}"
+            ));
+        }
+        if override_idx >= n {
+            return Err(format!(
+                "first_valid_override {override_idx} exceeds series len {n}"
+            ));
+        }
+        override_idx
+    } else {
+        derived_first_valid
+    };
     let regime_first_valid = if let Some(regime) = host_regime_filter {
         first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?
     } else if let Some(regime) = device_regime_filter {
@@ -5197,13 +5255,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                             && backtest_lockstep.is_some();
                         let use_m7 = !use_windowed_eval
                             && kernel_should_use_m7_specialize(
-                            launch_pairs,
-                            n,
-                            max_start_t,
-                            is_multi_tile_workload,
-                            metrics_count,
-                            backtest_m7.is_some(),
-                        );
+                                launch_pairs,
+                                n,
+                                max_start_t,
+                                is_multi_tile_workload,
+                                metrics_count,
+                                backtest_m7.is_some(),
+                            );
                         let use_lockstep_m7 = use_lockstep_time
                             && m7_specialize_enabled
                             && launch_pairs >= m7_specialize_min_pairs
@@ -6594,6 +6652,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             None,
             total_pairs_subset,
             0,
+            None,
             None,
             cancel,
             None,

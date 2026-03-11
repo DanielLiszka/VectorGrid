@@ -2,6 +2,8 @@ pub(crate) mod alloc_policy;
 pub mod asr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod asr_gpu_kernel;
+pub mod carm;
+pub mod cdmc;
 pub mod composite_cpu;
 pub mod composite_mo;
 pub(crate) mod composite_profile_route;
@@ -23,19 +25,21 @@ pub mod gpu_backtest_kernel;
 pub mod indicator_catalog;
 pub mod indicator_factory;
 pub mod iterative_sim;
+pub mod kqsr;
+pub mod kvdf;
 pub mod ma_policy;
 pub mod matrix_index;
 pub mod meta_select;
-pub mod ml_confidence;
 pub mod mkcs;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod mkcs_gpu_kernel;
+pub mod ml_confidence;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;
 pub mod rocb;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod rocb_gpu_kernel;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-pub mod mkcs_gpu_kernel;
 pub mod sharpe_stats;
 pub mod stats_common;
 pub mod strategy_dynamic;
@@ -80,6 +84,10 @@ pub use composite_cpu::{
 };
 
 pub use asr::AsrStrategyParams;
+pub use carm::CarmStrategyParams;
+pub use cdmc::CdmcStrategyParams;
+pub use kqsr::KqsrStrategyParams;
+pub use kvdf::KvdfStrategyParams;
 pub use mkcs::MkcsStrategyParams;
 pub use rocb::RocbStrategyParams;
 pub use vcc::VccStrategyParams;

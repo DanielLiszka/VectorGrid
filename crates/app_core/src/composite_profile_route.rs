@@ -8,9 +8,7 @@ pub(crate) enum CompositeProfileGpuTarget {
     GpuHybridKernel,
 }
 
-pub(crate) fn composite_profile_from_strategy(
-    strategy: &StrategyConfig,
-) -> StrategyProfileKind {
+pub(crate) fn composite_profile_from_strategy(strategy: &StrategyConfig) -> StrategyProfileKind {
     if strategy.breakout_momentum_enable {
         StrategyProfileKind::BreakoutMomentum
     } else if strategy.regime_hybrid_enable {
@@ -23,9 +21,7 @@ pub(crate) fn composite_profile_from_strategy(
 }
 
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
-pub(crate) fn composite_profile_runtime_label(
-    strategy: &StrategyConfig,
-) -> &'static str {
+pub(crate) fn composite_profile_runtime_label(strategy: &StrategyConfig) -> &'static str {
     match composite_profile_from_strategy(strategy) {
         StrategyProfileKind::CompositeCpu => "CompositeCpu",
         StrategyProfileKind::CompositeTrend => "CompositeTrendCpu",
@@ -35,9 +31,7 @@ pub(crate) fn composite_profile_runtime_label(
     }
 }
 
-pub(crate) fn composite_profile_gpu_target_label(
-    strategy: &StrategyConfig,
-) -> &'static str {
+pub(crate) fn composite_profile_gpu_target_label(strategy: &StrategyConfig) -> &'static str {
     match composite_profile_gpu_target(strategy) {
         CompositeProfileGpuTarget::CpuOnly => "CpuOnly",
         CompositeProfileGpuTarget::GpuKernel => "GpuKernel",
@@ -45,9 +39,7 @@ pub(crate) fn composite_profile_gpu_target_label(
     }
 }
 
-pub(crate) fn composite_profile_gpu_target(
-    strategy: &StrategyConfig,
-) -> CompositeProfileGpuTarget {
+pub(crate) fn composite_profile_gpu_target(strategy: &StrategyConfig) -> CompositeProfileGpuTarget {
     match composite_profile_from_strategy(strategy) {
         StrategyProfileKind::CompositeTrend => {
             if strategy.trend_quality_use_adx() {
@@ -87,7 +79,10 @@ mod tests {
             composite_profile_gpu_target(&strategy),
             CompositeProfileGpuTarget::GpuKernel
         );
-        assert_eq!(composite_profile_runtime_label(&strategy), "CompositeTrendCpu");
+        assert_eq!(
+            composite_profile_runtime_label(&strategy),
+            "CompositeTrendCpu"
+        );
     }
 
     #[test]
@@ -144,6 +139,9 @@ mod tests {
             composite_profile_gpu_target(&strategy),
             CompositeProfileGpuTarget::GpuHybridKernel
         );
-        assert_eq!(composite_profile_runtime_label(&strategy), "RegimeHybridCpu");
+        assert_eq!(
+            composite_profile_runtime_label(&strategy),
+            "RegimeHybridCpu"
+        );
     }
 }

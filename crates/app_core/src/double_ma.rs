@@ -3050,6 +3050,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
+                            None,
                             cancel,
                             progress,
                         )?
@@ -3090,6 +3091,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
+                            None,
                             cancel,
                             progress,
                         )?
@@ -3130,6 +3132,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
+                            None,
                             cancel,
                             progress,
                         )?
@@ -3170,6 +3173,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
+                            None,
                             cancel,
                             progress,
                         )?
@@ -3210,6 +3214,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
+                            None,
                             cancel,
                             progress,
                         )?
@@ -3295,6 +3300,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         cancel,
                         progress,
                         !matches!(mode_used, OptimizationModeResolved::GpuVdps),
+                        None,
                     )?;
                 Ok((
                     result,
@@ -6936,6 +6942,91 @@ pub(crate) fn ma_matrix_cpu_f64(
     Ok((values, n))
 }
 
+#[allow(unused_variables)]
+pub(crate) fn ma_matrix_with_backend_f64(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_type: &str,
+    ma_source: &str,
+    periods: &[u16],
+    ma_params: Option<&HashMap<String, f64>>,
+    alma_offset: f64,
+    alma_sigma: f64,
+    backend: Option<&Backend>,
+    prices_f32: Option<&[f32]>,
+) -> Result<(Vec<f64>, usize), String> {
+    let ma_info = lookup_ma_info(ma_type).ok_or_else(|| format!("unknown MA: '{ma_type}'"))?;
+
+    #[cfg(feature = "cuda")]
+    {
+        let normalized_backend = backend
+            .cloned()
+            .unwrap_or(Backend::CpuOnly)
+            .with_preferred_cuda_device()?;
+        let maybe_device_id = match normalized_backend {
+            Backend::Auto { device_id }
+            | Backend::GpuOnly { device_id }
+            | Backend::GpuHybridKernel { device_id }
+            | Backend::GpuKernel { device_id } => Some(device_id as usize),
+            Backend::CpuOnly => None,
+        };
+
+        if let Some(device_id) = maybe_device_id {
+            if cuda_available() && ma_info.supports_cuda_single {
+                let selector = CudaMaSelector::new(device_id);
+                let owned_prices_f32;
+                let prices_f32 = if let Some(values) = prices_f32 {
+                    values
+                } else {
+                    owned_prices_f32 =
+                        vector_ta::utilities::data_loader::source_type(candles, ma_source)
+                            .iter()
+                            .map(|&v| v as f32)
+                            .collect::<Vec<f32>>();
+                    owned_prices_f32.as_slice()
+                };
+                match ma_matrix_cuda_host_f32(
+                    &selector,
+                    device_id,
+                    candles,
+                    prices_f32,
+                    ma_type,
+                    ma_source,
+                    periods,
+                    ma_params,
+                    alma_offset,
+                    alma_sigma,
+                ) {
+                    Ok((values_f32, cols)) => {
+                        return Ok((values_f32.into_iter().map(f64::from).collect(), cols));
+                    }
+                    Err(err) if !ma_info.supports_cpu_single => {
+                        return Err(format!(
+                            "GPU-backed MA generation failed for '{ma_type}' and no CPU fallback exists: {err}"
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    if !ma_info.supports_cpu_single {
+        return Err(format!(
+            "CPU backend does not support MA '{ma_type}' and GPU MA generation is unavailable"
+        ));
+    }
+
+    ma_matrix_cpu_f64(
+        candles,
+        ma_type,
+        ma_source,
+        periods,
+        ma_params,
+        alma_offset,
+        alma_sigma,
+    )
+}
+
 pub(crate) fn ma_matrix_cpu_f32_staging(
     candles: &vector_ta::utilities::data_loader::Candles,
     ma_type: &str,
@@ -8150,7 +8241,7 @@ fn vdps_generate_seed_pairs_gpu(
     )
 }
 
-fn optimize_double_ma_gpu_hybrid_kernel_phase1(
+pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     candles: &vector_ta::utilities::data_loader::Candles,
     device_id: u32,
     fast_periods: &[u16],
@@ -8176,6 +8267,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
     allow_cpu_fallback: bool,
+    eval_range: Option<(usize, usize)>,
 ) -> Result<
     (
         OptimizationResult,
@@ -8317,6 +8409,12 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     let gpu_sweep_eligible = false;
     let cpu_eligible = fast_info.supports_cpu_single && slow_info.supports_cpu_single;
 
+    if eval_range.is_some() && !kernel_blockers.is_empty() {
+        return Err(format!(
+            "GpuHybridKernel windowed evaluation requires kernel-executable routing. Reasons: {blockers_text}"
+        ));
+    }
+
     let (result, backend_used, kernel_eval_ms) = if kernel_blockers.is_empty() {
         emit_progress(progress, 0, 1, "hybrid_kernel");
         let kernel_t0 = std::time::Instant::now();
@@ -8349,6 +8447,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     export_all_csv_path,
                     total_pairs,
                     heatmap_bins,
+                    eval_range,
                     cancel,
                     progress,
                 )?
@@ -8387,6 +8486,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     export_all_csv_path,
                     total_pairs,
                     heatmap_bins,
+                    eval_range,
                     cancel,
                     progress,
                 )?
@@ -8426,6 +8526,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     export_all_csv_path,
                     total_pairs,
                     heatmap_bins,
+                    eval_range,
                     cancel,
                     progress,
                 )?
@@ -8465,6 +8566,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     export_all_csv_path,
                     total_pairs,
                     heatmap_bins,
+                    eval_range,
                     cancel,
                     progress,
                 )?
@@ -8504,6 +8606,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     export_all_csv_path,
                     total_pairs,
                     heatmap_bins,
+                    eval_range,
                     cancel,
                     progress,
                 )?
@@ -8542,6 +8645,7 @@ fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                 export_all_csv_path,
                 total_pairs,
                 heatmap_bins,
+                eval_range,
                 cancel,
                 progress,
             )?
@@ -8710,6 +8814,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
     _export_all_csv_path: Option<&str>,
     _total_pairs: usize,
     _heatmap_bins: usize,
+    _eval_range: Option<(usize, usize)>,
     _cancel: &AtomicBool,
     _progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -8770,6 +8875,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        None,
         cancel,
         progress,
     )
@@ -8799,6 +8905,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -8836,6 +8943,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
         total_pairs,
         heatmap_bins,
         None,
+        eval_range,
         cancel,
         progress,
     )
@@ -8869,6 +8977,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -8923,6 +9032,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
         total_pairs,
         heatmap_bins,
         None,
+        eval_range,
         cancel,
         progress,
     )

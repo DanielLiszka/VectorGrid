@@ -144,9 +144,13 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
         validation_context: None,
     };
 
-    let route_probe =
-        ta_app_core::run_composite_validation_blocking_with_candles(base.clone(), &candles, &cancel, None)
-            .expect("cpu validation route probe");
+    let route_probe = ta_app_core::run_composite_validation_blocking_with_candles(
+        base.clone(),
+        &candles,
+        &cancel,
+        None,
+    )
+    .expect("cpu validation route probe");
     println!(
         "benchmark route composite_validate/workflow/50k/32candidates: backend_used={:?} backend_route={} fallback={}",
         route_probe.backend_used,
@@ -232,8 +236,7 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
     let cancel = AtomicBool::new(false);
     let candidates = make_asr_candidates(64);
 
-    let mut group =
-        c.benchmark_group("composite_validate/gpu_kernel/asr/100k/64candidates");
+    let mut group = c.benchmark_group("composite_validate/gpu_kernel/asr/100k/64candidates");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 
@@ -270,9 +273,13 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
         validation_context: None,
     };
 
-    let route_probe =
-        ta_app_core::run_composite_validation_blocking_with_candles(base.clone(), &candles, &cancel, None)
-            .expect("gpu validation route probe");
+    let route_probe = ta_app_core::run_composite_validation_blocking_with_candles(
+        base.clone(),
+        &candles,
+        &cancel,
+        None,
+    )
+    .expect("gpu validation route probe");
     println!(
         "benchmark route composite_validate/gpu_kernel/asr/100k/64candidates: backend_used={:?} backend_route={} fallback={}",
         route_probe.backend_used,

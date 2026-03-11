@@ -362,19 +362,17 @@ fn compute_indicator_f64(
     params: &[IndicatorParamKV],
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<Vec<f64>, String> {
-    Ok(
-        compute_indicator_f64_with_warmup(
-            candles,
-            ma_source,
-            _backend,
-            indicator_id,
-            output_id,
-            params,
-            #[cfg(feature = "cuda")]
-            prepared_cuda_inputs,
-        )?
-        .values,
-    )
+    Ok(compute_indicator_f64_with_warmup(
+        candles,
+        ma_source,
+        _backend,
+        indicator_id,
+        output_id,
+        params,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?
+    .values)
 }
 
 fn compute_indicator_f64_with_warmup(
@@ -718,14 +716,16 @@ pub fn compute_vcc_fast_signals(
     momentum_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<VccFastSignals, String> {
-    let squeeze_params = vec![IndicatorParamKV {
-        key: "length".to_string(),
-        value: IndicatorParamValue::Int(i64::from(squeeze_period.max(1))),
-    },
-    IndicatorParamKV {
-        key: "bb_mult".to_string(),
-        value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-    }];
+    let squeeze_params = vec![
+        IndicatorParamKV {
+            key: "length".to_string(),
+            value: IndicatorParamValue::Int(i64::from(squeeze_period.max(1))),
+        },
+        IndicatorParamKV {
+            key: "bb_mult".to_string(),
+            value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
+        },
+    ];
     let momentum_params = vec![
         IndicatorParamKV {
             key: "length_bb".to_string(),
@@ -967,13 +967,13 @@ pub fn build_vcc_desired_positions(
 mod tests {
     use super::*;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    use cust::memory::CopyDestination;
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     use crate::asr::eval_asr_metrics_from_desired;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     use crate::vcc_gpu_kernel::{
         eval_vcc_metrics_gpu_kernel_device_rows, VccGpuComboBatch, VccGpuDeviceSignalMatrices,
     };
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use cust::memory::CopyDestination;
     #[test]
     fn resolve_vcc_periods_maps_fast_and_slow_when_enabled() {
         let cfg = VccStrategyParams::default();
@@ -1188,7 +1188,10 @@ mod tests {
 
         eprintln!(
             "vcc diag: fast_first_valid cpu={} gpu={} trend_first_valid cpu={} gpu={}",
-            fast_cpu.first_valid, fast_gpu.first_valid, trend_cpu.first_valid, trend_gpu.first_valid
+            fast_cpu.first_valid,
+            fast_gpu.first_valid,
+            trend_cpu.first_valid,
+            trend_gpu.first_valid
         );
         eprintln!(
             "vcc diag: max abs diff squeeze={} momentum={} trend={}",
@@ -1361,14 +1364,9 @@ mod tests {
             Some(&prepared),
         )
         .unwrap();
-        let trend_cpu = compute_vcc_trend_signals(
-            &candles,
-            "close",
-            &Backend::CpuOnly,
-            24,
-            Some(&prepared),
-        )
-        .unwrap();
+        let trend_cpu =
+            compute_vcc_trend_signals(&candles, "close", &Backend::CpuOnly, 24, Some(&prepared))
+                .unwrap();
 
         let (sq_sweep, mo_sweep) =
             compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 8, 12, 8, 12, 1, 0).unwrap();
@@ -1432,14 +1430,9 @@ mod tests {
             Some(&prepared),
         )
         .unwrap();
-        let trend_cpu = compute_vcc_trend_signals(
-            &candles,
-            "close",
-            &Backend::CpuOnly,
-            12,
-            Some(&prepared),
-        )
-        .unwrap();
+        let trend_cpu =
+            compute_vcc_trend_signals(&candles, "close", &Backend::CpuOnly, 12, Some(&prepared))
+                .unwrap();
 
         let (sq_sweep, mo_sweep) =
             compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
@@ -1533,7 +1526,8 @@ mod tests {
         );
         let desired_cpu =
             build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
-        let metrics_cpu = eval_asr_metrics_from_desired(&candles, &lr, &desired_cpu, start_t, &strategy);
+        let metrics_cpu =
+            eval_asr_metrics_from_desired(&candles, &lr, &desired_cpu, start_t, &strategy);
 
         let (sq_sweep, mo_sweep) =
             compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
@@ -1564,23 +1558,23 @@ mod tests {
             fast_rows: 1,
             trend_rows: 1,
             fast_squeeze_rows: &[fast_squeeze_row],
+            fast_squeeze_host_row_major: None,
             fast_momentum_rows: &[fast_momentum_row],
             fast_momentum_host_row_major: None,
             trend_rows_ptr: &[trend_row],
+            trend_host_row_major: None,
         };
+        let combo_start = [start_t as i32];
+        let combo_end = [close.len() as i32];
         let combos = VccGpuComboBatch {
             fast_row_index: &[0],
             trend_row_index: &[0],
-            start_t: &[start_t as i32],
+            start_t: &combo_start,
+            metric_start_t: &combo_start,
+            end_t: &combo_end,
         };
-        let metrics_gpu = eval_vcc_metrics_gpu_kernel_device_rows(
-            0,
-            &signals,
-            &combos,
-            &strategy,
-            &cfg,
-        )
-        .unwrap();
+        let metrics_gpu =
+            eval_vcc_metrics_gpu_kernel_device_rows(0, &signals, &combos, &strategy, &cfg).unwrap();
 
         eprintln!(
             "vcc metric diag: cpu pnl={} dev_cpu pnl={} gpu pnl={} cpu trades={} dev_cpu trades={} gpu trades={}",
@@ -1646,8 +1640,11 @@ mod tests {
                 usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1),
                 strategy.trade_on_next_bar,
             );
-            let desired = build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
-            cpu_metrics.push(eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy));
+            let desired =
+                build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+            cpu_metrics.push(eval_asr_metrics_from_desired(
+                &candles, &lr, &desired, start_t, &strategy,
+            ));
 
             fast_rows.push(sq_sweep.row_ptr_for_period(periods.squeeze).unwrap());
             fast_mom_rows.push(mo_sweep.row_ptr_for_period(periods.momentum).unwrap());
@@ -1663,23 +1660,22 @@ mod tests {
             fast_rows: fast_rows.len(),
             trend_rows: trend_rows.len(),
             fast_squeeze_rows: &fast_rows,
+            fast_squeeze_host_row_major: None,
             fast_momentum_rows: &fast_mom_rows,
             fast_momentum_host_row_major: None,
             trend_rows_ptr: &trend_rows,
+            trend_host_row_major: None,
         };
+        let combo_end = vec![close.len() as i32; combo_start.len()];
         let combos = VccGpuComboBatch {
             fast_row_index: &combo_fast_idx,
             trend_row_index: &combo_trend_idx,
             start_t: &combo_start,
+            metric_start_t: &combo_start,
+            end_t: &combo_end,
         };
-        let gpu_metrics = eval_vcc_metrics_gpu_kernel_device_rows(
-            0,
-            &signals,
-            &combos,
-            &strategy,
-            &cfg,
-        )
-        .unwrap();
+        let gpu_metrics =
+            eval_vcc_metrics_gpu_kernel_device_rows(0, &signals, &combos, &strategy, &cfg).unwrap();
 
         for (idx, (cpu, gpu)) in cpu_metrics.iter().zip(gpu_metrics.iter()).enumerate() {
             eprintln!(
@@ -1711,14 +1707,9 @@ mod tests {
             Some(&prepared),
         )
         .unwrap();
-        let trend_cpu = compute_vcc_trend_signals(
-            &candles,
-            "close",
-            &Backend::CpuOnly,
-            12,
-            Some(&prepared),
-        )
-        .unwrap();
+        let trend_cpu =
+            compute_vcc_trend_signals(&candles, "close", &Backend::CpuOnly, 12, Some(&prepared))
+                .unwrap();
         let start_t = compute_vcc_start_t(
             0,
             0,
@@ -1727,8 +1718,10 @@ mod tests {
             12,
             strategy.trade_on_next_bar,
         );
-        let desired = build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
-        let metrics_cpu = eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy);
+        let desired =
+            build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+        let metrics_cpu =
+            eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy);
 
         let (sq_sweep, mo_sweep) =
             compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
@@ -1758,23 +1751,23 @@ mod tests {
             fast_rows: fast_squeeze_rows.len(),
             trend_rows: trend_rows_ptr.len(),
             fast_squeeze_rows: &fast_squeeze_rows,
+            fast_squeeze_host_row_major: None,
             fast_momentum_rows: &fast_momentum_rows,
             fast_momentum_host_row_major: None,
             trend_rows_ptr: &trend_rows_ptr,
+            trend_host_row_major: None,
         };
+        let combo_start = [start_t as i32];
+        let combo_end = [close.len() as i32];
         let combos = VccGpuComboBatch {
             fast_row_index: &[0],
             trend_row_index: &[0],
-            start_t: &[start_t as i32],
+            start_t: &combo_start,
+            metric_start_t: &combo_start,
+            end_t: &combo_end,
         };
-        let metrics_gpu = eval_vcc_metrics_gpu_kernel_device_rows(
-            0,
-            &signals,
-            &combos,
-            &strategy,
-            &cfg,
-        )
-        .unwrap();
+        let metrics_gpu =
+            eval_vcc_metrics_gpu_kernel_device_rows(0, &signals, &combos, &strategy, &cfg).unwrap();
 
         eprintln!(
             "vcc optimizer-shape diag: cpu pnl={} gpu pnl={} cpu trades={} gpu trades={}",
@@ -1824,14 +1817,9 @@ mod tests {
             Some(&prepared),
         )
         .unwrap();
-        let trend_cpu = compute_vcc_trend_signals(
-            &candles,
-            "close",
-            &Backend::CpuOnly,
-            12,
-            Some(&prepared),
-        )
-        .unwrap();
+        let trend_cpu =
+            compute_vcc_trend_signals(&candles, "close", &Backend::CpuOnly, 12, Some(&prepared))
+                .unwrap();
         let start_t = compute_vcc_start_t(
             0,
             0,
@@ -1883,9 +1871,11 @@ mod tests {
             fast_rows: fast_squeeze_rows.len(),
             trend_rows: trend_rows_ptr.len(),
             fast_squeeze_rows: &fast_squeeze_rows,
+            fast_squeeze_host_row_major: None,
             fast_momentum_rows: &fast_momentum_rows,
             fast_momentum_host_row_major: None,
             trend_rows_ptr: &trend_rows_ptr,
+            trend_host_row_major: None,
         };
         let fast_dev = VccFastSignals {
             squeeze_state: sweep_row_to_host(&sq_sweep, 6),
@@ -1900,19 +1890,17 @@ mod tests {
             build_vcc_desired_positions(close, &fast_dev, &trend_dev, start_t, &strategy, &cfg);
         let metrics_dev_cpu =
             eval_asr_metrics_from_desired(&candles, &lr, &desired_dev, start_t, &strategy);
+        let combo_start = [start_t as i32];
+        let combo_end = [close.len() as i32];
         let combos = VccGpuComboBatch {
             fast_row_index: &[1],
             trend_row_index: &[0],
-            start_t: &[start_t as i32],
+            start_t: &combo_start,
+            metric_start_t: &combo_start,
+            end_t: &combo_end,
         };
-        let metrics_gpu = eval_vcc_metrics_gpu_kernel_device_rows(
-            0,
-            &signals,
-            &combos,
-            &strategy,
-            &cfg,
-        )
-        .unwrap();
+        let metrics_gpu =
+            eval_vcc_metrics_gpu_kernel_device_rows(0, &signals, &combos, &strategy, &cfg).unwrap();
 
         eprintln!(
             "vcc optimizer-shape fast6 diag: start_t={} fast_first_valid={} trend_first_valid={} squeeze_diff={} momentum_diff={} host_gpu_momentum_diff={} trend_diff={} cpu pnl={} dev_cpu pnl={} gpu pnl={} cpu trades={} dev_cpu trades={} gpu trades={}",
@@ -2025,7 +2013,9 @@ mod tests {
             );
             let desired =
                 build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
-            cpu_metrics.push(eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy));
+            cpu_metrics.push(eval_asr_metrics_from_desired(
+                &candles, &lr, &desired, start_t, &strategy,
+            ));
 
             let fast_roundtrip = VccFastSignals {
                 squeeze_state: fast_cpu.squeeze_state.clone(),
@@ -2077,23 +2067,22 @@ mod tests {
             fast_rows: fast_rows.len(),
             trend_rows: trend_rows.len(),
             fast_squeeze_rows: &fast_rows,
+            fast_squeeze_host_row_major: None,
             fast_momentum_rows: &[],
             fast_momentum_host_row_major: Some(&host_momentum_row_major),
             trend_rows_ptr: &trend_rows,
+            trend_host_row_major: None,
         };
+        let combo_end = vec![close.len() as i32; combo_start.len()];
         let combos = VccGpuComboBatch {
             fast_row_index: &combo_fast_idx,
             trend_row_index: &combo_trend_idx,
             start_t: &combo_start,
+            metric_start_t: &combo_start,
+            end_t: &combo_end,
         };
-        let gpu_metrics = eval_vcc_metrics_gpu_kernel_device_rows(
-            0,
-            &signals,
-            &combos,
-            &strategy,
-            &cfg,
-        )
-        .unwrap();
+        let gpu_metrics =
+            eval_vcc_metrics_gpu_kernel_device_rows(0, &signals, &combos, &strategy, &cfg).unwrap();
 
         for (idx, (cpu, gpu)) in cpu_metrics.iter().zip(gpu_metrics.iter()).enumerate() {
             eprintln!(

@@ -15,40 +15,46 @@ use crate::asr_gpu_kernel::{
     eval_asr_metrics_gpu_kernel_device_rows, AsrGpuComboBatch, AsrGpuDeviceSignalMatrices,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::rocb::compute_rocb_atr_sweep_cuda_device;
+use crate::composite_cpu::build_base_composite_hard_gate_regime_f32;
 use crate::composite_cpu::{
     compute_halftrend_trend_with_backend, compute_macz_hist_with_backend,
     compute_ott_line_with_backend, MaczGateParams, OttGateParams,
 };
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::double_ma::ma_matrix_cpu_f64;
 use crate::double_ma::{
-    compute_log_returns_f64, first_finite_idx, lookup_ma_info, ma_matrix_cpu_f64,
+    compute_log_returns_f64, first_finite_idx, ma_matrix_with_backend_f64,
     resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed,
     HalfTrendRegimeFilter,
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
-use crate::progress::ProgressSink;
-use crate::rocb::{
-    build_rocb_desired_positions, compute_rocb_breakout_signals, compute_rocb_risk_signals,
-    compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbBreakoutSignals,
-    RocbRiskSignals, RocbStrategyParams,
-};
 use crate::mkcs::{
-    build_mkcs_desired_positions, compute_mkcs_breakout_signals,
-    compute_mkcs_compression_signals, compute_mkcs_start_t, resolve_mkcs_periods,
-    validate_mkcs_params, MkcsBreakoutSignals, MkcsCompressionSignals, MkcsStrategyParams,
+    build_mkcs_desired_positions, compute_mkcs_breakout_signals, compute_mkcs_compression_signals,
+    compute_mkcs_start_t, resolve_mkcs_periods, validate_mkcs_params, MkcsBreakoutSignals,
+    MkcsCompressionSignals, MkcsStrategyParams,
 };
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::rocb::compute_rocb_donchian_output_sweep_cuda_device;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs::{
     compute_mkcs_donchian_output_sweep_cuda_device, compute_mkcs_stddev_sweep_cuda_device,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::rocb_gpu_kernel::{eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs_gpu_kernel::{
     eval_mkcs_metrics_gpu_kernel_device_rows, MkcsGpuComboBatch, MkcsGpuDeviceSignalMatrices,
+};
+use crate::progress::ProgressSink;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::rocb::compute_rocb_atr_sweep_cuda_device;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::rocb::compute_rocb_donchian_output_sweep_cuda_device;
+use crate::rocb::{
+    build_rocb_desired_positions, compute_rocb_breakout_signals, compute_rocb_risk_signals,
+    compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbBreakoutSignals,
+    RocbRiskSignals, RocbStrategyParams,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::rocb_gpu_kernel::{
+    eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
 };
 use crate::validation_pipeline::{
     build_run_verdict, sanitize_hard_gates, ValidationCandidateVerdict, ValidationPostCandidate,
@@ -60,12 +66,16 @@ use crate::vcc::{
     VccStrategyParams, VccTrendSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcc::{
+    compute_vcc_fast_dual_sweep_cuda_device, compute_vcc_ttm_squeeze_sweep_cuda_device,
+    compute_vcc_ttm_trend_sweep_cuda_device,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::{vcc_momentum_roundtrip_is_fp32_stable, vcc_momentum_roundtrip_parity};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::vcc::{compute_vcc_fast_dual_sweep_cuda_device, compute_vcc_ttm_trend_sweep_cuda_device};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc_gpu_kernel::{
-    eval_vcc_metrics_gpu_kernel_device_rows, VccGpuComboBatch, VccGpuDeviceSignalMatrices,
+    eval_vcc_metrics_gpu_kernel_device_rows, eval_vcc_metrics_gpu_kernel_device_rows_detailed,
+    VccGpuComboBatch, VccGpuDeviceSignalMatrices,
 };
 use crate::vemr::{
     build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
@@ -87,16 +97,20 @@ use crate::vemr_gpu_kernel::{
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::composite_profile_route::composite_profile_from_strategy;
 #[cfg(feature = "cuda")]
 use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::strategy_ir::StrategyProfileKind;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use ta_optimizer::ObjectiveKind;
 
@@ -195,11 +209,58 @@ fn resolve_validation_backend_runtime(
 struct GpuCompositeFixedCandidateValidationEval {
     metrics: Vec<Metrics>,
     start_ts: Vec<usize>,
+    candidate_indices: HashMap<Vec<u8>, usize>,
+    walk_forward_stats: Option<Vec<WalkForwardStats>>,
     cscv_slices: Option<HashMap<Vec<u8>, Vec<SliceReturnStats>>>,
     spa_slice_sums: Option<HashMap<Vec<u8>, Vec<f64>>>,
+    base_composite_ctx: Option<BaseCompositeGpuValidationInputs>,
     backend_used: BackendUsed,
     backend_route: Option<String>,
     backend_fallback_reason: Option<String>,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+struct BaseCompositeGpuValidationInputs {
+    device_id: u32,
+    fast_ma: String,
+    slow_ma: String,
+    fast_periods: Vec<u16>,
+    slow_periods: Vec<u16>,
+    fast_values_f32: Vec<f32>,
+    fast_cols: usize,
+    slow_values_f32: Vec<f32>,
+    slow_cols: usize,
+    device_regime: crate::gpu_backtest_kernel::DeviceRegimeFilter,
+    shared_first_valid: usize,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+impl BaseCompositeGpuValidationInputs {
+    fn fast_precomputed(&self) -> crate::gpu_backtest_kernel::PrecomputedHostMaMatrix<'_> {
+        crate::gpu_backtest_kernel::PrecomputedHostMaMatrix {
+            periods: &self.fast_periods,
+            cols: self.fast_cols,
+            values_row_major: &self.fast_values_f32,
+        }
+    }
+
+    fn slow_precomputed(&self) -> crate::gpu_backtest_kernel::PrecomputedHostMaMatrix<'_> {
+        crate::gpu_backtest_kernel::PrecomputedHostMaMatrix {
+            periods: &self.slow_periods,
+            cols: self.slow_cols,
+            values_row_major: &self.slow_values_f32,
+        }
+    }
+
+    fn total_pairs(&self) -> usize {
+        self.fast_periods
+            .len()
+            .saturating_mul(self.slow_periods.len())
+    }
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -228,9 +289,11 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             .first()
             .map(|cand| {
                 cand.asr.is_some()
+                    || cand.vcc.is_some()
                     || cand.rocb.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
+                    || is_plain_base_composite_candidate(cand)
             })
             .unwrap_or(false);
         if !supports_walk_forward {
@@ -246,9 +309,11 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             .first()
             .map(|cand| {
                 cand.asr.is_some()
+                    || cand.vcc.is_some()
                     || cand.rocb.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
+                    || is_plain_base_composite_candidate(cand)
             })
             .unwrap_or(false);
         if !supports_reopt {
@@ -264,9 +329,11 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             .first()
             .map(|cand| {
                 cand.asr.is_some()
+                    || cand.vcc.is_some()
                     || cand.rocb.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
+                    || is_plain_base_composite_candidate(cand)
             })
             .unwrap_or(false);
         if !supports_spa {
@@ -281,9 +348,11 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             .first()
             .map(|cand| {
                 cand.asr.is_some()
+                    || cand.vcc.is_some()
                     || cand.rocb.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
+                    || is_plain_base_composite_candidate(cand)
             })
             .unwrap_or(false);
         if !supports_trade_bootstrap {
@@ -305,9 +374,11 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             .first()
             .map(|cand| {
                 cand.asr.is_some()
+                    || cand.vcc.is_some()
                     || cand.rocb.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
+                    || is_plain_base_composite_candidate(cand)
             })
             .unwrap_or(false);
         if !supports_cscv {
@@ -333,8 +404,30 @@ fn serialized_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn is_plain_base_composite_candidate(cand: &CompositeParams) -> bool {
+    cand.asr.is_none()
+        && cand.vcc.is_none()
+        && cand.vemr.is_none()
+        && cand.rocb.is_none()
+        && cand.mkcs.is_none()
+        && composite_profile_from_strategy(&cand.strategy) == StrategyProfileKind::CompositeCpu
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn serialize_composite_candidate_key(params: &CompositeParams) -> Result<Vec<u8>, String> {
     serde_json::to_vec(params).map_err(|e| e.to_string())
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn composite_candidate_index_map(
+    candidates: &[CompositeParams],
+) -> Result<HashMap<Vec<u8>, usize>, String> {
+    let mut out = HashMap::with_capacity(candidates.len());
+    for (idx, cand) in candidates.iter().enumerate() {
+        let key = serialize_composite_candidate_key(cand)?;
+        out.entry(key).or_insert(idx);
+    }
+    Ok(out)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -385,13 +478,10 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    let first_asr = first
-        .asr
-        .as_ref()
-        .ok_or_else(|| {
-            "GPU composite validation currently supports ASR, ROCB, VEMR, and VCC candidates only"
-                .to_string()
-        })?;
+    let first_asr = first.asr.as_ref().ok_or_else(|| {
+        "GPU composite validation currently supports ASR, ROCB, VEMR, and VCC candidates only"
+            .to_string()
+    })?;
     if first.vcc.is_some() || first.vemr.is_some() || first.rocb.is_some() {
         return Err(
             "GPU composite validation currently supports ASR, ROCB, VEMR, and VCC candidates only"
@@ -423,7 +513,9 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
 
     for cand in &req.candidates {
         if cand.asr.is_none() || cand.vcc.is_some() || cand.vemr.is_some() || cand.rocb.is_some() {
-            return Err("GPU composite validation currently requires all candidates to use ASR".to_string());
+            return Err(
+                "GPU composite validation currently requires all candidates to use ASR".to_string(),
+            );
         }
         if !serialized_eq(&cand.strategy, &first.strategy)? {
             return Err(
@@ -459,9 +551,12 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &first.strategy, device_id)?;
 
@@ -519,9 +614,9 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
             let sq_ptr = fast_squeeze_sweep
                 .row_ptr_for_period(sq)
                 .ok_or_else(|| format!("ASR GPU validation missing squeeze row for period={sq}"))?;
-            let mo_ptr = fast_momentum_sweep
-                .row_ptr_for_period(sq)
-                .ok_or_else(|| format!("ASR GPU validation missing momentum row for period={sq}"))?;
+            let mo_ptr = fast_momentum_sweep.row_ptr_for_period(sq).ok_or_else(|| {
+                format!("ASR GPU validation missing momentum row for period={sq}")
+            })?;
             let idx = i32::try_from(fast_squeeze_rows.len())
                 .map_err(|_| "ASR GPU fast row index exceeds i32 range".to_string())?;
             fast_squeeze_rows.push(sq_ptr);
@@ -534,9 +629,9 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
         let slow_idx = if let Some(idx) = slow_lookup.get(&slow_key) {
             *idx
         } else {
-            let angle_ptr = slow_angle_sweep
-                .row_ptr_for_period(trend)
-                .ok_or_else(|| format!("ASR GPU validation missing angle row for period={trend}"))?;
+            let angle_ptr = slow_angle_sweep.row_ptr_for_period(trend).ok_or_else(|| {
+                format!("ASR GPU validation missing angle row for period={trend}")
+            })?;
             let er_ptr = slow_er_sweep
                 .row_ptr_for_period(er)
                 .ok_or_else(|| format!("ASR GPU validation missing ER row for period={er}"))?;
@@ -576,8 +671,7 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
         fast_row_index.push(fast_idx);
         slow_row_index.push(slow_idx);
         combo_start_t.push(
-            i32::try_from(start_t)
-                .map_err(|_| "ASR GPU start_t exceeds i32 range".to_string())?,
+            i32::try_from(start_t).map_err(|_| "ASR GPU start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
@@ -596,7 +690,8 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
         kaufman_short_row: kaufman.short.device_ptr,
     };
     let combo_end_t = vec![
-        i32::try_from(n).map_err(|_| "ASR GPU end_t exceeds i32 range".to_string())?;
+        i32::try_from(n)
+            .map_err(|_| "ASR GPU end_t exceeds i32 range".to_string())?;
         fast_row_index.len()
     ];
     let combos = AsrGpuComboBatch {
@@ -605,8 +700,13 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
         start_t: &combo_start_t,
         end_t: &combo_end_t,
     };
-    let metrics =
-        eval_asr_metrics_gpu_kernel_device_rows(device_id, &signals, &combos, &first.strategy, first_asr)?;
+    let metrics = eval_asr_metrics_gpu_kernel_device_rows(
+        device_id,
+        &signals,
+        &combos,
+        &first.strategy,
+        first_asr,
+    )?;
     if metrics.len() != req.candidates.len() {
         return Err("ASR GPU validation output length mismatch".to_string());
     }
@@ -654,12 +754,386 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
     Ok(GpuCompositeFixedCandidateValidationEval {
         metrics,
         start_ts,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats: None,
         cscv_slices,
         spa_slice_sums,
+        base_composite_ctx: None,
         backend_used: BackendUsed::Gpu,
         backend_route,
         backend_fallback_reason: None,
     })
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn base_composite_gpu_metric_map(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    inputs: &BaseCompositeGpuValidationInputs,
+    strategy: &StrategyConfig,
+    top_k: usize,
+    eval_range: Option<(usize, usize)>,
+) -> Result<HashMap<(u16, u16), Metrics>, String> {
+    let fast_precomputed = inputs.fast_precomputed();
+    let slow_precomputed = inputs.slow_precomputed();
+    let res =
+        crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
+            candles,
+            &inputs.fast_periods,
+            &inputs.slow_periods,
+            &inputs.fast_ma,
+            &inputs.slow_ma,
+            &req.ma_source,
+            req.fast_ma_params.as_ref(),
+            req.slow_ma_params.as_ref(),
+            Some(crate::gpu_backtest_kernel::RegimeFilterInput::DeviceF32(
+                &inputs.device_regime,
+            )),
+            strategy,
+            ObjectiveKind::Sharpe,
+            top_k.max(1),
+            true,
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id: inputs.device_id,
+                fast_alma_offset: inputs.fast_alma_offset,
+                fast_alma_sigma: inputs.fast_alma_sigma,
+                slow_alma_offset: inputs.slow_alma_offset,
+                slow_alma_sigma: inputs.slow_alma_sigma,
+            },
+            Some(&fast_precomputed),
+            Some(&slow_precomputed),
+            None,
+            None,
+            inputs.total_pairs(),
+            0,
+            Some(inputs.shared_first_valid),
+            eval_range,
+            &AtomicBool::new(false),
+            None,
+        )?;
+    let all = res
+        .all
+        .as_ref()
+        .ok_or_else(|| "GPU base composite validation expected include_all metrics".to_string())?;
+    let mut out: HashMap<(u16, u16), Metrics> = HashMap::with_capacity(all.len());
+    for (params, metric) in all {
+        out.insert((params.fast_len, params.slow_len), metric.clone());
+    }
+    Ok(out)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_base_composite_gpu_walk_forward_stats(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    inputs: &BaseCompositeGpuValidationInputs,
+    strategy: &StrategyConfig,
+    candidate_pairs: &[(u16, u16)],
+    start_ts: &[usize],
+    cfg: &WalkForwardConfigOptional,
+) -> Result<Vec<WalkForwardStats>, String> {
+    let n = candles.close.len();
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+
+    let mut candidate_windows: Vec<Vec<usize>> = Vec::with_capacity(start_ts.len());
+    let mut unique_window_starts: BTreeSet<usize> = BTreeSet::new();
+    for &start_t in start_ts {
+        let mut windows = Vec::new();
+        let mut t0 = start_t;
+        while t0 + 2 <= n {
+            let end = t0.saturating_add(window).min(n);
+            if end <= t0 + 1 {
+                break;
+            }
+            windows.push(t0);
+            unique_window_starts.insert(t0);
+            if end == n {
+                break;
+            }
+            t0 = t0.saturating_add(step);
+        }
+        candidate_windows.push(windows);
+    }
+
+    let mut by_window: HashMap<usize, HashMap<(u16, u16), Metrics>> =
+        HashMap::with_capacity(unique_window_starts.len());
+    for &t0 in &unique_window_starts {
+        let end = t0.saturating_add(window).min(n);
+        let metric_map = base_composite_gpu_metric_map(
+            req,
+            candles,
+            inputs,
+            strategy,
+            candidate_pairs.len(),
+            Some((t0, end)),
+        )?;
+        by_window.insert(t0, metric_map);
+    }
+
+    let mut out = Vec::with_capacity(candidate_pairs.len());
+    for (idx, pair) in candidate_pairs.iter().enumerate() {
+        let mut sharpes = Vec::new();
+        let mut dds = Vec::new();
+        let mut pnls = Vec::new();
+        let mut trades = Vec::new();
+        for &t0 in &candidate_windows[idx] {
+            let metric = by_window
+                .get(&t0)
+                .and_then(|m| m.get(pair))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "GPU base composite walk_forward missing metric for pair ({}, {}) at window start {}",
+                        pair.0, pair.1, t0
+                    )
+                })?;
+            sharpes.push(metric.sharpe);
+            dds.push(metric.max_dd);
+            pnls.push(metric.pnl);
+            trades.push(metric.trades);
+        }
+        sharpes.sort_by(|a, b| a.total_cmp(b));
+        dds.sort_by(|a, b| a.total_cmp(b));
+        pnls.sort_by(|a, b| a.total_cmp(b));
+        out.push(WalkForwardStats {
+            windows: sharpes.len(),
+            sharpe_median: crate::stats_common::median(&sharpes),
+            sharpe_worst: crate::stats_common::worst_min(&sharpes),
+            max_dd_median: crate::stats_common::median(&dds),
+            max_dd_worst: crate::stats_common::worst_max(&dds),
+            pnl_median: crate::stats_common::median(&pnls),
+            pnl_worst: crate::stats_common::worst_min(&pnls),
+            trades_median: crate::stats_common::median_u32(&trades),
+            trades_worst: crate::stats_common::worst_min_u32(&trades),
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_base_composite_gpu_cscv_slice_stats(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    inputs: &BaseCompositeGpuValidationInputs,
+    strategy: &StrategyConfig,
+    candidate_keys: &[Vec<u8>],
+    candidate_pairs: &[(u16, u16)],
+    start_ts: &[usize],
+    cfg: &CscvPboConfig,
+) -> Result<Option<HashMap<Vec<u8>, Vec<SliceReturnStats>>>, String> {
+    let slices = sanitize_gpu_cscv_slices(cfg.slices);
+    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
+    if slice_bars < 2 || candidate_pairs.len() < 2 {
+        return Ok(None);
+    }
+
+    let mut out: HashMap<Vec<u8>, Vec<SliceReturnStats>> =
+        HashMap::with_capacity(candidate_keys.len());
+    for key in candidate_keys {
+        out.entry(key.clone())
+            .or_insert_with(|| vec![SliceReturnStats::default(); slices]);
+    }
+
+    for slice_idx in 0..slices {
+        let t0 = common_start_t + slice_idx * slice_bars;
+        let end = t0.saturating_add(slice_bars).min(candles.close.len());
+        let metric_map = base_composite_gpu_metric_map(
+            req,
+            candles,
+            inputs,
+            strategy,
+            candidate_pairs.len(),
+            Some((t0, end)),
+        )?;
+        for (idx, pair) in candidate_pairs.iter().enumerate() {
+            let metric = metric_map.get(pair).ok_or_else(|| {
+                format!(
+                    "GPU base composite CSCV/PBO missing metric for pair ({}, {}) at slice {}",
+                    pair.0, pair.1, slice_idx
+                )
+            })?;
+            let key = candidate_keys.get(idx).ok_or_else(|| {
+                "GPU base composite CSCV/PBO candidate key index out of bounds".to_string()
+            })?;
+            if let Some(slice_vec) = out.get_mut(key) {
+                slice_vec[slice_idx] = slice_return_stats_from_metrics(metric, slice_bars);
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_base_composite_gpu_spa_slice_sums(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    inputs: &BaseCompositeGpuValidationInputs,
+    strategy: &StrategyConfig,
+    candidate_keys: &[Vec<u8>],
+    candidate_pairs: &[(u16, u16)],
+    start_ts: &[usize],
+    cfg: &SpaConfigOptional,
+) -> Result<Option<HashMap<Vec<u8>, Vec<f64>>>, String> {
+    let slices = cfg.slices.max(4);
+    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
+    if slice_bars < 2 || candidate_pairs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut out: HashMap<Vec<u8>, Vec<f64>> = HashMap::with_capacity(candidate_keys.len());
+    for key in candidate_keys {
+        out.entry(key.clone()).or_insert_with(|| vec![0.0; slices]);
+    }
+
+    let nf = slice_bars as f64;
+    for slice_idx in 0..slices {
+        let t0 = common_start_t + slice_idx * slice_bars;
+        let end = t0.saturating_add(slice_bars).min(candles.close.len());
+        let metric_map = base_composite_gpu_metric_map(
+            req,
+            candles,
+            inputs,
+            strategy,
+            candidate_pairs.len(),
+            Some((t0, end)),
+        )?;
+        for (idx, pair) in candidate_pairs.iter().enumerate() {
+            let metric = metric_map.get(pair).ok_or_else(|| {
+                format!(
+                    "GPU base composite SPA missing metric for pair ({}, {}) at slice {}",
+                    pair.0, pair.1, slice_idx
+                )
+            })?;
+            let key = candidate_keys.get(idx).ok_or_else(|| {
+                "GPU base composite SPA candidate key index out of bounds".to_string()
+            })?;
+            if let Some(slice_vec) = out.get_mut(key) {
+                slice_vec[slice_idx] = metric.sharpe * metric.volatility * nf;
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_base_composite_gpu_reopt_walk_forward_stats(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    inputs: &BaseCompositeGpuValidationInputs,
+    finalist_params: &[CompositeParams],
+    finalist_start_ts: &[usize],
+    cfg: &ReoptWalkForwardConfigOptional,
+) -> Result<Option<ReoptWalkForwardStats>, String> {
+    if finalist_params.is_empty() || candles.close.len() < 3 {
+        return Ok(None);
+    }
+
+    let top_n = cfg.top_n_candidates.max(1).min(finalist_params.len());
+    let finalists = &finalist_params[..top_n];
+    let finalist_start_ts = &finalist_start_ts[..top_n];
+    let first = finalists
+        .first()
+        .ok_or_else(|| "GPU base composite reopt_walk_forward requires finalists".to_string())?;
+
+    let mut finalist_entries: Vec<(String, (u16, u16), usize)> =
+        Vec::with_capacity(finalists.len());
+    for (idx, cand) in finalists.iter().enumerate() {
+        if !is_plain_base_composite_candidate(cand) {
+            return Err(
+                "GPU base composite reopt_walk_forward currently supports plain CompositeCpu only"
+                    .to_string(),
+            );
+        }
+        if cand.signal_mode != CompositeSignalMode::HardGate {
+            return Err(
+                "GPU base composite reopt_walk_forward currently supports signal_mode=HardGate only"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.strategy, &first.strategy)? {
+            return Err(
+                "GPU base composite reopt_walk_forward currently requires a uniform StrategyConfig"
+                    .to_string(),
+            );
+        }
+        let key = serde_json::to_string(cand)
+            .unwrap_or_else(|_| format!("base:{}:{}", cand.fast_len, cand.slow_len));
+        finalist_entries.push((key, (cand.fast_len, cand.slow_len), finalist_start_ts[idx]));
+    }
+
+    let n = candles.close.len();
+    let common_start_t = finalist_start_ts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .min(n.saturating_sub(2));
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+
+    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut t0 = common_start_t;
+    while t0 + 2 < n {
+        let train_end = t0.saturating_add(window).min(n);
+        if train_end <= t0 + 1 {
+            break;
+        }
+        let test_end = train_end.saturating_add(step).min(n);
+        if test_end <= train_end + 1 {
+            break;
+        }
+        ranges.insert((t0, train_end));
+        ranges.insert((train_end, test_end));
+        if test_end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+
+    let mut range_metrics: HashMap<(usize, usize), HashMap<(u16, u16), Metrics>> =
+        HashMap::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let metric_map = base_composite_gpu_metric_map(
+            req,
+            candles,
+            inputs,
+            &first.strategy,
+            finalists.len(),
+            Some((start, end)),
+        )?;
+        range_metrics.insert((start, end), metric_map);
+    }
+
+    crate::validation_pipeline::compute_reopt_walk_forward_stats(
+        &finalist_entries,
+        n,
+        cfg,
+        |(_, _, start_t)| *start_t,
+        |(_, pair, _), start, end| {
+            range_metrics
+                .get(&(start, end))
+                .and_then(|m| m.get(pair))
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing GPU base composite reopt metrics for pair ({}, {}) in range {}..{}",
+                        pair.0, pair.1, start, end
+                    )
+                })
+        },
+        |(key, _, _)| key.clone(),
+    )
+    .ok_or_else(|| "GPU base composite reopt_walk_forward did not produce any windows".to_string())
+    .map(Some)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -700,9 +1174,12 @@ fn compute_asr_gpu_walk_forward_stats_for_candidate(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &params.strategy, device_id)?;
     let periods = resolve_asr_periods(asr, params.fast_len, params.slow_len);
@@ -747,19 +1224,42 @@ fn compute_asr_gpu_walk_forward_stats_for_candidate(
 
     let fast_squeeze_row = fast_squeeze_sweep
         .row_ptr_for_period(periods.squeeze)
-        .ok_or_else(|| format!("ASR GPU walk_forward missing squeeze row for period={}", periods.squeeze))?;
+        .ok_or_else(|| {
+            format!(
+                "ASR GPU walk_forward missing squeeze row for period={}",
+                periods.squeeze
+            )
+        })?;
     let fast_momentum_row = fast_momentum_sweep
         .row_ptr_for_period(periods.squeeze)
-        .ok_or_else(|| format!("ASR GPU walk_forward missing momentum row for period={}", periods.squeeze))?;
+        .ok_or_else(|| {
+            format!(
+                "ASR GPU walk_forward missing momentum row for period={}",
+                periods.squeeze
+            )
+        })?;
     let slow_angle_row = slow_angle_sweep
         .row_ptr_for_period(periods.trend)
-        .ok_or_else(|| format!("ASR GPU walk_forward missing angle row for period={}", periods.trend))?;
+        .ok_or_else(|| {
+            format!(
+                "ASR GPU walk_forward missing angle row for period={}",
+                periods.trend
+            )
+        })?;
     let slow_er_row = slow_er_sweep
         .row_ptr_for_period(periods.er)
-        .ok_or_else(|| format!("ASR GPU walk_forward missing ER row for period={}", periods.er))?;
-    let slow_z_row = slow_z_sweep
-        .row_ptr_for_period(periods.z)
-        .ok_or_else(|| format!("ASR GPU walk_forward missing zscore row for period={}", periods.z))?;
+        .ok_or_else(|| {
+            format!(
+                "ASR GPU walk_forward missing ER row for period={}",
+                periods.er
+            )
+        })?;
+    let slow_z_row = slow_z_sweep.row_ptr_for_period(periods.z).ok_or_else(|| {
+        format!(
+            "ASR GPU walk_forward missing zscore row for period={}",
+            periods.z
+        )
+    })?;
 
     let fast_first_valid = fast_squeeze_sweep
         .first_valid_for_period(periods.squeeze)
@@ -927,15 +1427,14 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
     let mut max_er = 0u16;
     let mut min_z = u16::MAX;
     let mut max_z = 0u16;
-    let mut periods_by_candidate: Vec<(u16, u16, u16, u16)> =
-        Vec::with_capacity(finalists.len());
+    let mut periods_by_candidate: Vec<(u16, u16, u16, u16)> = Vec::with_capacity(finalists.len());
     let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(finalists.len());
 
     for (idx, cand) in finalists.iter().enumerate() {
-        let asr = cand
-            .asr
-            .as_ref()
-            .ok_or_else(|| "GPU composite reopt_walk_forward currently requires all finalists to use ASR".to_string())?;
+        let asr = cand.asr.as_ref().ok_or_else(|| {
+            "GPU composite reopt_walk_forward currently requires all finalists to use ASR"
+                .to_string()
+        })?;
         if cand.vcc.is_some() || cand.vemr.is_some() || cand.rocb.is_some() {
             return Err(
                 "GPU composite reopt_walk_forward currently requires all finalists to use ASR"
@@ -975,9 +1474,12 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &first.strategy, device_id)?;
     let fast_squeeze_sweep = compute_asr_ttm_squeeze_sweep_cuda_device(
@@ -1138,8 +1640,10 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         return Ok(None);
     }
 
-    let candidate_keys: Vec<Vec<u8>> =
-        finalist_entries.iter().map(|(_, key, _)| key.clone()).collect();
+    let candidate_keys: Vec<Vec<u8>> = finalist_entries
+        .iter()
+        .map(|(_, key, _)| key.clone())
+        .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
     for (start, end) in ranges {
@@ -1160,8 +1664,13 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
             start_t: &slice_start,
             end_t: &slice_end,
         };
-        let metrics =
-            eval_asr_metrics_gpu_kernel_device_rows(device_id, &signals, &combos, &first.strategy, first_asr)?;
+        let metrics = eval_asr_metrics_gpu_kernel_device_rows(
+            device_id,
+            &signals,
+            &combos,
+            &first.strategy,
+            first_asr,
+        )?;
         let mut keyed = HashMap::with_capacity(metrics.len());
         for (key, metric) in candidate_keys.iter().zip(metrics.into_iter()) {
             keyed.insert(key.clone(), metric);
@@ -1239,8 +1748,13 @@ fn compute_asr_gpu_cscv_slice_stats_for_candidates(
             start_t: &slice_start,
             end_t: &slice_end,
         };
-        let metrics =
-            eval_asr_metrics_gpu_kernel_device_rows(device_id, signals, &combos, &req.candidates[0].strategy, asr)?;
+        let metrics = eval_asr_metrics_gpu_kernel_device_rows(
+            device_id,
+            signals,
+            &combos,
+            &req.candidates[0].strategy,
+            asr,
+        )?;
         for ((key, metric), _) in candidate_keys
             .iter()
             .zip(metrics.iter())
@@ -1272,10 +1786,9 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    let first_rocb = first
-        .rocb
-        .as_ref()
-        .ok_or_else(|| "GPU composite validation currently supports ROCB candidates only".to_string())?;
+    let first_rocb = first.rocb.as_ref().ok_or_else(|| {
+        "GPU composite validation currently supports ROCB candidates only".to_string()
+    })?;
     if first.asr.is_some() || first.vcc.is_some() || first.vemr.is_some() {
         return Err("GPU composite validation currently supports ROCB candidates only".to_string());
     }
@@ -1299,7 +1812,10 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
 
     for cand in &req.candidates {
         if cand.rocb.is_none() || cand.asr.is_some() || cand.vcc.is_some() || cand.vemr.is_some() {
-            return Err("GPU composite validation currently requires all candidates to use ROCB".to_string());
+            return Err(
+                "GPU composite validation currently requires all candidates to use ROCB"
+                    .to_string(),
+            );
         }
         if !serialized_eq(&cand.strategy, &first.strategy)? {
             return Err(
@@ -1335,9 +1851,12 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
         &["upper_band", "upper", "up"],
@@ -1352,8 +1871,7 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
         max_channel,
         1,
     )?;
-    let atr_sweep =
-        compute_rocb_atr_sweep_cuda_device(&prepared_cuda_inputs, min_atr, max_atr, 1)?;
+    let atr_sweep = compute_rocb_atr_sweep_cuda_device(&prepared_cuda_inputs, min_atr, max_atr, 1)?;
 
     let mut channel_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
     let mut atr_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
@@ -1363,10 +1881,12 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
     for (channel_period, atr_period) in periods_by_candidate {
         let channel_row = upper_sweep
             .row_index_for_period(channel_period)
-            .ok_or_else(|| format!("ROCB GPU validation missing channel row for period={channel_period}"))?;
-        let atr_row = atr_sweep
-            .row_index_for_period(atr_period)
-            .ok_or_else(|| format!("ROCB GPU validation missing ATR row for period={atr_period}"))?;
+            .ok_or_else(|| {
+                format!("ROCB GPU validation missing channel row for period={channel_period}")
+            })?;
+        let atr_row = atr_sweep.row_index_for_period(atr_period).ok_or_else(|| {
+            format!("ROCB GPU validation missing ATR row for period={atr_period}")
+        })?;
         let start_t = compute_rocb_start_t(
             first_valid_close,
             first_valid_high,
@@ -1390,8 +1910,7 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
                 .map_err(|_| "ROCB GPU ATR row index exceeds i32 range".to_string())?,
         );
         combo_start_t.push(
-            i32::try_from(start_t)
-                .map_err(|_| "ROCB GPU start_t exceeds i32 range".to_string())?,
+            i32::try_from(start_t).map_err(|_| "ROCB GPU start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
@@ -1408,7 +1927,8 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
         atr_stride: atr_sweep.matrix.cols,
     };
     let combo_end_t = vec![
-        i32::try_from(n).map_err(|_| "ROCB GPU end_t exceeds i32 range".to_string())?;
+        i32::try_from(n)
+            .map_err(|_| "ROCB GPU end_t exceeds i32 range".to_string())?;
         channel_row_index.len()
     ];
     let combos = RocbGpuComboBatch {
@@ -1471,8 +1991,11 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
     Ok(GpuCompositeFixedCandidateValidationEval {
         metrics,
         start_ts,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats: None,
         cscv_slices,
         spa_slice_sums,
+        base_composite_ctx: None,
         backend_used: BackendUsed::Gpu,
         backend_route,
         backend_fallback_reason: None,
@@ -1496,12 +2019,10 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    let first_mkcs = first
-        .mkcs
-        .as_ref()
-        .ok_or_else(|| "GPU composite validation currently supports MKCS candidates only".to_string())?;
-    if first.asr.is_some() || first.vcc.is_some() || first.vemr.is_some() || first.rocb.is_some()
-    {
+    let first_mkcs = first.mkcs.as_ref().ok_or_else(|| {
+        "GPU composite validation currently supports MKCS candidates only".to_string()
+    })?;
+    if first.asr.is_some() || first.vcc.is_some() || first.vemr.is_some() || first.rocb.is_some() {
         return Err("GPU composite validation currently supports MKCS candidates only".to_string());
     }
     validate_strategy_cfg(&first.strategy)?;
@@ -1523,8 +2044,16 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
     let mut periods_by_candidate: Vec<(u16, u16)> = Vec::with_capacity(req.candidates.len());
 
     for cand in &req.candidates {
-        if cand.mkcs.is_none() || cand.asr.is_some() || cand.vcc.is_some() || cand.vemr.is_some() || cand.rocb.is_some() {
-            return Err("GPU composite validation currently requires all candidates to use MKCS".to_string());
+        if cand.mkcs.is_none()
+            || cand.asr.is_some()
+            || cand.vcc.is_some()
+            || cand.vemr.is_some()
+            || cand.rocb.is_some()
+        {
+            return Err(
+                "GPU composite validation currently requires all candidates to use MKCS"
+                    .to_string(),
+            );
         }
         if !serialized_eq(&cand.strategy, &first.strategy)? {
             return Err(
@@ -1560,15 +2089,14 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
-    let stddev_sweep = compute_mkcs_stddev_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        min_stddev,
-        max_stddev,
-        1,
-    )?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+    let stddev_sweep =
+        compute_mkcs_stddev_sweep_cuda_device(&prepared_cuda_inputs, min_stddev, max_stddev, 1)?;
     let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
         &["upper_band", "upper", "up"],
@@ -1592,10 +2120,14 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
     for (stddev_period, breakout_period) in periods_by_candidate {
         let stddev_row = stddev_sweep
             .row_index_for_period(stddev_period)
-            .ok_or_else(|| format!("MKCS GPU validation missing stddev row for period={stddev_period}"))?;
+            .ok_or_else(|| {
+                format!("MKCS GPU validation missing stddev row for period={stddev_period}")
+            })?;
         let breakout_row = upper_sweep
             .row_index_for_period(breakout_period)
-            .ok_or_else(|| format!("MKCS GPU validation missing breakout row for period={breakout_period}"))?;
+            .ok_or_else(|| {
+                format!("MKCS GPU validation missing breakout row for period={breakout_period}")
+            })?;
         let start_t = compute_mkcs_start_t(
             first_valid_close,
             first_valid_high,
@@ -1619,8 +2151,7 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
                 .map_err(|_| "MKCS GPU breakout row index exceeds i32 range".to_string())?,
         );
         combo_start_t.push(
-            i32::try_from(start_t)
-                .map_err(|_| "MKCS GPU start_t exceeds i32 range".to_string())?,
+            i32::try_from(start_t).map_err(|_| "MKCS GPU start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
@@ -1637,7 +2168,8 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
         breakout_stride: upper_sweep.matrix.cols,
     };
     let combo_end_t = vec![
-        i32::try_from(n).map_err(|_| "MKCS GPU end_t exceeds i32 range".to_string())?;
+        i32::try_from(n)
+            .map_err(|_| "MKCS GPU end_t exceeds i32 range".to_string())?;
         stddev_row_index.len()
     ];
     let combos = MkcsGpuComboBatch {
@@ -1700,8 +2232,11 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
     Ok(GpuCompositeFixedCandidateValidationEval {
         metrics,
         start_ts,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats: None,
         cscv_slices,
         spa_slice_sums,
+        base_composite_ctx: None,
         backend_used: BackendUsed::Gpu,
         backend_route,
         backend_fallback_reason: None,
@@ -1750,9 +2285,12 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let periods = resolve_mkcs_periods(mkcs, params.fast_len, params.slow_len);
     let stddev_sweep = compute_mkcs_stddev_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -1775,12 +2313,14 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         1,
     )?;
 
-    let stddev_row = stddev_sweep.row_index_for_period(periods.stddev).ok_or_else(|| {
-        format!(
-            "MKCS GPU walk_forward missing stddev row for period={}",
-            periods.stddev
-        )
-    })?;
+    let stddev_row = stddev_sweep
+        .row_index_for_period(periods.stddev)
+        .ok_or_else(|| {
+            format!(
+                "MKCS GPU walk_forward missing stddev row for period={}",
+                periods.stddev
+            )
+        })?;
     let breakout_row = upper_sweep
         .row_index_for_period(periods.breakout)
         .ok_or_else(|| {
@@ -1833,10 +2373,10 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         if end <= t0 + 1 {
             break;
         }
-        let start_i =
-            i32::try_from(t0).map_err(|_| "MKCS GPU walk_forward start_t exceeds i32 range".to_string())?;
-        let end_i =
-            i32::try_from(end).map_err(|_| "MKCS GPU walk_forward end_t exceeds i32 range".to_string())?;
+        let start_i = i32::try_from(t0)
+            .map_err(|_| "MKCS GPU walk_forward start_t exceeds i32 range".to_string())?;
+        let end_i = i32::try_from(end)
+            .map_err(|_| "MKCS GPU walk_forward end_t exceeds i32 range".to_string())?;
         let combo_stddev = [stddev_row_i];
         let combo_breakout = [breakout_row_i];
         let combo_start = [start_i];
@@ -1944,12 +2484,11 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
     let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(finalists.len());
 
     for (idx, cand) in finalists.iter().enumerate() {
-        let mkcs = cand
-            .mkcs
-            .as_ref()
-            .ok_or_else(|| "GPU composite reopt_walk_forward currently requires all finalists to use MKCS".to_string())?;
-        if cand.asr.is_some() || cand.vcc.is_some() || cand.vemr.is_some() || cand.rocb.is_some()
-        {
+        let mkcs = cand.mkcs.as_ref().ok_or_else(|| {
+            "GPU composite reopt_walk_forward currently requires all finalists to use MKCS"
+                .to_string()
+        })?;
+        if cand.asr.is_some() || cand.vcc.is_some() || cand.vemr.is_some() || cand.rocb.is_some() {
             return Err(
                 "GPU composite reopt_walk_forward currently requires all finalists to use MKCS"
                     .to_string(),
@@ -1977,18 +2516,21 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
 
         let key = serde_json::to_string(cand)
             .unwrap_or_else(|_| format!("mkcs:{}:{}", cand.fast_len, cand.slow_len));
-        finalist_entries.push((key, serialize_composite_candidate_key(cand)?, finalist_start_ts[idx]));
+        finalist_entries.push((
+            key,
+            serialize_composite_candidate_key(cand)?,
+            finalist_start_ts[idx],
+        ));
     }
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
-    let stddev_sweep = compute_mkcs_stddev_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        min_stddev,
-        max_stddev,
-        1,
-    )?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+    let stddev_sweep =
+        compute_mkcs_stddev_sweep_cuda_device(&prepared_cuda_inputs, min_stddev, max_stddev, 1)?;
     let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
         &["upper_band", "upper", "up"],
@@ -2084,8 +2626,10 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         return Ok(None);
     }
 
-    let candidate_keys: Vec<Vec<u8>> =
-        finalist_entries.iter().map(|(_, key, _)| key.clone()).collect();
+    let candidate_keys: Vec<Vec<u8>> = finalist_entries
+        .iter()
+        .map(|(_, key, _)| key.clone())
+        .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
     for (start, end) in ranges {
@@ -2131,7 +2675,10 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
                 .and_then(|m| m.get(key))
                 .cloned()
                 .unwrap_or_else(|| {
-                    panic!("missing MKCS GPU reopt metrics for range {}..{}", start, end)
+                    panic!(
+                        "missing MKCS GPU reopt metrics for range {}..{}",
+                        start, end
+                    )
                 })
         },
         |(key, _, _)| key.clone(),
@@ -2249,9 +2796,12 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let periods = resolve_rocb_periods(rocb, params.fast_len, params.slow_len);
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -2267,19 +2817,23 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
         periods.channel,
         1,
     )?;
-    let atr_sweep = compute_rocb_atr_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        periods.atr,
-        periods.atr,
-        1,
-    )?;
+    let atr_sweep =
+        compute_rocb_atr_sweep_cuda_device(&prepared_cuda_inputs, periods.atr, periods.atr, 1)?;
 
     let channel_row = upper_sweep
         .row_index_for_period(periods.channel)
-        .ok_or_else(|| format!("ROCB GPU walk_forward missing channel row for period={}", periods.channel))?;
-    let atr_row = atr_sweep
-        .row_index_for_period(periods.atr)
-        .ok_or_else(|| format!("ROCB GPU walk_forward missing ATR row for period={}", periods.atr))?;
+        .ok_or_else(|| {
+            format!(
+                "ROCB GPU walk_forward missing channel row for period={}",
+                periods.channel
+            )
+        })?;
+    let atr_row = atr_sweep.row_index_for_period(periods.atr).ok_or_else(|| {
+        format!(
+            "ROCB GPU walk_forward missing ATR row for period={}",
+            periods.atr
+        )
+    })?;
     let start_t = compute_rocb_start_t(
         first_valid_close,
         first_valid_high,
@@ -2324,10 +2878,10 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
         if end <= t0 + 1 {
             break;
         }
-        let start_i =
-            i32::try_from(t0).map_err(|_| "ROCB GPU walk_forward start_t exceeds i32 range".to_string())?;
-        let end_i =
-            i32::try_from(end).map_err(|_| "ROCB GPU walk_forward end_t exceeds i32 range".to_string())?;
+        let start_i = i32::try_from(t0)
+            .map_err(|_| "ROCB GPU walk_forward start_t exceeds i32 range".to_string())?;
+        let end_i = i32::try_from(end)
+            .map_err(|_| "ROCB GPU walk_forward end_t exceeds i32 range".to_string())?;
         let combo_channel = [channel_row_i];
         let combo_atr = [atr_row_i];
         let combo_start = [start_i];
@@ -2435,10 +2989,10 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
     let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(finalists.len());
 
     for (idx, cand) in finalists.iter().enumerate() {
-        let rocb = cand
-            .rocb
-            .as_ref()
-            .ok_or_else(|| "GPU composite reopt_walk_forward currently requires all finalists to use ROCB".to_string())?;
+        let rocb = cand.rocb.as_ref().ok_or_else(|| {
+            "GPU composite reopt_walk_forward currently requires all finalists to use ROCB"
+                .to_string()
+        })?;
         if cand.asr.is_some() || cand.vcc.is_some() || cand.vemr.is_some() {
             return Err(
                 "GPU composite reopt_walk_forward currently requires all finalists to use ROCB"
@@ -2474,9 +3028,12 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
         &["upper_band", "upper", "up"],
@@ -2491,8 +3048,7 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         max_channel,
         1,
     )?;
-    let atr_sweep =
-        compute_rocb_atr_sweep_cuda_device(&prepared_cuda_inputs, min_atr, max_atr, 1)?;
+    let atr_sweep = compute_rocb_atr_sweep_cuda_device(&prepared_cuda_inputs, min_atr, max_atr, 1)?;
 
     let mut channel_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
     let mut atr_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
@@ -2574,8 +3130,10 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         return Ok(None);
     }
 
-    let candidate_keys: Vec<Vec<u8>> =
-        finalist_entries.iter().map(|(_, key, _)| key.clone()).collect();
+    let candidate_keys: Vec<Vec<u8>> = finalist_entries
+        .iter()
+        .map(|(_, key, _)| key.clone())
+        .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
     for (start, end) in ranges {
@@ -2596,8 +3154,13 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
             start_t: &start_vec,
             end_t: &end_vec,
         };
-        let metrics =
-            eval_rocb_metrics_gpu_kernel_device_rows(device_id, &signals, &combos, &first.strategy, first_rocb)?;
+        let metrics = eval_rocb_metrics_gpu_kernel_device_rows(
+            device_id,
+            &signals,
+            &combos,
+            &first.strategy,
+            first_rocb,
+        )?;
         let mut keyed = HashMap::with_capacity(metrics.len());
         for (key, metric) in candidate_keys.iter().zip(metrics.into_iter()) {
             keyed.insert(key.clone(), metric);
@@ -2616,7 +3179,10 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
                 .and_then(|m| m.get(key))
                 .cloned()
                 .unwrap_or_else(|| {
-                    panic!("missing ROCB GPU reopt metrics for range {}..{}", start, end)
+                    panic!(
+                        "missing ROCB GPU reopt metrics for range {}..{}",
+                        start, end
+                    )
                 })
         },
         |(key, _, _)| key.clone(),
@@ -2675,8 +3241,13 @@ fn compute_rocb_gpu_cscv_slice_stats_for_candidates(
             start_t: &slice_start,
             end_t: &slice_end,
         };
-        let metrics =
-            eval_rocb_metrics_gpu_kernel_device_rows(device_id, signals, &combos, &req.candidates[0].strategy, rocb)?;
+        let metrics = eval_rocb_metrics_gpu_kernel_device_rows(
+            device_id,
+            signals,
+            &combos,
+            &req.candidates[0].strategy,
+            rocb,
+        )?;
         for (key, metric) in candidate_keys.iter().zip(metrics.iter()) {
             if let Some(slice_vec) = out.get_mut(key) {
                 slice_vec[slice_idx] = slice_return_stats_from_metrics(metric, slice_bars);
@@ -2704,14 +3275,12 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    let first_vemr = first
-        .vemr
-        .as_ref()
-        .ok_or_else(|| "GPU composite validation currently supports ROCB and VEMR candidates only".to_string())?;
+    let first_vemr = first.vemr.as_ref().ok_or_else(|| {
+        "GPU composite validation currently supports ROCB and VEMR candidates only".to_string()
+    })?;
     if first.asr.is_some() || first.vcc.is_some() || first.rocb.is_some() {
         return Err(
-            "GPU composite validation currently supports ROCB and VEMR candidates only"
-                .to_string(),
+            "GPU composite validation currently supports ROCB and VEMR candidates only".to_string(),
         );
     }
     validate_strategy_cfg(&first.strategy)?;
@@ -2736,7 +3305,10 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
 
     for cand in &req.candidates {
         if cand.vemr.is_none() || cand.asr.is_some() || cand.vcc.is_some() || cand.rocb.is_some() {
-            return Err("GPU composite validation currently requires all candidates to use VEMR".to_string());
+            return Err(
+                "GPU composite validation currently requires all candidates to use VEMR"
+                    .to_string(),
+            );
         }
         if !serialized_eq(&cand.strategy, &first.strategy)? {
             return Err(
@@ -2770,9 +3342,12 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let z_sweep = compute_vemr_zscore_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vemr,
@@ -2815,12 +3390,14 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
     let mut start_ts: Vec<usize> = Vec::with_capacity(req.candidates.len());
 
     for (z_period, bb_period, atr_period) in periods_by_candidate {
-        let z_row = z_sweep
-            .row_index_for_period(z_period)
-            .ok_or_else(|| format!("VEMR GPU validation missing zscore row for period={z_period}"))?;
+        let z_row = z_sweep.row_index_for_period(z_period).ok_or_else(|| {
+            format!("VEMR GPU validation missing zscore row for period={z_period}")
+        })?;
         let bb_row = bb_upper_sweep
             .row_index_for_period(bb_period)
-            .ok_or_else(|| format!("VEMR GPU validation missing bollinger row for period={bb_period}"))?;
+            .ok_or_else(|| {
+                format!("VEMR GPU validation missing bollinger row for period={bb_period}")
+            })?;
         if bb_middle_sweep.row_index_for_period(bb_period).is_none()
             || bb_lower_sweep.row_index_for_period(bb_period).is_none()
         {
@@ -2828,9 +3405,9 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
                 "VEMR GPU validation missing one or more bollinger rows for period={bb_period}"
             ));
         }
-        let atr_row = atr_sweep
-            .row_index_for_period(atr_period)
-            .ok_or_else(|| format!("VEMR GPU validation missing ATR row for period={atr_period}"))?;
+        let atr_row = atr_sweep.row_index_for_period(atr_period).ok_or_else(|| {
+            format!("VEMR GPU validation missing ATR row for period={atr_period}")
+        })?;
         let fast_first_valid = z_sweep
             .first_valid_for_period(z_period)
             .max(bb_upper_sweep.first_valid_for_period(bb_period))
@@ -2863,8 +3440,7 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
                 .map_err(|_| "VEMR GPU ATR row index exceeds i32 range".to_string())?,
         );
         combo_start_t.push(
-            i32::try_from(start_t)
-                .map_err(|_| "VEMR GPU start_t exceeds i32 range".to_string())?,
+            i32::try_from(start_t).map_err(|_| "VEMR GPU start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
@@ -2885,7 +3461,8 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
         atr_stride: atr_sweep.matrix.cols,
     };
     let combo_end_t = vec![
-        i32::try_from(n).map_err(|_| "VEMR GPU end_t exceeds i32 range".to_string())?;
+        i32::try_from(n)
+            .map_err(|_| "VEMR GPU end_t exceeds i32 range".to_string())?;
         z_row_index.len()
     ];
     let combos = VemrGpuComboBatch {
@@ -2964,8 +3541,11 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
     Ok(GpuCompositeFixedCandidateValidationEval {
         metrics,
         start_ts,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats: None,
         cscv_slices,
         spa_slice_sums,
+        base_composite_ctx: None,
         backend_used: BackendUsed::Gpu,
         backend_route,
         backend_fallback_reason: None,
@@ -3010,9 +3590,12 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let periods = resolve_vemr_periods(vemr, params.fast_len, params.slow_len);
     let z_sweep = compute_vemr_zscore_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -3054,12 +3637,20 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
         device_id,
     )?;
 
-    let z_row = z_sweep
-        .row_index_for_period(periods.z)
-        .ok_or_else(|| format!("VEMR GPU walk_forward missing zscore row for period={}", periods.z))?;
+    let z_row = z_sweep.row_index_for_period(periods.z).ok_or_else(|| {
+        format!(
+            "VEMR GPU walk_forward missing zscore row for period={}",
+            periods.z
+        )
+    })?;
     let bb_row = bb_upper_sweep
         .row_index_for_period(periods.bb)
-        .ok_or_else(|| format!("VEMR GPU walk_forward missing bollinger row for period={}", periods.bb))?;
+        .ok_or_else(|| {
+            format!(
+                "VEMR GPU walk_forward missing bollinger row for period={}",
+                periods.bb
+            )
+        })?;
     if bb_middle_sweep.row_index_for_period(periods.bb).is_none()
         || bb_lower_sweep.row_index_for_period(periods.bb).is_none()
     {
@@ -3068,9 +3659,12 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
             periods.bb
         ));
     }
-    let atr_row = atr_sweep
-        .row_index_for_period(periods.atr)
-        .ok_or_else(|| format!("VEMR GPU walk_forward missing ATR row for period={}", periods.atr))?;
+    let atr_row = atr_sweep.row_index_for_period(periods.atr).ok_or_else(|| {
+        format!(
+            "VEMR GPU walk_forward missing ATR row for period={}",
+            periods.atr
+        )
+    })?;
     let fast_first_valid = z_sweep
         .first_valid_for_period(periods.z)
         .max(bb_upper_sweep.first_valid_for_period(periods.bb))
@@ -3126,10 +3720,10 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
         if end <= t0 + 1 {
             break;
         }
-        let start_i =
-            i32::try_from(t0).map_err(|_| "VEMR GPU walk_forward start_t exceeds i32 range".to_string())?;
-        let end_i =
-            i32::try_from(end).map_err(|_| "VEMR GPU walk_forward end_t exceeds i32 range".to_string())?;
+        let start_i = i32::try_from(t0)
+            .map_err(|_| "VEMR GPU walk_forward start_t exceeds i32 range".to_string())?;
+        let end_i = i32::try_from(end)
+            .map_err(|_| "VEMR GPU walk_forward end_t exceeds i32 range".to_string())?;
         let combo_z = [z_row_i];
         let combo_bb = [bb_row_i];
         let combo_atr = [atr_row_i];
@@ -3142,28 +3736,27 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
             start_t: &combo_start,
             end_t: &combo_end,
         };
-        let metric = match eval_vemr_metrics_gpu_kernel_device_rows(
-            device_id,
-            &signals,
-            &combos,
-            &params.strategy,
-            vemr,
-            ObjectiveKind::Sharpe,
-            1,
-            true,
-            0,
-        )? {
-            VemrGpuEvalResult::Full(metrics) => metrics
-                .into_iter()
-                .next()
-                .ok_or_else(|| "VEMR GPU walk_forward returned no metrics".to_string())?,
-            VemrGpuEvalResult::TopK(_) => {
-                return Err(
+        let metric =
+            match eval_vemr_metrics_gpu_kernel_device_rows(
+                device_id,
+                &signals,
+                &combos,
+                &params.strategy,
+                vemr,
+                ObjectiveKind::Sharpe,
+                1,
+                true,
+                0,
+            )? {
+                VemrGpuEvalResult::Full(metrics) => metrics
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "VEMR GPU walk_forward returned no metrics".to_string())?,
+                VemrGpuEvalResult::TopK(_) => return Err(
                     "VEMR GPU walk_forward unexpectedly returned TopK output in include_all mode"
                         .to_string(),
-                )
-            }
-        };
+                ),
+            };
 
         sharpes.push(metric.sharpe);
         dds.push(metric.max_dd);
@@ -3249,10 +3842,10 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
     let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(finalists.len());
 
     for (idx, cand) in finalists.iter().enumerate() {
-        let vemr = cand
-            .vemr
-            .as_ref()
-            .ok_or_else(|| "GPU composite reopt_walk_forward currently requires all finalists to use VEMR".to_string())?;
+        let vemr = cand.vemr.as_ref().ok_or_else(|| {
+            "GPU composite reopt_walk_forward currently requires all finalists to use VEMR"
+                .to_string()
+        })?;
         if cand.asr.is_some() || cand.vcc.is_some() || cand.rocb.is_some() {
             return Err(
                 "GPU composite reopt_walk_forward currently requires all finalists to use VEMR"
@@ -3290,9 +3883,12 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let z_sweep = compute_vemr_zscore_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vemr,
@@ -3325,13 +3921,8 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         1,
         device_id,
     )?;
-    let atr_sweep = compute_vemr_atr_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        min_atr,
-        max_atr,
-        1,
-        device_id,
-    )?;
+    let atr_sweep =
+        compute_vemr_atr_sweep_cuda_device(&prepared_cuda_inputs, min_atr, max_atr, 1, device_id)?;
 
     let mut z_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
     let mut bb_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
@@ -3437,8 +4028,10 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         return Ok(None);
     }
 
-    let candidate_keys: Vec<Vec<u8>> =
-        finalist_entries.iter().map(|(_, key, _)| key.clone()).collect();
+    let candidate_keys: Vec<Vec<u8>> = finalist_entries
+        .iter()
+        .map(|(_, key, _)| key.clone())
+        .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
     for (start, end) in ranges {
@@ -3472,12 +4065,10 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
             0,
         )? {
             VemrGpuEvalResult::Full(metrics) => metrics,
-            VemrGpuEvalResult::TopK(_) => {
-                return Err(
-                    "VEMR GPU reopt_walk_forward unexpectedly returned TopK output in include_all mode"
-                        .to_string(),
-                )
-            }
+            VemrGpuEvalResult::TopK(_) => return Err(
+                "VEMR GPU reopt_walk_forward unexpectedly returned TopK output in include_all mode"
+                    .to_string(),
+            ),
         };
         let mut keyed = HashMap::with_capacity(metrics.len());
         for (key, metric) in candidate_keys.iter().zip(metrics.into_iter()) {
@@ -3497,7 +4088,10 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
                 .and_then(|m| m.get(key))
                 .cloned()
                 .unwrap_or_else(|| {
-                    panic!("missing VEMR GPU reopt metrics for range {}..{}", start, end)
+                    panic!(
+                        "missing VEMR GPU reopt metrics for range {}..{}",
+                        start, end
+                    )
                 })
         },
         |(key, _, _)| key.clone(),
@@ -3605,10 +4199,10 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    let first_vcc = first
-        .vcc
-        .as_ref()
-        .ok_or_else(|| "GPU composite validation currently supports ROCB, VEMR, and VCC candidates only".to_string())?;
+    let first_vcc = first.vcc.as_ref().ok_or_else(|| {
+        "GPU composite validation currently supports ROCB, VEMR, and VCC candidates only"
+            .to_string()
+    })?;
     if first.asr.is_some() || first.vemr.is_some() || first.rocb.is_some() {
         return Err(
             "GPU composite validation currently supports ROCB, VEMR, and VCC candidates only"
@@ -3637,7 +4231,9 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
 
     for cand in &req.candidates {
         if cand.vcc.is_none() || cand.asr.is_some() || cand.vemr.is_some() || cand.rocb.is_some() {
-            return Err("GPU composite validation currently requires all candidates to use VCC".to_string());
+            return Err(
+                "GPU composite validation currently requires all candidates to use VCC".to_string(),
+            );
         }
         if !serialized_eq(&cand.strategy, &first.strategy)? {
             return Err(
@@ -3671,9 +4267,12 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, &req.ma_source, device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
     let (fast_squeeze_sweep, fast_momentum_sweep) = compute_vcc_fast_dual_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vcc,
@@ -3699,9 +4298,10 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
 
     let mut fast_squeeze_rows: Vec<u64> = Vec::new();
     let mut fast_momentum_rows: Vec<u64> = Vec::new();
-    let mut fast_momentum_host_row_major: Vec<f32> =
-        Vec::with_capacity(req.candidates.len() * n);
+    let mut fast_squeeze_host_row_major: Vec<f32> = Vec::with_capacity(req.candidates.len() * n);
+    let mut fast_momentum_host_row_major: Vec<f32> = Vec::with_capacity(req.candidates.len() * n);
     let mut trend_rows_ptr: Vec<u64> = Vec::new();
+    let mut trend_host_row_major: Vec<f32> = Vec::with_capacity(req.candidates.len() * n);
     let mut fast_lookup: HashMap<(u16, u16), i32> = HashMap::new();
     let mut trend_lookup: HashMap<u16, i32> = HashMap::new();
     let mut fast_first_valid_lookup: HashMap<(u16, u16), usize> = HashMap::new();
@@ -3715,9 +4315,9 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
             let sq_ptr = fast_squeeze_sweep
                 .row_ptr_for_period(sq)
                 .ok_or_else(|| format!("VCC GPU validation missing squeeze row for period={sq}"))?;
-            let mo_ptr = fast_momentum_sweep
-                .row_ptr_for_period(mo)
-                .ok_or_else(|| format!("VCC GPU validation missing momentum row for period={mo}"))?;
+            let mo_ptr = fast_momentum_sweep.row_ptr_for_period(mo).ok_or_else(|| {
+                format!("VCC GPU validation missing momentum row for period={mo}")
+            })?;
             let idx = i32::try_from(fast_squeeze_rows.len())
                 .map_err(|_| "VCC GPU fast row index exceeds i32 range".to_string())?;
             fast_squeeze_rows.push(sq_ptr);
@@ -3740,6 +4340,8 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
                     parity.delta_sign_mismatch_count
                 ));
             }
+            fast_squeeze_host_row_major
+                .extend(fast_signals.squeeze_state.iter().map(|v| *v as f32));
             fast_momentum_host_row_major.extend(fast_signals.momentum.iter().map(|v| *v as f32));
             fast_first_valid_lookup.insert(fast_key, fast_signals.first_valid);
             idx
@@ -3747,9 +4349,9 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
         let trend_idx = if let Some(idx) = trend_lookup.get(&trend) {
             *idx
         } else {
-            let tr_ptr = trend_sweep
-                .row_ptr_for_period(trend)
-                .ok_or_else(|| format!("VCC GPU validation missing trend row for period={trend}"))?;
+            let tr_ptr = trend_sweep.row_ptr_for_period(trend).ok_or_else(|| {
+                format!("VCC GPU validation missing trend row for period={trend}")
+            })?;
             let idx = i32::try_from(trend_rows_ptr.len())
                 .map_err(|_| "VCC GPU trend row index exceeds i32 range".to_string())?;
             trend_rows_ptr.push(tr_ptr);
@@ -3761,6 +4363,7 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
                 trend,
                 Some(&prepared_cuda_inputs),
             )?;
+            trend_host_row_major.extend(trend_signals.trend_state.iter().map(|v| *v as f32));
             trend_first_valid_lookup.insert(trend, trend_signals.first_valid);
             idx
         };
@@ -3786,8 +4389,7 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
         fast_row_index.push(fast_idx);
         trend_row_index.push(trend_idx);
         combo_start_t.push(
-            i32::try_from(start_t)
-                .map_err(|_| "VCC GPU start_t exceeds i32 range".to_string())?,
+            i32::try_from(start_t).map_err(|_| "VCC GPU start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
@@ -3798,14 +4400,23 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
         fast_rows: fast_squeeze_rows.len(),
         trend_rows: trend_rows_ptr.len(),
         fast_squeeze_rows: &fast_squeeze_rows,
+        fast_squeeze_host_row_major: Some(&fast_squeeze_host_row_major),
         fast_momentum_rows: &fast_momentum_rows,
         fast_momentum_host_row_major: Some(&fast_momentum_host_row_major),
         trend_rows_ptr: &trend_rows_ptr,
+        trend_host_row_major: Some(&trend_host_row_major),
     };
+    let combo_end_t = vec![
+        i32::try_from(n)
+            .map_err(|_| "VCC GPU end_t exceeds i32 range".to_string())?;
+        fast_row_index.len()
+    ];
     let combos = VccGpuComboBatch {
         fast_row_index: &fast_row_index,
         trend_row_index: &trend_row_index,
         start_t: &combo_start_t,
+        metric_start_t: &combo_start_t,
+        end_t: &combo_end_t,
     };
     let metrics = eval_vcc_metrics_gpu_kernel_device_rows(
         device_id,
@@ -3817,6 +4428,41 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
     if metrics.len() != req.candidates.len() {
         return Err("VCC GPU validation output length mismatch".to_string());
     }
+    let cscv_slices = if let Some(cscv_cfg) = req.cscv_pbo.as_ref() {
+        compute_vcc_gpu_cscv_slice_stats_for_candidates(
+            req,
+            &signals,
+            &fast_row_index,
+            &trend_row_index,
+            &combo_start_t,
+            &start_ts,
+            first_vcc,
+            device_id,
+            cscv_cfg,
+        )?
+    } else {
+        None
+    };
+    let spa_slice_sums = if let Some(spa_cfg) = req.spa.as_ref() {
+        let slice_stats = compute_vcc_gpu_cscv_slice_stats_for_candidates(
+            req,
+            &signals,
+            &fast_row_index,
+            &trend_row_index,
+            &combo_start_t,
+            &start_ts,
+            first_vcc,
+            device_id,
+            &CscvPboConfig {
+                slices: spa_cfg.slices.max(4),
+                max_combinations: 0,
+                threshold: 0.0,
+            },
+        )?;
+        slice_stats.as_ref().map(spa_slice_sums_from_slice_stats)
+    } else {
+        None
+    };
 
     let backend_route = match req.backend {
         Backend::Auto { .. } => Some("Auto->GpuKernel".to_string()),
@@ -3826,8 +4472,976 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
     Ok(GpuCompositeFixedCandidateValidationEval {
         metrics,
         start_ts,
-        cscv_slices: None,
-        spa_slice_sums: None,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats: None,
+        cscv_slices,
+        spa_slice_sums,
+        base_composite_ctx: None,
+        backend_used: BackendUsed::Gpu,
+        backend_route,
+        backend_fallback_reason: None,
+    })
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(dead_code)]
+fn compute_vcc_gpu_cscv_slice_stats_for_candidates(
+    req: &CompositeValidationRequest,
+    signals: &VccGpuDeviceSignalMatrices<'_>,
+    fast_row_index: &[i32],
+    trend_row_index: &[i32],
+    combo_start_t: &[i32],
+    start_ts: &[usize],
+    vcc: &VccStrategyParams,
+    device_id: u32,
+    cfg: &CscvPboConfig,
+) -> Result<Option<HashMap<Vec<u8>, Vec<SliceReturnStats>>>, String> {
+    let slices = sanitize_gpu_cscv_slices(cfg.slices);
+    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let slice_bars = signals.cols.saturating_sub(common_start_t) / slices;
+    if slice_bars < 2 || req.candidates.len() < 2 {
+        return Ok(None);
+    }
+
+    let candidate_keys: Vec<Vec<u8>> = req
+        .candidates
+        .iter()
+        .map(serialize_composite_candidate_key)
+        .collect::<Result<_, _>>()?;
+    let mut out: HashMap<Vec<u8>, Vec<SliceReturnStats>> =
+        HashMap::with_capacity(candidate_keys.len());
+    for key in &candidate_keys {
+        out.insert(key.clone(), vec![SliceReturnStats::default(); slices]);
+    }
+
+    for slice_idx in 0..slices {
+        let t0 = common_start_t + slice_idx * slice_bars;
+        let end = t0.saturating_add(slice_bars).min(signals.cols);
+        let end_i =
+            i32::try_from(end).map_err(|_| "VCC GPU CSCV end_t exceeds i32 range".to_string())?;
+        let slice_metric_start: Vec<i32> = combo_start_t
+            .iter()
+            .map(|&st| {
+                let start = usize::try_from(st).unwrap_or(0).max(t0);
+                i32::try_from(start)
+                    .map_err(|_| "VCC GPU CSCV start_t exceeds i32 range".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let slice_end = vec![end_i; slice_metric_start.len()];
+        let combos = VccGpuComboBatch {
+            fast_row_index,
+            trend_row_index,
+            start_t: combo_start_t,
+            metric_start_t: &slice_metric_start,
+            end_t: &slice_end,
+        };
+        let metrics = eval_vcc_metrics_gpu_kernel_device_rows_detailed(
+            device_id,
+            signals,
+            &combos,
+            &req.candidates[0].strategy,
+            vcc,
+        )?;
+        for (key, metric) in candidate_keys.iter().zip(metrics.iter()) {
+            if let Some(slice_vec) = out.get_mut(key) {
+                let _ = slice_bars;
+                slice_vec[slice_idx] = SliceReturnStats {
+                    sum: metric.step_return_sum,
+                    sumsq: metric.step_return_sumsq,
+                };
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(dead_code)]
+fn compute_vcc_gpu_walk_forward_stats_for_candidate(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &CompositeParams,
+    cfg: &WalkForwardConfigOptional,
+) -> Result<WalkForwardStats, String> {
+    let device_id = composite_validation_supports_gpu_fixed_candidates(req)?;
+    let vcc = params
+        .vcc
+        .as_ref()
+        .ok_or_else(|| "VCC GPU walk_forward requires VCC candidate params".to_string())?;
+    validate_strategy_cfg(&params.strategy)?;
+    validate_vcc_params(vcc)?;
+    if params.strategy.uses_execution_overlays()
+        || params.strategy.stop_loss_pct().is_some()
+        || params.strategy.take_profit_pct().is_some()
+    {
+        return Err(
+            "GPU composite VCC walk_forward currently supports strategy execution without overlays/stop-loss/take-profit."
+                .to_string(),
+        );
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let n = close.len();
+    if n < 2 || ma_prices.len() != n {
+        return Err("not enough candles or mismatched MA source length".to_string());
+    }
+    if n > i32::MAX as usize {
+        return Err("VCC GPU walk_forward length exceeds i32 range".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_source =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+    let periods = resolve_vcc_periods(vcc, params.fast_len, params.slow_len);
+    let fast_squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        vcc,
+        periods.squeeze,
+        periods.squeeze,
+        1,
+        device_id,
+    )?;
+    let trend_sweep = compute_vcc_ttm_trend_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        periods.trend,
+        periods.trend,
+        1,
+        device_id,
+    )?;
+    let fast_row = fast_squeeze_sweep
+        .row_ptr_for_period(periods.squeeze)
+        .ok_or_else(|| {
+            format!(
+                "VCC GPU walk_forward missing squeeze row for period={}",
+                periods.squeeze
+            )
+        })?;
+    let trend_row = trend_sweep
+        .row_ptr_for_period(periods.trend)
+        .ok_or_else(|| {
+            format!(
+                "VCC GPU walk_forward missing trend row for period={}",
+                periods.trend
+            )
+        })?;
+    let fast_signals = compute_vcc_fast_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        vcc,
+        periods.squeeze,
+        periods.momentum,
+        Some(&prepared_cuda_inputs),
+    )?;
+    let parity = vcc_momentum_roundtrip_parity(&fast_signals.momentum);
+    if !vcc_momentum_roundtrip_is_fp32_stable(&fast_signals.momentum) {
+        return Err(format!(
+            "GPU composite VCC validation falls back to CPU because the requested momentum rows are not fp32-stable (sign mismatches={}, delta-sign mismatches={}).",
+            parity.sign_mismatch_count,
+            parity.delta_sign_mismatch_count
+        ));
+    }
+    let trend_signals = compute_vcc_trend_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.trend,
+        Some(&prepared_cuda_inputs),
+    )?;
+    let start_t = compute_vcc_start_t(
+        first_valid_close,
+        first_valid_source,
+        fast_signals.first_valid,
+        trend_signals.first_valid,
+        usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1),
+        params.strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after VCC GPU walk_forward warmup".to_string());
+    }
+
+    let fast_squeeze_rows = vec![fast_row];
+    let fast_squeeze_host_row_major: Vec<f32> = fast_signals
+        .squeeze_state
+        .iter()
+        .map(|v| *v as f32)
+        .collect();
+    let trend_rows_ptr = vec![trend_row];
+    let trend_host_row_major: Vec<f32> = trend_signals
+        .trend_state
+        .iter()
+        .map(|v| *v as f32)
+        .collect();
+    let fast_momentum_host_row_major: Vec<f32> =
+        fast_signals.momentum.iter().map(|v| *v as f32).collect();
+    let signals = VccGpuDeviceSignalMatrices {
+        close_f64: close,
+        cols: n,
+        fast_rows: fast_squeeze_rows.len(),
+        trend_rows: trend_rows_ptr.len(),
+        fast_squeeze_rows: &fast_squeeze_rows,
+        fast_squeeze_host_row_major: Some(&fast_squeeze_host_row_major),
+        fast_momentum_rows: &[],
+        fast_momentum_host_row_major: Some(&fast_momentum_host_row_major),
+        trend_rows_ptr: &trend_rows_ptr,
+        trend_host_row_major: Some(&trend_host_row_major),
+    };
+
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+    let mut sharpes: Vec<f64> = Vec::new();
+    let mut dds: Vec<f64> = Vec::new();
+    let mut pnls: Vec<f64> = Vec::new();
+    let mut trades: Vec<u32> = Vec::new();
+
+    let mut t0 = start_t;
+    while t0 + 2 <= n {
+        let end = t0.saturating_add(window).min(n);
+        if end <= t0 + 1 {
+            break;
+        }
+        let combo_fast = [0];
+        let combo_trend = [0];
+        let combo_start = [i32::try_from(start_t)
+            .map_err(|_| "VCC GPU walk_forward canonical start_t exceeds i32 range".to_string())?];
+        let combo_metric_start = [i32::try_from(t0)
+            .map_err(|_| "VCC GPU walk_forward start_t exceeds i32 range".to_string())?];
+        let combo_end = [i32::try_from(end)
+            .map_err(|_| "VCC GPU walk_forward end_t exceeds i32 range".to_string())?];
+        let combos = VccGpuComboBatch {
+            fast_row_index: &combo_fast,
+            trend_row_index: &combo_trend,
+            start_t: &combo_start,
+            metric_start_t: &combo_metric_start,
+            end_t: &combo_end,
+        };
+        let metric = eval_vcc_metrics_gpu_kernel_device_rows(
+            device_id,
+            &signals,
+            &combos,
+            &params.strategy,
+            vcc,
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "VCC GPU walk_forward returned no metrics".to_string())?;
+
+        sharpes.push(metric.sharpe);
+        dds.push(metric.max_dd);
+        pnls.push(metric.pnl);
+        trades.push(metric.trades);
+        if end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+
+    sharpes.sort_by(|a, b| a.total_cmp(b));
+    dds.sort_by(|a, b| a.total_cmp(b));
+    pnls.sort_by(|a, b| a.total_cmp(b));
+
+    Ok(WalkForwardStats {
+        windows: sharpes.len(),
+        sharpe_median: crate::stats_common::median(&sharpes),
+        sharpe_worst: crate::stats_common::worst_min(&sharpes),
+        max_dd_median: crate::stats_common::median(&dds),
+        max_dd_worst: crate::stats_common::worst_max(&dds),
+        pnl_median: crate::stats_common::median(&pnls),
+        pnl_worst: crate::stats_common::worst_min(&pnls),
+        trades_median: crate::stats_common::median_u32(&trades),
+        trades_worst: crate::stats_common::worst_min_u32(&trades),
+    })
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(dead_code)]
+fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    finalist_params: &[CompositeParams],
+    finalist_start_ts: &[usize],
+    cfg: &ReoptWalkForwardConfigOptional,
+) -> Result<Option<ReoptWalkForwardStats>, String> {
+    if finalist_params.is_empty() || candles.close.len() < 3 {
+        return Ok(None);
+    }
+
+    let top_n = cfg.top_n_candidates.max(1).min(finalist_params.len());
+    let finalists = &finalist_params[..top_n];
+    let finalist_start_ts = &finalist_start_ts[..top_n];
+    let device_id = composite_validation_supports_gpu_fixed_candidates(req)?;
+    let first = &finalists[0];
+    let first_vcc = first
+        .vcc
+        .as_ref()
+        .ok_or_else(|| "VCC GPU reopt_walk_forward requires VCC candidate params".to_string())?;
+    validate_strategy_cfg(&first.strategy)?;
+    validate_vcc_params(first_vcc)?;
+    if first.strategy.uses_execution_overlays()
+        || first.strategy.stop_loss_pct().is_some()
+        || first.strategy.take_profit_pct().is_some()
+    {
+        return Err(
+            "GPU composite VCC reopt_walk_forward currently supports strategy execution without overlays/stop-loss/take-profit."
+                .to_string(),
+        );
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let n = close.len();
+    if n < 2 || ma_prices.len() != n {
+        return Err("not enough candles or mismatched MA source length".to_string());
+    }
+    if n > i32::MAX as usize {
+        return Err("VCC GPU reopt_walk_forward length exceeds i32 range".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_source =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    let mut min_sq = u16::MAX;
+    let mut max_sq = 0u16;
+    let mut min_mo = u16::MAX;
+    let mut max_mo = 0u16;
+    let mut min_trend = u16::MAX;
+    let mut max_trend = 0u16;
+    let mut periods_by_candidate: Vec<(u16, u16, u16)> = Vec::with_capacity(finalists.len());
+    let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(finalists.len());
+
+    for (idx, cand) in finalists.iter().enumerate() {
+        let vcc = cand.vcc.as_ref().ok_or_else(|| {
+            "GPU composite reopt_walk_forward currently requires all finalists to use VCC"
+                .to_string()
+        })?;
+        if cand.asr.is_some() || cand.vemr.is_some() || cand.rocb.is_some() || cand.mkcs.is_some() {
+            return Err(
+                "GPU composite reopt_walk_forward currently requires all finalists to use VCC"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.strategy, &first.strategy)? {
+            return Err(
+                "GPU composite reopt_walk_forward currently requires a uniform StrategyConfig"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(vcc, first_vcc)? {
+            return Err(
+                "GPU composite reopt_walk_forward currently requires uniform VCC parameters"
+                    .to_string(),
+            );
+        }
+
+        let periods = resolve_vcc_periods(first_vcc, cand.fast_len, cand.slow_len);
+        min_sq = min_sq.min(periods.squeeze);
+        max_sq = max_sq.max(periods.squeeze);
+        min_mo = min_mo.min(periods.momentum);
+        max_mo = max_mo.max(periods.momentum);
+        min_trend = min_trend.min(periods.trend);
+        max_trend = max_trend.max(periods.trend);
+        periods_by_candidate.push((periods.squeeze, periods.momentum, periods.trend));
+
+        let key = serde_json::to_string(cand)
+            .unwrap_or_else(|_| format!("vcc:{}:{}", cand.fast_len, cand.slow_len));
+        finalist_entries.push((
+            key,
+            serialize_composite_candidate_key(cand)?,
+            finalist_start_ts[idx],
+        ));
+    }
+
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+    let fast_squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        first_vcc,
+        min_sq,
+        max_sq,
+        1,
+        device_id,
+    )?;
+    let trend_sweep = compute_vcc_ttm_trend_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        min_trend,
+        max_trend,
+        1,
+        device_id,
+    )?;
+
+    let mut fast_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
+    let mut trend_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(finalists.len());
+    let mut fast_squeeze_rows: Vec<u64> = Vec::new();
+    let mut fast_squeeze_host_row_major: Vec<f32> = Vec::with_capacity(finalists.len() * n);
+    let mut fast_momentum_host_row_major: Vec<f32> = Vec::with_capacity(finalists.len() * n);
+    let mut trend_rows_ptr: Vec<u64> = Vec::new();
+    let mut trend_host_row_major: Vec<f32> = Vec::with_capacity(finalists.len() * n);
+    let mut fast_lookup: HashMap<(u16, u16), i32> = HashMap::new();
+    let mut trend_lookup: HashMap<u16, i32> = HashMap::new();
+    let mut fast_first_valid_lookup: HashMap<(u16, u16), usize> = HashMap::new();
+    let mut trend_first_valid_lookup: HashMap<u16, usize> = HashMap::new();
+
+    for ((sq, mo, trend), cand) in periods_by_candidate.into_iter().zip(finalists.iter()) {
+        let fast_key = (sq, mo);
+        let fast_idx = if let Some(idx) = fast_lookup.get(&fast_key) {
+            *idx
+        } else {
+            let sq_ptr = fast_squeeze_sweep
+                .row_ptr_for_period(sq)
+                .ok_or_else(|| format!("VCC GPU reopt missing squeeze row for period={sq}"))?;
+            let idx = i32::try_from(fast_squeeze_rows.len())
+                .map_err(|_| "VCC GPU reopt fast row index exceeds i32 range".to_string())?;
+            fast_squeeze_rows.push(sq_ptr);
+            fast_lookup.insert(fast_key, idx);
+            let fast_signals = compute_vcc_fast_signals(
+                candles,
+                &req.ma_source,
+                &Backend::CpuOnly,
+                first_vcc,
+                sq,
+                mo,
+                Some(&prepared_cuda_inputs),
+            )?;
+            let parity = vcc_momentum_roundtrip_parity(&fast_signals.momentum);
+            if !vcc_momentum_roundtrip_is_fp32_stable(&fast_signals.momentum) {
+                return Err(format!(
+                    "GPU composite VCC validation falls back to CPU because the requested momentum rows are not fp32-stable (sign mismatches={}, delta-sign mismatches={}).",
+                    parity.sign_mismatch_count,
+                    parity.delta_sign_mismatch_count
+                ));
+            }
+            fast_squeeze_host_row_major
+                .extend(fast_signals.squeeze_state.iter().map(|v| *v as f32));
+            fast_momentum_host_row_major.extend(fast_signals.momentum.iter().map(|v| *v as f32));
+            fast_first_valid_lookup.insert(fast_key, fast_signals.first_valid);
+            idx
+        };
+        let trend_idx = if let Some(idx) = trend_lookup.get(&trend) {
+            *idx
+        } else {
+            let tr_ptr = trend_sweep
+                .row_ptr_for_period(trend)
+                .ok_or_else(|| format!("VCC GPU reopt missing trend row for period={trend}"))?;
+            let idx = i32::try_from(trend_rows_ptr.len())
+                .map_err(|_| "VCC GPU reopt trend row index exceeds i32 range".to_string())?;
+            trend_rows_ptr.push(tr_ptr);
+            trend_lookup.insert(trend, idx);
+            let trend_signals = compute_vcc_trend_signals(
+                candles,
+                &req.ma_source,
+                &Backend::CpuOnly,
+                trend,
+                Some(&prepared_cuda_inputs),
+            )?;
+            trend_host_row_major.extend(trend_signals.trend_state.iter().map(|v| *v as f32));
+            trend_first_valid_lookup.insert(trend, trend_signals.first_valid);
+            idx
+        };
+        let fast_first_valid = *fast_first_valid_lookup
+            .get(&fast_key)
+            .ok_or_else(|| "VCC GPU reopt fast first_valid lookup miss".to_string())?;
+        let trend_first_valid = *trend_first_valid_lookup
+            .get(&trend)
+            .ok_or_else(|| "VCC GPU reopt trend first_valid lookup miss".to_string())?;
+        let start_t = compute_vcc_start_t(
+            first_valid_close,
+            first_valid_source,
+            fast_first_valid,
+            trend_first_valid,
+            usize::from(sq.max(mo).max(trend)).max(1),
+            cand.strategy.trade_on_next_bar,
+        );
+        if start_t >= n {
+            return Err("not enough candles after VCC GPU reopt warmup".to_string());
+        }
+        fast_row_index.push(fast_idx);
+        trend_row_index.push(trend_idx);
+        combo_start_t.push(
+            i32::try_from(start_t)
+                .map_err(|_| "VCC GPU reopt start_t exceeds i32 range".to_string())?,
+        );
+    }
+
+    let signals = VccGpuDeviceSignalMatrices {
+        close_f64: close,
+        cols: n,
+        fast_rows: fast_squeeze_rows.len(),
+        trend_rows: trend_rows_ptr.len(),
+        fast_squeeze_rows: &fast_squeeze_rows,
+        fast_squeeze_host_row_major: Some(&fast_squeeze_host_row_major),
+        fast_momentum_rows: &[],
+        fast_momentum_host_row_major: Some(&fast_momentum_host_row_major),
+        trend_rows_ptr: &trend_rows_ptr,
+        trend_host_row_major: Some(&trend_host_row_major),
+    };
+
+    let common_start_t = finalist_start_ts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .min(n.saturating_sub(2));
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut t0 = common_start_t;
+    while t0 + 2 < n {
+        let train_end = t0.saturating_add(window).min(n);
+        if train_end <= t0 + 1 {
+            break;
+        }
+        let test_end = train_end.saturating_add(step).min(n);
+        if test_end <= train_end + 1 {
+            break;
+        }
+        ranges.insert((t0, train_end));
+        ranges.insert((train_end, test_end));
+        if test_end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+
+    let candidate_keys: Vec<Vec<u8>> = finalist_entries
+        .iter()
+        .map(|(_, key, _)| key.clone())
+        .collect();
+    let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
+        HashMap::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let metric_start_vec: Vec<i32> = combo_start_t
+            .iter()
+            .map(|&st| {
+                let start_i = usize::try_from(st).unwrap_or(0).max(start);
+                i32::try_from(start_i)
+                    .map_err(|_| "VCC GPU reopt start_t exceeds i32 range".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let end_i =
+            i32::try_from(end).map_err(|_| "VCC GPU reopt end_t exceeds i32 range".to_string())?;
+        let end_vec = vec![end_i; metric_start_vec.len()];
+        let combos = VccGpuComboBatch {
+            fast_row_index: &fast_row_index,
+            trend_row_index: &trend_row_index,
+            start_t: &combo_start_t,
+            metric_start_t: &metric_start_vec,
+            end_t: &end_vec,
+        };
+        let metrics = eval_vcc_metrics_gpu_kernel_device_rows(
+            device_id,
+            &signals,
+            &combos,
+            &first.strategy,
+            first_vcc,
+        )?;
+        let mut keyed = HashMap::with_capacity(metrics.len());
+        for (key, metric) in candidate_keys.iter().zip(metrics.into_iter()) {
+            keyed.insert(key.clone(), metric);
+        }
+        range_metrics.insert((start, end), keyed);
+    }
+
+    crate::validation_pipeline::compute_reopt_walk_forward_stats(
+        &finalist_entries,
+        n,
+        cfg,
+        |(_, _, start_t)| *start_t,
+        |(_, key, _), start, end| {
+            range_metrics
+                .get(&(start, end))
+                .and_then(|m| m.get(key))
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("missing VCC GPU reopt metrics for range {}..{}", start, end)
+                })
+        },
+        |(key, _, _)| key.clone(),
+    )
+    .ok_or_else(|| "VCC GPU reopt_walk_forward did not produce any windows".to_string())
+    .map(Some)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn try_prepare_base_composite_gpu_fixed_candidate_validation(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<GpuCompositeFixedCandidateValidationEval, String> {
+    let device_id = composite_validation_supports_gpu_fixed_candidates(req)?;
+    if let Some(reason) = composite_gpu_validation_feature_blocker(req) {
+        return Err(reason);
+    }
+    if req.candidates.is_empty() {
+        return Err("no candidates to validate".to_string());
+    }
+
+    let first = req
+        .candidates
+        .first()
+        .ok_or_else(|| "no candidates to validate".to_string())?;
+    if first.asr.is_some()
+        || first.vcc.is_some()
+        || first.vemr.is_some()
+        || first.rocb.is_some()
+        || first.mkcs.is_some()
+    {
+        return Err(
+            "GPU base composite validation requires plain CompositeCpu candidates only".to_string(),
+        );
+    }
+    if composite_profile_from_strategy(&first.strategy) != StrategyProfileKind::CompositeCpu {
+        return Err(
+            "GPU base composite validation currently supports plain CompositeCpu only".to_string(),
+        );
+    }
+    if first.signal_mode != CompositeSignalMode::HardGate {
+        return Err(
+            "GPU base composite validation currently supports signal_mode=HardGate only"
+                .to_string(),
+        );
+    }
+    validate_strategy_cfg(&first.strategy)?;
+    if first.strategy.uses_execution_overlays()
+        || first.strategy.stop_loss_pct().is_some()
+        || first.strategy.take_profit_pct().is_some()
+    {
+        return Err(
+            "GPU base composite validation currently supports strategy execution without overlays/stop-loss/take-profit."
+                .to_string(),
+        );
+    }
+
+    let fast_ma = first.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = first.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("fast/slow MA type cannot be empty".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let mut fast_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut slow_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut candidate_pairs: Vec<(u16, u16)> = Vec::with_capacity(req.candidates.len());
+
+    for cand in &req.candidates {
+        if cand.asr.is_some()
+            || cand.vcc.is_some()
+            || cand.vemr.is_some()
+            || cand.rocb.is_some()
+            || cand.mkcs.is_some()
+        {
+            return Err(
+                "GPU base composite validation currently requires all candidates to use plain CompositeCpu"
+                    .to_string(),
+            );
+        }
+        if composite_profile_from_strategy(&cand.strategy) != StrategyProfileKind::CompositeCpu {
+            return Err(
+                "GPU base composite validation currently supports plain CompositeCpu only"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.strategy, &first.strategy)? {
+            return Err(
+                "GPU base composite validation currently requires a uniform StrategyConfig"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.halftrend, &first.halftrend)? {
+            return Err(
+                "GPU base composite validation currently requires uniform HalfTrend parameters"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.macz, &first.macz)? {
+            return Err(
+                "GPU base composite validation currently requires uniform MACZ parameters"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.ott, &first.ott)? {
+            return Err(
+                "GPU base composite validation currently requires uniform OTT parameters"
+                    .to_string(),
+            );
+        }
+        if cand.signal_mode != first.signal_mode {
+            return Err(
+                "GPU base composite validation currently requires uniform signal_mode".to_string(),
+            );
+        }
+        if cand.fast_ma_type.trim().to_ascii_lowercase() != fast_ma
+            || cand.slow_ma_type.trim().to_ascii_lowercase() != slow_ma
+        {
+            return Err(
+                "GPU base composite validation currently requires uniform fast/slow MA types"
+                    .to_string(),
+            );
+        }
+
+        fast_periods.insert(cand.fast_len);
+        slow_periods.insert(cand.slow_len);
+        candidate_pairs.push((cand.fast_len, cand.slow_len));
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let n = close.len();
+    if n < 2 || ma_prices.len() != n {
+        return Err("not enough candles or mismatched MA source length".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_source =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let base_first_valid = first_valid_close.max(first_valid_source);
+
+    let halftrend_trend =
+        compute_halftrend_trend_with_backend(candles, &first.halftrend, &Backend::CpuOnly, None)?;
+    if halftrend_trend.len() != n {
+        return Err("HalfTrend trend series length mismatch".to_string());
+    }
+    let macz_hist = compute_macz_hist_with_backend(
+        candles,
+        &req.ma_source,
+        &first.macz,
+        &Backend::CpuOnly,
+        None,
+    )?;
+    if macz_hist.len() != n {
+        return Err("MACZ series length mismatch".to_string());
+    }
+    let ott_line = compute_ott_line_with_backend(
+        candles,
+        &req.ma_source,
+        &first.ott,
+        &Backend::CpuOnly,
+        None,
+    )?;
+    if ott_line.len() != n {
+        return Err("OTT series length mismatch".to_string());
+    }
+
+    let fv_ht = first_finite_idx(&halftrend_trend)
+        .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+    let fv_macz =
+        first_finite_idx(&macz_hist).ok_or_else(|| "macz series all non-finite".to_string())?;
+    let fv_ott =
+        first_finite_idx(&ott_line).ok_or_else(|| "ott line series all non-finite".to_string())?;
+    let shared_first_valid = base_first_valid.max(fv_ht).max(fv_macz).max(fv_ott);
+
+    let regime = build_base_composite_hard_gate_regime_f32(
+        &halftrend_trend,
+        &macz_hist,
+        ma_prices,
+        &ott_line,
+    )?;
+    let device_regime = crate::gpu_backtest_kernel::upload_host_regime_filter(
+        device_id,
+        &regime,
+        shared_first_valid,
+    )?;
+
+    let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
+    let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
+    let (fast_alma_offset, fast_alma_sigma) =
+        resolve_alma_params_for_side("fast", &fast_ma, req.fast_ma_params.as_ref())?;
+    let (slow_alma_offset, slow_alma_sigma) =
+        resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
+
+    let (fast_values_f64, fast_cols) = ma_matrix_cpu_f64(
+        candles,
+        &fast_ma,
+        &req.ma_source,
+        &fast_periods,
+        req.fast_ma_params.as_ref(),
+        fast_alma_offset,
+        fast_alma_sigma,
+    )?;
+    let (slow_values_f64, slow_cols) = ma_matrix_cpu_f64(
+        candles,
+        &slow_ma,
+        &req.ma_source,
+        &slow_periods,
+        req.slow_ma_params.as_ref(),
+        slow_alma_offset,
+        slow_alma_sigma,
+    )?;
+    if fast_cols != n || slow_cols != n {
+        return Err("base composite GPU validation MA matrix column mismatch".to_string());
+    }
+
+    let fast_values_f32: Vec<f32> = fast_values_f64.iter().map(|&v| v as f32).collect();
+    let slow_values_f32: Vec<f32> = slow_values_f64.iter().map(|&v| v as f32).collect();
+
+    let inputs = BaseCompositeGpuValidationInputs {
+        device_id,
+        fast_ma: fast_ma.clone(),
+        slow_ma: slow_ma.clone(),
+        fast_periods: fast_periods.clone(),
+        slow_periods: slow_periods.clone(),
+        fast_values_f32,
+        fast_cols,
+        slow_values_f32,
+        slow_cols,
+        device_regime,
+        shared_first_valid,
+        fast_alma_offset,
+        fast_alma_sigma,
+        slow_alma_offset,
+        slow_alma_sigma,
+    };
+    let metric_by_pair = base_composite_gpu_metric_map(
+        req,
+        candles,
+        &inputs,
+        &first.strategy,
+        req.candidates.len(),
+        None,
+    )?;
+
+    let mut fast_first_valid_lookup: HashMap<u16, usize> =
+        HashMap::with_capacity(fast_periods.len());
+    for (row, &period) in fast_periods.iter().enumerate() {
+        let start = row.saturating_mul(n);
+        let end = start.saturating_add(n);
+        let slice = &fast_values_f64[start..end];
+        fast_first_valid_lookup.insert(
+            period,
+            first_finite_idx(slice)
+                .ok_or_else(|| format!("fast MA row all non-finite for period={period}"))?,
+        );
+    }
+    let mut slow_first_valid_lookup: HashMap<u16, usize> =
+        HashMap::with_capacity(slow_periods.len());
+    for (row, &period) in slow_periods.iter().enumerate() {
+        let start = row.saturating_mul(n);
+        let end = start.saturating_add(n);
+        let slice = &slow_values_f64[start..end];
+        slow_first_valid_lookup.insert(
+            period,
+            first_finite_idx(slice)
+                .ok_or_else(|| format!("slow MA row all non-finite for period={period}"))?,
+        );
+    }
+
+    let trade_offset = if first.strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+    let mut metrics: Vec<Metrics> = Vec::with_capacity(req.candidates.len());
+    let mut start_ts: Vec<usize> = Vec::with_capacity(req.candidates.len());
+    for &(fast_len, slow_len) in &candidate_pairs {
+        let candidate_first_valid = base_first_valid
+            .max(fv_ht)
+            .max(fv_macz)
+            .max(fv_ott)
+            .max(
+                *fast_first_valid_lookup
+                    .get(&fast_len)
+                    .ok_or_else(|| format!("missing fast first_valid for period={fast_len}"))?,
+            )
+            .max(
+                *slow_first_valid_lookup
+                    .get(&slow_len)
+                    .ok_or_else(|| format!("missing slow first_valid for period={slow_len}"))?,
+            );
+        let start_t = candidate_first_valid
+            .saturating_add(usize::from(fast_len.max(slow_len)).saturating_sub(1))
+            .saturating_add(trade_offset);
+        if start_t >= n {
+            return Err("not enough candles after base composite GPU warmup".to_string());
+        }
+        let metric = metric_by_pair
+            .get(&(fast_len, slow_len))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "GPU base composite validation missing metric for pair ({fast_len}, {slow_len})"
+                )
+            })?;
+        metrics.push(metric);
+        start_ts.push(start_t);
+    }
+
+    let candidate_keys: Vec<Vec<u8>> = req
+        .candidates
+        .iter()
+        .map(serialize_composite_candidate_key)
+        .collect::<Result<_, _>>()?;
+    let walk_forward_stats = if let Some(cfg) = req.walk_forward.as_ref() {
+        Some(compute_base_composite_gpu_walk_forward_stats(
+            req,
+            candles,
+            &inputs,
+            &first.strategy,
+            &candidate_pairs,
+            &start_ts,
+            cfg,
+        )?)
+    } else {
+        None
+    };
+    let cscv_slices = if let Some(cfg) = req.cscv_pbo.as_ref() {
+        compute_base_composite_gpu_cscv_slice_stats(
+            req,
+            candles,
+            &inputs,
+            &first.strategy,
+            &candidate_keys,
+            &candidate_pairs,
+            &start_ts,
+            cfg,
+        )?
+    } else {
+        None
+    };
+    let spa_slice_sums = if let Some(cfg) = req.spa.as_ref() {
+        compute_base_composite_gpu_spa_slice_sums(
+            req,
+            candles,
+            &inputs,
+            &first.strategy,
+            &candidate_keys,
+            &candidate_pairs,
+            &start_ts,
+            cfg,
+        )?
+    } else {
+        None
+    };
+
+    let backend_route = match req.backend {
+        Backend::Auto { .. } => Some("Auto->GpuKernel".to_string()),
+        _ => Some(validation_backend_label(&req.backend).to_string()),
+    };
+
+    Ok(GpuCompositeFixedCandidateValidationEval {
+        metrics,
+        start_ts,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats,
+        cscv_slices,
+        spa_slice_sums,
+        base_composite_ctx: Some(inputs),
         backend_used: BackendUsed::Gpu,
         backend_route,
         backend_fallback_reason: None,
@@ -3858,7 +5472,7 @@ fn try_prepare_composite_gpu_fixed_candidate_validation(
     if first.vcc.is_some() {
         return try_prepare_vcc_gpu_fixed_candidate_validation(req, candles);
     }
-    Err("GPU composite validation currently supports ASR, ROCB, MKCS, VEMR, and VCC candidates only".to_string())
+    try_prepare_base_composite_gpu_fixed_candidate_validation(req, candles)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -4424,7 +6038,9 @@ fn build_candidate_series<'a>(
         + usize::from(params.rocb.is_some())
         + usize::from(params.mkcs.is_some());
     if custom_strategy_count > 1 {
-        return Err("Select only one of ASR, VCC, VEMR, ROCB, or MKCS strategy config.".to_string());
+        return Err(
+            "Select only one of ASR, VCC, VEMR, ROCB, or MKCS strategy config.".to_string(),
+        );
     }
     if let Some(asr_cfg) = params.asr.as_ref() {
         return build_asr_candidate_series(
@@ -4532,15 +6148,6 @@ fn build_composite_candidate_series<'a>(
     validate_ma_kind(&fast_ma)?;
     validate_ma_kind(&slow_ma)?;
 
-    let fast_info = lookup_ma_info(&fast_ma).ok_or_else(|| "unknown fast MA".to_string())?;
-    if !fast_info.supports_cpu_single {
-        return Err(format!("CPU backend does not support MA '{}'", fast_ma));
-    }
-    let slow_info = lookup_ma_info(&slow_ma).ok_or_else(|| "unknown slow MA".to_string())?;
-    if !slow_info.supports_cpu_single {
-        return Err(format!("CPU backend does not support MA '{}'", slow_ma));
-    }
-
     let halftrend_trend = compute_halftrend_trend_with_backend(
         candles,
         &params.halftrend,
@@ -4587,8 +6194,10 @@ fn build_composite_candidate_series<'a>(
     let (slow_alma_offset, slow_alma_sigma) =
         resolve_alma_params_for_side("slow", &slow_ma, slow_ma_params)?;
 
+    #[cfg(feature = "cuda")]
+    let ma_source_f32 = prepared_cuda_inputs.map(|inputs| inputs.source());
     let fast_periods = [params.fast_len];
-    let (fast_mat, cols) = ma_matrix_cpu_f64(
+    let (fast_mat, cols) = ma_matrix_with_backend_f64(
         candles,
         &fast_ma,
         ma_source,
@@ -4596,13 +6205,21 @@ fn build_composite_candidate_series<'a>(
         fast_ma_params,
         fast_alma_offset,
         fast_alma_sigma,
+        #[cfg(feature = "cuda")]
+        Some(backend),
+        #[cfg(not(feature = "cuda"))]
+        None,
+        #[cfg(feature = "cuda")]
+        ma_source_f32,
+        #[cfg(not(feature = "cuda"))]
+        None,
     )?;
     if cols != n {
         return Err("fast MA series length mismatch".to_string());
     }
 
     let slow_periods = [params.slow_len];
-    let (slow_mat, cols2) = ma_matrix_cpu_f64(
+    let (slow_mat, cols2) = ma_matrix_with_backend_f64(
         candles,
         &slow_ma,
         ma_source,
@@ -4610,6 +6227,14 @@ fn build_composite_candidate_series<'a>(
         slow_ma_params,
         slow_alma_offset,
         slow_alma_sigma,
+        #[cfg(feature = "cuda")]
+        Some(backend),
+        #[cfg(not(feature = "cuda"))]
+        None,
+        #[cfg(feature = "cuda")]
+        ma_source_f32,
+        #[cfg(not(feature = "cuda"))]
+        None,
     )?;
     if cols2 != n {
         return Err("slow MA series length mismatch".to_string());
@@ -5990,7 +7615,8 @@ fn compute_gpu_perturb_stats_for_composite_candidate(
             validation_context: None,
         };
 
-        let metric = match try_prepare_composite_gpu_fixed_candidate_validation(&temp_req, candles) {
+        let metric = match try_prepare_composite_gpu_fixed_candidate_validation(&temp_req, candles)
+        {
             Ok(eval) => eval.metrics.into_iter().next().ok_or_else(|| {
                 "GPU composite perturb validation returned no metrics for perturbed candidate"
                     .to_string()
@@ -6123,26 +7749,28 @@ pub fn run_composite_validation_blocking_with_candles(
         |_, p, rng| {
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
             if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
-                let idx = req
-                    .candidates
-                    .iter()
-                    .position(|cand| serde_json::to_vec(cand).ok() == serde_json::to_vec(p).ok())
-                    .ok_or_else(|| {
-                        "GPU composite validation could not match candidate back to request order"
-                            .to_string()
-                    })?;
-                let in_sample = gpu_eval
-                    .metrics
-                    .get(idx)
-                    .cloned()
-                    .ok_or_else(|| "GPU composite validation metrics index out of bounds".to_string())?;
-                let start_t0 = *gpu_eval
-                    .start_ts
-                    .get(idx)
-                    .ok_or_else(|| "GPU composite validation warmup index out of bounds".to_string())?;
+                let key = serialize_composite_candidate_key(p)?;
+                let idx = *gpu_eval.candidate_indices.get(&key).ok_or_else(|| {
+                    "GPU composite validation could not match candidate key back to request order"
+                        .to_string()
+                })?;
+                let in_sample = gpu_eval.metrics.get(idx).cloned().ok_or_else(|| {
+                    "GPU composite validation metrics index out of bounds".to_string()
+                })?;
+                let start_t0 = *gpu_eval.start_ts.get(idx).ok_or_else(|| {
+                    "GPU composite validation warmup index out of bounds".to_string()
+                })?;
                 let walk_forward = if let Some(cfg) = walk_cfg.as_ref() {
-                    if p.asr.is_some() {
+                    if let Some(stats) = gpu_eval.walk_forward_stats.as_ref() {
+                        Some(stats.get(idx).cloned().ok_or_else(|| {
+                            "GPU composite validation walk_forward index out of bounds".to_string()
+                        })?)
+                    } else if p.asr.is_some() {
                         Some(compute_asr_gpu_walk_forward_stats_for_candidate(
+                            &req, candles, p, cfg,
+                        )?)
+                    } else if p.vcc.is_some() {
+                        Some(compute_vcc_gpu_walk_forward_stats_for_candidate(
                             &req, candles, p, cfg,
                         )?)
                     } else if p.mkcs.is_some() {
@@ -6186,13 +7814,12 @@ pub fn run_composite_validation_blocking_with_candles(
                 } else {
                     None
                 };
-                let robust_score =
-                    crate::validation_pipeline::robust_score_from_metrics(
-                        &in_sample,
-                        walk_forward
-                            .as_ref()
-                            .map(|w| (w.sharpe_median, w.max_dd_worst)),
-                    );
+                let robust_score = crate::validation_pipeline::robust_score_from_metrics(
+                    &in_sample,
+                    walk_forward
+                        .as_ref()
+                        .map(|w| (w.sharpe_median, w.max_dd_worst)),
+                );
                 let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
                     compute_gpu_perturb_stats_for_composite_candidate(
                         &req,
@@ -6259,6 +7886,10 @@ pub fn run_composite_validation_blocking_with_candles(
                 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
                 if gpu_fixed_eval.is_some() && p.asr.is_some() {
                     Some(compute_asr_gpu_walk_forward_stats_for_candidate(
+                        &req, candles, p, cfg,
+                    )?)
+                } else if gpu_fixed_eval.is_some() && p.vcc.is_some() {
+                    Some(compute_vcc_gpu_walk_forward_stats_for_candidate(
                         &req, candles, p, cfg,
                     )?)
                 } else if gpu_fixed_eval.is_some() && p.mkcs.is_some() {
@@ -6385,7 +8016,8 @@ pub fn run_composite_validation_blocking_with_candles(
         |cand, cscv_start_t, slice_bars, slices| {
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
             if gpu_fixed_eval.is_some() {
-                if let Some(slice_map) = gpu_fixed_eval.as_ref().and_then(|g| g.cscv_slices.as_ref())
+                if let Some(slice_map) =
+                    gpu_fixed_eval.as_ref().and_then(|g| g.cscv_slices.as_ref())
                 {
                     let key = serialize_composite_candidate_key(&cand.params)?;
                     if let Some(slice_stats) = slice_map.get(&key) {
@@ -6431,8 +8063,28 @@ pub fn run_composite_validation_blocking_with_candles(
                     .map(|cand| candles.close.len().saturating_sub(cand.track_record_bars))
                     .collect();
                 if let Some(first_params) = finalist_params.first() {
-                    if first_params.asr.is_some() {
+                    if let Some(inputs) = gpu_fixed_eval
+                        .as_ref()
+                        .and_then(|eval| eval.base_composite_ctx.as_ref())
+                    {
+                        compute_base_composite_gpu_reopt_walk_forward_stats(
+                            &req,
+                            candles,
+                            inputs,
+                            &finalist_params,
+                            &finalist_start_ts,
+                            cfg,
+                        )?
+                    } else if first_params.asr.is_some() {
                         compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
+                            &req,
+                            candles,
+                            &finalist_params,
+                            &finalist_start_ts,
+                            cfg,
+                        )?
+                    } else if first_params.vcc.is_some() {
+                        compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
                             &req,
                             candles,
                             &finalist_params,
@@ -6476,7 +8128,10 @@ pub fn run_composite_validation_blocking_with_candles(
                     let key = serde_json::to_string(&params).unwrap_or_else(|_| {
                         format!(
                             "{}:{}:{}:{}",
-                            params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
+                            params.fast_ma_type,
+                            params.fast_len,
+                            params.slow_ma_type,
+                            params.slow_len
                         )
                     });
                     finalist_series.push((
@@ -6644,17 +8299,16 @@ pub fn run_composite_validation_blocking_with_candles(
         spa.as_ref(),
     );
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    let (backend_used, backend_route, backend_fallback_reason) = if let Some(gpu_eval) =
-        gpu_fixed_eval.as_ref()
-    {
-        (
-            gpu_eval.backend_used.clone(),
-            gpu_eval.backend_route.clone(),
-            gpu_eval.backend_fallback_reason.clone(),
-        )
-    } else {
-        resolve_validation_backend_runtime(&req.backend, false, gpu_backend_fallback_reason)
-    };
+    let (backend_used, backend_route, backend_fallback_reason) =
+        if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+            (
+                gpu_eval.backend_used.clone(),
+                gpu_eval.backend_route.clone(),
+                gpu_eval.backend_fallback_reason.clone(),
+            )
+        } else {
+            resolve_validation_backend_runtime(&req.backend, false, gpu_backend_fallback_reason)
+        };
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let (backend_used, backend_route, backend_fallback_reason) =
         resolve_validation_backend_runtime(&req.backend, false, None);
@@ -6905,8 +8559,13 @@ mod tests {
         assert!(res.backend_fallback_reason.is_none());
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn composite_validation_gpu_request_reports_cpu_fallback_route() {
+    fn composite_validation_gpu_request_reports_gpu_route_for_base_composite_in_sample() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
         let candles = make_trending_candles(2048);
         let cancel = AtomicBool::new(false);
 
@@ -6958,23 +8617,419 @@ mod tests {
         };
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
-            .expect("composite gpu-route fallback");
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        let reason = res.backend_fallback_reason.as_deref().unwrap_or_default();
-        assert!(
-            reason.contains("GPU composite validation runtime not implemented yet")
-                || reason.contains("ASR, ROCB, VEMR, and VCC candidates only")
-                || reason.contains("ASR, ROCB, MKCS, VEMR, and VCC candidates only")
-                || reason.contains("ROCB candidates only")
-                || reason.contains("ROCB and VEMR candidates only")
-                || reason.contains("ROCB, VEMR, and VCC candidates only")
-                || reason.contains("confirm_bars parity")
-                || reason.contains("indicator parity")
-                || reason.contains("momentum parity")
-                || reason.contains("not fp32-stable"),
-            "unexpected fallback reason: {reason}"
-        );
+            .expect("composite gpu-route in-sample");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn composite_validation_gpu_request_reports_gpu_route_for_base_composite_walk_forward() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 10,
+            slow_len: 30,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "gpu-route-base-wf".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 16,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("composite gpu-route walk-forward");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.candidates.len(), 1);
+        assert!(res.candidates[0].walk_forward.is_some());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_kernel_smoke_in_sample() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "base-composite-gpu-validate".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                CompositeParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: None,
+                    mkcs: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+                CompositeParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 14,
+                    slow_len: 42,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: None,
+                    mkcs: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 11,
+            max_candidates: 16,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu base composite validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(gpu_res.candidates.len(), 2);
+
+        for gpu in &gpu_res.candidates {
+            assert!(gpu.in_sample.pnl.is_finite());
+            assert!(gpu.in_sample.sharpe.is_finite());
+            assert!(gpu.in_sample.max_dd.is_finite());
+            assert!(gpu.track_record_bars > 0);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_kernel_smoke_walk_forward() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "base-composite-gpu-walk-forward".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                CompositeParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: None,
+                    mkcs: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+                CompositeParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 14,
+                    slow_len: 42,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: None,
+                    mkcs: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 11,
+            max_candidates: 16,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu base composite walk_forward validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(gpu_res.candidates.len(), 2);
+
+        for gpu in &gpu_res.candidates {
+            let gpu_wf = gpu.walk_forward.as_ref().expect("gpu walk_forward");
+            assert!(gpu_wf.windows > 0);
+            assert!(gpu_wf.sharpe_median.is_finite());
+            assert!(gpu_wf.sharpe_worst.is_finite());
+            assert!(gpu_wf.max_dd_median.is_finite());
+            assert!(gpu_wf.max_dd_worst.is_finite());
+            assert!(gpu_wf.pnl_median.is_finite());
+            assert!(gpu_wf.pnl_worst.is_finite());
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_kernel_smoke_trade_bootstrap() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-gpu-trade-bootstrap".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![CompositeParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                halftrend: HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: None,
+                vcc: None,
+                vemr: None,
+                rocb: None,
+                mkcs: None,
+                macz: MaczGateParams::default(),
+                ott: OttGateParams::default(),
+                signal_mode: CompositeSignalMode::HardGate,
+                strategy: StrategyConfig::default(),
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 13,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite gpu trade_bootstrap validation");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(res.candidates.len(), 1);
+        let mc = res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("gpu trade_bootstrap");
+        assert_eq!(mc.simulations, 24);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_kernel_smoke_perturb() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-gpu-perturb".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![CompositeParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                halftrend: HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: None,
+                vcc: None,
+                vemr: None,
+                rocb: None,
+                mkcs: None,
+                macz: MaczGateParams::default(),
+                ott: OttGateParams::default(),
+                signal_mode: CompositeSignalMode::HardGate,
+                strategy: StrategyConfig::default(),
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: 0.05,
+                pct_max: 0.05,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite gpu perturb validation");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(res.candidates.len(), 1);
+        let perturb = res.candidates[0].perturb.as_ref().expect("gpu perturb");
+        assert_eq!(perturb.iterations, 8);
     }
 
     #[test]
@@ -7603,6 +9658,10 @@ mod tests {
             vemr: None,
             rocb: None,
             mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
             data_id: "opt-comp".to_string(),
             fast_range: (5, 9, 1),
             slow_range: (18, 28, 2),
@@ -8411,11 +10470,9 @@ mod tests {
                 gpu.in_sample.max_dd
             );
             assert_eq!(
-                cpu.in_sample.trades,
-                gpu.in_sample.trades,
+                cpu.in_sample.trades, gpu.in_sample.trades,
                 "trades cpu={} gpu={}",
-                cpu.in_sample.trades,
-                gpu.in_sample.trades
+                cpu.in_sample.trades, gpu.in_sample.trades
             );
         }
     }
@@ -8556,7 +10613,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: Some(AsrStrategyParams::default()),
                     vcc: None,
                     vemr: None,
@@ -8572,7 +10633,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: Some(AsrStrategyParams::default()),
                     vcc: None,
                     vemr: None,
@@ -8589,7 +10654,11 @@ mod tests {
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
-            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig { slices: 4, max_combinations: 1000, threshold: 0.0 }),
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 4,
+                max_combinations: 1000,
+                threshold: 0.0,
+            }),
             spa: None,
             seed: 17,
             max_candidates: 8,
@@ -8603,9 +10672,13 @@ mod tests {
             validation_context: None,
         };
 
-        let cpu_res =
-            run_composite_validation_blocking_with_candles(mk(Backend::CpuOnly), &candles, &cancel, None)
-                .expect("cpu asr cscv validation");
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu asr cscv validation");
         let gpu_res = run_composite_validation_blocking_with_candles(
             mk(Backend::GpuKernel { device_id: 0 }),
             &candles,
@@ -8626,8 +10699,18 @@ mod tests {
             let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
             let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
             assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-6);
-            assert!((cpu_st.oos_rank_frac_p50.unwrap_or_default() - gpu_st.oos_rank_frac_p50.unwrap_or_default()).abs() < 1e-3);
-            assert!((cpu_st.oos_metric_p50.unwrap_or_default() - gpu_st.oos_metric_p50.unwrap_or_default()).abs() < 1e-3);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
         }
     }
 
@@ -8649,7 +10732,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: Some(AsrStrategyParams::default()),
                     vcc: None,
                     vemr: None,
@@ -8665,7 +10752,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: Some(AsrStrategyParams::default()),
                     vcc: None,
                     vemr: None,
@@ -8748,7 +10839,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: Some(AsrStrategyParams::default()),
                     vcc: None,
                     vemr: None,
@@ -8764,7 +10859,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: Some(AsrStrategyParams::default()),
                     vcc: None,
                     vemr: None,
@@ -8822,10 +10921,15 @@ mod tests {
         assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
         assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
         assert!((cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6);
-        assert!((cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6);
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
         assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
         assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
-        assert!((cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs() < 1e-6);
+        assert!(
+            (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
+                < 1e-6
+        );
         assert!((cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2);
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
@@ -8849,7 +10953,11 @@ mod tests {
                 slow_ma_type: "ema".to_string(),
                 fast_len: 8,
                 slow_len: 24,
-                halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                halftrend: HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
                 asr: Some(AsrStrategyParams::default()),
                 vcc: None,
                 vemr: None,
@@ -8894,8 +11002,14 @@ mod tests {
         )
         .expect("gpu asr bootstrap validation");
 
-        let cpu_bs = cpu_res.candidates[0].trade_bootstrap.as_ref().expect("cpu bootstrap");
-        let gpu_bs = gpu_res.candidates[0].trade_bootstrap.as_ref().expect("gpu bootstrap");
+        let cpu_bs = cpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("cpu bootstrap");
+        let gpu_bs = gpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("gpu bootstrap");
         assert_eq!(cpu_bs.simulations, gpu_bs.simulations);
         assert_eq!(cpu_bs.trade_count, gpu_bs.trade_count);
         assert!((cpu_bs.prob_pnl_positive - gpu_bs.prob_pnl_positive).abs() < 1e-12);
@@ -9021,11 +11135,9 @@ mod tests {
                 gpu.in_sample.max_dd
             );
             assert_eq!(
-                cpu.in_sample.trades,
-                gpu.in_sample.trades,
+                cpu.in_sample.trades, gpu.in_sample.trades,
                 "trades cpu={} gpu={}",
-                cpu.in_sample.trades,
-                gpu.in_sample.trades
+                cpu.in_sample.trades, gpu.in_sample.trades
             );
         }
     }
@@ -9165,7 +11277,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: None,
@@ -9181,7 +11297,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: None,
@@ -9198,7 +11318,11 @@ mod tests {
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
-            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig { slices: 4, max_combinations: 1000, threshold: 0.0 }),
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 4,
+                max_combinations: 1000,
+                threshold: 0.0,
+            }),
             spa: None,
             seed: 19,
             max_candidates: 8,
@@ -9212,9 +11336,13 @@ mod tests {
             validation_context: None,
         };
 
-        let cpu_res =
-            run_composite_validation_blocking_with_candles(mk(Backend::CpuOnly), &candles, &cancel, None)
-                .expect("cpu rocb cscv validation");
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu rocb cscv validation");
         let gpu_res = run_composite_validation_blocking_with_candles(
             mk(Backend::GpuKernel { device_id: 0 }),
             &candles,
@@ -9235,8 +11363,18 @@ mod tests {
             let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
             let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
             assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-6);
-            assert!((cpu_st.oos_rank_frac_p50.unwrap_or_default() - gpu_st.oos_rank_frac_p50.unwrap_or_default()).abs() < 1e-3);
-            assert!((cpu_st.oos_metric_p50.unwrap_or_default() - gpu_st.oos_metric_p50.unwrap_or_default()).abs() < 1e-3);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
         }
     }
 
@@ -9258,7 +11396,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: None,
@@ -9274,7 +11416,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: None,
@@ -9357,7 +11503,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: None,
@@ -9373,7 +11523,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: None,
@@ -9431,10 +11585,15 @@ mod tests {
         assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
         assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
         assert!((cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6);
-        assert!((cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6);
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
         assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
         assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
-        assert!((cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs() < 1e-6);
+        assert!(
+            (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
+                < 1e-6
+        );
         assert!((cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2);
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
@@ -9458,7 +11617,11 @@ mod tests {
                 slow_ma_type: "ema".to_string(),
                 fast_len: 8,
                 slow_len: 24,
-                halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                halftrend: HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
                 asr: None,
                 vcc: None,
                 vemr: None,
@@ -9503,8 +11666,14 @@ mod tests {
         )
         .expect("gpu rocb bootstrap validation");
 
-        let cpu_bs = cpu_res.candidates[0].trade_bootstrap.as_ref().expect("cpu bootstrap");
-        let gpu_bs = gpu_res.candidates[0].trade_bootstrap.as_ref().expect("gpu bootstrap");
+        let cpu_bs = cpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("cpu bootstrap");
+        let gpu_bs = gpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("gpu bootstrap");
         assert_eq!(cpu_bs.simulations, gpu_bs.simulations);
         assert_eq!(cpu_bs.trade_count, gpu_bs.trade_count);
         assert!((cpu_bs.prob_pnl_positive - gpu_bs.prob_pnl_positive).abs() < 1e-12);
@@ -9630,11 +11799,9 @@ mod tests {
                 gpu.in_sample.max_dd
             );
             assert_eq!(
-                cpu.in_sample.trades,
-                gpu.in_sample.trades,
+                cpu.in_sample.trades, gpu.in_sample.trades,
                 "trades cpu={} gpu={}",
-                cpu.in_sample.trades,
-                gpu.in_sample.trades
+                cpu.in_sample.trades, gpu.in_sample.trades
             );
         }
     }
@@ -9775,7 +11942,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: Some(VemrStrategyParams::default()),
@@ -9791,7 +11962,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: Some(VemrStrategyParams::default()),
@@ -9808,7 +11983,11 @@ mod tests {
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
-            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig { slices: 4, max_combinations: 1000, threshold: 0.0 }),
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 4,
+                max_combinations: 1000,
+                threshold: 0.0,
+            }),
             spa: None,
             seed: 23,
             max_candidates: 8,
@@ -9822,9 +12001,13 @@ mod tests {
             validation_context: None,
         };
 
-        let cpu_res =
-            run_composite_validation_blocking_with_candles(mk(Backend::CpuOnly), &candles, &cancel, None)
-                .expect("cpu vemr cscv validation");
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu vemr cscv validation");
         let gpu_res = run_composite_validation_blocking_with_candles(
             mk(Backend::GpuKernel { device_id: 0 }),
             &candles,
@@ -9845,8 +12028,18 @@ mod tests {
             let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
             let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
             assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-6);
-            assert!((cpu_st.oos_rank_frac_p50.unwrap_or_default() - gpu_st.oos_rank_frac_p50.unwrap_or_default()).abs() < 1e-3);
-            assert!((cpu_st.oos_metric_p50.unwrap_or_default() - gpu_st.oos_metric_p50.unwrap_or_default()).abs() < 1e-3);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
         }
     }
 
@@ -9868,7 +12061,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: Some(VemrStrategyParams::default()),
@@ -9884,7 +12081,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: Some(VemrStrategyParams::default()),
@@ -9967,7 +12168,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 8,
                     slow_len: 24,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: Some(VemrStrategyParams::default()),
@@ -9983,7 +12188,11 @@ mod tests {
                     slow_ma_type: "ema".to_string(),
                     fast_len: 12,
                     slow_len: 36,
-                    halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
                     asr: None,
                     vcc: None,
                     vemr: Some(VemrStrategyParams::default()),
@@ -10041,10 +12250,15 @@ mod tests {
         assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
         assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
         assert!((cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6);
-        assert!((cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6);
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
         assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
         assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
-        assert!((cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs() < 1e-6);
+        assert!(
+            (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
+                < 1e-6
+        );
         assert!((cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2);
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
@@ -10068,7 +12282,11 @@ mod tests {
                 slow_ma_type: "ema".to_string(),
                 fast_len: 8,
                 slow_len: 24,
-                halftrend: HalfTrendRegimeFilter { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+                halftrend: HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
                 asr: None,
                 vcc: None,
                 vemr: Some(VemrStrategyParams::default()),
@@ -10113,8 +12331,14 @@ mod tests {
         )
         .expect("gpu vemr bootstrap validation");
 
-        let cpu_bs = cpu_res.candidates[0].trade_bootstrap.as_ref().expect("cpu bootstrap");
-        let gpu_bs = gpu_res.candidates[0].trade_bootstrap.as_ref().expect("gpu bootstrap");
+        let cpu_bs = cpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("cpu bootstrap");
+        let gpu_bs = gpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("gpu bootstrap");
         assert_eq!(cpu_bs.simulations, gpu_bs.simulations);
         assert_eq!(cpu_bs.trade_count, gpu_bs.trade_count);
         assert!((cpu_bs.prob_pnl_positive - gpu_bs.prob_pnl_positive).abs() < 1e-12);
@@ -10245,11 +12469,9 @@ mod tests {
                 gpu.in_sample.max_dd
             );
             assert_eq!(
-                cpu.in_sample.trades,
-                gpu.in_sample.trades,
+                cpu.in_sample.trades, gpu.in_sample.trades,
                 "trades cpu={} gpu={}",
-                cpu.in_sample.trades,
-                gpu.in_sample.trades
+                cpu.in_sample.trades, gpu.in_sample.trades
             );
         }
     }
@@ -10327,9 +12549,8 @@ mod tests {
             validation_context: None,
         };
 
-        let gpu_res =
-            run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
-                .expect("gpu vcc validation monotonic");
+        let gpu_res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu vcc validation monotonic");
 
         assert!(matches!(gpu_res.backend_used, BackendUsed::Cpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
@@ -10342,6 +12563,389 @@ mod tests {
             "unexpected fallback reason: {:?}",
             gpu_res.backend_fallback_reason
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn vcc_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: Some(VccStrategyParams::default()),
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_walk_forward_matches_cpu_metrics_when_fp32_stable() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "vcc-gpu-walk-forward".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(8, 24)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 67,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu vcc walk_forward validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu vcc walk_forward validation");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 1e-3);
+        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 1e-3);
+        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3);
+        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3);
+        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
+        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_cscv_matches_cpu_when_fp32_stable() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "vcc-gpu-cscv".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(8, 24), vcc_test_candidate(12, 36)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 4,
+                max_combinations: 1000,
+                threshold: 0.0,
+            }),
+            spa: None,
+            seed: 71,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu vcc cscv validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu vcc cscv validation");
+
+        let cpu_cscv = cpu_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
+        assert_eq!(cpu_cscv.slices, gpu_cscv.slices);
+        assert_eq!(cpu_cscv.slice_bars, gpu_cscv.slice_bars);
+        assert!((cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-3);
+        assert!((cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-3);
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-6);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+        }
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_spa_matches_cpu_when_fp32_stable() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "vcc-gpu-spa".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(8, 24), vcc_test_candidate(12, 36)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 8,
+                bootstrap_samples: 128,
+                block_length: 3,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 73,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu vcc spa validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu vcc spa validation");
+
+        let cpu_spa = cpu_res.spa.as_ref().expect("cpu spa");
+        let gpu_spa = gpu_res.spa.as_ref().expect("gpu spa");
+        assert_eq!(cpu_spa.slice_count, gpu_spa.slice_count);
+        assert_eq!(cpu_spa.candidate_count, gpu_spa.candidate_count);
+        assert_eq!(cpu_spa.best_candidate_key, gpu_spa.best_candidate_key);
+        assert!((cpu_spa.best_candidate_mean_diff - gpu_spa.best_candidate_mean_diff).abs() < 1e-3);
+        assert!((cpu_spa.best_candidate_t_stat - gpu_spa.best_candidate_t_stat).abs() < 1e-3);
+        assert!((cpu_spa.p_value - gpu_spa.p_value).abs() < 1e-9);
+        assert_eq!(cpu_spa.passed, gpu_spa.passed);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_reopt_walk_forward_matches_cpu_when_fp32_stable() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "vcc-gpu-reopt".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(8, 24), vcc_test_candidate(12, 36)],
+            walk_forward: None,
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 2000,
+                step_bars: 1000,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 79,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu vcc reopt validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu vcc reopt validation");
+
+        let cpu_stats = cpu_res.reopt_walk_forward.as_ref().expect("cpu reopt");
+        let gpu_stats = gpu_res.reopt_walk_forward.as_ref().expect("gpu reopt");
+        assert_eq!(cpu_stats.windows, gpu_stats.windows);
+        assert_eq!(cpu_stats.top_n_candidates, gpu_stats.top_n_candidates);
+        assert_eq!(cpu_stats.unique_winners, gpu_stats.unique_winners);
+        assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
+        assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
+        assert!((cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6);
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
+        assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
+        assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
+        assert!(
+            (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
+                < 1e-6
+        );
+        assert!((cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_trade_bootstrap_matches_cpu_when_fp32_stable() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "vcc-gpu-bootstrap".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(8, 24)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 83,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu vcc bootstrap validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu vcc bootstrap validation");
+
+        let cpu_bs = cpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("cpu bootstrap");
+        let gpu_bs = gpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("gpu bootstrap");
+        assert_eq!(cpu_bs.simulations, gpu_bs.simulations);
+        assert_eq!(cpu_bs.trade_count, gpu_bs.trade_count);
+        assert!((cpu_bs.prob_pnl_positive - gpu_bs.prob_pnl_positive).abs() < 1e-12);
+        assert!((cpu_bs.pnl_p05 - gpu_bs.pnl_p05).abs() < 1e-12);
+        assert!((cpu_bs.pnl_p50 - gpu_bs.pnl_p50).abs() < 1e-12);
+        assert!((cpu_bs.pnl_p95 - gpu_bs.pnl_p95).abs() < 1e-12);
+        assert!((cpu_bs.max_dd_p50 - gpu_bs.max_dd_p50).abs() < 1e-12);
+        assert!((cpu_bs.max_dd_p95 - gpu_bs.max_dd_p95).abs() < 1e-12);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -10440,11 +13044,9 @@ mod tests {
                 gpu.in_sample.max_dd
             );
             assert_eq!(
-                cpu.in_sample.trades,
-                gpu.in_sample.trades,
+                cpu.in_sample.trades, gpu.in_sample.trades,
                 "trades cpu={} gpu={}",
-                cpu.in_sample.trades,
-                gpu.in_sample.trades
+                cpu.in_sample.trades, gpu.in_sample.trades
             );
         }
     }
@@ -10744,14 +13346,15 @@ mod tests {
         let cpu_stats = cpu_res.reopt_walk_forward.as_ref().expect("cpu reopt");
         let gpu_stats = gpu_res.reopt_walk_forward.as_ref().expect("gpu reopt");
         assert_eq!(cpu_stats.windows, gpu_stats.windows);
-        assert_eq!(cpu_stats.forward_positive_pnl_frac, gpu_stats.forward_positive_pnl_frac);
+        assert_eq!(
+            cpu_stats.forward_positive_pnl_frac,
+            gpu_stats.forward_positive_pnl_frac
+        );
         assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
         assert!(
             (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
         );
-        assert!(
-            (cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6
-        );
+        assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

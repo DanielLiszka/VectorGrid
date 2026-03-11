@@ -1146,6 +1146,119 @@ describe('optimizeRequestBuilder', () => {
     })
   })
 
+  it('builds the staged GPU-native expansion requests through the composite CPU builder path', () => {
+    const cases = [
+      {
+        kind: 'Kqsr',
+        field: 'kqsr',
+        expected: {
+          kdj_period: 14,
+          srsi_period: 14,
+          srsi_smooth: 3,
+          ift_rsi_period: 9,
+          qqe_period: 14,
+          oversold: 20,
+          overbought: 80,
+          prb_period: 20,
+          prb_threshold: 0.2,
+        },
+      },
+      {
+        kind: 'Carm',
+        field: 'carm',
+        expected: {
+          coppock_long_period: 14,
+          coppock_short_period: 11,
+          coppock_wma_period: 10,
+          ao_fast_period: 5,
+          ao_slow_period: 34,
+          rocr_period: 10,
+          apo_fast_period: 12,
+          apo_slow_period: 26,
+          otto_period: 20,
+          otto_threshold: 0,
+        },
+      },
+      {
+        kind: 'Kvdf',
+        field: 'kvdf',
+        expected: {
+          keltner_period: 20,
+          keltner_mult: 1.5,
+          vwap_anchor: 'session',
+          fvg_lookback: 20,
+          devstop_period: 14,
+          devstop_mult: 2,
+          dti_period: 14,
+          dti_threshold: 20,
+        },
+      },
+      {
+        kind: 'Cdmc',
+        field: 'cdmc',
+        expected: {
+          dpo_period: 20,
+          correlation_cycle_period: 20,
+          mama_fast_limit: 0.5,
+          mama_slow_limit: 0.05,
+          decycler_period: 20,
+          phase_threshold: 0,
+        },
+      },
+    ] as const
+
+    for (const row of cases) {
+      const req = buildCompositeCpuOptimizationRequest({
+        context: {
+          strategy_kind: row.kind,
+          data_id: `data-${row.kind.toLowerCase()}`,
+          current_data_meta: {
+            has_open: true,
+            has_high: true,
+            has_low: true,
+            has_close: true,
+            has_volume: true,
+          },
+        },
+        backend: 'GpuKernel',
+        fastStart: '5',
+        fastEnd: '15',
+        fastStep: '5',
+        slowStart: '20',
+        slowEnd: '40',
+        slowStep: '10',
+        fastMaType: 'sma',
+        slowMaType: 'ema',
+        maSource: 'close',
+        objective: 'Sharpe',
+        topK: '20',
+        includeAll: 'false',
+        compositeSignalMode: 'hard_gate',
+        halfTrendAmplitude: '2',
+        halfTrendAtrPeriod: '100',
+        halfTrendChannelDev: '2.0',
+        maczFastLength: '12',
+        maczSlowLength: '25',
+        maczSignalLength: '9',
+        maczLengthZ: '20',
+        maczLengthStdev: '25',
+        maczGamma: '0.02',
+        maczA: '1',
+        maczB: '1',
+        maczUseVolume: false,
+        maczUseLag: false,
+        ottPeriod: '2',
+        ottPercent: '1.4',
+        ottMaType: 'VAR',
+      })
+
+      expect(req).toBeTruthy()
+      expect(req?.strategy_kind).toBe(row.kind)
+      expect(req?.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+      expect((req as Record<string, unknown>)[row.field]).toMatchObject(row.expected)
+    }
+  })
+
   it('returns null for non-CompositeCpu strategy kind', () => {
     const req = buildCompositeCpuOptimizationRequest({
       context: {
