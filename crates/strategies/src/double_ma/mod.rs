@@ -977,7 +977,11 @@ impl StrategyConfig {
 
     pub fn set_angle_min_deg(&self) -> f64 {
         let x = self.set_angle_min_deg;
-        if x.is_finite() { x } else { 2.0 }
+        if x.is_finite() {
+            x
+        } else {
+            2.0
+        }
     }
 
     pub fn set_er_period(&self) -> usize {
@@ -986,7 +990,11 @@ impl StrategyConfig {
 
     pub fn set_er_min(&self) -> f64 {
         let x = self.set_er_min;
-        if x.is_finite() { x } else { 0.3 }
+        if x.is_finite() {
+            x
+        } else {
+            0.3
+        }
     }
 
     pub fn set_chop_period(&self) -> usize {
@@ -995,7 +1003,11 @@ impl StrategyConfig {
 
     pub fn set_chop_max(&self) -> f64 {
         let x = self.set_chop_max;
-        if x.is_finite() { x } else { 45.0 }
+        if x.is_finite() {
+            x
+        } else {
+            45.0
+        }
     }
 
     pub fn uses_momentum_triple_stack_filter(&self) -> bool {
@@ -1045,7 +1057,11 @@ impl StrategyConfig {
 
     pub fn pit_cfo_scalar(&self) -> f64 {
         let x = self.pit_cfo_scalar;
-        if x.is_finite() && x > 0.0 { x } else { 100.0 }
+        if x.is_finite() && x > 0.0 {
+            x
+        } else {
+            100.0
+        }
     }
 
     pub fn pit_confirm_bars(&self) -> usize {

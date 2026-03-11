@@ -131,6 +131,12 @@ pub struct VccTrendSignals {
     pub first_valid: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VccMomentumRoundtripParity {
+    pub sign_mismatch_count: usize,
+    pub delta_sign_mismatch_count: usize,
+}
+
 #[cfg(feature = "cuda")]
 #[allow(dead_code)]
 enum VccDeviceMatrixOwner {
@@ -266,6 +272,41 @@ fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
 }
 
+fn sign_i8(v: f64) -> i8 {
+    if !v.is_finite() {
+        0
+    } else if v > 0.0 {
+        1
+    } else if v < 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
+pub fn vcc_momentum_roundtrip_parity(momentum: &[f64]) -> VccMomentumRoundtripParity {
+    let roundtrip: Vec<f64> = momentum.iter().map(|v| (*v as f32) as f64).collect();
+    let mut stats = VccMomentumRoundtripParity::default();
+    for (src, rt) in momentum.iter().zip(roundtrip.iter()) {
+        if sign_i8(*src) != sign_i8(*rt) {
+            stats.sign_mismatch_count += 1;
+        }
+    }
+    for idx in 1..momentum.len() {
+        let src_delta = momentum[idx] - momentum[idx - 1];
+        let rt_delta = roundtrip[idx] - roundtrip[idx - 1];
+        if sign_i8(src_delta) != sign_i8(rt_delta) {
+            stats.delta_sign_mismatch_count += 1;
+        }
+    }
+    stats
+}
+
+pub fn vcc_momentum_roundtrip_is_fp32_stable(momentum: &[f64]) -> bool {
+    let parity = vcc_momentum_roundtrip_parity(momentum);
+    parity.sign_mismatch_count == 0 && parity.delta_sign_mismatch_count == 0
+}
+
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
     match out.series {
         DynamicIndicatorSeries::F64(v) => v,
@@ -274,6 +315,11 @@ fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
             v.into_iter().map(|x| if x { 1.0 } else { 0.0 }).collect()
         }
     }
+}
+
+struct IndicatorSeriesF64 {
+    values: Vec<f64>,
+    warmup: Option<usize>,
 }
 
 #[cfg(feature = "cuda")]
@@ -306,6 +352,7 @@ fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
 }
 
+#[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn compute_indicator_f64(
     candles: &Candles,
     ma_source: &str,
@@ -315,6 +362,30 @@ fn compute_indicator_f64(
     params: &[IndicatorParamKV],
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<Vec<f64>, String> {
+    Ok(
+        compute_indicator_f64_with_warmup(
+            candles,
+            ma_source,
+            _backend,
+            indicator_id,
+            output_id,
+            params,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs,
+        )?
+        .values,
+    )
+}
+
+fn compute_indicator_f64_with_warmup(
+    candles: &Candles,
+    ma_source: &str,
+    _backend: &Backend,
+    indicator_id: &str,
+    output_id: &str,
+    params: &[IndicatorParamKV],
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<IndicatorSeriesF64, String> {
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         format!("VCC indicator '{indicator_id}' is not registered for dynamic dispatch")
     })?;
@@ -335,7 +406,11 @@ fn compute_indicator_f64(
                     vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
                 );
                 if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                    let warmup = values.warmup;
+                    return Ok(IndicatorSeriesF64 {
+                        values: cuda_series_to_f64(values)?,
+                        warmup,
+                    });
                 }
             }
         }
@@ -351,7 +426,11 @@ fn compute_indicator_f64(
         Kernel::Auto,
     )
     .map_err(|e| e.to_string())?;
-    Ok(series_to_f64(cpu))
+    let warmup = cpu.warmup;
+    Ok(IndicatorSeriesF64 {
+        values: series_to_f64(cpu),
+        warmup,
+    })
 }
 
 #[cfg(feature = "cuda")]
@@ -564,68 +643,6 @@ pub fn compute_vcc_ttm_squeeze_sweep_cuda_device(
     )
 }
 
-fn compute_vcc_squeeze_state_series(
-    candles: &Candles,
-    ma_source: &str,
-    backend: &Backend,
-    cfg: &VccStrategyParams,
-    squeeze_period: u16,
-    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
-) -> Result<Vec<f64>, String> {
-    let squeeze_momentum_params = vec![
-        IndicatorParamKV {
-            key: "length_bb".to_string(),
-            value: IndicatorParamValue::Int(i64::from(cfg.momentum_bb_period.max(1))),
-        },
-        IndicatorParamKV {
-            key: "mult_bb".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-        },
-        IndicatorParamKV {
-            key: "length_kc".to_string(),
-            value: IndicatorParamValue::Int(i64::from(squeeze_period.max(1))),
-        },
-        IndicatorParamKV {
-            key: "mult_kc".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_kc_mult),
-        },
-    ];
-
-    let legacy_ttm_squeeze_params = vec![
-        IndicatorParamKV {
-            key: "length".to_string(),
-            value: IndicatorParamValue::Int(i64::from(squeeze_period.max(1))),
-        },
-        IndicatorParamKV {
-            key: "bb_mult".to_string(),
-            value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
-        },
-    ];
-
-    match compute_indicator_f64(
-        candles,
-        ma_source,
-        backend,
-        "squeeze_momentum",
-        "squeeze",
-        squeeze_momentum_params.as_slice(),
-        #[cfg(feature = "cuda")]
-        prepared_cuda_inputs,
-    ) {
-        Ok(v) => Ok(v),
-        Err(_) => compute_indicator_f64(
-            candles,
-            ma_source,
-            backend,
-            "ttm_squeeze",
-            "squeeze",
-            legacy_ttm_squeeze_params.as_slice(),
-            #[cfg(feature = "cuda")]
-            prepared_cuda_inputs,
-        ),
-    }
-}
-
 #[cfg(feature = "cuda")]
 pub fn compute_vcc_squeeze_momentum_sweep_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
@@ -656,7 +673,7 @@ pub fn compute_vcc_fast_dual_sweep_cuda_device(
     period_step: u16,
     device_id: u32,
 ) -> Result<(VccPeriodSweepDevice, VccPeriodSweepDevice), String> {
-    let squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_device(
+    let squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_direct(
         prepared_inputs,
         cfg,
         squeeze_period_start,
@@ -664,7 +681,7 @@ pub fn compute_vcc_fast_dual_sweep_cuda_device(
         period_step,
         device_id,
     )?;
-    let momentum_sweep = compute_vcc_squeeze_momentum_sweep_cuda_device(
+    let momentum_sweep = compute_vcc_squeeze_momentum_sweep_cuda_direct(
         prepared_inputs,
         cfg,
         momentum_period_start,
@@ -701,6 +718,14 @@ pub fn compute_vcc_fast_signals(
     momentum_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<VccFastSignals, String> {
+    let squeeze_params = vec![IndicatorParamKV {
+        key: "length".to_string(),
+        value: IndicatorParamValue::Int(i64::from(squeeze_period.max(1))),
+    },
+    IndicatorParamKV {
+        key: "bb_mult".to_string(),
+        value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
+    }];
     let momentum_params = vec![
         IndicatorParamKV {
             key: "length_bb".to_string(),
@@ -720,16 +745,17 @@ pub fn compute_vcc_fast_signals(
         },
     ];
 
-    let squeeze_state = compute_vcc_squeeze_state_series(
+    let squeeze_state = compute_indicator_f64_with_warmup(
         candles,
         ma_source,
         backend,
-        cfg,
-        squeeze_period,
+        "ttm_squeeze",
+        "squeeze",
+        squeeze_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
-    let momentum = compute_indicator_f64(
+    let momentum = compute_indicator_f64_with_warmup(
         candles,
         ma_source,
         backend,
@@ -740,18 +766,23 @@ pub fn compute_vcc_fast_signals(
         prepared_cuda_inputs,
     )?;
 
-    if squeeze_state.len() != momentum.len() {
+    if squeeze_state.values.len() != momentum.values.len() {
         return Err("VCC fast signal series length mismatch".to_string());
     }
 
-    let first_valid = first_finite_idx_local(&squeeze_state)
-        .zip(first_finite_idx_local(&momentum))
-        .map(|(a, b)| a.max(b))
-        .ok_or_else(|| "VCC fast signal series are all non-finite".to_string())?;
+    let squeeze_first_valid = squeeze_state
+        .warmup
+        .or_else(|| first_finite_idx_local(&squeeze_state.values))
+        .ok_or_else(|| "VCC squeeze-state series is all non-finite".to_string())?;
+    let momentum_first_valid = momentum
+        .warmup
+        .or_else(|| first_finite_idx_local(&momentum.values))
+        .ok_or_else(|| "VCC momentum series is all non-finite".to_string())?;
+    let first_valid = squeeze_first_valid.max(momentum_first_valid);
 
     Ok(VccFastSignals {
-        squeeze_state,
-        momentum,
+        squeeze_state: squeeze_state.values,
+        momentum: momentum.values,
         first_valid,
     })
 }
@@ -768,7 +799,7 @@ pub fn compute_vcc_trend_signals(
         value: IndicatorParamValue::Int(i64::from(trend_period.max(1))),
     }];
 
-    let trend_state = compute_indicator_f64(
+    let trend_state = compute_indicator_f64_with_warmup(
         candles,
         ma_source,
         backend,
@@ -779,11 +810,13 @@ pub fn compute_vcc_trend_signals(
         prepared_cuda_inputs,
     )?;
 
-    let first_valid = first_finite_idx_local(&trend_state)
+    let first_valid = trend_state
+        .warmup
+        .or_else(|| first_finite_idx_local(&trend_state.values))
         .ok_or_else(|| "VCC trend signal series are all non-finite".to_string())?;
 
     Ok(VccTrendSignals {
-        trend_state,
+        trend_state: trend_state.values,
         first_valid,
     })
 }
@@ -806,6 +839,20 @@ pub fn compute_vcc_start_t(
     } else {
         t_valid
     }
+}
+
+pub fn compute_vcc_fast_first_valid(
+    cfg: &VccStrategyParams,
+    squeeze_period: u16,
+    momentum_period: u16,
+) -> usize {
+    usize::from(
+        cfg.momentum_bb_period
+            .max(1)
+            .max(squeeze_period.max(1))
+            .max(momentum_period.max(1))
+            .saturating_sub(1),
+    )
 }
 
 pub fn build_vcc_desired_positions(
@@ -919,7 +966,14 @@ pub fn build_vcc_desired_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use cust::memory::CopyDestination;
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use crate::asr::eval_asr_metrics_from_desired;
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use crate::vcc_gpu_kernel::{
+        eval_vcc_metrics_gpu_kernel_device_rows, VccGpuComboBatch, VccGpuDeviceSignalMatrices,
+    };
     #[test]
     fn resolve_vcc_periods_maps_fast_and_slow_when_enabled() {
         let cfg = VccStrategyParams::default();
@@ -935,5 +989,1117 @@ mod tests {
         cfg.max_trade_bars = 0;
         let err = validate_vcc_params(&cfg).expect_err("should reject max_trade_bars=0");
         assert!(err.contains("max_trade_bars"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn make_trending_candles(len: usize) -> Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64 * 0.05;
+            open.push(base);
+            high.push(base + 0.75);
+            low.push(base - 0.75);
+            close.push(base + ((i % 11) as f64 - 5.0) * 0.01);
+            vol.push(10_000.0 + ((i % 17) as f64) * 10.0);
+        }
+        Candles::new(ts, open, high, low, close, vol)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn make_monotonic_trending_candles(len: usize) -> Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64;
+            open.push(base);
+            high.push(base + 1.0);
+            low.push(base - 1.0);
+            close.push(base + 0.5);
+            vol.push(1_000.0);
+        }
+        Candles::new(ts, open, high, low, close, vol)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_signal_diagnostic_cpu_vs_cuda_host_series() {
+        fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .filter_map(|(x, y)| {
+                    if x.is_finite() && y.is_finite() {
+                        Some((x - y).abs())
+                    } else {
+                        None
+                    }
+                })
+                .fold(0.0, f64::max)
+        }
+
+        let candles = make_trending_candles(4096);
+        let cfg = VccStrategyParams::default();
+        let periods = resolve_vcc_periods(&cfg, 8, 24);
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            periods.squeeze,
+            periods.momentum,
+            Some(&prepared),
+        )
+        .unwrap();
+        let fast_gpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::GpuKernel { device_id: 0 },
+            &cfg,
+            periods.squeeze,
+            periods.momentum,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            periods.trend,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_gpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::GpuKernel { device_id: 0 },
+            periods.trend,
+            Some(&prepared),
+        )
+        .unwrap();
+
+        let sq_sm_cpu = compute_indicator_f64(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            "squeeze_momentum",
+            "squeeze",
+            &[
+                IndicatorParamKV {
+                    key: "length_bb".to_string(),
+                    value: IndicatorParamValue::Int(i64::from(cfg.momentum_bb_period.max(1))),
+                },
+                IndicatorParamKV {
+                    key: "mult_bb".to_string(),
+                    value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
+                },
+                IndicatorParamKV {
+                    key: "length_kc".to_string(),
+                    value: IndicatorParamValue::Int(i64::from(periods.squeeze.max(1))),
+                },
+                IndicatorParamKV {
+                    key: "mult_kc".to_string(),
+                    value: IndicatorParamValue::Float(cfg.squeeze_kc_mult),
+                },
+            ],
+            Some(&prepared),
+        )
+        .unwrap();
+        let sq_ttm_cpu = compute_indicator_f64(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            "ttm_squeeze",
+            "squeeze",
+            &[
+                IndicatorParamKV {
+                    key: "length".to_string(),
+                    value: IndicatorParamValue::Int(i64::from(periods.squeeze.max(1))),
+                },
+                IndicatorParamKV {
+                    key: "bb_mult".to_string(),
+                    value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
+                },
+            ],
+            Some(&prepared),
+        )
+        .unwrap();
+        let sq_sm_gpu = compute_indicator_f64(
+            &candles,
+            "close",
+            &Backend::GpuKernel { device_id: 0 },
+            "squeeze_momentum",
+            "squeeze",
+            &[
+                IndicatorParamKV {
+                    key: "length_bb".to_string(),
+                    value: IndicatorParamValue::Int(i64::from(cfg.momentum_bb_period.max(1))),
+                },
+                IndicatorParamKV {
+                    key: "mult_bb".to_string(),
+                    value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
+                },
+                IndicatorParamKV {
+                    key: "length_kc".to_string(),
+                    value: IndicatorParamValue::Int(i64::from(periods.squeeze.max(1))),
+                },
+                IndicatorParamKV {
+                    key: "mult_kc".to_string(),
+                    value: IndicatorParamValue::Float(cfg.squeeze_kc_mult),
+                },
+            ],
+            Some(&prepared),
+        )
+        .unwrap();
+        let sq_ttm_gpu = compute_indicator_f64(
+            &candles,
+            "close",
+            &Backend::GpuKernel { device_id: 0 },
+            "ttm_squeeze",
+            "squeeze",
+            &[
+                IndicatorParamKV {
+                    key: "length".to_string(),
+                    value: IndicatorParamValue::Int(i64::from(periods.squeeze.max(1))),
+                },
+                IndicatorParamKV {
+                    key: "bb_mult".to_string(),
+                    value: IndicatorParamValue::Float(cfg.squeeze_bb_mult),
+                },
+            ],
+            Some(&prepared),
+        )
+        .unwrap();
+
+        eprintln!(
+            "vcc diag: fast_first_valid cpu={} gpu={} trend_first_valid cpu={} gpu={}",
+            fast_cpu.first_valid, fast_gpu.first_valid, trend_cpu.first_valid, trend_gpu.first_valid
+        );
+        eprintln!(
+            "vcc diag: max abs diff squeeze={} momentum={} trend={}",
+            max_abs_diff(&fast_cpu.squeeze_state, &fast_gpu.squeeze_state),
+            max_abs_diff(&fast_cpu.momentum, &fast_gpu.momentum),
+            max_abs_diff(&trend_cpu.trend_state, &trend_gpu.trend_state)
+        );
+        eprintln!(
+            "vcc diag: cpu squeeze impl gap sm_vs_ttm={}",
+            max_abs_diff(&sq_sm_cpu, &sq_ttm_cpu)
+        );
+        eprintln!(
+            "vcc diag: squeeze impl gaps cpu_sm_vs_gpu_sm={} cpu_ttm_vs_gpu_ttm={} cpu_sm_vs_gpu_ttm={} cpu_ttm_vs_gpu_sm={}",
+            max_abs_diff(&sq_sm_cpu, &sq_sm_gpu),
+            max_abs_diff(&sq_ttm_cpu, &sq_ttm_gpu),
+            max_abs_diff(&sq_sm_cpu, &sq_ttm_gpu),
+            max_abs_diff(&sq_ttm_cpu, &sq_sm_gpu)
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_signal_diagnostic_device_sweeps_vs_cpu_series() {
+        fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .filter_map(|(x, y)| {
+                    if x.is_finite() && y.is_finite() {
+                        Some((x - y).abs())
+                    } else {
+                        None
+                    }
+                })
+                .fold(0.0, f64::max)
+        }
+
+        fn sweep_row_to_host(sweep: &VccPeriodSweepDevice) -> Vec<f64> {
+            let mut out = vec![0.0f32; sweep.matrix.rows * sweep.matrix.cols];
+            match &sweep.matrix.owner {
+                VccDeviceMatrixOwner::Raw(raw) => raw.buf.copy_to(&mut out).unwrap(),
+                VccDeviceMatrixOwner::Dispatch(_) => panic!("unexpected dispatch owner"),
+            }
+            out.into_iter().map(|x| x as f64).collect()
+        }
+
+        let candles = make_trending_candles(4096);
+        let cfg = VccStrategyParams::default();
+        let periods = resolve_vcc_periods(&cfg, 8, 24);
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            periods.squeeze,
+            periods.momentum,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            periods.trend,
+            Some(&prepared),
+        )
+        .unwrap();
+
+        let squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_device(
+            &prepared,
+            &cfg,
+            periods.squeeze,
+            periods.squeeze,
+            1,
+            0,
+        )
+        .unwrap();
+        let momentum_sweep = compute_vcc_squeeze_momentum_sweep_cuda_device(
+            &prepared,
+            &cfg,
+            periods.momentum,
+            periods.momentum,
+            1,
+            0,
+        )
+        .unwrap();
+        let trend_sweep =
+            compute_vcc_ttm_trend_sweep_cuda_device(&prepared, periods.trend, periods.trend, 1, 0)
+                .unwrap();
+
+        let squeeze_dev = sweep_row_to_host(&squeeze_sweep);
+        let momentum_dev = sweep_row_to_host(&momentum_sweep);
+        let trend_dev = sweep_row_to_host(&trend_sweep);
+
+        eprintln!(
+            "vcc device diag: diff squeeze={} momentum={} trend={}",
+            max_abs_diff(&fast_cpu.squeeze_state, &squeeze_dev),
+            max_abs_diff(&fast_cpu.momentum, &momentum_dev),
+            max_abs_diff(&trend_cpu.trend_state, &trend_dev)
+        );
+        let sign_mismatch = fast_cpu
+            .momentum
+            .iter()
+            .zip(momentum_dev.iter())
+            .filter(|(a, b)| a.is_finite() && b.is_finite() && a.signum() != b.signum())
+            .count();
+        let near_zero_sign_mismatch = fast_cpu
+            .momentum
+            .iter()
+            .zip(momentum_dev.iter())
+            .filter(|(a, b)| {
+                a.is_finite()
+                    && b.is_finite()
+                    && a.signum() != b.signum()
+                    && a.abs().max(b.abs()) < 0.01
+            })
+            .count();
+        eprintln!(
+            "vcc device diag: momentum sign mismatches={} near_zero(<0.01)={}",
+            sign_mismatch, near_zero_sign_mismatch
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_signal_diagnostic_multirow_sweeps_vs_cpu_series() {
+        fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .filter_map(|(x, y)| {
+                    if x.is_finite() && y.is_finite() {
+                        Some((x - y).abs())
+                    } else {
+                        None
+                    }
+                })
+                .fold(0.0, f64::max)
+        }
+
+        fn sweep_row_to_host(sweep: &VccPeriodSweepDevice, period: u16) -> Vec<f64> {
+            let mut out = vec![0.0f32; sweep.matrix.rows * sweep.matrix.cols];
+            match &sweep.matrix.owner {
+                VccDeviceMatrixOwner::Raw(raw) => raw.buf.copy_to(&mut out).unwrap(),
+                VccDeviceMatrixOwner::Dispatch(_) => panic!("unexpected dispatch owner"),
+            }
+            let row = sweep.row_index_for_period(period).unwrap();
+            let cols = sweep.matrix.cols;
+            out[(row * cols)..((row + 1) * cols)]
+                .iter()
+                .map(|x| *x as f64)
+                .collect()
+        }
+
+        let candles = make_trending_candles(4096);
+        let cfg = VccStrategyParams::default();
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            8,
+            8,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            24,
+            Some(&prepared),
+        )
+        .unwrap();
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 8, 12, 8, 12, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 24, 36, 1, 0).unwrap();
+
+        let squeeze_dev = sweep_row_to_host(&sq_sweep, 8);
+        let momentum_dev = sweep_row_to_host(&mo_sweep, 8);
+        let trend_dev = sweep_row_to_host(&tr_sweep, 24);
+
+        eprintln!(
+            "vcc multi-row diag: diff squeeze={} momentum={} trend={}",
+            max_abs_diff(&fast_cpu.squeeze_state, &squeeze_dev),
+            max_abs_diff(&fast_cpu.momentum, &momentum_dev),
+            max_abs_diff(&trend_cpu.trend_state, &trend_dev)
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_signal_diagnostic_short_combo_sweeps_vs_cpu_series() {
+        fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .filter_map(|(x, y)| {
+                    if x.is_finite() && y.is_finite() {
+                        Some((x - y).abs())
+                    } else {
+                        None
+                    }
+                })
+                .fold(0.0, f64::max)
+        }
+
+        fn sweep_row_to_host(sweep: &VccPeriodSweepDevice, period: u16) -> Vec<f64> {
+            let mut out = vec![0.0f32; sweep.matrix.rows * sweep.matrix.cols];
+            match &sweep.matrix.owner {
+                VccDeviceMatrixOwner::Raw(raw) => raw.buf.copy_to(&mut out).unwrap(),
+                VccDeviceMatrixOwner::Dispatch(_) => panic!("unexpected dispatch owner"),
+            }
+            let row = sweep.row_index_for_period(period).unwrap();
+            let cols = sweep.matrix.cols;
+            out[(row * cols)..((row + 1) * cols)]
+                .iter()
+                .map(|x| *x as f64)
+                .collect()
+        }
+
+        let candles = make_monotonic_trending_candles(3000);
+        let cfg = VccStrategyParams::default();
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            5,
+            5,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            12,
+            Some(&prepared),
+        )
+        .unwrap();
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 12, 16, 1, 0).unwrap();
+
+        let squeeze_dev = sweep_row_to_host(&sq_sweep, 5);
+        let momentum_dev = sweep_row_to_host(&mo_sweep, 5);
+        let trend_dev = sweep_row_to_host(&tr_sweep, 12);
+
+        let sign_mismatch = fast_cpu
+            .momentum
+            .iter()
+            .zip(momentum_dev.iter())
+            .filter(|(a, b)| a.is_finite() && b.is_finite() && a.signum() != b.signum())
+            .count();
+        let delta_sign_mismatch = fast_cpu
+            .momentum
+            .windows(2)
+            .zip(momentum_dev.windows(2))
+            .filter(|(cpu, gpu)| {
+                let cpu_delta = cpu[1] - cpu[0];
+                let gpu_delta = gpu[1] - gpu[0];
+                cpu_delta.is_finite()
+                    && gpu_delta.is_finite()
+                    && cpu_delta.signum() != gpu_delta.signum()
+            })
+            .count();
+
+        eprintln!(
+            "vcc short diag: diff squeeze={} momentum={} trend={} sign_mismatch={} delta_sign_mismatch={}",
+            max_abs_diff(&fast_cpu.squeeze_state, &squeeze_dev),
+            max_abs_diff(&fast_cpu.momentum, &momentum_dev),
+            max_abs_diff(&trend_cpu.trend_state, &trend_dev),
+            sign_mismatch,
+            delta_sign_mismatch
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_metrics_diagnostic_short_combo_cpu_vs_gpu_kernel() {
+        fn sweep_row_to_host(sweep: &VccPeriodSweepDevice, period: u16) -> Vec<f64> {
+            let mut out = vec![0.0f32; sweep.matrix.rows * sweep.matrix.cols];
+            match &sweep.matrix.owner {
+                VccDeviceMatrixOwner::Raw(raw) => raw.buf.copy_to(&mut out).unwrap(),
+                VccDeviceMatrixOwner::Dispatch(_) => panic!("unexpected dispatch owner"),
+            }
+            let row = sweep.row_index_for_period(period).unwrap();
+            let cols = sweep.matrix.cols;
+            out[(row * cols)..((row + 1) * cols)]
+                .iter()
+                .map(|x| *x as f64)
+                .collect()
+        }
+
+        let candles = make_monotonic_trending_candles(3000);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let strategy = StrategyConfig::default();
+        let cfg = VccStrategyParams::default();
+        let periods = resolve_vcc_periods(&cfg, 5, 12);
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            periods.squeeze,
+            periods.momentum,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            periods.trend,
+            Some(&prepared),
+        )
+        .unwrap();
+        let start_t = compute_vcc_start_t(
+            0,
+            0,
+            fast_cpu.first_valid,
+            trend_cpu.first_valid,
+            usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1),
+            strategy.trade_on_next_bar,
+        );
+        let desired_cpu =
+            build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+        let metrics_cpu = eval_asr_metrics_from_desired(&candles, &lr, &desired_cpu, start_t, &strategy);
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 12, 16, 1, 0).unwrap();
+        let squeeze_dev = sweep_row_to_host(&sq_sweep, 5);
+        let momentum_dev = sweep_row_to_host(&mo_sweep, 5);
+        let trend_dev = sweep_row_to_host(&tr_sweep, 12);
+        let fast_dev = VccFastSignals {
+            squeeze_state: squeeze_dev,
+            momentum: momentum_dev,
+            first_valid: fast_cpu.first_valid,
+        };
+        let trend_dev = VccTrendSignals {
+            trend_state: trend_dev,
+            first_valid: trend_cpu.first_valid,
+        };
+        let desired_dev =
+            build_vcc_desired_positions(close, &fast_dev, &trend_dev, start_t, &strategy, &cfg);
+        let metrics_dev_cpu =
+            eval_asr_metrics_from_desired(&candles, &lr, &desired_dev, start_t, &strategy);
+
+        let fast_squeeze_row = sq_sweep.row_ptr_for_period(5).unwrap();
+        let fast_momentum_row = mo_sweep.row_ptr_for_period(5).unwrap();
+        let trend_row = tr_sweep.row_ptr_for_period(12).unwrap();
+        let signals = VccGpuDeviceSignalMatrices {
+            close_f64: close,
+            cols: close.len(),
+            fast_rows: 1,
+            trend_rows: 1,
+            fast_squeeze_rows: &[fast_squeeze_row],
+            fast_momentum_rows: &[fast_momentum_row],
+            fast_momentum_host_row_major: None,
+            trend_rows_ptr: &[trend_row],
+        };
+        let combos = VccGpuComboBatch {
+            fast_row_index: &[0],
+            trend_row_index: &[0],
+            start_t: &[start_t as i32],
+        };
+        let metrics_gpu = eval_vcc_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &cfg,
+        )
+        .unwrap();
+
+        eprintln!(
+            "vcc metric diag: cpu pnl={} dev_cpu pnl={} gpu pnl={} cpu trades={} dev_cpu trades={} gpu trades={}",
+            metrics_cpu.pnl,
+            metrics_dev_cpu.pnl,
+            metrics_gpu[0].pnl,
+            metrics_cpu.trades,
+            metrics_dev_cpu.trades,
+            metrics_gpu[0].trades
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_metrics_diagnostic_validation_batch_cpu_vs_gpu_kernel() {
+        let candles = make_trending_candles(4096);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let strategy = StrategyConfig::default();
+        let cfg = VccStrategyParams::default();
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+        let combos_spec = [(8u16, 24u16), (12u16, 36u16)];
+
+        let mut cpu_metrics = Vec::new();
+        let mut fast_rows = Vec::new();
+        let mut fast_mom_rows = Vec::new();
+        let mut trend_rows = Vec::new();
+        let mut combo_fast_idx = Vec::new();
+        let mut combo_trend_idx = Vec::new();
+        let mut combo_start = Vec::new();
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 8, 12, 8, 12, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 24, 36, 1, 0).unwrap();
+
+        for (i, (fast_len, slow_len)) in combos_spec.iter().copied().enumerate() {
+            let periods = resolve_vcc_periods(&cfg, fast_len, slow_len);
+            let fast_cpu = compute_vcc_fast_signals(
+                &candles,
+                "close",
+                &Backend::CpuOnly,
+                &cfg,
+                periods.squeeze,
+                periods.momentum,
+                Some(&prepared),
+            )
+            .unwrap();
+            let trend_cpu = compute_vcc_trend_signals(
+                &candles,
+                "close",
+                &Backend::CpuOnly,
+                periods.trend,
+                Some(&prepared),
+            )
+            .unwrap();
+            let start_t = compute_vcc_start_t(
+                0,
+                0,
+                fast_cpu.first_valid,
+                trend_cpu.first_valid,
+                usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1),
+                strategy.trade_on_next_bar,
+            );
+            let desired = build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+            cpu_metrics.push(eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy));
+
+            fast_rows.push(sq_sweep.row_ptr_for_period(periods.squeeze).unwrap());
+            fast_mom_rows.push(mo_sweep.row_ptr_for_period(periods.momentum).unwrap());
+            trend_rows.push(tr_sweep.row_ptr_for_period(periods.trend).unwrap());
+            combo_fast_idx.push(i as i32);
+            combo_trend_idx.push(i as i32);
+            combo_start.push(start_t as i32);
+        }
+
+        let signals = VccGpuDeviceSignalMatrices {
+            close_f64: close,
+            cols: close.len(),
+            fast_rows: fast_rows.len(),
+            trend_rows: trend_rows.len(),
+            fast_squeeze_rows: &fast_rows,
+            fast_momentum_rows: &fast_mom_rows,
+            fast_momentum_host_row_major: None,
+            trend_rows_ptr: &trend_rows,
+        };
+        let combos = VccGpuComboBatch {
+            fast_row_index: &combo_fast_idx,
+            trend_row_index: &combo_trend_idx,
+            start_t: &combo_start,
+        };
+        let gpu_metrics = eval_vcc_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &cfg,
+        )
+        .unwrap();
+
+        for (idx, (cpu, gpu)) in cpu_metrics.iter().zip(gpu_metrics.iter()).enumerate() {
+            eprintln!(
+                "vcc batch diag idx={} cpu pnl={} gpu pnl={} cpu trades={} gpu trades={}",
+                idx, cpu.pnl, gpu.pnl, cpu.trades, gpu.trades
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_metrics_diagnostic_optimizer_shape_single_combo() {
+        let candles = make_monotonic_trending_candles(3000);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let strategy = StrategyConfig::default();
+        let cfg = VccStrategyParams::default();
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            5,
+            5,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            12,
+            Some(&prepared),
+        )
+        .unwrap();
+        let start_t = compute_vcc_start_t(
+            0,
+            0,
+            fast_cpu.first_valid,
+            trend_cpu.first_valid,
+            12,
+            strategy.trade_on_next_bar,
+        );
+        let desired = build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+        let metrics_cpu = eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy);
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 12, 16, 1, 0).unwrap();
+
+        let fast_squeeze_rows = vec![
+            sq_sweep.row_ptr_for_period(5).unwrap(),
+            sq_sweep.row_ptr_for_period(6).unwrap(),
+            sq_sweep.row_ptr_for_period(7).unwrap(),
+        ];
+        let fast_momentum_rows = vec![
+            mo_sweep.row_ptr_for_period(5).unwrap(),
+            mo_sweep.row_ptr_for_period(6).unwrap(),
+            mo_sweep.row_ptr_for_period(7).unwrap(),
+        ];
+        let trend_rows_ptr = vec![
+            tr_sweep.row_ptr_for_period(12).unwrap(),
+            tr_sweep.row_ptr_for_period(13).unwrap(),
+            tr_sweep.row_ptr_for_period(14).unwrap(),
+            tr_sweep.row_ptr_for_period(15).unwrap(),
+            tr_sweep.row_ptr_for_period(16).unwrap(),
+        ];
+
+        let signals = VccGpuDeviceSignalMatrices {
+            close_f64: close,
+            cols: close.len(),
+            fast_rows: fast_squeeze_rows.len(),
+            trend_rows: trend_rows_ptr.len(),
+            fast_squeeze_rows: &fast_squeeze_rows,
+            fast_momentum_rows: &fast_momentum_rows,
+            fast_momentum_host_row_major: None,
+            trend_rows_ptr: &trend_rows_ptr,
+        };
+        let combos = VccGpuComboBatch {
+            fast_row_index: &[0],
+            trend_row_index: &[0],
+            start_t: &[start_t as i32],
+        };
+        let metrics_gpu = eval_vcc_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &cfg,
+        )
+        .unwrap();
+
+        eprintln!(
+            "vcc optimizer-shape diag: cpu pnl={} gpu pnl={} cpu trades={} gpu trades={}",
+            metrics_cpu.pnl, metrics_gpu[0].pnl, metrics_cpu.trades, metrics_gpu[0].trades
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_metrics_diagnostic_optimizer_shape_single_combo_fast6() {
+        fn sweep_row_to_host(sweep: &VccPeriodSweepDevice, period: u16) -> Vec<f64> {
+            let mut out = vec![0.0f32; sweep.matrix.rows * sweep.matrix.cols];
+            match &sweep.matrix.owner {
+                VccDeviceMatrixOwner::Raw(raw) => raw.buf.copy_to(&mut out).unwrap(),
+                VccDeviceMatrixOwner::Dispatch(_) => panic!("unexpected dispatch owner"),
+            }
+            let row = sweep.row_index_for_period(period).unwrap();
+            let cols = sweep.matrix.cols;
+            out[(row * cols)..((row + 1) * cols)]
+                .iter()
+                .map(|x| *x as f64)
+                .collect()
+        }
+        fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .filter_map(|(x, y)| (x.is_finite() && y.is_finite()).then_some((x - y).abs()))
+                .fold(0.0, f64::max)
+        }
+
+        let candles = make_monotonic_trending_candles(3000);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let strategy = StrategyConfig::default();
+        let cfg = VccStrategyParams::default();
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+
+        let fast_cpu = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            &cfg,
+            6,
+            6,
+            Some(&prepared),
+        )
+        .unwrap();
+        let trend_cpu = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            12,
+            Some(&prepared),
+        )
+        .unwrap();
+        let start_t = compute_vcc_start_t(
+            0,
+            0,
+            fast_cpu.first_valid,
+            trend_cpu.first_valid,
+            12,
+            strategy.trade_on_next_bar,
+        );
+        let desired =
+            build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+        let metrics_cpu =
+            eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy);
+        let fast_gpu_host = compute_vcc_fast_signals(
+            &candles,
+            "close",
+            &Backend::Auto { device_id: 0 },
+            &cfg,
+            6,
+            6,
+            Some(&prepared),
+        )
+        .unwrap();
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 5, 7, 5, 7, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 12, 16, 1, 0).unwrap();
+
+        let fast_squeeze_rows = vec![
+            sq_sweep.row_ptr_for_period(5).unwrap(),
+            sq_sweep.row_ptr_for_period(6).unwrap(),
+            sq_sweep.row_ptr_for_period(7).unwrap(),
+        ];
+        let fast_momentum_rows = vec![
+            mo_sweep.row_ptr_for_period(5).unwrap(),
+            mo_sweep.row_ptr_for_period(6).unwrap(),
+            mo_sweep.row_ptr_for_period(7).unwrap(),
+        ];
+        let trend_rows_ptr = vec![
+            tr_sweep.row_ptr_for_period(12).unwrap(),
+            tr_sweep.row_ptr_for_period(13).unwrap(),
+            tr_sweep.row_ptr_for_period(14).unwrap(),
+            tr_sweep.row_ptr_for_period(15).unwrap(),
+            tr_sweep.row_ptr_for_period(16).unwrap(),
+        ];
+
+        let signals = VccGpuDeviceSignalMatrices {
+            close_f64: close,
+            cols: close.len(),
+            fast_rows: fast_squeeze_rows.len(),
+            trend_rows: trend_rows_ptr.len(),
+            fast_squeeze_rows: &fast_squeeze_rows,
+            fast_momentum_rows: &fast_momentum_rows,
+            fast_momentum_host_row_major: None,
+            trend_rows_ptr: &trend_rows_ptr,
+        };
+        let fast_dev = VccFastSignals {
+            squeeze_state: sweep_row_to_host(&sq_sweep, 6),
+            momentum: sweep_row_to_host(&mo_sweep, 6),
+            first_valid: fast_cpu.first_valid,
+        };
+        let trend_dev = VccTrendSignals {
+            trend_state: sweep_row_to_host(&tr_sweep, 12),
+            first_valid: trend_cpu.first_valid,
+        };
+        let desired_dev =
+            build_vcc_desired_positions(close, &fast_dev, &trend_dev, start_t, &strategy, &cfg);
+        let metrics_dev_cpu =
+            eval_asr_metrics_from_desired(&candles, &lr, &desired_dev, start_t, &strategy);
+        let combos = VccGpuComboBatch {
+            fast_row_index: &[1],
+            trend_row_index: &[0],
+            start_t: &[start_t as i32],
+        };
+        let metrics_gpu = eval_vcc_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &cfg,
+        )
+        .unwrap();
+
+        eprintln!(
+            "vcc optimizer-shape fast6 diag: start_t={} fast_first_valid={} trend_first_valid={} squeeze_diff={} momentum_diff={} host_gpu_momentum_diff={} trend_diff={} cpu pnl={} dev_cpu pnl={} gpu pnl={} cpu trades={} dev_cpu trades={} gpu trades={}",
+            start_t,
+            fast_cpu.first_valid,
+            trend_cpu.first_valid,
+            max_abs_diff(&fast_cpu.squeeze_state, &fast_dev.squeeze_state),
+            max_abs_diff(&fast_cpu.momentum, &fast_dev.momentum),
+            max_abs_diff(&fast_cpu.momentum, &fast_gpu_host.momentum),
+            max_abs_diff(&trend_cpu.trend_state, &trend_dev.trend_state),
+            metrics_cpu.pnl,
+            metrics_dev_cpu.pnl,
+            metrics_gpu[0].pnl,
+            metrics_cpu.trades,
+            metrics_dev_cpu.trades,
+            metrics_gpu[0].trades
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic"]
+    fn vcc_metrics_diagnostic_validation_batch_monotonic_with_cpu_momentum() {
+        fn sweep_row_to_host(sweep: &VccPeriodSweepDevice, period: u16) -> Vec<f64> {
+            let mut out = vec![0.0f32; sweep.matrix.rows * sweep.matrix.cols];
+            match &sweep.matrix.owner {
+                VccDeviceMatrixOwner::Raw(raw) => raw.buf.copy_to(&mut out).unwrap(),
+                VccDeviceMatrixOwner::Dispatch(_) => panic!("unexpected dispatch owner"),
+            }
+            let row = sweep.row_index_for_period(period).unwrap();
+            let cols = sweep.matrix.cols;
+            out[(row * cols)..((row + 1) * cols)]
+                .iter()
+                .map(|x| *x as f64)
+                .collect()
+        }
+        fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .zip(b.iter())
+                .filter_map(|(x, y)| (x.is_finite() && y.is_finite()).then_some((x - y).abs()))
+                .fold(0.0, f64::max)
+        }
+
+        let candles = {
+            let len = 4096usize;
+            let mut ts = Vec::with_capacity(len);
+            let mut open = Vec::with_capacity(len);
+            let mut high = Vec::with_capacity(len);
+            let mut low = Vec::with_capacity(len);
+            let mut close = Vec::with_capacity(len);
+            let mut vol: Vec<f64> = Vec::with_capacity(len);
+            for i in 0..len {
+                ts.push(i as i64);
+                let base = 100.0 + i as f64 * 0.1;
+                open.push(base);
+                high.push(base + 1.0);
+                low.push(base - 1.0);
+                close.push(base + 0.25);
+                vol.push(1_000.0);
+            }
+            Candles::new(ts, open, high, low, close, vol)
+        };
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let strategy = StrategyConfig::default();
+        let cfg = VccStrategyParams::default();
+        let prepared =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0).unwrap();
+        let combos_spec = [(8u16, 24u16), (12u16, 36u16)];
+
+        let mut cpu_metrics = Vec::new();
+        let mut fast_rows = Vec::new();
+        let mut trend_rows = Vec::new();
+        let mut combo_fast_idx = Vec::new();
+        let mut combo_trend_idx = Vec::new();
+        let mut combo_start = Vec::new();
+        let mut host_momentum_row_major = Vec::new();
+
+        let (sq_sweep, mo_sweep) =
+            compute_vcc_fast_dual_sweep_cuda_device(&prepared, &cfg, 8, 12, 8, 12, 1, 0).unwrap();
+        let tr_sweep = compute_vcc_ttm_trend_sweep_cuda_device(&prepared, 24, 36, 12, 0).unwrap();
+
+        for (i, (fast_len, slow_len)) in combos_spec.iter().copied().enumerate() {
+            let periods = resolve_vcc_periods(&cfg, fast_len, slow_len);
+            let fast_cpu = compute_vcc_fast_signals(
+                &candles,
+                "close",
+                &Backend::CpuOnly,
+                &cfg,
+                periods.squeeze,
+                periods.momentum,
+                Some(&prepared),
+            )
+            .unwrap();
+            let trend_cpu = compute_vcc_trend_signals(
+                &candles,
+                "close",
+                &Backend::CpuOnly,
+                periods.trend,
+                Some(&prepared),
+            )
+            .unwrap();
+            let start_t = compute_vcc_start_t(
+                0,
+                0,
+                fast_cpu.first_valid,
+                trend_cpu.first_valid,
+                usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1),
+                strategy.trade_on_next_bar,
+            );
+            let desired =
+                build_vcc_desired_positions(close, &fast_cpu, &trend_cpu, start_t, &strategy, &cfg);
+            cpu_metrics.push(eval_asr_metrics_from_desired(&candles, &lr, &desired, start_t, &strategy));
+
+            let fast_roundtrip = VccFastSignals {
+                squeeze_state: fast_cpu.squeeze_state.clone(),
+                momentum: fast_cpu
+                    .momentum
+                    .iter()
+                    .map(|v| (*v as f32) as f64)
+                    .collect(),
+                first_valid: fast_cpu.first_valid,
+            };
+            let desired_roundtrip = build_vcc_desired_positions(
+                close,
+                &fast_roundtrip,
+                &trend_cpu,
+                start_t,
+                &strategy,
+                &cfg,
+            );
+            let roundtrip_metrics = eval_asr_metrics_from_desired(
+                &candles,
+                &lr,
+                &desired_roundtrip,
+                start_t,
+                &strategy,
+            );
+
+            let sq_dev = sweep_row_to_host(&sq_sweep, periods.squeeze);
+            let tr_dev = sweep_row_to_host(&tr_sweep, periods.trend);
+            eprintln!(
+                "vcc monotonic validation diag combo=({fast_len},{slow_len}) squeeze_diff={} trend_diff={} roundtrip pnl={} roundtrip trades={}",
+                max_abs_diff(&fast_cpu.squeeze_state, &sq_dev),
+                max_abs_diff(&trend_cpu.trend_state, &tr_dev),
+                roundtrip_metrics.pnl,
+                roundtrip_metrics.trades,
+            );
+
+            fast_rows.push(sq_sweep.row_ptr_for_period(periods.squeeze).unwrap());
+            trend_rows.push(tr_sweep.row_ptr_for_period(periods.trend).unwrap());
+            combo_fast_idx.push(i as i32);
+            combo_trend_idx.push(i as i32);
+            combo_start.push(start_t as i32);
+            host_momentum_row_major.extend(fast_cpu.momentum.iter().map(|v| *v as f32));
+            let _ = mo_sweep.row_ptr_for_period(periods.momentum).unwrap();
+        }
+
+        let signals = VccGpuDeviceSignalMatrices {
+            close_f64: close,
+            cols: close.len(),
+            fast_rows: fast_rows.len(),
+            trend_rows: trend_rows.len(),
+            fast_squeeze_rows: &fast_rows,
+            fast_momentum_rows: &[],
+            fast_momentum_host_row_major: Some(&host_momentum_row_major),
+            trend_rows_ptr: &trend_rows,
+        };
+        let combos = VccGpuComboBatch {
+            fast_row_index: &combo_fast_idx,
+            trend_row_index: &combo_trend_idx,
+            start_t: &combo_start,
+        };
+        let gpu_metrics = eval_vcc_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &cfg,
+        )
+        .unwrap();
+
+        for (idx, (cpu, gpu)) in cpu_metrics.iter().zip(gpu_metrics.iter()).enumerate() {
+            eprintln!(
+                "vcc monotonic validation metrics idx={} cpu pnl={} gpu pnl={} cpu trades={} gpu trades={}",
+                idx, cpu.pnl, gpu.pnl, cpu.trades, gpu.trades
+            );
+        }
     }
 }

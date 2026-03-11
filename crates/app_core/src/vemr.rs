@@ -20,7 +20,9 @@ use vector_ta::cuda::{
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
 #[cfg(feature = "cuda")]
-use vector_ta::indicators::{atr::AtrBatchRange, bollinger_bands::BollingerBandsBatchRange, zscore::ZscoreBatchRange};
+use vector_ta::indicators::{
+    atr::AtrBatchRange, bollinger_bands::BollingerBandsBatchRange, zscore::ZscoreBatchRange,
+};
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
@@ -518,17 +520,9 @@ fn compute_vemr_zscore_sweep_cuda_direct(
             usize::from(period_end.max(period_start.max(1))),
             usize::from(period_step.max(1)),
         ),
-        ma_type: (
-            cfg.z_ma_type.clone(),
-            cfg.z_ma_type.clone(),
-            String::new(),
-        ),
+        ma_type: (cfg.z_ma_type.clone(), cfg.z_ma_type.clone(), String::new()),
         nbdev: (cfg.z_nbdev, cfg.z_nbdev, 0.0),
-        devtype: (
-            usize::from(cfg.z_devtype),
-            usize::from(cfg.z_devtype),
-            0,
-        ),
+        devtype: (usize::from(cfg.z_devtype), usize::from(cfg.z_devtype), 0),
     };
     let wrapper = CudaZscore::new(device_id as usize).map_err(|e| e.to_string())?;
     let first_valid = prepared_inputs.source_first_valid();

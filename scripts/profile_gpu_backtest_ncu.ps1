@@ -4,6 +4,8 @@ param(
   [string]$BenchFilter = "double_ma/gpu_kernel/sma_sma/200k/small",
   [ValidateSet("double_ma", "trend_quality", "regime_hybrid", "breakout_momentum")]
   [string]$RunnerStrategy = "breakout_momentum",
+  [ValidateSet("off", "on")]
+  [string]$RunnerAdxMode = "off",
   [ValidateSet("small", "medium", "large", "xlarge")]
   [string]$RunnerWorkload = "xlarge",
   [int]$RunnerIterations = 1,
@@ -93,6 +95,7 @@ if ($Target -eq "runner") {
   $ncuArgs += @(
     $targetExe.FullName,
     "--strategy", $RunnerStrategy,
+    "--adx-mode", $RunnerAdxMode,
     "--workload", $RunnerWorkload,
     "--iterations", "$RunnerIterations",
     "--dynamic-mode", $DynamicStrategyMode

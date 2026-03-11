@@ -38,6 +38,72 @@ Instructions for AI coding agents working in this repository.
 - For performance-sensitive changes, run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` before handoff (or `scripts/run_workflow_gate.ps1 -Mode candidate` at minimum).
 - For CUDA backtest-kernel changes, run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (when GPU is available).
 
+## Execution quality
+
+- Use the full set of available tools and skills when it improves solution quality, verification quality, or speed of understanding.
+- Prefer maximal beneficial use of sub-agents for bounded analysis tasks, especially when scanning separate backend/frontend/runtime surfaces in parallel will preserve context and reduce mistakes.
+- Use profiling, targeted diagnostics, and existing repo tooling before guessing about performance or parity issues.
+- Favor evidence-backed implementation over assumption-backed implementation, especially for CUDA/runtime-path changes.
+
+## Strategy-local architecture
+
+- Prefer strategy-local code organization over large generic execution layers when adding new optimization or validation backends.
+- For a strategy-specific backend/frontend feature, make it obvious where the code lives so contributors do not need to read the whole repo to change one strategy.
+- Keep backend strategy code grouped by strategy whenever practical. Preferred shape:
+  - request/config
+  - CPU path
+  - GPU path
+  - hybrid path
+  - validation adapter
+  - tests
+- Keep frontend strategy code grouped by strategy whenever practical:
+  - request builder/normalization
+  - capability summary
+  - strategy-specific form/config handling
+  - tests
+- Shared infrastructure should stay shared only for truly cross-cutting primitives such as:
+  - CUDA upload/buffers
+  - top-k/reduction
+  - common metric/stat helpers
+  - artifact/report plumbing
+- Current architecture target for supported GPU strategies:
+  - optimization stage should be GPU-executed end to end within that stage, with prices/derived series/candidate buffers kept VRAM-resident until compact results are returned
+  - validation stage should separately support GPU-executed end to end execution within that stage, rerunning backtests as needed rather than depending on a chained optimization-to-validation device pipeline
+  - CPU fallback must remain supported
+  - hybrid routes are acceptable when a specific component such as optional `ADX` remains CPU-preferred
+- For `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum`, the current product optimization route is the `double_ma` family, not `CompositeCpu`.
+- For `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum`, the target route policy is:
+  - `CompositeTrend`: `GpuKernel` when ADX is off, `GpuHybridKernel` when ADX is on, `CpuOnly` fallback
+  - `BreakoutMomentum`: `GpuKernel` when ADX is off, `GpuHybridKernel` when ADX is on, `CpuOnly` fallback
+  - `RegimeHybrid`: `GpuHybridKernel` in its current ADX-bearing form, `CpuOnly` fallback, with full `GpuKernel` only if a true no-ADX effective variant is later implemented
+
+### Profile file map
+
+- For `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum`, contributors should start in these locations before broader repo search:
+  - request shaping / backend selection:
+    - `web/src/services/optimizeRequestBuilder.ts`
+    - `web/src/services/optimizeService.ts`
+    - `web/src/utils/strategyOptimizationCapabilities.ts`
+  - optimization execution and route metadata:
+    - `crates/app_core/src/double_ma.rs`
+    - `crates/app_core/src/composite_profile_route.rs`
+  - validation execution:
+    - `crates/app_core/src/double_ma_validate.rs`
+    - `src-tauri/src/commands_validation.rs`
+  - strategy preset/test helpers:
+    - `crates/app_core/src/strategy_presets.rs`
+    - `crates/app_core/src/double_ma_test_support.rs`
+  - representative tests:
+    - `web/src/services/optimizeRequestBuilder.test.ts`
+    - `web/src/services/optimizeService.test.ts`
+    - `crates/app_core/src/double_ma.rs`
+    - `crates/app_core/src/double_ma_validate.rs`
+- Shared primitives that intentionally remain shared:
+  - CUDA upload and kernel runtime plumbing in `crates/app_core/src/gpu_backtest_kernel.rs`
+  - common regime/filter computation in `crates/app_core/src/double_ma.rs`
+  - validation reduction logic in `crates/app_core/src/validation_pipeline.rs`
+  - Tauri cross-ticker orchestration in `src-tauri/src/commands_validation.rs`
+
 ## Allocation policy (performance-critical)
 
 - Default to malloc-like allocation (`Vec::with_capacity` + `set_len` / `MaybeUninit`) only when every element is guaranteed to be written before any read.

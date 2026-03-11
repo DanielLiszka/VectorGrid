@@ -24,8 +24,7 @@ pub(crate) use crate::double_ma_strategy::{
 use crate::double_ma_vdps::{
     merge_vdps_telemetry, vdps_decimated_periods, vdps_inject_differential_seed_pairs,
     vdps_inject_elite_mutation_pairs, vdps_inject_random_seed_pairs, vdps_local_anchor_axes,
-    vdps_merge_partial_results, vdps_period_window_slice, vdps_rank_candidates,
-    vdps_target_pairs,
+    vdps_merge_partial_results, vdps_period_window_slice, vdps_rank_candidates, vdps_target_pairs,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::progress::ProgressSink;
@@ -538,7 +537,6 @@ impl VdpsResolvedConfig {
         })
     }
 }
-
 
 #[inline]
 fn vdps_normalized_refill_mix(cfg: &VdpsResolvedConfig) -> (f64, f64, f64) {
@@ -2754,7 +2752,6 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         None
     };
 
-    let mut backend_route: Option<String> = None;
     let mut backend_fallback_reason: Option<String> = None;
     let indicator_route_plan_summary = build_indicator_route_plan_summary(&fast_ma, &slow_ma);
 
@@ -2905,12 +2902,15 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     let requested_backend_label = backend_kind_label(&requested_backend);
     let resolved_backend_label = backend_kind_label(&backend);
+    let mut backend_route: Option<String>;
     if matches!(requested_backend, Backend::Auto { .. }) {
         backend_route = Some(format!("Auto->{resolved_backend_label}"));
     } else if requested_backend_label != resolved_backend_label {
         backend_route = Some(format!(
             "{requested_backend_label}->{resolved_backend_label}"
         ));
+    } else {
+        backend_route = Some(resolved_backend_label.to_string());
     }
 
     if matches!(mode_used, OptimizationModeResolved::GpuVdps) && matches!(backend, Backend::CpuOnly)
@@ -8835,6 +8835,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        None,
         cancel,
         progress,
     )
@@ -8921,6 +8922,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        None,
         cancel,
         progress,
     )
@@ -8928,14 +8930,12 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::double_ma_test_support::{
-        double_like_kernel_strategy_cases,
-        marrt_strategy_for_kernel, mts_strategy_for_kernel, orc_strategy_for_kernel,
-        pit_strategy_for_kernel,
-        set_strategy_for_kernel,
+        double_like_kernel_strategy_cases, marrt_strategy_for_kernel, mts_strategy_for_kernel,
+        orc_strategy_for_kernel, pit_strategy_for_kernel, set_strategy_for_kernel,
         vfct_strategy_for_kernel,
     };
+    use super::*;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
@@ -9896,8 +9896,8 @@ mod tests {
             res.backend_used
         );
         assert!(
-            res.backend_route.is_none(),
-            "expected no backend route fallback, got {:?}",
+            res.backend_route.as_deref() == Some("GpuHybridKernel"),
+            "expected explicit hybrid route, got {:?}",
             res.backend_route
         );
         assert!(
@@ -9959,8 +9959,8 @@ mod tests {
             res.backend_used
         );
         assert!(
-            res.backend_route.is_none(),
-            "expected no route fallback, got {:?}",
+            res.backend_route.as_deref() == Some("GpuHybridKernel"),
+            "expected explicit hybrid route, got {:?}",
             res.backend_route
         );
         assert!(
@@ -10103,14 +10103,16 @@ mod tests {
             "expected GPU backend for batched run"
         );
         assert!(
-            single.backend_route.is_none() && single.backend_fallback_reason.is_none(),
-            "unexpected hybrid fallback on unbatched run: route={:?} fallback={:?}",
+            single.backend_route.as_deref() == Some("GpuHybridKernel")
+                && single.backend_fallback_reason.is_none(),
+            "unexpected hybrid route/fallback on unbatched run: route={:?} fallback={:?}",
             single.backend_route,
             single.backend_fallback_reason
         );
         assert!(
-            batched.backend_route.is_none() && batched.backend_fallback_reason.is_none(),
-            "unexpected hybrid fallback on batched run: route={:?} fallback={:?}",
+            batched.backend_route.as_deref() == Some("GpuHybridKernel")
+                && batched.backend_fallback_reason.is_none(),
+            "unexpected hybrid route/fallback on batched run: route={:?} fallback={:?}",
             batched.backend_route,
             batched.backend_fallback_reason
         );
@@ -10180,8 +10182,8 @@ mod tests {
             res.backend_used
         );
         assert!(
-            res.backend_route.is_none(),
-            "expected no fallback route, got {:?}",
+            res.backend_route.as_deref() == Some("GpuHybridKernel"),
+            "expected explicit hybrid route, got {:?}",
             res.backend_route
         );
         assert!(
@@ -10248,8 +10250,8 @@ mod tests {
             res.backend_used
         );
         assert!(
-            res.backend_route.is_none(),
-            "expected no fallback route, got {:?}",
+            res.backend_route.as_deref() == Some("GpuHybridKernel"),
+            "expected explicit hybrid route, got {:?}",
             res.backend_route
         );
 
@@ -10295,9 +10297,13 @@ mod tests {
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect("hybrid objective fallback");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(
-            res.backend_route.as_deref(),
-            Some("GpuHybridKernel->CpuOnly")
+        assert!(
+            res.backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("GpuHybridKernel->CpuOnly"),
+            "unexpected backend route: {:?}",
+            res.backend_route
         );
         let reason = res.backend_fallback_reason.unwrap_or_default();
         assert!(

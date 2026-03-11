@@ -48,6 +48,7 @@ fn make_vemr_req(
         vcc: None,
         vemr: Some(VemrStrategyParams::default()),
         rocb: None,
+        mkcs: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,

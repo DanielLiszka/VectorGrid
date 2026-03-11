@@ -4,18 +4,19 @@ pub mod asr;
 pub mod asr_gpu_kernel;
 pub mod composite_cpu;
 pub mod composite_mo;
+pub(crate) mod composite_profile_route;
 pub mod composite_validate;
 pub mod cscv_pbo;
-pub mod cuda_device;
 pub mod csv_compat;
+pub mod cuda_device;
 pub mod double_ma;
 pub(crate) mod double_ma_backend;
 pub(crate) mod double_ma_ma_kind;
 pub(crate) mod double_ma_mode;
 pub(crate) mod double_ma_result;
 pub(crate) mod double_ma_strategy;
-pub(crate) mod double_ma_vdps;
 pub mod double_ma_validate;
+pub(crate) mod double_ma_vdps;
 pub mod dynamic_indicator_adapter;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod gpu_backtest_kernel;
@@ -26,17 +27,22 @@ pub mod ma_policy;
 pub mod matrix_index;
 pub mod meta_select;
 pub mod ml_confidence;
+pub mod mkcs;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;
 pub mod rocb;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod rocb_gpu_kernel;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod mkcs_gpu_kernel;
 pub mod sharpe_stats;
 pub mod stats_common;
-pub mod strategy_presets;
 pub mod strategy_dynamic;
 pub mod strategy_gpu_program;
 pub mod strategy_ir;
 pub mod strategy_plan;
+pub mod strategy_presets;
 pub mod timeframe;
 pub(crate) mod validation_core;
 pub mod validation_pipeline;
@@ -47,8 +53,6 @@ pub mod vcc_gpu_kernel;
 pub mod vemr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vemr_gpu_kernel;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-pub mod rocb_gpu_kernel;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) mod vram_ma;
 pub use ta_strategies::composite_cpu::CompositeSignalMode;
@@ -76,6 +80,7 @@ pub use composite_cpu::{
 };
 
 pub use asr::AsrStrategyParams;
+pub use mkcs::MkcsStrategyParams;
 pub use rocb::RocbStrategyParams;
 pub use vcc::VccStrategyParams;
 pub use vemr::VemrStrategyParams;
@@ -122,10 +127,11 @@ pub use indicator_catalog::{
 };
 
 pub use meta_select::{
-    meta_group_key, meta_group_key_for_request, meta_select_from_artifacts, HoldoutAggregate,
-    HoldoutDatasetRow, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode,
-    MetaHoldoutMode, MetaHoldoutValidationConfig, MetaScoreWeights, MetaSelectionRequest,
-    MetaSelectionResult, TrainDatasetRow,
+    meta_group_key, meta_group_key_for_request, meta_select_from_artifacts,
+    refresh_meta_group_evidence_flags, HoldoutAggregate, HoldoutDatasetRow, HoldoutSummary,
+    MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode,
+    MetaHoldoutValidationConfig, MetaScoreWeights, MetaSelectionRequest, MetaSelectionResult,
+    TrainDatasetRow,
 };
 
 pub use ml_confidence::{

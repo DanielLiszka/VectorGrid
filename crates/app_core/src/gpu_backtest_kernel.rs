@@ -2916,32 +2916,31 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let mut start_at = fv_close;
+    let mut source_start_at = fv_close;
     if let Some(p) = ma_prices {
         let fv_ma =
             first_finite_idx(p).ok_or_else(|| "ma source series all non-finite".to_string())?;
-        start_at = start_at.max(fv_ma);
+        source_start_at = source_start_at.max(fv_ma);
     }
     if let Some(v) = volume {
         let fv_vol =
             first_finite_idx(v).ok_or_else(|| "volume series all non-finite".to_string())?;
-        start_at = start_at.max(fv_vol);
+        source_start_at = source_start_at.max(fv_vol);
     }
     if let Some(h) = high {
         let fv_high =
             first_finite_idx(h).ok_or_else(|| "high series all non-finite".to_string())?;
-        start_at = start_at.max(fv_high);
+        source_start_at = source_start_at.max(fv_high);
     }
     if let Some(l) = low {
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
-        start_at = start_at.max(fv_low);
+        source_start_at = source_start_at.max(fv_low);
     }
-    if let Some(regime) = host_regime_filter {
-        let fv_regime = first_finite_idx(regime)
-            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
-        start_at = start_at.max(fv_regime);
-    }
-    if let Some(regime) = device_regime_filter {
+    let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, source_start_at)
+        .ok_or_else(|| "no index where all required series are finite".to_string())?;
+    let regime_first_valid = if let Some(regime) = host_regime_filter {
+        first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?
+    } else if let Some(regime) = device_regime_filter {
         if regime.len() != n {
             return Err("device regime trend series length mismatch".to_string());
         }
@@ -2952,10 +2951,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 regime.device_id()
             ));
         }
-        start_at = start_at.max(regime.first_valid());
-    }
-    let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
-        .ok_or_else(|| "no index where all required series are finite".to_string())?;
+        regime.first_valid()
+    } else {
+        first_valid
+    };
     if !supports_vram_kernel_ma(fast_ma.as_str()) || !supports_vram_kernel_ma(slow_ma.as_str()) {
         return Err(format!(
              "GPU kernel backend does not support the selected MA(s) for VRAM-resident mode (fast='{fast_ma_type}', slow='{slow_ma_type}')"
@@ -3000,12 +2999,25 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         return Err("FRAMA evenized window exceeds CUDA limit (1024)".to_string());
     }
 
-    if n - first_valid < max_pf.max(max_ps) {
+    let max_period = max_pf.max(max_ps);
+    let max_start_t = first_valid
+        .saturating_add(max_period.saturating_sub(1))
+        .max(regime_first_valid);
+    let (eval_start_t, eval_end_t) = (0usize, n);
+    let eval_end_t = eval_end_t.min(n);
+    let eval_effective_start = max_start_t.max(eval_start_t);
+    if n.saturating_sub(max_start_t) < 1 {
         return Err(format!(
-            "not enough valid data after first_valid={} for max period {} (len={})",
+            "not enough valid data after first_valid={} regime_first_valid={} for max period {} (len={})",
             first_valid,
-            max_pf.max(max_ps),
+            regime_first_valid,
+            max_period,
             n
+        ));
+    }
+    if eval_end_t <= eval_effective_start.saturating_add(1) {
+        return Err(format!(
+            "evaluation window [{eval_start_t}, {eval_end_t}) has insufficient bars after warmup (effective_start={eval_effective_start})"
         ));
     }
 
@@ -3131,6 +3143,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .map_err(|e| e.to_string())?;
     let backtest = bt_module
         .get_function("double_cross_backtest_tm_flex_f32")
+        .map_err(|e| e.to_string())?;
+    let backtest_windowed = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed")
         .map_err(|e| e.to_string())?;
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
@@ -3648,6 +3663,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let mut regime_entry = regime_entry_rel;
                     let mut regime_exit = regime_exit_rel;
                     let mut fv = first_valid as i32;
+                    let mut regime_fv = regime_first_valid as i32;
                     let mut commission = commission;
                     let mut eps_rel = eps_rel;
                     let mut stop_log = stop_log;
@@ -3658,14 +3674,18 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let mut pair_map_ptr = pair_index_map_ptr;
                     let mut pair_count_i = launch_pairs as i32;
                     let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut eval_start_i = eval_start_t as i32;
+                    let mut eval_end_i = eval_end_t as i32;
+                    let use_windowed_eval = false;
 
-                    let use_lockstep_time = lockstep_time_enabled
+                    let use_lockstep_time = !use_windowed_eval
+                        && lockstep_time_enabled
                         && launch_pairs >= lockstep_time_min_pairs
                         && backtest_lockstep.is_some();
-                    let use_m7 = kernel_should_use_m7_specialize(
+                    let use_m7 = !use_windowed_eval && kernel_should_use_m7_specialize(
                         launch_pairs,
                         n,
-                        first_valid,
+                        max_start_t,
                         is_multi_tile_workload,
                         METRICS_COUNT,
                         backtest_m7.is_some(),
@@ -3676,11 +3696,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         && !is_multi_tile_workload
                         && (METRICS_COUNT == 7)
                         && backtest_lockstep_m7.is_some();
-                    let use_fast_warp_dedup = !use_lockstep_time
+                    let use_fast_warp_dedup = !use_windowed_eval
+                        && !use_lockstep_time
                         && fast_warp_dedup_enabled
                         && launch_pairs >= fast_warp_dedup_min_pairs
                         && backtest_fast_warp.is_some();
-                    let launch_caps = if use_lockstep_m7 {
+                    let launch_caps = if use_windowed_eval {
+                        backtest_launch_caps
+                    } else if use_lockstep_m7 {
                         backtest_lockstep_m7_launch_caps
                             .or(backtest_lockstep_launch_caps)
                             .unwrap_or(backtest_launch_caps)
@@ -3700,7 +3723,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     );
                     let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
                     let eps_zero_mode = eps_rel <= 0.0f32;
-                    let backtest_fn = if use_lockstep_m7 {
+                    let backtest_fn = if use_windowed_eval {
+                        &backtest_windowed
+                    } else if use_lockstep_m7 {
                         if lockstep_m7_norisk_specialize_enabled && no_risk_mode {
                             if lockstep_m7_eps0_specialize_enabled && eps_zero_mode {
                                 if use_regime_hybrid_i != 0 {
@@ -3782,41 +3807,83 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     };
                     let block_x: u32 = launch.block_x;
                     let grid_x: u32 = launch.grid_x;
-                    let args: &mut [*mut c_void] = &mut [
-                        &mut f_ma_tm as *mut _ as *mut c_void,
-                        &mut s_ma_tm as *mut _ as *mut c_void,
-                        &mut lr as *mut _ as *mut c_void,
-                        &mut t_i as *mut _ as *mut c_void,
-                        &mut pf_tile_i as *mut _ as *mut c_void,
-                        &mut ps_tile_i as *mut _ as *mut c_void,
-                        &mut fast_tm_stride_i as *mut _ as *mut c_void,
-                        &mut slow_tm_stride_i as *mut _ as *mut c_void,
-                        &mut pf_total_i as *mut _ as *mut c_void,
-                        &mut ps_total_i as *mut _ as *mut c_void,
-                        &mut f_off as *mut _ as *mut c_void,
-                        &mut s_off as *mut _ as *mut c_void,
-                        &mut f_per as *mut _ as *mut c_void,
-                        &mut s_per as *mut _ as *mut c_void,
-                        &mut regime_ptr as *mut _ as *mut c_void,
-                        &mut use_regime_i as *mut _ as *mut c_void,
-                        &mut use_regime_hybrid_i as *mut _ as *mut c_void,
-                        &mut regime_entry as *mut _ as *mut c_void,
-                        &mut regime_exit as *mut _ as *mut c_void,
-                        &mut fv as *mut _ as *mut c_void,
-                        &mut commission as *mut _ as *mut c_void,
-                        &mut eps_rel as *mut _ as *mut c_void,
-                        &mut stop_log as *mut _ as *mut c_void,
-                        &mut take_log as *mut _ as *mut c_void,
-                        &mut flags_u as *mut _ as *mut c_void,
-                        &mut m_i as *mut _ as *mut c_void,
-                        &mut metrics_stride_i as *mut _ as *mut c_void,
-                        &mut pair_map_ptr as *mut _ as *mut c_void,
-                        &mut pair_count_i as *mut _ as *mut c_void,
-                        &mut out_ptr as *mut _ as *mut c_void,
-                    ];
-                    bt_stream
-                        .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    if use_windowed_eval {
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut f_ma_tm as *mut _ as *mut c_void,
+                            &mut s_ma_tm as *mut _ as *mut c_void,
+                            &mut lr as *mut _ as *mut c_void,
+                            &mut t_i as *mut _ as *mut c_void,
+                            &mut pf_tile_i as *mut _ as *mut c_void,
+                            &mut ps_tile_i as *mut _ as *mut c_void,
+                            &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                            &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                            &mut pf_total_i as *mut _ as *mut c_void,
+                            &mut ps_total_i as *mut _ as *mut c_void,
+                            &mut f_off as *mut _ as *mut c_void,
+                            &mut s_off as *mut _ as *mut c_void,
+                            &mut f_per as *mut _ as *mut c_void,
+                            &mut s_per as *mut _ as *mut c_void,
+                            &mut regime_ptr as *mut _ as *mut c_void,
+                            &mut use_regime_i as *mut _ as *mut c_void,
+                            &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                            &mut regime_entry as *mut _ as *mut c_void,
+                            &mut regime_exit as *mut _ as *mut c_void,
+                            &mut fv as *mut _ as *mut c_void,
+                            &mut regime_fv as *mut _ as *mut c_void,
+                            &mut eval_start_i as *mut _ as *mut c_void,
+                            &mut eval_end_i as *mut _ as *mut c_void,
+                            &mut commission as *mut _ as *mut c_void,
+                            &mut eps_rel as *mut _ as *mut c_void,
+                            &mut stop_log as *mut _ as *mut c_void,
+                            &mut take_log as *mut _ as *mut c_void,
+                            &mut flags_u as *mut _ as *mut c_void,
+                            &mut m_i as *mut _ as *mut c_void,
+                            &mut metrics_stride_i as *mut _ as *mut c_void,
+                            &mut pair_map_ptr as *mut _ as *mut c_void,
+                            &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut out_ptr as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut f_ma_tm as *mut _ as *mut c_void,
+                            &mut s_ma_tm as *mut _ as *mut c_void,
+                            &mut lr as *mut _ as *mut c_void,
+                            &mut t_i as *mut _ as *mut c_void,
+                            &mut pf_tile_i as *mut _ as *mut c_void,
+                            &mut ps_tile_i as *mut _ as *mut c_void,
+                            &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                            &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                            &mut pf_total_i as *mut _ as *mut c_void,
+                            &mut ps_total_i as *mut _ as *mut c_void,
+                            &mut f_off as *mut _ as *mut c_void,
+                            &mut s_off as *mut _ as *mut c_void,
+                            &mut f_per as *mut _ as *mut c_void,
+                            &mut s_per as *mut _ as *mut c_void,
+                            &mut regime_ptr as *mut _ as *mut c_void,
+                            &mut use_regime_i as *mut _ as *mut c_void,
+                            &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                            &mut regime_entry as *mut _ as *mut c_void,
+                            &mut regime_exit as *mut _ as *mut c_void,
+                            &mut fv as *mut _ as *mut c_void,
+                            &mut regime_fv as *mut _ as *mut c_void,
+                            &mut commission as *mut _ as *mut c_void,
+                            &mut eps_rel as *mut _ as *mut c_void,
+                            &mut stop_log as *mut _ as *mut c_void,
+                            &mut take_log as *mut _ as *mut c_void,
+                            &mut flags_u as *mut _ as *mut c_void,
+                            &mut m_i as *mut _ as *mut c_void,
+                            &mut metrics_stride_i as *mut _ as *mut c_void,
+                            &mut pair_map_ptr as *mut _ as *mut c_void,
+                            &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut out_ptr as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
             }
             bt_stream.synchronize().map_err(|e| e.to_string())?;
@@ -3898,6 +3965,54 @@ pub fn optimize_double_ma_gpu_kernel(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
+    optimize_double_ma_gpu_kernel_in_range(
+        candles,
+        fast_periods,
+        slow_periods,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        strategy,
+        objective,
+        top_k,
+        include_all,
+        cfg,
+        constraints,
+        export_all_csv_path,
+        total_pairs,
+        heatmap_bins,
+        None,
+        cancel,
+        progress,
+    )
+}
+
+pub fn optimize_double_ma_gpu_kernel_in_range(
+    candles: &Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    cfg: KernelConfig,
+    constraints: Option<&DoubleMaConstraints>,
+    export_all_csv_path: Option<&str>,
+    total_pairs: usize,
+    heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<OptimizationResult, String> {
     optimize_double_ma_gpu_kernel_with_precomputed(
         candles,
         fast_periods,
@@ -3919,6 +4034,7 @@ pub fn optimize_double_ma_gpu_kernel(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        eval_range,
         cancel,
         progress,
     )
@@ -3945,6 +4061,7 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -3969,6 +4086,7 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
+        eval_range,
         cancel,
         progress,
     )
@@ -3995,6 +4113,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -4030,6 +4149,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
             export_all_csv_path,
             total_pairs,
             heatmap_bins,
+            eval_range,
             cancel,
             progress,
         )
@@ -4058,6 +4178,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -4213,12 +4334,11 @@ fn optimize_double_ma_gpu_kernel_impl(
         let fv_low = first_finite_idx(l).ok_or_else(|| "low series all non-finite".to_string())?;
         start_at = start_at.max(fv_low);
     }
-    if let Some(regime) = host_regime_filter {
-        let fv_regime = first_finite_idx(regime)
-            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
-        start_at = start_at.max(fv_regime);
-    }
-    if let Some(regime) = device_regime_filter {
+    let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
+        .ok_or_else(|| "no index where all required series are finite".to_string())?;
+    let regime_first_valid = if let Some(regime) = host_regime_filter {
+        first_finite_idx(regime).ok_or_else(|| "regime trend series all non-finite".to_string())?
+    } else if let Some(regime) = device_regime_filter {
         if regime.len() != n {
             return Err("device regime trend series length mismatch".to_string());
         }
@@ -4229,10 +4349,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                 regime.device_id()
             ));
         }
-        start_at = start_at.max(regime.first_valid());
-    }
-    let first_valid = first_valid_idx_required(close, ma_prices, volume, high, low, start_at)
-        .ok_or_else(|| "no index where all required series are finite".to_string())?;
+        regime.first_valid()
+    } else {
+        first_valid
+    };
     if fast_on_gpu && !crate::vram_ma::supports_vram_kernel_ma(fast_ma.as_str()) {
         return Err(format!(
             "GPU kernel backend does not support fast='{fast_ma_type}' without precomputed fast matrix"
@@ -4259,12 +4379,25 @@ fn optimize_double_ma_gpu_kernel_impl(
         return Err("WMA periods must be > 1 for the GPU kernel backend".to_string());
     }
 
-    if n - first_valid < max_pf.max(max_ps) {
+    let max_period = max_pf.max(max_ps);
+    let max_start_t = first_valid
+        .saturating_add(max_period.saturating_sub(1))
+        .max(regime_first_valid);
+    let (eval_start_t, eval_end_t) = eval_range.unwrap_or((0, n));
+    let eval_end_t = eval_end_t.min(n);
+    let eval_effective_start = max_start_t.max(eval_start_t);
+    if n.saturating_sub(max_start_t) < 1 {
         return Err(format!(
-            "not enough valid data after first_valid={} for max period {} (len={})",
+            "not enough valid data after first_valid={} regime_first_valid={} for max period {} (len={})",
             first_valid,
-            max_pf.max(max_ps),
+            regime_first_valid,
+            max_period,
             n
+        ));
+    }
+    if eval_end_t <= eval_effective_start.saturating_add(1) {
+        return Err(format!(
+            "evaluation window [{eval_start_t}, {eval_end_t}) has insufficient bars after warmup (effective_start={eval_effective_start})"
         ));
     }
 
@@ -4456,6 +4589,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         .map_err(|e| e.to_string())?;
     let backtest = bt_module
         .get_function("double_cross_backtest_tm_flex_f32")
+        .map_err(|e| e.to_string())?;
+    let backtest_windowed = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed")
         .map_err(|e| e.to_string())?;
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
@@ -5040,6 +5176,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut regime_entry = regime_entry_rel;
                         let mut regime_exit = regime_exit_rel;
                         let mut fv = first_valid as i32;
+                        let mut regime_fv = regime_first_valid as i32;
                         let mut commission = commission;
                         let mut eps_rel = eps_rel;
                         let mut stop_log = stop_log;
@@ -5050,14 +5187,19 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut pair_map_ptr = pair_index_map_ptr;
                         let mut pair_count_i = launch_pairs as i32;
                         let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut eval_start_i = eval_start_t as i32;
+                        let mut eval_end_i = eval_end_t as i32;
+                        let use_windowed_eval = eval_range.is_some();
 
-                        let use_lockstep_time = lockstep_time_enabled
+                        let use_lockstep_time = !use_windowed_eval
+                            && lockstep_time_enabled
                             && launch_pairs >= lockstep_time_min_pairs
                             && backtest_lockstep.is_some();
-                        let use_m7 = kernel_should_use_m7_specialize(
+                        let use_m7 = !use_windowed_eval
+                            && kernel_should_use_m7_specialize(
                             launch_pairs,
                             n,
-                            first_valid,
+                            max_start_t,
                             is_multi_tile_workload,
                             metrics_count,
                             backtest_m7.is_some(),
@@ -5068,11 +5210,14 @@ fn optimize_double_ma_gpu_kernel_impl(
                             && !is_multi_tile_workload
                             && (metrics_count == 7)
                             && backtest_lockstep_m7.is_some();
-                        let use_fast_warp_dedup = !use_lockstep_time
+                        let use_fast_warp_dedup = !use_windowed_eval
+                            && !use_lockstep_time
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
                             && backtest_fast_warp.is_some();
-                        let launch_caps = if use_lockstep_m7 {
+                        let launch_caps = if use_windowed_eval {
+                            backtest_launch_caps
+                        } else if use_lockstep_m7 {
                             backtest_lockstep_m7_launch_caps
                                 .or(backtest_lockstep_launch_caps)
                                 .unwrap_or(backtest_launch_caps)
@@ -5092,7 +5237,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                         );
                         let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
                         let eps_zero_mode = eps_rel <= 0.0f32;
-                        let backtest_fn = if use_lockstep_m7 {
+                        let backtest_fn = if use_windowed_eval {
+                            &backtest_windowed
+                        } else if use_lockstep_m7 {
                             if lockstep_m7_norisk_specialize_enabled && no_risk_mode {
                                 if lockstep_m7_eps0_specialize_enabled && eps_zero_mode {
                                     if use_regime_hybrid_i != 0 {
@@ -5174,41 +5321,83 @@ fn optimize_double_ma_gpu_kernel_impl(
                         };
                         let block_x: u32 = launch.block_x;
                         let grid_x: u32 = launch.grid_x;
-                        let args: &mut [*mut c_void] = &mut [
-                            &mut f_ma_tm as *mut _ as *mut c_void,
-                            &mut s_ma_tm as *mut _ as *mut c_void,
-                            &mut lr as *mut _ as *mut c_void,
-                            &mut t_i as *mut _ as *mut c_void,
-                            &mut pf_tile_i as *mut _ as *mut c_void,
-                            &mut ps_tile_i as *mut _ as *mut c_void,
-                            &mut fast_tm_stride_i as *mut _ as *mut c_void,
-                            &mut slow_tm_stride_i as *mut _ as *mut c_void,
-                            &mut pf_total_i as *mut _ as *mut c_void,
-                            &mut ps_total_i as *mut _ as *mut c_void,
-                            &mut f_off as *mut _ as *mut c_void,
-                            &mut s_off as *mut _ as *mut c_void,
-                            &mut f_per as *mut _ as *mut c_void,
-                            &mut s_per as *mut _ as *mut c_void,
-                            &mut regime_ptr as *mut _ as *mut c_void,
-                            &mut use_regime_i as *mut _ as *mut c_void,
-                            &mut use_regime_hybrid_i as *mut _ as *mut c_void,
-                            &mut regime_entry as *mut _ as *mut c_void,
-                            &mut regime_exit as *mut _ as *mut c_void,
-                            &mut fv as *mut _ as *mut c_void,
-                            &mut commission as *mut _ as *mut c_void,
-                            &mut eps_rel as *mut _ as *mut c_void,
-                            &mut stop_log as *mut _ as *mut c_void,
-                            &mut take_log as *mut _ as *mut c_void,
-                            &mut flags_u as *mut _ as *mut c_void,
-                            &mut m_i as *mut _ as *mut c_void,
-                            &mut metrics_stride_i as *mut _ as *mut c_void,
-                            &mut pair_map_ptr as *mut _ as *mut c_void,
-                            &mut pair_count_i as *mut _ as *mut c_void,
-                            &mut out_ptr as *mut _ as *mut c_void,
-                        ];
-                        bt_stream
-                            .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                            .map_err(|e| e.to_string())?;
+                        if use_windowed_eval {
+                            let args: &mut [*mut c_void] = &mut [
+                                &mut f_ma_tm as *mut _ as *mut c_void,
+                                &mut s_ma_tm as *mut _ as *mut c_void,
+                                &mut lr as *mut _ as *mut c_void,
+                                &mut t_i as *mut _ as *mut c_void,
+                                &mut pf_tile_i as *mut _ as *mut c_void,
+                                &mut ps_tile_i as *mut _ as *mut c_void,
+                                &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                                &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                                &mut pf_total_i as *mut _ as *mut c_void,
+                                &mut ps_total_i as *mut _ as *mut c_void,
+                                &mut f_off as *mut _ as *mut c_void,
+                                &mut s_off as *mut _ as *mut c_void,
+                                &mut f_per as *mut _ as *mut c_void,
+                                &mut s_per as *mut _ as *mut c_void,
+                                &mut regime_ptr as *mut _ as *mut c_void,
+                                &mut use_regime_i as *mut _ as *mut c_void,
+                                &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                                &mut regime_entry as *mut _ as *mut c_void,
+                                &mut regime_exit as *mut _ as *mut c_void,
+                                &mut fv as *mut _ as *mut c_void,
+                                &mut regime_fv as *mut _ as *mut c_void,
+                                &mut eval_start_i as *mut _ as *mut c_void,
+                                &mut eval_end_i as *mut _ as *mut c_void,
+                                &mut commission as *mut _ as *mut c_void,
+                                &mut eps_rel as *mut _ as *mut c_void,
+                                &mut stop_log as *mut _ as *mut c_void,
+                                &mut take_log as *mut _ as *mut c_void,
+                                &mut flags_u as *mut _ as *mut c_void,
+                                &mut m_i as *mut _ as *mut c_void,
+                                &mut metrics_stride_i as *mut _ as *mut c_void,
+                                &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut out_ptr as *mut _ as *mut c_void,
+                            ];
+                            bt_stream
+                                .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                                .map_err(|e| e.to_string())?;
+                        } else {
+                            let args: &mut [*mut c_void] = &mut [
+                                &mut f_ma_tm as *mut _ as *mut c_void,
+                                &mut s_ma_tm as *mut _ as *mut c_void,
+                                &mut lr as *mut _ as *mut c_void,
+                                &mut t_i as *mut _ as *mut c_void,
+                                &mut pf_tile_i as *mut _ as *mut c_void,
+                                &mut ps_tile_i as *mut _ as *mut c_void,
+                                &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                                &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                                &mut pf_total_i as *mut _ as *mut c_void,
+                                &mut ps_total_i as *mut _ as *mut c_void,
+                                &mut f_off as *mut _ as *mut c_void,
+                                &mut s_off as *mut _ as *mut c_void,
+                                &mut f_per as *mut _ as *mut c_void,
+                                &mut s_per as *mut _ as *mut c_void,
+                                &mut regime_ptr as *mut _ as *mut c_void,
+                                &mut use_regime_i as *mut _ as *mut c_void,
+                                &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                                &mut regime_entry as *mut _ as *mut c_void,
+                                &mut regime_exit as *mut _ as *mut c_void,
+                                &mut fv as *mut _ as *mut c_void,
+                                &mut regime_fv as *mut _ as *mut c_void,
+                                &mut commission as *mut _ as *mut c_void,
+                                &mut eps_rel as *mut _ as *mut c_void,
+                                &mut stop_log as *mut _ as *mut c_void,
+                                &mut take_log as *mut _ as *mut c_void,
+                                &mut flags_u as *mut _ as *mut c_void,
+                                &mut m_i as *mut _ as *mut c_void,
+                                &mut metrics_stride_i as *mut _ as *mut c_void,
+                                &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut out_ptr as *mut _ as *mut c_void,
+                            ];
+                            bt_stream
+                                .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                                .map_err(|e| e.to_string())?;
+                        }
                     }
                     if let Some(t0) = backtest_t0 {
                         bt_stream.synchronize().map_err(|e| e.to_string())?;
@@ -6405,6 +6594,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             None,
             total_pairs_subset,
             0,
+            None,
             cancel,
             None,
         )?;

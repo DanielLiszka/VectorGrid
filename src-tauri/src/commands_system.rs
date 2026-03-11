@@ -27,11 +27,7 @@ fn cuda_available_now() -> bool {
 pub fn get_gpu_status() -> Result<GpuStatus, String> {
     let (auto_device_name, auto_device_memory_bytes, auto_device_error) =
         match ta_app_core::preferred_cuda_device() {
-            Ok(Some(device)) => (
-                Some(device.name),
-                Some(device.total_memory_bytes),
-                None,
-            ),
+            Ok(Some(device)) => (Some(device.name), Some(device.total_memory_bytes), None),
             Ok(None) => (None, None, None),
             Err(error) => (None, None, Some(error)),
         };

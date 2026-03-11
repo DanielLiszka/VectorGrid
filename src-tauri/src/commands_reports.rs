@@ -3177,6 +3177,7 @@ mod tests {
             vcc: None,
             vemr: None,
             rocb: None,
+            mkcs: None,
             macz: ta_app_core::composite_cpu::MaczGateParams::default(),
             ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -3185,11 +3186,14 @@ mod tests {
 
         let req = ta_app_core::CompositeValidationRequest {
             data_id: "base".to_string(),
+            backend: ta_app_core::Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![base_params],
             walk_forward: None,
+            reopt_walk_forward: None,
+            spa: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
@@ -3200,6 +3204,9 @@ mod tests {
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -3226,6 +3233,7 @@ mod tests {
         super::super::apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            ta_app_core::Backend::CpuOnly,
             "close",
             None,
             None,

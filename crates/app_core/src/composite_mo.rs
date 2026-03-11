@@ -2946,5 +2946,4 @@ mod tests {
         assert_eq!(res.total_evaluations, 10);
         assert!(!res.pareto.is_empty());
     }
-
 }

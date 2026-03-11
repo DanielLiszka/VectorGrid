@@ -4,14 +4,14 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ta_app_core::double_ma::VdpsConfig;
+use ta_app_core::strategy_presets::{
+    breakout_strategy_for_kernel, trend_quality_strategy_for_kernel,
+};
 use ta_app_core::{
     parse_timeframe_label, read_candles_from_csv_compat, resample_candles,
     run_double_ma_optimization_blocking_with_candles,
     run_double_ma_validation_blocking_with_candles, Backend, DoubleMaParamsResolved,
     DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, ValidationEngine,
-};
-use ta_app_core::strategy_presets::{
-    breakout_strategy_for_kernel, trend_quality_strategy_for_kernel,
 };
 use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
@@ -183,10 +183,7 @@ fn main() -> Result<(), String> {
                 );
                 let grid_t0 = Instant::now();
                 let grid_res = run_double_ma_optimization_blocking_with_candles(
-                    grid_req,
-                    &train,
-                    &cancel,
-                    None,
+                    grid_req, &train, &cancel, None,
                 )?;
                 let grid_runtime_ms = grid_t0.elapsed().as_millis() as u64;
 
@@ -218,10 +215,7 @@ fn main() -> Result<(), String> {
                 );
                 let vdps_t0 = Instant::now();
                 let vdps_res = run_double_ma_optimization_blocking_with_candles(
-                    vdps_req,
-                    &train,
-                    &cancel,
-                    None,
+                    vdps_req, &train, &cancel, None,
                 )?;
                 let progressive_runtime_ms = vdps_t0.elapsed().as_millis() as u64;
 
@@ -229,14 +223,8 @@ fn main() -> Result<(), String> {
                     compare_against_exact(&grid_res, &vdps_res, ObjectiveKind::Sharpe)?;
                 let progressive_selected_exact_best = progressive_rank == Some(1);
 
-                let holdout_validation = evaluate_holdout(
-                    ma,
-                    strategy_case,
-                    &holdout,
-                    &grid_res,
-                    &vdps_res,
-                    &cancel,
-                )?;
+                let holdout_validation =
+                    evaluate_holdout(ma, strategy_case, &holdout, &grid_res, &vdps_res, &cancel)?;
                 let high_quality_stats = evaluate_topk_holdout_recovery(
                     ma,
                     strategy_case,
@@ -257,7 +245,8 @@ fn main() -> Result<(), String> {
                     progressive_best_exact_rank: progressive_rank,
                     progressive_best_score_regret,
                     topk_overlap_ratio,
-                    holdout_positive_exact_topk_count: high_quality_stats.holdout_positive_exact_topk_count,
+                    holdout_positive_exact_topk_count: high_quality_stats
+                        .holdout_positive_exact_topk_count,
                     holdout_positive_progressive_topk_count: high_quality_stats
                         .holdout_positive_progressive_topk_count,
                     progressive_recovered_holdout_positive_count: high_quality_stats
@@ -604,6 +593,7 @@ fn evaluate_holdout(
 ) -> Result<HoldoutEval, String> {
     let req = DoubleMaValidationRequest {
         data_id: "holdout".to_string(),
+        backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
@@ -620,6 +610,8 @@ fn evaluate_holdout(
             validation_params_from_result(ma, strategy_case, &vdps_res.best_params),
         ],
         walk_forward: None,
+        reopt_walk_forward: None,
+        spa: None,
         perturb: None,
         trade_bootstrap: None,
         cross_ticker: None,
@@ -630,6 +622,9 @@ fn evaluate_holdout(
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
         validation_context: None,
     };
     let res = run_double_ma_validation_blocking_with_candles(req, holdout, cancel, None)?;
@@ -679,6 +674,7 @@ fn evaluate_topk_holdout_recovery(
 
     let req = DoubleMaValidationRequest {
         data_id: "holdout_topk".to_string(),
+        backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
         fast_ma_params: if ma.fast_ma == "alma" {
             Some(alma_params_default())
@@ -692,6 +688,8 @@ fn evaluate_topk_holdout_recovery(
         },
         candidates: dedup,
         walk_forward: None,
+        reopt_walk_forward: None,
+        spa: None,
         perturb: None,
         trade_bootstrap: None,
         cross_ticker: None,
@@ -702,6 +700,9 @@ fn evaluate_topk_holdout_recovery(
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
         validation_context: None,
     };
     let res = run_double_ma_validation_blocking_with_candles(req, holdout, cancel, None)?;

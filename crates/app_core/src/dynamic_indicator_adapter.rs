@@ -10,15 +10,14 @@ use vector_ta::utilities::data_loader::{source_type, Candles};
 use vector_ta::utilities::enums::Kernel;
 
 #[cfg(feature = "cuda")]
-use vector_ta::indicators::dispatch::{
-    compute_cuda, compute_cuda_device, IndicatorCudaDataRef,
-    IndicatorCudaDeviceDataRef, IndicatorCudaDeviceRequest, IndicatorCudaRequest,
-    IndicatorCudaSeries,
-};
-#[cfg(feature = "cuda")]
 use vector_ta::cuda::{
     CudaDeviceCloseVolumeRef, CudaDeviceHighLowRef, CudaDeviceOhlcRef, CudaDeviceOhlcvRef,
     CudaDeviceSliceF32Ref, CudaDeviceVectorF32, CudaRuntime,
+};
+#[cfg(feature = "cuda")]
+use vector_ta::indicators::dispatch::{
+    compute_cuda, compute_cuda_device, IndicatorCudaDataRef, IndicatorCudaDeviceDataRef,
+    IndicatorCudaDeviceRequest, IndicatorCudaRequest, IndicatorCudaSeries,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -294,9 +293,9 @@ impl PreparedCudaIndicatorInputs {
         let source_override = if source_kind == PreparedCudaSourceKind::Derived {
             Some(
                 source_type(candles, ma_source)
-                .iter()
-                .map(|v| *v as f32)
-                .collect::<Vec<f32>>(),
+                    .iter()
+                    .map(|v| *v as f32)
+                    .collect::<Vec<f32>>(),
             )
         } else {
             None
@@ -498,7 +497,10 @@ impl PreparedCudaIndicatorInputs {
 
 #[cfg(feature = "cuda")]
 fn first_valid_in_slice_f32(values: &[f32]) -> usize {
-    values.iter().position(|v| v.is_finite()).unwrap_or(values.len())
+    values
+        .iter()
+        .position(|v| v.is_finite())
+        .unwrap_or(values.len())
 }
 
 #[cfg(feature = "cuda")]
@@ -563,8 +565,8 @@ fn cuda_device_data_ref_for_input_kind(
         IndicatorInputKind::Slice => Ok(IndicatorCudaDeviceDataRef::Slice {
             values: buffers.source_device().as_view(),
         }),
-        IndicatorInputKind::Candles | IndicatorInputKind::Ohlc => Ok(
-            IndicatorCudaDeviceDataRef::Ohlc(
+        IndicatorInputKind::Candles | IndicatorInputKind::Ohlc => {
+            Ok(IndicatorCudaDeviceDataRef::Ohlc(
                 CudaDeviceOhlcRef::new(
                     buffers.open_device().as_view(),
                     buffers.high_device().as_view(),
@@ -575,8 +577,8 @@ fn cuda_device_data_ref_for_input_kind(
                 .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
                     details: e.to_string(),
                 })?,
-            ),
-        ),
+            ))
+        }
         IndicatorInputKind::Ohlcv => Ok(IndicatorCudaDeviceDataRef::Ohlcv(
             CudaDeviceOhlcvRef::new(
                 None,
@@ -652,10 +654,11 @@ pub(crate) fn device_slice_ref_from_matrix_row(
         .ok_or_else(|| DynamicIndicatorAdapterError::CudaPreparation {
             details: "device matrix pointer overflow".to_string(),
         })?;
-    unsafe { CudaDeviceSliceF32Ref::from_raw_parts(device_ptr, row_len, matrix.device_id) }
-        .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
+    unsafe { CudaDeviceSliceF32Ref::from_raw_parts(device_ptr, row_len, matrix.device_id) }.map_err(
+        |e| DynamicIndicatorAdapterError::CudaPreparation {
             details: e.to_string(),
-        })
+        },
+    )
 }
 
 #[cfg(feature = "cuda")]
@@ -754,7 +757,8 @@ pub fn compute_dynamic_indicator_cuda_with_inputs(
             },
         )?;
     let first_valid = prepared_inputs.first_valid_for_input_kind(descriptor.input_kind);
-    let dispatch_params = dispatch_params_with_first_valid(normalized_params.as_slice(), first_valid);
+    let dispatch_params =
+        dispatch_params_with_first_valid(normalized_params.as_slice(), first_valid);
     let data = cuda_data_ref_for_input_kind(prepared_inputs, descriptor.input_kind);
     let out = match cuda_device_data_ref_for_input_kind(prepared_inputs, descriptor.input_kind)
         .and_then(|device_data| {
@@ -1146,14 +1150,13 @@ mod tests {
             _ => panic!("expected host f32 output for reference sma"),
         };
         let sma_host_f64: Vec<f64> = sma_host_values.iter().map(|v| *v as f64).collect();
-        let ema_cpu = vector_ta::indicators::ema::ema(
-            &vector_ta::indicators::ema::EmaInput::from_slice(
+        let ema_cpu =
+            vector_ta::indicators::ema::ema(&vector_ta::indicators::ema::EmaInput::from_slice(
                 sma_host_f64.as_slice(),
                 vector_ta::indicators::ema::EmaParams { period: Some(10) },
-            ),
-        )
-        .expect("cpu ema on chained sma should succeed")
-        .values;
+            ))
+            .expect("cpu ema on chained sma should succeed")
+            .values;
 
         match ema_cuda.series {
             DynamicIndicatorCudaSeries::HostF32(rhs) => {

@@ -20,8 +20,8 @@ use crate::dynamic_indicator_adapter::{
 };
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::{
-    er_wrapper::DeviceArrayF32Er, CudaEr, CudaKaufmanstop, CudaLinearregAngle,
-    CudaSqueezeMomentum, CudaTtmSqueeze, CudaZscore, DeviceArrayF32,
+    er_wrapper::DeviceArrayF32Er, CudaEr, CudaKaufmanstop, CudaLinearregAngle, CudaSqueezeMomentum,
+    CudaTtmSqueeze, CudaZscore, DeviceArrayF32,
 };
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
@@ -809,17 +809,9 @@ fn compute_asr_zscore_sweep_cuda_direct(
     let step = period_step.max(1);
     let sweep = ZscoreBatchRange {
         period: (usize::from(start), usize::from(end), usize::from(step)),
-        ma_type: (
-            cfg.z_ma_type.clone(),
-            cfg.z_ma_type.clone(),
-            String::new(),
-        ),
+        ma_type: (cfg.z_ma_type.clone(), cfg.z_ma_type.clone(), String::new()),
         nbdev: (cfg.z_nbdev, cfg.z_nbdev, 0.0),
-        devtype: (
-            usize::from(cfg.z_devtype),
-            usize::from(cfg.z_devtype),
-            0,
-        ),
+        devtype: (usize::from(cfg.z_devtype), usize::from(cfg.z_devtype), 0),
     };
     let wrapper = CudaZscore::new(device_id as usize).map_err(|e| e.to_string())?;
     let first_valid = prepared_inputs.source_first_valid();
@@ -1280,24 +1272,25 @@ pub fn compute_asr_kaufman_stops_cuda_device(
         },
     ];
 
-    let sweep_for_direction = |direction: &str| vector_ta::indicators::kaufmanstop::KaufmanstopBatchRange {
-        period: (
-            strategy.kaufman_stop_period().max(1) as usize,
-            strategy.kaufman_stop_period().max(1) as usize,
-            0,
-        ),
-        mult: (
-            strategy.kaufman_stop_mult(),
-            strategy.kaufman_stop_mult(),
-            0.0,
-        ),
-        direction: (direction.to_string(), direction.to_string(), 0.0),
-        ma_type: (
-            strategy.kaufman_stop_ma_type().to_string(),
-            strategy.kaufman_stop_ma_type().to_string(),
-            0.0,
-        ),
-    };
+    let sweep_for_direction =
+        |direction: &str| vector_ta::indicators::kaufmanstop::KaufmanstopBatchRange {
+            period: (
+                strategy.kaufman_stop_period().max(1) as usize,
+                strategy.kaufman_stop_period().max(1) as usize,
+                0,
+            ),
+            mult: (
+                strategy.kaufman_stop_mult(),
+                strategy.kaufman_stop_mult(),
+                0.0,
+            ),
+            direction: (direction.to_string(), direction.to_string(), 0.0),
+            ma_type: (
+                strategy.kaufman_stop_ma_type().to_string(),
+                strategy.kaufman_stop_ma_type().to_string(),
+                0.0,
+            ),
+        };
 
     let direct_compute = |direction: &str| -> Result<AsrOwnedDeviceMatrix, String> {
         let wrapper = CudaKaufmanstop::new(device_id as usize).map_err(|e| e.to_string())?;
@@ -1322,8 +1315,13 @@ pub fn compute_asr_kaufman_stops_cuda_device(
                     .and_then(|d| d.outputs.first())
                     .map(|o| o.id.as_str());
                 if let Some(output_id) = output_id {
-                    compute_indicator_f32_cuda_device(prepared_inputs, "kaufmanstop", output_id, params)
-                        .map(|(matrix, _warmup)| AsrOwnedDeviceMatrix::from_dispatch(matrix))
+                    compute_indicator_f32_cuda_device(
+                        prepared_inputs,
+                        "kaufmanstop",
+                        output_id,
+                        params,
+                    )
+                    .map(|(matrix, _warmup)| AsrOwnedDeviceMatrix::from_dispatch(matrix))
                 } else {
                     let candidates = [
                         IndicatorInputKind::HighLow,

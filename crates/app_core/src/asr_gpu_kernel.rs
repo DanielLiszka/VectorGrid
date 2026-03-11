@@ -45,6 +45,7 @@ pub struct AsrGpuComboBatch<'a> {
     pub fast_row_index: &'a [i32],
     pub slow_row_index: &'a [i32],
     pub start_t: &'a [i32],
+    pub end_t: &'a [i32],
 }
 
 struct AsrCudaRuntime {
@@ -149,7 +150,10 @@ fn validate_inputs(
     }
 
     let combos_len = combos.fast_row_index.len();
-    if combos.slow_row_index.len() != combos_len || combos.start_t.len() != combos_len {
+    if combos.slow_row_index.len() != combos_len
+        || combos.start_t.len() != combos_len
+        || combos.end_t.len() != combos_len
+    {
         return Err("ASR GPU combo vector length mismatch".to_string());
     }
     Ok(())
@@ -181,7 +185,10 @@ fn validate_inputs_device_rows(
         return Err("ASR GPU kaufman row pointer is null".to_string());
     }
     let combos_len = combos.fast_row_index.len();
-    if combos.slow_row_index.len() != combos_len || combos.start_t.len() != combos_len {
+    if combos.slow_row_index.len() != combos_len
+        || combos.start_t.len() != combos_len
+        || combos.end_t.len() != combos_len
+    {
         return Err("ASR GPU combo vector length mismatch".to_string());
     }
     Ok(())
@@ -289,6 +296,7 @@ pub fn eval_asr_metrics_gpu_kernel(
         let d_combo_slow =
             DeviceBuffer::from_slice(combos.slow_row_index).map_err(|e| e.to_string())?;
         let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
         let d_out =
             unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
 
@@ -324,6 +332,7 @@ pub fn eval_asr_metrics_gpu_kernel(
         let mut combo_fast_ptr = d_combo_fast.as_device_ptr().as_raw();
         let mut combo_slow_ptr = d_combo_slow.as_device_ptr().as_raw();
         let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
         let mut out_ptr = d_out.as_device_ptr().as_raw();
 
         let mut t_i = signals.cols as i32;
@@ -368,6 +377,7 @@ pub fn eval_asr_metrics_gpu_kernel(
                 &mut combo_fast_ptr as *mut _ as *mut c_void,
                 &mut combo_slow_ptr as *mut _ as *mut c_void,
                 &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
                 &mut combo_count_i as *mut _ as *mut c_void,
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,
@@ -556,6 +566,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
         let d_combo_slow =
             DeviceBuffer::from_slice(combos.slow_row_index).map_err(|e| e.to_string())?;
         let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
         let d_out =
             unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
 
@@ -591,6 +602,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
         let mut combo_fast_ptr = d_combo_fast.as_device_ptr().as_raw();
         let mut combo_slow_ptr = d_combo_slow.as_device_ptr().as_raw();
         let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
         let mut out_ptr = d_out.as_device_ptr().as_raw();
 
         let mut t_i = signals.cols as i32;
@@ -635,6 +647,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 &mut combo_fast_ptr as *mut _ as *mut c_void,
                 &mut combo_slow_ptr as *mut _ as *mut c_void,
                 &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
                 &mut combo_count_i as *mut _ as *mut c_void,
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,

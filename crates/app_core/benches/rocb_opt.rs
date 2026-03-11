@@ -50,6 +50,7 @@ fn make_rocb_req(
         vcc: None,
         vemr: None,
         rocb: Some(RocbStrategyParams::default()),
+        mkcs: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,

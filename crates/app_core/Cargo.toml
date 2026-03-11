@@ -59,6 +59,10 @@ name = "rocb_opt"
 harness = false
 
 [[bench]]
+name = "mkcs_opt"
+harness = false
+
+[[bench]]
 name = "dynamic_strategy_cpu"
 harness = false
 

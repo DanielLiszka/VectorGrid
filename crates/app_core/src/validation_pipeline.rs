@@ -1,5 +1,7 @@
 use crate::composite_validate::{
-    PerturbConfig, PerturbStats, TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
+    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
+    SpaConfigOptional, SpaValidationStats, TradeBootstrapStats, WalkForwardConfigOptional,
+    WalkForwardStats,
 };
 use crate::cscv_pbo::{
     compute_cscv_pbo_from_slices, CscvCandidatePboStats, CscvPboConfig, CscvPboResult,
@@ -14,25 +16,106 @@ use crate::stats_common::{median, median_u32, quantile, worst_max, worst_min, wo
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ValidationHardGateConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_psr: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_dsr: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_cscv_oos_rank_frac: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_cscv_oos_metric: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pbo: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ValidationCandidateVerdict {
+    pub passed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fail_reasons: Vec<String>,
+}
+
+impl Default for ValidationCandidateVerdict {
+    fn default() -> Self {
+        Self {
+            passed: true,
+            warning_flags: Vec::new(),
+            fail_reasons: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationRecommendation {
+    NoCandidateSurvived,
+    NoCandidateApproved,
+    CandidatesSurvivedButSearchNotStatisticallySuperior,
+    EvidenceTooShortMinTrackRecord,
+    ApprovedWithWarnings,
+    SingleCandidateSupported,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ValidationRunVerdict {
+    pub passed: bool,
+    pub approved: bool,
+    pub candidates_tested: usize,
+    pub candidates_survived_hard_gates: usize,
+    pub approved_candidate_count: usize,
+    pub final_recommendation: ValidationRecommendation,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fail_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_approved_rank: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_candidate_track_record_bars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_candidate_min_track_record_length_bars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_candidate_psr: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_candidate_dsr: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pbo: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pbo: Option<f64>,
+}
 
 pub trait ValidationPostCandidate {
     fn in_sample_metrics(&self) -> &Metrics;
     fn iterative_in_sample_metrics(&self) -> Option<&Metrics>;
     fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)>;
     fn cscv_oos_metric_p50(&self) -> Option<f64>;
+    fn cscv_oos_rank_frac_p50(&self) -> Option<f64>;
 
     fn psr(&self) -> Option<f64>;
     fn dsr(&self) -> Option<f64>;
     fn set_psr(&mut self, v: Option<f64>);
     fn set_dsr(&mut self, v: Option<f64>);
+    fn track_record_bars(&self) -> usize;
+    fn min_track_record_length_bars(&self) -> Option<usize>;
+    fn set_track_record_bars(&mut self, v: usize);
+    fn set_min_track_record_length_bars(&mut self, v: Option<usize>);
 
     fn robust_score(&self) -> f64;
     fn set_robust_score(&mut self, v: f64);
     fn set_robust_pareto(&mut self, v: bool);
     fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>);
+    fn validation_verdict(&self) -> &ValidationCandidateVerdict;
+    fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict);
 }
 
 pub fn robust_score_from_metrics(in_sample: &Metrics, wf: Option<(f64, f64)>) -> f64 {
@@ -50,11 +133,33 @@ pub fn fold_cscv_metric(base: f64, oos_metric_p50: Option<f64>) -> f64 {
     }
 }
 
-pub fn compute_probability_metrics_and_gate<C: ValidationPostCandidate>(
-    out: &mut Vec<C>,
-    sample_obs: &[usize],
+pub fn sanitize_hard_gates(
     min_psr: Option<f64>,
     min_dsr: Option<f64>,
+    min_cscv_oos_rank_frac: Option<f64>,
+    min_cscv_oos_metric: Option<f64>,
+    max_pbo: Option<f64>,
+) -> ValidationHardGateConfig {
+    ValidationHardGateConfig {
+        min_psr: crate::validation_stats::sanitize_probability_gate(min_psr),
+        min_dsr: crate::validation_stats::sanitize_probability_gate(min_dsr),
+        min_cscv_oos_rank_frac: crate::validation_stats::sanitize_probability_gate(
+            min_cscv_oos_rank_frac,
+        ),
+        min_cscv_oos_metric: min_cscv_oos_metric.and_then(|v| {
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        }),
+        max_pbo: crate::validation_stats::sanitize_probability_gate(max_pbo),
+    }
+}
+
+pub fn compute_probability_metrics<C: ValidationPostCandidate>(
+    out: &mut Vec<C>,
+    sample_obs: &[usize],
 ) {
     let sharpe_peers: Vec<f64> = out
         .iter()
@@ -75,19 +180,12 @@ pub fn compute_probability_metrics_and_gate<C: ValidationPostCandidate>(
         let obs = sample_obs.get(i).copied().unwrap_or(2).max(2);
         let (psr, dsr) =
             crate::validation_stats::compute_psr_dsr(m.sharpe, obs, trials, peer_mean, peer_std);
+        let mintrl =
+            crate::sharpe_stats::minimum_track_record_length(m.sharpe, 0.0, 0.0, 3.0, 0.95);
         cand.set_psr(psr);
         cand.set_dsr(dsr);
-    }
-
-    if min_psr.is_some() || min_dsr.is_some() {
-        out.retain(|cand| {
-            crate::validation_stats::passes_probability_gates(
-                cand.psr(),
-                cand.dsr(),
-                min_psr,
-                min_dsr,
-            )
-        });
+        cand.set_track_record_bars(obs);
+        cand.set_min_track_record_length_bars(mintrl);
     }
 }
 
@@ -123,6 +221,213 @@ pub fn fold_cscv_into_robust_and_sort<C: ValidationPostCandidate>(out: &mut [C])
         cand.set_robust_score(folded);
     }
     out.sort_by(|a, b| b.robust_score().total_cmp(&a.robust_score()));
+}
+
+pub fn apply_candidate_hard_gates<C: ValidationPostCandidate>(
+    out: &mut [C],
+    gates: &ValidationHardGateConfig,
+    cscv_pbo: Option<&CscvPboResult>,
+) {
+    let cscv_available = cscv_pbo
+        .map(|res| res.combinations > 0 && res.skipped_reason.is_none())
+        .unwrap_or(false);
+
+    for cand in out.iter_mut() {
+        let mut verdict = ValidationCandidateVerdict::default();
+
+        if let Some(thr) = gates.min_psr {
+            let psr = cand.psr().unwrap_or(0.0);
+            if !psr.is_finite() || psr < thr {
+                verdict.fail_reasons.push(format!("psr_below_min:{thr:.2}"));
+            }
+        }
+
+        if let Some(thr) = gates.min_dsr {
+            let dsr = cand.dsr().unwrap_or(0.0);
+            if !dsr.is_finite() || dsr < thr {
+                verdict.fail_reasons.push(format!("dsr_below_min:{thr:.2}"));
+            }
+        }
+
+        if let Some(thr) = gates.min_cscv_oos_rank_frac {
+            if !cscv_available {
+                verdict
+                    .fail_reasons
+                    .push("cscv_rank_gate_requested_but_cscv_unavailable".to_string());
+            } else {
+                let rank = cand.cscv_oos_rank_frac_p50().unwrap_or(f64::NEG_INFINITY);
+                if !rank.is_finite() || rank < thr {
+                    verdict
+                        .fail_reasons
+                        .push(format!("cscv_oos_rank_frac_below_min:{thr:.2}"));
+                }
+            }
+        }
+
+        if let Some(thr) = gates.min_cscv_oos_metric {
+            if !cscv_available {
+                verdict
+                    .fail_reasons
+                    .push("cscv_metric_gate_requested_but_cscv_unavailable".to_string());
+            } else {
+                let metric = cand.cscv_oos_metric_p50().unwrap_or(f64::NEG_INFINITY);
+                if !metric.is_finite() || metric < thr {
+                    verdict
+                        .fail_reasons
+                        .push(format!("cscv_oos_metric_below_min:{thr:.6}"));
+                }
+            }
+        }
+
+        if let Some(mintrl) = cand.min_track_record_length_bars() {
+            let obs = cand.track_record_bars().max(2);
+            if obs < mintrl {
+                verdict
+                    .warning_flags
+                    .push(format!("min_track_record_length_not_met:{obs}/{mintrl}"));
+            }
+        }
+
+        verdict.passed = verdict.fail_reasons.is_empty();
+        cand.set_validation_verdict(verdict);
+    }
+}
+
+pub fn build_run_verdict<C: ValidationPostCandidate>(
+    out: &[C],
+    candidates_tested: usize,
+    gates: &ValidationHardGateConfig,
+    cscv_pbo: Option<&CscvPboResult>,
+    spa: Option<&SpaValidationStats>,
+) -> ValidationRunVerdict {
+    let candidates_survived_hard_gates = out
+        .iter()
+        .filter(|cand| cand.validation_verdict().passed)
+        .count();
+    let approved_candidates: Vec<(usize, &C)> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, cand)| {
+            cand.validation_verdict().passed
+                && cand
+                    .min_track_record_length_bars()
+                    .map(|mintrl| cand.track_record_bars().max(2) >= mintrl)
+                    .unwrap_or(false)
+        })
+        .collect();
+    let approved_candidate_count = approved_candidates.len();
+    let first_approved_rank = approved_candidates
+        .first()
+        .map(|(idx, _)| idx.saturating_add(1));
+
+    let mut warning_flags: Vec<String> = Vec::new();
+    let mut fail_reasons: Vec<String> = Vec::new();
+
+    let pbo = cscv_pbo.and_then(|res| {
+        if res.combinations > 0 && res.pbo.is_finite() {
+            Some(res.pbo)
+        } else {
+            None
+        }
+    });
+
+    if let Some(res) = cscv_pbo {
+        if res.skipped_reason.is_some() {
+            warning_flags.push("cscv_skipped".to_string());
+        }
+    }
+
+    if candidates_survived_hard_gates == 0 {
+        fail_reasons.push("no_candidates_survived_hard_gates".to_string());
+    }
+
+    let top_candidate = out.first();
+    let top_candidate_track_record_bars = top_candidate.map(|cand| cand.track_record_bars().max(2));
+    let top_candidate_min_track_record_length_bars =
+        top_candidate.and_then(|cand| cand.min_track_record_length_bars());
+    let top_candidate_psr = top_candidate.and_then(|cand| cand.psr());
+    let top_candidate_dsr = top_candidate.and_then(|cand| cand.dsr());
+
+    if candidates_survived_hard_gates > 0 && approved_candidate_count == 0 {
+        warning_flags.push("no_candidate_approved".to_string());
+        if let (Some(obs), Some(mintrl)) = (
+            top_candidate_track_record_bars,
+            top_candidate_min_track_record_length_bars,
+        ) {
+            if obs < mintrl {
+                warning_flags.push("top_candidate_min_track_record_length_not_met".to_string());
+            }
+        }
+    }
+
+    if let Some(max_pbo) = gates.max_pbo {
+        match pbo {
+            Some(v) if v > max_pbo => fail_reasons.push(format!("pbo_above_max:{max_pbo:.2}")),
+            Some(_) => {}
+            None => fail_reasons.push("pbo_gate_requested_but_cscv_unavailable".to_string()),
+        }
+    } else if let Some(v) = pbo {
+        if v > 0.30 {
+            warning_flags.push("high_pbo".to_string());
+        }
+    }
+    if let Some(spa) = spa {
+        if let Some(reason) = spa.skipped_reason.as_deref() {
+            warning_flags.push(reason.to_string());
+        } else if !spa.passed {
+            warning_flags.push("spa_not_significant".to_string());
+        }
+    }
+
+    let (approved, final_recommendation) = if !fail_reasons.is_empty() {
+        (false, ValidationRecommendation::NoCandidateSurvived)
+    } else if spa
+        .map(|spa| spa.skipped_reason.is_none() && !spa.passed)
+        .unwrap_or(false)
+    {
+        (
+            false,
+            ValidationRecommendation::CandidatesSurvivedButSearchNotStatisticallySuperior,
+        )
+    } else if approved_candidate_count == 0 {
+        let top_short = match (
+            top_candidate_track_record_bars,
+            top_candidate_min_track_record_length_bars,
+        ) {
+            (Some(obs), Some(mintrl)) => obs < mintrl,
+            _ => false,
+        };
+        if top_short {
+            (
+                false,
+                ValidationRecommendation::EvidenceTooShortMinTrackRecord,
+            )
+        } else {
+            (false, ValidationRecommendation::NoCandidateApproved)
+        }
+    } else if !warning_flags.is_empty() || first_approved_rank.unwrap_or(1) > 1 {
+        (true, ValidationRecommendation::ApprovedWithWarnings)
+    } else {
+        (true, ValidationRecommendation::SingleCandidateSupported)
+    };
+
+    ValidationRunVerdict {
+        passed: fail_reasons.is_empty(),
+        approved,
+        candidates_tested,
+        candidates_survived_hard_gates,
+        approved_candidate_count,
+        final_recommendation,
+        warning_flags,
+        fail_reasons,
+        first_approved_rank,
+        top_candidate_track_record_bars,
+        top_candidate_min_track_record_length_bars,
+        top_candidate_psr,
+        top_candidate_dsr,
+        pbo,
+        max_pbo: gates.max_pbo,
+    }
 }
 
 pub fn parallel_collect_validation_candidates<P, C, F>(
@@ -211,6 +516,221 @@ where
         trades_median: median_u32(&trades),
         trades_worst: worst_min_u32(&trades),
     }
+}
+
+fn normalized_json_drift_value(left: &JsonValue, right: &JsonValue) -> f64 {
+    match (left, right) {
+        (JsonValue::Null, JsonValue::Null) => 0.0,
+        (JsonValue::Bool(a), JsonValue::Bool(b)) => {
+            if a == b {
+                0.0
+            } else {
+                1.0
+            }
+        }
+        (JsonValue::String(a), JsonValue::String(b)) => {
+            if a == b {
+                0.0
+            } else {
+                1.0
+            }
+        }
+        (JsonValue::Number(a), JsonValue::Number(b)) => {
+            let left = a.as_f64().unwrap_or(0.0);
+            let right = b.as_f64().unwrap_or(0.0);
+            let scale = left.abs().max(right.abs()).max(1.0);
+            ((left - right).abs() / scale).clamp(0.0, 1.0)
+        }
+        (JsonValue::Array(a), JsonValue::Array(b)) => {
+            let len = a.len().max(b.len());
+            if len == 0 {
+                return 0.0;
+            }
+            let mut sum = 0.0;
+            for idx in 0..len {
+                let drift = match (a.get(idx), b.get(idx)) {
+                    (Some(left), Some(right)) => normalized_json_drift_value(left, right),
+                    (Some(_), None) | (None, Some(_)) => 1.0,
+                    (None, None) => 0.0,
+                };
+                sum += drift;
+            }
+            (sum / len as f64).clamp(0.0, 1.0)
+        }
+        (JsonValue::Object(a), JsonValue::Object(b)) => {
+            let mut keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            keys.extend(a.keys().map(|key| key.as_str()));
+            keys.extend(b.keys().map(|key| key.as_str()));
+            if keys.is_empty() {
+                return 0.0;
+            }
+            let mut sum = 0.0;
+            for key in keys {
+                let drift = match (a.get(key), b.get(key)) {
+                    (Some(left), Some(right)) => normalized_json_drift_value(left, right),
+                    (Some(_), None) | (None, Some(_)) => 1.0,
+                    (None, None) => 0.0,
+                };
+                sum += drift;
+            }
+            (sum / a.len().max(b.len()) as f64).clamp(0.0, 1.0)
+        }
+        _ => 1.0,
+    }
+}
+
+fn normalized_param_drift_from_key_text(left: &str, right: &str) -> f64 {
+    if left == right {
+        return 0.0;
+    }
+    let left = serde_json::from_str::<JsonValue>(left);
+    let right = serde_json::from_str::<JsonValue>(right);
+    match (left, right) {
+        (Ok(left), Ok(right)) => normalized_json_drift_value(&left, &right),
+        _ => 1.0,
+    }
+}
+
+pub fn compute_reopt_walk_forward_stats<P, FStart, FEval, FKey>(
+    candidates: &[P],
+    n: usize,
+    cfg: &ReoptWalkForwardConfigOptional,
+    mut candidate_start_t: FStart,
+    mut eval_metrics_window: FEval,
+    mut candidate_key: FKey,
+) -> Option<ReoptWalkForwardStats>
+where
+    FStart: FnMut(&P) -> usize,
+    FEval: FnMut(&P, usize, usize) -> Metrics,
+    FKey: FnMut(&P) -> String,
+{
+    if candidates.is_empty() || n < 3 {
+        return None;
+    }
+
+    let top_n_candidates = cfg.top_n_candidates.max(1).min(candidates.len());
+    let finalists = &candidates[..top_n_candidates];
+    let common_start_t = finalists
+        .iter()
+        .map(&mut candidate_start_t)
+        .max()
+        .unwrap_or(0)
+        .min(n.saturating_sub(2));
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+
+    let mut train_scores: Vec<f64> = Vec::new();
+    let mut sharpes: Vec<f64> = Vec::new();
+    let mut dds: Vec<f64> = Vec::new();
+    let mut pnls: Vec<f64> = Vec::new();
+    let mut trades: Vec<u32> = Vec::new();
+    let mut winner_keys: Vec<String> = Vec::new();
+    let mut positive_forward_pnl = 0usize;
+
+    let mut t0 = common_start_t;
+    while t0 + 2 < n {
+        let train_end = t0.saturating_add(window).min(n);
+        if train_end <= t0 + 1 {
+            break;
+        }
+        let test_end = train_end.saturating_add(step).min(n);
+        if test_end <= train_end + 1 {
+            break;
+        }
+
+        let mut best_idx: Option<usize> = None;
+        let mut best_score = f64::NEG_INFINITY;
+        for (idx, cand) in finalists.iter().enumerate() {
+            let metrics = eval_metrics_window(cand, t0, train_end);
+            let score = robust_score_from_metrics(&metrics, None);
+            if score.is_finite() && score > best_score {
+                best_score = score;
+                best_idx = Some(idx);
+            }
+        }
+
+        let Some(best_idx) = best_idx else {
+            break;
+        };
+        let winner = &finalists[best_idx];
+        let forward = eval_metrics_window(winner, train_end, test_end);
+
+        train_scores.push(best_score);
+        sharpes.push(forward.sharpe);
+        dds.push(forward.max_dd);
+        pnls.push(forward.pnl);
+        trades.push(forward.trades);
+        if forward.pnl > 0.0 {
+            positive_forward_pnl = positive_forward_pnl.saturating_add(1);
+        }
+        winner_keys.push(candidate_key(winner));
+
+        if test_end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+
+    if sharpes.is_empty() {
+        return None;
+    }
+
+    train_scores.sort_by(|a, b| a.total_cmp(b));
+    sharpes.sort_by(|a, b| a.total_cmp(b));
+    dds.sort_by(|a, b| a.total_cmp(b));
+    pnls.sort_by(|a, b| a.total_cmp(b));
+
+    let mut winner_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut winner_changes = 0usize;
+    let mut prev_key: Option<&str> = None;
+    let mut drift_values: Vec<f64> = Vec::new();
+    for key in &winner_keys {
+        *winner_counts.entry(key.clone()).or_insert(0) += 1;
+        if let Some(prev) = prev_key {
+            if prev != key {
+                winner_changes = winner_changes.saturating_add(1);
+            }
+            drift_values.push(normalized_param_drift_from_key_text(prev, key));
+        }
+        prev_key = Some(key.as_str());
+    }
+    let max_winner_count = winner_counts.values().copied().max().unwrap_or(0);
+    let drift_mean = if drift_values.is_empty() {
+        0.0
+    } else {
+        drift_values.iter().sum::<f64>() / drift_values.len() as f64
+    };
+    let drift_max = drift_values.iter().copied().fold(0.0_f64, f64::max);
+
+    Some(ReoptWalkForwardStats {
+        windows: winner_keys.len(),
+        top_n_candidates,
+        unique_winners: winner_counts.len(),
+        winner_changes,
+        dominant_winner_frac: if winner_keys.is_empty() {
+            0.0
+        } else {
+            max_winner_count as f64 / winner_keys.len() as f64
+        },
+        winner_param_drift_mean: drift_mean,
+        winner_param_drift_max: drift_max,
+        train_score_median: median(&train_scores),
+        forward_positive_pnl_frac: if winner_keys.is_empty() {
+            0.0
+        } else {
+            positive_forward_pnl as f64 / winner_keys.len() as f64
+        },
+        forward_sharpe_median: median(&sharpes),
+        forward_sharpe_worst: worst_min(&sharpes),
+        forward_max_dd_median: median(&dds),
+        forward_max_dd_worst: worst_max(&dds),
+        forward_pnl_median: median(&pnls),
+        forward_pnl_worst: worst_min(&pnls),
+        forward_trades_median: median_u32(&trades),
+        forward_trades_worst: worst_min_u32(&trades),
+        winner_sequence: winner_keys,
+    })
 }
 
 pub fn summarize_perturb_stats(
@@ -390,8 +910,7 @@ where
 pub fn finalize_with_probability_and_optional_cscv<C, F>(
     out: &mut Vec<C>,
     sample_obs: &[usize],
-    min_psr: Option<f64>,
-    min_dsr: Option<f64>,
+    hard_gates: &ValidationHardGateConfig,
     cscv_cfg: Option<&CscvPboConfig>,
     total_bars: usize,
     common_start_t: usize,
@@ -405,7 +924,7 @@ where
     C: ValidationPostCandidate,
     F: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
 {
-    compute_probability_metrics_and_gate(out, sample_obs, min_psr, min_dsr);
+    compute_probability_metrics(out, sample_obs);
     mark_robust_pareto(out);
 
     let mut cscv_pbo: Option<CscvPboResult> = None;
@@ -465,6 +984,7 @@ where
         }
     }
 
+    apply_candidate_hard_gates(out, hard_gates, cscv_pbo.as_ref());
     fold_cscv_into_robust_and_sort(out);
     Ok(cscv_pbo)
 }
@@ -478,9 +998,249 @@ fn sanitize_cscv_slices(slices: usize) -> usize {
     }
 }
 
+fn stationary_bootstrap_indices(n: usize, mean_block: usize, rng: &mut StdRng) -> Vec<usize> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let restart_prob = (1.0 / mean_block.max(1) as f64).clamp(1e-6, 1.0);
+    let mut out = Vec::with_capacity(n);
+    let mut idx = rng.gen_range(0..n);
+    out.push(idx);
+    while out.len() < n {
+        if rng.gen::<f64>() < restart_prob {
+            idx = rng.gen_range(0..n);
+        } else {
+            idx = (idx + 1) % n;
+        }
+        out.push(idx);
+    }
+    out
+}
+
+fn sample_mean(xs: &[f64]) -> f64 {
+    if xs.is_empty() {
+        return 0.0;
+    }
+    xs.iter().copied().sum::<f64>() / xs.len() as f64
+}
+
+fn sample_std(xs: &[f64], mean: f64) -> f64 {
+    if xs.len() <= 1 {
+        return 0.0;
+    }
+    let mut sumsq = 0.0;
+    for &x in xs {
+        let d = x - mean;
+        sumsq += d * d;
+    }
+    (sumsq / (xs.len() - 1) as f64).sqrt()
+}
+
+pub fn compute_spa_validation_stats(
+    candidate_keys: &[String],
+    candidate_slice_returns: &[Vec<f64>],
+    benchmark_slice_returns: &[f64],
+    cfg: &SpaConfigOptional,
+    seed: u64,
+    cancel: &AtomicBool,
+) -> Option<SpaValidationStats> {
+    let candidate_count = candidate_slice_returns.len();
+    if candidate_count == 0 || candidate_keys.len() != candidate_count {
+        return None;
+    }
+
+    let slice_count = candidate_slice_returns
+        .iter()
+        .map(Vec::len)
+        .min()
+        .unwrap_or(0)
+        .min(benchmark_slice_returns.len())
+        .min(cfg.slices.max(4));
+    if slice_count < 4 {
+        return Some(SpaValidationStats {
+            scope: "validation_candidates".to_string(),
+            candidate_count,
+            slice_count,
+            bootstrap_samples: cfg.bootstrap_samples.max(1),
+            block_length: cfg.block_length.max(1),
+            benchmark: cfg.benchmark.clone(),
+            best_candidate_key: String::new(),
+            best_candidate_mean_diff: 0.0,
+            best_candidate_t_stat: 0.0,
+            p_value: 1.0,
+            passed: false,
+            skipped_reason: Some("spa_skipped_not_enough_slices".to_string()),
+        });
+    }
+
+    let benchmark = &benchmark_slice_returns[..slice_count];
+    let mut diffs: Vec<Vec<f64>> = Vec::with_capacity(candidate_count);
+    let mut best_idx = 0usize;
+    let mut best_mean = f64::NEG_INFINITY;
+    let mut t_stats: Vec<f64> = Vec::with_capacity(candidate_count);
+    let sqrt_n = (slice_count as f64).sqrt();
+
+    for (idx, candidate) in candidate_slice_returns.iter().enumerate() {
+        let candidate = &candidate[..slice_count];
+        let diff: Vec<f64> = candidate
+            .iter()
+            .zip(benchmark.iter())
+            .map(|(cand, bench)| *cand - *bench)
+            .collect();
+        let mean = sample_mean(&diff);
+        let std = sample_std(&diff, mean).max(1e-12);
+        let t = (sqrt_n * mean / std).max(0.0);
+        if mean > best_mean {
+            best_mean = mean;
+            best_idx = idx;
+        }
+        diffs.push(diff);
+        t_stats.push(t);
+    }
+
+    let observed_stat = t_stats.iter().copied().fold(0.0_f64, f64::max);
+    let bootstrap_samples = cfg.bootstrap_samples.max(100);
+    let block_length = cfg.block_length.max(1);
+    let mut exceed = 0usize;
+    let mut rng = StdRng::seed_from_u64(seed ^ 0x5eed_5aa5_u64);
+
+    for _ in 0..bootstrap_samples {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let indices = stationary_bootstrap_indices(slice_count, block_length, &mut rng);
+        let mut boot_stat = 0.0_f64;
+        for diff in &diffs {
+            let mean = sample_mean(diff);
+            let std = sample_std(diff, mean).max(1e-12);
+            let mut centered_sum = 0.0_f64;
+            for &sample_idx in &indices {
+                centered_sum += diff[sample_idx] - mean;
+            }
+            let centered_mean = centered_sum / slice_count as f64;
+            let t_star = (sqrt_n * centered_mean / std).max(0.0);
+            if t_star > boot_stat {
+                boot_stat = t_star;
+            }
+        }
+        if boot_stat >= observed_stat {
+            exceed = exceed.saturating_add(1);
+        }
+    }
+
+    let p_value = exceed as f64 / bootstrap_samples as f64;
+    Some(SpaValidationStats {
+        scope: "validation_candidates".to_string(),
+        candidate_count,
+        slice_count,
+        bootstrap_samples,
+        block_length,
+        benchmark: cfg.benchmark.clone(),
+        best_candidate_key: candidate_keys.get(best_idx).cloned().unwrap_or_default(),
+        best_candidate_mean_diff: best_mean,
+        best_candidate_t_stat: t_stats.get(best_idx).copied().unwrap_or(0.0),
+        p_value,
+        passed: p_value <= 0.05 && observed_stat.is_finite() && observed_stat > 0.0,
+        skipped_reason: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validation_pipeline::ValidationRecommendation;
+    use ta_strategies::double_ma::Metrics;
+
+    #[derive(Clone, Debug)]
+    struct DummyCandidate {
+        in_sample: Metrics,
+        psr: Option<f64>,
+        dsr: Option<f64>,
+        track_record_bars: usize,
+        min_track_record_length_bars: Option<usize>,
+        robust_score: f64,
+        robust_pareto: bool,
+        cscv_pbo: Option<CscvCandidatePboStats>,
+        validation_verdict: ValidationCandidateVerdict,
+    }
+
+    impl ValidationPostCandidate for DummyCandidate {
+        fn in_sample_metrics(&self) -> &Metrics {
+            &self.in_sample
+        }
+
+        fn iterative_in_sample_metrics(&self) -> Option<&Metrics> {
+            None
+        }
+
+        fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)> {
+            None
+        }
+
+        fn cscv_oos_metric_p50(&self) -> Option<f64> {
+            self.cscv_pbo.as_ref().and_then(|v| v.oos_metric_p50)
+        }
+
+        fn cscv_oos_rank_frac_p50(&self) -> Option<f64> {
+            self.cscv_pbo.as_ref().and_then(|v| v.oos_rank_frac_p50)
+        }
+
+        fn psr(&self) -> Option<f64> {
+            self.psr
+        }
+
+        fn dsr(&self) -> Option<f64> {
+            self.dsr
+        }
+
+        fn set_psr(&mut self, v: Option<f64>) {
+            self.psr = v;
+        }
+
+        fn set_dsr(&mut self, v: Option<f64>) {
+            self.dsr = v;
+        }
+
+        fn track_record_bars(&self) -> usize {
+            self.track_record_bars
+        }
+
+        fn min_track_record_length_bars(&self) -> Option<usize> {
+            self.min_track_record_length_bars
+        }
+
+        fn set_track_record_bars(&mut self, v: usize) {
+            self.track_record_bars = v;
+        }
+
+        fn set_min_track_record_length_bars(&mut self, v: Option<usize>) {
+            self.min_track_record_length_bars = v;
+        }
+
+        fn robust_score(&self) -> f64 {
+            self.robust_score
+        }
+
+        fn set_robust_score(&mut self, v: f64) {
+            self.robust_score = v;
+        }
+
+        fn set_robust_pareto(&mut self, v: bool) {
+            self.robust_pareto = v;
+        }
+
+        fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>) {
+            self.cscv_pbo = v;
+        }
+
+        fn validation_verdict(&self) -> &ValidationCandidateVerdict {
+            &self.validation_verdict
+        }
+
+        fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict) {
+            self.validation_verdict = v;
+        }
+    }
 
     #[test]
     fn robust_score_prefers_walk_forward_when_present() {
@@ -503,5 +1263,52 @@ mod tests {
         assert!((fold_cscv_metric(1.0, Some(2.0)) - 1.0).abs() < 1e-12);
         assert!((fold_cscv_metric(1.0, Some(f64::NAN)) - 1.0).abs() < 1e-12);
         assert!((fold_cscv_metric(1.0, None) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compute_probability_metrics_populates_track_record_and_mintrl() {
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.2,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.2,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        compute_probability_metrics(&mut out, &[120]);
+        assert_eq!(out[0].track_record_bars, 120);
+        assert!(out[0].min_track_record_length_bars.is_some());
+    }
+
+    #[test]
+    fn run_verdict_marks_unapproved_when_mintrl_not_met() {
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.0,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 64,
+            min_track_record_length_bars: Some(256),
+            robust_score: 1.0,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+        let verdict = build_run_verdict(&out, 1, &ValidationHardGateConfig::default(), None, None);
+        assert!(!verdict.approved);
+        assert_eq!(
+            verdict.final_recommendation,
+            ValidationRecommendation::EvidenceTooShortMinTrackRecord
+        );
+        assert_eq!(verdict.approved_candidate_count, 0);
     }
 }

@@ -19,6 +19,17 @@ interface ValidationBuildInputs {
   seed?: unknown
   minPsr?: unknown
   minDsr?: unknown
+  minCscvOosRankFrac?: unknown
+  minCscvOosMetric?: unknown
+  maxPbo?: unknown
+  spaEnable?: unknown
+  spaSlices?: unknown
+  spaBootstrapSamples?: unknown
+  spaBlockLength?: unknown
+  reoptWfEnable?: unknown
+  reoptWfWindow?: unknown
+  reoptWfStep?: unknown
+  reoptWfTopN?: unknown
   wfEnable?: unknown
   wfWindow?: unknown
   wfStep?: unknown
@@ -46,6 +57,7 @@ interface ValidationCandidateLike {
   vcc?: unknown
   vemr?: unknown
   rocb?: unknown
+  mkcs?: unknown
   strategy?: unknown
   halftrend_filter?: unknown
   halftrend?: unknown
@@ -56,6 +68,10 @@ interface ValidationCandidateLike {
 
 export interface ValidationRequestPayload {
   data_id: string
+  backend: {
+    backend: 'Auto' | 'CpuOnly' | 'GpuOnly' | 'GpuHybridKernel' | 'GpuKernel'
+    device_id?: number
+  }
   ma_source: string
   fast_ma_params: unknown
   slow_ma_params: unknown
@@ -63,6 +79,17 @@ export interface ValidationRequestPayload {
   walk_forward: {
     window_bars: number
     step_bars: number
+  } | null
+  reopt_walk_forward: {
+    window_bars: number
+    step_bars: number
+    top_n_candidates: number
+  } | null
+  spa: {
+    slices: number
+    bootstrap_samples: number
+    block_length: number
+    benchmark: 'buy_hold'
   } | null
   perturb: {
     iterations: number
@@ -86,6 +113,9 @@ export interface ValidationRequestPayload {
   max_candidates: number
   min_psr: number | null
   min_dsr: number | null
+  min_cscv_oos_rank_frac: number | null
+  min_cscv_oos_metric: number | null
+  max_pbo: number | null
   validation_context: {
     strategy_kind: string
     csv_path: string | null
@@ -115,6 +145,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
+  if (kind === 'Mkcs') return 'Mkcs'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -145,6 +176,13 @@ function parseProbabilityGate(value: unknown): number | null {
   return Math.max(0, Math.min(1, parsed))
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  const raw = normalizeText(value)
+  if (!raw) return null
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function normalizeCrossDatasets(value: unknown, maxDatasets: number): Array<{ csv_path: string; label: string }> {
   if (maxDatasets <= 0 || !Array.isArray(value)) return []
   const out: Array<{ csv_path: string; label: string }> = []
@@ -170,6 +208,17 @@ function firstNonEmptyText(...values: unknown[]): string {
   return ''
 }
 
+function normalizeValidationBackend(value: unknown): ValidationRequestPayload['backend'] {
+  const row = asRecord(value)
+  const backend = normalizeText(row?.backend ?? value)
+  const deviceId = Math.max(0, Math.floor(num(row?.device_id, 0)))
+  if (backend === 'Auto') return { backend: 'Auto', device_id: deviceId }
+  if (backend === 'GpuOnly') return { backend: 'GpuOnly', device_id: deviceId }
+  if (backend === 'GpuHybridKernel') return { backend: 'GpuHybridKernel', device_id: deviceId }
+  if (backend === 'GpuKernel') return { backend: 'GpuKernel', device_id: deviceId }
+  return { backend: 'CpuOnly' }
+}
+
 export function buildValidationRequest(inputs: ValidationBuildInputs): ValidationRequestPayload {
   const currentRunReq = asRecord(inputs.currentRunReq)
   if (!currentRunReq || !inputs.currentRunRes) throw new Error('Run an optimization first.')
@@ -182,6 +231,9 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   const seed = Math.max(0, Math.floor(num(inputs.seed, 1)))
   const min_psr = parseProbabilityGate(inputs.minPsr)
   const min_dsr = parseProbabilityGate(inputs.minDsr)
+  const min_cscv_oos_rank_frac = parseProbabilityGate(inputs.minCscvOosRankFrac)
+  const min_cscv_oos_metric = parseFiniteNumber(inputs.minCscvOosMetric)
+  const max_pbo = parseProbabilityGate(inputs.maxPbo)
   const datasetMeta = asRecord(inputs.runDatasetMeta)
   const validation_context = {
     strategy_kind: kind,
@@ -287,6 +339,21 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
         }
       }
 
+      if (kind === 'Mkcs') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const mkcs = asRecord(p.mkcs) || asRecord(currentRunReq.mkcs) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          mkcs,
+          strategy
+        }
+      }
+
       const halftrend = kind === 'CompositeMo' ? asRecord(p.halftrend) || null : asRecord(currentRunReq.halftrend) || null
       const signal_mode = kind === 'CompositeMo' ? normalizeText(p.signal_mode || p.signalMode || currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate') : normalizeText(currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate')
 
@@ -311,6 +378,7 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       if (kind === 'Vcc') return true
       if (kind === 'Vemr') return true
       if (kind === 'Rocb') return true
+      if (kind === 'Mkcs') return true
       return !!candidate.halftrend
     })
 
@@ -320,6 +388,23 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
     ? {
         window_bars: Math.max(64, Math.floor(num(inputs.wfWindow, 20000))),
         step_bars: Math.max(1, Math.floor(num(inputs.wfStep, 20000)))
+      }
+    : null
+
+  const reopt_walk_forward = inputs.reoptWfEnable
+    ? {
+        window_bars: Math.max(64, Math.floor(num(inputs.reoptWfWindow, 20000))),
+        step_bars: Math.max(1, Math.floor(num(inputs.reoptWfStep, 20000))),
+        top_n_candidates: Math.max(1, Math.floor(num(inputs.reoptWfTopN, 8))),
+      }
+    : null
+
+  const spa = inputs.spaEnable
+    ? {
+        slices: Math.max(4, Math.floor(num(inputs.spaSlices, 16))),
+        bootstrap_samples: Math.max(100, Math.floor(num(inputs.spaBootstrapSamples, 500))),
+        block_length: Math.max(1, Math.floor(num(inputs.spaBlockLength, 4))),
+        benchmark: 'buy_hold' as const
       }
     : null
 
@@ -357,11 +442,14 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
 
   return {
     data_id: dataId,
+    backend: normalizeValidationBackend(currentRunReq.backend),
     ma_source: normalizeText(currentRunReq.ma_source || 'close') || 'close',
     fast_ma_params: currentRunReq.fast_ma_params || null,
     slow_ma_params: currentRunReq.slow_ma_params || null,
     candidates,
     walk_forward,
+    reopt_walk_forward,
+    spa,
     perturb,
     trade_bootstrap,
     cross_ticker,
@@ -370,6 +458,9 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
     max_candidates: maxCandidates,
     min_psr,
     min_dsr,
+    min_cscv_oos_rank_frac,
+    min_cscv_oos_metric,
+    max_pbo,
     validation_context
   }
 }

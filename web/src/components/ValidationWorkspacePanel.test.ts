@@ -24,7 +24,7 @@ describe('ValidationWorkspacePanel', () => {
     localStorage.clear()
   })
 
-  it('does not duplicate the primary run action inline', async () => {
+  it('keeps the primary validation action inline in the panel', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflow = useWorkflowStore(pinia)
@@ -36,11 +36,11 @@ describe('ValidationWorkspacePanel', () => {
     })
     await flushPanel()
 
-    expect(document.body.textContent || '').toContain('Run validation from the sticky footer')
+    expect(document.body.textContent || '').toContain('Run validation')
     const runButtons = Array.from(document.querySelectorAll('button')).filter(
       (button) => button.textContent?.trim() === 'Run validation',
     )
-    expect(runButtons).toHaveLength(0)
+    expect(runButtons).toHaveLength(1)
 
     wrapper.unmount()
   })

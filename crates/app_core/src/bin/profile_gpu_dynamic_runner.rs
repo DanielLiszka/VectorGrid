@@ -1,12 +1,12 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use ta_app_core::{
-    run_double_ma_optimization_blocking_with_candles, Backend, BackendUsed, DoubleMaRequest,
-};
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     trend_quality_strategy_for_kernel,
+};
+use ta_app_core::{
+    run_double_ma_optimization_blocking_with_candles, Backend, BackendUsed, DoubleMaRequest,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -26,6 +26,12 @@ enum WorkloadKind {
     Medium,
     Large,
     Xlarge,
+}
+
+#[derive(Clone, Copy)]
+enum AdxMode {
+    Off,
+    On,
 }
 
 fn parse_arg_value(flag: &str) -> Option<String> {
@@ -92,6 +98,17 @@ fn parse_device_id() -> Result<u32, String> {
     raw.trim()
         .parse::<u32>()
         .map_err(|e| format!("invalid --device-id '{}': {e}", raw.trim()))
+}
+
+fn parse_adx_mode() -> Result<AdxMode, String> {
+    let raw = parse_arg_value("--adx-mode").unwrap_or_else(|| "off".to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => Ok(AdxMode::Off),
+        "on" => Ok(AdxMode::On),
+        other => Err(format!(
+            "unsupported --adx-mode '{other}' (expected: on|off)"
+        )),
+    }
 }
 
 fn make_trending_candles(len: usize) -> Candles {
@@ -190,12 +207,20 @@ fn workload_ranges(kind: WorkloadKind) -> ((u32, u32, u32), (u32, u32, u32)) {
     }
 }
 
-fn strategy_config(kind: StrategyKind) -> StrategyConfig {
+fn strategy_config(kind: StrategyKind, adx_mode: AdxMode) -> StrategyConfig {
     match kind {
         StrategyKind::DoubleMa => StrategyConfig::default(),
-        StrategyKind::TrendQuality => trend_quality_strategy_for_kernel(),
+        StrategyKind::TrendQuality => {
+            let mut s = trend_quality_strategy_for_kernel();
+            s.trend_quality_use_adx = matches!(adx_mode, AdxMode::On);
+            s
+        }
         StrategyKind::RegimeHybrid => regime_hybrid_strategy_for_kernel(),
-        StrategyKind::BreakoutMomentum => breakout_strategy_for_kernel(),
+        StrategyKind::BreakoutMomentum => {
+            let mut s = breakout_strategy_for_kernel();
+            s.breakout_use_adx = matches!(adx_mode, AdxMode::On);
+            s
+        }
     }
 }
 
@@ -204,6 +229,19 @@ fn candles_for_strategy(kind: StrategyKind, len: usize) -> Candles {
         StrategyKind::DoubleMa | StrategyKind::TrendQuality => make_trending_candles(len),
         StrategyKind::RegimeHybrid => make_choppy_candles(len),
         StrategyKind::BreakoutMomentum => make_breakout_candles(len),
+    }
+}
+
+fn backend_for_strategy(kind: StrategyKind, adx_mode: AdxMode, device_id: u32) -> Backend {
+    match kind {
+        StrategyKind::TrendQuality if matches!(adx_mode, AdxMode::On) => {
+            Backend::GpuHybridKernel { device_id }
+        }
+        StrategyKind::BreakoutMomentum if matches!(adx_mode, AdxMode::On) => {
+            Backend::GpuHybridKernel { device_id }
+        }
+        StrategyKind::RegimeHybrid => Backend::GpuHybridKernel { device_id },
+        _ => Backend::GpuKernel { device_id },
     }
 }
 
@@ -238,6 +276,10 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let adx_mode = parse_adx_mode().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
 
     if !cuda_available() {
         eprintln!("CUDA device not available");
@@ -250,13 +292,13 @@ fn main() {
         std::env::remove_var("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL");
     }
 
-    let strategy = strategy_config(strategy_kind);
+    let strategy = strategy_config(strategy_kind, adx_mode);
     let candles = candles_for_strategy(strategy_kind, 200_000);
     let (fast_range, slow_range) = workload_ranges(workload_kind);
     let cancel = AtomicBool::new(false);
 
     let req = DoubleMaRequest {
-        backend: Backend::GpuKernel { device_id },
+        backend: backend_for_strategy(strategy_kind, adx_mode, device_id),
         data_id: "profile-gpu-dynamic-runner".to_string(),
         fast_range,
         slow_range,
@@ -296,9 +338,10 @@ fn main() {
         }
         let wall_ms = t0.elapsed().as_millis() as u64;
         println!(
-            "iter={} backend={:?} runtime_ms={} wall_ms={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            "iter={} backend={:?} route={} runtime_ms={} wall_ms={} best=({}, {}) sharpe={:.6} pnl={:.6}",
             i + 1,
             res.backend_used,
+            res.backend_route.as_deref().unwrap_or("<none>"),
             res.runtime_ms,
             wall_ms,
             res.best_params.fast_len,
@@ -306,5 +349,17 @@ fn main() {
             res.best_metrics.sharpe,
             res.best_metrics.pnl
         );
+        if let Some(plan) = res.indicator_route_plan.as_ref() {
+            println!(
+                "indicator_route_plan=fast:{}->{} slow:{}->{}",
+                plan.fast.indicator_id,
+                plan.fast.route,
+                plan.slow.indicator_id,
+                plan.slow.route
+            );
+        }
+        if let Some(reason) = res.backend_fallback_reason.as_deref() {
+            println!("fallback_reason={reason}");
+        }
     }
 }

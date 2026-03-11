@@ -143,6 +143,40 @@ pub fn deflated_sharpe_ratio(
     probabilistic_sharpe_ratio(sr_hat, sr_star, samples, skewness, kurtosis)
 }
 
+pub fn minimum_track_record_length(
+    sr_hat: f64,
+    benchmark_sr: f64,
+    skewness: f64,
+    kurtosis: f64,
+    confidence_level: f64,
+) -> Option<usize> {
+    if !sr_hat.is_finite()
+        || !benchmark_sr.is_finite()
+        || !confidence_level.is_finite()
+        || confidence_level <= 0.0
+        || confidence_level >= 1.0
+        || sr_hat <= benchmark_sr
+    {
+        return None;
+    }
+
+    let g3 = if skewness.is_finite() { skewness } else { 0.0 };
+    let g4 = if kurtosis.is_finite() {
+        kurtosis.max(1.0)
+    } else {
+        3.0
+    };
+    let denom = (1.0 - g3 * sr_hat + ((g4 - 1.0) / 4.0) * sr_hat * sr_hat).max(1e-12);
+    let z = normal_inv_cdf(confidence_level.clamp(1e-12, 1.0 - 1e-12));
+    let delta = (sr_hat - benchmark_sr).abs().max(1e-12);
+    let required = 1.0 + denom * (z / delta) * (z / delta);
+    if !required.is_finite() {
+        None
+    } else {
+        Some(required.ceil().max(2.0) as usize)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +200,18 @@ mod tests {
         let a = expected_max_sharpe(42, 0.4, 0.2);
         let b = expected_max_sharpe(42, 0.4, 0.2);
         assert!((a - b).abs() < 1e-15);
+    }
+
+    #[test]
+    fn minimum_track_record_length_increases_with_confidence() {
+        let a = minimum_track_record_length(1.0, 0.0, 0.0, 3.0, 0.80).expect("mintrl");
+        let b = minimum_track_record_length(1.0, 0.0, 0.0, 3.0, 0.95).expect("mintrl");
+        assert!(b >= a);
+    }
+
+    #[test]
+    fn minimum_track_record_length_requires_excess_sharpe() {
+        assert!(minimum_track_record_length(0.0, 0.0, 0.0, 3.0, 0.95).is_none());
+        assert!(minimum_track_record_length(-0.2, 0.0, 0.0, 3.0, 0.95).is_none());
     }
 }

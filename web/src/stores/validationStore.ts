@@ -189,6 +189,33 @@ function applyVueTextFieldUpdate(state: ValidationState, field: string, value: s
     case 'valMinDsr':
       state.minDsr = next
       return true
+    case 'valMinCscvRank':
+      state.minCscvRank = next
+      return true
+    case 'valMinCscvMetric':
+      state.minCscvMetric = next
+      return true
+    case 'valMaxPbo':
+      state.maxPbo = next
+      return true
+    case 'valSpaSlices':
+      state.spaSlices = next
+      return true
+    case 'valSpaBootstrapSamples':
+      state.spaBootstrapSamples = next
+      return true
+    case 'valSpaBlockLength':
+      state.spaBlockLength = next
+      return true
+    case 'valReoptWfWindow':
+      state.reoptWfWindow = next
+      return true
+    case 'valReoptWfStep':
+      state.reoptWfStep = next
+      return true
+    case 'valReoptWfTopN':
+      state.reoptWfTopN = next
+      return true
     case 'valCscvSlices':
       state.cscvSlices = next
       return true
@@ -251,6 +278,12 @@ function applyVueCheckboxFieldUpdate(state: ValidationState, field: string, chec
     case 'valCscvEnable':
       state.cscvEnable = next
       return true
+    case 'valSpaEnable':
+      state.spaEnable = next
+      return true
+    case 'valReoptWfEnable':
+      state.reoptWfEnable = next
+      return true
     case 'valCrossEnable':
       state.crossEnable = next
       return true
@@ -263,6 +296,7 @@ interface ValidationState {
   activeResultsTab: string
   validationHint: string
   validationMeta: string
+  validationReoptMeta: string
   validationShortlistMeta: string
   validationColumns: { label: string; alignLeft: boolean }[]
   validationRows: { cells: { text: string; className: string; title: string }[] }[]
@@ -273,6 +307,15 @@ interface ValidationState {
   seed: string
   minPsr: string
   minDsr: string
+  minCscvRank: string
+  minCscvMetric: string
+  maxPbo: string
+  spaSlices: string
+  spaBootstrapSamples: string
+  spaBlockLength: string
+  reoptWfWindow: string
+  reoptWfStep: string
+  reoptWfTopN: string
   cscvSlices: string
   autoRun: boolean
   autoExportXlsx: boolean
@@ -288,6 +331,8 @@ interface ValidationState {
   mcEnable: boolean
   mcSims: string
   cscvEnable: boolean
+  spaEnable: boolean
+  reoptWfEnable: boolean
   crossEnable: boolean
   crossMax: string
   crossSearch: string
@@ -315,6 +360,7 @@ export const useValidationStore = defineStore('validation', {
     activeResultsTab: 'overview',
     validationHint: '—',
     validationMeta: '-',
+    validationReoptMeta: '-',
     validationShortlistMeta: '-',
     validationColumns: [],
     validationRows: [],
@@ -323,23 +369,34 @@ export const useValidationStore = defineStore('validation', {
     tableRowCount: 0,
     candidates: '32',
     seed: '1',
-    minPsr: '',
-    minDsr: '',
-    cscvSlices: '',
+    minPsr: '0.80',
+    minDsr: '0.60',
+    minCscvRank: '0.55',
+    minCscvMetric: '',
+    maxPbo: '0.20',
+    spaSlices: '16',
+    spaBootstrapSamples: '500',
+    spaBlockLength: '4',
+    reoptWfWindow: '20000',
+    reoptWfStep: '5000',
+    reoptWfTopN: '8',
+    cscvSlices: '16',
     autoRun: true,
     autoExportXlsx: false,
     autoRevealReport: false,
     autoExportTopN: '20',
-    wfEnable: false,
+    wfEnable: true,
     wfWindow: '20000',
-    wfStep: '20000',
+    wfStep: '5000',
     perturbEnable: false,
     perturbIters: '8',
     perturbMin: '0.015',
     perturbMax: '0.06',
     mcEnable: false,
     mcSims: '500',
-    cscvEnable: false,
+    cscvEnable: true,
+    spaEnable: false,
+    reoptWfEnable: false,
     crossEnable: false,
     crossMax: '6',
     crossSearch: '',
@@ -367,6 +424,7 @@ export const useValidationStore = defineStore('validation', {
       this.activeResultsTab = String(snapshot.activeResultsTab ?? this.activeResultsTab ?? 'overview').trim() || 'overview'
       this.validationHint = String(snapshot.validationHint ?? this.validationHint ?? '—').trim() || '—'
       this.validationMeta = String(snapshot.validationMeta ?? this.validationMeta ?? '-').trim() || '-'
+      this.validationReoptMeta = String(snapshot.validationReoptMeta ?? this.validationReoptMeta ?? '-').trim() || '-'
       this.validationShortlistMeta = String(snapshot.validationShortlistMeta ?? this.validationShortlistMeta ?? '-').trim() || '-'
       this.validationColumns = rawArray(snapshot.validationColumns, this.validationColumns)
       this.validationRows = rawArray(snapshot.validationRows, this.validationRows)
@@ -377,6 +435,15 @@ export const useValidationStore = defineStore('validation', {
       this.seed = String(snapshot.seed ?? this.seed ?? '1').trim() || '1'
       this.minPsr = String(snapshot.minPsr ?? this.minPsr ?? '').trim()
       this.minDsr = String(snapshot.minDsr ?? this.minDsr ?? '').trim()
+      this.minCscvRank = String(snapshot.minCscvRank ?? this.minCscvRank ?? '').trim()
+      this.minCscvMetric = String(snapshot.minCscvMetric ?? this.minCscvMetric ?? '').trim()
+      this.maxPbo = String(snapshot.maxPbo ?? this.maxPbo ?? '').trim()
+      this.spaSlices = String(snapshot.spaSlices ?? this.spaSlices ?? '16').trim() || '16'
+      this.spaBootstrapSamples = String(snapshot.spaBootstrapSamples ?? this.spaBootstrapSamples ?? '500').trim() || '500'
+      this.spaBlockLength = String(snapshot.spaBlockLength ?? this.spaBlockLength ?? '4').trim() || '4'
+      this.reoptWfWindow = String(snapshot.reoptWfWindow ?? this.reoptWfWindow ?? '20000').trim() || '20000'
+      this.reoptWfStep = String(snapshot.reoptWfStep ?? this.reoptWfStep ?? '5000').trim() || '5000'
+      this.reoptWfTopN = String(snapshot.reoptWfTopN ?? this.reoptWfTopN ?? '8').trim() || '8'
       this.cscvSlices = String(snapshot.cscvSlices ?? this.cscvSlices ?? '').trim()
       this.autoRun = Boolean(snapshot.autoRun ?? this.autoRun)
       this.autoExportXlsx = Boolean(snapshot.autoExportXlsx ?? this.autoExportXlsx)
@@ -392,6 +459,8 @@ export const useValidationStore = defineStore('validation', {
       this.mcEnable = Boolean(snapshot.mcEnable ?? this.mcEnable)
       this.mcSims = String(snapshot.mcSims ?? this.mcSims ?? '500').trim() || '500'
       this.cscvEnable = Boolean(snapshot.cscvEnable ?? this.cscvEnable)
+      this.spaEnable = Boolean(snapshot.spaEnable ?? this.spaEnable)
+      this.reoptWfEnable = Boolean(snapshot.reoptWfEnable ?? this.reoptWfEnable)
       this.crossEnable = Boolean(snapshot.crossEnable ?? this.crossEnable)
       this.crossMax = String(snapshot.crossMax ?? this.crossMax ?? '6').trim() || '6'
       this.crossSearch = String(snapshot.crossSearch ?? this.crossSearch ?? '').trim()

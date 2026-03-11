@@ -1,21 +1,28 @@
 use crate::composite_validate::{
     CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
-    TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
+    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, SpaBenchmarkKind, SpaConfigOptional,
+    SpaValidationStats, TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
     WalkForwardConfigOptional, WalkForwardStats,
 };
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
     compute_combined_regime_filter, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
-    resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, HalfTrendRegimeFilter,
+    resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed,
+    HalfTrendRegimeFilter,
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
-use crate::validation_pipeline::ValidationPostCandidate;
+use crate::validation_pipeline::{
+    build_run_verdict, sanitize_hard_gates, ValidationCandidateVerdict, ValidationPostCandidate,
+    ValidationRunVerdict,
+};
 
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
@@ -30,6 +37,1032 @@ fn default_seed() -> u64 {
 
 fn default_max_candidates() -> usize {
     32
+}
+
+fn default_validation_backend() -> Backend {
+    Backend::CpuOnly
+}
+
+fn validation_backend_label(backend: &Backend) -> &'static str {
+    match backend {
+        Backend::Auto { .. } => "Auto",
+        Backend::CpuOnly => "CpuOnly",
+        Backend::GpuOnly { .. } => "GpuOnly",
+        Backend::GpuHybridKernel { .. } => "GpuHybridKernel",
+        Backend::GpuKernel { .. } => "GpuKernel",
+    }
+}
+
+fn resolve_validation_backend_runtime(
+    backend: &Backend,
+    gpu_activated: bool,
+    fallback_reason: Option<String>,
+) -> (BackendUsed, Option<String>, Option<String>) {
+    if gpu_activated {
+        let route = match backend {
+            Backend::Auto { .. } => Some("Auto->GpuKernel".to_string()),
+            _ => Some(validation_backend_label(backend).to_string()),
+        };
+        return (BackendUsed::Gpu, route, None);
+    }
+
+    match backend {
+        Backend::CpuOnly => (BackendUsed::Cpu, Some("CpuOnly".to_string()), None),
+        Backend::Auto { .. } => (
+            BackendUsed::Cpu,
+            Some("Auto->CpuOnly".to_string()),
+            fallback_reason.or_else(|| {
+                Some("GPU validation runtime not implemented yet; using CPU validation.".to_string())
+            }),
+        ),
+        _ => (
+            BackendUsed::Cpu,
+            Some(format!("{}->CpuOnly", validation_backend_label(backend))),
+            fallback_reason.or_else(|| {
+                Some("GPU validation runtime not implemented yet; using CPU validation.".to_string())
+            }),
+        ),
+    }
+}
+
+#[derive(Clone)]
+struct GpuFixedCandidateValidationEval {
+    metrics: Vec<Metrics>,
+    start_ts: Vec<usize>,
+    walk_forwards: Option<Vec<WalkForwardStats>>,
+    cscv_slices: Option<HashMap<(u16, u16), Vec<SliceReturnStats>>>,
+    spa_slice_sums: Option<HashMap<(u16, u16), Vec<f64>>>,
+    backend_used: BackendUsed,
+    backend_route: Option<String>,
+    backend_fallback_reason: Option<String>,
+}
+
+fn validation_supports_gpu_fixed_candidates(req: &DoubleMaValidationRequest) -> Result<u32, String> {
+    match req.backend {
+        Backend::CpuOnly => Err("CPU validation requested".to_string()),
+        Backend::GpuHybridKernel { device_id } => Ok(device_id),
+        Backend::GpuOnly { .. } => {
+            Err("fixed-candidate GPU validation requires GpuKernel-compatible execution".to_string())
+        }
+        Backend::GpuKernel { device_id } | Backend::Auto { device_id } => Ok(device_id),
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn gpu_validation_strategy_blocker(_strategy: &StrategyConfig) -> Option<String> {
+    None
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn gpu_validation_feature_blocker(req: &DoubleMaValidationRequest) -> Option<String> {
+    if req.trade_bootstrap.is_some() {
+        return Some(
+            "GPU fixed-candidate validation does not support trade bootstrap yet".to_string(),
+        );
+    }
+    if req.cross_ticker.is_some() {
+        return Some("GPU fixed-candidate validation does not support cross_ticker yet".to_string());
+    }
+    if !matches!(req.validation_engine, ValidationEngine::Vectorized) {
+        return Some(
+            "GPU fixed-candidate validation currently supports only the vectorized validation engine"
+                .to_string(),
+        );
+    }
+    None
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+type GpuFixedMetricMapResult = (
+    HashMap<(u16, u16), Metrics>,
+    BackendUsed,
+    Option<String>,
+    Option<String>,
+);
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn gpu_fixed_candidate_metric_map(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    first_fast_params: Option<&HashMap<String, f64>>,
+    first_slow_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    first_strategy: &StrategyConfig,
+    first_halftrend: &Option<HalfTrendRegimeFilter>,
+    combos: &[ta_strategies::double_ma::DoubleMaParams],
+    device_id: u32,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    eval_range: Option<(usize, usize)>,
+) -> Result<GpuFixedMetricMapResult, String> {
+    match req.backend {
+        Backend::GpuHybridKernel { .. } => {
+            if eval_range.is_some() {
+                return Err(
+                    "GPU fixed-candidate validation does not support walk_forward on GpuHybridKernel yet"
+                        .to_string(),
+                );
+            }
+            let res = crate::double_ma::run_double_ma_optimization_blocking_with_candles(
+                crate::double_ma::DoubleMaRequest {
+                    backend: req.backend.clone(),
+                    data_id: req.data_id.clone(),
+                    fast_range: (
+                        u32::from(*fast_periods.first().unwrap_or(&1)),
+                        u32::from(*fast_periods.last().unwrap_or(&1)),
+                        1,
+                    ),
+                    slow_range: (
+                        u32::from(*slow_periods.first().unwrap_or(&1)),
+                        u32::from(*slow_periods.last().unwrap_or(&1)),
+                        1,
+                    ),
+                    fast_ma_types: vec![fast_ma_type.to_string()],
+                    slow_ma_types: vec![slow_ma_type.to_string()],
+                    ma_source: req.ma_source.clone(),
+                    export_all_csv_path: None,
+                    fast_ma_params: first_fast_params.cloned(),
+                    slow_ma_params: first_slow_params.cloned(),
+                    fast_ma_param_sweeps: None,
+                    slow_ma_param_sweeps: None,
+                    strategy: first_strategy.clone(),
+                    halftrend_filter: first_halftrend.clone(),
+                    objective: ta_optimizer::ObjectiveKind::Sharpe,
+                    mode: ta_optimizer::OptimizationMode::Grid,
+                    top_k: Some(combos.len()),
+                    include_all: Some(true),
+                    heatmap_bins: Some(0),
+                    constraints: None,
+                    vdps: None,
+                },
+                candles,
+                &AtomicBool::new(false),
+                None,
+            )?;
+            let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
+                HashMap::with_capacity(combos.len());
+            if let Some(all) = res.all.as_ref() {
+                for (params, metric) in all {
+                    metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
+                }
+            }
+            Ok((
+                metric_by_pair,
+                res.backend_used,
+                res.backend_route,
+                res.backend_fallback_reason,
+            ))
+        }
+        _ => {
+            let res = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_in_range(
+                candles,
+                fast_periods,
+                slow_periods,
+                fast_ma_type,
+                slow_ma_type,
+                &req.ma_source,
+                first_fast_params,
+                first_slow_params,
+                regime_filter,
+                first_strategy,
+                ta_optimizer::ObjectiveKind::Sharpe,
+                combos.len(),
+                true,
+                crate::gpu_backtest_kernel::KernelConfig {
+                    device_id,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                },
+                None,
+                None,
+                fast_periods.len().saturating_mul(slow_periods.len()),
+                0,
+                eval_range,
+                &AtomicBool::new(false),
+                None,
+            )?;
+            let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
+                HashMap::with_capacity(combos.len());
+            if let Some(all) = res.all.as_ref() {
+                for (params, metric) in all {
+                    metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
+                }
+            }
+            Ok((
+                metric_by_pair,
+                BackendUsed::Gpu,
+                Some(match req.backend {
+                    Backend::Auto { .. } => "Auto->GpuKernel".to_string(),
+                    _ => validation_backend_label(&req.backend).to_string(),
+                }),
+                None,
+            ))
+        }
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_walk_forward_stats_for_candidates(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    first_fast_params: Option<&HashMap<String, f64>>,
+    first_slow_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    first_strategy: &StrategyConfig,
+    first_halftrend: &Option<HalfTrendRegimeFilter>,
+    combos: &[ta_strategies::double_ma::DoubleMaParams],
+    start_ts: &[usize],
+    device_id: u32,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    cfg: &WalkForwardConfigOptional,
+) -> Result<Vec<WalkForwardStats>, String> {
+    let n = candles.close.len();
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+
+    let mut candidate_windows: Vec<Vec<usize>> = Vec::with_capacity(start_ts.len());
+    let mut unique_window_starts: BTreeSet<usize> = BTreeSet::new();
+    for &start_t in start_ts {
+        let mut windows = Vec::new();
+        let mut t0 = start_t;
+        while t0 + 2 <= n {
+            let end = t0.saturating_add(window).min(n);
+            if end <= t0 + 1 {
+                break;
+            }
+            windows.push(t0);
+            unique_window_starts.insert(t0);
+            if end == n {
+                break;
+            }
+            t0 = t0.saturating_add(step);
+        }
+        candidate_windows.push(windows);
+    }
+
+    let mut by_window: HashMap<usize, HashMap<(u16, u16), Metrics>> =
+        HashMap::with_capacity(unique_window_starts.len());
+    for &t0 in &unique_window_starts {
+        let end = t0.saturating_add(window).min(n);
+        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
+            req,
+            candles,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            first_fast_params,
+            first_slow_params,
+            regime_filter,
+            first_strategy,
+            first_halftrend,
+            combos,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            Some((t0, end)),
+        )?;
+        by_window.insert(t0, metric_map);
+    }
+
+    let mut out = Vec::with_capacity(req.candidates.len());
+    for (idx, cand) in req.candidates.iter().enumerate() {
+        let mut sharpes = Vec::new();
+        let mut dds = Vec::new();
+        let mut pnls = Vec::new();
+        let mut trades = Vec::new();
+        for &t0 in &candidate_windows[idx] {
+            let metric = by_window
+                .get(&t0)
+                .and_then(|m| m.get(&(cand.fast_len, cand.slow_len)))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "GPU walk-forward validation did not return metrics for pair ({}, {}) at window start {}",
+                        cand.fast_len, cand.slow_len, t0
+                    )
+                })?;
+            sharpes.push(metric.sharpe);
+            dds.push(metric.max_dd);
+            pnls.push(metric.pnl);
+            trades.push(metric.trades);
+        }
+        sharpes.sort_by(|a, b| a.total_cmp(b));
+        dds.sort_by(|a, b| a.total_cmp(b));
+        pnls.sort_by(|a, b| a.total_cmp(b));
+        out.push(WalkForwardStats {
+            windows: sharpes.len(),
+            sharpe_median: crate::stats_common::median(&sharpes),
+            sharpe_worst: crate::stats_common::worst_min(&sharpes),
+            max_dd_median: crate::stats_common::median(&dds),
+            max_dd_worst: crate::stats_common::worst_max(&dds),
+            pnl_median: crate::stats_common::median(&pnls),
+            pnl_worst: crate::stats_common::worst_min(&pnls),
+            trades_median: crate::stats_common::median_u32(&trades),
+            trades_worst: crate::stats_common::worst_min_u32(&trades),
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn sanitize_gpu_cscv_slices(slices: usize) -> usize {
+    let s = slices.clamp(4, 32);
+    if (s & 1) == 0 {
+        s
+    } else {
+        s.saturating_sub(1).max(4)
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_cscv_slice_stats_for_candidates(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    first_fast_params: Option<&HashMap<String, f64>>,
+    first_slow_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    first_strategy: &StrategyConfig,
+    first_halftrend: &Option<HalfTrendRegimeFilter>,
+    combos: &[ta_strategies::double_ma::DoubleMaParams],
+    start_ts: &[usize],
+    device_id: u32,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    cfg: &CscvPboConfig,
+) -> Result<Option<HashMap<(u16, u16), Vec<SliceReturnStats>>>, String> {
+    if matches!(req.backend, Backend::GpuHybridKernel { .. }) {
+        return Err(
+            "GPU fixed-candidate validation does not support CSCV/PBO on GpuHybridKernel yet"
+                .to_string(),
+        );
+    }
+
+    let slices = sanitize_gpu_cscv_slices(cfg.slices);
+    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
+    if slice_bars < 2 || req.candidates.len() < 2 {
+        return Ok(None);
+    }
+
+    let mut out: HashMap<(u16, u16), Vec<SliceReturnStats>> =
+        HashMap::with_capacity(req.candidates.len());
+    for cand in &req.candidates {
+        out.entry((cand.fast_len, cand.slow_len))
+            .or_insert_with(|| vec![SliceReturnStats::default(); slices]);
+    }
+
+    for slice_idx in 0..slices {
+        let t0 = common_start_t + slice_idx * slice_bars;
+        let end = t0.saturating_add(slice_bars).min(candles.close.len());
+        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
+            req,
+            candles,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            first_fast_params,
+            first_slow_params,
+            regime_filter,
+            first_strategy,
+            first_halftrend,
+            combos,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            Some((t0, end)),
+        )?;
+        let nf = slice_bars as f64;
+        for (pair, metric) in metric_map {
+            if let Some(slice_vec) = out.get_mut(&pair) {
+                let mean = metric.sharpe * metric.volatility;
+                let sum = mean * nf;
+                let variance = metric.volatility * metric.volatility;
+                let sumsq = variance * (nf - 1.0) + (sum * sum) / nf;
+                slice_vec[slice_idx] = SliceReturnStats { sum, sumsq };
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_spa_slice_sums_for_candidates(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    first_fast_params: Option<&HashMap<String, f64>>,
+    first_slow_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    first_strategy: &StrategyConfig,
+    first_halftrend: &Option<HalfTrendRegimeFilter>,
+    combos: &[ta_strategies::double_ma::DoubleMaParams],
+    start_ts: &[usize],
+    device_id: u32,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    cfg: &SpaConfigOptional,
+) -> Result<Option<HashMap<(u16, u16), Vec<f64>>>, String> {
+    if matches!(req.backend, Backend::GpuHybridKernel { .. }) {
+        return Err(
+            "GPU fixed-candidate validation does not support SPA on GpuHybridKernel yet"
+                .to_string(),
+        );
+    }
+
+    let slices = cfg.slices.max(4);
+    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
+    if slice_bars < 2 || req.candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let mut out: HashMap<(u16, u16), Vec<f64>> = HashMap::with_capacity(req.candidates.len());
+    for cand in &req.candidates {
+        out.entry((cand.fast_len, cand.slow_len))
+            .or_insert_with(|| vec![0.0; slices]);
+    }
+
+    let nf = slice_bars as f64;
+    for slice_idx in 0..slices {
+        let t0 = common_start_t + slice_idx * slice_bars;
+        let end = t0.saturating_add(slice_bars).min(candles.close.len());
+        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
+            req,
+            candles,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            first_fast_params,
+            first_slow_params,
+            regime_filter,
+            first_strategy,
+            first_halftrend,
+            combos,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            Some((t0, end)),
+        )?;
+        for (pair, metric) in metric_map {
+            if let Some(slice_vec) = out.get_mut(&pair) {
+                slice_vec[slice_idx] = metric.sharpe * metric.volatility * nf;
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_reopt_walk_forward_stats_for_candidates(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    finalist_params: &[DoubleMaValidationParams],
+    finalist_start_ts: &[usize],
+    first_fast_params: Option<&HashMap<String, f64>>,
+    first_slow_params: Option<&HashMap<String, f64>>,
+    cfg: &ReoptWalkForwardConfigOptional,
+) -> Result<Option<ReoptWalkForwardStats>, String> {
+    if matches!(req.backend, Backend::GpuHybridKernel { .. }) {
+        return Err(
+            "GPU fixed-candidate validation does not support reopt_walk_forward on GpuHybridKernel yet"
+                .to_string(),
+        );
+    }
+    if finalist_params.is_empty() || candles.close.len() < 3 {
+        return Ok(None);
+    }
+
+    let top_n = cfg.top_n_candidates.max(1).min(finalist_params.len());
+    let finalists = &finalist_params[..top_n];
+    let finalist_start_ts = &finalist_start_ts[..top_n];
+    let device_id = validation_supports_gpu_fixed_candidates(req)?;
+    let first = &finalists[0];
+    let fast_ma_type = first.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma_type = first.slow_ma_type.trim().to_ascii_lowercase();
+    let first_fast_effective = first.fast_ma_params.as_ref().or(first_fast_params);
+    let first_slow_effective = first.slow_ma_params.as_ref().or(first_slow_params);
+    let first_halftrend = &first.halftrend_filter;
+    let first_strategy = &first.strategy;
+
+    let mut fast_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut slow_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut combos = Vec::with_capacity(finalists.len());
+    let mut finalist_entries = Vec::with_capacity(finalists.len());
+    for (idx, params) in finalists.iter().enumerate() {
+        if params.fast_ma_type.trim().to_ascii_lowercase() != fast_ma_type
+            || params.slow_ma_type.trim().to_ascii_lowercase() != slow_ma_type
+        {
+            return Err(
+                "GPU reopt_walk_forward currently requires uniform fast/slow MA types"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&params.strategy, first_strategy)? {
+            return Err(
+                "GPU reopt_walk_forward currently requires a uniform StrategyConfig"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&params.halftrend_filter, first_halftrend)? {
+            return Err(
+                "GPU reopt_walk_forward currently requires a uniform halftrend filter"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(
+            &params.fast_ma_params.as_ref().or(first_fast_params),
+            &first_fast_effective,
+        )? {
+            return Err(
+                "GPU reopt_walk_forward currently requires uniform fast MA params"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(
+            &params.slow_ma_params.as_ref().or(first_slow_params),
+            &first_slow_effective,
+        )? {
+            return Err(
+                "GPU reopt_walk_forward currently requires uniform slow MA params"
+                    .to_string(),
+            );
+        }
+        fast_periods.insert(params.fast_len);
+        slow_periods.insert(params.slow_len);
+        combos.push(ta_strategies::double_ma::DoubleMaParams {
+            fast_len: params.fast_len,
+            slow_len: params.slow_len,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        });
+        let key = serde_json::to_string(params).unwrap_or_else(|_| {
+            format!(
+                "{}:{}:{}:{}",
+                params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
+            )
+        });
+        finalist_entries.push((key, (params.fast_len, params.slow_len), finalist_start_ts[idx]));
+    }
+    let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
+    let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
+
+    let regime_filter = compute_combined_regime_filter(
+        candles,
+        &req.ma_source,
+        first_strategy,
+        first_halftrend.as_ref(),
+    )?;
+    let blockers = crate::double_ma_backend::gpu_kernel_blockers_for_request(
+        &fast_ma_type,
+        &slow_ma_type,
+        first_strategy,
+        regime_filter.is_some(),
+        ta_optimizer::ObjectiveKind::Sharpe,
+        combos.len(),
+        true,
+    );
+    if !blockers.is_empty() {
+        return Err(format!(
+            "GPU reopt_walk_forward is unavailable. Reasons: {}",
+            blockers.join("; ")
+        ));
+    }
+
+    let (fast_alma_offset, fast_alma_sigma) =
+        resolve_alma_params_for_side("fast", &fast_ma_type, first_fast_effective)?;
+    let (slow_alma_offset, slow_alma_sigma) =
+        resolve_alma_params_for_side("slow", &slow_ma_type, first_slow_effective)?;
+
+    let n = candles.close.len();
+    let common_start_t = finalist_start_ts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .min(n.saturating_sub(2));
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut t0 = common_start_t;
+    while t0 + 2 < n {
+        let train_end = t0.saturating_add(window).min(n);
+        if train_end <= t0 + 1 {
+            break;
+        }
+        let test_end = train_end.saturating_add(step).min(n);
+        if test_end <= train_end + 1 {
+            break;
+        }
+        ranges.insert((t0, train_end));
+        ranges.insert((train_end, test_end));
+        if test_end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+
+    let mut range_metrics: HashMap<(usize, usize), HashMap<(u16, u16), Metrics>> =
+        HashMap::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
+            req,
+            candles,
+            &fast_periods,
+            &slow_periods,
+            &fast_ma_type,
+            &slow_ma_type,
+            first_fast_effective,
+            first_slow_effective,
+            regime_filter.as_deref(),
+            first_strategy,
+            first_halftrend,
+            &combos,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            Some((start, end)),
+        )?;
+        range_metrics.insert((start, end), metric_map);
+    }
+
+    crate::validation_pipeline::compute_reopt_walk_forward_stats(
+        &finalist_entries,
+        n,
+        cfg,
+        |(_, _, start_t)| *start_t,
+        |(_, pair, _), start, end| {
+            range_metrics
+                .get(&(start, end))
+                .and_then(|m| m.get(pair))
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing GPU reopt metrics for pair ({}, {}) in range {}..{}",
+                        pair.0, pair.1, start, end
+                    )
+                })
+        },
+        |(key, _, _)| key.clone(),
+    )
+    .ok_or_else(|| "GPU reopt_walk_forward did not produce any windows".to_string())
+    .map(Some)
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_reopt_walk_forward_stats_for_candidates(
+    _req: &DoubleMaValidationRequest,
+    _candles: &vector_ta::utilities::data_loader::Candles,
+    _finalist_params: &[DoubleMaValidationParams],
+    _finalist_start_ts: &[usize],
+    _first_fast_params: Option<&HashMap<String, f64>>,
+    _first_slow_params: Option<&HashMap<String, f64>>,
+    _cfg: &ReoptWalkForwardConfigOptional,
+) -> Result<Option<ReoptWalkForwardStats>, String> {
+    Err("GPU reopt_walk_forward requires cuda and cuda-backtest-kernel features".to_string())
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn serialized_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
+    Ok(serde_json::to_string(a).map_err(|e| e.to_string())?
+        == serde_json::to_string(b).map_err(|e| e.to_string())?)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn candidate_start_t(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    base_first_valid: usize,
+    params: &DoubleMaValidationParams,
+) -> Result<usize, String> {
+    let n = candles.close.len();
+    let trade_offset = if params.strategy.trade_on_next_bar { 1 } else { 0 };
+    let ma_warmup = base_first_valid
+        .saturating_add((params.fast_len as usize).max(params.slow_len as usize).saturating_sub(1))
+        .saturating_add(trade_offset);
+    let mut start_t = ma_warmup;
+    let halftrend_trend = compute_combined_regime_filter(
+        candles,
+        ma_source,
+        &params.strategy,
+        params.halftrend_filter.as_ref(),
+    )?;
+    if let Some(trend) = halftrend_trend.as_ref() {
+        if trend.len() != n {
+            return Err("regime trend series length mismatch".to_string());
+        }
+        let fv_ht = first_finite_idx(trend)
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        start_t = start_t.max(fv_ht);
+    }
+    if let Some(ks) = crate::double_ma::compute_kaufman_stop_series(candles, &params.strategy)?.as_ref()
+    {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        start_t = start_t.max(fv_k_long.max(fv_k_short));
+    }
+    Ok(start_t)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn try_prepare_gpu_fixed_candidate_validation(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    base_first_valid: usize,
+) -> Result<GpuFixedCandidateValidationEval, String> {
+    let device_id = validation_supports_gpu_fixed_candidates(req)?;
+    if req.reopt_walk_forward.is_some() && matches!(req.backend, Backend::GpuHybridKernel { .. }) {
+        return Err(
+            "GPU fixed-candidate validation does not support reopt_walk_forward on GpuHybridKernel yet"
+                .to_string(),
+        );
+    }
+    if let Some(reason) = gpu_validation_feature_blocker(req) {
+        return Err(reason);
+    }
+    if req.candidates.is_empty() {
+        return Err("no candidates to validate".to_string());
+    }
+
+    let first = req
+        .candidates
+        .first()
+        .ok_or_else(|| "no candidates to validate".to_string())?;
+    let fast_ma_type = first.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma_type = first.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma_type.is_empty() || slow_ma_type.is_empty() {
+        return Err("candidate MA types cannot be empty".to_string());
+    }
+
+    let first_fast_params = first.fast_ma_params.as_ref().or(req.fast_ma_params.as_ref());
+    let first_slow_params = first.slow_ma_params.as_ref().or(req.slow_ma_params.as_ref());
+    let first_strategy = &first.strategy;
+    let first_halftrend = &first.halftrend_filter;
+    if let Some(reason) = gpu_validation_strategy_blocker(first_strategy) {
+        return Err(reason);
+    }
+
+    let mut fast_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut slow_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut combos = Vec::with_capacity(req.candidates.len());
+    let mut start_ts = Vec::with_capacity(req.candidates.len());
+
+    for cand in &req.candidates {
+        if cand.fast_ma_type.trim().to_ascii_lowercase() != fast_ma_type
+            || cand.slow_ma_type.trim().to_ascii_lowercase() != slow_ma_type
+        {
+            return Err(
+                "GPU fixed-candidate validation currently requires uniform fast/slow MA types"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.strategy, first_strategy)? {
+            return Err(
+                "GPU fixed-candidate validation currently requires a uniform StrategyConfig"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.halftrend_filter, first_halftrend)? {
+            return Err(
+                "GPU fixed-candidate validation currently requires a uniform halftrend filter"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.fast_ma_params.as_ref().or(req.fast_ma_params.as_ref()), &first_fast_params)?
+        {
+            return Err(
+                "GPU fixed-candidate validation currently requires uniform fast MA params"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.slow_ma_params.as_ref().or(req.slow_ma_params.as_ref()), &first_slow_params)?
+        {
+            return Err(
+                "GPU fixed-candidate validation currently requires uniform slow MA params"
+                    .to_string(),
+            );
+        }
+
+        fast_periods.insert(cand.fast_len);
+        slow_periods.insert(cand.slow_len);
+        combos.push(ta_strategies::double_ma::DoubleMaParams {
+            fast_len: cand.fast_len,
+            slow_len: cand.slow_len,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        });
+        start_ts.push(candidate_start_t(candles, &req.ma_source, base_first_valid, cand)?);
+    }
+
+    let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
+    let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
+    let regime_filter = compute_combined_regime_filter(
+        candles,
+        &req.ma_source,
+        first_strategy,
+        first_halftrend.as_ref(),
+    )?;
+    let blockers = crate::double_ma_backend::gpu_kernel_blockers_for_request(
+        &fast_ma_type,
+        &slow_ma_type,
+        first_strategy,
+        regime_filter.is_some(),
+        ta_optimizer::ObjectiveKind::Sharpe,
+        combos.len(),
+        true,
+    );
+    if !blockers.is_empty() {
+        return Err(format!(
+            "GPU fixed-candidate validation is unavailable. Reasons: {}",
+            blockers.join("; ")
+        ));
+    }
+
+    let (fast_alma_offset, fast_alma_sigma) =
+        resolve_alma_params_for_side("fast", &fast_ma_type, first_fast_params)?;
+    let (slow_alma_offset, slow_alma_sigma) =
+        resolve_alma_params_for_side("slow", &slow_ma_type, first_slow_params)?;
+    let metric_by_pair = gpu_fixed_candidate_metric_map(
+        req,
+        candles,
+        &fast_periods,
+        &slow_periods,
+        &fast_ma_type,
+        &slow_ma_type,
+        first_fast_params,
+        first_slow_params,
+        regime_filter.as_deref(),
+        first_strategy,
+        first_halftrend,
+        &combos,
+        device_id,
+        fast_alma_offset,
+        fast_alma_sigma,
+        slow_alma_offset,
+        slow_alma_sigma,
+        None,
+    )?;
+
+    let mut ordered_metrics = Vec::with_capacity(req.candidates.len());
+    for cand in &req.candidates {
+        let metric = metric_by_pair
+            .0
+            .get(&(cand.fast_len, cand.slow_len))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "GPU fixed-candidate validation did not return metrics for pair ({}, {})",
+                    cand.fast_len, cand.slow_len
+                )
+            })?;
+        ordered_metrics.push(metric);
+    }
+
+    let walk_forwards = if let Some(walk_cfg) = req.walk_forward.as_ref() {
+        Some(compute_gpu_walk_forward_stats_for_candidates(
+            req,
+            candles,
+            &fast_periods,
+            &slow_periods,
+            &fast_ma_type,
+            &slow_ma_type,
+            first_fast_params,
+            first_slow_params,
+            regime_filter.as_deref(),
+            first_strategy,
+            first_halftrend,
+            &combos,
+            &start_ts,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            walk_cfg,
+        )?)
+    } else {
+        None
+    };
+    let cscv_slices = if let Some(cscv_cfg) = req.cscv_pbo.as_ref() {
+        compute_gpu_cscv_slice_stats_for_candidates(
+            req,
+            candles,
+            &fast_periods,
+            &slow_periods,
+            &fast_ma_type,
+            &slow_ma_type,
+            first_fast_params,
+            first_slow_params,
+            regime_filter.as_deref(),
+            first_strategy,
+            first_halftrend,
+            &combos,
+            &start_ts,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            cscv_cfg,
+        )?
+    } else {
+        None
+    };
+    let spa_slice_sums = if let Some(spa_cfg) = req.spa.as_ref() {
+        compute_gpu_spa_slice_sums_for_candidates(
+            req,
+            candles,
+            &fast_periods,
+            &slow_periods,
+            &fast_ma_type,
+            &slow_ma_type,
+            first_fast_params,
+            first_slow_params,
+            regime_filter.as_deref(),
+            first_strategy,
+            first_halftrend,
+            &combos,
+            &start_ts,
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            spa_cfg,
+        )?
+    } else {
+        None
+    };
+
+    Ok(GpuFixedCandidateValidationEval {
+        metrics: ordered_metrics,
+        start_ts,
+        walk_forwards,
+        cscv_slices,
+        spa_slice_sums,
+        backend_used: metric_by_pair.1,
+        backend_route: metric_by_pair.2,
+        backend_fallback_reason: metric_by_pair.3,
+    })
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn try_prepare_gpu_fixed_candidate_validation(
+    req: &DoubleMaValidationRequest,
+    _candles: &vector_ta::utilities::data_loader::Candles,
+    _base_first_valid: usize,
+) -> Result<GpuFixedCandidateValidationEval, String> {
+    let _ = req;
+    Err("GPU fixed-candidate validation requires cuda and cuda-backtest-kernel features".to_string())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -51,6 +1084,8 @@ pub struct DoubleMaValidationParams {
 #[derive(Clone, Debug, Deserialize)]
 pub struct DoubleMaValidationRequest {
     pub data_id: String,
+    #[serde(default = "default_validation_backend")]
+    pub backend: Backend,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
     pub fast_ma_params: Option<HashMap<String, f64>>,
@@ -58,6 +1093,10 @@ pub struct DoubleMaValidationRequest {
     pub candidates: Vec<DoubleMaValidationParams>,
     #[serde(default)]
     pub walk_forward: Option<WalkForwardConfigOptional>,
+    #[serde(default)]
+    pub reopt_walk_forward: Option<ReoptWalkForwardConfigOptional>,
+    #[serde(default)]
+    pub spa: Option<SpaConfigOptional>,
     #[serde(default)]
     pub perturb: Option<PerturbConfig>,
     #[serde(default)]
@@ -79,6 +1118,12 @@ pub struct DoubleMaValidationRequest {
     #[serde(default)]
     pub min_dsr: Option<f64>,
     #[serde(default)]
+    pub min_cscv_oos_rank_frac: Option<f64>,
+    #[serde(default)]
+    pub min_cscv_oos_metric: Option<f64>,
+    #[serde(default)]
+    pub max_pbo: Option<f64>,
+    #[serde(default)]
     pub validation_context: Option<ValidationArtifactContext>,
 }
 
@@ -94,6 +1139,9 @@ pub struct DoubleMaValidationCandidateResult {
     pub psr: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dsr: Option<f64>,
+    pub track_record_bars: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_track_record_length_bars: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub walk_forward: Option<WalkForwardStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,6 +1154,8 @@ pub struct DoubleMaValidationCandidateResult {
     pub cross_ticker_pareto: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cscv_pbo: Option<CscvCandidatePboStats>,
+    #[serde(default)]
+    pub validation_verdict: ValidationCandidateVerdict,
     pub robust_score: f64,
     pub robust_pareto: bool,
 }
@@ -129,6 +1179,10 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
         self.cscv_pbo.as_ref().and_then(|c| c.oos_metric_p50)
     }
 
+    fn cscv_oos_rank_frac_p50(&self) -> Option<f64> {
+        self.cscv_pbo.as_ref().and_then(|c| c.oos_rank_frac_p50)
+    }
+
     fn psr(&self) -> Option<f64> {
         self.psr
     }
@@ -143,6 +1197,22 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
 
     fn set_dsr(&mut self, v: Option<f64>) {
         self.dsr = v;
+    }
+
+    fn track_record_bars(&self) -> usize {
+        self.track_record_bars
+    }
+
+    fn min_track_record_length_bars(&self) -> Option<usize> {
+        self.min_track_record_length_bars
+    }
+
+    fn set_track_record_bars(&mut self, v: usize) {
+        self.track_record_bars = v;
+    }
+
+    fn set_min_track_record_length_bars(&mut self, v: Option<usize>) {
+        self.min_track_record_length_bars = v;
     }
 
     fn robust_score(&self) -> f64 {
@@ -160,17 +1230,35 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
     fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>) {
         self.cscv_pbo = v;
     }
+
+    fn validation_verdict(&self) -> &ValidationCandidateVerdict {
+        &self.validation_verdict
+    }
+
+    fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict) {
+        self.validation_verdict = v;
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DoubleMaValidationResult {
     pub data_id: String,
     pub runtime_ms: u64,
+    pub backend_used: BackendUsed,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_route: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_fallback_reason: Option<String>,
     pub candidates: Vec<DoubleMaValidationCandidateResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reopt_walk_forward: Option<ReoptWalkForwardStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spa: Option<SpaValidationStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker: Option<CrossTickerValidationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cscv_pbo: Option<CscvPboResult>,
+    pub run_verdict: ValidationRunVerdict,
 }
 
 fn emit_progress(
@@ -453,6 +1541,45 @@ fn slice_return_stats_for_series(
     out
 }
 
+fn slice_return_sums_for_series(
+    series: &CandidateSeries<'_>,
+    start_t: usize,
+    slice_bars: usize,
+    slices: usize,
+) -> Vec<f64> {
+    slice_return_stats_for_series(series, start_t, slice_bars, slices)
+        .into_iter()
+        .map(|entry| entry.sum)
+        .collect()
+}
+
+fn benchmark_slice_returns(
+    lr: &[f64],
+    start_t: usize,
+    slice_bars: usize,
+    slices: usize,
+    benchmark: &SpaBenchmarkKind,
+) -> Vec<f64> {
+    let mut out = vec![0.0; slices];
+    if slices == 0 || slice_bars == 0 {
+        return out;
+    }
+    let end_t = start_t
+        .saturating_add(slice_bars.saturating_mul(slices))
+        .min(lr.len());
+    for t in start_t..end_t {
+        let slice_idx = (t - start_t) / slice_bars;
+        if slice_idx >= slices {
+            break;
+        }
+        out[slice_idx] += match benchmark {
+            SpaBenchmarkKind::Flat => 0.0,
+            SpaBenchmarkKind::BuyAndHold => lr[t].exp_m1(),
+        };
+    }
+    out
+}
+
 fn repair_params(p: &mut DoubleMaValidationParams) {
     // MA lengths
     if p.fast_len == 0 {
@@ -674,6 +1801,93 @@ fn perturb_params(
     p
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+fn compute_gpu_perturb_stats_for_candidate(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    base_first_valid: usize,
+    lr: &[f64],
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    base: &DoubleMaValidationParams,
+    cfg: &PerturbConfig,
+    cancel: &AtomicBool,
+    rng: &mut StdRng,
+) -> Result<Option<PerturbStats>, String> {
+    let iters = cfg.iterations.min(1024);
+    if iters == 0 {
+        return Ok(None);
+    }
+
+    let mut sharpes: Vec<f64> = Vec::with_capacity(iters);
+    let mut dds: Vec<f64> = Vec::with_capacity(iters);
+    let mut pnls: Vec<f64> = Vec::with_capacity(iters);
+    let mut pnl_pos: usize = 0;
+
+    for _ in 0..iters {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        let pp = perturb_params(base, cfg, rng);
+        let temp_req = DoubleMaValidationRequest {
+            data_id: req.data_id.clone(),
+            backend: req.backend.clone(),
+            ma_source: ma_source.to_string(),
+            fast_ma_params: fast_ma_params.cloned(),
+            slow_ma_params: slow_ma_params.cloned(),
+            candidates: vec![pp.clone()],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: req.seed,
+            max_candidates: 1,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let metric = match try_prepare_gpu_fixed_candidate_validation(&temp_req, candles, base_first_valid) {
+            Ok(eval) => eval.metrics.into_iter().next().ok_or_else(|| {
+                "GPU perturb validation returned no metrics for perturbed candidate".to_string()
+            })?,
+            Err(_) => {
+                let s2 = build_candidate_series(
+                    candles,
+                    lr,
+                    base_first_valid,
+                    ma_source,
+                    fast_ma_params,
+                    slow_ma_params,
+                    &pp,
+                )?;
+                eval_metrics_window(&s2, s2.start_t, s2.n)
+            }
+        };
+
+        if metric.pnl > 0.0 {
+            pnl_pos += 1;
+        }
+        sharpes.push(metric.sharpe);
+        dds.push(metric.max_dd);
+        pnls.push(metric.pnl);
+    }
+
+    Ok(Some(crate::validation_pipeline::summarize_perturb_stats(
+        cfg, iters, &sharpes, &dds, &pnls, pnl_pos,
+    )))
+}
+
 pub fn run_double_ma_validation_blocking_with_candles(
     mut req: DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -726,8 +1940,31 @@ pub fn run_double_ma_validation_blocking_with_candles(
     let cscv_cfg = req.cscv_pbo.clone();
     let validation_engine = req.validation_engine;
     let iterative_cfg = req.iterative.clone();
-    let min_psr = crate::validation_stats::sanitize_probability_gate(req.min_psr);
-    let min_dsr = crate::validation_stats::sanitize_probability_gate(req.min_dsr);
+    let reopt_walk_cfg = req.reopt_walk_forward.clone();
+    let spa_cfg = req.spa.clone();
+    let mut gpu_validation_fallback_reason: Option<String> = None;
+    let gpu_fixed_eval = match validation_supports_gpu_fixed_candidates(&req) {
+        Ok(_) => match try_prepare_gpu_fixed_candidate_validation(&req, candles, base_first_valid) {
+            Ok(eval) => Some(eval),
+            Err(err) => {
+                gpu_validation_fallback_reason = Some(err);
+                None
+            }
+        },
+        Err(reason) => {
+            if !matches!(req.backend, Backend::CpuOnly) {
+                gpu_validation_fallback_reason = Some(reason);
+            }
+            None
+        }
+    };
+    let hard_gates = sanitize_hard_gates(
+        req.min_psr,
+        req.min_dsr,
+        req.min_cscv_oos_rank_frac,
+        req.min_cscv_oos_metric,
+        req.max_pbo,
+    );
 
     let (out, cscv_pbo) = crate::validation_core::run_validation_candidates(
         &req.candidates,
@@ -736,11 +1973,65 @@ pub fn run_double_ma_validation_blocking_with_candles(
         progress,
         "double_ma_validate",
         "double_ma_validate_cscv_prep",
-        min_psr,
-        min_dsr,
+        &hard_gates,
         cscv_cfg.as_ref(),
         candles.close.len(),
-        |_, p, rng| {
+        |idx, p, rng| {
+            if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+                let in_sample = gpu_eval.metrics[idx].clone();
+                let series_start_t = gpu_eval.start_ts[idx];
+                let walk_forward = gpu_eval
+                    .walk_forwards
+                    .as_ref()
+                    .and_then(|stats| stats.get(idx).cloned());
+                let robust_score =
+                    crate::validation_pipeline::robust_score_from_metrics(
+                        &in_sample,
+                        walk_forward
+                            .as_ref()
+                            .map(|w| (w.sharpe_median, w.max_dd_worst)),
+                    );
+                let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
+                    compute_gpu_perturb_stats_for_candidate(
+                        &req,
+                        candles,
+                        base_first_valid,
+                        &lr,
+                        &ma_source,
+                        fast_ma_params.as_ref(),
+                        slow_ma_params.as_ref(),
+                        p,
+                        cfg,
+                        cancel,
+                        rng,
+                    )?
+                } else {
+                    None
+                };
+                return Ok((
+                    DoubleMaValidationCandidateResult {
+                        params: p.clone(),
+                        in_sample,
+                        iterative_in_sample: None,
+                        iterative_delta: None,
+                        psr: None,
+                        dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
+                        walk_forward,
+                        perturb,
+                        trade_bootstrap: None,
+                        cross_ticker: None,
+                        cross_ticker_pareto: None,
+                        cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
+                        robust_score,
+                        robust_pareto: false,
+                    },
+                    series_start_t,
+                    n.saturating_sub(series_start_t),
+                ));
+            }
             let series = build_candidate_series(
                 candles,
                 &lr,
@@ -832,12 +2123,15 @@ pub fn run_double_ma_validation_blocking_with_candles(
                     iterative_delta,
                     psr: None,
                     dsr: None,
+                    track_record_bars: 0,
+                    min_track_record_length_bars: None,
                     walk_forward,
                     perturb,
                     trade_bootstrap,
                     cross_ticker: None,
                     cross_ticker_pareto: None,
                     cscv_pbo: None,
+                    validation_verdict: ValidationCandidateVerdict::default(),
                     robust_score,
                     robust_pareto: false,
                 },
@@ -846,6 +2140,15 @@ pub fn run_double_ma_validation_blocking_with_candles(
             ))
         },
         |cand, cscv_start_t, slice_bars, slices| {
+            if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+                if let Some(slice_map) = gpu_eval.cscv_slices.as_ref() {
+                    if let Some(slice_stats) =
+                        slice_map.get(&(cand.params.fast_len, cand.params.slow_len))
+                    {
+                        return Ok(slice_stats.clone());
+                    }
+                }
+            }
             let series = build_candidate_series(
                 candles,
                 &lr,
@@ -864,13 +2167,176 @@ pub fn run_double_ma_validation_blocking_with_candles(
         },
     )?;
 
+    let reopt_walk_forward = if let Some(cfg) = reopt_walk_cfg.as_ref() {
+        let finalist_params: Vec<DoubleMaValidationParams> = out
+            .iter()
+            .take(cfg.top_n_candidates.max(1))
+            .map(|cand| cand.params.clone())
+            .collect();
+        if gpu_fixed_eval.is_some() {
+            let finalist_start_ts: Vec<usize> = out
+                .iter()
+                .take(cfg.top_n_candidates.max(1))
+                .map(|cand| candles.close.len().saturating_sub(cand.track_record_bars))
+                .collect();
+            compute_gpu_reopt_walk_forward_stats_for_candidates(
+                &req,
+                candles,
+                &finalist_params,
+                &finalist_start_ts,
+                fast_ma_params.as_ref(),
+                slow_ma_params.as_ref(),
+                cfg,
+            )?
+        } else {
+            let mut finalist_series: Vec<(String, CandidateSeries<'_>)> =
+                Vec::with_capacity(finalist_params.len());
+            for params in finalist_params {
+                let key = serde_json::to_string(&params).unwrap_or_else(|_| {
+                    format!(
+                        "{}:{}:{}:{}",
+                        params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
+                    )
+                });
+                finalist_series.push((
+                    key,
+                    build_candidate_series(
+                        candles,
+                        &lr,
+                        base_first_valid,
+                        &ma_source,
+                        fast_ma_params.as_ref(),
+                        slow_ma_params.as_ref(),
+                        &params,
+                    )?,
+                ));
+            }
+            crate::validation_pipeline::compute_reopt_walk_forward_stats(
+                &finalist_series,
+                candles.close.len(),
+                cfg,
+                |(_, series)| series.start_t,
+                |(_, series), t0, end| eval_metrics_window(series, t0, end),
+                |(key, _)| key.clone(),
+            )
+        }
+    } else {
+        None
+    };
+    let spa = if let Some(cfg) = spa_cfg.as_ref() {
+        let common_start_t = out
+            .iter()
+            .map(|cand| candles.close.len().saturating_sub(cand.track_record_bars))
+            .max()
+            .unwrap_or(0);
+        let slices = cfg.slices.max(4);
+        let slice_bars = candles
+            .close
+            .len()
+            .saturating_sub(common_start_t)
+            .checked_div(slices)
+            .unwrap_or(0);
+        if slice_bars >= 2 {
+            let benchmark =
+                benchmark_slice_returns(&lr, common_start_t, slice_bars, slices, &cfg.benchmark);
+            let mut candidate_keys: Vec<String> = Vec::with_capacity(out.len());
+            let mut candidate_slice_returns: Vec<Vec<f64>> = Vec::with_capacity(out.len());
+            for cand in &out {
+                let params = cand.params.clone();
+                let key = serde_json::to_string(&params).unwrap_or_else(|_| {
+                    format!(
+                        "{}:{}:{}:{}",
+                        params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
+                    )
+                });
+                candidate_keys.push(key);
+                if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+                    if let Some(slice_map) = gpu_eval.spa_slice_sums.as_ref() {
+                        if let Some(slice_sums) = slice_map.get(&(params.fast_len, params.slow_len))
+                        {
+                            candidate_slice_returns.push(slice_sums.clone());
+                            continue;
+                        }
+                    }
+                }
+                let series = build_candidate_series(
+                    candles,
+                    &lr,
+                    base_first_valid,
+                    &ma_source,
+                    fast_ma_params.as_ref(),
+                    slow_ma_params.as_ref(),
+                    &params,
+                )?;
+                candidate_slice_returns.push(slice_return_sums_for_series(
+                    &series,
+                    common_start_t,
+                    slice_bars,
+                    slices,
+                ));
+            }
+            crate::validation_pipeline::compute_spa_validation_stats(
+                &candidate_keys,
+                &candidate_slice_returns,
+                &benchmark,
+                cfg,
+                req.seed,
+                cancel,
+            )
+        } else {
+            Some(SpaValidationStats {
+                scope: "validation_candidates".to_string(),
+                candidate_count: out.len(),
+                slice_count: slices,
+                bootstrap_samples: cfg.bootstrap_samples.max(1),
+                block_length: cfg.block_length.max(1),
+                benchmark: cfg.benchmark.clone(),
+                best_candidate_key: String::new(),
+                best_candidate_mean_diff: 0.0,
+                best_candidate_t_stat: 0.0,
+                p_value: 1.0,
+                passed: false,
+                skipped_reason: Some("spa_skipped_not_enough_bars_after_warmup".to_string()),
+            })
+        }
+    } else {
+        None
+    };
+
     let runtime_ms = start.elapsed().as_millis() as u64;
+    let run_verdict = build_run_verdict(
+        &out,
+        req.candidates.len(),
+        &hard_gates,
+        cscv_pbo.as_ref(),
+        spa.as_ref(),
+    );
+    let (backend_used, backend_route, backend_fallback_reason) =
+        if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+            (
+                gpu_eval.backend_used.clone(),
+                gpu_eval.backend_route.clone(),
+                gpu_eval.backend_fallback_reason.clone(),
+            )
+        } else {
+            resolve_validation_backend_runtime(
+                &req.backend,
+                false,
+                gpu_validation_fallback_reason,
+            )
+        };
     Ok(DoubleMaValidationResult {
         data_id: req.data_id,
         runtime_ms,
+        backend_used,
+        backend_route,
+        backend_fallback_reason,
         candidates: out,
+        reopt_walk_forward,
+        spa,
         cross_ticker: None,
         cscv_pbo,
+        run_verdict,
     })
 }
 
@@ -889,6 +2355,13 @@ mod tests {
     use ta_strategies::double_ma::ExitMode;
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        make_trending_candles_with_slope(len, 0.1)
+    }
+
+    fn make_trending_candles_with_slope(
+        len: usize,
+        slope: f64,
+    ) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);
         let mut high = Vec::with_capacity(len);
@@ -898,7 +2371,7 @@ mod tests {
 
         for i in 0..len {
             ts.push(i as i64);
-            let base = 100.0 + i as f64 * 0.1;
+            let base = 100.0 + i as f64 * slope;
             open.push(base);
             high.push(base + 1.0);
             low.push(base - 1.0);
@@ -940,6 +2413,50 @@ mod tests {
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn make_breakout_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        let up_start = len / 3;
+        let down_start = (len * 2) / 3;
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = if i < up_start {
+                100.0 + i as f64 * 0.02
+            } else if i < down_start {
+                102.0 + (i - up_start) as f64 * 0.35
+            } else {
+                102.0 + (down_start - up_start) as f64 * 0.35 - (i - down_start) as f64 * 0.38
+            };
+            let n = ((i as f64) / 7.0).sin() * 0.08;
+            let o = base + n;
+            let c = if i < down_start {
+                base + 0.30 + n
+            } else {
+                base - 0.30 + n
+            };
+            open.push(o);
+            close.push(c);
+            high.push(o.max(c) + 0.22);
+            low.push(o.min(c) - 0.22);
+            let burst = if i < up_start {
+                950.0
+            } else if i < down_start {
+                2_200.0
+            } else {
+                2_450.0
+            };
+            vol.push(burst + ((i % 11) as f64) * 35.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
     #[test]
     fn double_ma_validation_smoke_runs_and_returns_stats() {
         let candles = make_trending_candles(5000);
@@ -958,6 +2475,7 @@ mod tests {
 
         let req = DoubleMaValidationRequest {
             data_id: "test".to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
@@ -966,6 +2484,7 @@ mod tests {
                 window_bars: 2000,
                 step_bars: 1000,
             }),
+            reopt_walk_forward: None,
             perturb: Some(PerturbConfig {
                 iterations: 3,
                 pct_min: 0.01,
@@ -975,12 +2494,16 @@ mod tests {
             trade_bootstrap: Some(TradeBootstrapConfig { simulations: 50 }),
             cross_ticker: None,
             cscv_pbo: None,
+            spa: None,
             seed: 1,
             max_candidates: 32,
             validation_engine: ValidationEngine::Vectorized,
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -995,6 +2518,1519 @@ mod tests {
         assert_eq!(c.perturb.as_ref().unwrap().iterations, 3);
         assert_eq!(c.trade_bootstrap.as_ref().unwrap().simulations, 50);
         assert!(c.robust_score.is_finite());
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("CpuOnly"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[test]
+    fn double_ma_validation_gpu_request_reports_backend_route() {
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "gpu-route".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+        {
+            assert!(matches!(res.backend_used, BackendUsed::Gpu));
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+            assert!(res.backend_fallback_reason.is_none());
+        }
+        #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+        {
+            assert!(matches!(res.backend_used, BackendUsed::Cpu));
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+            assert!(
+                res.backend_fallback_reason
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("requires cuda")
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_matches_cpu_metrics_plain() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-plain".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-plain".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!(
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4,
+                "pnl mismatch cpu={} gpu={} route={:?}",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl,
+                gpu_res.backend_route
+            );
+            assert!(
+                (cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 5e-5,
+                "sharpe mismatch cpu={} gpu={} route={:?}",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe,
+                gpu_res.backend_route
+            );
+            assert!(
+                (cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 5e-5,
+                "max_dd mismatch cpu={} gpu={} route={:?}",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd,
+                gpu_res.backend_route
+            );
+            assert_eq!(
+                cpu.track_record_bars, gpu.track_record_bars,
+                "track_record mismatch cpu={} gpu={} route={:?}",
+                cpu.track_record_bars,
+                gpu.track_record_bars,
+                gpu_res.backend_route
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_walk_forward_matches_cpu_plain() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let walk_forward = Some(WalkForwardConfigOptional {
+            window_bars: 512,
+            step_bars: 256,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-wf".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: walk_forward.clone(),
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu walk_forward validation");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-wf".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu walk_forward validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_wf = cpu.walk_forward.as_ref().expect("cpu walk_forward");
+            let gpu_wf = gpu.walk_forward.as_ref().expect("gpu walk_forward");
+            assert_eq!(cpu_wf.windows, gpu_wf.windows);
+            assert!(
+                (cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 5e-2,
+                "sharpe_median mismatch cpu={} gpu={}",
+                cpu_wf.sharpe_median,
+                gpu_wf.sharpe_median
+            );
+            assert!(
+                (cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 5e-2,
+                "sharpe_worst mismatch cpu={} gpu={}",
+                cpu_wf.sharpe_worst,
+                gpu_wf.sharpe_worst
+            );
+            assert!(
+                (cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-5,
+                "max_dd_median mismatch cpu={} gpu={}",
+                cpu_wf.max_dd_median,
+                gpu_wf.max_dd_median
+            );
+            assert!(
+                (cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-5,
+                "max_dd_worst mismatch cpu={} gpu={}",
+                cpu_wf.max_dd_worst,
+                gpu_wf.max_dd_worst
+            );
+            assert!(
+                (cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3,
+                "pnl_median mismatch cpu={} gpu={}",
+                cpu_wf.pnl_median,
+                gpu_wf.pnl_median
+            );
+            assert!(
+                (cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3,
+                "pnl_worst mismatch cpu={} gpu={}",
+                cpu_wf.pnl_worst,
+                gpu_wf.pnl_worst
+            );
+            assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+            assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_walk_forward_reports_cpu_fallback_route() {
+        let candles = make_choppy_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_period: 14,
+            regime_hybrid_adx_enter: 22.0,
+            regime_hybrid_adx_exit: 18.0,
+            regime_hybrid_reversion_entry_rel: 0.004,
+            regime_hybrid_reversion_exit_rel: 0.0015,
+            ..StrategyConfig::default()
+        };
+        let res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-wf".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![DoubleMaValidationParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy,
+                    halftrend_filter: None,
+                }],
+                walk_forward: Some(WalkForwardConfigOptional {
+                    window_bars: 512,
+                    step_bars: 256,
+                }),
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid walk_forward fallback");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("walk_forward on GpuHybridKernel")
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_matches_cpu_metrics_regime_hybrid() {
+        let candles = make_choppy_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_period: 14,
+            regime_hybrid_adx_enter: 22.0,
+            regime_hybrid_adx_exit: 18.0,
+            regime_hybrid_reversion_entry_rel: 0.004,
+            regime_hybrid_reversion_exit_rel: 0.0015,
+            ..StrategyConfig::default()
+        };
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-hybrid".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(
+            gpu_res
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("GpuHybridKernel")
+        );
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!(
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4,
+                "pnl mismatch cpu={} gpu={} route={:?}",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl,
+                gpu_res.backend_route
+            );
+            assert!(
+                (cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 5e-5,
+                "sharpe mismatch cpu={} gpu={} route={:?}",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe,
+                gpu_res.backend_route
+            );
+            assert!(
+                (cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 5e-5,
+                "max_dd mismatch cpu={} gpu={} route={:?}",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd,
+                gpu_res.backend_route
+            );
+            assert_eq!(
+                cpu.track_record_bars, gpu.track_record_bars,
+                "track_record mismatch cpu={} gpu={} route={:?}",
+                cpu.track_record_bars,
+                gpu.track_record_bars,
+                gpu_res.backend_route
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_matches_cpu_metrics_trend_quality_adx_off() {
+        let candles = make_trending_candles_with_slope(4096, 0.07);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            ..StrategyConfig::default()
+        };
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-composite-trend".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-composite-trend".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
+            assert!((cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 2e-4);
+            assert!((cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-5);
+            assert_eq!(cpu.track_record_bars, gpu.track_record_bars);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_matches_cpu_metrics_trend_quality_adx_on() {
+        let candles = make_trending_candles_with_slope(4096, 0.07);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            trend_quality_use_adx: true,
+            trend_quality_adx_period: 14,
+            trend_quality_adx_min: 20.0,
+            ..StrategyConfig::default()
+        };
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-composite-trend-adx".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-composite-trend-adx".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(
+            gpu_res
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("GpuHybridKernel")
+        );
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
+            assert!((cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 2e-4);
+            assert!((cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-5);
+            assert_eq!(cpu.track_record_bars, gpu.track_record_bars);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_walk_forward_matches_cpu_trend_quality_adx_off() {
+        let candles = make_trending_candles_with_slope(4096, 0.07);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            ..StrategyConfig::default()
+        };
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+        ];
+        let walk_forward = Some(WalkForwardConfigOptional {
+            window_bars: 512,
+            step_bars: 256,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-composite-trend-wf".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: walk_forward.clone(),
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu walk_forward validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-composite-trend-wf".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu walk_forward validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_wf = cpu.walk_forward.as_ref().expect("cpu walk_forward");
+            let gpu_wf = gpu.walk_forward.as_ref().expect("gpu walk_forward");
+            assert_eq!(cpu_wf.windows, gpu_wf.windows);
+            assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 5e-2);
+            assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 5e-2);
+            assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-5);
+            assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-5);
+            assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
+            assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+            assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+            assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_matches_cpu_metrics_breakout_momentum_adx_off() {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let strategy = crate::strategy_presets::breakout_strategy_for_kernel();
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-breakout".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-breakout".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
+            assert!((cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 2e-5);
+            assert!((cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-5);
+            assert_eq!(cpu.track_record_bars, gpu.track_record_bars);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_matches_cpu_metrics_breakout_momentum_adx_on() {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let mut strategy = crate::strategy_presets::breakout_strategy_for_kernel();
+        strategy.breakout_use_adx = true;
+        strategy.breakout_adx_period = 14;
+        strategy.breakout_adx_min = 20.0;
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-breakout-adx".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-breakout-adx".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert!(
+            gpu_res
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("GpuHybridKernel")
+        );
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
+            assert!((cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 2e-4);
+            assert!((cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-5);
+            assert_eq!(cpu.track_record_bars, gpu.track_record_bars);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_walk_forward_reports_cpu_fallback_route_trend_quality_adx_on()
+    {
+        let candles = make_trending_candles_with_slope(4096, 0.07);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            trend_quality_use_adx: true,
+            trend_quality_adx_period: 14,
+            trend_quality_adx_min: 20.0,
+            ..StrategyConfig::default()
+        };
+        let res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-composite-trend-wf".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![DoubleMaValidationParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy,
+                    halftrend_filter: None,
+                }],
+                walk_forward: Some(WalkForwardConfigOptional {
+                    window_bars: 512,
+                    step_bars: 256,
+                }),
+                reopt_walk_forward: None,
+                spa: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                seed: 1,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid walk_forward fallback");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("walk_forward on GpuHybridKernel")
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_cscv_reports_cpu_fallback_route_breakout_momentum_adx_on()
+    {
+        let candles = make_breakout_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let mut strategy = crate::strategy_presets::breakout_strategy_for_kernel();
+        strategy.breakout_use_adx = true;
+        strategy.breakout_adx_period = 14;
+        strategy.breakout_adx_min = 20.0;
+
+        let res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-breakout-cscv".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy,
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: Some(CscvPboConfig {
+                    slices: 8,
+                    max_combinations: 1000,
+                    threshold: 0.0,
+                }),
+                spa: None,
+                seed: 1,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid cscv fallback");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("CSCV/PBO on GpuHybridKernel")
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn breakout_validation_gpu_parity_diagnostic() {
+        let candles = make_breakout_candles(5000);
+        let strategy = crate::strategy_presets::breakout_strategy_for_kernel();
+        let params = DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: strategy.clone(),
+            halftrend_filter: None,
+        };
+        let lr = compute_log_returns_f64(&candles.close);
+        let base_first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
+            &candles,
+            "close",
+        ))
+        .expect("base first valid");
+        let series = build_candidate_series(
+            &candles,
+            &lr,
+            base_first_valid,
+            "close",
+            None,
+            None,
+            &params,
+        )
+        .expect("cpu series");
+        let gpu_like_start_t =
+            candidate_start_t(&candles, "close", base_first_valid, &params).expect("gpu start_t");
+        let cpu_f64 = eval_metrics_window(&series, series.start_t, series.n);
+        let fast_f32: Vec<f32> = series.fast.iter().map(|&v| v as f32).collect();
+        let slow_f32: Vec<f32> = series.slow.iter().map(|&v| v as f32).collect();
+        let regime = series
+            .halftrend_trend
+            .as_deref()
+            .expect("breakout regime filter");
+        let cpu_f32_same_start =
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
+                &lr,
+                &fast_f32,
+                &slow_f32,
+                regime,
+                series.start_t,
+                &series.cfg,
+            );
+        let cpu_f32_gpu_start =
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
+                &lr,
+                &fast_f32,
+                &slow_f32,
+                regime,
+                gpu_like_start_t,
+                &series.cfg,
+            );
+
+        let regime = compute_combined_regime_filter(&candles, "close", &strategy, None)
+            .expect("regime filter");
+        let kernel = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel(
+            &candles,
+            &[params.fast_len],
+            &[params.slow_len],
+            "sma",
+            "sma",
+            "close",
+            None,
+            None,
+            regime.as_deref(),
+            &strategy,
+            ta_optimizer::ObjectiveKind::Sharpe,
+            1,
+            true,
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id: 0,
+                fast_alma_offset: 0.85,
+                fast_alma_sigma: 6.0,
+                slow_alma_offset: 0.85,
+                slow_alma_sigma: 6.0,
+            },
+            None,
+            None,
+            1,
+            0,
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect("gpu kernel metrics");
+        let gpu = kernel
+            .all
+            .as_ref()
+            .and_then(|all| all.first().map(|(_, m)| m.clone()))
+            .expect("gpu metric");
+
+        assert_eq!(series.start_t, gpu_like_start_t);
+        assert!((cpu_f64.pnl - cpu_f32_same_start.pnl).abs() < 1e-9);
+        assert!((cpu_f64.sharpe - cpu_f32_same_start.sharpe).abs() < 1e-9);
+        assert!((cpu_f32_gpu_start.pnl - gpu.pnl).abs() < 1e-4);
+        assert!((cpu_f32_gpu_start.sharpe - gpu.sharpe).abs() < 2e-5);
+        assert!((cpu_f32_gpu_start.max_dd - gpu.max_dd).abs() < 1e-5);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn trend_quality_validation_gpu_parity_diagnostic() {
+        let candles = make_trending_candles_with_slope(4096, 0.10);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            ..StrategyConfig::default()
+        };
+        let opt = run_double_ma_optimization_blocking_with_candles(
+            DoubleMaRequest {
+                backend: Backend::CpuOnly,
+                data_id: "trend-quality-parity".to_string(),
+                fast_range: (5, 12, 1),
+                slow_range: (20, 40, 2),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                mode: OptimizationMode::Grid,
+                top_k: Some(1),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("optimization run");
+        let (best, _) = opt.top.first().expect("top candidate");
+        let params = DoubleMaValidationParams {
+            fast_ma_type: best.fast_ma_type.clone(),
+            slow_ma_type: best.slow_ma_type.clone(),
+            fast_len: best.fast_len,
+            slow_len: best.slow_len,
+            fast_ma_params: best.fast_ma_params.clone(),
+            slow_ma_params: best.slow_ma_params.clone(),
+            strategy: strategy.clone(),
+            halftrend_filter: None,
+        };
+
+        let lr = compute_log_returns_f64(&candles.close);
+        let base_first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
+            &candles,
+            "close",
+        ))
+        .expect("base first valid");
+        let series = build_candidate_series(
+            &candles,
+            &lr,
+            base_first_valid,
+            "close",
+            None,
+            None,
+            &params,
+        )
+        .expect("cpu series");
+        let gpu_like_start_t =
+            candidate_start_t(&candles, "close", base_first_valid, &params).expect("gpu start_t");
+        let cpu_f64 = eval_metrics_window(&series, series.start_t, series.n);
+        let fast_f32: Vec<f32> = series.fast.iter().map(|&v| v as f32).collect();
+        let slow_f32: Vec<f32> = series.slow.iter().map(|&v| v as f32).collect();
+        let regime = series
+            .halftrend_trend
+            .as_deref()
+            .expect("trend-quality regime filter");
+        let cpu_f32_gpu_start =
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
+                &lr,
+                &fast_f32,
+                &slow_f32,
+                regime,
+                gpu_like_start_t,
+                &series.cfg,
+            );
+
+        let regime = compute_combined_regime_filter(&candles, "close", &strategy, None)
+            .expect("regime filter");
+        let kernel = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel(
+            &candles,
+            &[params.fast_len],
+            &[params.slow_len],
+            "sma",
+            "sma",
+            "close",
+            None,
+            None,
+            regime.as_deref(),
+            &strategy,
+            ta_optimizer::ObjectiveKind::Sharpe,
+            1,
+            true,
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id: 0,
+                fast_alma_offset: 0.85,
+                fast_alma_sigma: 6.0,
+                slow_alma_offset: 0.85,
+                slow_alma_sigma: 6.0,
+            },
+            None,
+            None,
+            1,
+            0,
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect("gpu kernel metrics");
+        let gpu = kernel
+            .all
+            .as_ref()
+            .and_then(|all| all.first().map(|(_, m)| m.clone()))
+            .expect("gpu metric");
+
+        assert_eq!(series.start_t, gpu_like_start_t);
+        assert!((cpu_f64.pnl - cpu_f32_gpu_start.pnl).abs() < 1e-9);
+        assert!((cpu_f64.sharpe - cpu_f32_gpu_start.sharpe).abs() < 1e-9);
+        assert!((cpu_f32_gpu_start.pnl - gpu.pnl).abs() < 1e-4);
+        assert!((cpu_f32_gpu_start.sharpe - gpu.sharpe).abs() < 2e-4);
+        assert!((cpu_f32_gpu_start.max_dd - gpu.max_dd).abs() < 1e-5);
     }
 
     #[test]
@@ -1063,11 +4099,13 @@ mod tests {
 
         let req = DoubleMaValidationRequest {
             data_id: "test".to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![a, b],
             walk_forward: None,
+            reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
@@ -1076,12 +4114,16 @@ mod tests {
                 max_combinations: 1000,
                 threshold: 0.0,
             }),
+            spa: None,
             seed: 1,
             max_candidates: 32,
             validation_engine: ValidationEngine::Vectorized,
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -1091,6 +4133,775 @@ mod tests {
         assert!(res.cscv_pbo.is_some());
         assert!(res.candidates[0].cscv_pbo.is_some());
         assert!(res.candidates[1].cscv_pbo.is_some());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_cscv_matches_cpu_plain() {
+        let candles = make_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 12,
+                slow_len: 36,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+        let cscv = Some(CscvPboConfig {
+            slices: 8,
+            max_combinations: 1000,
+            threshold: 0.0,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-cscv".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: cscv.clone(),
+                spa: None,
+                seed: 1,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cscv validation");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-cscv".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: cscv,
+                spa: None,
+                seed: 1,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cscv validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_cscv = cpu_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
+        assert_eq!(cpu_cscv.slices, gpu_cscv.slices);
+        assert_eq!(cpu_cscv.slice_bars, gpu_cscv.slice_bars);
+        assert!((cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-3);
+        assert!((cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-3);
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-6);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-3
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_spa_matches_cpu_plain() {
+        let candles = make_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 12,
+                slow_len: 36,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+        let spa = Some(SpaConfigOptional {
+            slices: 8,
+            bootstrap_samples: 128,
+            block_length: 3,
+            benchmark: SpaBenchmarkKind::BuyAndHold,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-spa".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa: spa.clone(),
+                seed: 7,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu spa validation");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-spa".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa,
+                seed: 7,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu spa validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_spa = cpu_res.spa.as_ref().expect("cpu spa");
+        let gpu_spa = gpu_res.spa.as_ref().expect("gpu spa");
+        assert_eq!(cpu_spa.slice_count, gpu_spa.slice_count);
+        assert_eq!(cpu_spa.candidate_count, gpu_spa.candidate_count);
+        assert_eq!(cpu_spa.best_candidate_key, gpu_spa.best_candidate_key);
+        assert!((cpu_spa.best_candidate_mean_diff - gpu_spa.best_candidate_mean_diff).abs() < 1e-3);
+        assert!((cpu_spa.best_candidate_t_stat - gpu_spa.best_candidate_t_stat).abs() < 1e-3);
+        assert!((cpu_spa.p_value - gpu_spa.p_value).abs() < 1e-9);
+        assert_eq!(cpu_spa.passed, gpu_spa.passed);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_perturb_matches_cpu_plain() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| DoubleMaValidationRequest {
+            data_id: "gpu-perturb-plain".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: Some(PerturbConfig {
+                iterations: 32,
+                pct_min: 0.05,
+                pct_max: 0.10,
+                flip_bool_prob: 0.1,
+            }),
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 59,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu perturb validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu perturb validation");
+
+        let cpu_pt = cpu_res.candidates[0].perturb.as_ref().expect("cpu perturb");
+        let gpu_pt = gpu_res.candidates[0].perturb.as_ref().expect("gpu perturb");
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(cpu_pt.iterations, gpu_pt.iterations);
+        assert!((cpu_pt.sharpe_mean - gpu_pt.sharpe_mean).abs() < 1e-4);
+        assert!((cpu_pt.sharpe_worst - gpu_pt.sharpe_worst).abs() < 1e-4);
+        assert!((cpu_pt.max_dd_mean - gpu_pt.max_dd_mean).abs() < 1e-4);
+        assert!((cpu_pt.max_dd_worst - gpu_pt.max_dd_worst).abs() < 1e-4);
+        assert!((cpu_pt.pnl_mean - gpu_pt.pnl_mean).abs() < 1e-4);
+        assert!((cpu_pt.pnl_worst - gpu_pt.pnl_worst).abs() < 1e-4);
+        assert!((cpu_pt.pnl_positive_frac - gpu_pt.pnl_positive_frac).abs() < 1e-12);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_cscv_reports_cpu_fallback_route() {
+        let candles = make_choppy_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_period: 14,
+            regime_hybrid_adx_enter: 22.0,
+            regime_hybrid_adx_exit: 18.0,
+            regime_hybrid_reversion_entry_rel: 0.004,
+            regime_hybrid_reversion_exit_rel: 0.0015,
+            ..StrategyConfig::default()
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-cscv".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy,
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: Some(CscvPboConfig {
+                    slices: 8,
+                    max_combinations: 1000,
+                    threshold: 0.0,
+                }),
+                spa: None,
+                seed: 1,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid cscv fallback");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("CSCV/PBO on GpuHybridKernel")
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_spa_reports_cpu_fallback_route() {
+        let candles = make_choppy_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_period: 14,
+            regime_hybrid_adx_enter: 22.0,
+            regime_hybrid_adx_exit: 18.0,
+            regime_hybrid_reversion_entry_rel: 0.004,
+            regime_hybrid_reversion_exit_rel: 0.0015,
+            ..StrategyConfig::default()
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-spa".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy,
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa: Some(SpaConfigOptional {
+                    slices: 8,
+                    bootstrap_samples: 64,
+                    block_length: 3,
+                    benchmark: SpaBenchmarkKind::BuyAndHold,
+                }),
+                seed: 3,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid spa fallback");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SPA on GpuHybridKernel")
+        );
+    }
+
+    #[test]
+    fn double_ma_validation_reopt_walk_forward_smoke() {
+        let candles = make_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 14,
+                slow_len: 42,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let req = DoubleMaValidationRequest {
+            data_id: "reopt".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: None,
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 2000,
+                step_bars: 1000,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 3,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("reopt validation run");
+        let stats = res.reopt_walk_forward.as_ref().expect("reopt stats");
+        assert!(stats.windows > 0);
+        assert!(stats.unique_winners > 0);
+        assert!(stats.dominant_winner_frac.is_finite());
+        assert!(stats.forward_positive_pnl_frac.is_finite());
+        assert!(stats.winner_param_drift_mean.is_finite());
+        assert!(stats.winner_param_drift_max.is_finite());
+        assert_eq!(stats.windows, stats.winner_sequence.len());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_reopt_walk_forward_matches_cpu_plain() {
+        let candles = make_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 12,
+                slow_len: 36,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+        let reopt = Some(ReoptWalkForwardConfigOptional {
+            window_bars: 2000,
+            step_bars: 1000,
+            top_n_candidates: 2,
+        });
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "cpu-reopt".to_string(),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: candidates.clone(),
+                walk_forward: None,
+                reopt_walk_forward: reopt.clone(),
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa: None,
+                seed: 11,
+                max_candidates: 16,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu reopt validation");
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-reopt".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: None,
+                reopt_walk_forward: reopt,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa: None,
+                seed: 11,
+                max_candidates: 16,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu reopt validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_stats = cpu_res.reopt_walk_forward.as_ref().expect("cpu reopt");
+        let gpu_stats = gpu_res.reopt_walk_forward.as_ref().expect("gpu reopt");
+        assert_eq!(cpu_stats.windows, gpu_stats.windows);
+        assert_eq!(cpu_stats.top_n_candidates, gpu_stats.top_n_candidates);
+        assert_eq!(cpu_stats.unique_winners, gpu_stats.unique_winners);
+        assert_eq!(cpu_stats.winner_changes, gpu_stats.winner_changes);
+        assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
+        assert!(
+            (cpu_stats.dominant_winner_frac - gpu_stats.dominant_winner_frac).abs() < 1e-6
+        );
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
+        assert!(
+            (cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6
+        );
+        assert!((cpu_stats.train_score_median - gpu_stats.train_score_median).abs() < 5e-2);
+        assert!(
+            (cpu_stats.forward_positive_pnl_frac - gpu_stats.forward_positive_pnl_frac).abs()
+                < 1e-6
+        );
+        assert!(
+            (cpu_stats.forward_sharpe_median - gpu_stats.forward_sharpe_median).abs() < 5e-2
+        );
+        assert!(
+            (cpu_stats.forward_sharpe_worst - gpu_stats.forward_sharpe_worst).abs() < 5e-2
+        );
+        assert!(
+            (cpu_stats.forward_max_dd_median - gpu_stats.forward_max_dd_median).abs() < 1e-5
+        );
+        assert!(
+            (cpu_stats.forward_max_dd_worst - gpu_stats.forward_max_dd_worst).abs() < 1e-5
+        );
+        assert!((cpu_stats.forward_pnl_median - gpu_stats.forward_pnl_median).abs() < 1e-3);
+        assert!((cpu_stats.forward_pnl_worst - gpu_stats.forward_pnl_worst).abs() < 1e-3);
+        assert_eq!(cpu_stats.forward_trades_median, gpu_stats.forward_trades_median);
+        assert_eq!(cpu_stats.forward_trades_worst, gpu_stats.forward_trades_worst);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_hybrid_reopt_walk_forward_reports_cpu_fallback_route() {
+        let candles = make_choppy_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_period: 14,
+            regime_hybrid_adx_enter: 22.0,
+            regime_hybrid_adx_exit: 18.0,
+            regime_hybrid_reversion_entry_rel: 0.004,
+            regime_hybrid_reversion_exit_rel: 0.0015,
+            ..StrategyConfig::default()
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-hybrid-reopt".to_string(),
+                backend: Backend::GpuHybridKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy,
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                    window_bars: 1024,
+                    step_bars: 512,
+                    top_n_candidates: 2,
+                }),
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa: None,
+                seed: 5,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu hybrid reopt fallback");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuHybridKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("reopt_walk_forward on GpuHybridKernel")
+        );
     }
 
     #[test]
@@ -1111,15 +4922,18 @@ mod tests {
 
         let req = DoubleMaValidationRequest {
             data_id: "test".to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![base],
             walk_forward: None,
+            reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
             cscv_pbo: None,
+            spa: None,
             seed: 9,
             max_candidates: 32,
             validation_engine: ValidationEngine::Iterative,
@@ -1129,6 +4943,9 @@ mod tests {
             },
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -1201,15 +5018,18 @@ mod tests {
 
             let mk_req = |validation_engine: ValidationEngine| DoubleMaValidationRequest {
                 data_id: format!("opt-vs-iter-{label}"),
+                backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates: candidates.clone(),
                 walk_forward: None,
+                reopt_walk_forward: None,
                 perturb: None,
                 trade_bootstrap: None,
                 cross_ticker: None,
                 cscv_pbo: None,
+                spa: None,
                 seed: 17,
                 max_candidates: 32,
                 validation_engine,
@@ -1219,6 +5039,9 @@ mod tests {
                 },
                 min_psr: None,
                 min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
                 validation_context: None,
             };
 
@@ -1344,6 +5167,7 @@ mod tests {
 
         let req = DoubleMaValidationRequest {
             data_id: "det".to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
@@ -1352,6 +5176,7 @@ mod tests {
                 window_bars: 1024,
                 step_bars: 512,
             }),
+            reopt_walk_forward: None,
             perturb: Some(PerturbConfig {
                 iterations: 8,
                 pct_min: 0.01,
@@ -1361,12 +5186,16 @@ mod tests {
             trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
             cross_ticker: None,
             cscv_pbo: None,
+            spa: None,
             seed: 77,
             max_candidates: 16,
             validation_engine: ValidationEngine::Vectorized,
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -1407,21 +5236,27 @@ mod tests {
 
         let base_req = DoubleMaValidationRequest {
             data_id: "gate".to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
             candidates: vec![mk(8, 24), mk(12, 36), mk(20, 60)],
             walk_forward: None,
+            reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
             cscv_pbo: None,
+            spa: None,
             seed: 77,
             max_candidates: 16,
             validation_engine: ValidationEngine::Vectorized,
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -1440,10 +5275,16 @@ mod tests {
             run_double_ma_validation_blocking_with_candles(gated_req, &candles, &cancel, None)
                 .expect("gated run");
 
-        assert!(gated.candidates.len() <= baseline.candidates.len());
+        assert_eq!(gated.candidates.len(), baseline.candidates.len());
+        assert!(
+            gated.run_verdict.candidates_survived_hard_gates <= gated.candidates.len(),
+            "survivor count must not exceed total candidates"
+        );
         for cand in &gated.candidates {
-            assert!(cand.psr.unwrap_or(0.0) >= 0.80);
-            assert!(cand.dsr.unwrap_or(0.0) >= 0.60);
+            let passed = cand.validation_verdict.passed;
+            let psr_ok = cand.psr.unwrap_or(0.0) >= 0.80;
+            let dsr_ok = cand.dsr.unwrap_or(0.0) >= 0.60;
+            assert_eq!(passed, psr_ok && dsr_ok);
         }
     }
 
@@ -1454,6 +5295,7 @@ mod tests {
 
         let req = DoubleMaValidationRequest {
             data_id: "invalid".to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
@@ -1474,16 +5316,21 @@ mod tests {
                 halftrend_filter: None,
             }],
             walk_forward: None,
+            reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
             cscv_pbo: None,
+            spa: None,
             seed: 1,
             max_candidates: 1,
             validation_engine: ValidationEngine::Vectorized,
             iterative: IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -1584,21 +5431,27 @@ mod tests {
 
             let val_req = DoubleMaValidationRequest {
                 data_id: label.to_string(),
+                backend: Backend::CpuOnly,
                 ma_source: "close".to_string(),
                 fast_ma_params: None,
                 slow_ma_params: None,
                 candidates,
                 walk_forward: None,
+                reopt_walk_forward: None,
                 perturb: None,
                 trade_bootstrap: None,
                 cross_ticker: None,
                 cscv_pbo: None,
+                spa: None,
                 seed: 7,
                 max_candidates: 16,
                 validation_engine: ValidationEngine::Vectorized,
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
                 min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
                 validation_context: None,
             };
 

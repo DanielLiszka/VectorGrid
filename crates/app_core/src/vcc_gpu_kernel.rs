@@ -20,6 +20,7 @@ pub struct VccGpuDeviceSignalMatrices<'a> {
     pub trend_rows: usize,
     pub fast_squeeze_rows: &'a [u64],
     pub fast_momentum_rows: &'a [u64],
+    pub fast_momentum_host_row_major: Option<&'a [f32]>,
     pub trend_rows_ptr: &'a [u64],
 }
 
@@ -113,8 +114,18 @@ fn validate_inputs_device_rows(
         return Err("VCC GPU close length mismatch".to_string());
     }
     if signals.fast_squeeze_rows.len() != signals.fast_rows
-        || signals.fast_momentum_rows.len() != signals.fast_rows
     {
+        return Err("VCC GPU fast row-pointer length mismatch".to_string());
+    }
+    if let Some(host_rows) = signals.fast_momentum_host_row_major {
+        let expected = signals
+            .fast_rows
+            .checked_mul(signals.cols)
+            .ok_or_else(|| "VCC GPU fast momentum host matrix overflow".to_string())?;
+        if host_rows.len() != expected {
+            return Err("VCC GPU fast momentum host matrix length mismatch".to_string());
+        }
+    } else if signals.fast_momentum_rows.len() != signals.fast_rows {
         return Err("VCC GPU fast row-pointer length mismatch".to_string());
     }
     if signals.trend_rows_ptr.len() != signals.trend_rows {
@@ -219,8 +230,6 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
 
         let d_fast_sq_rows =
             DeviceBuffer::from_slice(signals.fast_squeeze_rows).map_err(|e| e.to_string())?;
-        let d_fast_mom_rows =
-            DeviceBuffer::from_slice(signals.fast_momentum_rows).map_err(|e| e.to_string())?;
         let d_trend_rows =
             DeviceBuffer::from_slice(signals.trend_rows_ptr).map_err(|e| e.to_string())?;
 
@@ -235,8 +244,11 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
 
         let mut d_fast_sq = unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }
             .map_err(|e| e.to_string())?;
-        let mut d_fast_mom = unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }
-            .map_err(|e| e.to_string())?;
+        let mut d_fast_mom = if let Some(host_rows) = signals.fast_momentum_host_row_major {
+            DeviceBuffer::from_slice(host_rows).map_err(|e| e.to_string())?
+        } else {
+            unsafe { DeviceBuffer::<f32>::uninitialized(fast_mat_len) }.map_err(|e| e.to_string())?
+        };
         let mut d_trend = unsafe { DeviceBuffer::<f32>::uninitialized(trend_mat_len) }
             .map_err(|e| e.to_string())?;
 
@@ -247,13 +259,17 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
             signals.cols,
             &mut d_fast_sq,
         )?;
-        launch_pack_rows_u64_ptr_f32(
-            rt,
-            &d_fast_mom_rows,
-            signals.fast_rows,
-            signals.cols,
-            &mut d_fast_mom,
-        )?;
+        if signals.fast_momentum_host_row_major.is_none() {
+            let d_fast_mom_rows =
+                DeviceBuffer::from_slice(signals.fast_momentum_rows).map_err(|e| e.to_string())?;
+            launch_pack_rows_u64_ptr_f32(
+                rt,
+                &d_fast_mom_rows,
+                signals.fast_rows,
+                signals.cols,
+                &mut d_fast_mom,
+            )?;
+        }
         launch_pack_rows_u64_ptr_f32(
             rt,
             &d_trend_rows,

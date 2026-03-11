@@ -24,9 +24,51 @@ function installDefaultInvokeCommandMock(): void {
   invokeCommandMock.mockImplementation(async (command: string) => {
     if (command === 'run_double_ma_validation' || command === 'run_composite_validation') {
       return {
+        backend_used: 'Cpu',
+        backend_route: 'GpuKernel->CpuOnly',
+        backend_fallback_reason: 'GPU validation runtime not implemented yet; using CPU validation.',
         candidates: [{ score: 1 }],
         runtime_ms: 123,
         cross_ticker: { datasets: [] },
+        reopt_walk_forward: {
+          windows: 3,
+          top_n_candidates: 2,
+          unique_winners: 2,
+          winner_changes: 1,
+          winner_param_drift_mean: 0.15,
+          winner_param_drift_max: 0.3,
+          forward_positive_pnl_frac: 2 / 3,
+          forward_sharpe_median: 0.42,
+          forward_max_dd_worst: 0.11,
+          winner_sequence: [
+            JSON.stringify({ fast_ma_type: 'sma', fast_len: 10, slow_ma_type: 'alma', slow_len: 40 }),
+            JSON.stringify({ fast_ma_type: 'sma', fast_len: 12, slow_ma_type: 'alma', slow_len: 44 }),
+            JSON.stringify({ fast_ma_type: 'sma', fast_len: 12, slow_ma_type: 'alma', slow_len: 44 }),
+          ],
+        },
+        run_verdict: {
+          passed: true,
+          approved: false,
+          candidates_tested: 1,
+          candidates_survived_hard_gates: 1,
+          approved_candidate_count: 0,
+          final_recommendation: 'evidence_too_short_min_track_record',
+          top_candidate_track_record_bars: 120,
+          top_candidate_min_track_record_length_bars: 240,
+        },
+        spa: {
+          scope: 'validation_candidates',
+          candidate_count: 1,
+          slice_count: 8,
+          bootstrap_samples: 300,
+          block_length: 4,
+          benchmark: 'buy_hold',
+          best_candidate_key: 'sma(10)/alma(40)',
+          best_candidate_mean_diff: 0.02,
+          best_candidate_t_stat: 1.4,
+          p_value: 0.17,
+          passed: false,
+        },
       }
     }
     if (command === 'save_run_artifact') {
@@ -87,6 +129,14 @@ describe('validationService', () => {
       seed: '1',
       minPsr: '',
       minDsr: '',
+      spaEnable: true,
+      spaSlices: '8',
+      spaBootstrapSamples: '300',
+      spaBlockLength: '4',
+      reoptWfEnable: true,
+      reoptWfWindow: '12000',
+      reoptWfStep: '3000',
+      reoptWfTopN: '5',
       wfEnable: false,
       wfWindow: '20000',
       wfStep: '20000',
@@ -111,6 +161,7 @@ describe('validationService', () => {
         req: {
           strategy_kind: 'DoubleMa',
           data_id: 'data-123',
+          backend: { backend: 'GpuKernel', device_id: 0 },
           ma_source: 'close',
           fast_ma_types: ['sma'],
           slow_ma_types: ['alma'],
@@ -138,8 +189,20 @@ describe('validationService', () => {
     const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
     expect(command).toBe('run_double_ma_validation')
     expect(req.data_id).toBe('data-123')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
     expect(req.max_candidates).toBe(32)
     expect(req.seed).toBe(1)
+    expect(req.spa).toEqual({
+      slices: 8,
+      bootstrap_samples: 300,
+      block_length: 4,
+      benchmark: 'buy_hold',
+    })
+    expect(req.reopt_walk_forward).toEqual({
+      window_bars: 12000,
+      step_bars: 3000,
+      top_n_candidates: 5,
+    })
     expect(req.cross_ticker).toEqual({
       max_datasets: 2,
       datasets: [{ csv_path: 'C:/data/a.csv', label: 'A' }],
@@ -148,6 +211,11 @@ describe('validationService', () => {
     expect(Array.isArray(validationState.validationColumns)).toBe(true)
     expect(Array.isArray(validationState.validationRows)).toBe(true)
     expect(Number(validationState.tableRowCount || 0)).toBeGreaterThan(0)
+    expect(String(validationState.validationReoptMeta || '')).toContain('reopt_wf:')
+    expect(String(validationState.validationMeta || '')).toContain('backend=Cpu')
+    expect(String(validationState.validationMeta || '')).toContain('route=GpuKernel->CpuOnly')
+    expect(String(validationState.validationMeta || '')).toContain('spa=0.170 fail')
+    expect(String(validationState.validationMeta || '')).toContain('rec=evidence_too_short_min_track_record')
     expect(invokeCommandMock).toHaveBeenCalledWith('save_run_artifact', expect.any(Object))
 
   })
@@ -243,6 +311,59 @@ describe('validationService', () => {
     const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
     const candidates = Array.isArray(req.candidates) ? req.candidates as Array<Record<string, unknown>> : []
     expect(candidates[0]?.asr).toMatchObject({ angle_deg_min: 10, z_entry: 2.0 })
+  })
+
+  it('routes Mkcs validation through composite validation command', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '8',
+      seed: '5',
+      minPsr: '',
+      minDsr: '',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-11T00:00:00Z',
+        req: {
+          strategy_kind: 'Mkcs',
+          data_id: 'mkcs-data',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['ema'],
+          slow_ma_types: ['sma'],
+          strategy: { fee_bps: 1.25 },
+          mkcs: { compression_threshold: 0.01, reexpansion_threshold: 0.03 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 48,
+                mkcs: { stddev_period: 20, breakout_lookback: 30 },
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const [command, args] = firstValidationRunCall()
+    expect(command).toBe('run_composite_validation')
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    const candidates = Array.isArray(req.candidates) ? req.candidates as Array<Record<string, unknown>> : []
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(candidates[0]?.mkcs).toEqual({ stddev_period: 20, breakout_lookback: 30 })
   })
 
   it('prefers Vue validation store inputs when store source is ready', async () => {

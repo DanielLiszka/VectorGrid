@@ -230,7 +230,7 @@ const visible = computed(() => String(controlsTab.value || '').trim() === 'strat
 const strategyKindNormalized = computed(() => String(strategyKind.value || 'DoubleMa').trim() || 'DoubleMa')
 const isDoubleLikeKind = computed(() => {
   const kind = strategyKindNormalized.value
-  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'Asr' || kind === 'Vemr' || kind === 'Rocb' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'Asr' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 })
 const showDmConstraints = computed(() => isDoubleLikeKind.value)
 const showAsrControls = computed(() => strategyKindNormalized.value === 'Asr')

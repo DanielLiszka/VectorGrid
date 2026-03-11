@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use ta_app_core::{
-    read_candles_from_csv_compat, CompositeParams, CompositeValidationRequest, CscvPboConfig,
+    read_candles_from_csv_compat, Backend, CompositeParams, CompositeValidationRequest, CscvPboConfig,
     DoubleMaValidationParams, DoubleMaValidationRequest, MetaClusterConfig, MetaGroupingMode,
     MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest, ValidationEngine,
 };
@@ -140,6 +140,7 @@ fn main() -> Result<(), String> {
     // Double-MA validation snapshot
     let double_req = DoubleMaValidationRequest {
         data_id: "AAPL".to_string(),
+        backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
         fast_ma_params: None,
         slow_ma_params: None,
@@ -169,6 +170,8 @@ fn main() -> Result<(), String> {
             window_bars: 3_000,
             step_bars: 3_000,
         }),
+        reopt_walk_forward: None,
+        spa: None,
         perturb: Some(ta_app_core::PerturbConfig {
             iterations: 16,
             pct_min: 0.01,
@@ -188,6 +191,9 @@ fn main() -> Result<(), String> {
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
         validation_context: None,
     };
 
@@ -229,6 +235,7 @@ fn main() -> Result<(), String> {
         vcc: None,
         vemr: None,
         rocb: None,
+        mkcs: None,
         macz: ta_app_core::composite_cpu::MaczGateParams::default(),
         ott: ta_app_core::composite_cpu::OttGateParams::default(),
         signal_mode: CompositeSignalMode::HardGate,
@@ -237,6 +244,7 @@ fn main() -> Result<(), String> {
 
     let composite_req_aapl = CompositeValidationRequest {
         data_id: "AAPL".to_string(),
+        backend: Backend::CpuOnly,
         ma_source: "close".to_string(),
         fast_ma_params: None,
         slow_ma_params: None,
@@ -245,6 +253,8 @@ fn main() -> Result<(), String> {
             window_bars: 3_000,
             step_bars: 3_000,
         }),
+        reopt_walk_forward: None,
+        spa: None,
         perturb: Some(ta_app_core::PerturbConfig {
             iterations: 16,
             pct_min: 0.01,
@@ -264,6 +274,9 @@ fn main() -> Result<(), String> {
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
         validation_context: None,
     };
     let composite_req_nvda = CompositeValidationRequest {

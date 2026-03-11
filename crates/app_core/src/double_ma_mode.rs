@@ -14,8 +14,7 @@ pub(crate) fn resolve_optimization_mode(
         OptimizationMode::CoarseToFine => OptimizationModeResolved::CoarseToFine,
         OptimizationMode::GpuVdps => OptimizationModeResolved::GpuVdps,
         OptimizationMode::Auto => {
-            let can_adapt =
-                !include_all && export_all_csv_path.is_none() && heatmap_bins == 0;
+            let can_adapt = !include_all && export_all_csv_path.is_none() && heatmap_bins == 0;
             if can_adapt && total_combos > 500_000 {
                 OptimizationModeResolved::CoarseToFine
             } else {
@@ -69,23 +68,11 @@ mod tests {
             OptimizationModeResolved::CoarseToFine
         ));
         assert!(matches!(
-            resolve_optimization_mode(
-                OptimizationMode::Auto,
-                true,
-                0,
-                None,
-                750_000
-            ),
+            resolve_optimization_mode(OptimizationMode::Auto, true, 0, None, 750_000),
             OptimizationModeResolved::Grid
         ));
         assert!(matches!(
-            resolve_optimization_mode(
-                OptimizationMode::Auto,
-                false,
-                64,
-                None,
-                750_000
-            ),
+            resolve_optimization_mode(OptimizationMode::Auto, false, 64, None, 750_000),
             OptimizationModeResolved::Grid
         ));
     }
@@ -100,22 +87,12 @@ mod tests {
         )
         .is_ok());
         assert!(
-            validate_optimization_mode(
-                &OptimizationModeResolved::CoarseToFine,
-                true,
-                0,
-                None
-            )
-            .is_err()
+            validate_optimization_mode(&OptimizationModeResolved::CoarseToFine, true, 0, None)
+                .is_err()
         );
         assert!(
-            validate_optimization_mode(
-                &OptimizationModeResolved::GpuVdps,
-                false,
-                64,
-                None
-            )
-            .is_err()
+            validate_optimization_mode(&OptimizationModeResolved::GpuVdps, false, 64, None)
+                .is_err()
         );
     }
 }

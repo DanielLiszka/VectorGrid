@@ -54,6 +54,7 @@ void rocb_backtest_metrics_f32(
     const int* __restrict__ combo_channel_row_idx,
     const int* __restrict__ combo_atr_row_idx,
     const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
     int combo_count,
     unsigned int flags,
     float commission,
@@ -68,13 +69,14 @@ void rocb_backtest_metrics_f32(
     const int channel_row = combo_channel_row_idx[idx];
     const int atr_row = combo_atr_row_idx[idx];
     const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
     const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
     const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
 
     const int base = idx * out_stride;
     if (base < 0) return;
-    if (channel_row < 0 || channel_row >= channel_rows || atr_row < 0 || atr_row >= atr_rows || start_t < 0 || start_t >= T) {
+    if (channel_row < 0 || channel_row >= channel_rows || atr_row < 0 || atr_row >= atr_rows || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) {
         if (out_stride >= 10) {
             out_metrics[base + 0] = 0.0f;
             out_metrics[base + 1] = 0.0f;
@@ -117,7 +119,7 @@ void rocb_backtest_metrics_f32(
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
     const int max_trade_bars_clamped = max(max_trade_bars, 1);
 
-    for (int t = start_t; t < T; ++t) {
+    for (int t = start_t; t < end_t; ++t) {
         int sig_t = t - trade_on_next_bar;
         if (sig_t < 0) sig_t = 0;
         int prev_t = sig_t - 1;
@@ -193,6 +195,237 @@ void rocb_backtest_metrics_f32(
                 entry_price = NAN;
             } else {
                 bars_in_trade += 1;
+            }
+        }
+
+        const int desired_exec = pos_signal;
+        const int pos_prev = pos_exec;
+        int trade_delta = 0;
+        if (desired_exec != pos_prev) {
+            if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
+            else trade_delta = no_flip ? 2 : 1;
+            trades += trade_delta;
+        }
+
+        float step_r = 0.0f;
+        if (t > 0 && t < T) {
+            step_r += (float)pos_prev * lr[t];
+        }
+        if (trade_delta > 0) {
+            step_r += log_cost * (float)trade_delta;
+        }
+        log_eq += step_r;
+        log_peak = fmaxf(log_peak, log_eq);
+        max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+
+        ++n_obs;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_prev);
+        sum_pos += pos_prev;
+        pos_exec = desired_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void mkcs_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ stddev_row_major,
+    int stddev_rows,
+    int stddev_stride,
+    const float* __restrict__ upper_row_major,
+    const float* __restrict__ lower_row_major,
+    int breakout_rows,
+    int breakout_stride,
+    const int* __restrict__ combo_stddev_row_idx,
+    const int* __restrict__ combo_breakout_row_idx,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float compression_threshold,
+    float reexpansion_threshold,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int stddev_row = combo_stddev_row_idx[idx];
+    const int breakout_row = combo_breakout_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (stddev_row < 0 || stddev_row >= stddev_rows
+        || breakout_row < 0 || breakout_row >= breakout_rows
+        || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ stddev = stddev_row_major + ((size_t)stddev_row * (size_t)stddev_stride);
+    const float* __restrict__ upper = upper_row_major + ((size_t)breakout_row * (size_t)breakout_stride);
+    const float* __restrict__ lower = lower_row_major + ((size_t)breakout_row * (size_t)breakout_stride);
+
+    int pos_signal = 0;
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+
+    for (int t = start_t; t < end_t; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+        int prev_t = sig_t - 1;
+
+        const float close_now = close[sig_t];
+        const float close_prev = (prev_t >= 0) ? close[prev_t] : NAN;
+        const float stddev_now = stddev[sig_t];
+        const float stddev_prev = (prev_t >= 0) ? stddev[prev_t] : NAN;
+        const float upper_prev = (prev_t >= 0) ? upper[prev_t] : NAN;
+        const float lower_prev = (prev_t >= 0) ? lower[prev_t] : NAN;
+
+        const float denom_prev = isfinite(close_prev) ? fmaxf(fabsf(close_prev), 1.0e-12f) : NAN;
+        const float denom_now = isfinite(close_now) ? fmaxf(fabsf(close_now), 1.0e-12f) : NAN;
+        const float compression_prev = (isfinite(stddev_prev) && isfinite(denom_prev)) ? (fabsf(stddev_prev) / denom_prev) : NAN;
+        const float compression_now = (isfinite(stddev_now) && isfinite(denom_now)) ? (fabsf(stddev_now) / denom_now) : NAN;
+
+        const int compressed_prev = isfinite(compression_prev) && (compression_prev <= compression_threshold);
+        const int reexpanded_now = isfinite(compression_now) && (compression_now >= reexpansion_threshold);
+
+        const int long_breakout = compressed_prev
+            && isfinite(close_now) && isfinite(upper_prev)
+            && (close_now > upper_prev);
+        const int short_breakout = compressed_prev
+            && isfinite(close_now) && isfinite(lower_prev)
+            && (close_now < lower_prev);
+
+        if (pos_signal == 0) {
+            if (long_breakout) {
+                pos_signal = 1;
+            } else if (!long_only && short_breakout) {
+                pos_signal = -1;
+            }
+        } else if (pos_signal > 0) {
+            int exit_now = reexpanded_now
+                || (isfinite(close_now) && isfinite(upper_prev) && (close_now <= upper_prev));
+
+            if (!long_only && short_breakout) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        } else {
+            int exit_now = reexpanded_now
+                || (isfinite(close_now) && isfinite(lower_prev) && (close_now >= lower_prev));
+
+            if (long_breakout) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
             }
         }
 
@@ -750,6 +983,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     float regime_range_exit_rel,
     int first_valid,
 
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+
     float commission,
     float eps_rel,
     float stop_log,
@@ -810,10 +1047,13 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             continue;
         }
 
-        const int t_valid = first_valid + max(period_f, period_s) - 1;
-        const int start_t = t_valid + ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
+        const int pair_first_valid = first_valid + max(period_f, period_s) - 1;
+        const int t_valid = max(max(pair_first_valid, regime_first_valid), eval_start);
+        const int trade_offset = ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
+        const int start_t = max(t_valid + trade_offset, eval_start);
+        const int end_t = min(T, eval_end);
 
-        if (start_t >= T) {
+        if (start_t >= end_t) {
             if (M > 0) metrics_out[base + 0] = 0.0f;
             if (M > 1) metrics_out[base + 1] = 0.0f;
             if (M > 2) metrics_out[base + 2] = 0.0f;
@@ -836,7 +1076,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
         if (!use_risk) {
             const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
-            for (int t = loop_start; t < T; ++t) {
+            for (int t = loop_start; t < end_t; ++t) {
                 if constexpr (LOCKSTEP_TIME) {
                     if (t < start_t) {
                         continue;
@@ -905,7 +1145,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             float trade_log_ret = 0.0f;
 
             const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
-            for (int t = loop_start; t < T; ++t) {
+            for (int t = loop_start; t < end_t; ++t) {
                 if constexpr (LOCKSTEP_TIME) {
                     if (t < start_t) {
                         continue;
@@ -1025,6 +1265,50 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     }
 }
 
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1>
+static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+
+    float commission,
+    float eps_rel,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    float* __restrict__ metrics_out
+){
+    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE>(
+        fast_ma_T, slow_ma_T, lr,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        0, T,
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+    );
+}
+
 extern "C" __global__
 void double_cross_backtest_tm_flex_f32(
     const float* __restrict__ fast_ma_T,
@@ -1043,6 +1327,7 @@ void double_cross_backtest_tm_flex_f32(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1059,7 +1344,50 @@ void double_cross_backtest_tm_flex_f32(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+    );
+}
+
+extern "C" __global__
+void double_cross_backtest_tm_flex_f32_windowed(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    float* __restrict__ metrics_out
+){
+    double_cross_backtest_tm_flex_f32_body<false, false, false>(
+        fast_ma_T, slow_ma_T, lr,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1082,6 +1410,7 @@ void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1098,7 +1427,7 @@ void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1121,6 +1450,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1137,7 +1467,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1160,6 +1490,7 @@ void double_cross_backtest_tm_flex_f32_m7(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1176,7 +1507,7 @@ void double_cross_backtest_tm_flex_f32_m7(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1199,6 +1530,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1215,7 +1547,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1238,6 +1570,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1254,7 +1587,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1277,6 +1610,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1293,7 +1627,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1316,6 +1650,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1332,7 +1667,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1356,6 +1691,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1372,7 +1708,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1395,6 +1731,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1411,7 +1748,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1434,6 +1771,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1450,7 +1788,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1473,6 +1811,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk(
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1489,7 +1828,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk(
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -1512,6 +1851,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps
     float regime_range_entry_rel,
     float regime_range_exit_rel,
     int first_valid,
+    int regime_first_valid,
     float commission,
     float eps_rel,
     float stop_log,
@@ -1528,7 +1868,7 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
-        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
     );
 }
@@ -2452,6 +2792,7 @@ void asr_backtest_metrics_f32(
     const int* __restrict__ combo_fast_row_idx,
     const int* __restrict__ combo_slow_row_idx,
     const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
     int combo_count,
     unsigned int flags,
     float commission,
@@ -2475,6 +2816,7 @@ void asr_backtest_metrics_f32(
     const int fast_row = combo_fast_row_idx[idx];
     const int slow_row = combo_slow_row_idx[idx];
     const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
     const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
     const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
@@ -2494,7 +2836,7 @@ void asr_backtest_metrics_f32(
         out_metrics[base + 9] = 0.0f; // net_exposure
     }
     if (fast_row < 0 || fast_row >= fast_rows || slow_row < 0 || slow_row >= slow_rows) return;
-    if (start_t < 0 || start_t >= T) return;
+    if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
 
     const float* __restrict__ squeeze = fast_squeeze_row_major + ((size_t)fast_row * (size_t)fast_stride);
     const float* __restrict__ momentum = fast_momentum_row_major + ((size_t)fast_row * (size_t)fast_stride);
@@ -2530,7 +2872,7 @@ void asr_backtest_metrics_f32(
     const int max_trade_bars_clamped = max(max_trade_bars, 1);
     const int max_mr_trade_bars_clamped = max(max_mr_trade_bars, 1);
 
-    for (int t = start_t; t < T; ++t) {
+    for (int t = start_t; t < end_t; ++t) {
         const int sig_t = max(0, t - trade_on_next_bar);
         const int prev_t = max(0, sig_t - 1);
 
@@ -2549,10 +2891,10 @@ void asr_backtest_metrics_f32(
 
         if (squeeze_release) {
             release_confirm_left = confirm_bars_clamped;
-        } else if (release_confirm_left > 0) {
+        } else if (release_confirm_left > 0 && !squeeze_on_now) {
             release_confirm_left -= 1;
         }
-        const int release_confirmed = squeeze_release || (release_confirm_left == 0);
+        const int release_confirmed = squeeze_release || (confirm_bars_clamped > 0 && release_confirm_left == 0 && !squeeze_on_now);
 
         const int trend_ok_long = isfinite(ang_now)
             && (ang_now >= angle_deg_min)
@@ -2856,10 +3198,10 @@ void vcc_backtest_metrics_f32(
 
         if (squeeze_release) {
             release_confirm_left = confirm_bars_clamped;
-        } else if (release_confirm_left > 0 && !squeeze_on_now) {
+        } else if (release_confirm_left > 0) {
             release_confirm_left -= 1;
         }
-        const int release_confirmed = squeeze_release || (confirm_bars_clamped > 0 && release_confirm_left == 0 && !squeeze_on_now);
+        const int release_confirmed = squeeze_release || (release_confirm_left == 0);
 
         const int bullish_trend = isfinite(trend_now) && trend_now > 0.5f;
         const int bearish_trend = isfinite(trend_now) && trend_now <= 0.5f;
@@ -3034,6 +3376,7 @@ void vemr_backtest_metrics_f32(
     const int* __restrict__ combo_bb_row_idx,
     const int* __restrict__ combo_atr_row_idx,
     const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
     int combo_count,
     unsigned int flags,
     float commission,
@@ -3053,13 +3396,14 @@ void vemr_backtest_metrics_f32(
     const int bb_row = combo_bb_row_idx[idx];
     const int atr_row = combo_atr_row_idx[idx];
     const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
     const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
     const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
 
     const int base = idx * out_stride;
     if (base < 0) return;
-    if (z_row < 0 || z_row >= z_rows || bb_row < 0 || bb_row >= bb_rows || atr_row < 0 || atr_row >= atr_rows || start_t < 0 || start_t >= T) {
+    if (z_row < 0 || z_row >= z_rows || bb_row < 0 || bb_row >= bb_rows || atr_row < 0 || atr_row >= atr_rows || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) {
         if (out_stride >= 10) {
             out_metrics[base + 0] = 0.0f;
             out_metrics[base + 1] = 0.0f;
@@ -3109,7 +3453,7 @@ void vemr_backtest_metrics_f32(
     const int max_trade_bars_clamped = max(max_trade_bars, 1);
     const int require_band_touch_i = (require_band_touch != 0) ? 1 : 0;
 
-    for (int t = start_t; t < T; ++t) {
+    for (int t = start_t; t < end_t; ++t) {
         int sig_t = t - trade_on_next_bar;
         if (sig_t < 0) sig_t = 0;
 
@@ -3365,3 +3709,7 @@ void vemr_backtest_metrics_f32(
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
     }
 }
+
+
+
+

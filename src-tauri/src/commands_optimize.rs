@@ -4,8 +4,8 @@ use super::{
 };
 use crate::state::AppState;
 use crate::state::BackgroundTaskState;
-use tauri::Emitter;
 use ta_optimizer::OptimizationMode;
+use tauri::Emitter;
 
 #[tauri::command]
 pub fn cancel_background_task(bg: tauri::State<'_, BackgroundTaskState>) -> Result<(), String> {

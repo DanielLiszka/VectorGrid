@@ -927,6 +927,7 @@ type OptimizeStrategyKind =
   | 'Marrt'
   | 'Vfct'
   | 'Rocb'
+  | 'Mkcs'
   | 'Asr'
   | 'Vcc'
   | 'Vemr'
@@ -945,6 +946,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Mkcs') return 'Mkcs'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -959,7 +961,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
 function resolveOptimizationCommand(kindRaw: unknown): 'run_double_ma_optimization' | 'run_composite_cpu_optimization' | 'run_composite_mo_optimization' {
   const kind = normalizeStrategyKindRaw(kindRaw)
   if (kind === 'CompositeMo') return 'run_composite_mo_optimization'
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs' || kind === 'CompositeCpu') {
     return 'run_composite_cpu_optimization'
   }
   return 'run_double_ma_optimization'
@@ -1176,6 +1178,34 @@ async function buildAutoDoubleMaRequest(
     kaufmanStopPeriod: readStoreTextInputValue('kaufmanStopPeriod'),
     kaufmanStopMult: readStoreTextInputValue('kaufmanStopMult'),
     kaufmanStopMaType: readStoreTextInputValue('kaufmanStopMaType'),
+    trendLrPeriod: readStoreTextInputValue('trendLrPeriod'),
+    trendLrMinDeg: readStoreTextInputValue('trendLrMinDeg'),
+    trendBbwPeriod: readStoreTextInputValue('trendBbwPeriod'),
+    trendBbwMult: readStoreTextInputValue('trendBbwMult'),
+    trendBbwMin: readStoreTextInputValue('trendBbwMin'),
+    trendRocPeriod: readStoreTextInputValue('trendRocPeriod'),
+    trendUseRoc: readStoreCheckboxValue('trendUseRoc'),
+    trendUseAdx: readStoreCheckboxValue('trendUseAdx'),
+    trendAdxPeriod: readStoreTextInputValue('trendAdxPeriod'),
+    trendAdxMin: readStoreTextInputValue('trendAdxMin'),
+    regimeAdxPeriod: readStoreTextInputValue('regimeAdxPeriod'),
+    regimeAdxEnter: readStoreTextInputValue('regimeAdxEnter'),
+    regimeAdxExit: readStoreTextInputValue('regimeAdxExit'),
+    regimeRevEntryRel: readStoreTextInputValue('regimeRevEntryRel'),
+    regimeRevExitRel: readStoreTextInputValue('regimeRevExitRel'),
+    breakoutBbPeriod: readStoreTextInputValue('breakoutBbPeriod'),
+    breakoutBbMult: readStoreTextInputValue('breakoutBbMult'),
+    breakoutConfirmBars: readStoreTextInputValue('breakoutConfirmBars'),
+    breakoutMacdFast: readStoreTextInputValue('breakoutMacdFast'),
+    breakoutMacdSlow: readStoreTextInputValue('breakoutMacdSlow'),
+    breakoutMacdSignal: readStoreTextInputValue('breakoutMacdSignal'),
+    breakoutCmoPeriod: readStoreTextInputValue('breakoutCmoPeriod'),
+    breakoutCmoMinAbs: readStoreTextInputValue('breakoutCmoMinAbs'),
+    breakoutAdoscShort: readStoreTextInputValue('breakoutAdoscShort'),
+    breakoutAdoscLong: readStoreTextInputValue('breakoutAdoscLong'),
+    breakoutUseAdx: readStoreCheckboxValue('breakoutUseAdx'),
+    breakoutAdxPeriod: readStoreTextInputValue('breakoutAdxPeriod'),
+    breakoutAdxMin: readStoreTextInputValue('breakoutAdxMin'),
     pitEfiPeriod: readStoreTextInputValue('pitEfiPeriod'),
     pitVoscShortPeriod: readStoreTextInputValue('pitVoscShortPeriod'),
     pitVoscLongPeriod: readStoreTextInputValue('pitVoscLongPeriod'),
@@ -1235,11 +1265,11 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
   const fastParamState: MaParamsAndSweeps = storeMaParamState?.fast ?? emptyParamState
   const slowParamState: MaParamsAndSweeps = storeMaParamState?.slow ?? emptyParamState
 
-  if (kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct') {
+  if (kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
     return buildAutoDoubleMaRequest(context)
   }
 
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'CompositeCpu' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum') {
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs' || kind === 'CompositeCpu') {
     const maSupportMap = await getMovingAverageSupportMap()
     return buildCompositeCpuOptimizationRequest({
       context,

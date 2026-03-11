@@ -7,6 +7,7 @@ describe('validationRequestBuilder', () => {
       currentRunReq: {
         strategy_kind: 'DoubleMa',
         data_id: 'data-123',
+        backend: { backend: 'GpuKernel', device_id: 0 },
         ma_source: 'close',
         fast_ma_types: ['sma'],
         slow_ma_types: ['alma'],
@@ -31,6 +32,14 @@ describe('validationRequestBuilder', () => {
       seed: '7',
       minPsr: '0.6',
       minDsr: '0.4',
+      spaEnable: true,
+      spaSlices: '12',
+      spaBootstrapSamples: '750',
+      spaBlockLength: '5',
+      reoptWfEnable: true,
+      reoptWfWindow: '12000',
+      reoptWfStep: '3000',
+      reoptWfTopN: '5',
       wfEnable: true,
       wfWindow: '20000',
       wfStep: '5000',
@@ -52,9 +61,21 @@ describe('validationRequestBuilder', () => {
     })
 
     expect(req.data_id).toBe('data-123')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
     expect(req.seed).toBe(7)
     expect(req.min_psr).toBe(0.6)
     expect(req.min_dsr).toBe(0.4)
+    expect(req.spa).toEqual({
+      slices: 12,
+      bootstrap_samples: 750,
+      block_length: 5,
+      benchmark: 'buy_hold',
+    })
+    expect(req.reopt_walk_forward).toEqual({
+      window_bars: 12000,
+      step_bars: 3000,
+      top_n_candidates: 5,
+    })
     expect(req.candidates).toHaveLength(1)
     expect(req.candidates[0]).toMatchObject({
       fast_ma_type: 'sma',
@@ -443,6 +464,48 @@ describe('validationRequestBuilder', () => {
       fast_len: 14,
       slow_len: 55,
       vemr: { z_entry: 2.1, atr_stop_mult: 1.8 }
+    })
+  })
+
+  it('builds MKCS validation request using run-level MKCS config', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Mkcs',
+        data_id: 'mkcs-data',
+        ma_source: 'close',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['sma'],
+        strategy: { fee_bps: 1.25 },
+        mkcs: { compression_threshold: 0.01, reexpansion_threshold: 0.03 }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 12,
+            slow_len: 48,
+            mkcs: { stddev_period: 20, breakout_lookback: 30 }
+          }
+        }
+      ],
+      candidates: '5',
+      seed: '5'
+    })
+
+    expect(req.data_id).toBe('mkcs-data')
+    expect(req.seed).toBe(5)
+    expect(req.validation_context.strategy_kind).toBe('Mkcs')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req.candidates).toHaveLength(1)
+    expect(req.candidates[0]).toMatchObject({
+      fast_ma_type: 'ema',
+      slow_ma_type: 'sma',
+      fast_len: 12,
+      slow_len: 48,
+      mkcs: { stddev_period: 20, breakout_lookback: 30 }
     })
   })
 

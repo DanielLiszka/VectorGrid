@@ -877,15 +877,33 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
                     vdps: None,
                 };
 
+                let candles = if strategy_label == "breakout_momentum" || strategy_label == "vfct" {
+                    &breakout_candles
+                } else {
+                    &trend_candles
+                };
+                let route_probe = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req.clone(),
+                    candles,
+                    &cancel,
+                    None,
+                )
+                .expect("gpu kernel strategy profile route probe");
+                println!(
+                    "benchmark route double_ma/gpu_kernel_strategy/{}/200k/{}: backend_used={:?} backend_route={} fallback={}",
+                    ma.label,
+                    name,
+                    route_probe.backend_used,
+                    route_probe.backend_route.as_deref().unwrap_or("<none>"),
+                    route_probe
+                        .backend_fallback_reason
+                        .as_deref()
+                        .unwrap_or("<none>")
+                );
+
                 group.bench_function(&name, |b| {
                     b.iter(|| {
                         let req2 = req.clone();
-                        let candles =
-                            if strategy_label == "breakout_momentum" || strategy_label == "vfct" {
-                                &breakout_candles
-                            } else {
-                                &trend_candles
-                            };
                         let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
                             req2, candles, &cancel, None,
                         )

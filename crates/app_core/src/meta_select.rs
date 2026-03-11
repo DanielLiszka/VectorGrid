@@ -279,6 +279,8 @@ pub struct MetaCandidateAggregate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub train_rows: Vec<TrainDatasetRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holdout_rows: Vec<HoldoutDatasetRow>,
@@ -346,9 +348,64 @@ struct GroupAcc {
     train_rows: Vec<TrainDatasetRow>,
 }
 
+fn compute_meta_group_evidence_flags(group: &MetaCandidateAggregate) -> Vec<String> {
+    let mut flags: Vec<String> = Vec::new();
+
+    if group.samples < GROUP_EVIDENCE_MIN_SAMPLES_WARN {
+        flags.push(format!(
+            "train_samples_lt_{}",
+            GROUP_EVIDENCE_MIN_SAMPLES_WARN
+        ));
+    }
+    if group.pass_rate < GROUP_EVIDENCE_MIN_PASS_RATE_WARN {
+        flags.push(format!(
+            "train_pass_rate_lt_{:.2}",
+            GROUP_EVIDENCE_MIN_PASS_RATE_WARN
+        ));
+    }
+    if group.tail_gap > group.robust_score_p10.abs().max(0.25) {
+        flags.push("train_tail_gap_wide".to_string());
+    }
+
+    if let Some(holdout) = group.holdout.as_ref() {
+        if holdout.datasets < GROUP_EVIDENCE_MIN_HOLDOUT_DATASETS_WARN {
+            flags.push(format!(
+                "holdout_datasets_lt_{}",
+                GROUP_EVIDENCE_MIN_HOLDOUT_DATASETS_WARN
+            ));
+        }
+        if holdout.pass_rate < GROUP_EVIDENCE_MIN_HOLDOUT_PASS_RATE_WARN {
+            flags.push(format!(
+                "holdout_pass_rate_lt_{:.2}",
+                GROUP_EVIDENCE_MIN_HOLDOUT_PASS_RATE_WARN
+            ));
+        }
+        if holdout.score_p10 <= 0.0 {
+            flags.push("holdout_score_p10_non_positive".to_string());
+        }
+        if holdout.max_dd_p90 > GROUP_EVIDENCE_MAX_HOLDOUT_DD_P90_WARN {
+            flags.push(format!(
+                "holdout_dd_p90_gt_{:.2}",
+                GROUP_EVIDENCE_MAX_HOLDOUT_DD_P90_WARN
+            ));
+        }
+    }
+
+    flags
+}
+
+pub fn refresh_meta_group_evidence_flags(group: &mut MetaCandidateAggregate) {
+    group.evidence_flags = compute_meta_group_evidence_flags(group);
+}
+
 const GROUP_GATE_MIN_ROBUST_P10: f64 = 0.0;
 const GROUP_GATE_MIN_PASS_RATE: f64 = 0.15;
 const GROUP_GATE_MAX_DD_P90: f64 = 0.80;
+const GROUP_EVIDENCE_MIN_SAMPLES_WARN: usize = 3;
+const GROUP_EVIDENCE_MIN_PASS_RATE_WARN: f64 = 0.60;
+const GROUP_EVIDENCE_MIN_HOLDOUT_DATASETS_WARN: usize = 3;
+const GROUP_EVIDENCE_MIN_HOLDOUT_PASS_RATE_WARN: f64 = 0.50;
+const GROUP_EVIDENCE_MAX_HOLDOUT_DD_P90_WARN: f64 = 0.50;
 
 pub fn meta_select_from_artifacts(
     req: &MetaSelectionRequest,
@@ -363,6 +420,7 @@ pub fn meta_select_from_artifacts(
     let mut artifacts_used = 0usize;
     let mut candidates_considered = 0usize;
     let mut artifacts_rejected_by_shortlist = 0usize;
+    let mut artifacts_rejected_by_validation_verdict = 0usize;
     let mut datasets_considered: HashSet<String> = HashSet::new();
 
     for (i, art) in artifacts.iter().enumerate() {
@@ -380,6 +438,12 @@ pub fn meta_select_from_artifacts(
             None => continue,
         };
         if candidates.is_empty() {
+            continue;
+        }
+
+        if matches!(artifact_backend_validation_approved(art), Some(false)) {
+            artifacts_rejected_by_validation_verdict =
+                artifacts_rejected_by_validation_verdict.saturating_add(1);
             continue;
         }
         artifacts_used += 1;
@@ -623,9 +687,14 @@ pub fn meta_select_from_artifacts(
             meta_score,
             final_score: None,
             holdout: None,
+            evidence_flags: Vec::new(),
             train_rows: acc.train_rows,
             holdout_rows: Vec::new(),
         });
+    }
+
+    for group in &mut aggregates {
+        refresh_meta_group_evidence_flags(group);
     }
 
     aggregates.sort_by(|a, b| b.meta_score.total_cmp(&a.meta_score));
@@ -635,7 +704,14 @@ pub fn meta_select_from_artifacts(
 
     if artifacts_used == 0 {
         warnings.push("No matching run artifacts with validation results were found.".to_string());
-    } else if artifacts_rejected_by_shortlist > 0 && !req.allow_shortlist_fallback {
+    }
+    if artifacts_rejected_by_validation_verdict > 0 {
+        warnings.push(format!(
+            "Validation verdict rejected {} artifact(s): no approved candidate survived backend validation.",
+            artifacts_rejected_by_validation_verdict
+        ));
+    }
+    if artifacts_rejected_by_shortlist > 0 && !req.allow_shortlist_fallback {
         warnings.push(format!(
             "Hard shortlist rejected {} artifact(s): no candidates passed strict/CSCV gates.",
             artifacts_rejected_by_shortlist
@@ -659,6 +735,15 @@ pub fn meta_select_from_artifacts(
         warnings.push(format!(
             "No candidates met min_samples={} (matched artifacts={}). Try lowering min_samples.",
             req.min_samples, artifacts_used
+        ));
+    }
+    let groups_with_evidence_flags = aggregates
+        .iter()
+        .filter(|group| !group.evidence_flags.is_empty())
+        .count();
+    if groups_with_evidence_flags > 0 {
+        warnings.push(format!(
+            "Meta evidence warning: {groups_with_evidence_flags} group(s) have thin or noisy evidence."
         ));
     }
 
@@ -1075,6 +1160,9 @@ fn shortlist_candidates<'a>(
             .iter()
             .copied()
             .filter(|cand| {
+                if let Some(passed) = candidate_backend_validation_pass(cand) {
+                    return passed;
+                }
                 let st = cand.get("cscv_pbo").and_then(|v| v.as_object());
                 let sel = st
                     .and_then(|o| o.get("is_selected_frac").and_then(|v| v.as_f64()))
@@ -1165,6 +1253,9 @@ fn shortlist_candidates<'a>(
         .iter()
         .copied()
         .filter(|cand| {
+            if let Some(passed) = candidate_backend_validation_pass(cand) {
+                return passed;
+            }
             let st = cand.get("cscv_pbo").and_then(|v| v.as_object());
             let sel = st
                 .and_then(|o| o.get("is_selected_frac").and_then(|v| v.as_f64()))
@@ -1194,6 +1285,53 @@ fn shortlist_candidates<'a>(
     } else {
         filtered
     }
+}
+
+fn candidate_backend_validation_pass(cand: &Value) -> Option<bool> {
+    cand.pointer("/validation_verdict/passed")
+        .and_then(|v| v.as_bool())
+}
+
+fn artifact_backend_validation_approved(art: &Value) -> Option<bool> {
+    let verdict = art.pointer("/validation/res/run_verdict")?.as_object()?;
+
+    if let Some(approved) = verdict.get("approved").and_then(|v| v.as_bool()) {
+        return Some(approved);
+    }
+
+    if let Some(recommendation) = verdict
+        .get("final_recommendation")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+    {
+        if matches!(
+            recommendation.as_str(),
+            "singlecandidatesupported"
+                | "approvedwithwarnings"
+                | "single_candidate_supported"
+                | "approved_with_warnings"
+        ) {
+            return Some(true);
+        }
+        if matches!(
+            recommendation.as_str(),
+            "nocandidatesurvived"
+                | "nocandidateapproved"
+                | "candidatessurvivedbutsearchnotstatisticallysuperior"
+                | "evidencetooshortmintrackrecord"
+                | "no_candidate_survived"
+                | "no_candidate_approved"
+                | "candidates_survived_but_search_not_statistically_superior"
+                | "evidence_too_short_min_track_record"
+        ) {
+            return Some(false);
+        }
+    }
+
+    verdict
+        .get("approved_candidate_count")
+        .and_then(|v| v.as_u64())
+        .map(|count| count > 0)
 }
 
 fn quantile(sorted: &[f64], q: f64) -> f64 {
@@ -1540,6 +1678,194 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("Hard shortlist rejected")));
+    }
+
+    #[test]
+    fn meta_select_rejects_unapproved_validation_artifacts() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 5,
+            "slow_len": 20,
+            "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+            "macz": {},
+            "ott": {},
+            "strategy": {}
+        });
+
+        let art = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-01-26T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+            "validation": { "res": {
+                "run_verdict": {
+                    "approved": false,
+                    "final_recommendation": "NoCandidateApproved"
+                },
+                "candidates": [
+                    {
+                        "params": params,
+                        "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                        "robust_score": 1.1,
+                        "robust_pareto": true,
+                        "validation_verdict": { "passed": true }
+                    }
+                ]
+            }}
+        });
+
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: false,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &[art], None);
+        assert_eq!(res.artifacts_used, 0);
+        assert!(res.groups.is_empty());
+        assert!(res
+            .warnings
+            .iter()
+            .any(|w| w.contains("Validation verdict rejected")));
+    }
+
+    #[test]
+    fn meta_select_populates_evidence_flags_for_thin_groups() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 5,
+            "slow_len": 20,
+            "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+            "macz": {},
+            "ott": {},
+            "strategy": {}
+        });
+
+        let art = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-01-26T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+            "validation": { "res": {
+                "candidates": [
+                    {
+                        "params": params,
+                        "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                        "robust_score": 1.1,
+                        "robust_pareto": true
+                    }
+                ]
+            }}
+        });
+
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &[art], None);
+        assert_eq!(res.groups.len(), 1);
+        assert!(!res.groups[0].evidence_flags.is_empty());
+        assert!(res
+            .warnings
+            .iter()
+            .any(|w| w.contains("thin or noisy evidence")));
+    }
+
+    #[test]
+    fn meta_select_keeps_legacy_validation_artifacts_compatible_without_run_verdict() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 5,
+            "slow_len": 20,
+            "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+            "macz": {},
+            "ott": {},
+            "strategy": {}
+        });
+
+        let art = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-01-26T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+            "validation": { "res": {
+                "candidates": [
+                    {
+                        "params": params,
+                        "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                        "robust_score": 1.1,
+                        "robust_pareto": true
+                    }
+                ]
+            }}
+        });
+
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &[art], None);
+        assert_eq!(res.artifacts_used, 1);
+        assert_eq!(res.groups.len(), 1);
+        assert!(res
+            .warnings
+            .iter()
+            .all(|w| !w.contains("Validation verdict rejected")));
     }
 
     #[test]

@@ -56,6 +56,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
+  if (kind === 'Mkcs') return 'Mkcs'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -148,6 +149,15 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valSeed: { key: 'seed' },
   valMinPsr: { key: 'minPsr' },
   valMinDsr: { key: 'minDsr' },
+  valMinCscvRank: { key: 'minCscvRank' },
+  valMinCscvMetric: { key: 'minCscvMetric' },
+  valMaxPbo: { key: 'maxPbo' },
+  valSpaSlices: { key: 'spaSlices' },
+  valSpaBootstrapSamples: { key: 'spaBootstrapSamples' },
+  valSpaBlockLength: { key: 'spaBlockLength' },
+  valReoptWfWindow: { key: 'reoptWfWindow' },
+  valReoptWfStep: { key: 'reoptWfStep' },
+  valReoptWfTopN: { key: 'reoptWfTopN' },
   valWfWindow: { key: 'wfWindow' },
   valWfStep: { key: 'wfStep' },
   valPerturbIters: { key: 'perturbIters' },
@@ -163,6 +173,8 @@ const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbEnable: { key: 'perturbEnable' },
   valMcEnable: { key: 'mcEnable' },
   valCscvEnable: { key: 'cscvEnable' },
+  valSpaEnable: { key: 'spaEnable' },
+  valReoptWfEnable: { key: 'reoptWfEnable' },
   valCrossEnable: { key: 'crossEnable' }
 }
 
@@ -648,6 +660,14 @@ function buildValidationMetaText(result: unknown): string {
   const row = asRecord(result)
   const candidates = Array.isArray(row?.candidates) ? row.candidates.length : 0
   const runtimeMs = Math.max(0, Math.floor(Number(row?.runtime_ms ?? 0)))
+  const backendUsed = normalizeText(row?.backend_used)
+  const backendRoute = normalizeText(row?.backend_route)
+  const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+  const backendParts: string[] = []
+  if (backendUsed) backendParts.push(`backend=${backendUsed}`)
+  if (backendRoute) backendParts.push(`route=${backendRoute}`)
+  if (backendFallbackReason) backendParts.push(`fallback=${backendFallbackReason}`)
+  const backendSummary = backendParts.length > 0 ? backendParts.join(' • ') : 'backend'
   const cross = asRecord(row?.cross_ticker)
   const crossDatasets = Array.isArray(cross?.datasets) ? cross.datasets.length : 0
   const crossSuffix = crossDatasets > 0 ? ` • cross=${crossDatasets}` : ''
@@ -660,7 +680,90 @@ function buildValidationMetaText(result: unknown): string {
   if (cscvSkipped) cscvSuffix = ' • cscv skipped'
   else if (cscv && cscvCombos > 0 && Number.isFinite(cscvPbo)) cscvSuffix = ` • pbo=${cscvPbo.toFixed(3)} (cs=${cscvCombos})`
 
-  return `validated ${candidates} candidates in ${runtimeMs}ms (backend)${crossSuffix}${cscvSuffix}`
+  const reopt = asRecord(row?.reopt_walk_forward)
+  const reoptWindows = Math.max(0, Math.floor(Number(reopt?.windows ?? 0)))
+  const reoptSharpe = Number(reopt?.forward_sharpe_median ?? Number.NaN)
+  const reoptSuffix = reoptWindows > 0
+    ? ` • reopt_wf=${reoptWindows}w${Number.isFinite(reoptSharpe) ? ` sh_med=${reoptSharpe.toFixed(3)}` : ''}`
+    : ''
+  const spa = asRecord(row?.spa)
+  const spaP = Number(spa?.p_value ?? Number.NaN)
+  const spaSuffix = spa
+    ? ` • spa=${Number.isFinite(spaP) ? spaP.toFixed(3) : '-'}${spa?.passed === false ? ' fail' : ' pass'}`
+    : ''
+
+  const runVerdict = asRecord(row?.run_verdict)
+  const survived = Math.max(0, Math.floor(Number(runVerdict?.candidates_survived_hard_gates ?? 0)))
+  const tested = Math.max(0, Math.floor(Number(runVerdict?.candidates_tested ?? candidates)))
+  const approved = Math.max(0, Math.floor(Number(runVerdict?.approved_candidate_count ?? 0)))
+  const recommendation = normalizeText(runVerdict?.final_recommendation)
+  const topObs = Math.max(0, Math.floor(Number(runVerdict?.top_candidate_track_record_bars ?? 0)))
+  const topMinTrl = Math.max(0, Math.floor(Number(runVerdict?.top_candidate_min_track_record_length_bars ?? 0)))
+  const approvalSuffix = runVerdict
+    ? ` • approved=${approved}/${survived}${recommendation ? ` • rec=${recommendation}` : ''}`
+    : ''
+  const minTrlSuffix = topObs > 0 && topMinTrl > 0
+    ? ` • top_mintrl=${topObs}/${topMinTrl}`
+    : ''
+  const hasRunVerdict = !!runVerdict
+  const runState = hasRunVerdict ? ` • hard_gates=${survived}/${tested}${runVerdict?.passed === false ? ' fail' : ''}` : ''
+
+  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${minTrlSuffix}`
+}
+
+function compactWinnerLabel(value: unknown): string {
+  const raw = normalizeText(value)
+  if (!raw) return '—'
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const fastMa = normalizeText(parsed.fast_ma_type || '?')
+    const slowMa = normalizeText(parsed.slow_ma_type || '?')
+    const fastLen = Math.max(0, Math.floor(Number(parsed.fast_len || 0)))
+    const slowLen = Math.max(0, Math.floor(Number(parsed.slow_len || 0)))
+    const base = `${fastMa || '?'}(${fastLen || '?'})/${slowMa || '?'}(${slowLen || '?'})`
+    const overlays: string[] = []
+    for (const key of ['asr', 'vcc', 'vemr', 'rocb', 'mkcs']) {
+      const entry = asRecord(parsed[key])
+      if (entry) overlays.push(key)
+    }
+    if (parsed.halftrend || parsed.halftrend_filter) overlays.push('halftrend')
+    return overlays.length > 0 ? `${base}+${overlays.join('+')}` : base
+  } catch {
+    return raw.length > 40 ? `${raw.slice(0, 37)}...` : raw
+  }
+}
+
+function buildValidationReoptMetaText(result: unknown): string {
+  const row = asRecord(result)
+  const reopt = asRecord(row?.reopt_walk_forward)
+  if (!reopt) return '-'
+  const windows = Math.max(0, Math.floor(Number(reopt.windows ?? 0)))
+  if (windows <= 0) return '-'
+
+  const topN = Math.max(1, Math.floor(Number(reopt.top_n_candidates ?? 1)))
+  const uniqueWinners = Math.max(0, Math.floor(Number(reopt.unique_winners ?? 0)))
+  const winnerChanges = Math.max(0, Math.floor(Number(reopt.winner_changes ?? 0)))
+  const driftMean = Number(reopt.winner_param_drift_mean ?? Number.NaN)
+  const driftMax = Number(reopt.winner_param_drift_max ?? Number.NaN)
+  const hitRate = Number(reopt.forward_positive_pnl_frac ?? Number.NaN)
+  const sharpeMedian = Number(reopt.forward_sharpe_median ?? Number.NaN)
+  const ddWorst = Number(reopt.forward_max_dd_worst ?? Number.NaN)
+  const sequenceRaw = Array.isArray(reopt.winner_sequence) ? reopt.winner_sequence : []
+  const sequence = sequenceRaw
+    .slice(0, 4)
+    .map((entry) => compactWinnerLabel(entry))
+    .filter((entry) => entry.length > 0)
+  const sequenceSuffix = sequence.length > 0
+    ? ` • winners=${sequence.join(' -> ')}${sequenceRaw.length > sequence.length ? ' -> ...' : ''}`
+    : ''
+
+  return `reopt_wf: ${windows} windows • topN=${topN} • unique=${uniqueWinners} • changes=${winnerChanges}` +
+    `${Number.isFinite(hitRate) ? ` • oos_hit=${fmtPct(hitRate, 1)}` : ''}` +
+    `${Number.isFinite(sharpeMedian) ? ` • sh_med=${sharpeMedian.toFixed(3)}` : ''}` +
+    `${Number.isFinite(ddWorst) ? ` • dd_worst=${ddWorst.toFixed(3)}` : ''}` +
+    `${Number.isFinite(driftMean) ? ` • drift_mean=${driftMean.toFixed(3)}` : ''}` +
+    `${Number.isFinite(driftMax) ? ` • drift_max=${driftMax.toFixed(3)}` : ''}` +
+    sequenceSuffix
 }
 
 function fmt(value: unknown, digits = 6): string {
@@ -688,6 +791,13 @@ function parseProbabilityGateValue(value: unknown): number | null {
   return Math.max(0, Math.min(1, n))
 }
 
+function parseFiniteNumberValue(value: unknown): number | null {
+  const raw = normalizeText(value)
+  if (!raw) return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
 function validationCandidates(result: unknown): Array<Record<string, unknown>> {
   const row = asRecord(result)
   const xs = Array.isArray(row?.candidates) ? row.candidates : []
@@ -703,7 +813,9 @@ function validationCandidates(result: unknown): Array<Record<string, unknown>> {
 function computeValidationShortlist(
   result: unknown,
   minPsr: number | null,
-  minDsr: number | null
+  minDsr: number | null,
+  minCscvRank: number | null,
+  minCscvMetric: number | null
 ): {
   rows: Array<Record<string, unknown>>
   candidates: Array<Record<string, unknown>>
@@ -717,10 +829,19 @@ function computeValidationShortlist(
   usedCscvFallback: boolean
   hasProbGate: boolean
   probPassN: number
+  hasBackendVerdicts: boolean
+  backendPassN: number
+  runVerdict: Record<string, unknown> | null
 } {
   const CSCV_RANK_FRAC_MIN = 0.55
   const candidates = validationCandidates(result)
   const hasProbGate = minPsr != null || minDsr != null
+  const cscvRankThreshold = minCscvRank ?? CSCV_RANK_FRAC_MIN
+  const runVerdict = asRecord(asRecord(result)?.run_verdict)
+  const hasBackendVerdicts = candidates.some((candidate) => {
+    const verdict = asRecord(candidate.validation_verdict)
+    return !!verdict && typeof verdict.passed === 'boolean'
+  })
   const passProbabilityGates = (candidate: Record<string, unknown>): boolean => {
     if (!hasProbGate) return true
     const psr = Number(candidate.psr)
@@ -756,21 +877,27 @@ function computeValidationShortlist(
   const usedFallback = strict.length === 0
 
   const passCscv = (candidate: Record<string, unknown>): boolean => {
+    const verdict = asRecord(candidate.validation_verdict)
+    if (verdict && typeof verdict.passed === 'boolean') return verdict.passed === true
     const stats = asRecord(candidate.cscv_pbo)
     if (!stats) return false
     const selectedFrac = Number(stats.is_selected_frac ?? 0)
     const rankFrac = Number(stats.oos_rank_frac_p50 ?? 0)
     const metric = Number(stats.oos_metric_p50 ?? Number.NaN)
     if (!Number.isFinite(selectedFrac) || selectedFrac <= 0) return false
-    if (!Number.isFinite(rankFrac) || rankFrac < CSCV_RANK_FRAC_MIN) return false
-    if (!Number.isFinite(metric) || metric < cscvThreshold) return false
+    if (!Number.isFinite(rankFrac) || rankFrac < cscvRankThreshold) return false
+    const requiredMetric = minCscvMetric != null ? minCscvMetric : cscvThreshold
+    if (!Number.isFinite(metric) || metric < requiredMetric) return false
     return true
   }
 
   const probFiltered = hasProbGate ? baseRows.filter(passProbabilityGates) : baseRows
-  const cscvFiltered = hasCscv ? probFiltered.filter(passCscv) : probFiltered
-  const usedCscvFallback = hasCscv && baseRows.length > 0 && cscvFiltered.length === 0
+  const cscvFiltered = hasCscv || hasBackendVerdicts ? probFiltered.filter(passCscv) : probFiltered
+  const usedCscvFallback = !hasBackendVerdicts && hasCscv && baseRows.length > 0 && cscvFiltered.length === 0
   const pickedRows = hasProbGate ? cscvFiltered : usedCscvFallback ? baseRows : cscvFiltered
+  const backendPassN = hasBackendVerdicts
+    ? candidates.filter((candidate) => asRecord(candidate.validation_verdict)?.passed === true).length
+    : 0
 
   const sortByFinal = (left: Record<string, unknown>, right: Record<string, unknown>): number => {
     const robustL = Number(left.robust_score ?? 0)
@@ -803,10 +930,13 @@ function computeValidationShortlist(
     hasCscv,
     cscvCombos,
     cscvThreshold,
-    cscvRankMin: CSCV_RANK_FRAC_MIN,
+    cscvRankMin: cscvRankThreshold,
     usedCscvFallback,
     hasProbGate,
-    probPassN: probFiltered.length
+    probPassN: probFiltered.length,
+    hasBackendVerdicts,
+    backendPassN,
+    runVerdict
   }
 }
 
@@ -816,7 +946,8 @@ function buildValidationShortlistMetaText(shortlist: ReturnType<typeof computeVa
   const baseRule = shortlist.hasCross ? 'robust_pareto && cross_ticker_pareto' : 'robust_pareto'
   const probRule = shortlist.hasProbGate ? `prob(${minPsr != null ? `psr>=${fmtFixed(minPsr, 2)}` : ''}${minPsr != null && minDsr != null ? ',' : ''}${minDsr != null ? `dsr>=${fmtFixed(minDsr, 2)}` : ''})` : ''
   const cscvRule = shortlist.hasCscv ? `cscv(oos_rank_p50>=${shortlist.cscvRankMin}, oos_sharpe_p50>=${shortlist.cscvThreshold})` : ''
-  const rule = [baseRule, probRule, cscvRule].filter((part) => part.length > 0).join(' && ')
+  const backendRule = shortlist.hasBackendVerdicts ? 'backend_hard_gates' : ''
+  const rule = [baseRule, probRule, cscvRule, backendRule].filter((part) => part.length > 0).join(' && ')
   const baseFallbackNote = shortlist.usedFallback ? ' • (fallback: top robust score)' : ''
   const cscvFallbackNote = shortlist.usedCscvFallback && !shortlist.hasProbGate ? ' • (cscv fallback)' : ''
   const crossNote = shortlist.hasCross ? ` • cross_pareto=${crossParetoN}/${shortlist.candidates.length}` : ''
@@ -824,7 +955,14 @@ function buildValidationShortlistMetaText(shortlist: ReturnType<typeof computeVa
   const probNote = shortlist.hasProbGate ? ` • prob_pass=${shortlist.probPassN}/${strictCount}` : ''
   const cscvNote = shortlist.hasCscv ? ` • cscv=${shortlist.cscvCombos} combos` : ''
   const cscvPassNote = shortlist.hasCscv ? ` • cscv_pass=${shortlist.rows.length}/${strictCount}` : ''
-  return `shortlist=${shortlist.rows.length}/${shortlist.candidates.length} • robust_pareto=${robustParetoN}/${shortlist.candidates.length}${crossNote}${probNote}${cscvNote}${cscvPassNote} • rule=${rule}${baseFallbackNote}${cscvFallbackNote}`
+  const backendNote = shortlist.hasBackendVerdicts ? ` • backend_pass=${shortlist.backendPassN}/${shortlist.candidates.length}` : ''
+  const approvedCount = Math.max(0, Math.floor(Number(shortlist.runVerdict?.approved_candidate_count ?? 0)))
+  const firstApprovedRank = Math.max(0, Math.floor(Number(shortlist.runVerdict?.first_approved_rank ?? 0)))
+  const runVerdictRecommendation = normalizeText(shortlist.runVerdict?.final_recommendation)
+  const runVerdictNote = shortlist.runVerdict
+    ? ` • run=${shortlist.runVerdict.passed === false ? 'fail' : 'pass'} • approved=${approvedCount}${firstApprovedRank > 0 ? `@#${firstApprovedRank}` : ''}${runVerdictRecommendation ? ` • rec=${runVerdictRecommendation}` : ''}`
+    : ''
+  return `shortlist=${shortlist.rows.length}/${shortlist.candidates.length} • robust_pareto=${robustParetoN}/${shortlist.candidates.length}${crossNote}${probNote}${cscvNote}${cscvPassNote}${backendNote}${runVerdictNote} • rule=${rule}${baseFallbackNote}${cscvFallbackNote}`
 }
 
 function buildValidationTableColumns(): ValidationTableColumn[] {
@@ -836,6 +974,7 @@ function buildValidationTableColumns(): ValidationTableColumn[] {
     { label: 'PSR', alignLeft: false },
     { label: 'DSR', alignLeft: false },
     { label: 'CSCV Rank', alignLeft: false },
+    { label: 'Gate', alignLeft: true },
     { label: 'Robust Pareto', alignLeft: true },
     { label: 'Cross', alignLeft: false },
     { label: 'Cross Pareto', alignLeft: true },
@@ -854,6 +993,19 @@ function buildValidationTableRows(shortlistRows: Array<Record<string, unknown>>,
     const inSample = asRecord(candidate.in_sample) ?? {}
     const cross = asRecord(candidate.cross_ticker)
     const cscv = asRecord(candidate.cscv_pbo)
+    const verdict = asRecord(candidate.validation_verdict)
+    const failReasons = Array.isArray(verdict?.fail_reasons) ? verdict.fail_reasons.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0) : []
+    const warningFlags = Array.isArray(verdict?.warning_flags) ? verdict.warning_flags.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0) : []
+    const gateText = verdict
+      ? verdict.passed === false
+        ? failReasons[0] || 'fail'
+        : warningFlags.length
+          ? `pass*`
+          : 'pass'
+      : '-'
+    const gateTitle = verdict
+      ? [...failReasons, ...warningFlags].filter((entry) => entry.length > 0).join(' • ')
+      : ''
 
     rows.push({
       cells: [
@@ -883,6 +1035,11 @@ function buildValidationTableRows(shortlistRows: Array<Record<string, unknown>>,
           text: cscv ? fmtPct(cscv.oos_rank_frac_p50, 1) : '-',
           className: 'mono',
           title: ''
+        },
+        {
+          text: gateText,
+          className: 'left mono',
+          title: gateTitle
         },
         {
           text: candidate.robust_pareto ? 'robust' : '—',
@@ -1055,6 +1212,17 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     seed: readStoreTextInputValue('valSeed'),
     minPsr: readStoreTextInputValue('valMinPsr'),
     minDsr: readStoreTextInputValue('valMinDsr'),
+    minCscvOosRankFrac: readStoreTextInputValue('valMinCscvRank'),
+    minCscvOosMetric: readStoreTextInputValue('valMinCscvMetric'),
+    maxPbo: readStoreTextInputValue('valMaxPbo'),
+    spaEnable: readStoreCheckboxValue('valSpaEnable'),
+    spaSlices: readStoreTextInputValue('valSpaSlices'),
+    spaBootstrapSamples: readStoreTextInputValue('valSpaBootstrapSamples'),
+    spaBlockLength: readStoreTextInputValue('valSpaBlockLength'),
+    reoptWfEnable: readStoreCheckboxValue('valReoptWfEnable'),
+    reoptWfWindow: readStoreTextInputValue('valReoptWfWindow'),
+    reoptWfStep: readStoreTextInputValue('valReoptWfStep'),
+    reoptWfTopN: readStoreTextInputValue('valReoptWfTopN'),
     wfEnable: readStoreCheckboxValue('valWfEnable'),
     wfWindow: readStoreTextInputValue('valWfWindow'),
     wfStep: readStoreTextInputValue('valWfStep'),
@@ -1079,7 +1247,8 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
   patchValidationStoreState({
     validateDisabled: true,
     statusLine: 'Running validation...',
-    validationHint: 'Running validation...'
+    validationHint: 'Running validation...',
+    validationReoptMeta: '-'
   })
   writeDomTextContent('status', 'Running validation...')
 
@@ -1089,9 +1258,12 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const elapsedMs = Math.max(0, finishedAt - startedAt)
     const validationMeta = buildValidationMetaText(validationRes)
+    const validationReoptMeta = buildValidationReoptMetaText(validationRes)
     const minPsrGate = parseProbabilityGateValue(validationReq.min_psr)
     const minDsrGate = parseProbabilityGateValue(validationReq.min_dsr)
-    const shortlist = computeValidationShortlist(validationRes, minPsrGate, minDsrGate)
+    const minCscvRankGate = parseProbabilityGateValue(validationReq.min_cscv_oos_rank_frac)
+    const minCscvMetricGate = parseFiniteNumberValue(validationReq.min_cscv_oos_metric)
+    const shortlist = computeValidationShortlist(validationRes, minPsrGate, minDsrGate, minCscvRankGate, minCscvMetricGate)
     const validationColumns = buildValidationTableColumns()
     const validationRows = buildValidationTableRows(shortlist.rows, shortlist.hasCross)
     const validationShortlistMeta = validationRows.length > 0 ? buildValidationShortlistMetaText(shortlist, minPsrGate, minDsrGate) : 'No validation result yet.'
@@ -1102,6 +1274,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     patchValidationStoreState({
       validationHint: 'Validation complete.',
       validationMeta,
+      validationReoptMeta,
       validationColumns,
       validationRows,
       validationOutputPreview: toOutputPreview(validationRes),
@@ -1122,7 +1295,8 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = String(error || '').trim() || 'Validation failed.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message
+      validationHint: message,
+      validationReoptMeta: '-'
     })
     writeDomTextContent('status', message)
     throw error

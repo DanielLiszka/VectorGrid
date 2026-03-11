@@ -183,10 +183,9 @@ fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
     match out.series {
         DynamicIndicatorSeries::F64(v) => v,
         DynamicIndicatorSeries::I32(v) => v.into_iter().map(|x| x as f64).collect(),
-        DynamicIndicatorSeries::Bool(v) => v
-            .into_iter()
-            .map(|x| if x { 1.0 } else { 0.0 })
-            .collect(),
+        DynamicIndicatorSeries::Bool(v) => {
+            v.into_iter().map(|x| if x { 1.0 } else { 0.0 }).collect()
+        }
     }
 }
 
@@ -569,7 +568,11 @@ pub fn build_rocb_desired_positions(
         return desired;
     }
 
-    let trade_offset = if strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
     let max_trade_bars = usize::from(cfg.max_trade_bars.max(1));
     let mut pos: i32 = 0;
     let mut bars_in_trade: usize = 0;
@@ -611,9 +614,8 @@ pub fn build_rocb_desired_positions(
                 && stop_dist.is_finite()
                 && close_now.is_finite()
                 && close_now <= entry_price - stop_dist;
-            let channel_exit = close_now.is_finite()
-                && upper_prev.is_finite()
-                && close_now <= upper_prev;
+            let channel_exit =
+                close_now.is_finite() && upper_prev.is_finite() && close_now <= upper_prev;
             let mut exit_now = stop_hit || channel_exit || bars_in_trade >= max_trade_bars;
 
             if !strategy.long_only && short_breakout {
@@ -644,9 +646,8 @@ pub fn build_rocb_desired_positions(
                 && stop_dist.is_finite()
                 && close_now.is_finite()
                 && close_now >= entry_price + stop_dist;
-            let channel_exit = close_now.is_finite()
-                && lower_prev.is_finite()
-                && close_now >= lower_prev;
+            let channel_exit =
+                close_now.is_finite() && lower_prev.is_finite() && close_now >= lower_prev;
             let mut exit_now = stop_hit || channel_exit || bars_in_trade >= max_trade_bars;
 
             if long_breakout {

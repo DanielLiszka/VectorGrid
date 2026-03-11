@@ -65,8 +65,40 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
             vcc: None,
             vemr: None,
             rocb: None,
+            mkcs: None,
             macz,
             ott,
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 8u16.saturating_add(i_u16 % 12);
+        let slow_len = fast_len.saturating_add(24);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: Some(ta_app_core::AsrStrategyParams::default()),
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
             strategy: StrategyConfig::default(),
         });
@@ -85,6 +117,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
 
     let base = CompositeValidationRequest {
         data_id: "bench".to_string(),
+        backend: ta_app_core::Backend::CpuOnly,
         ma_source: "close".to_string(),
         fast_ma_params: None,
         slow_ma_params: None,
@@ -93,6 +126,8 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
             window_bars: 10_000,
             step_bars: 10_000,
         }),
+        reopt_walk_forward: None,
+        spa: None,
         perturb: None,
         trade_bootstrap: None,
         cross_ticker: None,
@@ -103,8 +138,24 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
         iterative: ta_app_core::IterativeSimConfig::default(),
         min_psr: None,
         min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
         validation_context: None,
     };
+
+    let route_probe =
+        ta_app_core::run_composite_validation_blocking_with_candles(base.clone(), &candles, &cancel, None)
+            .expect("cpu validation route probe");
+    println!(
+        "benchmark route composite_validate/workflow/50k/32candidates: backend_used={:?} backend_route={} fallback={}",
+        route_probe.backend_used,
+        route_probe.backend_route.as_deref().unwrap_or("<none>"),
+        route_probe
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("<none>")
+    );
 
     group.bench_function("wf_only", |b| {
         b.iter(|| {
@@ -175,5 +226,102 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_composite_validation_workflow);
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
+    let candles = make_synth_candles(100_000);
+    let cancel = AtomicBool::new(false);
+    let candidates = make_asr_candidates(64);
+
+    let mut group =
+        c.benchmark_group("composite_validate/gpu_kernel/asr/100k/64candidates");
+    group.measurement_time(Duration::from_secs(8));
+    group.sample_size(10);
+
+    let base = CompositeValidationRequest {
+        data_id: "bench-gpu".to_string(),
+        backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
+        ma_source: "close".to_string(),
+        fast_ma_params: None,
+        slow_ma_params: None,
+        candidates: candidates.clone(),
+        walk_forward: Some(WalkForwardConfigOptional {
+            window_bars: 20_000,
+            step_bars: 20_000,
+        }),
+        reopt_walk_forward: None,
+        spa: None,
+        perturb: None,
+        trade_bootstrap: None,
+        cross_ticker: None,
+        cscv_pbo: Some(CscvPboConfig {
+            slices: 8,
+            max_combinations: 2_000,
+            threshold: 0.0,
+        }),
+        seed: 123,
+        max_candidates: candidates.len(),
+        validation_engine: ta_app_core::ValidationEngine::Vectorized,
+        iterative: ta_app_core::IterativeSimConfig::default(),
+        min_psr: None,
+        min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
+        validation_context: None,
+    };
+
+    let route_probe =
+        ta_app_core::run_composite_validation_blocking_with_candles(base.clone(), &candles, &cancel, None)
+            .expect("gpu validation route probe");
+    println!(
+        "benchmark route composite_validate/gpu_kernel/asr/100k/64candidates: backend_used={:?} backend_route={} fallback={}",
+        route_probe.backend_used,
+        route_probe.backend_route.as_deref().unwrap_or("<none>"),
+        route_probe
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+
+    group.bench_function("wf_cscv", |b| {
+        b.iter(|| {
+            let _ = ta_app_core::run_composite_validation_blocking_with_candles(
+                base.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .expect("gpu wf+cscv validate");
+        })
+    });
+
+    let mut vram_heavy = base.clone();
+    vram_heavy.candidates = make_asr_candidates(192);
+    vram_heavy.max_candidates = vram_heavy.candidates.len();
+    vram_heavy.walk_forward = None;
+    vram_heavy.cscv_pbo = None;
+
+    group.bench_function("in_sample_192candidates", |b| {
+        b.iter(|| {
+            let _ = ta_app_core::run_composite_validation_blocking_with_candles(
+                vram_heavy.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .expect("gpu in-sample validate");
+        })
+    });
+
+    group.finish();
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_composite_validation_gpu_workflow(_c: &mut Criterion) {}
+
+criterion_group!(
+    benches,
+    bench_composite_validation_workflow,
+    bench_composite_validation_gpu_workflow
+);
 criterion_main!(benches);

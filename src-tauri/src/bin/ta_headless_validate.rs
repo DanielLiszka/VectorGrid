@@ -285,7 +285,7 @@ fn main() -> Result<(), String> {
         return Err("perturb_pct_min must be <= perturb_pct_max".to_string());
     }
 
-    let backend = to_backend(cli.backend);
+    let backend = to_backend(cli.backend.clone());
     let objective = to_objective(cli.objective);
 
     let fast_ma_params = alma_params_if_needed(&cli.fast_ma, cli.alma_offset, cli.alma_sigma);
@@ -416,14 +416,18 @@ fn main() -> Result<(), String> {
         .to_string();
     let validation_engine = ta_app_core::ValidationEngine::Vectorized;
     let iterative_cfg = ta_app_core::IterativeSimConfig::default();
+    let validation_backend = to_backend(cli.backend.clone());
 
     let val_req = DoubleMaValidationRequest {
         data_id,
+        backend: validation_backend.clone(),
         ma_source: cli.ma_source.clone(),
         fast_ma_params: fast_ma_params.clone(),
         slow_ma_params: slow_ma_params.clone(),
         candidates,
         walk_forward,
+        reopt_walk_forward: None,
+        spa: None,
         perturb,
         trade_bootstrap,
         cross_ticker: None,
@@ -434,6 +438,9 @@ fn main() -> Result<(), String> {
         iterative: iterative_cfg.clone(),
         min_psr: None,
         min_dsr: None,
+        min_cscv_oos_rank_frac: None,
+        min_cscv_oos_metric: None,
+        max_pbo: None,
         validation_context: None,
     };
 
@@ -464,6 +471,7 @@ fn main() -> Result<(), String> {
         apply_cross_ticker_validation_double_ma_headless(
             &mut val_res,
             cross_cfg,
+            validation_backend,
             &cli.ma_source,
             fast_ma_params.clone(),
             slow_ma_params.clone(),

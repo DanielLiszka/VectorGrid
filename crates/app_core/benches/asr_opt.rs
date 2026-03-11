@@ -46,6 +46,7 @@ fn make_asr_req(
         vcc: None,
         vemr: None,
         rocb: None,
+        mkcs: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,

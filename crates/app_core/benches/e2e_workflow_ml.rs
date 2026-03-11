@@ -113,11 +113,14 @@ fn evaluate_holdout_light(
 
         let val_req = CompositeValidationRequest {
             data_id: label.to_string(),
+            backend: Backend::CpuOnly,
             ma_source: ma_source.clone(),
             fast_ma_params: fast_ma_params.clone(),
             slow_ma_params: slow_ma_params.clone(),
             candidates,
             walk_forward: None,
+            reopt_walk_forward: None,
+            spa: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
@@ -128,6 +131,9 @@ fn evaluate_holdout_light(
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
 
@@ -307,6 +313,7 @@ fn run_full_workflow_once(
             vcc: None,
             vemr: None,
             rocb: None,
+            mkcs: None,
             data_id: label.to_string(),
             fast_range: (5, 60, 5),
             slow_range: (20, 220, 10),
@@ -344,6 +351,7 @@ fn run_full_workflow_once(
                 vcc: None,
                 vemr: None,
                 rocb: None,
+                mkcs: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -356,11 +364,14 @@ fn run_full_workflow_once(
 
         let val_req = CompositeValidationRequest {
             data_id: label.to_string(),
+            backend: Backend::CpuOnly,
             ma_source: "close".to_string(),
             fast_ma_params: None,
             slow_ma_params: None,
             candidates,
             walk_forward: None,
+            reopt_walk_forward: None,
+            spa: None,
             perturb: None,
             trade_bootstrap: None,
             cross_ticker: None,
@@ -371,6 +382,9 @@ fn run_full_workflow_once(
             iterative: ta_app_core::IterativeSimConfig::default(),
             min_psr: None,
             min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
             validation_context: None,
         };
         let val_res =

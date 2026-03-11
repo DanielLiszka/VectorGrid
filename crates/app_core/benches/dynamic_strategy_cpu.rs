@@ -228,6 +228,7 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         vcc: None,
         vemr: None,
         rocb: None,
+        mkcs: None,
         data_id: "bench".to_string(),
         fast_range: (10, 10, 1),
         slow_range: (30, 30, 1),

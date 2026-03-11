@@ -3,8 +3,8 @@ import { TAURI_COMMANDS, isTauriCommand } from './commands'
 
 describe('tauri command registry', () => {
   it('contains the full handler set and no duplicates', () => {
-    expect(TAURI_COMMANDS.length).toBe(64)
-    expect(new Set(TAURI_COMMANDS).size).toBe(64)
+    expect(TAURI_COMMANDS.length).toBe(68)
+    expect(new Set(TAURI_COMMANDS).size).toBe(68)
   })
 
   it('validates known and unknown command names', () => {

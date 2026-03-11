@@ -5,6 +5,7 @@ export type StrategyOptimizationKind =
   | 'Vcc'
   | 'Vemr'
   | 'Rocb'
+  | 'Mkcs'
   | 'CompositeCpu'
   | 'CompositeTrend'
   | 'RegimeHybrid'
@@ -34,6 +35,7 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
     case 'Vcc':
     case 'Vemr':
     case 'Rocb':
+    case 'Mkcs':
     case 'CompositeCpu':
     case 'CompositeTrend':
     case 'RegimeHybrid':
@@ -47,7 +49,13 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
 
 export function describeStrategyOptimizationCapabilities(value: unknown): StrategyOptimizationCapabilities {
   const kind = normalizeKind(value)
-  if (kind === 'DoubleMa' || kind === 'Vfct') {
+  if (
+    kind === 'DoubleMa'
+    || kind === 'Vfct'
+    || kind === 'CompositeTrend'
+    || kind === 'RegimeHybrid'
+    || kind === 'BreakoutMomentum'
+  ) {
     return {
       kind,
       usesGlobalBackend: true,
@@ -59,18 +67,28 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
       executionSummary:
         kind === 'Vfct'
           ? 'VFCT reuses the double-MA optimizer with volume-backed confirmation filters and unified GPU routing where supported.'
+          : kind === 'CompositeTrend'
+            ? 'CompositeTrend runs through the double-MA optimizer. ADX-off uses the GPU kernel path where supported; ADX-on uses the hybrid GPU route.'
+            : kind === 'RegimeHybrid'
+              ? 'RegimeHybrid runs through the double-MA optimizer and currently targets the hybrid GPU route because its active regime logic is ADX-bearing.'
+              : kind === 'BreakoutMomentum'
+                ? 'BreakoutMomentum runs through the double-MA optimizer. ADX-off uses the GPU kernel path where supported; ADX-on uses the hybrid GPU route.'
           : 'Double MA supports CPU, Auto, and unified GPU routing.',
       modeSummary:
         kind === 'Vfct'
           ? 'VFCT uses exact Grid search through the double-MA backend.'
+          : kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+            ? `${kind} uses exact Grid search through the double-MA backend.`
           : 'Double MA uses exact Grid search.',
       outputSummary:
         kind === 'Vfct'
           ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend.'
+          : kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+            ? `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend.`
           : 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs.',
     }
   }
-  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb') {
+  if (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs') {
     return {
       kind,
       usesGlobalBackend: true,
@@ -79,17 +97,14 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
       supportsExportAll: false,
       supportsTopK: true,
       supportsIncludeAll: true,
-      executionSummary: `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
+      executionSummary: kind === 'Mkcs'
+        ? 'MKCS can use CPU or unified GPU execution, with fast/slow ranges mapped into compression and breakout periods.'
+        : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
       outputSummary: `${kind} returns best/top rows, but does not emit the Double MA heatmap or per-pair CSV export.`,
     }
   }
-  if (
-    kind === 'CompositeCpu'
-    || kind === 'CompositeTrend'
-    || kind === 'RegimeHybrid'
-    || kind === 'BreakoutMomentum'
-  ) {
+  if (kind === 'CompositeCpu') {
     return {
       kind,
       usesGlobalBackend: false,
@@ -98,7 +113,7 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
       supportsExportAll: false,
       supportsTopK: true,
       supportsIncludeAll: true,
-      executionSummary: `${kind} uses the CPU optimization path.`,
+      executionSummary: 'CompositeCpu uses the composite CPU optimization path.',
       modeSummary: `${kind} always runs in Grid mode.`,
       outputSummary: `${kind} returns ranked results, but does not emit the Double MA heatmap or CSV export.`,
     }

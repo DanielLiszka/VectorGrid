@@ -34,6 +34,7 @@ pub struct RocbGpuComboBatch<'a> {
     pub channel_row_index: &'a [i32],
     pub atr_row_index: &'a [i32],
     pub start_t: &'a [i32],
+    pub end_t: &'a [i32],
 }
 
 struct RocbCudaRuntime {
@@ -89,7 +90,9 @@ fn validate_inputs(
     if signals.close_f32.len() != n {
         return Err("ROCB GPU close length mismatch".to_string());
     }
-    if signals.upper_row_major_ptr == 0 || signals.lower_row_major_ptr == 0 || signals.atr_row_major_ptr == 0
+    if signals.upper_row_major_ptr == 0
+        || signals.lower_row_major_ptr == 0
+        || signals.atr_row_major_ptr == 0
     {
         return Err("ROCB GPU signal pointer is null".to_string());
     }
@@ -102,7 +105,10 @@ fn validate_inputs(
     }
 
     let combos_len = combos.channel_row_index.len();
-    if combos.atr_row_index.len() != combos_len || combos.start_t.len() != combos_len {
+    if combos.atr_row_index.len() != combos_len
+        || combos.start_t.len() != combos_len
+        || combos.end_t.len() != combos_len
+    {
         return Err("ROCB GPU combo vector length mismatch".to_string());
     }
     Ok(())
@@ -180,7 +186,11 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
         } else {
             0.0
         },
-        max_dd: if max_dd.is_finite() { max_dd.max(0.0) } else { 0.0 },
+        max_dd: if max_dd.is_finite() {
+            max_dd.max(0.0)
+        } else {
+            0.0
+        },
         trades: if trades_f.is_finite() && trades_f >= 0.0 {
             trades_f as u32
         } else {
@@ -241,6 +251,7 @@ pub fn eval_rocb_metrics_gpu_kernel_device_rows(
         let d_combo_atr =
             DeviceBuffer::from_slice(combos.atr_row_index).map_err(|e| e.to_string())?;
         let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
         let d_out =
             unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
 
@@ -283,6 +294,7 @@ pub fn eval_rocb_metrics_gpu_kernel_device_rows(
         let mut combo_channel_ptr = d_combo_channel.as_device_ptr().as_raw();
         let mut combo_atr_ptr = d_combo_atr.as_device_ptr().as_raw();
         let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
         let mut combo_count_i = combo_count as i32;
         let mut t_i = signals.cols as i32;
         let mut flags_u = flags;
@@ -307,6 +319,7 @@ pub fn eval_rocb_metrics_gpu_kernel_device_rows(
                 &mut combo_channel_ptr as *mut _ as *mut c_void,
                 &mut combo_atr_ptr as *mut _ as *mut c_void,
                 &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
                 &mut combo_count_i as *mut _ as *mut c_void,
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,

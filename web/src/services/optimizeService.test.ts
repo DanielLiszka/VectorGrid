@@ -13,6 +13,7 @@ import { requestCancelCurrentRun } from './runControlService'
 import { invokeCommand } from '../tauri/invoke'
 import { runValidation as runValidationAction } from './validationService'
 import { useAnalysisStore } from '../stores/analysisStore'
+import { useOptimizeStore } from '../stores/optimizeStore'
 
 vi.mock('./runControlService', () => ({
   requestCancelCurrentRun: vi.fn(async () => ({
@@ -346,6 +347,71 @@ describe('optimizeService', () => {
     expect(statusLine).toContain('fallback=Hybrid phase-1 fallback to CpuOnly.')
   })
 
+  it('surfaces backend route metadata for CompositeTrend, RegimeHybrid, and BreakoutMomentum', async () => {
+    const optimizeStore = useOptimizeStore()
+    const cases = [
+      {
+        strategy_kind: 'CompositeTrend',
+        backend_used: 'Gpu',
+        backend_route: 'GpuKernel',
+        backend_fallback_reason: null,
+      },
+      {
+        strategy_kind: 'RegimeHybrid',
+        backend_used: 'Gpu',
+        backend_route: 'GpuHybridKernel',
+        backend_fallback_reason: null,
+      },
+      {
+        strategy_kind: 'BreakoutMomentum',
+        backend_used: 'Cpu',
+        backend_route: 'GpuHybridKernel->CpuOnly',
+        backend_fallback_reason: 'Hybrid profile fallback to CpuOnly.',
+      },
+    ]
+
+    for (const row of cases) {
+      invokeCommandMock.mockClear()
+      installDefaultInvokeCommandMock()
+      invokeCommandMock.mockImplementation(async (command: string) => {
+        if (command === 'run_double_ma_optimization') {
+          return {
+            best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+            best_params: { fast_len: 5, slow_len: 20 },
+            backend_used: row.backend_used,
+            backend_route: row.backend_route,
+            backend_fallback_reason: row.backend_fallback_reason,
+          }
+        }
+        if (command === 'save_run_artifact') {
+          return { path: 'runs/vectorbt_run_test.json', bytes: 128 }
+        }
+        if (command === 'get_gpu_status') {
+          return {
+            built_with_cuda: true,
+            built_with_cuda_backtest_kernel: true,
+            cuda_available: true,
+            auto_device_name: 'NVIDIA RTX 4090',
+            auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+          }
+        }
+        return {}
+      })
+
+      await runOptimization({
+        request: { strategy_kind: row.strategy_kind, data_id: `route-${row.strategy_kind}` },
+        switchTab: false,
+      })
+
+      const statusLine = String(optimizeStore.statusLine || '')
+      expect(statusLine).toContain(`backend=${row.backend_used}`)
+      expect(statusLine).toContain(`route=${row.backend_route}`)
+      if (row.backend_fallback_reason) {
+        expect(statusLine).toContain(`fallback=${row.backend_fallback_reason}`)
+      }
+    }
+  })
+
   it('runs optimization via injected request when request payload is provided', async () => {
     await runOptimization({
       request: { strategy_kind: 'DoubleMa', data_id: 'data-123' },
@@ -572,9 +638,10 @@ describe('optimizeService', () => {
     expect(req.backend).toEqual({ backend: 'CpuOnly' })
   })
 
-  it('routes CompositeTrend through the composite CPU optimization command', async () => {
+  it('routes CompositeTrend through the double-MA optimization command', async () => {
     ;(pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: 'CompositeTrend',
+      backend: 'GpuKernel',
       fastStart: '5',
       fastEnd: '15',
       fastStep: '5',
@@ -647,8 +714,205 @@ describe('optimizeService', () => {
 
     const [command, args] = firstOptimizationRunCall()
     const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
-    expect(command).toBe('run_composite_cpu_optimization')
+    expect(command).toBe('run_double_ma_optimization')
     expect(req.strategy_kind).toBe('CompositeTrend')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+  })
+
+  it('routes RegimeHybrid through the double-MA optimization command with GPU hybrid', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'RegimeHybrid',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: false,
+      allowFlip: true,
+      tradeOnNext: false,
+      regimeAdxPeriod: '14',
+      regimeAdxEnter: '22',
+      regimeAdxExit: '18',
+      regimeRevEntryRel: '0.0035',
+      regimeRevExitRel: '0.0012',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-regime-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_double_ma_optimization')
+    expect(req.strategy_kind).toBe('RegimeHybrid')
+    expect(req.backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+  })
+
+  it('routes BreakoutMomentum through the double-MA optimization command and promotes ADX-on requests to GPU hybrid', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'BreakoutMomentum',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: false,
+      allowFlip: true,
+      tradeOnNext: false,
+      breakoutBbPeriod: '20',
+      breakoutBbMult: '2.0',
+      breakoutConfirmBars: '1',
+      breakoutMacdFast: '12',
+      breakoutMacdSlow: '26',
+      breakoutMacdSignal: '9',
+      breakoutCmoPeriod: '14',
+      breakoutCmoMinAbs: '20',
+      breakoutAdoscShort: '3',
+      breakoutAdoscLong: '10',
+      breakoutUseAdx: true,
+      breakoutAdxPeriod: '14',
+      breakoutAdxMin: '20',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-breakout-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_double_ma_optimization')
+    expect(req.strategy_kind).toBe('BreakoutMomentum')
+    expect(req.backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+  })
+
+  it('keeps CompositeTrend on the double-MA optimization command when CpuOnly is requested', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'CompositeTrend',
+      backend: 'CpuOnly',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      trendUseRoc: true,
+      trendUseAdx: false,
+      trendLrPeriod: '34',
+      trendLrMinDeg: '2.0',
+      trendBbwPeriod: '20',
+      trendBbwMult: '2.0',
+      trendBbwMin: '0.04',
+      trendRocPeriod: '9',
+      trendAdxPeriod: '14',
+      trendAdxMin: '20',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-trend-cpu-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_double_ma_optimization')
+    expect(req.strategy_kind).toBe('CompositeTrend')
+    expect(req.backend).toEqual({ backend: 'CpuOnly' })
   })
 
   it('routes VCC through the composite CPU optimization command', async () => {
@@ -854,6 +1118,86 @@ describe('optimizeService', () => {
       atr_stop_mult: 2.1,
       confirm_bars: 2,
       max_trade_bars: 130,
+    })
+  })
+
+  it('routes MKCS through the composite CPU optimization command', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'Mkcs',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: 'hard_gate',
+      halfTrendAmplitude: '2',
+      halfTrendAtrPeriod: '100',
+      halfTrendChannelDev: '2.0',
+      maczFastLength: '12',
+      maczSlowLength: '25',
+      maczSignalLength: '9',
+      maczLengthZ: '20',
+      maczLengthStdev: '25',
+      maczGamma: '0.02',
+      maczA: '1',
+      maczB: '1',
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: '2',
+      ottPercent: '1.4',
+      ottMaType: 'VAR',
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      longOnly: false,
+      allowFlip: true,
+      tradeOnNext: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-mkcs-1',
+      dataFields: ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization()
+
+    const [command, args] = firstOptimizationRunCall()
+    const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
+    expect(command).toBe('run_composite_cpu_optimization')
+    expect(req.strategy_kind).toBe('Mkcs')
+    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req.mkcs).toMatchObject({
+      map_fast_to_stddev_period: true,
+      map_slow_to_breakout_lookback: true,
+      stddev_period: 20,
+      breakout_lookback: 20,
+      compression_threshold: 0.01,
+      reexpansion_threshold: 0.03,
     })
   })
 

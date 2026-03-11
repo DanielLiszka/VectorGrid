@@ -1,6 +1,6 @@
 use crate::cscv_pbo::{CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::progress::ProgressSink;
-use crate::validation_pipeline::ValidationPostCandidate;
+use crate::validation_pipeline::{ValidationHardGateConfig, ValidationPostCandidate};
 use rand::rngs::StdRng;
 use std::sync::atomic::AtomicBool;
 
@@ -11,8 +11,7 @@ pub fn run_validation_candidates<P, C, FProcess, FSliceStats>(
     progress: Option<&dyn ProgressSink>,
     validate_phase: &'static str,
     cscv_prep_phase: &'static str,
-    min_psr: Option<f64>,
-    min_dsr: Option<f64>,
+    hard_gates: &ValidationHardGateConfig,
     cscv_cfg: Option<&CscvPboConfig>,
     total_bars: usize,
     process_one: FProcess,
@@ -46,8 +45,7 @@ where
     let cscv_pbo = crate::validation_pipeline::finalize_with_probability_and_optional_cscv(
         &mut out,
         &sample_obs,
-        min_psr,
-        min_dsr,
+        hard_gates,
         cscv_cfg,
         total_bars,
         common_start_t,
@@ -66,7 +64,9 @@ mod tests {
     use super::*;
     use crate::cscv_pbo::CscvCandidatePboStats;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
-    use crate::validation_pipeline::ValidationPostCandidate;
+    use crate::validation_pipeline::{
+        ValidationCandidateVerdict, ValidationHardGateConfig, ValidationPostCandidate,
+    };
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
@@ -78,9 +78,12 @@ mod tests {
         in_sample: Metrics,
         psr: Option<f64>,
         dsr: Option<f64>,
+        track_record_bars: usize,
+        min_track_record_length_bars: Option<usize>,
         robust_score: f64,
         robust_pareto: bool,
         cscv_pbo: Option<CscvCandidatePboStats>,
+        validation_verdict: ValidationCandidateVerdict,
     }
 
     impl ValidationPostCandidate for DummyCandidate {
@@ -100,6 +103,10 @@ mod tests {
             self.cscv_pbo.as_ref().and_then(|v| v.oos_metric_p50)
         }
 
+        fn cscv_oos_rank_frac_p50(&self) -> Option<f64> {
+            self.cscv_pbo.as_ref().and_then(|v| v.oos_rank_frac_p50)
+        }
+
         fn psr(&self) -> Option<f64> {
             self.psr
         }
@@ -116,6 +123,22 @@ mod tests {
             self.dsr = v;
         }
 
+        fn track_record_bars(&self) -> usize {
+            self.track_record_bars
+        }
+
+        fn min_track_record_length_bars(&self) -> Option<usize> {
+            self.min_track_record_length_bars
+        }
+
+        fn set_track_record_bars(&mut self, v: usize) {
+            self.track_record_bars = v;
+        }
+
+        fn set_min_track_record_length_bars(&mut self, v: Option<usize>) {
+            self.min_track_record_length_bars = v;
+        }
+
         fn robust_score(&self) -> f64 {
             self.robust_score
         }
@@ -130,6 +153,14 @@ mod tests {
 
         fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>) {
             self.cscv_pbo = v;
+        }
+
+        fn validation_verdict(&self) -> &ValidationCandidateVerdict {
+            &self.validation_verdict
+        }
+
+        fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict) {
+            self.validation_verdict = v;
         }
     }
 
@@ -162,8 +193,7 @@ mod tests {
             None,
             "unit_validate",
             "unit_cscv",
-            None,
-            None,
+            &ValidationHardGateConfig::default(),
             None,
             128,
             |_, p, _| {
@@ -178,9 +208,12 @@ mod tests {
                         in_sample: m,
                         psr: None,
                         dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
                         robust_score: *p as f64,
                         robust_pareto: false,
                         cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
                     },
                     0,
                     64,
@@ -208,8 +241,7 @@ mod tests {
             None,
             "unit_validate",
             "unit_cscv",
-            None,
-            None,
+            &ValidationHardGateConfig::default(),
             None,
             128,
             |_, p, _| {
@@ -224,9 +256,12 @@ mod tests {
                         in_sample: m,
                         psr: None,
                         dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
                         robust_score: *p as f64,
                         robust_pareto: false,
                         cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
                     },
                     0,
                     64,
@@ -251,8 +286,7 @@ mod tests {
             Some(&progress),
             "unit_validate",
             "unit_cscv",
-            None,
-            None,
+            &ValidationHardGateConfig::default(),
             Some(&crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
                 max_combinations: 16,
@@ -271,9 +305,12 @@ mod tests {
                         in_sample: m,
                         psr: None,
                         dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
                         robust_score: *p as f64,
                         robust_pareto: false,
                         cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
                     },
                     0,
                     64,

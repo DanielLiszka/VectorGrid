@@ -36,6 +36,7 @@ const { validationStage } = useUiReadiness()
 const {
   validationHint,
   validationMeta,
+  validationReoptMeta,
   validationShortlistMeta,
   validationColumns,
   validationRows,
@@ -46,6 +47,15 @@ const {
   seed,
   minPsr,
   minDsr,
+  minCscvRank,
+  minCscvMetric,
+  maxPbo,
+  spaSlices,
+  spaBootstrapSamples,
+  spaBlockLength,
+  reoptWfWindow,
+  reoptWfStep,
+  reoptWfTopN,
   cscvSlices,
   autoRun,
   autoExportXlsx,
@@ -61,6 +71,8 @@ const {
   mcEnable,
   mcSims,
   cscvEnable,
+  spaEnable,
+  reoptWfEnable,
   crossEnable,
   crossMax,
   crossSearch,
@@ -90,6 +102,15 @@ const candidatesDraft = ref('32')
 const seedDraft = ref('1')
 const minPsrDraft = ref('')
 const minDsrDraft = ref('')
+const minCscvRankDraft = ref('')
+const minCscvMetricDraft = ref('')
+const maxPboDraft = ref('')
+const spaSlicesDraft = ref('16')
+const spaBootstrapSamplesDraft = ref('500')
+const spaBlockLengthDraft = ref('4')
+const reoptWfWindowDraft = ref('20000')
+const reoptWfStepDraft = ref('5000')
+const reoptWfTopNDraft = ref('8')
 const cscvDraft = ref('')
 const autoRunDraft = ref(true)
 const autoExportXlsxDraft = ref(false)
@@ -105,6 +126,8 @@ const perturbMaxDraft = ref('0.06')
 const mcEnableDraft = ref(false)
 const mcSimsDraft = ref('500')
 const cscvEnableDraft = ref(false)
+const spaEnableDraft = ref(false)
+const reoptWfEnableDraft = ref(false)
 const crossEnableDraft = ref(false)
 const crossMaxDraft = ref('6')
 const crossSearchDraft = ref('')
@@ -134,6 +157,15 @@ watch(
     String(seed.value || '1'),
     String(minPsr.value || ''),
     String(minDsr.value || ''),
+    String(minCscvRank.value || ''),
+    String(minCscvMetric.value || ''),
+    String(maxPbo.value || ''),
+    String(spaSlices.value || '16').trim() || '16',
+    String(spaBootstrapSamples.value || '500').trim() || '500',
+    String(spaBlockLength.value || '4').trim() || '4',
+    String(reoptWfWindow.value || '20000').trim() || '20000',
+    String(reoptWfStep.value || '5000').trim() || '5000',
+    String(reoptWfTopN.value || '8').trim() || '8',
     String(cscvSlices.value || ''),
     Boolean(autoRun.value),
     Boolean(autoExportXlsx.value),
@@ -149,6 +181,8 @@ watch(
     Boolean(mcEnable.value),
     String(mcSims.value || '500').trim() || '500',
     Boolean(cscvEnable.value),
+    Boolean(spaEnable.value),
+    Boolean(reoptWfEnable.value),
     Boolean(crossEnable.value),
     String(crossMax.value || '6').trim() || '6',
     String(crossSearch.value || '').trim(),
@@ -158,6 +192,15 @@ watch(
     nextSeed,
     nextMinPsr,
     nextMinDsr,
+    nextMinCscvRank,
+    nextMinCscvMetric,
+    nextMaxPbo,
+    nextSpaSlices,
+    nextSpaBootstrapSamples,
+    nextSpaBlockLength,
+    nextReoptWfWindow,
+    nextReoptWfStep,
+    nextReoptWfTopN,
     nextCscv,
     nextAutoRun,
     nextAutoExportXlsx,
@@ -173,6 +216,8 @@ watch(
     nextMcEnable,
     nextMcSims,
     nextCscvEnable,
+    nextSpaEnable,
+    nextReoptWfEnable,
     nextCrossEnable,
     nextCrossMax,
     nextCrossSearch,
@@ -181,6 +226,15 @@ watch(
     if (seedDraft.value !== nextSeed) seedDraft.value = nextSeed
     if (minPsrDraft.value !== nextMinPsr) minPsrDraft.value = nextMinPsr
     if (minDsrDraft.value !== nextMinDsr) minDsrDraft.value = nextMinDsr
+    if (minCscvRankDraft.value !== nextMinCscvRank) minCscvRankDraft.value = nextMinCscvRank
+    if (minCscvMetricDraft.value !== nextMinCscvMetric) minCscvMetricDraft.value = nextMinCscvMetric
+    if (maxPboDraft.value !== nextMaxPbo) maxPboDraft.value = nextMaxPbo
+    if (spaSlicesDraft.value !== nextSpaSlices) spaSlicesDraft.value = nextSpaSlices
+    if (spaBootstrapSamplesDraft.value !== nextSpaBootstrapSamples) spaBootstrapSamplesDraft.value = nextSpaBootstrapSamples
+    if (spaBlockLengthDraft.value !== nextSpaBlockLength) spaBlockLengthDraft.value = nextSpaBlockLength
+    if (reoptWfWindowDraft.value !== nextReoptWfWindow) reoptWfWindowDraft.value = nextReoptWfWindow
+    if (reoptWfStepDraft.value !== nextReoptWfStep) reoptWfStepDraft.value = nextReoptWfStep
+    if (reoptWfTopNDraft.value !== nextReoptWfTopN) reoptWfTopNDraft.value = nextReoptWfTopN
     if (cscvDraft.value !== nextCscv) cscvDraft.value = nextCscv
     if (autoRunDraft.value !== nextAutoRun) autoRunDraft.value = nextAutoRun
     if (autoExportXlsxDraft.value !== nextAutoExportXlsx) autoExportXlsxDraft.value = nextAutoExportXlsx
@@ -196,6 +250,8 @@ watch(
     if (mcEnableDraft.value !== nextMcEnable) mcEnableDraft.value = nextMcEnable
     if (mcSimsDraft.value !== nextMcSims) mcSimsDraft.value = nextMcSims
     if (cscvEnableDraft.value !== nextCscvEnable) cscvEnableDraft.value = nextCscvEnable
+    if (spaEnableDraft.value !== nextSpaEnable) spaEnableDraft.value = nextSpaEnable
+    if (reoptWfEnableDraft.value !== nextReoptWfEnable) reoptWfEnableDraft.value = nextReoptWfEnable
     if (crossEnableDraft.value !== nextCrossEnable) crossEnableDraft.value = nextCrossEnable
     if (crossMaxDraft.value !== nextCrossMax) crossMaxDraft.value = nextCrossMax
     if (crossSearchDraft.value !== nextCrossSearch) crossSearchDraft.value = nextCrossSearch
@@ -392,6 +448,46 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <div class="gridThree">
+          <div>
+            <label for="vueValMinCscvRank">Min CSCV rank frac</label>
+            <input
+              id="vueValMinCscvRank"
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              :value="minCscvRankDraft"
+              @input="minCscvRankDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinCscvRank', minCscvRankDraft)"
+              @change="commitInputValue('valMinCscvRank', minCscvRankDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueValMinCscvMetric">Min CSCV OOS metric</label>
+            <input
+              id="vueValMinCscvMetric"
+              type="number"
+              step="any"
+              :value="minCscvMetricDraft"
+              @input="minCscvMetricDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinCscvMetric', minCscvMetricDraft)"
+              @change="commitInputValue('valMinCscvMetric', minCscvMetricDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueValMaxPbo">Max PBO</label>
+            <input
+              id="vueValMaxPbo"
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              :value="maxPboDraft"
+              @input="maxPboDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMaxPbo', maxPboDraft)"
+              @change="commitInputValue('valMaxPbo', maxPboDraft)"
+            />
+          </div>
+        </div>
+
         <div class="actions">
           <button type="button" class="primary" :disabled="validateDisabled" @click="runValidationAction">Run validation</button>
           <button type="button" :disabled="!canExportValidationCsv" @click="exportShortlistCsvAction">Export shortlist CSV</button>
@@ -457,7 +553,7 @@ onBeforeUnmount(() => {
               :checked="wfEnableDraft"
               @change="wfEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valWfEnable', wfEnableDraft)"
             />
-            Walk-forward
+            Walk-forward (recommended)
           </label>
           <label>
             <input
@@ -481,7 +577,23 @@ onBeforeUnmount(() => {
               :checked="cscvEnableDraft"
               @change="cscvEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valCscvEnable', cscvEnableDraft)"
             />
-            CSCV/PBO (overfitting risk)
+            CSCV/PBO (recommended)
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              :checked="spaEnableDraft"
+              @change="spaEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valSpaEnable', spaEnableDraft)"
+            />
+            Hansen SPA
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              :checked="reoptWfEnableDraft"
+              @change="reoptWfEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valReoptWfEnable', reoptWfEnableDraft)"
+            />
+            Finalist re-opt walk-forward
           </label>
         </div>
 
@@ -520,6 +632,84 @@ onBeforeUnmount(() => {
               :value="perturbItersDraft"
               @input="perturbItersDraft = String(($event.target as HTMLInputElement).value || '8'); queueInputValue('valPerturbIters', perturbItersDraft)"
               @change="commitInputValue('valPerturbIters', perturbItersDraft)"
+            />
+          </div>
+        </div>
+
+        <div class="gridThree">
+          <div>
+            <label for="vueValSpaSlices">SPA slices</label>
+            <input
+              id="vueValSpaSlices"
+              type="number"
+              min="4"
+              step="1"
+              :value="spaSlicesDraft"
+              @input="spaSlicesDraft = String(($event.target as HTMLInputElement).value || '16'); queueInputValue('valSpaSlices', spaSlicesDraft)"
+              @change="commitInputValue('valSpaSlices', spaSlicesDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueValSpaBootstrapSamples">SPA bootstrap samples</label>
+            <input
+              id="vueValSpaBootstrapSamples"
+              type="number"
+              min="100"
+              step="1"
+              :value="spaBootstrapSamplesDraft"
+              @input="spaBootstrapSamplesDraft = String(($event.target as HTMLInputElement).value || '500'); queueInputValue('valSpaBootstrapSamples', spaBootstrapSamplesDraft)"
+              @change="commitInputValue('valSpaBootstrapSamples', spaBootstrapSamplesDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueValSpaBlockLength">SPA mean block length</label>
+            <input
+              id="vueValSpaBlockLength"
+              type="number"
+              min="1"
+              step="1"
+              :value="spaBlockLengthDraft"
+              @input="spaBlockLengthDraft = String(($event.target as HTMLInputElement).value || '4'); queueInputValue('valSpaBlockLength', spaBlockLengthDraft)"
+              @change="commitInputValue('valSpaBlockLength', spaBlockLengthDraft)"
+            />
+          </div>
+        </div>
+
+        <div class="gridThree">
+          <div>
+            <label for="vueValReoptWfWindow">Re-opt WF window (bars)</label>
+            <input
+              id="vueValReoptWfWindow"
+              type="number"
+              min="64"
+              step="1"
+              :value="reoptWfWindowDraft"
+              @input="reoptWfWindowDraft = String(($event.target as HTMLInputElement).value || '20000'); queueInputValue('valReoptWfWindow', reoptWfWindowDraft)"
+              @change="commitInputValue('valReoptWfWindow', reoptWfWindowDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueValReoptWfStep">Re-opt WF step (bars)</label>
+            <input
+              id="vueValReoptWfStep"
+              type="number"
+              min="1"
+              step="1"
+              :value="reoptWfStepDraft"
+              @input="reoptWfStepDraft = String(($event.target as HTMLInputElement).value || '5000'); queueInputValue('valReoptWfStep', reoptWfStepDraft)"
+              @change="commitInputValue('valReoptWfStep', reoptWfStepDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueValReoptWfTopN">Re-opt finalist top N</label>
+            <input
+              id="vueValReoptWfTopN"
+              type="number"
+              min="1"
+              step="1"
+              :value="reoptWfTopNDraft"
+              @input="reoptWfTopNDraft = String(($event.target as HTMLInputElement).value || '8'); queueInputValue('valReoptWfTopN', reoptWfTopNDraft)"
+              @change="commitInputValue('valReoptWfTopN', reoptWfTopNDraft)"
             />
           </div>
         </div>
@@ -627,6 +817,7 @@ onBeforeUnmount(() => {
 
       <section v-if="showValidationResults" class="pane">
         <div class="metaLine mono">{{ validationMeta }}</div>
+        <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
         <div class="metaLine mono">{{ validationShortlistMeta }}</div>
         <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
         <div ref="tableScrollElementRef" class="tableWrap">

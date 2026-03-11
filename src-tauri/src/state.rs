@@ -175,9 +175,7 @@ impl AppState {
                     id: out_id,
                     meta,
                     cache_hit: true,
-                    cache_path: ctx
-                        .map(|loaded| loaded.csv_path)
-                        .unwrap_or_default(),
+                    cache_path: ctx.map(|loaded| loaded.csv_path).unwrap_or_default(),
                 });
             }
         }

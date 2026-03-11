@@ -395,6 +395,13 @@ Recommended product behavior:
 - if SPA fails, label the whole run as "no statistically superior candidate confirmed"
 - if MCS has many survivors, avoid pretending one winner is special
 
+Current implementation note:
+
+- Hansen SPA is now implemented in the validation backend with a serial-dependence-aware stationary bootstrap
+- the current scope is `validation_candidates` rather than the full optimization universe
+- benchmark choices currently implemented are `buy_and_hold` and `flat`
+- run-level recommendations now degrade to `candidates_survived_but_search_not_statistically_superior` when SPA is enabled and fails
+
 ## Phase 4: Tighten Meta-Stage Acceptance
 
 Objective: stop weak validation results from becoming strong-looking meta winners.
@@ -494,82 +501,86 @@ Production mode:
 
 ### Phase 1: Harden existing validation
 
-- [ ] Add backend config fields for hard validation gates:
-  - [ ] min CSCV OOS rank fraction
-  - [ ] min CSCV OOS metric
-  - [ ] max run-level PBO
+- [x] Add backend config fields for hard validation gates:
+  - [x] min CSCV OOS rank fraction
+  - [x] min CSCV OOS metric
+  - [x] max run-level PBO
   - [ ] minimum local-stability score
-- [ ] Add candidate `warning_flags` and `fail_reasons` to validation outputs.
-- [ ] Add run-level validation verdict summary to:
-  - [ ] Double MA validation result
-  - [ ] Composite validation result
-- [ ] Move CSCV pass/fail logic from frontend-only shortlist code into backend validation semantics.
-- [ ] Make recommended frontend defaults stricter for:
-  - [ ] walk-forward
-  - [ ] CSCV
-  - [ ] PSR
-  - [ ] DSR
+- [x] Add candidate `warning_flags` and `fail_reasons` to validation outputs.
+- [x] Add run-level validation verdict summary to:
+  - [x] Double MA validation result
+  - [x] Composite validation result
+- [x] Move CSCV pass/fail logic from frontend-only shortlist code into backend validation semantics.
+- [x] Make recommended frontend defaults stricter for:
+  - [x] walk-forward
+  - [x] CSCV
+  - [x] PSR
+  - [x] DSR
 
 ### Phase 2: Stronger walk-forward
 
-- [ ] Design finalist-only re-optimization walk-forward request shape.
-- [ ] Implement Double MA re-optimization walk-forward.
-- [ ] Implement Composite re-optimization walk-forward.
-- [ ] Emit parameter-drift summary across windows.
-- [ ] Add UI output for:
-  - [ ] OOS window results
-  - [ ] parameter drift
-  - [ ] pass/fail verdict
+- [x] Design finalist-only re-optimization walk-forward request shape.
+- [x] Implement Double MA re-optimization walk-forward.
+- [x] Implement Composite re-optimization walk-forward.
+- [x] Emit parameter-drift summary across windows.
+- [x] Add UI output for:
+  - [x] OOS window results
+  - [x] parameter drift
+  - [x] pass/fail verdict
 
 ### Phase 3: Search-level data-snooping control
 
-- [ ] Implement Hansen SPA for candidate-vs-benchmark evaluation.
+- [x] Implement Hansen SPA for candidate-vs-benchmark evaluation.
 - [ ] Decide benchmark policy:
-  - [ ] zero / flat
-  - [ ] buy-and-hold
+  - [x] zero / flat
+  - [x] buy-and-hold
   - [ ] strategy-family baseline
-- [ ] Choose and document a serial-dependence-aware bootstrap design.
-- [ ] Add SPA result fields to validation output.
-- [ ] Gate final recommendation on SPA where enabled.
+- [x] Choose and document a serial-dependence-aware bootstrap design.
+- [x] Add SPA result fields to validation output.
+- [x] Gate final recommendation on SPA where enabled.
+- [ ] Extend SPA scope from validated finalists to the full tried-candidate universe when practical.
 - [ ] Evaluate whether White Reality Check is still needed after SPA.
 - [ ] Evaluate whether Model Confidence Set should be added for survivor-set output.
 - [ ] Evaluate whether FDR control should be added for large rule universes.
 
 ### Phase 3B: Approval-oriented inference
 
-- [ ] Add Minimum Track Record Length reporting to validation output.
-- [ ] Add approval / reject semantics at the run level.
-- [ ] Add a "no candidate approved" UX path that does not feel like an error.
+- [x] Add Minimum Track Record Length reporting to validation output.
+- [x] Add approval / reject semantics at the run level.
+- [x] Add a "no candidate approved" UX path that does not feel like an error.
 
 ### Phase 4: Meta tightening
 
-- [ ] Tighten meta ingestion rules for weak validation artifacts.
-- [ ] Make hard-shortlist behavior the default for production-facing meta.
-- [ ] Raise visibility of holdout quality and sample sufficiency in meta UI.
-- [ ] Add explicit warnings when meta evidence is weak or noisy.
+- [x] Tighten meta ingestion rules for weak validation artifacts.
+- [x] Make hard-shortlist behavior the default for production-facing meta.
+- [x] Raise visibility of holdout quality and sample sufficiency in meta UI.
+- [x] Add explicit warnings when meta evidence is weak or noisy.
 
 ### Phase 5: Strategy coverage
 
-- [ ] Implement VCC local stability.
-- [ ] Implement ROCB local stability.
-- [ ] Decide where purged / embargoed validation applies in the current strategy stack.
+- [x] Implement VCC local stability.
+- [x] Implement ROCB local stability.
+- [x] Decide where purged / embargoed validation applies in the current strategy stack.
+  Decision:
+  - not a default requirement for the current fixed-rule, causal bar-by-bar validation stack
+  - should be introduced first for any future label-based ML workflows, overlapping-horizon targets, or train/test procedures that can leak through temporal proximity
 - [ ] Verify parity of hard gates across:
-  - [ ] DoubleMa family
-  - [ ] CompositeCpu
+  - [x] DoubleMa family
+  - [x] CompositeCpu
   - [ ] CompositeMo-backed validation path
-  - [ ] ASR
-  - [ ] VEMR
-  - [ ] ROCB
-  - [ ] VCC
+  - [x] ASR
+  - [x] VEMR
+  - [x] ROCB
+  - [x] VCC
 
 ### Verification
 
-- [ ] Add unit tests for new hard-gate semantics.
+- [x] Add unit tests for new hard-gate semantics.
 - [ ] Add snapshot tests for validation result schema changes.
 - [ ] Add one end-to-end workflow regression that fails when overfit candidates survive incorrectly.
-- [ ] Run `cargo test --workspace`
-- [ ] Run `npm --prefix ./web run typecheck`
-- [ ] Run `npm --prefix ./web run test`
+- [x] Run `cargo test --workspace`
+- [x] Run `npm --prefix ./web run typecheck`
+- [x] Run `npm --prefix ./web run test`
 
 ## Practical Recommendation
 

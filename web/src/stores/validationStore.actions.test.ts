@@ -116,6 +116,22 @@ describe('validation store actions', () => {
     expect(store.updatedAtUnixMs).toBeGreaterThan(0)
   })
 
+  it('starts with stricter validation defaults enabled', () => {
+    const store = useValidationStore()
+
+    expect(store.minPsr).toBe('0.80')
+    expect(store.minDsr).toBe('0.60')
+    expect(store.minCscvRank).toBe('0.55')
+    expect(store.maxPbo).toBe('0.20')
+    expect(store.wfEnable).toBe(true)
+    expect(store.wfWindow).toBe('20000')
+    expect(store.wfStep).toBe('5000')
+    expect(store.cscvEnable).toBe(true)
+    expect(store.cscvSlices).toBe('16')
+    expect(store.spaEnable).toBe(false)
+    expect(store.reoptWfEnable).toBe(false)
+  })
+
   it('dispatches validate and export actions', () => {
     const store = useValidationStore()
     store.runValidation()

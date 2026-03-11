@@ -24,6 +24,7 @@ const STRATEGY_OPTIONS_DEFAULT: OptimizeOption[] = [
   { value: 'Marrt', label: 'MA Ribbon Regime Trend (MARRT)', disabled: false },
   { value: 'Vfct', label: 'Volume Flow Confirmation Trend (VFCT)', disabled: false },
   { value: 'Rocb', label: 'Risk Overlay Channel Breakout (ROCB)', disabled: false },
+  { value: 'Mkcs', label: 'Market Kurtosis Compression Setup (MKCS)', disabled: false },
   { value: 'Asr', label: 'Adaptive Squeeze Regime (ASR)', disabled: false },
   { value: 'Vcc', label: 'Volatility Compression Confirmation (VCC)', disabled: false },
   { value: 'Vemr', label: 'Volatility Expansion Mean Reversion (VEMR)', disabled: false },

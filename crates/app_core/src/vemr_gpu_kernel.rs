@@ -42,6 +42,7 @@ pub struct VemrGpuComboBatch<'a> {
     pub bb_row_index: &'a [i32],
     pub atr_row_index: &'a [i32],
     pub start_t: &'a [i32],
+    pub end_t: &'a [i32],
 }
 
 pub struct VemrGpuTopMetricRow {
@@ -128,6 +129,7 @@ fn validate_inputs(
     if combos.bb_row_index.len() != combos_len
         || combos.atr_row_index.len() != combos_len
         || combos.start_t.len() != combos_len
+        || combos.end_t.len() != combos_len
     {
         return Err("VEMR GPU combo vector length mismatch".to_string());
     }
@@ -499,11 +501,11 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
         let d_combo_atr =
             DeviceBuffer::from_slice(combos.atr_row_index).map_err(|e| e.to_string())?;
         let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
         let d_out =
             unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
 
-        let d_close =
-            DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
+        let d_close = DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
         launch_compute_log_returns_f32(rt, device_id, &d_close, &mut d_lr, signals.cols)?;
 
         let kernel = rt
@@ -545,6 +547,7 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
         let mut combo_bb_ptr = d_combo_bb.as_device_ptr().as_raw();
         let mut combo_atr_ptr = d_combo_atr.as_device_ptr().as_raw();
         let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
         let mut out_ptr = d_out.as_device_ptr().as_raw();
 
         let mut t_i = i32::try_from(signals.cols)
@@ -593,6 +596,7 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
                 &mut combo_bb_ptr as *mut _ as *mut c_void,
                 &mut combo_atr_ptr as *mut _ as *mut c_void,
                 &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
                 &mut combo_count_i as *mut _ as *mut c_void,
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,

@@ -561,6 +561,8 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
     const group = groups[index] ?? {}
     const params = asRecord(group.params) ?? {}
     const holdout = asRecord(group.holdout)
+    const evidenceFlags = Array.isArray(group.evidence_flags) ? group.evidence_flags.map((item) => normalizeText(item)).filter((item) => item.length > 0) : []
+    const evidenceTitle = evidenceFlags.length ? `Evidence flags: ${evidenceFlags.join(', ')}` : ''
 
     const fast = `${normalizeText(params.fast_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.fast_len || 0)))}`.trim()
     const slow = `${normalizeText(params.slow_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.slow_len || 0)))}`.trim()
@@ -574,7 +576,7 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
       cells: cells.map((text, cellIndex) => ({
         text,
         className: cellIndex >= 14 ? 'left' : '',
-        title: ''
+        title: cellIndex === 3 || cellIndex === cells.length - 1 ? evidenceTitle : ''
       }))
     })
   }
@@ -591,14 +593,42 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const holdoutDatasets = Math.max(0, Math.floor(Number(holdout?.datasets || 0)))
   const holdoutSkipped = Math.max(0, Math.floor(Number(holdout?.skipped || 0)))
   const warnings = Array.isArray(result?.warnings) ? result.warnings : []
+  const groupsWithEvidenceFlags = groups.filter((group) => Array.isArray(group.evidence_flags) && group.evidence_flags.length > 0).length
   const reportPath = normalizePath(resp?.report_xlsx_path)
   const metaPath = normalizePath(resp?.meta_json_path)
 
   const warnText = warnings.length ? ` · warn=${warnings.length}` : ''
+  const evidenceText = groupsWithEvidenceFlags ? ` · weak=${groupsWithEvidenceFlags}` : ''
   const holdoutText = holdoutDatasets ? ` · holdout=${holdoutDatasets}${holdoutSkipped ? ` (skipped ${holdoutSkipped})` : ''}` : ''
   const rankMode = groups.some((group) => Number.isFinite(Number(group.final_score))) ? ' · rank=holdout-adjusted' : ''
 
-  const metaMeta = result ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${rankMode}${warnText}` : '—'
+  const metaMeta = result ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${rankMode}${evidenceText}${warnText}` : '—'
+
+  const previewLines: string[] = []
+  if (result) {
+    previewLines.push(`groups=${groups.length} artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms`)
+    if (holdoutDatasets) {
+      previewLines.push(`holdout datasets=${holdoutDatasets}${holdoutSkipped ? ` skipped=${holdoutSkipped}` : ''}`)
+    }
+    if (groupsWithEvidenceFlags > 0) {
+      previewLines.push(`evidence warning: ${groupsWithEvidenceFlags} group(s) have thin or noisy evidence`)
+      const flagged = groups
+        .map((group, index) => {
+          const evidenceFlags = Array.isArray(group.evidence_flags) ? group.evidence_flags.map((item) => normalizeText(item)).filter((item) => item.length > 0) : []
+          if (!evidenceFlags.length) return ''
+          const params = asRecord(group.params) ?? {}
+          const fast = `${normalizeText(params.fast_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.fast_len || 0)))}`.trim()
+          const slow = `${normalizeText(params.slow_ma_type).toUpperCase()} ${Math.max(0, Math.floor(Number(params.slow_len || 0)))}`.trim()
+          return `#${index + 1} ${fast} vs ${slow}: ${evidenceFlags.join(', ')}`
+        })
+        .filter((line) => line.length > 0)
+      previewLines.push(...flagged.slice(0, 8))
+    }
+    if (warnings.length > 0) {
+      previewLines.push(`warnings=${warnings.length}: ${warnings.map((item) => normalizeText(item)).filter((item) => item.length > 0).join(' | ')}`)
+    }
+    previewLines.push('')
+  }
 
   const latestGroups = String(groups.length)
   const latestArtifacts = result ? `${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))}` : '—'
@@ -608,7 +638,7 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
 
   patchAnalysisStore({
     metaMeta,
-    metaOutputPreview: result ? pretty(result) : '-',
+    metaOutputPreview: result ? `${previewLines.join('\n')}${pretty(result)}` : '-',
     metaTableColumns: META_TABLE_COLUMNS,
     metaTableRows: markRaw(buildMetaRows(groups)),
     canOpenMetaReport: !!reportPath,

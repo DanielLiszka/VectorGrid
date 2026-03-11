@@ -373,7 +373,16 @@ fn strategy_supports_holdout(strategy_kind: &str) -> bool {
 fn strategy_uses_double_ma_validation(strategy_kind: &str) -> bool {
     matches!(
         strategy_kind,
-        "DoubleMa" | "Pit" | "Set" | "Mts" | "Orc" | "Marrt" | "Vfct" | "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum"
+        "DoubleMa"
+            | "Pit"
+            | "Set"
+            | "Mts"
+            | "Orc"
+            | "Marrt"
+            | "Vfct"
+            | "CompositeTrend"
+            | "RegimeHybrid"
+            | "BreakoutMomentum"
     )
 }
 
@@ -461,7 +470,10 @@ fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<Path
     Ok(path)
 }
 
-fn suggest_ml_policy_eval_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn suggest_ml_policy_eval_artifact_path(
+    ts: &str,
+    app: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
     let dir = run_artifacts::runs_dir(app)?;
     let safe_ts = sanitize_filename_component(ts);
     let base_name = format!("vectorbt_ml_confidence_eval_{safe_ts}");
@@ -1231,12 +1243,10 @@ fn evaluate_policy_candidates(
     req: &MlConfidencePolicyEvaluationRequest,
     candidates: &[PolicyEvalCandidate],
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let meta_labels = select_top_labels_by_metric(candidates, req.top_k, |candidate| {
-        candidate.meta_score
-    });
-    let ml_labels = select_top_labels_by_metric(candidates, req.top_k, |candidate| {
-        candidate.ml_confidence
-    });
+    let meta_labels =
+        select_top_labels_by_metric(candidates, req.top_k, |candidate| candidate.meta_score);
+    let ml_labels =
+        select_top_labels_by_metric(candidates, req.top_k, |candidate| candidate.ml_confidence);
 
     let candidate_indices: Vec<usize> = candidates
         .iter()
@@ -1270,8 +1280,7 @@ fn evaluate_policy_candidates(
                 let candidate = &candidates[idx];
                 let score = req.meta_weight * zscore(candidate.meta_score, meta_mean, meta_std)
                     + req.ml_weight * zscore(candidate.ml_logit, ml_mean, ml_std)
-                    - req.uncertainty_weight
-                        * zscore(candidate.ml_uncertainty, unc_mean, unc_std);
+                    - req.uncertainty_weight * zscore(candidate.ml_uncertainty, unc_mean, unc_std);
                 (idx, score)
             })
             .collect();
@@ -1375,8 +1384,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
         };
 
         if req.require_healthy_model && !metrics.healthy {
-            artifacts_skipped_unhealthy_model =
-                artifacts_skipped_unhealthy_model.saturating_add(1);
+            artifacts_skipped_unhealthy_model = artifacts_skipped_unhealthy_model.saturating_add(1);
             continue;
         }
 
@@ -1390,8 +1398,8 @@ fn run_ml_confidence_policy_evaluation_blocking(
             let Some(label) = group_holdout_label(group, &label_cfg) else {
                 continue;
             };
-            let Some(probability) =
-                ta_app_core::predict_ml_confidence_for_group(&model, group).filter(|p| p.is_finite())
+            let Some(probability) = ta_app_core::predict_ml_confidence_for_group(&model, group)
+                .filter(|p| p.is_finite())
             else {
                 continue;
             };
@@ -1861,9 +1869,11 @@ pub async fn evaluate_ml_confidence_policy(
     app: tauri::AppHandle,
 ) -> Result<RunMlConfidencePolicyEvaluationResponse, String> {
     let _run_guard = state.try_begin_run()?;
-    tauri::async_runtime::spawn_blocking(move || run_ml_confidence_policy_evaluation_blocking(req, app))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_ml_confidence_policy_evaluation_blocking(req, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2586,11 +2596,14 @@ fn apply_holdout_evaluation(
                 let max_candidates = candidates.len();
                 let val_req = ta_app_core::DoubleMaValidationRequest {
                     data_id: label.clone(),
+                    backend: ta_app_core::Backend::CpuOnly,
                     ma_source: g0.ma_source.clone(),
                     fast_ma_params: g0.fast_ma_params.clone(),
                     slow_ma_params: g0.slow_ma_params.clone(),
                     candidates,
                     walk_forward: hv_wf.clone(),
+                    reopt_walk_forward: None,
+                    spa: None,
                     perturb: hv_perturb.clone(),
                     trade_bootstrap: hv_mc.clone(),
                     cross_ticker: None,
@@ -2601,6 +2614,9 @@ fn apply_holdout_evaluation(
                     iterative: hv_iterative.clone(),
                     min_psr: None,
                     min_dsr: None,
+                    min_cscv_oos_rank_frac: None,
+                    min_cscv_oos_metric: None,
+                    max_pbo: None,
                     validation_context: None,
                 };
 
@@ -2676,11 +2692,14 @@ fn apply_holdout_evaluation(
                 let max_candidates = candidates.len();
                 let val_req = ta_app_core::CompositeValidationRequest {
                     data_id: label.clone(),
+                    backend: ta_app_core::Backend::CpuOnly,
                     ma_source: g0.ma_source.clone(),
                     fast_ma_params: g0.fast_ma_params.clone(),
                     slow_ma_params: g0.slow_ma_params.clone(),
                     candidates,
                     walk_forward: hv_wf.clone(),
+                    reopt_walk_forward: None,
+                    spa: None,
                     perturb: hv_perturb.clone(),
                     trade_bootstrap: hv_mc.clone(),
                     cross_ticker: None,
@@ -2691,6 +2710,9 @@ fn apply_holdout_evaluation(
                     iterative: hv_iterative.clone(),
                     min_psr: None,
                     min_dsr: None,
+                    min_cscv_oos_rank_frac: None,
+                    min_cscv_oos_metric: None,
+                    max_pbo: None,
                     validation_context: None,
                 };
 
@@ -2841,6 +2863,7 @@ fn apply_holdout_evaluation(
             max_dd_p90,
             pnl_median,
         });
+        ta_app_core::refresh_meta_group_evidence_flags(g);
 
         if req.save_holdout_rows && !holdout_rows.is_empty() {
             g.holdout_rows = std::mem::take(&mut holdout_rows[i]);
@@ -2880,6 +2903,16 @@ fn apply_holdout_evaluation(
     result.warnings.push(
         "Final group ordering uses holdout-adjusted score when holdout is available.".to_string(),
     );
+    let groups_with_evidence_flags = result
+        .groups
+        .iter()
+        .filter(|group| !group.evidence_flags.is_empty())
+        .count();
+    if groups_with_evidence_flags > 0 {
+        result.warnings.push(format!(
+            "Holdout/meta evidence warning: {groups_with_evidence_flags} group(s) still show thin or noisy evidence after holdout evaluation."
+        ));
+    }
 
     Ok(())
 }

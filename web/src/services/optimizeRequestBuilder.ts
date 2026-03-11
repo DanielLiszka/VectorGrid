@@ -42,6 +42,34 @@ export interface DoubleMaOptimizationBuildInputs {
   kaufmanStopPeriod?: unknown
   kaufmanStopMult?: unknown
   kaufmanStopMaType?: unknown
+  trendLrPeriod?: unknown
+  trendLrMinDeg?: unknown
+  trendBbwPeriod?: unknown
+  trendBbwMult?: unknown
+  trendBbwMin?: unknown
+  trendRocPeriod?: unknown
+  trendUseRoc?: unknown
+  trendUseAdx?: unknown
+  trendAdxPeriod?: unknown
+  trendAdxMin?: unknown
+  regimeAdxPeriod?: unknown
+  regimeAdxEnter?: unknown
+  regimeAdxExit?: unknown
+  regimeRevEntryRel?: unknown
+  regimeRevExitRel?: unknown
+  breakoutBbPeriod?: unknown
+  breakoutBbMult?: unknown
+  breakoutConfirmBars?: unknown
+  breakoutMacdFast?: unknown
+  breakoutMacdSlow?: unknown
+  breakoutMacdSignal?: unknown
+  breakoutCmoPeriod?: unknown
+  breakoutCmoMinAbs?: unknown
+  breakoutAdoscShort?: unknown
+  breakoutAdoscLong?: unknown
+  breakoutUseAdx?: unknown
+  breakoutAdxPeriod?: unknown
+  breakoutAdxMin?: unknown
   pitEfiPeriod?: unknown
   pitVoscShortPeriod?: unknown
   pitVoscLongPeriod?: unknown
@@ -122,6 +150,17 @@ interface StrategyConfigBuildInputs {
   breakoutUseAdx?: unknown
   breakoutAdxPeriod?: unknown
   breakoutAdxMin?: unknown
+  pitEfiPeriod?: unknown
+  pitVoscShortPeriod?: unknown
+  pitVoscLongPeriod?: unknown
+  pitCfoPeriod?: unknown
+  pitCfoScalar?: unknown
+  pitConfirmBars?: unknown
+  vfctObvSmoothPeriod?: unknown
+  vfctMfiPeriod?: unknown
+  vfctMfiLongMin?: unknown
+  vfctMfiShortMax?: unknown
+  vfctConfirmBars?: unknown
 }
 
 export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuildInputs {
@@ -324,6 +363,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Mkcs') return 'Mkcs'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -445,6 +485,37 @@ function normalizeBackend(value: unknown): 'Auto' | 'CpuOnly' | 'GpuKernel' {
   return 'CpuOnly'
 }
 
+function isDoubleMaOverlayKind(kind: string): boolean {
+  return kind === 'DoubleMa'
+    || kind === 'Pit'
+    || kind === 'Set'
+    || kind === 'Mts'
+    || kind === 'Orc'
+    || kind === 'Marrt'
+    || kind === 'Vfct'
+    || kind === 'CompositeTrend'
+    || kind === 'RegimeHybrid'
+    || kind === 'BreakoutMomentum'
+}
+
+function resolveDoubleMaBackendPayload(
+  kind: string,
+  backend: 'Auto' | 'CpuOnly' | 'GpuKernel',
+  strategy: Record<string, unknown>,
+): Record<string, unknown> {
+  if (backend === 'CpuOnly') return { backend: 'CpuOnly' }
+
+  const useHybrid =
+    kind === 'RegimeHybrid'
+    || (kind === 'CompositeTrend' && !!strategy.trend_quality_use_adx)
+    || (kind === 'BreakoutMomentum' && !!strategy.breakout_use_adx)
+
+  return {
+    backend: useHybrid ? 'GpuHybridKernel' : 'GpuKernel',
+    device_id: 0,
+  }
+}
+
 function normalizeMode(value: unknown): 'Grid' {
   const mode = normalizeText(value)
   if (
@@ -553,6 +624,25 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
   const breakoutAdxPeriod = Math.max(1, Math.floor(num(inputs.breakoutAdxPeriod, 14)))
   const breakoutAdxMin = Math.max(0.0001, num(inputs.breakoutAdxMin, 20.0))
 
+  const pressureImpulseTrendEnable = kind === 'Pit'
+  const pitEfiPeriod = Math.max(1, Math.floor(num(inputs.pitEfiPeriod, 13)))
+  const pitVoscShortPeriod = Math.max(1, Math.floor(num(inputs.pitVoscShortPeriod, 5)))
+  const pitVoscLongPeriod = Math.max(pitVoscShortPeriod + 1, Math.floor(num(inputs.pitVoscLongPeriod, 20)))
+  const pitCfoPeriod = Math.max(1, Math.floor(num(inputs.pitCfoPeriod, 9)))
+  const pitCfoScalar = num(inputs.pitCfoScalar, 100.0)
+  const pitConfirmBars = Math.max(1, Math.floor(num(inputs.pitConfirmBars, 2)))
+
+  const volumeFlowConfirmEnable = kind === 'Vfct'
+  const volumeFlowObvSmoothPeriod = Math.max(1, Math.floor(num(inputs.vfctObvSmoothPeriod, 21)))
+  const volumeFlowMfiPeriod = Math.max(1, Math.floor(num(inputs.vfctMfiPeriod, 14)))
+  const volumeFlowMfiLongMin = num(inputs.vfctMfiLongMin, 55.0)
+  const volumeFlowMfiShortMax = num(inputs.vfctMfiShortMax, 45.0)
+  const volumeFlowConfirmBars = Math.max(1, Math.floor(num(inputs.vfctConfirmBars, 1)))
+
+  const slopeEfficiencyTrendEnable = kind === 'Set'
+  const momentumTripleStackEnable = kind === 'Mts'
+  const oscillatorReversionConfluenceEnable = kind === 'Orc'
+
   if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error('total cost must be in [0, 1).')
   if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error('eps_rel must be >= 0.')
   if (!Number.isFinite(cooldownBars) || cooldownBars < 0 || cooldownBars > 65535) {
@@ -608,6 +698,20 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
       throw new Error('breakout ADX min must be > 0.')
     }
   }
+  if (pressureImpulseTrendEnable && (!Number.isFinite(pitCfoScalar) || pitCfoScalar <= 0)) {
+    throw new Error('PIT CFO scalar must be > 0.')
+  }
+  if (volumeFlowConfirmEnable) {
+    if (!Number.isFinite(volumeFlowMfiLongMin) || volumeFlowMfiLongMin < 0 || volumeFlowMfiLongMin > 100) {
+      throw new Error('VFCT MFI long min must be in [0, 100].')
+    }
+    if (!Number.isFinite(volumeFlowMfiShortMax) || volumeFlowMfiShortMax < 0 || volumeFlowMfiShortMax > 100) {
+      throw new Error('VFCT MFI short max must be in [0, 100].')
+    }
+    if (volumeFlowMfiShortMax > volumeFlowMfiLongMin) {
+      throw new Error('VFCT MFI short max must be <= MFI long min.')
+    }
+  }
 
   return {
     long_only: normalizeBoolean(inputs.longOnly),
@@ -658,6 +762,36 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
     breakout_use_adx: breakoutUseAdx,
     breakout_adx_period: breakoutAdxPeriod,
     breakout_adx_min: breakoutAdxMin,
+    volume_flow_confirm_enable: volumeFlowConfirmEnable,
+    volume_flow_obv_smooth_period: volumeFlowObvSmoothPeriod,
+    volume_flow_mfi_period: volumeFlowMfiPeriod,
+    volume_flow_mfi_long_min: volumeFlowMfiLongMin,
+    volume_flow_mfi_short_max: volumeFlowMfiShortMax,
+    volume_flow_confirm_bars: volumeFlowConfirmBars,
+    slope_efficiency_trend_enable: slopeEfficiencyTrendEnable,
+    set_linearreg_period: 34,
+    set_angle_min_deg: 2.0,
+    set_er_period: 14,
+    set_er_min: 0.3,
+    set_chop_period: 14,
+    set_chop_max: 45.0,
+    momentum_triple_stack_enable: momentumTripleStackEnable,
+    mts_roc_period: 10,
+    mts_mom_period: 20,
+    mts_ppo_fast_period: 12,
+    mts_ppo_slow_period: 26,
+    oscillator_reversion_confluence_enable: oscillatorReversionConfluenceEnable,
+    pressure_impulse_trend_enable: pressureImpulseTrendEnable,
+    pit_efi_period: pitEfiPeriod,
+    pit_vosc_short_period: pitVoscShortPeriod,
+    pit_vosc_long_period: pitVoscLongPeriod,
+    pit_cfo_period: pitCfoPeriod,
+    pit_cfo_scalar: pitCfoScalar,
+    pit_confirm_bars: pitConfirmBars,
+    orc_rsi_period: 14,
+    orc_stoch_fastk_period: 5,
+    orc_stoch_fastd_period: 3,
+    orc_willr_period: 14,
     eps_rel: epsRel,
   }
 }
@@ -927,7 +1061,7 @@ function buildCompositeMoSampler(inputs: CompositeMoOptimizationBuildInputs): Re
 
 export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBuildInputs): Record<string, unknown> | null {
   const kind = normalizeStrategyKindRaw(inputs.context?.strategy_kind)
-  if (kind !== 'DoubleMa' && kind !== 'Pit' && kind !== 'Set' && kind !== 'Mts' && kind !== 'Orc' && kind !== 'Marrt' && kind !== 'Vfct') return null
+  if (!isDoubleMaOverlayKind(kind)) return null
 
   const dataId = normalizeText(inputs.context?.data_id)
   if (!dataId) throw new Error('Load CSV first (missing data id).')
@@ -989,7 +1123,28 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
       throw new Error('VFCT requires high, low, and volume candle fields.')
     }
   }
-
+  if (kind === 'CompositeTrend') {
+    const meta = inputs.context?.current_data_meta
+    const record = meta && typeof meta === 'object' ? meta as Record<string, unknown> : null
+    const trendUseAdx = normalizeBoolean(inputs.trendUseAdx)
+    if (trendUseAdx && (!record?.has_high || !record?.has_low)) {
+      throw new Error('CompositeTrend with ADX enabled requires high and low candle fields.')
+    }
+  }
+  if (kind === 'RegimeHybrid') {
+    const meta = inputs.context?.current_data_meta
+    const record = meta && typeof meta === 'object' ? meta as Record<string, unknown> : null
+    if (!record?.has_high || !record?.has_low) {
+      throw new Error('RegimeHybrid requires high and low candle fields.')
+    }
+  }
+  if (kind === 'BreakoutMomentum') {
+    const meta = inputs.context?.current_data_meta
+    const record = meta && typeof meta === 'object' ? meta as Record<string, unknown> : null
+    if (!record?.has_high || !record?.has_low || !record?.has_volume) {
+      throw new Error('BreakoutMomentum requires high, low, and volume candle fields.')
+    }
+  }
   const objective = normalizeText(inputs.objective || 'Sharpe') || 'Sharpe'
   const mode = normalizeMode(inputs.mode)
   const backend = normalizeBackend(inputs.backend)
@@ -1037,11 +1192,6 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     throw new Error('total cost must be in [0, 1).')
   }
   const startingEquity = normalizeStartingEquity(inputs.startingEquity)
-  const epsRel = Math.max(0, num(inputs.epsRel, 0))
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error('eps_rel must be >= 0.')
-
-  const stopLossPct = parseRiskPct(inputs.stopLossPct)
-  const takeProfitPct = parseRiskPct(inputs.takeProfitPct)
   const cooldownBars = Math.max(0, Math.floor(num(inputs.cooldownBars, 0)))
   if (!Number.isFinite(cooldownBars) || cooldownBars < 0 || cooldownBars > 65535) {
     throw new Error('cooldown bars must be in [0, 65535].')
@@ -1054,36 +1204,9 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   if (!(exitMode === 'cross' || exitMode === 'kaufman_stop')) {
     throw new Error("exit mode must be 'cross' or 'kaufman_stop'.")
   }
-  const kaufmanStopPeriod = Math.max(1, Math.floor(num(inputs.kaufmanStopPeriod, 22)))
   const kaufmanStopMult = Math.max(0.0001, num(inputs.kaufmanStopMult, 2.0))
   if (!Number.isFinite(kaufmanStopMult) || kaufmanStopMult <= 0) {
     throw new Error('kaufman-stop multiplier must be > 0.')
-  }
-  const kaufmanStopMaType = normalizeText(inputs.kaufmanStopMaType || 'sma') || 'sma'
-  const pitEfiPeriod = Math.max(1, Math.floor(num(inputs.pitEfiPeriod, 13)))
-  const pitVoscShortPeriod = Math.max(1, Math.floor(num(inputs.pitVoscShortPeriod, 5)))
-  const pitVoscLongPeriod = Math.max(pitVoscShortPeriod + 1, Math.floor(num(inputs.pitVoscLongPeriod, 20)))
-  const pitCfoPeriod = Math.max(1, Math.floor(num(inputs.pitCfoPeriod, 9)))
-  const pitCfoScalar = num(inputs.pitCfoScalar, 100.0)
-  const pitConfirmBars = Math.max(1, Math.floor(num(inputs.pitConfirmBars, 2)))
-  if (kind === 'Pit' && (!Number.isFinite(pitCfoScalar) || pitCfoScalar <= 0)) {
-    throw new Error('PIT CFO scalar must be > 0.')
-  }
-  const vfctObvSmoothPeriod = Math.max(1, Math.floor(num(inputs.vfctObvSmoothPeriod, 21)))
-  const vfctMfiPeriod = Math.max(1, Math.floor(num(inputs.vfctMfiPeriod, 14)))
-  const vfctMfiLongMin = num(inputs.vfctMfiLongMin, 55.0)
-  const vfctMfiShortMax = num(inputs.vfctMfiShortMax, 45.0)
-  const vfctConfirmBars = Math.max(1, Math.floor(num(inputs.vfctConfirmBars, 1)))
-  if (kind === 'Vfct') {
-    if (!Number.isFinite(vfctMfiLongMin) || vfctMfiLongMin < 0 || vfctMfiLongMin > 100) {
-      throw new Error('VFCT MFI long min must be in [0, 100].')
-    }
-    if (!Number.isFinite(vfctMfiShortMax) || vfctMfiShortMax < 0 || vfctMfiShortMax > 100) {
-      throw new Error('VFCT MFI short max must be in [0, 100].')
-    }
-    if (vfctMfiShortMax > vfctMfiLongMin) {
-      throw new Error('VFCT MFI short max must be <= MFI long min.')
-    }
   }
 
   const fastMaParams = normalizeMaParams(inputs.fastMaParams)
@@ -1131,60 +1254,8 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     if (maxDrawdown != null) constraints.max_drawdown = maxDrawdown
   }
 
-  const strategy = {
-    long_only: normalizeBoolean(inputs.longOnly),
-    allow_flip: normalizeBoolean(inputs.allowFlip),
-    trade_on_next_bar: true,
-    cost_preset: normalizeText(inputs.costPreset || 'custom') || 'custom',
-    starting_equity: startingEquity,
-    fee_bps: feeBps,
-    spread_bps: spreadBps,
-    slippage_bps: slippageBps,
-    commission,
-    pressure_impulse_trend_enable: kind === 'Pit',
-    pit_efi_period: pitEfiPeriod,
-    pit_vosc_short_period: pitVoscShortPeriod,
-    pit_vosc_long_period: pitVoscLongPeriod,
-    pit_cfo_period: pitCfoPeriod,
-    pit_cfo_scalar: pitCfoScalar,
-    pit_confirm_bars: pitConfirmBars,
-    slope_efficiency_trend_enable: kind === 'Set',
-    set_linearreg_period: 34,
-    set_angle_min_deg: 2.0,
-    set_er_period: 14,
-    set_er_min: 0.3,
-    set_chop_period: 14,
-    set_chop_max: 45.0,
-    momentum_triple_stack_enable: kind === 'Mts',
-    mts_roc_period: 10,
-    mts_mom_period: 20,
-    mts_ppo_fast_period: 12,
-    mts_ppo_slow_period: 26,
-    oscillator_reversion_confluence_enable: kind === 'Orc',
-    orc_rsi_period: 14,
-    orc_stoch_fastk_period: 5,
-    orc_stoch_fastd_period: 3,
-    orc_willr_period: 14,
-    stop_loss_pct: stopLossPct,
-    take_profit_pct: takeProfitPct,
-    cooldown_bars: cooldownBars,
-    signal_persistence_bars: signalPersistenceBars,
-    exit_mode: exitMode,
-    kaufman_stop_period: kaufmanStopPeriod,
-    kaufman_stop_mult: kaufmanStopMult,
-    kaufman_stop_ma_type: kaufmanStopMaType,
-    volume_flow_confirm_enable: kind === 'Vfct',
-    volume_flow_obv_smooth_period: vfctObvSmoothPeriod,
-    volume_flow_mfi_period: vfctMfiPeriod,
-    volume_flow_mfi_long_min: vfctMfiLongMin,
-    volume_flow_mfi_short_max: vfctMfiShortMax,
-    volume_flow_confirm_bars: vfctConfirmBars,
-    eps_rel: epsRel,
-  }
-
-  const backendPayload = backend === 'CpuOnly'
-    ? { backend: 'CpuOnly' }
-    : { backend, device_id: 0 }
+  const strategy = buildStrategyConfigFromInputs(inputs, kind)
+  const backendPayload = resolveDoubleMaBackendPayload(kind, backend, strategy)
 
   return {
     strategy_kind: kind,
@@ -1219,10 +1290,8 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     && kind !== 'Vcc'
     && kind !== 'Vemr'
     && kind !== 'Rocb'
+    && kind !== 'Mkcs'
     && kind !== 'CompositeCpu'
-    && kind !== 'CompositeTrend'
-    && kind !== 'RegimeHybrid'
-    && kind !== 'BreakoutMomentum'
   ) {
     return null
   }
@@ -1257,7 +1326,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   if (!fastMaType) throw new Error('Select a fast MA type.')
   if (!slowMaType) throw new Error('Select a slow MA type.')
   const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
-  if (kind !== 'Asr' && kind !== 'Vcc' && kind !== 'Vemr' && kind !== 'Rocb' && hasMovingAverageSupportData(maSupportMap)) {
+  if (kind !== 'Asr' && kind !== 'Vcc' && kind !== 'Vemr' && kind !== 'Rocb' && kind !== 'Mkcs' && hasMovingAverageSupportData(maSupportMap)) {
     if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
       throw new Error('Composite strategy is CPU-only and does not support one of the selected MA types.')
     }
@@ -1326,7 +1395,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   const strategy = buildStrategyConfigFromInputs(inputs, kind)
   const signalMode = normalizeCompositeSignalMode(inputs.compositeSignalMode)
   const backend = normalizeBackend(inputs.backend)
-  const backendPayload = (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb')
+  const backendPayload = (kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Mkcs')
     ? (backend === 'CpuOnly' ? { backend: 'CpuOnly' } : { backend, device_id: 0 })
     : { backend: 'CpuOnly' }
 
@@ -1526,6 +1595,17 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     }
   }
 
+  const mkcs = kind === 'Mkcs'
+    ? {
+        map_fast_to_stddev_period: true,
+        map_slow_to_breakout_lookback: true,
+        stddev_period: 20,
+        breakout_lookback: 20,
+        compression_threshold: 0.01,
+        reexpansion_threshold: 0.03,
+      }
+    : undefined
+
   return {
     strategy_kind: kind,
     backend: backendPayload,
@@ -1547,6 +1627,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     vcc,
     vemr,
     rocb,
+    mkcs,
     objective,
     mode: 'Grid',
     top_k: topK,

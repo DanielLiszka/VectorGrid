@@ -18,9 +18,7 @@ pub fn run_tauri() {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "missing window config")
             })?;
 
-            let data_dir = std::env::temp_dir()
-                .join("vectorgrid")
-                .join("webview2");
+            let data_dir = std::env::temp_dir().join("vectorgrid").join("webview2");
 
             tauri::WebviewWindowBuilder::from_config(app.handle(), &window_cfg)?
                 .data_directory(data_dir)

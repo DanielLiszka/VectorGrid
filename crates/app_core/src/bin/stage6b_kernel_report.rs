@@ -3,11 +3,11 @@ use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use ta_app_core::{run_double_ma_optimization_blocking_with_candles, Backend, DoubleMaRequest};
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     trend_quality_strategy_for_kernel,
 };
+use ta_app_core::{run_double_ma_optimization_blocking_with_candles, Backend, DoubleMaRequest};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;

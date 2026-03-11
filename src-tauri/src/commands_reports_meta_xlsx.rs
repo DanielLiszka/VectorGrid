@@ -816,6 +816,7 @@ mod tests {
                 pass_rate: 1.0,
                 robust_score_median: 0.42,
                 robust_score_p10: 0.21,
+                evidence_flags: Vec::new(),
                 tail_gap: 0.21,
                 max_dd_p90: 0.18,
                 cross_score_median: 0.17,

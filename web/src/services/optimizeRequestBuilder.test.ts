@@ -544,8 +544,8 @@ describe('optimizeRequestBuilder', () => {
     })
   })
 
-  it('builds a CompositeTrend request through the composite CPU builder path', () => {
-    const req = buildCompositeCpuOptimizationRequest({
+  it('builds a CompositeTrend request through the double-MA builder path with GPU kernel when ADX is off', () => {
+    const req = buildDoubleMaOptimizationRequest({
       context: {
         strategy_kind: 'CompositeTrend',
         data_id: 'data-trend',
@@ -563,29 +563,16 @@ describe('optimizeRequestBuilder', () => {
       slowStart: '20',
       slowEnd: '40',
       slowStep: '10',
+      backend: 'GpuKernel',
       fastMaType: 'sma',
       slowMaType: 'ema',
       maSource: 'close',
       objective: 'Sharpe',
+      mode: 'Grid',
       topK: '20',
       includeAll: 'false',
-      compositeSignalMode: 'hard_gate',
-      halfTrendAmplitude: '2',
-      halfTrendAtrPeriod: '100',
-      halfTrendChannelDev: '2.0',
-      maczFastLength: '12',
-      maczSlowLength: '25',
-      maczSignalLength: '9',
-      maczLengthZ: '20',
-      maczLengthStdev: '25',
-      maczGamma: '0.02',
-      maczA: '1',
-      maczB: '1',
-      maczUseVolume: false,
-      maczUseLag: false,
-      ottPeriod: '2',
-      ottPercent: '1.4',
-      ottMaType: 'VAR',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
       startingEquity: '10000',
       costPreset: 'custom',
       feeBps: '1',
@@ -603,18 +590,16 @@ describe('optimizeRequestBuilder', () => {
       longOnly: true,
       allowFlip: true,
       tradeOnNext: false,
-      vccMapFastToSqueezePeriod: false,
-      vccMapFastToMomentumPeriod: true,
-      vccMapSlowToTrendPeriod: false,
-      vccSqueezePeriod: '18',
-      vccMomentumPeriod: '22',
-      vccMomentumBbPeriod: '24',
-      vccTrendPeriod: '9',
-      vccSqueezeBbMult: '2.2',
-      vccSqueezeKcMult: '1.7',
-      vccConfirmBars: '3',
-      vccRequireMomentumAccel: false,
-      vccMaxTradeBars: '140',
+      trendUseRoc: true,
+      trendUseAdx: false,
+      trendLrPeriod: '34',
+      trendLrMinDeg: '2.0',
+      trendBbwPeriod: '20',
+      trendBbwMult: '2.0',
+      trendBbwMin: '0.04',
+      trendRocPeriod: '9',
+      trendAdxPeriod: '14',
+      trendAdxMin: '20',
       fastMaParams: { alpha: 2 },
       slowMaParams: { alpha: 3 },
     })
@@ -624,9 +609,218 @@ describe('optimizeRequestBuilder', () => {
       : {}
     expect(req).toBeTruthy()
     expect(req?.strategy_kind).toBe('CompositeTrend')
+    expect((req as Record<string, unknown>)?.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
     expect(strategy.trend_quality_enable).toBe(true)
     expect(strategy.regime_hybrid_enable).toBe(false)
     expect(strategy.breakout_momentum_enable).toBe(false)
+  })
+
+  it('builds a CompositeTrend request through the double-MA builder path with GPU hybrid when ADX is on', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'CompositeTrend',
+        data_id: 'data-trend',
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
+      trendUseRoc: true,
+      trendUseAdx: true,
+      trendLrPeriod: '34',
+      trendLrMinDeg: '2.0',
+      trendBbwPeriod: '20',
+      trendBbwMult: '2.0',
+      trendBbwMin: '0.04',
+      trendRocPeriod: '9',
+      trendAdxPeriod: '14',
+      trendAdxMin: '20',
+    })
+
+    expect(req).toBeTruthy()
+    expect((req as Record<string, unknown>)?.backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+  })
+
+  it('builds RegimeHybrid and BreakoutMomentum through the double-MA builder path', () => {
+    const regimeReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'RegimeHybrid',
+        data_id: 'data-regime',
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
+      regimeAdxPeriod: '14',
+      regimeAdxEnter: '22',
+      regimeAdxExit: '18',
+      regimeRevEntryRel: '0.0035',
+      regimeRevExitRel: '0.0012',
+    })
+
+    const breakoutReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'BreakoutMomentum',
+        data_id: 'data-breakout',
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
+      breakoutBbPeriod: '20',
+      breakoutBbMult: '2.0',
+      breakoutConfirmBars: '1',
+      breakoutMacdFast: '12',
+      breakoutMacdSlow: '26',
+      breakoutMacdSignal: '9',
+      breakoutCmoPeriod: '14',
+      breakoutCmoMinAbs: '20',
+      breakoutAdoscShort: '3',
+      breakoutAdoscLong: '10',
+      breakoutUseAdx: false,
+      breakoutAdxPeriod: '14',
+      breakoutAdxMin: '20',
+    })
+
+    expect(regimeReq).toBeTruthy()
+    expect((regimeReq as Record<string, unknown>)?.backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+    expect((regimeReq as Record<string, unknown>)?.strategy_kind).toBe('RegimeHybrid')
+
+    expect(breakoutReq).toBeTruthy()
+    expect((breakoutReq as Record<string, unknown>)?.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect((breakoutReq as Record<string, unknown>)?.strategy_kind).toBe('BreakoutMomentum')
+  })
+
+  it('keeps CompositeTrend, RegimeHybrid, and BreakoutMomentum on the double-MA path with CpuOnly fallback when requested', () => {
+    const baseContext = {
+      current_data_meta: {
+        has_open: true,
+        has_high: true,
+        has_low: true,
+        has_close: true,
+        has_volume: true,
+      },
+    }
+
+    const trendReq = buildDoubleMaOptimizationRequest({
+      context: { strategy_kind: 'CompositeTrend', data_id: 'data-trend-cpu', ...baseContext },
+      backend: 'CpuOnly',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      trendUseAdx: false,
+    })
+
+    const regimeReq = buildDoubleMaOptimizationRequest({
+      context: { strategy_kind: 'RegimeHybrid', data_id: 'data-regime-cpu', ...baseContext },
+      backend: 'CpuOnly',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+    })
+
+    const breakoutReq = buildDoubleMaOptimizationRequest({
+      context: { strategy_kind: 'BreakoutMomentum', data_id: 'data-breakout-cpu', ...baseContext },
+      backend: 'CpuOnly',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      breakoutUseAdx: false,
+    })
+
+    expect((trendReq as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
+    expect((regimeReq as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
+    expect((breakoutReq as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
   })
 
   it('builds a VCC request through the composite CPU builder path', () => {
@@ -891,6 +1085,64 @@ describe('optimizeRequestBuilder', () => {
       atr_period: 16,
       atr_stop_mult: 2.3,
       max_trade_bars: 90,
+    })
+  })
+
+  it('builds an MKCS request through the composite CPU builder path', () => {
+    const req = buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: 'Mkcs',
+        data_id: 'data-mkcs',
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      topK: '20',
+      includeAll: 'false',
+      compositeSignalMode: 'hard_gate',
+      halfTrendAmplitude: '2',
+      halfTrendAtrPeriod: '100',
+      halfTrendChannelDev: '2.0',
+      maczFastLength: '12',
+      maczSlowLength: '25',
+      maczSignalLength: '9',
+      maczLengthZ: '20',
+      maczLengthStdev: '25',
+      maczGamma: '0.02',
+      maczA: '1',
+      maczB: '1',
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: '2',
+      ottPercent: '1.4',
+      ottMaType: 'VAR',
+    })
+
+    expect(req).toBeTruthy()
+    expect(req?.strategy_kind).toBe('Mkcs')
+    expect(req?.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req?.mkcs).toMatchObject({
+      map_fast_to_stddev_period: true,
+      map_slow_to_breakout_lookback: true,
+      stddev_period: 20,
+      breakout_lookback: 20,
+      compression_threshold: 0.01,
+      reexpansion_threshold: 0.03,
     })
   })
 
