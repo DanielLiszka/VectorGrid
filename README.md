@@ -1,202 +1,148 @@
 # VectorTA Optimizer
 
-Tauri desktop app for brute-force double moving-average optimization (and future strategy expansion).
+GPU-accelerated Tauri desktop app for exact-grid trading strategy optimization and validation.
 
-## Frontend stack
+In benchmark docs and scripts, the app's execution engine is referred to as **VectorGrid**. The desktop product and the benchmarked engine live in this repository.
 
-- Vue 3 + Vite frontend workspace in `web/`
-- Vue-first app shell in `web/src/App.vue` mounted from minimal `web/index.html`
-- `web/src/App.vue` now defers loading heavy migrated workspace panels until their tab/workspace is first activated (async component lazy-load).
-- Frontend runtime is now fully Vue-owned (legacy `web/src/legacy/*` runtime path removed).
-- Vue task/progress overlay in `web/src/components/TaskCenterOverlay.vue` (wired through Tauri event/invoke instrumentation)
-- Vue-native run/cancel footer panel in `web/src/components/RunFooterPanel.vue`
-- Vue-native controls/workspaces:
-  - Data: `web/src/components/DataWorkspacePanel.vue`
-  - Optimize: `web/src/components/OptimizeWorkspacePanel.vue`
-  - Strategy: `web/src/components/StrategyWorkspacePanel.vue`
-  - Advanced: `web/src/components/AdvancedWorkspacePanel.vue`
-- Vue-native Validation results tab panel in `web/src/components/ValidationWorkspacePanel.vue` (core controls, advanced validation options, cross-ticker dataset controls/list, shortlist table, raw JSON preview, and report XLSX export flow render in Vue)
-- Vue-native Overview results tab panel in `web/src/components/OverviewWorkspacePanel.vue` (empty-state, best card/stats/details, and compare controls render in Vue)
-- Vue-native Top results tab panel in `web/src/components/TopWorkspacePanel.vue`
-- Top/Validation/Meta Vue result tables now use row-window virtualization to avoid rendering entire large result sets at once.
-- Vue-native Pareto results tab panel in `web/src/components/ParetoWorkspacePanel.vue`
-- Vue-native Drilldown results tab panel in `web/src/components/DrillWorkspacePanel.vue`
-- Vue-native Heatmap results tab panel in `web/src/components/HeatmapWorkspacePanel.vue`
-- Vue-native Meta results tab panel in `web/src/components/MetaWorkspacePanel.vue` (strategy/filter controls, holdout/grouping tuning, batch controls/list/output, meta table, compare flow, saved-meta manager, saved-stage4 manager, and ML confidence/stage4 run tuning now render in Vue)
-- Vue-native Debug results tab panel in `web/src/components/DebugWorkspacePanel.vue` (debug JSON output now renders via Vue panel state)
-- Vue-native Settings workspace panel in `web/src/components/SettingsWorkspacePanel.vue`
-- Vue-native History tab panel in `web/src/components/HistoryWorkspacePanel.vue`
-- Vue-native Execution settings pane in `web/src/components/ExecutionWorkspacePanel.vue` (includes Vue-rendered broker orders table + chart host)
+## Benchmark
 
-## First-time setup
+![VectorGrid vs VectorBT 250k benchmark chart](docs/assets/benchmark-double-ma-250k.svg)
 
-From repo root:
+**Current headline benchmark**
+
+- Scenario: `Double MA`, `ALMA/ALMA`, exact grid
+- Workload: `250,000` backtests over `200,000` bars
+- Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
+- VectorGrid GPU kernel: `233.660 ms`
+- VectorGrid CPU: `15202.400 ms`
+- VectorBT CPU workflow: `445240.337 ms`
+
+That is about:
+
+- `1905x` faster than the measured VectorBT CPU workflow
+- `65x` faster than the app's own CPU path on the same scenario
+
+**Secondary benchmark snapshot**
+
+| Scenario | VectorGrid GPU kernel | VectorGrid CPU | VectorBT CPU |
+| --- | --- | --- | --- |
+| `200k bars / 58,300 pairs` | `101.890 ms` | `3486.130 ms` | `92377.801 ms` |
+| `200k bars / 250,000 pairs` | `233.660 ms` | `15202.400 ms` | `445240.337 ms` |
+
+## What This Measures
+
+The benchmark shown above is the **warm app-path** benchmark, not the tighter Criterion microbenchmark.
+
+- Dataset is loaded once.
+- Warmup runs happen before measured trials.
+- GPU measured trials reuse resident market-series buffers.
+- The `250,000`-pair scenario uses `top_k=10` and `heatmap_bins=0`.
+- VectorBT is measured as a CPU Python workflow on `vectorbt 0.28.4`, with local ALMA generation and app-equivalent next-bar Sharpe scoring to keep the objective semantics aligned.
+
+This repo also has a tighter engine benchmark boundary for the classic `58,300`-pair ALMA case:
+
+- Criterion anchor: `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`
+- Historical anchor: about `89 ms`
+
+Use the warm app-path numbers for product-facing comparisons. Use the Criterion benchmark for lower-level engine tracking.
+
+## What The App Does
+
+- Exact-grid optimization for trading strategies, with a mature GPU path for the `Double MA` family.
+- GPU-backed validation coverage for the active supported strategy families, including walk-forward and related validation flows.
+- CPU fallback support throughout the product.
+- Warm in-memory and VRAM-resident execution paths designed for repeated optimization and validation runs on the same dataset.
+- Desktop UI for data loading, optimization, shortlist review, heatmaps, validation, history, and export/report workflows.
+
+## Current GPU Coverage
+
+Broadly, the repo is in a good backend state for the current target set.
+
+- Mature `DoubleMa` GPU optimization and validation path.
+- `CompositeTrend`, `BreakoutMomentum`, and `RegimeHybrid` route through the `DoubleMa` product path.
+- Composite-side GPU support exists for `ASR`, `ROCB`, `VEMR`, `MKCS`, `KQSR`, `CARM`, `KVDF`, and `CDMC`.
+- `VCC` remains parity-gated.
+- `CompositeMo` remains CPU-bound.
+
+For the current detailed tracker set, see:
+
+- [OPEN_IMPLEMENTATION_COMPLETION_TRACKER_2026-03-12.md](research/OPEN_IMPLEMENTATION_COMPLETION_TRACKER_2026-03-12.md)
+- [GPU_VALIDATION_MIGRATION_PLAN_2026-03-10.md](research/GPU_VALIDATION_MIGRATION_PLAN_2026-03-10.md)
+- [VALIDATION_HARDENING_PLAN_2026-03-10.md](research/VALIDATION_HARDENING_PLAN_2026-03-10.md)
+- [STRATEGY_INDICATOR_GPU_COVERAGE_INVENTORY_2026-03-10.md](research/STRATEGY_INDICATOR_GPU_COVERAGE_INVENTORY_2026-03-10.md)
+
+## Quick Start
+
+Install frontend dependencies:
 
 ```powershell
 cd web
 npm install
 ```
 
-## Run
-
-From the repo root:
+Run the app from the repo root:
 
 ```powershell
-cd ta_desktop_demo
 npm --prefix web run build
+cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel
+```
+
+CPU-only app run:
+
+```powershell
 cargo run -p ta_desktop_demo_app --release
 ```
 
-Tauri config is wired to build frontend from `web/` automatically via:
+## Reproduce The Benchmark
 
-- `src-tauri/tauri.conf.json`:
-  - `beforeDevCommand`: `npm --prefix ./web run dev -- --host 127.0.0.1 --port 1420`
-  - `beforeBuildCommand`: `npm --prefix ./web run build`
-
-## Validation/meta adapter notes
-
-- Validation runner orchestration is shared in `crates/app_core/src/validation_core.rs`.
-- Strategy modules stay adapter-focused:
-  - `crates/app_core/src/double_ma_validate.rs`
-  - `crates/app_core/src/composite_validate.rs`
-- To add a new strategy with validation support:
-  - keep strategy-specific series/evaluation code in its strategy module,
-  - implement `ValidationPostCandidate` for the strategy’s candidate result type,
-  - route candidate execution/finalization through `validation_core::run_validation_candidates(...)`.
-- Meta grouping supports optional strategy-agnostic context fields:
-  - `feature_context`
-  - `run_context`
-  Legacy MA grouping fields are still supported for backward compatibility.
-
-## Frontend dev/test commands
+Run the `250,000`-pair warm faceoff scenario:
 
 ```powershell
-cd web
-npm run typecheck
-npm run lint
-npm run parity:outputs
-npm run test
-npm run build
-node ../scripts/check_migration_freeze_scope.mjs
-node ../scripts/export_baseline_samples.mjs
-npm run baseline:ui
-powershell -ExecutionPolicy Bypass -File ../scripts/capture_optimization_memory.ps1
-node ../scripts/post_release_telemetry_review.mjs
+powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1 `
+  -ScenarioPath scripts/vectorbt_double_ma_faceoff_scenario_250k.json `
+  -OutDir target/vectorbt_vs_vectorgrid_faceoff_250k
 ```
 
-## Performance benchmarking (CPU-only while GPU is busy)
+Scenario file:
 
-Use the deterministic workflow gate + criterion microbench:
+- [scripts/vectorbt_double_ma_faceoff_scenario_250k.json](scripts/vectorbt_double_ma_faceoff_scenario_250k.json)
+
+The app-only reruns used for the current README numbers were written to:
+
+- `target/vectorgrid_app_faceoff_only_250k_20260313/`
+- `target/vectorbt_only_faceoff_250k_20260313/`
+
+## Performance Gates And Profiling
+
+CPU perf gate:
 
 ```powershell
-# create/update CPU perf baseline
-powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode baseline
-
-# compare current code against baseline (fails on regression)
 powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode candidate
 ```
 
-Outputs:
-- `target/workflow_regression_summary.json`
-- `target/cpu_perf_summary.json`
-- baseline snapshot at `scripts/baselines/cpu_perf_baseline.json`
-
-When GPU is available again, keep this CPU gate and add Nsight runs on the same commit to isolate GPU-side gains.
-
-## GPU backtest perf + Nsight
-
-Use these when CUDA is available and you want to focus on grid backtest optimization performance.
+GPU perf gate:
 
 ```powershell
-# create/update GPU perf baseline (criterion)
-powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode baseline
-
-# compare current code against GPU baseline (fails on regression)
 powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate
+```
 
-# capture Nsight Compute report for the GPU kernel grid benchmark
+Nsight Compute capture:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_ncu.ps1
-
-# example: profile a heavier grid case
-powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_ncu.ps1 `
-  -BenchFilter "double_ma/gpu_kernel/sma_sma/200k/medium"
 ```
 
-Outputs:
-- `target/gpu_perf_summary.json`
-- baseline snapshot at `scripts/baselines/gpu_perf_baseline.json`
-- Nsight report `target/nsight/gpu_kernel_small.ncu-rep` (default path)
+## Repo Layout
 
-Notes:
-- GPU metrics-toggle bench defaults to `sma/sma` (backtest-focused). Set `$env:VECTORBT_BENCH_KERNEL_MA=\"alma\"` before running `double_ma_metrics` if you want the prior ALMA profile.
-- For stable baseline comparisons, keep GPU load constant (close other CUDA workloads) and prefer fixed clocks/power settings when possible.
+- `src-tauri/`: Tauri app crate, commands, desktop integration
+- `crates/app_core/`: optimization, validation, CUDA/runtime plumbing
+- `crates/strategies/`: strategy configuration and shared strategy logic
+- `crates/optimizer/`: optimizer support crate
+- `web/`: Vue 3 + Vite frontend
+- `research/`: trackers, migration plans, benchmark notes, and implementation docs
 
-### Current Double-MA benchmark snapshots
+## Notes
 
-These are two different measurement boundaries and should not be mixed:
-
-- Criterion benchmark anchor:
-  - benchmark id: `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`
-  - historical anchor: about `89 ms`
-  - use this as the tighter engine benchmark, not as the app wall-clock benchmark
-- Warm app-path VectorBT vs VectorGrid faceoff (`scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`):
-  - dataset is loaded once
-  - app-path warmup runs before measured trials
-  - GPU measured trials reuse resident market-series buffers
-  - artifacts:
-    - `target/vectorbt_vs_vectorgrid_faceoff_58300_rerun/summary.json`
-    - `target/vectorbt_vs_vectorgrid_faceoff_250k/summary.json`
-
-Latest warm faceoff numbers:
-
-| Scenario | VectorGrid GPU kernel | VectorGrid CPU | VectorBT CPU |
-| --- | --- | --- | --- |
-| `200k bars / 58,300 pairs` | `494.757 ms` | `3522.491 ms` | `92377.801 ms` |
-| `200k bars / 250,000 pairs` | `270.248 ms` | `15483.240 ms` | `432062.619 ms` |
-
-Why the warm app-path timings are still slower than Criterion:
-
-- Criterion is a tighter in-process engine benchmark with much less orchestration around the optimization call.
-- The faceoff still includes app-path request setup, result shaping/serialization, and trial harness overhead around the optimization itself.
-- Warm app-path runs do reuse resident data, but they are still a broader product-facing timing boundary than Criterion.
-
-### In-app GPU demo (recommended)
-
-After the app opens:
-- Load any CSV (or use the sample CSV list).
-- Confirm the `GPU:` status line shows build/runtime info (and `cuda_available=true` when applicable).
-- Select **Strategy = Double MA**, then:
-  - Click `Preset: GPU kernel (SMA/ALMA)` (kernel demo path), then `Run`.
-  - Optionally click `CPU ↔ GPU parity check (tiny)` to sanity-check CPU vs GPU results on a tiny grid.
-
-### GPU backends
-
-GPU MA sweep (does not require `nvcc` - uses `vector-ta` prebuilt PTX):
-
-```powershell
-cargo run -p ta_desktop_demo_app --release --features cuda
-```
-
-GPU hybrid backend (phase 1 scaffolding, currently routes through kernel path constraints):
-
-```powershell
-cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel
-```
-
-Hybrid rollout control:
-- Enable/disable hybrid backend routing at runtime: `$env:VECTORBT_ENABLE_GPU_HYBRID_KERNEL="1"` (default `1`)
-
-GPU kernel backend (VRAM-resident, fastest). Does **not** require `nvcc` when using the prebuilt PTX:
-
-```powershell
-cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel
-```
-
-Notes:
-- GPU kernel backend currently supports `sma`, `ema`, `wma`, and `alma` for the MA computation.
-- GPU hybrid backend (`GpuHybridKernel`) is currently a phase-1 contract/wiring mode and uses the same MA support envelope as GPU kernel.
-- Prebuilt PTX control (backtest kernel):
-  - Force prebuilt PTX (recommended for CI/packaging): `$env:VECTORBT_USE_PREBUILT_PTX="1"`
-  - Require `nvcc` (developer mode): `$env:VECTORBT_REQUIRE_NVCC="1"`
-- Host-to-device upload control (kernel path):
-  - Enable pinned host staging for select H2D uploads (regime series): `$env:VECTORBT_KERNEL_PINNED_H2D="1"` (default `1`)
+- Keep CPU-only builds working; CUDA is optional at build time.
+- For CUDA backtest-kernel work, use the repo perf gates and Nsight before drawing conclusions from single ad-hoc timings.
+- The current benchmark chart is intentionally static and explicit. It is meant to be readable and honest in a GitHub README without relying on video playback.

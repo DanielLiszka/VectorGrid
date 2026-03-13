@@ -1967,6 +1967,11 @@ fn kernel_global_topk_enabled() -> bool {
 }
 
 #[inline]
+fn kernel_log_dispatch_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_LOG_DISPATCH", false)
+}
+
+#[inline]
 fn kernel_valid_pair_map_enabled() -> bool {
     // Compact dense Pf*Ps launch space into valid fast<slow pairs only.
     env_flag_enabled("VECTORBT_KERNEL_VALID_PAIR_MAP", true)
@@ -5400,6 +5405,34 @@ fn optimize_double_ma_gpu_kernel_impl(
                             device_launch_caps,
                             launch_caps,
                         );
+                        let dispatch_label = if use_windowed_eval {
+                            "windowed"
+                        } else if use_lockstep_m7 {
+                            "lockstep_m7"
+                        } else if use_lockstep_time {
+                            "lockstep_time"
+                        } else if use_fast_warp_dedup {
+                            "fast_warp_dedup"
+                        } else if use_m7 {
+                            "m7"
+                        } else {
+                            "baseline"
+                        };
+                        if kernel_log_dispatch_enabled() {
+                            eprintln!(
+                                "VECTORBT_KERNEL_DISPATCH: pair={}/{} launch_pairs={} fast_path={} multi_tile={} dispatch={} use_m7={} use_lockstep_time={} use_lockstep_m7={} use_fast_warp={}",
+                                fast_ma,
+                                slow_ma,
+                                launch_pairs,
+                                use_fast_path,
+                                is_multi_tile_workload,
+                                dispatch_label,
+                                use_m7,
+                                use_lockstep_time,
+                                use_lockstep_m7,
+                                use_fast_warp_dedup
+                            );
+                        }
                         let backtest_fn = if use_windowed_eval {
                             &backtest_windowed
                         } else if use_lockstep_m7 {
