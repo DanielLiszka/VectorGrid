@@ -3,7 +3,11 @@ pub mod asr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod asr_gpu_kernel;
 pub mod carm;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod carm_gpu_kernel;
 pub mod cdmc;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod cdmc_gpu_kernel;
 pub mod composite_cpu;
 pub mod composite_mo;
 pub(crate) mod composite_profile_route;
@@ -26,7 +30,11 @@ pub mod indicator_catalog;
 pub mod indicator_factory;
 pub mod iterative_sim;
 pub mod kqsr;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod kqsr_gpu_kernel;
 pub mod kvdf;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod kvdf_gpu_kernel;
 pub mod ma_policy;
 pub mod matrix_index;
 pub mod meta_select;

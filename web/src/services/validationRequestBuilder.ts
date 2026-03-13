@@ -58,6 +58,10 @@ interface ValidationCandidateLike {
   vemr?: unknown
   rocb?: unknown
   mkcs?: unknown
+  kqsr?: unknown
+  carm?: unknown
+  kvdf?: unknown
+  cdmc?: unknown
   strategy?: unknown
   halftrend_filter?: unknown
   halftrend?: unknown
@@ -146,6 +150,10 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
   if (kind === 'Mkcs') return 'Mkcs'
+  if (kind === 'Kqsr') return 'Kqsr'
+  if (kind === 'Carm') return 'Carm'
+  if (kind === 'Kvdf') return 'Kvdf'
+  if (kind === 'Cdmc') return 'Cdmc'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -354,6 +362,66 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
         }
       }
 
+      if (kind === 'Kqsr') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const kqsr = asRecord(p.kqsr) || asRecord(currentRunReq.kqsr) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          kqsr,
+          strategy
+        }
+      }
+
+      if (kind === 'Carm') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const carm = asRecord(p.carm) || asRecord(currentRunReq.carm) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          carm,
+          strategy
+        }
+      }
+
+      if (kind === 'Kvdf') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const kvdf = asRecord(p.kvdf) || asRecord(currentRunReq.kvdf) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          kvdf,
+          strategy
+        }
+      }
+
+      if (kind === 'Cdmc') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const cdmc = asRecord(p.cdmc) || asRecord(currentRunReq.cdmc) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          cdmc,
+          strategy
+        }
+      }
+
       const halftrend = kind === 'CompositeMo' ? asRecord(p.halftrend) || null : asRecord(currentRunReq.halftrend) || null
       const signal_mode = kind === 'CompositeMo' ? normalizeText(p.signal_mode || p.signalMode || currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate') : normalizeText(currentRunReq.signal_mode || currentRunReq.signalMode || 'hard_gate')
 
@@ -379,6 +447,10 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       if (kind === 'Vemr') return true
       if (kind === 'Rocb') return true
       if (kind === 'Mkcs') return true
+      if (kind === 'Kqsr') return true
+      if (kind === 'Carm') return true
+      if (kind === 'Kvdf') return true
+      if (kind === 'Cdmc') return true
       return !!candidate.halftrend
     })
 

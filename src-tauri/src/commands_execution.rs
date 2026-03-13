@@ -3,7 +3,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
@@ -774,9 +774,9 @@ fn execute_strategy_signal_blocking(
     req: ExecuteStrategySignalRequest,
     symbol: String,
     qty: f64,
-    candles: Candles,
+    candles: Arc<Candles>,
 ) -> Result<ExecuteStrategySignalResponse, String> {
-    let decision = signal_decision_from_request(&req.strategy, &candles, &req.risk)?;
+    let decision = signal_decision_from_request(&req.strategy, candles.as_ref(), &req.risk)?;
     let target_position_qty = (decision.desired_position as f64) * qty;
     let mut warnings: Vec<String> = Vec::new();
 

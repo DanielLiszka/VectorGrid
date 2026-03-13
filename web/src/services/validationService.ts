@@ -722,7 +722,7 @@ function compactWinnerLabel(value: unknown): string {
     const slowLen = Math.max(0, Math.floor(Number(parsed.slow_len || 0)))
     const base = `${fastMa || '?'}(${fastLen || '?'})/${slowMa || '?'}(${slowLen || '?'})`
     const overlays: string[] = []
-    for (const key of ['asr', 'vcc', 'vemr', 'rocb', 'mkcs']) {
+    for (const key of ['asr', 'vcc', 'vemr', 'rocb', 'mkcs', 'kqsr', 'carm', 'kvdf', 'cdmc']) {
       const entry = asRecord(parsed[key])
       if (entry) overlays.push(key)
     }

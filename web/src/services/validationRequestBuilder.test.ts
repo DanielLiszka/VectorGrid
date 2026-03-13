@@ -509,6 +509,138 @@ describe('validationRequestBuilder', () => {
     })
   })
 
+  it('builds KQSR validation request using run-level KQSR config', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Kqsr',
+        data_id: 'kqsr-data',
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['ema'],
+        strategy: { fee_bps: 0.5 },
+        kqsr: { oversold: 18, overbought: 82 }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'ema',
+            fast_len: 12,
+            slow_len: 36,
+            kqsr: { prb_period: 24, prb_threshold: 0.15 }
+          }
+        }
+      ]
+    })
+
+    expect(req.validation_context.strategy_kind).toBe('Kqsr')
+    expect(req.candidates[0]).toMatchObject({
+      fast_len: 12,
+      slow_len: 36,
+      kqsr: { prb_period: 24, prb_threshold: 0.15 }
+    })
+  })
+
+  it('builds CARM validation request using run-level CARM config', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Carm',
+        data_id: 'carm-data',
+        ma_source: 'close',
+        fast_ma_types: ['sma'],
+        slow_ma_types: ['ema'],
+        strategy: { fee_bps: 0.5 },
+        carm: { otto_threshold: 0.1 }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'sma',
+            slow_ma_type: 'ema',
+            fast_len: 10,
+            slow_len: 42,
+            carm: { rocr_period: 12, otto_period: 24 }
+          }
+        }
+      ]
+    })
+
+    expect(req.validation_context.strategy_kind).toBe('Carm')
+    expect(req.candidates[0]).toMatchObject({
+      fast_len: 10,
+      slow_len: 42,
+      carm: { rocr_period: 12, otto_period: 24 }
+    })
+  })
+
+  it('builds KVDF validation request using run-level KVDF config', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Kvdf',
+        data_id: 'kvdf-data',
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['sma'],
+        strategy: { fee_bps: 0.5 },
+        kvdf: { keltner_mult: 1.8, dti_threshold: 22 }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 15,
+            slow_len: 55,
+            kvdf: { fvg_lookback: 18, devstop_period: 16 }
+          }
+        }
+      ]
+    })
+
+    expect(req.validation_context.strategy_kind).toBe('Kvdf')
+    expect(req.candidates[0]).toMatchObject({
+      fast_len: 15,
+      slow_len: 55,
+      kvdf: { fvg_lookback: 18, devstop_period: 16 }
+    })
+  })
+
+  it('builds CDMC validation request using run-level CDMC config', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Cdmc',
+        data_id: 'cdmc-data',
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['ema'],
+        strategy: { fee_bps: 0.5 },
+        cdmc: { mama_fast_limit: 0.45, mama_slow_limit: 0.08 }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'ema',
+            fast_len: 11,
+            slow_len: 44,
+            cdmc: { dpo_period: 22, decycler_period: 34 }
+          }
+        }
+      ]
+    })
+
+    expect(req.validation_context.strategy_kind).toBe('Cdmc')
+    expect(req.candidates[0]).toMatchObject({
+      fast_len: 11,
+      slow_len: 44,
+      cdmc: { dpo_period: 22, decycler_period: 34 }
+    })
+  })
+
   it('builds VCC validation request using run-level VCC config', () => {
     const req = buildValidationRequest({
       currentRunReq: {

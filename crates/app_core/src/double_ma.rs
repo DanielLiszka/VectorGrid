@@ -2,8 +2,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
 use ta_strategies::double_ma::{
@@ -31,6 +32,8 @@ use crate::progress::ProgressSink;
 use crate::request_normalization::{
     normalize_heatmap_bins, normalize_optional_path, normalize_topk_include_all,
 };
+
+static DYNAMIC_GPU_PREFLIGHT_CACHE: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 
 #[cfg(test)]
 #[path = "double_ma_test_support.rs"]
@@ -7661,6 +7664,25 @@ fn maybe_compile_dynamic_gpu_plan_preflight(
         return Ok(());
     }
 
+    let cache_key = dynamic_gpu_preflight_cache_key(
+        ma_source,
+        fast_ma_type,
+        slow_ma_type,
+        fast_ma_params,
+        slow_ma_params,
+        strategy,
+        halftrend_filter,
+    )?;
+    let cache = DYNAMIC_GPU_PREFLIGHT_CACHE.get_or_init(|| Mutex::new(BTreeSet::new()));
+    {
+        let guard = cache
+            .lock()
+            .map_err(|_| "dynamic GPU preflight cache lock poisoned".to_string())?;
+        if guard.contains(&cache_key) {
+            return Ok(());
+        }
+    }
+
     let plan = crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config(
         ma_source,
         fast_ma_type,
@@ -7676,7 +7698,52 @@ fn maybe_compile_dynamic_gpu_plan_preflight(
     crate::strategy_gpu_program::compile_gpu_predicate_program(&plan)
         .map_err(|e| format!("dynamic GPU predicate compile failed: {e}"))?;
 
+    let mut guard = cache
+        .lock()
+        .map_err(|_| "dynamic GPU preflight cache lock poisoned".to_string())?;
+    guard.insert(cache_key);
+
     Ok(())
+}
+
+fn dynamic_gpu_preflight_cache_key(
+    ma_source: &str,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct PreflightSignature<'a> {
+        ma_source: &'a str,
+        fast_ma_type: &'a str,
+        slow_ma_type: &'a str,
+        fast_ma_params: Option<BTreeMap<String, String>>,
+        slow_ma_params: Option<BTreeMap<String, String>>,
+        strategy: &'a StrategyConfig,
+        halftrend_filter: Option<&'a HalfTrendRegimeFilter>,
+    }
+
+    fn normalize_params(params: Option<&HashMap<String, f64>>) -> Option<BTreeMap<String, String>> {
+        params.map(|map| {
+            map.iter()
+                .map(|(k, v)| (k.clone(), format!("{:.12}", v)))
+                .collect()
+        })
+    }
+
+    serde_json::to_string(&PreflightSignature {
+        ma_source,
+        fast_ma_type,
+        slow_ma_type,
+        fast_ma_params: normalize_params(fast_ma_params),
+        slow_ma_params: normalize_params(slow_ma_params),
+        strategy,
+        halftrend_filter,
+    })
+    .map_err(|e| format!("dynamic GPU preflight cache key serialization failed: {e}"))
 }
 
 fn dynamic_gpu_preflight_required_for_backend(

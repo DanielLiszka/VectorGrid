@@ -117,8 +117,14 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
       supportsIncludeAll: true,
       executionSummary: kind === 'Mkcs'
         ? 'MKCS can use CPU or unified GPU execution, with fast/slow ranges mapped into compression and breakout periods.'
-        : kind === 'Kqsr' || kind === 'Carm' || kind === 'Kvdf' || kind === 'Cdmc'
-          ? `${kind} is staged on the GPU-native expansion track. The request surface targets GpuKernel with CpuOnly fallback, but backend optimization is not implemented yet.`
+        : kind === 'Kqsr'
+          ? 'KQSR can use CPU or unified GPU execution, with GPU scoring fed by staged oscillator and band signal matrices.'
+        : kind === 'Carm'
+          ? 'CARM can use CPU or unified GPU execution, with GPU scoring fed by staged Coppock, AO, ROCR, APO, and OTTO HOTT/LOTT signal matrices.'
+        : kind === 'Kvdf'
+          ? 'KVDF can use CPU or unified GPU execution, with GPU scoring fed by staged Keltner, VWAP, DTI, DevStop, and FVG trailing-stop signal matrices.'
+        : kind === 'Cdmc'
+          ? 'CDMC can use CPU or unified GPU execution, with GPU scoring fed by staged cycle, MAMA/FAMA, and decycler signal matrices.'
         : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
       outputSummary: `${kind} returns best/top rows, but does not emit the Double MA heatmap or per-pair CSV export.`,

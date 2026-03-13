@@ -3,6 +3,12 @@ use crate::indicator_catalog::{
     normalize_and_validate_indicator_params, IndicatorInputKind, IndicatorParamKV,
     IndicatorParamValue,
 };
+#[cfg(feature = "cuda")]
+use std::cell::RefCell;
+#[cfg(feature = "cuda")]
+use std::collections::HashMap;
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
 use vector_ta::indicators::dispatch::{
     compute_cpu, IndicatorComputeRequest, IndicatorDataRef, IndicatorSeries, ParamKV, ParamValue,
 };
@@ -243,22 +249,83 @@ enum PreparedCudaSourceKind {
 }
 
 #[cfg(feature = "cuda")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreparedCudaDatasetSignature {
+    len: usize,
+    timestamp_ptr: usize,
+    open_ptr: usize,
+    high_ptr: usize,
+    low_ptr: usize,
+    close_ptr: usize,
+    volume_ptr: usize,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug)]
+struct ResidentCudaIndicatorDataset {
+    signature: PreparedCudaDatasetSignature,
+    runtime: Arc<CudaRuntime>,
+    open: Arc<Vec<f32>>,
+    high: Arc<Vec<f32>>,
+    low: Arc<Vec<f32>>,
+    close: Arc<Vec<f32>>,
+    volume: Arc<Vec<f32>>,
+    d_open: Arc<CudaDeviceVectorF32>,
+    d_high: Arc<CudaDeviceVectorF32>,
+    d_low: Arc<CudaDeviceVectorF32>,
+    d_close: Arc<CudaDeviceVectorF32>,
+    d_volume: Arc<CudaDeviceVectorF32>,
+    source_overrides: HashMap<String, Arc<Vec<f32>>>,
+    d_source_overrides: HashMap<String, Arc<CudaDeviceVectorF32>>,
+}
+
+#[cfg(feature = "cuda")]
+thread_local! {
+    static PREPARED_CUDA_INPUT_CACHE: RefCell<HashMap<usize, ResidentCudaIndicatorDataset>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn prepared_cuda_dataset_signature(candles: &Candles) -> PreparedCudaDatasetSignature {
+    PreparedCudaDatasetSignature {
+        len: candles.close.len(),
+        timestamp_ptr: candles.timestamp.as_ptr() as usize,
+        open_ptr: candles.open.as_ptr() as usize,
+        high_ptr: candles.high.as_ptr() as usize,
+        low_ptr: candles.low.as_ptr() as usize,
+        close_ptr: candles.close.as_ptr() as usize,
+        volume_ptr: candles.volume.as_ptr() as usize,
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn normalize_prepared_cuda_source_key(ma_source: &str) -> String {
+    let trimmed = ma_source.trim();
+    if trimmed.is_empty() {
+        return "close".to_string();
+    }
+    trimmed.to_ascii_lowercase()
+}
+
+#[cfg(feature = "cuda")]
 #[derive(Debug)]
 pub struct PreparedCudaIndicatorInputs {
     source_kind: PreparedCudaSourceKind,
-    source_override: Option<Vec<f32>>,
-    open: Vec<f32>,
-    high: Vec<f32>,
-    low: Vec<f32>,
-    close: Vec<f32>,
-    volume: Vec<f32>,
-    runtime: CudaRuntime,
-    d_source_override: Option<CudaDeviceVectorF32>,
-    d_open: CudaDeviceVectorF32,
-    d_high: CudaDeviceVectorF32,
-    d_low: CudaDeviceVectorF32,
-    d_close: CudaDeviceVectorF32,
-    d_volume: CudaDeviceVectorF32,
+    source_override: Option<Arc<Vec<f32>>>,
+    open: Arc<Vec<f32>>,
+    high: Arc<Vec<f32>>,
+    low: Arc<Vec<f32>>,
+    close: Arc<Vec<f32>>,
+    volume: Arc<Vec<f32>>,
+    runtime: Arc<CudaRuntime>,
+    d_source_override: Option<Arc<CudaDeviceVectorF32>>,
+    d_open: Arc<CudaDeviceVectorF32>,
+    d_high: Arc<CudaDeviceVectorF32>,
+    d_low: Arc<CudaDeviceVectorF32>,
+    d_close: Arc<CudaDeviceVectorF32>,
+    d_volume: Arc<CudaDeviceVectorF32>,
 }
 
 #[cfg(feature = "cuda")]
@@ -275,86 +342,140 @@ impl PreparedCudaIndicatorInputs {
         ma_source: &str,
         device_id: usize,
     ) -> Result<Self, DynamicIndicatorAdapterError> {
-        let open: Vec<f32> = candles.open.iter().map(|v| *v as f32).collect();
-        let high: Vec<f32> = candles.high.iter().map(|v| *v as f32).collect();
-        let low: Vec<f32> = candles.low.iter().map(|v| *v as f32).collect();
-        let close: Vec<f32> = candles.close.iter().map(|v| *v as f32).collect();
-        let volume: Vec<f32> = candles.volume.iter().map(|v| *v as f32).collect();
+        let signature = prepared_cuda_dataset_signature(candles);
+        let source_key = normalize_prepared_cuda_source_key(ma_source);
 
-        let source_kind = match ma_source.trim().to_ascii_lowercase().as_str() {
-            "open" => PreparedCudaSourceKind::Open,
-            "high" => PreparedCudaSourceKind::High,
-            "low" => PreparedCudaSourceKind::Low,
-            "close" => PreparedCudaSourceKind::Close,
-            "volume" => PreparedCudaSourceKind::Volume,
-            _ => PreparedCudaSourceKind::Derived,
-        };
+        PREPARED_CUDA_INPUT_CACHE.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            let rebuild = cache
+                .get(&device_id)
+                .map(|entry| entry.signature != signature)
+                .unwrap_or(true);
+            if rebuild {
+                let runtime = Arc::new(CudaRuntime::new(device_id).map_err(|e| {
+                    DynamicIndicatorAdapterError::CudaPreparation {
+                        details: e.to_string(),
+                    }
+                })?);
+                let open = Arc::new(candles.open.iter().map(|v| *v as f32).collect::<Vec<f32>>());
+                let high = Arc::new(candles.high.iter().map(|v| *v as f32).collect::<Vec<f32>>());
+                let low = Arc::new(candles.low.iter().map(|v| *v as f32).collect::<Vec<f32>>());
+                let close = Arc::new(
+                    candles
+                        .close
+                        .iter()
+                        .map(|v| *v as f32)
+                        .collect::<Vec<f32>>(),
+                );
+                let volume = Arc::new(
+                    candles
+                        .volume
+                        .iter()
+                        .map(|v| *v as f32)
+                        .collect::<Vec<f32>>(),
+                );
+                let d_open = Arc::new(runtime.upload_f32(open.as_slice()).map_err(|e| {
+                    DynamicIndicatorAdapterError::CudaPreparation {
+                        details: e.to_string(),
+                    }
+                })?);
+                let d_high = Arc::new(runtime.upload_f32(high.as_slice()).map_err(|e| {
+                    DynamicIndicatorAdapterError::CudaPreparation {
+                        details: e.to_string(),
+                    }
+                })?);
+                let d_low = Arc::new(runtime.upload_f32(low.as_slice()).map_err(|e| {
+                    DynamicIndicatorAdapterError::CudaPreparation {
+                        details: e.to_string(),
+                    }
+                })?);
+                let d_close = Arc::new(runtime.upload_f32(close.as_slice()).map_err(|e| {
+                    DynamicIndicatorAdapterError::CudaPreparation {
+                        details: e.to_string(),
+                    }
+                })?);
+                let d_volume = Arc::new(runtime.upload_f32(volume.as_slice()).map_err(|e| {
+                    DynamicIndicatorAdapterError::CudaPreparation {
+                        details: e.to_string(),
+                    }
+                })?);
+                cache.insert(
+                    device_id,
+                    ResidentCudaIndicatorDataset {
+                        signature,
+                        runtime,
+                        open,
+                        high,
+                        low,
+                        close,
+                        volume,
+                        d_open,
+                        d_high,
+                        d_low,
+                        d_close,
+                        d_volume,
+                        source_overrides: HashMap::new(),
+                        d_source_overrides: HashMap::new(),
+                    },
+                );
+            }
 
-        let source_override = if source_kind == PreparedCudaSourceKind::Derived {
-            Some(
-                source_type(candles, ma_source)
-                    .iter()
-                    .map(|v| *v as f32)
-                    .collect::<Vec<f32>>(),
-            )
-        } else {
-            None
-        };
-
-        let runtime = CudaRuntime::new(device_id).map_err(|e| {
-            DynamicIndicatorAdapterError::CudaPreparation {
-                details: e.to_string(),
-            }
-        })?;
-        let d_open = runtime.upload_f32(open.as_slice()).map_err(|e| {
-            DynamicIndicatorAdapterError::CudaPreparation {
-                details: e.to_string(),
-            }
-        })?;
-        let d_high = runtime.upload_f32(high.as_slice()).map_err(|e| {
-            DynamicIndicatorAdapterError::CudaPreparation {
-                details: e.to_string(),
-            }
-        })?;
-        let d_low = runtime.upload_f32(low.as_slice()).map_err(|e| {
-            DynamicIndicatorAdapterError::CudaPreparation {
-                details: e.to_string(),
-            }
-        })?;
-        let d_close = runtime.upload_f32(close.as_slice()).map_err(|e| {
-            DynamicIndicatorAdapterError::CudaPreparation {
-                details: e.to_string(),
-            }
-        })?;
-        let d_volume = runtime.upload_f32(volume.as_slice()).map_err(|e| {
-            DynamicIndicatorAdapterError::CudaPreparation {
-                details: e.to_string(),
-            }
-        })?;
-        let d_source_override = match source_override.as_ref() {
-            Some(values) => Some(runtime.upload_f32(values.as_slice()).map_err(|e| {
+            let entry = cache.get_mut(&device_id).ok_or_else(|| {
                 DynamicIndicatorAdapterError::CudaPreparation {
-                    details: e.to_string(),
+                    details: "prepared CUDA cache entry missing".to_string(),
                 }
-            })?),
-            None => None,
-        };
+            })?;
 
-        Ok(Self {
-            source_kind,
-            source_override,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            runtime,
-            d_source_override,
-            d_open,
-            d_high,
-            d_low,
-            d_close,
-            d_volume,
+            let source_kind = match source_key.as_str() {
+                "open" => PreparedCudaSourceKind::Open,
+                "high" => PreparedCudaSourceKind::High,
+                "low" => PreparedCudaSourceKind::Low,
+                "close" => PreparedCudaSourceKind::Close,
+                "volume" => PreparedCudaSourceKind::Volume,
+                _ => PreparedCudaSourceKind::Derived,
+            };
+
+            if source_kind == PreparedCudaSourceKind::Derived
+                && !entry.source_overrides.contains_key(&source_key)
+            {
+                let source_override = Arc::new(
+                    source_type(candles, ma_source)
+                        .iter()
+                        .map(|v| *v as f32)
+                        .collect::<Vec<f32>>(),
+                );
+                let d_source_override = Arc::new(
+                    entry
+                        .runtime
+                        .upload_f32(source_override.as_slice())
+                        .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
+                            details: e.to_string(),
+                        })?,
+                );
+                entry
+                    .source_overrides
+                    .insert(source_key.clone(), source_override);
+                entry
+                    .d_source_overrides
+                    .insert(source_key.clone(), d_source_override);
+            }
+
+            Ok(Self {
+                source_kind,
+                source_override: entry.source_overrides.get(&source_key).cloned(),
+                open: entry.open.clone(),
+                high: entry.high.clone(),
+                low: entry.low.clone(),
+                close: entry.close.clone(),
+                volume: entry.volume.clone(),
+                runtime: entry.runtime.clone(),
+                d_source_override: entry.d_source_overrides.get(&source_key).cloned(),
+                d_open: entry.d_open.clone(),
+                d_high: entry.d_high.clone(),
+                d_low: entry.d_low.clone(),
+                d_close: entry.d_close.clone(),
+                d_volume: entry.d_volume.clone(),
+            })
         })
     }
 
@@ -398,7 +519,7 @@ impl PreparedCudaIndicatorInputs {
     }
 
     pub fn runtime(&self) -> &CudaRuntime {
-        &self.runtime
+        self.runtime.as_ref()
     }
 
     pub fn len(&self) -> usize {
@@ -1000,6 +1121,141 @@ mod tests {
     }
 
     #[cfg(feature = "cuda")]
+    fn assert_prepared_cuda_matches_cpu(
+        indicator_id: &str,
+        output_id: &str,
+        params: &[IndicatorParamKV],
+    ) {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let candles = make_trending_candles(1024);
+        let cpu = compute_dynamic_indicator_cpu(
+            &candles,
+            "close",
+            indicator_id,
+            Some(output_id),
+            params,
+            Kernel::Auto,
+        )
+        .expect("cpu compute should succeed");
+        let prepared_inputs = PreparedCudaIndicatorInputs::from_candles(&candles, "close")
+            .expect("prepared inputs should upload to device");
+        let cuda = compute_dynamic_indicator_cuda_with_inputs(
+            &prepared_inputs,
+            indicator_id,
+            Some(output_id),
+            params,
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+        )
+        .expect("prepared-input cuda compute should succeed");
+        match (cpu.series, cuda.series) {
+            (DynamicIndicatorSeries::F64(lhs), DynamicIndicatorCudaSeries::HostF32(rhs)) => {
+                assert_eq!(lhs.len(), rhs.len());
+                for (l, r) in lhs.iter().zip(rhs.iter()) {
+                    if l.is_nan() {
+                        continue;
+                    }
+                    assert!((l - (*r as f64)).abs() <= 1e-3);
+                }
+            }
+            _ => panic!("unexpected series type for cpu/cuda comparison"),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn assert_cuda_direct_matches_typed_cpu(
+        indicator_id: &str,
+        output_id: &str,
+        params: &[IndicatorParamKV],
+    ) {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let candles = make_trending_candles(1024);
+        let prepared_inputs = PreparedCudaIndicatorInputs::from_candles(&candles, "close")
+            .expect("prepared inputs should upload to device");
+        let cuda = compute_dynamic_indicator_cuda_direct_with_inputs(
+            &prepared_inputs,
+            indicator_id,
+            Some(output_id),
+            IndicatorInputKind::Slice,
+            params,
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+        )
+        .expect("direct cuda compute should succeed");
+
+        let cpu = match indicator_id {
+            "mama" => {
+                let mut builder = vector_ta::indicators::moving_averages::mama::MamaBuilder::new()
+                    .kernel(Kernel::Auto);
+                for param in params {
+                    match param.key.as_str() {
+                        "fast_limit" => {
+                            if let IndicatorParamValue::Float(v) = param.value {
+                                builder = builder.fast_limit(v);
+                            }
+                        }
+                        "slow_limit" => {
+                            if let IndicatorParamValue::Float(v) = param.value {
+                                builder = builder.slow_limit(v);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let out = builder
+                    .apply_slice(source_type(&candles, "close"))
+                    .expect("typed cpu mama should succeed");
+                if output_id.eq_ignore_ascii_case("fama") {
+                    out.fama_values
+                } else {
+                    out.mama_values
+                }
+            }
+            "decycler" => {
+                let mut builder =
+                    vector_ta::indicators::decycler::DecyclerBuilder::new().kernel(Kernel::Auto);
+                for param in params {
+                    match param.key.as_str() {
+                        "hp_period" => {
+                            if let IndicatorParamValue::Int(v) = param.value {
+                                builder = builder.hp_period(v as usize);
+                            }
+                        }
+                        "k" => {
+                            if let IndicatorParamValue::Float(v) = param.value {
+                                builder = builder.k(v);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                builder
+                    .apply_slice(source_type(&candles, "close"))
+                    .expect("typed cpu decycler should succeed")
+                    .values
+            }
+            _ => panic!("unsupported typed cpu comparison for {indicator_id}"),
+        };
+
+        match cuda.series {
+            DynamicIndicatorCudaSeries::HostF32(rhs) => {
+                assert_eq!(cpu.len(), rhs.len());
+                for (l, r) in cpu.iter().zip(rhs.iter()) {
+                    if l.is_nan() {
+                        continue;
+                    }
+                    assert!((l - (*r as f64)).abs() <= 1e-3);
+                }
+            }
+            _ => panic!("unexpected direct cuda series type"),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
     #[test]
     fn cuda_adapter_parity_matches_cpu_for_single_output_indicator() {
         if !vector_ta::cuda::cuda_available() {
@@ -1210,5 +1466,59 @@ mod tests {
             }
             _ => panic!("unexpected series type for macd parity comparison"),
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_adapter_supports_qqe_fast_and_slow_outputs_with_prepared_inputs() {
+        let params = vec![
+            IndicatorParamKV {
+                key: "rsi_period".to_string(),
+                value: IndicatorParamValue::Int(14),
+            },
+            IndicatorParamKV {
+                key: "smoothing_factor".to_string(),
+                value: IndicatorParamValue::Int(5),
+            },
+            IndicatorParamKV {
+                key: "fast_factor".to_string(),
+                value: IndicatorParamValue::Float(4.236),
+            },
+        ];
+        assert_prepared_cuda_matches_cpu("qqe", "fast", params.as_slice());
+        assert_prepared_cuda_matches_cpu("qqe", "slow", params.as_slice());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_adapter_supports_mama_and_fama_outputs_with_prepared_inputs() {
+        let params = vec![
+            IndicatorParamKV {
+                key: "fast_limit".to_string(),
+                value: IndicatorParamValue::Float(0.5),
+            },
+            IndicatorParamKV {
+                key: "slow_limit".to_string(),
+                value: IndicatorParamValue::Float(0.05),
+            },
+        ];
+        assert_cuda_direct_matches_typed_cpu("mama", "mama", params.as_slice());
+        assert_cuda_direct_matches_typed_cpu("mama", "fama", params.as_slice());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_adapter_supports_decycler_with_prepared_inputs() {
+        let params = vec![
+            IndicatorParamKV {
+                key: "hp_period".to_string(),
+                value: IndicatorParamValue::Int(20),
+            },
+            IndicatorParamKV {
+                key: "k".to_string(),
+                value: IndicatorParamValue::Float(0.707),
+            },
+        ];
+        assert_cuda_direct_matches_typed_cpu("decycler", "value", params.as_slice());
     }
 }

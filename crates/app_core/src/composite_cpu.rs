@@ -28,7 +28,28 @@ use crate::carm::{
     build_carm_desired_positions, compute_carm_signals, compute_carm_start_t, resolve_carm_periods,
     validate_carm_params, CarmStrategyParams,
 };
-use crate::cdmc::CdmcStrategyParams;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::carm::{
+    compute_carm_mixed_signals_f32, compute_carm_otto_signals_f32, compute_carm_rocr_signal_f32,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::carm_gpu_kernel::{
+    eval_carm_metrics_gpu_kernel_device_rows, CarmGpuComboBatch, CarmGpuDeviceSignalMatrices,
+};
+use crate::cdmc::{
+    build_cdmc_desired_positions, compute_cdmc_signals, compute_cdmc_start_t, resolve_cdmc_periods,
+    validate_cdmc_params, CdmcStrategyParams,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::cdmc::{
+    compute_cdmc_correlation_cycle_output_sweep_cuda_device,
+    compute_cdmc_decycler_sweep_cuda_device, compute_cdmc_dpo_sweep_cuda_device,
+    compute_cdmc_mama_pair_cuda_device,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::cdmc_gpu_kernel::{
+    eval_cdmc_metrics_gpu_kernel_device_rows, CdmcGpuComboBatch, CdmcGpuDeviceSignalMatrices,
+};
 use crate::composite_mo::CompositeGpuPrescanConfig;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::composite_profile_route::composite_profile_from_strategy;
@@ -57,9 +78,20 @@ use crate::kqsr::{
     build_kqsr_desired_positions, compute_kqsr_signals, compute_kqsr_start_t, resolve_kqsr_periods,
     validate_kqsr_params, KqsrStrategyParams,
 };
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::kqsr::{compute_kqsr_fast_signals_f32, compute_kqsr_slow_signals_f32};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::kqsr_gpu_kernel::{
+    eval_kqsr_metrics_gpu_kernel_device_rows, KqsrGpuComboBatch, KqsrGpuDeviceSignalMatrices,
+};
 use crate::kvdf::{
-    build_kvdf_desired_positions, compute_kvdf_signals, compute_kvdf_start_t, resolve_kvdf_periods,
-    validate_kvdf_params, KvdfStrategyParams,
+    build_kvdf_desired_positions, compute_kvdf_dti_signal, compute_kvdf_fast_signals,
+    compute_kvdf_shared_signals, compute_kvdf_signals, compute_kvdf_slow_signals,
+    compute_kvdf_start_t, resolve_kvdf_periods, validate_kvdf_params, KvdfStrategyParams,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::kvdf_gpu_kernel::{
+    eval_kvdf_metrics_gpu_kernel_device_rows, KvdfGpuComboBatch, KvdfGpuDeviceSignalMatrices,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::mkcs::{
@@ -4367,17 +4399,6 @@ fn run_rocb_optimization_gpu(
         return Err("ROCB GPU kernel output length mismatch".to_string());
     }
 
-    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
-        DoubleMaParamsResolved {
-            fast_len: p.fast_len,
-            slow_len: p.slow_len,
-            fast_ma_type: fast_ma.clone(),
-            slow_ma_type: slow_ma.clone(),
-            fast_ma_params: req.fast_ma_params.clone(),
-            slow_ma_params: req.slow_ma_params.clone(),
-        }
-    };
-
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
     if heatmap_bins > 0 {
         agg = agg.with_heatmap(
@@ -4400,6 +4421,17 @@ fn run_rocb_optimization_gpu(
         }
     }
     emit_progress(progress, total_pairs, total_pairs, "rocb_optimize");
+
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
 
     let result = agg
         .finalize()
@@ -4653,49 +4685,29 @@ fn run_rocb_optimization_impl(
     }
     emit_progress(progress, total_pairs, total_pairs, "rocb_optimize");
 
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
     let result = agg
         .finalize()
         .ok_or_else(|| "ROCB grid search produced no result".to_string())?;
-    let best_params = DoubleMaParamsResolved {
-        fast_len: result.best_params.fast_len,
-        slow_len: result.best_params.slow_len,
-        fast_ma_type: fast_ma.clone(),
-        slow_ma_type: slow_ma.clone(),
-        fast_ma_params: req.fast_ma_params.clone(),
-        slow_ma_params: req.slow_ma_params.clone(),
-    };
+    let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
         .iter()
-        .map(|(p, m)| {
-            (
-                DoubleMaParamsResolved {
-                    fast_len: p.fast_len,
-                    slow_len: p.slow_len,
-                    fast_ma_type: fast_ma.clone(),
-                    slow_ma_type: slow_ma.clone(),
-                    fast_ma_params: req.fast_ma_params.clone(),
-                    slow_ma_params: req.slow_ma_params.clone(),
-                },
-                m.clone(),
-            )
-        })
+        .map(|(p, m)| (resolve_params(p), m.clone()))
         .collect();
     let all = result.all.as_ref().map(|rows| {
         rows.iter()
-            .map(|(p, m)| {
-                (
-                    DoubleMaParamsResolved {
-                        fast_len: p.fast_len,
-                        slow_len: p.slow_len,
-                        fast_ma_type: fast_ma.clone(),
-                        slow_ma_type: slow_ma.clone(),
-                        fast_ma_params: req.fast_ma_params.clone(),
-                        slow_ma_params: req.slow_ma_params.clone(),
-                    },
-                    m.clone(),
-                )
-            })
+            .map(|(p, m)| (resolve_params(p), m.clone()))
             .collect::<Vec<_>>()
     });
 
@@ -5149,17 +5161,408 @@ fn run_kqsr_optimization(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
-    if !matches!(req.backend, Backend::CpuOnly) {
-        let backend_label = composite_backend_label(&req.backend).to_string();
-        let mut cpu_res = run_kqsr_optimization_cpu(req, candles, cancel, progress)?;
-        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
-        cpu_res.backend_fallback_reason = Some(
-            "KQSR GPU optimization is not implemented yet; using the CPU baseline.".to_string(),
-        );
-        return Ok(cpu_res);
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            if vector_ta::cuda::cuda_available() {
+                let device_id = match &normalized_backend {
+                    Backend::Auto { device_id }
+                    | Backend::GpuOnly { device_id }
+                    | Backend::GpuHybridKernel { device_id }
+                    | Backend::GpuKernel { device_id } => *device_id,
+                    Backend::CpuOnly => 0,
+                };
+                match run_kqsr_optimization_gpu(&req, candles, cancel, progress, device_id) {
+                    Ok(mut gpu_res) => {
+                        if matches!(req.backend, Backend::Auto { .. }) {
+                            gpu_res.backend_route = Some("Auto->GpuKernel".to_string());
+                        } else if matches!(req.backend, Backend::GpuKernel { .. }) {
+                            gpu_res.backend_route = Some("GpuKernel".to_string());
+                        } else {
+                            gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
+                        }
+                        return Ok(gpu_res);
+                    }
+                    Err(err) => {
+                        let mut cpu_res =
+                            run_kqsr_optimization_cpu(req, candles, cancel, progress)?;
+                        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+                        cpu_res.backend_fallback_reason = Some(err);
+                        return Ok(cpu_res);
+                    }
+                }
+            }
+
+            let mut cpu_res = run_kqsr_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason =
+                Some("CUDA unavailable; falling back to CPU KQSR optimization.".to_string());
+            return Ok(cpu_res);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    {
+        if !matches!(req.backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            let mut cpu_res = run_kqsr_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason = Some(
+                "KQSR GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
+                    .to_string(),
+            );
+            return Ok(cpu_res);
+        }
     }
 
     run_kqsr_optimization_cpu(req, candles, cancel, progress)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn run_kqsr_optimization_gpu(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    device_id: u32,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kqsr_cfg = req.kqsr.clone().unwrap_or_default();
+    validate_kqsr_params(&kqsr_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "KQSR")?;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let n = close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let slow_seed = *slow_periods
+        .first()
+        .ok_or_else(|| "KQSR slow period range is empty".to_string())?;
+    let fast_seed = *fast_periods
+        .first()
+        .ok_or_else(|| "KQSR fast period range is empty".to_string())?;
+
+    let fast_rows = fast_periods.len();
+    let slow_rows = slow_periods.len();
+    let row_major_len_fast = fast_rows
+        .checked_mul(n)
+        .ok_or_else(|| "KQSR fast signal matrix overflow".to_string())?;
+    let row_major_len_slow = slow_rows
+        .checked_mul(n)
+        .ok_or_else(|| "KQSR slow signal matrix overflow".to_string())?;
+
+    let mut j_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut srsi_k_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut srsi_d_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut ift_rsi_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut fast_first_valid: Vec<usize> = Vec::with_capacity(fast_rows);
+
+    emit_progress(progress, 0, total_pairs, "kqsr_optimize");
+    for &fast_len in &fast_periods {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+
+        let periods = resolve_kqsr_periods(&kqsr_cfg, fast_len, slow_seed);
+        let signals = compute_kqsr_fast_signals_f32(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            &kqsr_cfg,
+            Some(&prepared_cuda_inputs),
+        )?;
+        fast_first_valid.push(signals.first_valid);
+        j_row_major.extend_from_slice(&signals.j);
+        srsi_k_row_major.extend_from_slice(&signals.srsi_k);
+        srsi_d_row_major.extend_from_slice(&signals.srsi_d);
+        ift_rsi_row_major.extend_from_slice(&signals.ift_rsi);
+    }
+
+    let mut qqe_fast_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut qqe_slow_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut prb_upper_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut prb_lower_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut slow_first_valid: Vec<usize> = Vec::with_capacity(slow_rows);
+    for &slow_len in &slow_periods {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+
+        let periods = resolve_kqsr_periods(&kqsr_cfg, fast_seed, slow_len);
+        let signals = compute_kqsr_slow_signals_f32(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            Some(&prepared_cuda_inputs),
+        )?;
+        slow_first_valid.push(signals.first_valid);
+        qqe_fast_row_major.extend_from_slice(&signals.qqe_fast);
+        qqe_slow_row_major.extend_from_slice(&signals.qqe_slow);
+        prb_upper_row_major.extend_from_slice(&signals.prb_upper);
+        prb_lower_row_major.extend_from_slice(&signals.prb_lower);
+    }
+
+    let runtime = prepared_cuda_inputs.runtime();
+    let d_j = runtime
+        .upload_f32(j_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_srsi_k = runtime
+        .upload_f32(srsi_k_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_srsi_d = runtime
+        .upload_f32(srsi_d_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_ift_rsi = runtime
+        .upload_f32(ift_rsi_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_qqe_fast = runtime
+        .upload_f32(qqe_fast_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_qqe_slow = runtime
+        .upload_f32(qqe_slow_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_prb_upper = runtime
+        .upload_f32(prb_upper_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_prb_lower = runtime
+        .upload_f32(prb_lower_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+
+    let mut combo_fast_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_slow_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_params: Vec<DoubleMaParams> = Vec::with_capacity(total_pairs);
+
+    for (fast_idx, &fast_len) in fast_periods.iter().enumerate() {
+        for (slow_idx, &slow_len) in slow_periods.iter().enumerate() {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let signals_first_valid = fast_first_valid
+                .get(fast_idx)
+                .copied()
+                .unwrap_or(n)
+                .max(slow_first_valid.get(slow_idx).copied().unwrap_or(n));
+            let start_t =
+                compute_kqsr_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+            if start_t >= n {
+                continue;
+            }
+
+            combo_fast_row_idx.push(
+                i32::try_from(fast_idx)
+                    .map_err(|_| "KQSR fast row index exceeds i32 range".to_string())?,
+            );
+            combo_slow_row_idx.push(
+                i32::try_from(slow_idx)
+                    .map_err(|_| "KQSR slow row index exceeds i32 range".to_string())?,
+            );
+            combo_start_t.push(
+                i32::try_from(start_t).map_err(|_| "KQSR start_t exceeds i32 range".to_string())?,
+            );
+            combo_params.push(DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+
+            if (combo_params.len() & 0x03ff) == 0 {
+                emit_progress(progress, combo_params.len(), total_pairs, "kqsr_optimize");
+            }
+        }
+    }
+    emit_progress(progress, combo_params.len(), total_pairs, "kqsr_optimize");
+
+    if combo_params.is_empty() {
+        return Err("KQSR grid search produced no valid parameter combinations".to_string());
+    }
+
+    let signals = KqsrGpuDeviceSignalMatrices {
+        close_f32: prepared_cuda_inputs.close(),
+        cols: n,
+        j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
+        fast_rows,
+        fast_stride: n,
+        srsi_k_row_major_ptr: d_srsi_k.buffer().as_device_ptr().as_raw() as u64,
+        srsi_d_row_major_ptr: d_srsi_d.buffer().as_device_ptr().as_raw() as u64,
+        ift_rsi_row_major_ptr: d_ift_rsi.buffer().as_device_ptr().as_raw() as u64,
+        qqe_fast_row_major_ptr: d_qqe_fast.buffer().as_device_ptr().as_raw() as u64,
+        qqe_slow_row_major_ptr: d_qqe_slow.buffer().as_device_ptr().as_raw() as u64,
+        slow_rows,
+        slow_stride: n,
+        prb_upper_row_major_ptr: d_prb_upper.buffer().as_device_ptr().as_raw() as u64,
+        prb_lower_row_major_ptr: d_prb_lower.buffer().as_device_ptr().as_raw() as u64,
+    };
+    let combo_end_t = vec![
+        i32::try_from(n)
+            .map_err(|_| "KQSR end_t exceeds i32 range".to_string())?;
+        combo_fast_row_idx.len()
+    ];
+    let combos = KqsrGpuComboBatch {
+        fast_row_index: &combo_fast_row_idx,
+        slow_row_index: &combo_slow_row_idx,
+        start_t: &combo_start_t,
+        end_t: &combo_end_t,
+    };
+
+    let start = std::time::Instant::now();
+    let metrics = eval_kqsr_metrics_gpu_kernel_device_rows(
+        device_id, &signals, &combos, &strategy, &kqsr_cfg,
+    )?;
+    if metrics.len() != combo_params.len() {
+        return Err("KQSR GPU kernel output length mismatch".to_string());
+    }
+
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+    for (i, (params, m)) in combo_params
+        .into_iter()
+        .zip(metrics.into_iter())
+        .enumerate()
+    {
+        agg.push(params, m);
+        if (i & 0x03ff) == 0 {
+            emit_progress(progress, i + 1, total_pairs, "kqsr_optimize");
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "kqsr_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "KQSR grid search produced no result".to_string())?;
+    let best_params = resolve_params(&result.best_params);
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| (resolve_params(p), m.clone()))
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| (resolve_params(p), m.clone()))
+            .collect::<Vec<_>>()
+    });
+    let runtime_ms = start.elapsed().as_millis() as u64;
+
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics: result.best_metrics,
+        mode_used,
+        backend_used: BackendUsed::Gpu,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms,
+        top,
+        all,
+        heatmap: result.heatmap.clone(),
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
 }
 
 fn run_kqsr_optimization_cpu(
@@ -5218,6 +5621,13 @@ fn run_kqsr_optimization_cpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+    };
+
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
     if heatmap_bins > 0 {
         agg = agg.with_heatmap(
@@ -5242,7 +5652,15 @@ fn run_kqsr_optimization_cpu(
             }
 
             let periods = resolve_kqsr_periods(&kqsr_cfg, fast_len, slow_len);
-            let signals = compute_kqsr_signals(candles, &req.ma_source, periods, &kqsr_cfg)?;
+            let signals = compute_kqsr_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &kqsr_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
             let start_t =
                 compute_kqsr_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
             if start_t >= n {
@@ -5269,49 +5687,29 @@ fn run_kqsr_optimization_cpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "kqsr_optimize");
 
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
     let result = agg
         .finalize()
         .ok_or_else(|| "KQSR grid search produced no result".to_string())?;
-    let best_params = DoubleMaParamsResolved {
-        fast_len: result.best_params.fast_len,
-        slow_len: result.best_params.slow_len,
-        fast_ma_type: fast_ma.clone(),
-        slow_ma_type: slow_ma.clone(),
-        fast_ma_params: req.fast_ma_params.clone(),
-        slow_ma_params: req.slow_ma_params.clone(),
-    };
+    let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
         .iter()
-        .map(|(p, m)| {
-            (
-                DoubleMaParamsResolved {
-                    fast_len: p.fast_len,
-                    slow_len: p.slow_len,
-                    fast_ma_type: fast_ma.clone(),
-                    slow_ma_type: slow_ma.clone(),
-                    fast_ma_params: req.fast_ma_params.clone(),
-                    slow_ma_params: req.slow_ma_params.clone(),
-                },
-                m.clone(),
-            )
-        })
+        .map(|(p, m)| (resolve_params(p), m.clone()))
         .collect();
     let all = result.all.as_ref().map(|rows| {
         rows.iter()
-            .map(|(p, m)| {
-                (
-                    DoubleMaParamsResolved {
-                        fast_len: p.fast_len,
-                        slow_len: p.slow_len,
-                        fast_ma_type: fast_ma.clone(),
-                        slow_ma_type: slow_ma.clone(),
-                        fast_ma_params: req.fast_ma_params.clone(),
-                        slow_ma_params: req.slow_ma_params.clone(),
-                    },
-                    m.clone(),
-                )
-            })
+            .map(|(p, m)| (resolve_params(p), m.clone()))
             .collect::<Vec<_>>()
     });
     let heatmap = result.heatmap.clone();
@@ -5358,17 +5756,399 @@ fn run_carm_optimization(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
-    if !matches!(req.backend, Backend::CpuOnly) {
-        let backend_label = composite_backend_label(&req.backend).to_string();
-        let mut cpu_res = run_carm_optimization_cpu(req, candles, cancel, progress)?;
-        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
-        cpu_res.backend_fallback_reason = Some(
-            "CARM GPU optimization is not implemented yet; using the CPU baseline.".to_string(),
-        );
-        return Ok(cpu_res);
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            if vector_ta::cuda::cuda_available() {
+                let device_id = match &normalized_backend {
+                    Backend::Auto { device_id }
+                    | Backend::GpuOnly { device_id }
+                    | Backend::GpuHybridKernel { device_id }
+                    | Backend::GpuKernel { device_id } => *device_id,
+                    Backend::CpuOnly => 0,
+                };
+                match run_carm_optimization_gpu(&req, candles, cancel, progress, device_id) {
+                    Ok(mut gpu_res) => {
+                        if matches!(req.backend, Backend::Auto { .. }) {
+                            gpu_res.backend_route = Some("Auto->GpuKernel".to_string());
+                        } else if matches!(req.backend, Backend::GpuKernel { .. }) {
+                            gpu_res.backend_route = Some("GpuKernel".to_string());
+                        } else {
+                            gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
+                        }
+                        return Ok(gpu_res);
+                    }
+                    Err(err) => {
+                        let mut cpu_res =
+                            run_carm_optimization_cpu(req, candles, cancel, progress)?;
+                        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+                        cpu_res.backend_fallback_reason = Some(err);
+                        return Ok(cpu_res);
+                    }
+                }
+            }
+
+            let mut cpu_res = run_carm_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason =
+                Some("CUDA unavailable; falling back to CPU CARM optimization.".to_string());
+            return Ok(cpu_res);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    {
+        if !matches!(req.backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            let mut cpu_res = run_carm_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason = Some(
+                "CARM GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
+                    .to_string(),
+            );
+            return Ok(cpu_res);
+        }
     }
 
     run_carm_optimization_cpu(req, candles, cancel, progress)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn run_carm_optimization_gpu(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    device_id: u32,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let carm_cfg = req.carm.clone().unwrap_or_default();
+    validate_carm_params(&carm_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "CARM")?;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let n = close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let fast_rows = fast_periods.len();
+    let row_major_len_fast = fast_rows
+        .checked_mul(n)
+        .ok_or_else(|| "CARM fast signal matrix overflow".to_string())?;
+    let mut rocr_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut rocr_first_valid: Vec<usize> = Vec::with_capacity(fast_rows);
+    let slow_seed = *slow_periods
+        .first()
+        .ok_or_else(|| "CARM slow period range is empty".to_string())?;
+    for &fast_len in &fast_periods {
+        let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_seed);
+        let rocr = compute_carm_rocr_signal_f32(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            Some(&prepared_cuda_inputs),
+        )?;
+        rocr_first_valid.push(rocr.iter().position(|v| v.is_finite()).unwrap_or(n));
+        rocr_row_major.extend_from_slice(&rocr);
+    }
+
+    let mut coppock_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
+    let mut ao_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
+    let mut apo_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
+    let mut otto_hott_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
+    let mut otto_lott_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
+    let mut otto_first_valid_by_row: Vec<usize> = Vec::new();
+    let mut otto_row_lookup: HashMap<(u16, u16, u16), i32> = HashMap::new();
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_fast_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_otto_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_params: Vec<DoubleMaParams> = Vec::with_capacity(total_pairs);
+
+    emit_progress(progress, 0, total_pairs, "carm_optimize");
+    for (fast_idx, &fast_len) in fast_periods.iter().enumerate() {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_len);
+            let otto_key = (
+                periods.otto,
+                periods.coppock_short.max(2),
+                periods.ao_slow.max(periods.otto),
+            );
+            let mixed = compute_carm_mixed_signals_f32(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                Some(&prepared_cuda_inputs),
+            )?;
+            let otto_row = if let Some(&row) = otto_row_lookup.get(&otto_key) {
+                row
+            } else {
+                let otto = compute_carm_otto_signals_f32(
+                    candles,
+                    &req.ma_source,
+                    &req.backend,
+                    periods,
+                    &carm_cfg,
+                    Some(&prepared_cuda_inputs),
+                )?;
+                let row = i32::try_from(otto_first_valid_by_row.len())
+                    .map_err(|_| "CARM OTTO row index exceeds i32 range".to_string())?;
+                otto_first_valid_by_row.push(otto.first_valid);
+                otto_hott_row_major.extend_from_slice(&otto.hott);
+                otto_lott_row_major.extend_from_slice(&otto.lott);
+                otto_row_lookup.insert(otto_key, row);
+                row
+            };
+            let otto_first_valid = otto_first_valid_by_row
+                .get(usize::try_from(otto_row).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or(n);
+            let signals_first_valid = mixed
+                .first_valid
+                .max(*rocr_first_valid.get(fast_idx).unwrap_or(&n))
+                .max(otto_first_valid);
+            let start_t =
+                compute_carm_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+            if start_t >= n {
+                continue;
+            }
+
+            coppock_row_major.extend_from_slice(&mixed.coppock);
+            ao_row_major.extend_from_slice(&mixed.ao);
+            apo_row_major.extend_from_slice(&mixed.apo);
+            combo_start_t.push(
+                i32::try_from(start_t).map_err(|_| "CARM start_t exceeds i32 range".to_string())?,
+            );
+            combo_fast_row_idx.push(
+                i32::try_from(fast_idx)
+                    .map_err(|_| "CARM fast row index exceeds i32 range".to_string())?,
+            );
+            combo_otto_row_idx.push(otto_row);
+            combo_params.push(DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+
+            if (combo_params.len() & 0x03ff) == 0 {
+                emit_progress(progress, combo_params.len(), total_pairs, "carm_optimize");
+            }
+        }
+    }
+    emit_progress(progress, combo_params.len(), total_pairs, "carm_optimize");
+
+    if combo_params.is_empty() {
+        return Err("CARM grid search produced no valid parameter combinations".to_string());
+    }
+
+    let signal_rows = combo_params.len();
+    let runtime = prepared_cuda_inputs.runtime();
+    let d_coppock = runtime
+        .upload_f32(coppock_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_ao = runtime
+        .upload_f32(ao_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_rocr = runtime
+        .upload_f32(rocr_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_apo = runtime
+        .upload_f32(apo_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_otto_hott = runtime
+        .upload_f32(otto_hott_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_otto_lott = runtime
+        .upload_f32(otto_lott_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+
+    let signals = CarmGpuDeviceSignalMatrices {
+        close_f32: prepared_cuda_inputs.close(),
+        cols: n,
+        mixed_rows: signal_rows,
+        mixed_stride: n,
+        coppock_row_major_ptr: d_coppock.buffer().as_device_ptr().as_raw() as u64,
+        ao_row_major_ptr: d_ao.buffer().as_device_ptr().as_raw() as u64,
+        rocr_row_major_ptr: d_rocr.buffer().as_device_ptr().as_raw() as u64,
+        fast_rows,
+        fast_stride: n,
+        apo_row_major_ptr: d_apo.buffer().as_device_ptr().as_raw() as u64,
+        otto_hott_row_major_ptr: d_otto_hott.buffer().as_device_ptr().as_raw() as u64,
+        otto_lott_row_major_ptr: d_otto_lott.buffer().as_device_ptr().as_raw() as u64,
+        otto_rows: otto_first_valid_by_row.len(),
+        otto_stride: n,
+    };
+    let combo_end_t = vec![
+        i32::try_from(n)
+            .map_err(|_| "CARM end_t exceeds i32 range".to_string())?;
+        signal_rows
+    ];
+    let combos = CarmGpuComboBatch {
+        fast_row_index: &combo_fast_row_idx,
+        otto_row_index: &combo_otto_row_idx,
+        start_t: &combo_start_t,
+        end_t: &combo_end_t,
+    };
+
+    let start = std::time::Instant::now();
+    let metrics = eval_carm_metrics_gpu_kernel_device_rows(
+        device_id, &signals, &combos, &strategy, &carm_cfg,
+    )?;
+    if metrics.len() != combo_params.len() {
+        return Err("CARM GPU kernel output length mismatch".to_string());
+    }
+
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+    for (i, (params, m)) in combo_params
+        .into_iter()
+        .zip(metrics.into_iter())
+        .enumerate()
+    {
+        agg.push(params, m);
+        if (i & 0x03ff) == 0 {
+            emit_progress(progress, i + 1, total_pairs, "carm_optimize");
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "carm_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "CARM grid search produced no result".to_string())?;
+    let best_params = resolve_params(&result.best_params);
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| (resolve_params(p), m.clone()))
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| (resolve_params(p), m.clone()))
+            .collect::<Vec<_>>()
+    });
+    let runtime_ms = start.elapsed().as_millis() as u64;
+
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics: result.best_metrics,
+        mode_used,
+        backend_used: BackendUsed::Gpu,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms,
+        top,
+        all,
+        heatmap: result.heatmap.clone(),
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
 }
 
 fn run_carm_optimization_cpu(
@@ -5427,6 +6207,13 @@ fn run_carm_optimization_cpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+    };
+
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
     if heatmap_bins > 0 {
         agg = agg.with_heatmap(
@@ -5451,7 +6238,15 @@ fn run_carm_optimization_cpu(
             }
 
             let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_len);
-            let signals = compute_carm_signals(candles, &req.ma_source, periods, &carm_cfg)?;
+            let signals = compute_carm_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &carm_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
             let start_t =
                 compute_carm_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
             if start_t >= n {
@@ -5478,49 +6273,29 @@ fn run_carm_optimization_cpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "carm_optimize");
 
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
     let result = agg
         .finalize()
         .ok_or_else(|| "CARM grid search produced no result".to_string())?;
-    let best_params = DoubleMaParamsResolved {
-        fast_len: result.best_params.fast_len,
-        slow_len: result.best_params.slow_len,
-        fast_ma_type: fast_ma.clone(),
-        slow_ma_type: slow_ma.clone(),
-        fast_ma_params: req.fast_ma_params.clone(),
-        slow_ma_params: req.slow_ma_params.clone(),
-    };
+    let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
         .iter()
-        .map(|(p, m)| {
-            (
-                DoubleMaParamsResolved {
-                    fast_len: p.fast_len,
-                    slow_len: p.slow_len,
-                    fast_ma_type: fast_ma.clone(),
-                    slow_ma_type: slow_ma.clone(),
-                    fast_ma_params: req.fast_ma_params.clone(),
-                    slow_ma_params: req.slow_ma_params.clone(),
-                },
-                m.clone(),
-            )
-        })
+        .map(|(p, m)| (resolve_params(p), m.clone()))
         .collect();
     let all = result.all.as_ref().map(|rows| {
         rows.iter()
-            .map(|(p, m)| {
-                (
-                    DoubleMaParamsResolved {
-                        fast_len: p.fast_len,
-                        slow_len: p.slow_len,
-                        fast_ma_type: fast_ma.clone(),
-                        slow_ma_type: slow_ma.clone(),
-                        fast_ma_params: req.fast_ma_params.clone(),
-                        slow_ma_params: req.slow_ma_params.clone(),
-                    },
-                    m.clone(),
-                )
-            })
+            .map(|(p, m)| (resolve_params(p), m.clone()))
             .collect::<Vec<_>>()
     });
     let heatmap = result.heatmap.clone();
@@ -5568,17 +6343,442 @@ fn run_kvdf_optimization(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
-    if !matches!(req.backend, Backend::CpuOnly) {
-        let backend_label = composite_backend_label(&req.backend).to_string();
-        let mut cpu_res = run_kvdf_optimization_cpu(req, candles, cancel, progress)?;
-        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
-        cpu_res.backend_fallback_reason = Some(
-            "KVDF GPU optimization is not implemented yet; using the CPU baseline.".to_string(),
-        );
-        return Ok(cpu_res);
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            if vector_ta::cuda::cuda_available() {
+                let device_id = match &normalized_backend {
+                    Backend::Auto { device_id }
+                    | Backend::GpuOnly { device_id }
+                    | Backend::GpuHybridKernel { device_id }
+                    | Backend::GpuKernel { device_id } => *device_id,
+                    Backend::CpuOnly => 0,
+                };
+                match run_kvdf_optimization_gpu(&req, candles, cancel, progress, device_id) {
+                    Ok(mut gpu_res) => {
+                        if matches!(req.backend, Backend::Auto { .. }) {
+                            gpu_res.backend_route = Some("Auto->GpuKernel".to_string());
+                        } else if matches!(req.backend, Backend::GpuKernel { .. }) {
+                            gpu_res.backend_route = Some("GpuKernel".to_string());
+                        } else {
+                            gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
+                        }
+                        return Ok(gpu_res);
+                    }
+                    Err(err) => {
+                        let mut cpu_res =
+                            run_kvdf_optimization_cpu(req, candles, cancel, progress)?;
+                        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+                        cpu_res.backend_fallback_reason = Some(err);
+                        return Ok(cpu_res);
+                    }
+                }
+            }
+
+            let mut cpu_res = run_kvdf_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason =
+                Some("CUDA unavailable; falling back to CPU KVDF optimization.".to_string());
+            return Ok(cpu_res);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    {
+        if !matches!(req.backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            let mut cpu_res = run_kvdf_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason = Some(
+                "KVDF GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
+                    .to_string(),
+            );
+            return Ok(cpu_res);
+        }
     }
 
     run_kvdf_optimization_cpu(req, candles, cancel, progress)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn run_kvdf_optimization_gpu(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    device_id: u32,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kvdf_cfg = req.kvdf.clone().unwrap_or_default();
+    validate_kvdf_params(&kvdf_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "KVDF")?;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let n = close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let fast_rows = fast_periods.len();
+    let slow_rows = slow_periods.len();
+    let row_major_len_fast = fast_rows
+        .checked_mul(n)
+        .ok_or_else(|| "KVDF fast signal matrix overflow".to_string())?;
+    let row_major_len_slow = slow_rows
+        .checked_mul(n)
+        .ok_or_else(|| "KVDF slow signal matrix overflow".to_string())?;
+
+    let shared = compute_kvdf_shared_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        &kvdf_cfg,
+        Some(&prepared_cuda_inputs),
+    )?;
+    let shared_vwap_f32: Vec<f32> = shared.vwap.iter().map(|v| *v as f32).collect();
+
+    let slow_seed = *slow_periods
+        .first()
+        .ok_or_else(|| "KVDF slow period range is empty".to_string())?;
+    let fast_seed = *fast_periods
+        .first()
+        .ok_or_else(|| "KVDF fast period range is empty".to_string())?;
+
+    let mut fvg_upper_ts_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut fvg_lower_ts_row_major: Vec<f32> = Vec::with_capacity(row_major_len_fast);
+    let mut fast_first_valid: Vec<usize> = Vec::with_capacity(fast_rows);
+    for &fast_len in &fast_periods {
+        let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_seed);
+        let fast = compute_kvdf_fast_signals(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            Some(&prepared_cuda_inputs),
+        )?;
+        fast_first_valid.push(fast.first_valid);
+        fvg_upper_ts_row_major.extend(fast.fvg_upper_ts.iter().map(|v| *v as f32));
+        fvg_lower_ts_row_major.extend(fast.fvg_lower_ts.iter().map(|v| *v as f32));
+    }
+
+    let mut keltner_upper_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut keltner_middle_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut keltner_lower_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut devstop_long_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut devstop_short_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
+    let mut slow_first_valid: Vec<usize> = Vec::with_capacity(slow_rows);
+    for &slow_len in &slow_periods {
+        let periods = resolve_kvdf_periods(&kvdf_cfg, fast_seed, slow_len);
+        let slow = compute_kvdf_slow_signals(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            &kvdf_cfg,
+            Some(&prepared_cuda_inputs),
+        )?;
+        slow_first_valid.push(slow.first_valid);
+        keltner_upper_row_major.extend(slow.keltner_upper.iter().map(|v| *v as f32));
+        keltner_middle_row_major.extend(slow.keltner_middle.iter().map(|v| *v as f32));
+        keltner_lower_row_major.extend(slow.keltner_lower.iter().map(|v| *v as f32));
+        devstop_long_row_major.extend(slow.devstop_long.iter().map(|v| *v as f32));
+        devstop_short_row_major.extend(slow.devstop_short.iter().map(|v| *v as f32));
+    }
+
+    let mut dti_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
+    let mut dti_first_valid_by_row: Vec<usize> = Vec::new();
+    let mut dti_row_lookup: HashMap<(u16, u16, u16), i32> = HashMap::new();
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_fast_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_slow_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_dti_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_params: Vec<DoubleMaParams> = Vec::with_capacity(total_pairs);
+
+    emit_progress(progress, 0, total_pairs, "kvdf_optimize");
+    for (fast_idx, &fast_len) in fast_periods.iter().enumerate() {
+        for (slow_idx, &slow_len) in slow_periods.iter().enumerate() {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_len);
+            let dti_key = (periods.dti_r, periods.dti_s, periods.dti_u);
+            let dti_row = if let Some(&row) = dti_row_lookup.get(&dti_key) {
+                row
+            } else {
+                let dti = compute_kvdf_dti_signal(
+                    candles,
+                    &req.ma_source,
+                    &req.backend,
+                    periods,
+                    Some(&prepared_cuda_inputs),
+                )?;
+                let row = i32::try_from(dti_first_valid_by_row.len())
+                    .map_err(|_| "KVDF DTI row index exceeds i32 range".to_string())?;
+                dti_first_valid_by_row.push(first_finite_idx(&dti).unwrap_or(n));
+                dti_row_major.extend(dti.iter().map(|v| *v as f32));
+                dti_row_lookup.insert(dti_key, row);
+                row
+            };
+            let dti_first_valid = dti_first_valid_by_row
+                .get(usize::try_from(dti_row).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or(n);
+            let signals_first_valid = shared
+                .first_valid
+                .max(*fast_first_valid.get(fast_idx).unwrap_or(&n))
+                .max(*slow_first_valid.get(slow_idx).unwrap_or(&n))
+                .max(dti_first_valid);
+            let start_t =
+                compute_kvdf_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+            if start_t >= n {
+                continue;
+            }
+
+            combo_start_t.push(
+                i32::try_from(start_t).map_err(|_| "KVDF start_t exceeds i32 range".to_string())?,
+            );
+            combo_fast_row_idx.push(
+                i32::try_from(fast_idx)
+                    .map_err(|_| "KVDF fast row index exceeds i32 range".to_string())?,
+            );
+            combo_slow_row_idx.push(
+                i32::try_from(slow_idx)
+                    .map_err(|_| "KVDF slow row index exceeds i32 range".to_string())?,
+            );
+            combo_dti_row_idx.push(dti_row);
+            combo_params.push(DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+
+            if (combo_params.len() & 0x03ff) == 0 {
+                emit_progress(progress, combo_params.len(), total_pairs, "kvdf_optimize");
+            }
+        }
+    }
+    emit_progress(progress, combo_params.len(), total_pairs, "kvdf_optimize");
+
+    if combo_params.is_empty() {
+        return Err("KVDF grid search produced no valid parameter combinations".to_string());
+    }
+
+    let signal_rows = combo_params.len();
+    let runtime = prepared_cuda_inputs.runtime();
+    let d_keltner_upper = runtime
+        .upload_f32(keltner_upper_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_keltner_middle = runtime
+        .upload_f32(keltner_middle_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_keltner_lower = runtime
+        .upload_f32(keltner_lower_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_vwap = runtime
+        .upload_f32(shared_vwap_f32.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_dti = runtime
+        .upload_f32(dti_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_devstop_long = runtime
+        .upload_f32(devstop_long_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_devstop_short = runtime
+        .upload_f32(devstop_short_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_fvg_upper_ts = runtime
+        .upload_f32(fvg_upper_ts_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_fvg_lower_ts = runtime
+        .upload_f32(fvg_lower_ts_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+
+    let signals = KvdfGpuDeviceSignalMatrices {
+        close_f32: prepared_cuda_inputs.close(),
+        cols: n,
+        dti_rows: dti_first_valid_by_row.len(),
+        dti_stride: n,
+        keltner_upper_row_major_ptr: d_keltner_upper.buffer().as_device_ptr().as_raw() as u64,
+        keltner_middle_row_major_ptr: d_keltner_middle.buffer().as_device_ptr().as_raw() as u64,
+        keltner_lower_row_major_ptr: d_keltner_lower.buffer().as_device_ptr().as_raw() as u64,
+        vwap_row_major_ptr: d_vwap.buffer().as_device_ptr().as_raw() as u64,
+        dti_row_major_ptr: d_dti.buffer().as_device_ptr().as_raw() as u64,
+        slow_rows,
+        slow_stride: n,
+        devstop_long_row_major_ptr: d_devstop_long.buffer().as_device_ptr().as_raw() as u64,
+        devstop_short_row_major_ptr: d_devstop_short.buffer().as_device_ptr().as_raw() as u64,
+        fvg_upper_ts_row_major_ptr: d_fvg_upper_ts.buffer().as_device_ptr().as_raw() as u64,
+        fvg_lower_ts_row_major_ptr: d_fvg_lower_ts.buffer().as_device_ptr().as_raw() as u64,
+        fast_rows,
+        fast_stride: n,
+    };
+    let combo_end_t = vec![
+        i32::try_from(n)
+            .map_err(|_| "KVDF end_t exceeds i32 range".to_string())?;
+        signal_rows
+    ];
+    let combos = KvdfGpuComboBatch {
+        fast_row_index: &combo_fast_row_idx,
+        slow_row_index: &combo_slow_row_idx,
+        dti_row_index: &combo_dti_row_idx,
+        start_t: &combo_start_t,
+        end_t: &combo_end_t,
+    };
+
+    let start = std::time::Instant::now();
+    let metrics = eval_kvdf_metrics_gpu_kernel_device_rows(
+        device_id, &signals, &combos, &strategy, &kvdf_cfg,
+    )?;
+    if metrics.len() != combo_params.len() {
+        return Err("KVDF GPU kernel output length mismatch".to_string());
+    }
+
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+    for (i, (params, m)) in combo_params
+        .into_iter()
+        .zip(metrics.into_iter())
+        .enumerate()
+    {
+        agg.push(params, m);
+        if (i & 0x03ff) == 0 {
+            emit_progress(progress, i + 1, total_pairs, "kvdf_optimize");
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "kvdf_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "KVDF grid search produced no result".to_string())?;
+    let best_params = resolve_params(&result.best_params);
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| (resolve_params(p), m.clone()))
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| (resolve_params(p), m.clone()))
+            .collect::<Vec<_>>()
+    });
+    let runtime_ms = start.elapsed().as_millis() as u64;
+
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics: result.best_metrics,
+        mode_used,
+        backend_used: BackendUsed::Gpu,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms,
+        top,
+        all,
+        heatmap: result.heatmap.clone(),
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
 }
 
 fn run_kvdf_optimization_cpu(
@@ -5637,6 +6837,13 @@ fn run_kvdf_optimization_cpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+    };
+
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
     if heatmap_bins > 0 {
         agg = agg.with_heatmap(
@@ -5661,7 +6868,15 @@ fn run_kvdf_optimization_cpu(
             }
 
             let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_len);
-            let signals = compute_kvdf_signals(candles, &req.ma_source, periods, &kvdf_cfg)?;
+            let signals = compute_kvdf_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &kvdf_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
             let start_t =
                 compute_kvdf_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
             if start_t >= n {
@@ -5688,9 +6903,651 @@ fn run_kvdf_optimization_cpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "kvdf_optimize");
 
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
     let result = agg
         .finalize()
         .ok_or_else(|| "KVDF grid search produced no result".to_string())?;
+    let best_params = resolve_params(&result.best_params);
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| (resolve_params(p), m.clone()))
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| (resolve_params(p), m.clone()))
+            .collect::<Vec<_>>()
+    });
+    let heatmap = result.heatmap.clone();
+
+    let matrix_index =
+        DoubleMaFastLtSlowIndex::new(fast_periods.clone(), slow_periods.clone()).ok();
+    let best_col = matrix_index
+        .as_ref()
+        .and_then(|idx| idx.col_id(best_params.fast_len, best_params.slow_len));
+    let top_cols = matrix_index.as_ref().map(|idx| {
+        top.iter()
+            .filter_map(|(p, _)| idx.col_id(p.fast_len, p.slow_len))
+            .collect::<Vec<_>>()
+    });
+    let top_cols = match top_cols {
+        Some(v) if v.len() == top.len() => Some(v),
+        _ => None,
+    };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics: result.best_metrics,
+        mode_used,
+        backend_used: BackendUsed::Cpu,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms: 0,
+        top,
+        all,
+        heatmap,
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
+}
+
+fn run_cdmc_optimization(
+    req: CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<BackendOptimizationResult, String> {
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
+        if !matches!(normalized_backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            if vector_ta::cuda::cuda_available() {
+                let device_id = match &normalized_backend {
+                    Backend::Auto { device_id }
+                    | Backend::GpuOnly { device_id }
+                    | Backend::GpuHybridKernel { device_id }
+                    | Backend::GpuKernel { device_id } => *device_id,
+                    Backend::CpuOnly => 0,
+                };
+                match run_cdmc_optimization_gpu(&req, candles, cancel, progress, device_id) {
+                    Ok(mut gpu_res) => {
+                        if matches!(req.backend, Backend::Auto { .. }) {
+                            gpu_res.backend_route = Some("Auto->GpuKernel".to_string());
+                        } else if matches!(req.backend, Backend::GpuKernel { .. }) {
+                            gpu_res.backend_route = Some("GpuKernel".to_string());
+                        } else {
+                            gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
+                        }
+                        return Ok(gpu_res);
+                    }
+                    Err(err) => {
+                        let mut cpu_res =
+                            run_cdmc_optimization_cpu(req, candles, cancel, progress)?;
+                        cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+                        cpu_res.backend_fallback_reason = Some(err);
+                        return Ok(cpu_res);
+                    }
+                }
+            }
+
+            let mut cpu_res = run_cdmc_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason =
+                Some("CUDA unavailable; falling back to CPU CDMC optimization.".to_string());
+            return Ok(cpu_res);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    {
+        if !matches!(req.backend, Backend::CpuOnly) {
+            let backend_label = composite_backend_label(&req.backend).to_string();
+            let mut cpu_res = run_cdmc_optimization_cpu(req, candles, cancel, progress)?;
+            cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
+            cpu_res.backend_fallback_reason = Some(
+                "CDMC GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
+                    .to_string(),
+            );
+            return Ok(cpu_res);
+        }
+    }
+
+    run_cdmc_optimization_cpu(req, candles, cancel, progress)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn run_cdmc_optimization_gpu(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    device_id: u32,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let cdmc_cfg = req.cdmc.clone().unwrap_or_default();
+    validate_cdmc_params(&cdmc_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "CDMC")?;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    let prepared_cuda_inputs =
+        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
+            .map_err(|e| e.to_string())?;
+
+    let mut dpo_keys: Vec<u16> = fast_periods
+        .iter()
+        .map(|&fast_len| resolve_cdmc_periods(&cdmc_cfg, fast_len, 1).dpo)
+        .collect();
+    dpo_keys.sort_unstable();
+    dpo_keys.dedup();
+    if dpo_keys.is_empty() {
+        return Err("CDMC DPO period set is empty".to_string());
+    }
+    let dpo_min = *dpo_keys.first().unwrap_or(&1);
+    let dpo_max = *dpo_keys.last().unwrap_or(&dpo_min);
+    let dpo_sweep = compute_cdmc_dpo_sweep_cuda_device(&prepared_cuda_inputs, dpo_min, dpo_max, 1)?;
+    if dpo_sweep.matrix.cols != n {
+        return Err("CDMC DPO sweep column mismatch".to_string());
+    }
+    let mut dpo_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(dpo_keys.len());
+    let mut dpo_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(dpo_keys.len());
+    for period in dpo_keys.iter().copied() {
+        let row = dpo_sweep
+            .row_index_for_period(period)
+            .ok_or_else(|| format!("CDMC DPO row missing for period={period}"))?;
+        let row_i = i32::try_from(row).map_err(|_| "CDMC DPO row exceeds i32 range".to_string())?;
+        dpo_row_lookup.insert(period, row_i);
+        dpo_first_valid_lookup.insert(period, dpo_sweep.first_valid_for_period(period));
+    }
+
+    let mut cycle_keys: Vec<u16> = slow_periods
+        .iter()
+        .map(|&slow_len| resolve_cdmc_periods(&cdmc_cfg, 1, slow_len).correlation_cycle)
+        .collect();
+    cycle_keys.sort_unstable();
+    cycle_keys.dedup();
+    if cycle_keys.is_empty() {
+        return Err("CDMC correlation-cycle period set is empty".to_string());
+    }
+    let cycle_min = *cycle_keys.first().unwrap_or(&1);
+    let cycle_max = *cycle_keys.last().unwrap_or(&cycle_min);
+    let angle_sweep = compute_cdmc_correlation_cycle_output_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        &["angle"],
+        cycle_min,
+        cycle_max,
+        1,
+    )?;
+    let state_sweep = compute_cdmc_correlation_cycle_output_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        &["state"],
+        cycle_min,
+        cycle_max,
+        1,
+    )?;
+    if angle_sweep.matrix.cols != n || state_sweep.matrix.cols != n {
+        return Err("CDMC correlation-cycle sweep column mismatch".to_string());
+    }
+    if angle_sweep.matrix.rows != state_sweep.matrix.rows {
+        return Err("CDMC correlation-cycle sweep row mismatch".to_string());
+    }
+    let mut cycle_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(cycle_keys.len());
+    let mut cycle_first_valid_lookup: HashMap<u16, usize> =
+        HashMap::with_capacity(cycle_keys.len());
+    for period in cycle_keys.iter().copied() {
+        let row = angle_sweep
+            .row_index_for_period(period)
+            .ok_or_else(|| format!("CDMC correlation-cycle row missing for period={period}"))?;
+        if state_sweep.row_index_for_period(period).is_none() {
+            return Err(format!(
+                "CDMC correlation-cycle state row missing for period={period}"
+            ));
+        }
+        let row_i = i32::try_from(row)
+            .map_err(|_| "CDMC correlation-cycle row exceeds i32 range".to_string())?;
+        cycle_row_lookup.insert(period, row_i);
+        cycle_first_valid_lookup.insert(period, angle_sweep.first_valid_for_period(period));
+    }
+
+    let mut decycler_keys: Vec<u16> = slow_periods
+        .iter()
+        .map(|&slow_len| resolve_cdmc_periods(&cdmc_cfg, 1, slow_len).decycler)
+        .collect();
+    decycler_keys.sort_unstable();
+    decycler_keys.dedup();
+    if decycler_keys.is_empty() {
+        return Err("CDMC decycler period set is empty".to_string());
+    }
+    let decycler_min = *decycler_keys.first().unwrap_or(&1);
+    let decycler_max = *decycler_keys.last().unwrap_or(&decycler_min);
+    let decycler_sweep = compute_cdmc_decycler_sweep_cuda_device(
+        &prepared_cuda_inputs,
+        decycler_min,
+        decycler_max,
+        1,
+    )?;
+    if decycler_sweep.matrix.cols != n {
+        return Err("CDMC decycler sweep column mismatch".to_string());
+    }
+    let mut decycler_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(decycler_keys.len());
+    let mut decycler_first_valid_lookup: HashMap<u16, usize> =
+        HashMap::with_capacity(decycler_keys.len());
+    for period in decycler_keys.iter().copied() {
+        let row = decycler_sweep
+            .row_index_for_period(period)
+            .ok_or_else(|| format!("CDMC decycler row missing for period={period}"))?;
+        let row_i =
+            i32::try_from(row).map_err(|_| "CDMC decycler row exceeds i32 range".to_string())?;
+        decycler_row_lookup.insert(period, row_i);
+        decycler_first_valid_lookup.insert(period, decycler_sweep.first_valid_for_period(period));
+    }
+
+    let ((mama_matrix, fama_matrix), mama_first_valid) =
+        compute_cdmc_mama_pair_cuda_device(&prepared_cuda_inputs, &cdmc_cfg)?;
+    let fama_first_valid = mama_first_valid;
+    if mama_matrix.cols != n || fama_matrix.cols != n {
+        return Err("CDMC MAMA/FAMA column mismatch".to_string());
+    }
+    if mama_matrix.rows != 1 || fama_matrix.rows != 1 {
+        return Err("CDMC MAMA/FAMA device output must be single-row".to_string());
+    }
+    if dpo_sweep.matrix.device_id != device_id
+        || angle_sweep.matrix.device_id != device_id
+        || state_sweep.matrix.device_id != device_id
+        || decycler_sweep.matrix.device_id != device_id
+        || mama_matrix.device_id != device_id
+        || fama_matrix.device_id != device_id
+    {
+        return Err("CDMC GPU signal staging device mismatch".to_string());
+    }
+
+    let mut combo_dpo_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_cycle_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_decycler_row_idx: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(total_pairs);
+    let mut combo_params: Vec<DoubleMaParams> = Vec::with_capacity(total_pairs);
+
+    emit_progress(progress, 0, total_pairs, "cdmc_optimize");
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let periods = resolve_cdmc_periods(&cdmc_cfg, fast_len, slow_len);
+            let dpo_row = *dpo_row_lookup
+                .get(&periods.dpo)
+                .ok_or_else(|| "CDMC DPO row lookup miss".to_string())?;
+            let cycle_row = *cycle_row_lookup
+                .get(&periods.correlation_cycle)
+                .ok_or_else(|| "CDMC correlation-cycle row lookup miss".to_string())?;
+            let decycler_row = *decycler_row_lookup
+                .get(&periods.decycler)
+                .ok_or_else(|| "CDMC decycler row lookup miss".to_string())?;
+            let dpo_first_valid = *dpo_first_valid_lookup
+                .get(&periods.dpo)
+                .ok_or_else(|| "CDMC DPO first_valid lookup miss".to_string())?;
+            let cycle_first_valid = *cycle_first_valid_lookup
+                .get(&periods.correlation_cycle)
+                .ok_or_else(|| "CDMC correlation-cycle first_valid lookup miss".to_string())?;
+            let decycler_first_valid = *decycler_first_valid_lookup
+                .get(&periods.decycler)
+                .ok_or_else(|| "CDMC decycler first_valid lookup miss".to_string())?;
+            let signals_first_valid = dpo_first_valid
+                .max(cycle_first_valid)
+                .max(mama_first_valid)
+                .max(fama_first_valid)
+                .max(decycler_first_valid);
+            let start_t =
+                compute_cdmc_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+            if start_t >= n {
+                continue;
+            }
+
+            combo_dpo_row_idx.push(dpo_row);
+            combo_cycle_row_idx.push(cycle_row);
+            combo_decycler_row_idx.push(decycler_row);
+            combo_start_t.push(
+                i32::try_from(start_t).map_err(|_| "CDMC start_t exceeds i32 range".to_string())?,
+            );
+            combo_params.push(DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+
+            if (combo_params.len() & 0x03ff) == 0 {
+                emit_progress(progress, combo_params.len(), total_pairs, "cdmc_optimize");
+            }
+        }
+    }
+    emit_progress(progress, combo_params.len(), total_pairs, "cdmc_optimize");
+
+    if combo_params.is_empty() {
+        return Err("CDMC grid search produced no valid parameter combinations".to_string());
+    }
+
+    let signals = CdmcGpuDeviceSignalMatrices {
+        close_f32: prepared_cuda_inputs.close(),
+        cols: n,
+        dpo_row_major_ptr: dpo_sweep.matrix.device_ptr,
+        dpo_rows: dpo_sweep.matrix.rows,
+        dpo_stride: dpo_sweep.matrix.cols,
+        cycle_angle_row_major_ptr: angle_sweep.matrix.device_ptr,
+        cycle_state_row_major_ptr: state_sweep.matrix.device_ptr,
+        cycle_rows: angle_sweep.matrix.rows,
+        cycle_stride: angle_sweep.matrix.cols,
+        mama_ptr: mama_matrix.device_ptr,
+        fama_ptr: fama_matrix.device_ptr,
+        decycler_row_major_ptr: decycler_sweep.matrix.device_ptr,
+        decycler_rows: decycler_sweep.matrix.rows,
+        decycler_stride: decycler_sweep.matrix.cols,
+    };
+    let combo_end_t = vec![
+        i32::try_from(n)
+            .map_err(|_| "CDMC end_t exceeds i32 range".to_string())?;
+        combo_dpo_row_idx.len()
+    ];
+    let combos = CdmcGpuComboBatch {
+        dpo_row_index: &combo_dpo_row_idx,
+        cycle_row_index: &combo_cycle_row_idx,
+        decycler_row_index: &combo_decycler_row_idx,
+        start_t: &combo_start_t,
+        end_t: &combo_end_t,
+    };
+
+    let start = std::time::Instant::now();
+    let metrics = eval_cdmc_metrics_gpu_kernel_device_rows(
+        device_id, &signals, &combos, &strategy, &cdmc_cfg,
+    )?;
+    if metrics.len() != combo_params.len() {
+        return Err("CDMC GPU kernel output length mismatch".to_string());
+    }
+
+    let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len: p.fast_len,
+            slow_len: p.slow_len,
+            fast_ma_type: fast_ma.clone(),
+            slow_ma_type: slow_ma.clone(),
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
+        }
+    };
+
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+    for (i, (params, m)) in combo_params
+        .into_iter()
+        .zip(metrics.into_iter())
+        .enumerate()
+    {
+        agg.push(params, m);
+        if (i & 0x03ff) == 0 {
+            emit_progress(progress, i + 1, total_pairs, "cdmc_optimize");
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "cdmc_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "CDMC grid search produced no result".to_string())?;
+    let best_params = resolve_params(&result.best_params);
+    let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+        .top
+        .iter()
+        .map(|(p, m)| (resolve_params(p), m.clone()))
+        .collect();
+    let all = result.all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(p, m)| (resolve_params(p), m.clone()))
+            .collect::<Vec<_>>()
+    });
+    let runtime_ms = start.elapsed().as_millis() as u64;
+
+    let (matrix_index, best_col, top_cols) =
+        match DoubleMaFastLtSlowIndex::new(fast_periods, slow_periods) {
+            Ok(idx) => {
+                let best_col = idx.col_id(best_params.fast_len, best_params.slow_len);
+                let mut top_cols: Vec<u32> = Vec::with_capacity(top.len());
+                for (p, _) in &top {
+                    match idx.col_id(p.fast_len, p.slow_len) {
+                        Some(c) => top_cols.push(c),
+                        None => {
+                            top_cols.clear();
+                            break;
+                        }
+                    }
+                }
+                let top_cols = if top_cols.is_empty() {
+                    None
+                } else {
+                    Some(top_cols)
+                };
+                (Some(idx), best_col, top_cols)
+            }
+            Err(_) => (None, None, None),
+        };
+
+    Ok(BackendOptimizationResult {
+        best_params,
+        best_metrics: result.best_metrics,
+        mode_used,
+        backend_used: BackendUsed::Gpu,
+        matrix_index,
+        best_col,
+        top_cols,
+        num_combos: result.num_combos,
+        num_candles: n,
+        runtime_ms,
+        top,
+        all,
+        heatmap: result.heatmap.clone(),
+        vdps: None,
+        hybrid_timing_ms: None,
+        backend_route: None,
+        backend_fallback_reason: None,
+        indicator_route_plan: None,
+    })
+}
+
+fn run_cdmc_optimization_cpu(
+    req: CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<BackendOptimizationResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let cdmc_cfg = req.cdmc.clone().unwrap_or_default();
+    validate_cdmc_params(&cdmc_cfg)?;
+
+    let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
+    let mode_used = resolve_composite_grid_mode(&req.mode, "CDMC")?;
+    let objective = req.objective;
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("Fast/slow MA type cannot be empty.".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let fast_periods = expand_u16_range(req.fast_range)?;
+    let slow_periods = expand_u16_range(req.slow_range)?;
+    if fast_periods.is_empty() || slow_periods.is_empty() {
+        return Err("empty period range".to_string());
+    }
+    let total_pairs = estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    if total_pairs == 0 {
+        return Err("no valid parameter combinations (fast must be < slow)".to_string());
+    }
+    if include_all && total_pairs > 2_000_000 {
+        return Err(format!(
+            "include_all=true would return {} rows; disable it or reduce ranges.",
+            total_pairs
+        ));
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let n = close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+    };
+
+    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+    if heatmap_bins > 0 {
+        agg = agg.with_heatmap(
+            heatmap_bins,
+            heatmap_bins,
+            *fast_periods.iter().min().unwrap_or(&0),
+            *fast_periods.iter().max().unwrap_or(&0),
+            *slow_periods.iter().min().unwrap_or(&0),
+            *slow_periods.iter().max().unwrap_or(&0),
+        );
+    }
+
+    let mut processed = 0usize;
+    emit_progress(progress, 0, total_pairs, "cdmc_optimize");
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+
+            let periods = resolve_cdmc_periods(&cdmc_cfg, fast_len, slow_len);
+            let signals = compute_cdmc_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &cdmc_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            let start_t =
+                compute_cdmc_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+            if start_t >= n {
+                continue;
+            }
+
+            let desired =
+                build_cdmc_desired_positions(close, &signals, start_t, &strategy, &cdmc_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            agg.push(
+                DoubleMaParams {
+                    fast_len,
+                    slow_len,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                metrics,
+            );
+            processed += 1;
+            if (processed & 0x03ff) == 0 {
+                emit_progress(progress, processed, total_pairs, "cdmc_optimize");
+            }
+        }
+    }
+    emit_progress(progress, total_pairs, total_pairs, "cdmc_optimize");
+
+    let result = agg
+        .finalize()
+        .ok_or_else(|| "CDMC grid search produced no result".to_string())?;
     let best_params = DoubleMaParamsResolved {
         fast_len: result.best_params.fast_len,
         slow_len: result.best_params.slow_len,
@@ -6095,7 +7952,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         return run_kvdf_optimization(req, candles, cancel, progress);
     }
     if req.cdmc.is_some() {
-        return Err("CDMC optimization is not implemented yet.".to_string());
+        return run_cdmc_optimization(req, candles, cancel, progress);
     }
 
     if cancel.load(Ordering::Relaxed) {
@@ -6466,6 +8323,9 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         )
     };
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let mut backend_used = BackendUsed::Cpu;
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let backend_used = BackendUsed::Cpu;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let mut base_gpu_kernel_fallback_reason = None::<String>;
@@ -7961,6 +9821,141 @@ mod tests {
         assert_eq!(heatmap_legacy.values, heatmap_dynamic.values);
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_metric_major_parity(label: &str, metric: &str, cpu: f64, gpu: f64) {
+        if cpu.is_nan() || gpu.is_nan() {
+            assert!(
+                cpu.is_nan() && gpu.is_nan(),
+                "{label} {metric} NaN mismatch: cpu={cpu}, gpu={gpu}"
+            );
+            return;
+        }
+        let abs_tol: f64 = match metric {
+            "sharpe" => 0.25,
+            "pnl" | "max_dd" | "volatility" | "exposure" | "net_exposure" => 0.03,
+            _ => 0.05,
+        };
+        let rel_tol: f64 = match metric {
+            "sharpe" => 0.12,
+            "pnl" | "max_dd" | "volatility" | "exposure" | "net_exposure" => 0.08,
+            _ => 0.10,
+        };
+        let scale = cpu.abs().max(gpu.abs()).max(1.0);
+        let limit = abs_tol.max(rel_tol * scale);
+        let diff = (cpu - gpu).abs();
+        assert!(
+            diff <= limit,
+            "{label} {metric} diverged: cpu={cpu}, gpu={gpu}, diff={diff}, limit={limit}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_composite_gpu_kernel_major_parity(
+        mut req: CompositeCpuRequest,
+        candles: &vector_ta::utilities::data_loader::Candles,
+        cancel: &AtomicBool,
+        label: &str,
+    ) {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        req.include_all = Some(true);
+        req.top_k = Some(128);
+        req.heatmap_bins = Some(0);
+
+        let mut cpu_req = req.clone();
+        cpu_req.backend = Backend::CpuOnly;
+        let cpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(cpu_req, candles, cancel, None)
+                .unwrap_or_else(|e| panic!("{label} cpu optimization failed: {e}"));
+
+        let mut gpu_req = req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, candles, cancel, None)
+                .unwrap_or_else(|e| panic!("{label} gpu optimization failed: {e}"));
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "{label} expected GPU backend, got {:?} route={:?} fallback={:?}",
+            gpu_res.backend_used,
+            gpu_res.backend_route,
+            gpu_res.backend_fallback_reason
+        );
+        assert_eq!(
+            cpu_res.num_combos, gpu_res.num_combos,
+            "{label} combo count"
+        );
+
+        let cpu_all = cpu_res.all.expect("cpu all");
+        let gpu_all = gpu_res.all.expect("gpu all");
+        assert_eq!(cpu_all.len(), gpu_all.len(), "{label} all-row count");
+
+        let cpu_map: std::collections::HashMap<(u16, u16), Metrics> = cpu_all
+            .into_iter()
+            .map(|(params, metrics)| ((params.fast_len, params.slow_len), metrics))
+            .collect();
+        let gpu_map: std::collections::HashMap<(u16, u16), Metrics> = gpu_all
+            .into_iter()
+            .map(|(params, metrics)| ((params.fast_len, params.slow_len), metrics))
+            .collect();
+        assert_eq!(cpu_map.len(), gpu_map.len(), "{label} map size");
+
+        for (key, cpu_metrics) in &cpu_map {
+            let gpu_metrics = gpu_map
+                .get(key)
+                .unwrap_or_else(|| panic!("{label} missing GPU metrics for combo {:?}", key));
+            assert_metric_major_parity(label, "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(label, "sharpe", cpu_metrics.sharpe, gpu_metrics.sharpe);
+            assert_metric_major_parity(
+                label,
+                "volatility",
+                cpu_metrics.volatility,
+                gpu_metrics.volatility,
+            );
+            assert_metric_major_parity(label, "max_dd", cpu_metrics.max_dd, gpu_metrics.max_dd);
+            assert_metric_major_parity(
+                label,
+                "exposure",
+                cpu_metrics.exposure,
+                gpu_metrics.exposure,
+            );
+            assert_metric_major_parity(
+                label,
+                "net_exposure",
+                cpu_metrics.net_exposure,
+                gpu_metrics.net_exposure,
+            );
+            assert!(
+                cpu_metrics.trades.abs_diff(gpu_metrics.trades) <= 2,
+                "{label} trades diverged for {:?}: cpu={}, gpu={}",
+                key,
+                cpu_metrics.trades,
+                gpu_metrics.trades
+            );
+        }
+
+        assert_metric_major_parity(
+            label,
+            "best_sharpe",
+            cpu_res.best_metrics.sharpe,
+            gpu_res.best_metrics.sharpe,
+        );
+        assert_metric_major_parity(
+            label,
+            "best_pnl",
+            cpu_res.best_metrics.pnl,
+            gpu_res.best_metrics.pnl,
+        );
+        assert_metric_major_parity(
+            label,
+            "best_max_dd",
+            cpu_res.best_metrics.max_dd,
+            gpu_res.best_metrics.max_dd,
+        );
+    }
+
     fn make_base_composite_req() -> CompositeCpuRequest {
         CompositeCpuRequest {
             backend: crate::double_ma::Backend::CpuOnly,
@@ -8132,6 +10127,34 @@ mod tests {
             low.push(px * 0.9955);
             close.push(px);
             vol.push(1_500.0 + (i % 19) as f64 * 55.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn make_cdmc_cycle_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let len = len.max(260);
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let angle = i as f64 * 0.11;
+            let trend = if i < len / 2 {
+                i as f64 * 0.035
+            } else {
+                (len - i) as f64 * 0.028
+            };
+            let px = 100.0 + angle.sin() * 3.6 + (angle * 0.43).cos() * 1.1 + trend;
+            open.push(px * 0.9988);
+            high.push(px * 1.0038);
+            low.push(px * 0.9962);
+            close.push(px);
+            vol.push(1_050.0 + (i % 11) as f64 * 24.0);
         }
 
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
@@ -9894,8 +11917,9 @@ mod tests {
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
     }
 
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     #[test]
-    fn kqsr_gpu_request_falls_back_to_cpu_baseline() {
+    fn kqsr_gpu_request_falls_back_to_cpu_without_cuda_kernel_support() {
         let candles = make_kqsr_oscillating_candles(600);
         let cancel = AtomicBool::new(false);
 
@@ -9944,7 +11968,108 @@ mod tests {
             .backend_fallback_reason
             .as_deref()
             .unwrap_or("")
-            .contains("not implemented yet"));
+            .contains("disabled"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kqsr_gpu_kernel_request_runs_when_cuda_available() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_kqsr_oscillating_candles(600);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: Some(KqsrStrategyParams::default()),
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            data_id: "test".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (12, 20, 4),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("kqsr gpu optimization");
+        assert!(res.num_combos > 0);
+        assert!(!res.top.is_empty());
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kqsr_gpu_kernel_major_parity_vs_cpu() {
+        let candles = make_kqsr_oscillating_candles(600);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: Some(KqsrStrategyParams::default()),
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            data_id: "kqsr-parity".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (12, 20, 4),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "kqsr");
     }
 
     #[test]
@@ -9996,8 +12121,9 @@ mod tests {
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
     }
 
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     #[test]
-    fn carm_gpu_request_falls_back_to_cpu_baseline() {
+    fn carm_gpu_request_falls_back_to_cpu_without_cuda_kernel_support() {
         let candles = make_carm_momentum_candles(640);
         let cancel = AtomicBool::new(false);
 
@@ -10041,12 +12167,121 @@ mod tests {
             run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
                 .expect("carm fallback optimization");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(res
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or("")
-            .contains("not implemented yet"));
+        #[cfg(feature = "cuda")]
+        {
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+            assert!(res
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("disabled"));
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            assert!(res.backend_route.is_none());
+            assert!(res.backend_fallback_reason.is_none());
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_gpu_kernel_request_runs_when_cuda_available() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_carm_momentum_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: Some(CarmStrategyParams::default()),
+            kvdf: None,
+            cdmc: None,
+            data_id: "test".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("carm gpu optimization");
+        assert!(res.num_combos > 0);
+        assert!(!res.top.is_empty());
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_gpu_kernel_major_parity_vs_cpu() {
+        let candles = make_carm_momentum_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: Some(CarmStrategyParams::default()),
+            kvdf: None,
+            cdmc: None,
+            data_id: "carm-parity".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "carm");
     }
 
     #[test]
@@ -10098,8 +12333,9 @@ mod tests {
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
     }
 
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     #[test]
-    fn kvdf_gpu_request_falls_back_to_cpu_baseline() {
+    fn kvdf_gpu_request_falls_back_to_cpu_without_cuda_kernel_support() {
         let candles = make_kvdf_flow_candles(720);
         let cancel = AtomicBool::new(false);
 
@@ -10143,33 +12379,333 @@ mod tests {
             run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
                 .expect("kvdf fallback optimization");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(res
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or("")
-            .contains("not implemented yet"));
+        #[cfg(feature = "cuda")]
+        {
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+            assert!(res
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("disabled"));
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            assert!(res.backend_route.is_none());
+            assert!(res.backend_fallback_reason.is_none());
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kvdf_gpu_kernel_request_runs_when_cuda_available() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_kvdf_flow_candles(720);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: Some(KvdfStrategyParams::default()),
+            cdmc: None,
+            data_id: "test".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("kvdf gpu optimization");
+        assert!(res.num_combos > 0);
+        assert!(!res.top.is_empty());
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kvdf_gpu_kernel_major_parity_vs_cpu() {
+        let candles = make_kvdf_flow_candles(720);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: Some(KvdfStrategyParams::default()),
+            cdmc: None,
+            data_id: "kvdf-parity".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "kvdf");
     }
 
     #[test]
-    fn new_gpu_native_strategy_placeholders_reject_optimization_explicitly() {
-        let candles = make_trending_candles(5000);
+    fn cdmc_optimization_smoke_runs() {
+        let candles = make_cdmc_cycle_candles(640);
         let cancel = AtomicBool::new(false);
 
-        let cases = [("CDMC", "CDMC optimization is not implemented yet.")];
+        let req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: Some(CdmcStrategyParams::default()),
+            data_id: "test".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
 
-        for (kind, expected) in cases {
-            let mut req = make_base_composite_req();
-            match kind {
-                "CDMC" => req.cdmc = Some(CdmcStrategyParams::default()),
-                _ => unreachable!(),
-            }
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("cdmc optimization");
+        assert!(res.num_combos > 0);
+        assert!(!res.top.is_empty());
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+    }
 
-            let err =
-                run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
-                    .expect_err("placeholder strategy should reject explicitly");
-            assert_eq!(err, expected, "{kind} should reject with a stable message");
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    #[test]
+    fn cdmc_gpu_request_falls_back_to_cpu_without_cuda_kernel_support() {
+        let candles = make_cdmc_cycle_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: Some(CdmcStrategyParams::default()),
+            data_id: "test".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("cdmc fallback optimization");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        #[cfg(feature = "cuda")]
+        {
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+            assert!(res
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("disabled"));
         }
+        #[cfg(not(feature = "cuda"))]
+        {
+            assert!(res.backend_route.is_none());
+            assert!(res.backend_fallback_reason.is_none());
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_gpu_kernel_request_runs_when_cuda_available() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_cdmc_cycle_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: Some(CdmcStrategyParams::default()),
+            data_id: "test".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("cdmc gpu optimization");
+        assert!(res.num_combos > 0);
+        assert!(!res.top.is_empty());
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_gpu_kernel_major_parity_vs_cpu() {
+        let candles = make_cdmc_cycle_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: Some(CdmcStrategyParams::default()),
+            data_id: "cdmc-parity".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "cdmc");
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

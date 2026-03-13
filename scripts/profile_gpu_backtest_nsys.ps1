@@ -1,7 +1,12 @@
 param(
   [ValidateSet("runner", "bench")]
   [string]$Target = "runner",
+  [string]$BenchName = "double_ma_opt",
   [string]$BenchFilter = "double_ma/gpu_kernel/sma_sma/200k/small",
+  [string]$BenchStrategyOnly = "",
+  [int]$BenchSampleSize = 10,
+  [int]$BenchMeasurementTimeSec = 3,
+  [int]$BenchWarmupTimeSec = 1,
   [ValidateSet("double_ma", "trend_quality", "regime_hybrid", "breakout_momentum")]
   [string]$RunnerStrategy = "breakout_momentum",
   [ValidateSet("off", "on")]
@@ -17,9 +22,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $nsysCandidates = @(
-  "C:\Program Files\NVIDIA Corporation\Nsight Systems 2022.4.2\target-windows-x64\nsys.exe",
   "C:\Program Files\NVIDIA Corporation\Nsight Systems 2023.3.3\target-windows-x64\nsys.exe",
   "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe",
+  "C:\Program Files\NVIDIA Corporation\Nsight Systems 2022.4.2\target-windows-x64\nsys.exe",
   "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\host\target-windows-x64\nsys.exe"
 )
 $nsysExe = $nsysCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -46,16 +51,16 @@ if ($Target -eq "runner") {
   $targetExe = Get-Item $targetExePath
 } else {
   Write-Host "Building benchmark executable..."
-  cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel --no-run
+  cargo bench -p ta_app_core --bench $BenchName --features cuda,cuda-backtest-kernel --no-run
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }
 
-  $targetExe = Get-ChildItem -Path "target/release/deps" -File -Filter "double_ma_opt-*.exe" |
+  $targetExe = Get-ChildItem -Path "target/release/deps" -File -Filter "$BenchName-*.exe" |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
   if ($null -eq $targetExe) {
-    throw "Could not find built bench executable: target/release/deps/double_ma_opt-*.exe"
+    throw "Could not find built bench executable: target/release/deps/$BenchName-*.exe"
   }
 }
 
@@ -69,6 +74,7 @@ $prevGraphs = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_USE_
 $prevMetrics = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_METRICS_COUNT", "Process")
 $prevSkip = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_SKIP_RECOMPUTE", "Process")
 $prevDynamic = [System.Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
+$prevBenchOnly = [System.Environment]::GetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", "Process")
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", "1", "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "0", "Process")
@@ -78,6 +84,11 @@ if ($DynamicStrategyMode -eq "on") {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "1", "Process")
 } else {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", $null, "Process")
+}
+if ([string]::IsNullOrWhiteSpace($BenchStrategyOnly)) {
+  [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $null, "Process")
+} else {
+  [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $BenchStrategyOnly, "Process")
 }
 
 Write-Host "Profiling with Nsight Systems (dynamic_strategy=$DynamicStrategyMode)..."
@@ -105,9 +116,9 @@ if ($Target -eq "runner") {
   $nsysArgs += @(
     $targetExe.FullName,
     $BenchFilter,
-    "--sample-size", "10",
-    "--measurement-time", "3",
-    "--warm-up-time", "1"
+    "--sample-size", "$BenchSampleSize",
+    "--measurement-time", "$BenchMeasurementTimeSec",
+    "--warm-up-time", "$BenchWarmupTimeSec"
   )
 }
 
@@ -119,10 +130,7 @@ $exitCode = $LASTEXITCODE
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_METRICS_COUNT", $prevMetrics, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_SKIP_RECOMPUTE", $prevSkip, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", $prevDynamic, "Process")
-
-if ($exitCode -ne 0) {
-  exit $exitCode
-}
+[System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $prevBenchOnly, "Process")
 
 $reportPath = "$OutputPrefix.nsys-rep"
 if (!(Test-Path $reportPath)) {
@@ -139,6 +147,10 @@ if (!(Test-Path $reportPath)) {
   } elseif (!(Test-Path $reportPath)) {
     throw "Nsight Systems report not generated at '$reportPath' or '$altReport'."
   }
+}
+
+if ($exitCode -ne 0) {
+  Write-Warning "Nsight Systems exited with code $exitCode but produced '$reportPath'; treating the capture as usable."
 }
 
 Write-Host "Nsight Systems report written to $reportPath"

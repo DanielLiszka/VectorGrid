@@ -38,10 +38,20 @@ Instructions for AI coding agents working in this repository.
 - For performance-sensitive changes, run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` before handoff (or `scripts/run_workflow_gate.ps1 -Mode candidate` at minimum).
 - For CUDA backtest-kernel changes, run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (when GPU is available).
 
+## Autonomy Policy
+If you're working towards goals, do NOT end your turn. This allows for continuous autonomous work.
+
+The user will interrupt you when required, but they will mostly provide steering messages.
+
+Do not pester the user by ending your turn after a unit of work, as that requires them to keep nudging you to keep working.
+
+You MUST continue working autonomously towards any known objectives until the user interrupts you. Do NOT end your turn until there is absolutely nothing left to do.
+
 ## Execution quality
 
 - Use the full set of available tools and skills when it improves solution quality, verification quality, or speed of understanding.
-- Prefer maximal beneficial use of sub-agents for bounded analysis tasks, especially when scanning separate backend/frontend/runtime surfaces in parallel will preserve context and reduce mistakes.
+- Always use sub-agents whenever delegation is beneficial to task completion, verification quality, or context preservation.
+- Prefer maximal beneficial use of sub-agents for bounded analysis, implementation, profiling, and verification tasks, especially when scanning separate backend/frontend/runtime surfaces in parallel will preserve context and reduce mistakes.
 - Use profiling, targeted diagnostics, and existing repo tooling before guessing about performance or parity issues.
 - Favor evidence-backed implementation over assumption-backed implementation, especially for CUDA/runtime-path changes.
 

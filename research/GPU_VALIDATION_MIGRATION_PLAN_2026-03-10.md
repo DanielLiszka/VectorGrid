@@ -6,6 +6,22 @@ Scope: migrate the validation stage from its current mostly host/CPU execution m
 
 This document is a planning and tracking artifact. It is intentionally biased toward extending the existing GPU optimization substrate rather than inventing a separate validation engine with duplicate logic.
 
+March 12, 2026 late-pass implementation note:
+
+- source now carries composite GPU validation execution for `KQSR`, `CARM`, `KVDF`, and `CDMC` across in-sample, `walk_forward`, `CSCV/PBO`, `SPA`, `reopt_walk_forward`, `trade_bootstrap`, `perturb`, and command-layer `cross_ticker` reruns
+- representative source tests now exist in:
+  - `crates/app_core/src/composite_validate.rs`
+  - `src-tauri/src/commands_validation.rs`
+- closure evidence was re-run successfully in this session with:
+  - `cargo check -p ta_app_core --features cuda,cuda-backtest-kernel`
+  - `cargo test -p ta_app_core validation_gpu_kernel_matches_cpu_metrics --features cuda,cuda-backtest-kernel`
+  - `cargo test -p ta_app_core advanced_routes_smoke --features cuda,cuda-backtest-kernel`
+  - `cargo test -p ta_app_core gpu_smoke_runs_with_ --features cuda,cuda-backtest-kernel`
+  - `cargo test -p ta_desktop_demo_app cross_ticker_ --features cuda,cuda-backtest-kernel`
+  - `cargo check -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel`
+  - `npm --prefix ./web run typecheck`
+  - `npm --prefix ./web run test -- validationRequestBuilder.test.ts`
+
 ## Goal
 
 Turn validation into a dual-engine system:
@@ -173,7 +189,7 @@ Key files:
     - `reopt_walk_forward`
     - `trade_bootstrap` with host-side bootstrap reduction
     - `perturb` via GPU reruns of perturbed single-candidate requests
-  - cross-ticker still falls back explicitly to CPU for base composite
+  - command-layer `cross_ticker` reruns now preserve the requested base-composite backend by rebuilding per-dataset validation requests with `cross_ticker: None`; representative smoke coverage lives in `src-tauri/src/commands_validation.rs`
 - `CompositeMo` remains CPU-bound for actual optimization/evaluation, aside from optional GPU prescan/narrowing
 
 Key files:
@@ -2028,9 +2044,11 @@ All `Use` indicators are covered:
 
 Current implementation note:
 
-- the intended coverage map above remains the target
-- the implemented `MKCS` slice currently only covers the `stddev` portion of that target
-- `mass`, `kurtosis`, and `correl_hl` therefore remain unimplemented despite the longer-term plan assignment
+- the intended coverage map above remains the longer-term target
+- the shipped `MKCS` backend for the current GPU validation completion pass is explicitly the narrower v1 slice:
+  - `stddev`
+  - `donchian`
+- `mass`, `kurtosis`, and `correl_hl` remain unimplemented and are now explicitly deferred out of the current execution-completion scope unless product scope is widened later
 
 ### Architectural Direction
 
@@ -2252,126 +2270,141 @@ Deliverables:
 
 ### Phase S4: GPU signal staging
 
-Deliverables:
-
-- implement GPU-prepared inputs for every selected indicator
-- keep all selected signals device-resident through the optimization loop
-- ensure no first-wave strategy depends on a CPU-only component
-
-### Phase S5: GPU kernel optimization implementations
-
-Deliverables:
-
-- implement dedicated GPU combo evaluation for all five new strategies
-- support device-resident shortlist/top-k handling where practical
-- expose route metadata and explicit `GpuKernel` selection
-
-### Phase S6: parity, benchmarking, and profiling
-
-Deliverables:
-
-- CPU vs GPU parity tests for each strategy
-- representative benchmarks for each strategy
-- Nsight Systems captures for at least one benchmark per strategy
-- route metadata in benchmark and artifact outputs
-
-### Acceptance Criteria
-
-1. Every indicator in the `Use` list is covered by at least one new strategy.
-2. Every new strategy supports:
-   - `GpuKernel`
-   - `CpuOnly`
-3. No first-wave new strategy depends on a hybrid-only indicator.
-4. CPU and GPU outputs are parity-tested.
-5. Frontend surfaces the new strategies clearly.
-6. Benchmark evidence exists for every new strategy family.
-
-## Tracking Checklist For New GPU-Native Strategy Expansion
-
-### Phase S1: formalize
-
-- [x] Finalize the `Use` / `don't use` classification from the unused `>= 5x` indicator list.
-- [x] Define entry / exit logic for `KQSR`.
-- [x] Define entry / exit logic for `CARM`.
-- [x] Define entry / exit logic for `KVDF`.
-- [x] Define entry / exit logic for `MKCS`.
-- [x] Define entry / exit logic for `CDMC`.
-- [x] Define the tunable parameter surface for each strategy.
-- [x] Define candle-field requirements for each strategy.
-
-### Phase S2: frontend and request surface
-
-- [x] Add `KQSR` to the strategy selector.
-- [x] Add `CARM` to the strategy selector.
-- [x] Add `KVDF` to the strategy selector.
-- [x] Add `MKCS` to the strategy selector.
-- [x] Add `CDMC` to the strategy selector.
-- [x] Add request builders for all five strategies.
-  - `MKCS` request shaping is implemented.
-  - `KQSR`, `CARM`, `KVDF`, and `CDMC` now have explicit request-shaping support with documented default parameter blocks.
-  - current implementation note on March 11, 2026:
-    - `KQSR`, `CARM`, `KVDF`, and `CDMC` optimize requests are frontend-visible and deserialize cleanly in Rust.
-    - `CDMC` backend optimization still returns an explicit `not implemented yet` error.
-    - `KQSR`, `CARM`, and `KVDF` now have real CPU baselines, while their true `GpuKernel` execution is still pending.
-- [x] Add capability summaries showing `GpuKernel` + `CpuOnly` fallback.
-  - `MKCS` capability summary is implemented.
-  - `KQSR`, `CARM`, `KVDF`, and `CDMC` now surface the same target-route contract, with explicit UI wording that backend execution for those four is still pending.
-
-### Phase S3: CPU baselines
-
-- [x] Implement CPU baseline for `KQSR`.
-- [x] Implement CPU baseline for `CARM`.
-- [x] Implement CPU baseline for `KVDF`.
-- [x] Implement CPU baseline for `MKCS`.
-- [ ] Implement CPU baseline for `CDMC`.
-  - current implementation note on March 11, 2026:
-    - `KQSR` now has a real CPU optimization baseline in `kqsr.rs` / `composite_cpu.rs`.
-    - `CARM` now has a real CPU optimization baseline in `carm.rs` / `composite_cpu.rs`.
-    - `KVDF` now has a real CPU optimization baseline in `kvdf.rs` / `composite_cpu.rs`.
-    - the implemented baseline maps fast/slow grid periods into `KDJ`, `sRSI`, `IFT RSI`, `QQE`, and `PRB` signal periods and evaluates CPU desired positions through the standard optimization result contract.
-    - the `CARM` baseline maps fast/slow grid periods into `Coppock`, `AO`, `ROCR`, `APO`, and `OTTO` confirmation periods and evaluates CPU desired positions through the same optimization result contract.
-    - the `KVDF` baseline maps fast/slow grid periods into `Keltner`, anchored `VWAP`, `DTI`, `DevStop`, and `FVG Trailing Stop` signals and evaluates CPU desired positions through the same optimization result contract.
-
-### Phase S4: GPU signal staging
-
-- [ ] Implement GPU signal staging for `KQSR`.
-- [ ] Implement GPU signal staging for `CARM`.
-- [ ] Implement GPU signal staging for `KVDF`.
+- [x] Implement GPU signal staging for `KQSR`.
+- [x] Implement GPU signal staging for `CARM`.
+- [x] Implement GPU signal staging for `KVDF`.
 - [x] Implement GPU signal staging for `MKCS`.
-- [ ] Implement GPU signal staging for `CDMC`.
+- [x] Implement GPU signal staging for `CDMC`.
 - [ ] Verify all selected first-wave indicators remain GPU-executable end to end.
   - `MKCS` v1 currently stages GPU-computed host rows into device matrices for parity-safe optimization.
+  - current implementation note on March 11, 2026:
+    - after the workspace bump to `vector-ta 0.1.9`, the generic CUDA dispatch surface now exposes `QQE` `fast` + `slow` outputs, so the existing mixed staging path in `kqsr.rs` / `composite_cpu.rs` can keep `KDJ`, `sRSI`, `IFT RSI`, `QQE`, and `PRB` on CUDA-backed staging when available, and those staged rows now feed the verified strategy-local `GpuKernel` optimization path.
+    - `CARM` now attempts CUDA signal staging on non-CPU backends for `Coppock`, `AO`, `ROCR`, `APO`, and `OTTO` through `carm.rs` / `composite_cpu.rs`, and those staged rows now feed the verified strategy-local `GpuKernel` optimization path.
+    - `KVDF` now attempts CUDA signal staging on non-CPU backends for `Keltner`, `VWAP`, `DTI`, `DevStop`, and `FVG Trailing Stop` through `kvdf.rs` / `composite_cpu.rs`, and those staged rows now feed the verified strategy-local `GpuKernel` optimization path.
+    - after the workspace bump to `vector-ta 0.1.9`, `CDMC` now attempts CUDA signal staging on non-CPU backends for `DPO`, `Correlation Cycle`, `MAMA/FAMA`, and `Decycler` through `cdmc.rs` / `composite_cpu.rs`, and those staged rows now feed the verified strategy-local `GpuKernel` optimization path.
 
 ### Phase S5: GPU optimization path
 
-- [ ] Implement `GpuKernel` optimization for `KQSR`.
-- [ ] Implement `GpuKernel` optimization for `CARM`.
-- [ ] Implement `GpuKernel` optimization for `KVDF`.
+- [x] Implement `GpuKernel` optimization for `KQSR`.
+  - current implementation note on March 12, 2026:
+    - `KQSR` now has a strategy-local `GpuKernel` optimization path through `kqsr_gpu_kernel.rs`, `composite_cpu.rs`, and `double_crossover.cu`.
+    - the current S5 route keeps metrics evaluation on GPU and batches compact row-major signal matrices for `KDJ.J`, `sRSI.K/D`, `IFT RSI`, `QQE fast/slow`, and `PRB upper/lower` into device buffers before device-side scoring.
+    - this is intentionally not claiming a fully direct device-sweep path for every indicator family yet: `sRSI`, `IFT RSI`, and `PRB` still use host-assembled row-major uploads in the current route because their lockstep multi-parameter surfaces are not yet exposed as a simple one-axis device sweep in the generic adapter path.
+    - follow-up backend optimization note on March 12, 2026:
+      - the `KQSR` GPU route no longer computes the full eight-output bundle twice during staging.
+      - `kqsr.rs` now exposes `compute_kqsr_fast_signals(...)` and `compute_kqsr_slow_signals(...)`, and `composite_cpu.rs` uses them in the fast/slow staging loops so the route stops materializing discarded seed-side outputs before upload.
+      - the profiling follow-up pass now also keeps those fast/slow staging buffers in `f32` form end to end for the GPU route.
+      - `kqsr.rs` now exposes `compute_kqsr_fast_signals_f32(...)` and `compute_kqsr_slow_signals_f32(...)`, and the optimization / validation staging loops in `composite_cpu.rs` and `composite_validate.rs` no longer allocate intermediate `Vec<f64>` rows only to cast them back to `f32` before upload.
+- [x] Implement `GpuKernel` optimization for `CARM`.
+  - current implementation note on March 12, 2026:
+    - `CARM` now has a strategy-local `GpuKernel` optimization path through `carm.rs`, `carm_gpu_kernel.rs`, `composite_cpu.rs`, and `double_crossover.cu`.
+    - the route keeps `Coppock`, `AO`, `ROCR`, `APO`, and `OTTO HOTT/LOTT` staged as compact row-major matrices, uploads them to device buffers once, and evaluates combo metrics through `carm_backtest_metrics_f32` before returning compact host results.
+    - focused verification passed with `cargo check -p ta_app_core --features cuda,cuda-backtest-kernel --target-dir codex_tmp_carm_s5`, `cargo test -p ta_app_core carm_ --features cuda,cuda-backtest-kernel --target-dir codex_tmp_carm_s5 -- --nocapture`, and `cargo check -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel --target-dir codex_tmp_carm_s5`.
+    - follow-up backend optimization note on March 12, 2026:
+      - Nsight Compute inspection on `target/nsight/carm_gpu_small_ncu.ncu-rep` did not point to local spilling; it reinforced that the route was still staging more row-major data than necessary.
+      - `CARM` now factors `ROCR` into a fast-only row matrix, keeps the mixed `Coppock` / `AO` / `APO` rows per combo, and threads `combo_fast_row_index` into `carm_gpu_kernel.rs` / `double_crossover.cu` so the device kernel reuses the fast-side `ROCR` rows instead of uploading them per combo.
+      - the profiling follow-up pass now also dedupes identical `OTTO` parameter tuples before upload and threads a combo-side `otto_row_index` into `carm_gpu_kernel.rs` / `double_crossover.cu`, so repeated `OTTO HOTT/LOTT` rows are staged once and reused across combos.
+- [x] Implement `GpuKernel` optimization for `KVDF`.
+  - current implementation note on March 12, 2026:
+    - `KVDF` now has a strategy-local `GpuKernel` optimization path through `kvdf.rs`, `kvdf_gpu_kernel.rs`, `composite_cpu.rs`, and `double_crossover.cu`.
+    - the route keeps `Keltner`, `VWAP`, `DTI`, `DevStop`, and `FVG Trailing Stop` staged as compact row-major matrices, uploads them to device buffers once, and evaluates combo metrics through `kvdf_backtest_metrics_f32` before returning compact host results.
+    - focused verification passed with `cargo check -p ta_app_core --features cuda,cuda-backtest-kernel --target-dir codex_tmp_kvdf_s5`, `cargo test -p ta_app_core kvdf_ --features cuda,cuda-backtest-kernel --target-dir codex_tmp_kvdf_s5 -- --nocapture`, and `cargo check -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel --target-dir codex_tmp_kvdf_s5`.
+    - follow-up backend optimization note on March 12, 2026:
+      - `KVDF` no longer stages every matrix per combo. The route now treats `VWAP` as shared, `FVG Trailing Stop` as fast-only, `Keltner` + `DevStop` as slow-only, and leaves only `DTI` as combo-shaped.
+      - `kvdf.rs` now exposes strategy-local split builders for shared / fast / slow / mixed staging, and `kvdf_gpu_kernel.rs` / `double_crossover.cu` now take explicit fast-row and slow-row combo indices so the kernel reuses those factored matrices instead of consuming one full row per combo for every signal family.
+      - profiling follow-up pass on March 12, 2026:
+        - `DTI` is no longer forced to remain combo-shaped internally.
+        - `kvdf_gpu_kernel.rs` / `double_crossover.cu` now take an explicit combo-side `DTI` row index, and the optimization / validation routes in `composite_cpu.rs` and `composite_validate.rs` dedupe identical `(dti_r, dti_s, dti_u)` triples before computing and uploading `DTI` rows.
+        - on the current benchmark-grid shape used in `crates/app_core/benches/gpu_native_expansion_opt.rs` (`fast 5..20`, `slow 20..80`), that reduces the `DTI` staging set from `975` combo rows to `540` unique `DTI` rows, or about `44.6%` fewer `DTI` rows to compute/upload.
+        - targeted regression coverage passed with `cargo check -p ta_app_core --features cuda,cuda-backtest-kernel`, `cargo test -p ta_app_core kvdf_ --features cuda,cuda-backtest-kernel`, and `cargo test -p ta_desktop_demo_app cross_ticker_kvdf_gpu_kernel_smoke_applies_stats --features cuda,cuda-backtest-kernel`.
 - [x] Implement `GpuKernel` optimization for `MKCS`.
-- [ ] Implement `GpuKernel` optimization for `CDMC`.
-- [ ] Wire clean `CpuOnly` fallback for all five.
+- [x] Implement `GpuKernel` optimization for `CDMC`.
+  - current implementation note on March 12, 2026:
+    - `CDMC` now has a strategy-local `GpuKernel` optimization path through `cdmc.rs`, `cdmc_gpu_kernel.rs`, `composite_cpu.rs`, and `double_crossover.cu`.
+    - the route keeps `DPO`, `Correlation Cycle`, `MAMA/FAMA`, and `Decycler` staged as device-resident matrices/buffers, evaluates combo metrics through `cdmc_backtest_metrics_f32`, and returns compact host results after device-side scoring.
+    - focused verification passed with `cargo check -p ta_app_core --features cuda,cuda-backtest-kernel`, `cargo test -p ta_app_core cdmc_ --features cuda,cuda-backtest-kernel -- --nocapture`, `cargo test -p ta_app_core dynamic_indicator_adapter --features cuda,cuda-backtest-kernel -- --nocapture`, and `cargo check -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel`.
+    - follow-up backend optimization note on March 12, 2026:
+      - the repo-local hotspot was duplicated `MAMA/FAMA` generation rather than the final scorer kernel.
+      - `cdmc.rs` now computes the `MAMA/FAMA` pair in one `CudaMama` pass for optimization / validation staging and reuses both device buffers.
+      - the shared `compute_cdmc_signals(...)` helper now computes the `MAMA/FAMA` pair once per request instead of running two identical passes for the two outputs.
+- [x] Wire clean `CpuOnly` fallback for all five.
   - `MKCS` fallback is implemented.
-  - `KQSR` now falls back cleanly to `CpuOnly` when `GpuKernel` is requested, but true `KQSR` GPU execution is still unimplemented.
-  - `CARM` now falls back cleanly to `CpuOnly` when `GpuKernel` is requested, but true `CARM` GPU execution is still unimplemented.
-  - `KVDF` now falls back cleanly to `CpuOnly` when `GpuKernel` is requested, but true `KVDF` GPU execution is still unimplemented.
+  - `KQSR` now falls back cleanly to `CpuOnly` when CUDA is unavailable or the build omits `cuda-backtest-kernel`; otherwise the new strategy-local `GpuKernel` route runs directly.
+  - `CARM` now falls back cleanly to `CpuOnly` when CUDA is unavailable or the build omits `cuda-backtest-kernel`; otherwise the strategy-local `GpuKernel` route runs directly.
+  - `KVDF` now falls back cleanly to `CpuOnly` when CUDA is unavailable or the build omits `cuda-backtest-kernel`; otherwise the strategy-local `GpuKernel` route runs directly.
+  - `CDMC` now falls back cleanly to `CpuOnly` when CUDA is unavailable or the build omits `cuda-backtest-kernel`; otherwise the strategy-local `GpuKernel` route runs directly.
 
 ### Phase S6: parity and evidence
 
-- [ ] Add CPU vs GPU parity tests for `KQSR`.
-- [ ] Add CPU vs GPU parity tests for `CARM`.
-- [ ] Add CPU vs GPU parity tests for `KVDF`.
+- current implementation note on March 12, 2026:
+  - for these GPU-native S5 routes, Phase S6 parity is treated as a tolerance-gated major-difference check, not bitwise `fp64` equality.
+  - device-side `fp32` metric reduction is allowed when the trade path remains aligned and the resulting `pnl`, `sharpe`, `volatility`, `max_dd`, exposure, and trade-count outputs stay within explicit guardrails.
+- [x] Add CPU vs GPU parity tests for `KQSR`.
+- [x] Add CPU vs GPU parity tests for `CARM`.
+- [x] Add CPU vs GPU parity tests for `KVDF`.
 - [x] Add CPU vs GPU parity tests for `MKCS`.
-- [ ] Add CPU vs GPU parity tests for `CDMC`.
-- [ ] Add representative benchmarks for all five strategies.
-  - `MKCS` benchmark coverage is implemented.
+- [x] Add CPU vs GPU parity tests for `CDMC`.
+- [x] Add representative benchmarks for all five strategies.
+  - `MKCS` benchmark coverage is implemented in `crates/app_core/benches/mkcs_opt.rs`.
+  - `KQSR`, `CARM`, `KVDF`, and `CDMC` benchmark coverage is implemented in `crates/app_core/benches/gpu_native_expansion_opt.rs`.
   - current local benchmark evidence on March 11, 2026:
     - `mkcs/cpu/200k/small`: about `1.73 s`
     - `mkcs/gpu_kernel/200k/small/975pairs`: about `5.05 s`
   - interpretation:
     - the implemented parity-safe GPU staging is real, but it is not yet a speed win on the small benchmark case
-- [ ] Run Nsight Systems on at least one benchmark per strategy.
-- [ ] Record route metadata in benchmark outputs.
-  - `MKCS` bench confirms `backend_used=Gpu`, but explicit route metadata is not yet surfacing consistently in the release benchmark path.
+- [x] Run Nsight Systems on at least one benchmark per strategy.
+  - benchmark-mode Nsight Systems reports were captured on March 12, 2026 for:
+    - `target/nsight/kqsr_gpu_small_2023.nsys-rep`
+    - `target/nsight/carm_gpu_small_2023.nsys-rep`
+    - `target/nsight/kvdf_gpu_small_2023.nsys-rep`
+    - `target/nsight/cdmc_gpu_small_2023.nsys-rep`
+    - `target/nsight/mkcs_gpu_small_2023.nsys-rep`
+  - supporting script/runtime fixes landed alongside the captures:
+    - `scripts/profile_gpu_backtest_nsys.ps1` now prefers the stable 2023 Nsight Systems CLI in this environment, preserves a `BenchStrategyOnly` selector via `VECTORBT_GPU_NATIVE_BENCH_ONLY`, and treats Windows nonzero-exit-but-report-generated runs as usable captures.
+    - `scripts/profile_gpu_backtest_ncu.ps1` now supports the same `BenchStrategyOnly` selector so compute-level follow-up can isolate a single strategy without replaying unrelated benchmark probes.
+    - `crates/app_core/benches/gpu_native_expansion_opt.rs` now honors `VECTORBT_GPU_NATIVE_BENCH_ONLY`, which prevents unrelated strategy route probes from contaminating per-strategy benchmark traces.
+  - hotspot summary from the benchmark-mode Nsight Systems captures:
+    - `KQSR`: the trace is dominated by indicator staging (`prb_batch_f32`, `srsi_build_rsi_f32`, `qqe_batch_f32`), with `kqsr_backtest_metrics_f32` only about `0.4%` of GPU kernel time and about `264 MB` host-to-device plus `246 MB` device-to-host transfer volume on the small case.
+    - `CARM`: the trace is overwhelmingly dominated by `otto_batch_f32` with the strategy backtest kernel only about `0.1%` of GPU kernel time; the small case still moves about `3.9 GB` in each direction and pays heavy module-load/unload churn, so any next optimization should target `OTTO` staging rather than the final scorer.
+    - `KVDF`: the trace is dominated by `dti_batch_f32`, `devstop_batch_grouped_f32`, and `fvg_trailing_stop_batch_small_shmem_f32`, while `kvdf_backtest_metrics_f32` is about `1.6%` of GPU kernel time; this reinforces the earlier Nsight Compute result that the next wins are upstream indicator-side, not another pass on the scorer loop.
+    - `CDMC`: the trace is dominated by `mama_inv_dp_f32`, with `cdmc_backtest_metrics_f32` about `5.2%` of GPU kernel time and very small transfer volume; the remaining cost is clearly in `MAMA/FAMA` generation.
+    - profiling follow-up implementation state on March 12, 2026:
+      - `KQSR`: repo-local host-side staging now stays split and `f32`-native before upload.
+      - `CARM`: repo-local `OTTO` staging now dedupes repeated tuples and reuses them by combo-side row index.
+      - `KVDF`: repo-local `DTI` staging now dedupes repeated `(dti_r, dti_s, dti_u)` tuples and reuses them by combo-side row index.
+      - `CDMC`: repo-local staging now computes `MAMA/FAMA` once per request or per device staging pass instead of triggering the same CUDA indicator work twice.
+    - post-change profiling closeout on March 12, 2026 after the U6 repo-local reductions:
+      - refreshed Nsight Systems reports were captured at:
+        - `target/nsight/kqsr_gpu_small_post_u6.nsys-rep`
+        - `target/nsight/carm_gpu_small_post_u6.nsys-rep`
+        - `target/nsight/kvdf_gpu_small_post_u6.nsys-rep`
+        - `target/nsight/cdmc_gpu_small_post_u6.nsys-rep`
+      - environment note:
+        - `nsys stats --report cuda_gpu_kern_sum` was not usable on those post-U6 `.nsys-rep` captures in this environment because the CLI reported no CUDA kernel data, so the post-change hotspot summaries below come from Nsight Compute imports instead.
+      - refreshed Nsight Compute reports were captured at:
+        - `target/nsight/kqsr_gpu_small_post_u6_ncu.ncu-rep`
+        - `target/nsight/carm_gpu_small_post_u6_ncu.ncu-rep`
+        - `target/nsight/kvdf_gpu_small_post_u6_ncu.ncu-rep`
+        - `target/nsight/cdmc_gpu_small_post_u6_ncu2.ncu-rep`
+      - post-change hotspot summary from those Nsight Compute captures:
+        - `KQSR`: `srsi_build_rsi_f32` remains dominant at about `71.11%` of captured device duration, followed by `willr_build_sparse_level_f32` at about `17.10%`; this is consistent with the implemented win being host-side `f32` staging reduction rather than a device-kernel rewrite.
+        - `CARM`: `otto_batch_f32` still dominates at about `62.31%` of captured device duration after the repo-local dedupe, which suggests the next ceiling is upstream `OTTO` indicator work rather than another scorer-path change.
+        - `KVDF`: `DTI` no longer appears in the captured top-duration kernel set; `fvg_trailing_stop_batch_small_shmem_f32` now dominates at about `76.07%`, followed by `devstop_batch_grouped_f32` at about `16.20%`.
+        - `CDMC`: `mama_inv_dp_f32` is no longer the dominant device-side hotspot; `correlation_cycle_batch_f32_ria` now leads at about `62.76%`, while `mama_inv_dp_f32` is about `14.95%`, which is consistent with the duplicated repo-local `MAMA/FAMA` computation having been removed.
+      - focused regression verification for the U6 implementation and profiling pass remained green with:
+        - `cargo check -p ta_app_core --features cuda,cuda-backtest-kernel`
+        - `cargo test -p ta_app_core kvdf_ --features cuda,cuda-backtest-kernel`
+        - `cargo test -p ta_app_core carm_ --features cuda,cuda-backtest-kernel`
+        - `cargo test -p ta_app_core kqsr_ --features cuda,cuda-backtest-kernel`
+        - `cargo test -p ta_app_core cdmc_ --features cuda,cuda-backtest-kernel`
+        - `cargo test -p ta_desktop_demo_app cross_ticker_ --features cuda,cuda-backtest-kernel`
+    - `MKCS`: the trace is dominated by `donchian_batch_from_rmq_f32`, with `mkcs_backtest_metrics_f32` about `10.4%` of GPU kernel time; the strategy is no longer bottlenecked primarily by orchestration.
+- post-profile perf-gate caveat on March 12, 2026:
+  - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` failed against the stored baseline and wrote `target/gpu_perf_summary.json`.
+  - that gate measures `double_ma/gpu_kernel/sma_sma/200k/small` through `scripts/run_gpu_perf_gate.ps1`, not the `gpu_native_expansion_opt` harness used by `KQSR`, `CARM`, `KVDF`, and `CDMC`, so it should be treated as a separate `DoubleMa` performance investigation instead of evidence that the U6 strategy-local changes regressed.
+- [x] Record route metadata in benchmark outputs.
+  - `mkcs_opt.rs` and `gpu_native_expansion_opt.rs` now print a route probe before the benchmark groups, including `backend_used`, `backend_route`, and `backend_fallback_reason`.
+  - focused verification in this session compiled both benchmark harnesses with `cargo bench -p ta_app_core --bench mkcs_opt --features cuda,cuda-backtest-kernel --no-run` and `cargo bench -p ta_app_core --bench gpu_native_expansion_opt --features cuda,cuda-backtest-kernel --no-run`, and the `mkcs_opt` release benchmark executable printed route metadata on `--list`.
 
 ## Ordering Note
 

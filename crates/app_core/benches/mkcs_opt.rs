@@ -51,6 +51,10 @@ fn make_mkcs_req(
         vemr: None,
         rocb: None,
         mkcs: Some(MkcsStrategyParams::default()),
+        kqsr: None,
+        carm: None,
+        kvdf: None,
+        cdmc: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,
@@ -123,6 +127,30 @@ fn bench_mkcs_gpu_kernel(c: &mut Criterion) {
     let mut group = c.benchmark_group("mkcs/gpu_kernel/200k");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+
+    let route_probe = ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
+        make_mkcs_req(Backend::GpuKernel { device_id: 0 }, cases[0].1, cases[0].2),
+        &candles,
+        &cancel,
+        None,
+    )
+    .expect("mkcs gpu route probe");
+    println!(
+        "benchmark route mkcs/gpu_kernel/200k: backend_used={:?} backend_route={} fallback={}",
+        route_probe.backend_used,
+        route_probe.backend_route.as_deref().unwrap_or("<none>"),
+        route_probe
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    assert!(
+        matches!(route_probe.backend_used, BackendUsed::Gpu),
+        "expected GPU backend for MKCS route probe, got backend={:?}, route={:?}, fallback={:?}",
+        route_probe.backend_used,
+        route_probe.backend_route,
+        route_probe.backend_fallback_reason
+    );
 
     for (label, fast_range, slow_range) in cases.iter().copied() {
         let req = make_mkcs_req(Backend::GpuKernel { device_id: 0 }, fast_range, slow_range);

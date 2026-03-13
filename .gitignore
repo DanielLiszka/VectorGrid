@@ -32,7 +32,12 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+.venv-vectorbt-faceoff/
 __init__.py
 codex_tmp
 codex_tmp*/
 .codex_tmp/
+
+# Local crash dumps / one-off profiling artifacts
+rustc-ice-*.txt
+codex_tmp*.svg

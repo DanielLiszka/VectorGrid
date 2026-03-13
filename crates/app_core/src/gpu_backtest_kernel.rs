@@ -646,6 +646,7 @@ struct CudaKernelRuntime {
     ma: VramMaComputer,
     scratch: KernelScratch,
     launch_caps: DeviceLaunchCaps,
+    resident_market: Option<ResidentMarketSeriesCache>,
 }
 
 impl CudaKernelRuntime {
@@ -680,6 +681,7 @@ impl CudaKernelRuntime {
             ma: VramMaComputer::new(device_id),
             scratch: KernelScratch::default(),
             launch_caps,
+            resident_market: None,
         })
     }
 
@@ -1682,22 +1684,170 @@ fn kernel_pinned_h2d_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_PINNED_H2D", true)
 }
 
-struct HostSeriesUploadInput<'a> {
-    close: &'a [f64],
-    ma: Option<&'a [f64]>,
-    volume: Option<&'a [f64]>,
-    high: Option<&'a [f64]>,
-    low: Option<&'a [f64]>,
-    regime_f32: Option<&'a [f32]>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CandleDatasetSignature {
+    len: usize,
+    timestamp_ptr: usize,
+    open_ptr: usize,
+    high_ptr: usize,
+    low_ptr: usize,
+    close_ptr: usize,
+    volume_ptr: usize,
+    field_mask: u8,
 }
 
-struct DeviceSeriesBuffers {
+#[derive(Debug)]
+struct ResidentMarketSeriesCache {
+    signature: CandleDatasetSignature,
     close: DeviceBuffer<f32>,
-    ma: Option<DeviceBuffer<f32>>,
-    volume: Option<DeviceBuffer<f32>>,
     high: Option<DeviceBuffer<f32>>,
     low: Option<DeviceBuffer<f32>>,
-    regime: Option<DeviceBuffer<f32>>,
+    volume: Option<DeviceBuffer<f32>>,
+    source_overrides: HashMap<String, DeviceBuffer<f32>>,
+}
+
+const MARKET_FIELD_OPEN: u8 = 1 << 0;
+const MARKET_FIELD_HIGH: u8 = 1 << 1;
+const MARKET_FIELD_LOW: u8 = 1 << 2;
+const MARKET_FIELD_CLOSE: u8 = 1 << 3;
+const MARKET_FIELD_VOLUME: u8 = 1 << 4;
+
+#[inline]
+fn candle_dataset_signature(candles: &Candles) -> CandleDatasetSignature {
+    let mut field_mask = 0u8;
+    if candles.fields.open {
+        field_mask |= MARKET_FIELD_OPEN;
+    }
+    if candles.fields.high {
+        field_mask |= MARKET_FIELD_HIGH;
+    }
+    if candles.fields.low {
+        field_mask |= MARKET_FIELD_LOW;
+    }
+    if candles.fields.close {
+        field_mask |= MARKET_FIELD_CLOSE;
+    }
+    if candles.fields.volume {
+        field_mask |= MARKET_FIELD_VOLUME;
+    }
+
+    CandleDatasetSignature {
+        len: candles.close.len(),
+        timestamp_ptr: candles.timestamp.as_ptr() as usize,
+        open_ptr: candles.open.as_ptr() as usize,
+        high_ptr: candles.high.as_ptr() as usize,
+        low_ptr: candles.low.as_ptr() as usize,
+        close_ptr: candles.close.as_ptr() as usize,
+        volume_ptr: candles.volume.as_ptr() as usize,
+        field_mask,
+    }
+}
+
+#[inline]
+fn normalize_market_source_key(ma_source: &str) -> String {
+    let trimmed = ma_source.trim();
+    if trimmed.is_empty() {
+        return "close".to_string();
+    }
+    trimmed.to_ascii_lowercase()
+}
+
+fn reset_resident_market_cache(
+    stream: &Stream,
+    resident: &mut Option<ResidentMarketSeriesCache>,
+) -> Result<(), String> {
+    if resident.is_some() {
+        stream.synchronize().map_err(|e| e.to_string())?;
+        *resident = None;
+    }
+    Ok(())
+}
+
+fn upload_resident_series_f64(stream: &Stream, src: &[f64]) -> Result<DeviceBuffer<f32>, String> {
+    let use_pinned = kernel_pinned_h2d_enabled();
+    let mut guard = AsyncPinnedUploadGuard::new(stream);
+    let buf = upload_f32_source_to_device(stream, HostF32Source::F64(src), use_pinned, &mut guard)?;
+    guard.finalize()?;
+    Ok(buf)
+}
+
+fn upload_ephemeral_series_f32(stream: &Stream, src: &[f32]) -> Result<DeviceBuffer<f32>, String> {
+    let use_pinned = kernel_pinned_h2d_enabled();
+    let mut guard = AsyncPinnedUploadGuard::new(stream);
+    let buf = upload_f32_source_to_device(stream, HostF32Source::F32(src), use_pinned, &mut guard)?;
+    guard.finalize()?;
+    Ok(buf)
+}
+
+fn ensure_resident_market_series(
+    stream: &Stream,
+    resident: &mut Option<ResidentMarketSeriesCache>,
+    candles: &Candles,
+    close: &[f64],
+    ma_source: &str,
+    ma_prices: Option<&[f64]>,
+    needs_ma_prices: bool,
+    needs_high_low: bool,
+    high: Option<&[f64]>,
+    low: Option<&[f64]>,
+    needs_volume: bool,
+    volume: Option<&[f64]>,
+) -> Result<(), String> {
+    let signature = candle_dataset_signature(candles);
+    let source_key = normalize_market_source_key(ma_source);
+
+    let should_reset = resident
+        .as_ref()
+        .map(|cache| cache.signature != signature)
+        .unwrap_or(true);
+    if should_reset {
+        reset_resident_market_cache(stream, resident)?;
+        *resident = Some(ResidentMarketSeriesCache {
+            signature,
+            close: upload_resident_series_f64(stream, close)?,
+            high: None,
+            low: None,
+            volume: None,
+            source_overrides: HashMap::new(),
+        });
+    }
+
+    let cache = resident
+        .as_mut()
+        .ok_or_else(|| "resident market cache unavailable".to_string())?;
+
+    if needs_high_low {
+        if cache.high.is_none() {
+            cache.high = Some(upload_resident_series_f64(
+                stream,
+                high.ok_or_else(|| "high prices required for resident upload".to_string())?,
+            )?);
+        }
+        if cache.low.is_none() {
+            cache.low = Some(upload_resident_series_f64(
+                stream,
+                low.ok_or_else(|| "low prices required for resident upload".to_string())?,
+            )?);
+        }
+    }
+
+    if needs_volume && cache.volume.is_none() {
+        cache.volume = Some(upload_resident_series_f64(
+            stream,
+            volume.ok_or_else(|| "volume prices required for resident upload".to_string())?,
+        )?);
+    }
+
+    if needs_ma_prices && source_key != "close" && !cache.source_overrides.contains_key(&source_key)
+    {
+        let uploaded = upload_resident_series_f64(
+            stream,
+            ma_prices.ok_or_else(|| format!("ma prices required for ma_source={source_key}"))?,
+        )?;
+        cache.source_overrides.insert(source_key, uploaded);
+    }
+
+    Ok(())
 }
 
 struct AsyncPinnedUploadGuard<'a> {
@@ -1793,77 +1943,6 @@ fn upload_f32_source_to_device(
             DeviceBuffer::from_slice(&tmp).map_err(|e| e.to_string())
         }
     }
-}
-
-fn upload_market_series_to_device(
-    stream: &Stream,
-    host: HostSeriesUploadInput<'_>,
-) -> Result<DeviceSeriesBuffers, String> {
-    let use_pinned = kernel_pinned_h2d_enabled();
-    let mut guard = AsyncPinnedUploadGuard::new(stream);
-
-    let d_close = upload_f32_source_to_device(
-        stream,
-        HostF32Source::F64(host.close),
-        use_pinned,
-        &mut guard,
-    )?;
-    let d_ma = match host.ma {
-        Some(src) => Some(upload_f32_source_to_device(
-            stream,
-            HostF32Source::F64(src),
-            use_pinned,
-            &mut guard,
-        )?),
-        None => None,
-    };
-    let d_volume = match host.volume {
-        Some(src) => Some(upload_f32_source_to_device(
-            stream,
-            HostF32Source::F64(src),
-            use_pinned,
-            &mut guard,
-        )?),
-        None => None,
-    };
-    let d_high = match host.high {
-        Some(src) => Some(upload_f32_source_to_device(
-            stream,
-            HostF32Source::F64(src),
-            use_pinned,
-            &mut guard,
-        )?),
-        None => None,
-    };
-    let d_low = match host.low {
-        Some(src) => Some(upload_f32_source_to_device(
-            stream,
-            HostF32Source::F64(src),
-            use_pinned,
-            &mut guard,
-        )?),
-        None => None,
-    };
-    let d_regime = match host.regime_f32 {
-        Some(src) => Some(upload_f32_source_to_device(
-            stream,
-            HostF32Source::F32(src),
-            use_pinned,
-            &mut guard,
-        )?),
-        None => None,
-    };
-
-    guard.finalize()?;
-
-    Ok(DeviceSeriesBuffers {
-        close: d_close,
-        ma: d_ma,
-        volume: d_volume,
-        high: d_high,
-        low: d_low,
-        regime: d_regime,
-    })
 }
 
 #[inline]
@@ -3080,55 +3159,68 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let mut out_metrics = vec![Metrics::default(); combos.len()];
 
     let bt_stream = &rt.stream;
-    let ma_is_close = ma_source.trim().eq_ignore_ascii_case("close");
+    let ma_source_key = normalize_market_source_key(ma_source);
+    let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let host_upload = HostSeriesUploadInput {
+    let (resident_market, ma, scratch) = (&mut rt.resident_market, &mut rt.ma, &mut rt.scratch);
+    ensure_resident_market_series(
+        bt_stream,
+        resident_market,
+        candles,
         close,
-        ma: if alloc_ma_buf {
-            Some(ma_prices.expect("ma_prices required when alloc_ma_buf=true"))
-        } else {
-            None
-        },
-        volume: if needs_volume {
-            Some(volume.expect("volume required when needs_volume=true"))
-        } else {
-            None
-        },
-        high: if needs_high_low {
-            Some(high.expect("high required when needs_high_low=true"))
-        } else {
-            None
-        },
-        low: if needs_high_low {
-            Some(low.expect("low required when needs_high_low=true"))
-        } else {
-            None
-        },
-        regime_f32: regime_f32.as_deref(),
+        ma_source,
+        ma_prices,
+        needs_ma_prices,
+        needs_high_low,
+        high,
+        low,
+        needs_volume,
+        volume,
+    )?;
+    let resident = resident_market
+        .as_ref()
+        .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    let d_close = &resident.close;
+    let d_high = if needs_high_low {
+        resident.high.as_ref()
+    } else {
+        None
     };
-    let uploaded = upload_market_series_to_device(bt_stream, host_upload)?;
-    let d_close = uploaded.close;
-    let d_ma_buf = uploaded.ma;
-    let d_volume = uploaded.volume;
-    let d_high = uploaded.high;
-    let d_low = uploaded.low;
-    let d_regime = uploaded.regime;
+    let d_low = if needs_high_low {
+        resident.low.as_ref()
+    } else {
+        None
+    };
+    let d_volume = if needs_volume {
+        resident.volume.as_ref()
+    } else {
+        None
+    };
+    let d_regime = match regime_f32.as_deref() {
+        Some(src) => Some(upload_ephemeral_series_f32(bt_stream, src)?),
+        None => None,
+    };
     let d_regime_ptr = d_regime
         .as_ref()
         .map(|d| d.as_device_ptr().as_raw())
         .or_else(|| device_regime_filter.map(DeviceRegimeFilter::as_device_ptr_raw));
-    let d_ma_prices: &DeviceBuffer<f32> = d_ma_buf.as_ref().unwrap_or(&d_close);
+    let d_ma_prices: &DeviceBuffer<f32> = if alloc_ma_buf {
+        resident
+            .source_overrides
+            .get(&ma_source_key)
+            .ok_or_else(|| format!("resident ma_source buffer missing for {ma_source_key}"))?
+    } else {
+        d_close
+    };
 
     let vram_inputs = VramMaInputs {
         prices: d_ma_prices,
-        close: &d_close,
-        high: d_high.as_ref(),
-        low: d_low.as_ref(),
-        volume: d_volume.as_ref(),
+        close: d_close,
+        high: d_high,
+        low: d_low,
+        volume: d_volume,
     };
 
-    let ma = &mut rt.ma;
-    let scratch = &mut rt.scratch;
     let mut fast_params_from_cfg: HashMap<String, f64> = HashMap::new();
     let mut slow_params_from_cfg: HashMap<String, f64> = HashMap::new();
     let fast_params: Option<&HashMap<String, f64>> =
@@ -4553,55 +4645,68 @@ fn optimize_double_ma_gpu_kernel_impl(
     };
 
     let bt_stream = &rt.stream;
-    let ma_is_close = ma_source.trim().eq_ignore_ascii_case("close");
+    let ma_source_key = normalize_market_source_key(ma_source);
+    let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let host_upload = HostSeriesUploadInput {
+    let (resident_market, ma, scratch) = (&mut rt.resident_market, &mut rt.ma, &mut rt.scratch);
+    ensure_resident_market_series(
+        bt_stream,
+        resident_market,
+        candles,
         close,
-        ma: if alloc_ma_buf {
-            Some(ma_prices.expect("ma_prices required when alloc_ma_buf=true"))
-        } else {
-            None
-        },
-        volume: if needs_volume {
-            Some(volume.expect("volume required when needs_volume=true"))
-        } else {
-            None
-        },
-        high: if needs_high_low {
-            Some(high.expect("high required when needs_high_low=true"))
-        } else {
-            None
-        },
-        low: if needs_high_low {
-            Some(low.expect("low required when needs_high_low=true"))
-        } else {
-            None
-        },
-        regime_f32: regime_f32.as_deref(),
+        ma_source,
+        ma_prices,
+        needs_ma_prices,
+        needs_high_low,
+        high,
+        low,
+        needs_volume,
+        volume,
+    )?;
+    let resident = resident_market
+        .as_ref()
+        .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    let d_close = &resident.close;
+    let d_high = if needs_high_low {
+        resident.high.as_ref()
+    } else {
+        None
     };
-    let uploaded = upload_market_series_to_device(bt_stream, host_upload)?;
-    let d_close = uploaded.close;
-    let d_ma_buf = uploaded.ma;
-    let d_volume = uploaded.volume;
-    let d_high = uploaded.high;
-    let d_low = uploaded.low;
-    let d_regime = uploaded.regime;
+    let d_low = if needs_high_low {
+        resident.low.as_ref()
+    } else {
+        None
+    };
+    let d_volume = if needs_volume {
+        resident.volume.as_ref()
+    } else {
+        None
+    };
+    let d_regime = match regime_f32.as_deref() {
+        Some(src) => Some(upload_ephemeral_series_f32(bt_stream, src)?),
+        None => None,
+    };
     let d_regime_ptr = d_regime
         .as_ref()
         .map(|d| d.as_device_ptr().as_raw())
         .or_else(|| device_regime_filter.map(DeviceRegimeFilter::as_device_ptr_raw));
-    let d_ma_prices: &DeviceBuffer<f32> = d_ma_buf.as_ref().unwrap_or(&d_close);
+    let d_ma_prices: &DeviceBuffer<f32> = if alloc_ma_buf {
+        resident
+            .source_overrides
+            .get(&ma_source_key)
+            .ok_or_else(|| format!("resident ma_source buffer missing for {ma_source_key}"))?
+    } else {
+        d_close
+    };
 
     let vram_inputs = VramMaInputs {
         prices: d_ma_prices,
-        close: &d_close,
-        high: d_high.as_ref(),
-        low: d_low.as_ref(),
-        volume: d_volume.as_ref(),
+        close: d_close,
+        high: d_high,
+        low: d_low,
+        volume: d_volume,
     };
 
-    let ma = &mut rt.ma;
-    let scratch = &mut rt.scratch;
     let mut fast_params_from_cfg: HashMap<String, f64> = HashMap::new();
     let mut slow_params_from_cfg: HashMap<String, f64> = HashMap::new();
     let fast_params: Option<&HashMap<String, f64>> =
@@ -5248,6 +5353,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut eval_start_i = eval_start_t as i32;
                         let mut eval_end_i = eval_end_t as i32;
                         let use_windowed_eval = eval_range.is_some();
+                        let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
+                        let eps_zero_mode = eps_rel <= 0.0f32;
 
                         let use_lockstep_time = !use_windowed_eval
                             && lockstep_time_enabled
@@ -5293,8 +5400,6 @@ fn optimize_double_ma_gpu_kernel_impl(
                             device_launch_caps,
                             launch_caps,
                         );
-                        let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
-                        let eps_zero_mode = eps_rel <= 0.0f32;
                         let backtest_fn = if use_windowed_eval {
                             &backtest_windowed
                         } else if use_lockstep_m7 {

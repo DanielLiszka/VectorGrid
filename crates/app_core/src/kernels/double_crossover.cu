@@ -521,6 +521,1052 @@ void mkcs_backtest_metrics_f32(
     }
 }
 
+extern "C" __global__
+void cdmc_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ dpo_row_major,
+    int dpo_rows,
+    int dpo_stride,
+    const float* __restrict__ angle_row_major,
+    const float* __restrict__ state_row_major,
+    int cycle_rows,
+    int cycle_stride,
+    const float* __restrict__ mama,
+    const float* __restrict__ fama,
+    const float* __restrict__ decycler_row_major,
+    int decycler_rows,
+    int decycler_stride,
+    const int* __restrict__ combo_dpo_row_idx,
+    const int* __restrict__ combo_cycle_row_idx,
+    const int* __restrict__ combo_decycler_row_idx,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float phase_threshold,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int dpo_row = combo_dpo_row_idx[idx];
+    const int cycle_row = combo_cycle_row_idx[idx];
+    const int decycler_row = combo_decycler_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (dpo_row < 0 || dpo_row >= dpo_rows
+        || cycle_row < 0 || cycle_row >= cycle_rows
+        || decycler_row < 0 || decycler_row >= decycler_rows
+        || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T
+        || mama == nullptr || fama == nullptr) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ dpo = dpo_row_major + ((size_t)dpo_row * (size_t)dpo_stride);
+    const float* __restrict__ angle = angle_row_major + ((size_t)cycle_row * (size_t)cycle_stride);
+    const float* __restrict__ state = state_row_major + ((size_t)cycle_row * (size_t)cycle_stride);
+    const float* __restrict__ decycler = decycler_row_major + ((size_t)decycler_row * (size_t)decycler_stride);
+
+    int pos_signal = 0;
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const float phase_gate = fabsf(phase_threshold);
+
+    for (int t = start_t; t < end_t; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+        const int prev_t = sig_t - 1;
+
+        const float dpo_now = dpo[sig_t];
+        const float dpo_prev = (prev_t >= 0) ? dpo[prev_t] : NAN;
+        const float angle_now = angle[sig_t];
+        const float state_now = state[sig_t];
+        const float mama_now = mama[sig_t];
+        const float fama_now = fama[sig_t];
+        const float decycler_now = decycler[sig_t];
+        const float decycler_prev = (prev_t >= 0) ? decycler[prev_t] : NAN;
+
+        const int bullish_phase = isfinite(angle_now) && (angle_now >= phase_gate);
+        const int bearish_phase = isfinite(angle_now) && (angle_now <= -phase_gate);
+        const int trend_regime = !isfinite(state_now) || (state_now >= 0.0f);
+        const int reversion_regime = isfinite(state_now) && (state_now < 0.0f);
+        const int trend_up = isfinite(mama_now) && isfinite(fama_now) && (mama_now > fama_now);
+        const int trend_down = isfinite(mama_now) && isfinite(fama_now) && (mama_now < fama_now);
+        const int decycler_rising = isfinite(decycler_now) && isfinite(decycler_prev) && (decycler_now > decycler_prev);
+        const int decycler_falling = isfinite(decycler_now) && isfinite(decycler_prev) && (decycler_now < decycler_prev);
+        const int dpo_cross_up = isfinite(dpo_now) && isfinite(dpo_prev) && (dpo_prev <= 0.0f) && (dpo_now > 0.0f);
+        const int dpo_cross_down = isfinite(dpo_now) && isfinite(dpo_prev) && (dpo_prev >= 0.0f) && (dpo_now < 0.0f);
+
+        const int long_entry =
+            ((trend_regime && trend_up && decycler_rising && isfinite(dpo_now) && (dpo_now > 0.0f) && bullish_phase)
+             || (reversion_regime && trend_up && dpo_cross_up && bullish_phase));
+        const int short_entry =
+            (!long_only) &&
+            ((trend_regime && trend_down && decycler_falling && isfinite(dpo_now) && (dpo_now < 0.0f) && bearish_phase)
+             || (reversion_regime && trend_down && dpo_cross_down && bearish_phase));
+
+        if (pos_signal == 0) {
+            if (long_entry) {
+                pos_signal = 1;
+            } else if (short_entry) {
+                pos_signal = -1;
+            }
+        } else if (pos_signal > 0) {
+            int opposing_votes = (trend_down ? 1 : 0)
+                + (decycler_falling ? 1 : 0)
+                + ((isfinite(dpo_now) && dpo_now < 0.0f) ? 1 : 0)
+                + (bearish_phase ? 1 : 0);
+            int exit_now = opposing_votes >= 2;
+            if (short_entry) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        } else {
+            int opposing_votes = (trend_up ? 1 : 0)
+                + (decycler_rising ? 1 : 0)
+                + ((isfinite(dpo_now) && dpo_now > 0.0f) ? 1 : 0)
+                + (bullish_phase ? 1 : 0);
+            int exit_now = opposing_votes >= 2;
+            if (long_entry) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        }
+
+        const int desired_exec = pos_signal;
+        const int pos_prev = pos_exec;
+        int trade_delta = 0;
+        if (desired_exec != pos_prev) {
+            if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
+            else trade_delta = no_flip ? 2 : 1;
+            if (desired_exec != 0) ++trades;
+        }
+
+        float step_r = 0.0f;
+        if (t > 0 && t < T) {
+            step_r += (float)pos_prev * lr[t];
+        }
+        if (trade_delta > 0) {
+            step_r += log_cost * (float)trade_delta;
+        }
+        log_eq += step_r;
+        log_peak = fmaxf(log_peak, log_eq);
+        max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+
+        ++n_obs;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_prev);
+        sum_pos += pos_prev;
+        pos_exec = desired_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void kqsr_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ j_row_major,
+    int fast_rows,
+    int fast_stride,
+    const float* __restrict__ srsi_k_row_major,
+    const float* __restrict__ srsi_d_row_major,
+    const float* __restrict__ ift_rsi_row_major,
+    const float* __restrict__ qqe_fast_row_major,
+    const float* __restrict__ qqe_slow_row_major,
+    int slow_rows,
+    int slow_stride,
+    const float* __restrict__ prb_upper_row_major,
+    const float* __restrict__ prb_lower_row_major,
+    const int* __restrict__ combo_fast_row_idx,
+    const int* __restrict__ combo_slow_row_idx,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float oversold,
+    float overbought,
+    float prb_threshold,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row = combo_fast_row_idx[idx];
+    const int slow_row = combo_slow_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (fast_row < 0 || fast_row >= fast_rows
+        || slow_row < 0 || slow_row >= slow_rows
+        || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ j = j_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ srsi_k = srsi_k_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ srsi_d = srsi_d_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ ift_rsi = ift_rsi_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ qqe_fast = qqe_fast_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ qqe_slow = qqe_slow_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ prb_upper = prb_upper_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ prb_lower = prb_lower_row_major + ((size_t)slow_row * (size_t)slow_stride);
+
+    int pos_signal = 0;
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const float neutral = 50.0f;
+    const float prb_threshold_clamped = fminf(fmaxf(prb_threshold, 0.0f), 1.0f);
+
+    for (int t = start_t; t < end_t; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+        const int prev_t = (sig_t > 0) ? (sig_t - 1) : 0;
+
+        const float close_now = close[sig_t];
+        const float j_now = j[sig_t];
+        const float j_prev = j[prev_t];
+        const float srsi_k_now = srsi_k[sig_t];
+        const float srsi_k_prev = srsi_k[prev_t];
+        const float srsi_d_now = srsi_d[sig_t];
+        const float ift_now = ift_rsi[sig_t];
+        const float qqe_fast_now = qqe_fast[sig_t];
+        const float qqe_slow_now = qqe_slow[sig_t];
+        const float prb_upper_now = prb_upper[sig_t];
+        const float prb_lower_now = prb_lower[sig_t];
+
+        float prb_frac = NAN;
+        if (isfinite(close_now) && isfinite(prb_upper_now) && isfinite(prb_lower_now)) {
+            const float width = prb_upper_now - prb_lower_now;
+            if (isfinite(width) && fabsf(width) > 1.0e-12f) {
+                prb_frac = (close_now - prb_lower_now) / width;
+            }
+        }
+        const int prb_long_ok = !isfinite(prb_frac) || (prb_frac <= prb_threshold_clamped);
+        const int prb_short_ok = !isfinite(prb_frac) || (prb_frac >= (1.0f - prb_threshold_clamped));
+
+        const int long_entry =
+            isfinite(j_prev) && isfinite(j_now)
+            && (j_prev < oversold) && (j_now >= oversold)
+            && isfinite(srsi_k_now) && isfinite(srsi_d_now) && isfinite(srsi_k_prev)
+            && (srsi_k_now > srsi_d_now) && (srsi_k_now > srsi_k_prev)
+            && isfinite(ift_now) && (ift_now > 0.0f)
+            && isfinite(qqe_fast_now) && isfinite(qqe_slow_now)
+            && (qqe_fast_now > qqe_slow_now)
+            && prb_long_ok;
+
+        const int short_entry =
+            (!long_only)
+            && isfinite(j_prev) && isfinite(j_now)
+            && (j_prev > overbought) && (j_now <= overbought)
+            && isfinite(srsi_k_now) && isfinite(srsi_d_now) && isfinite(srsi_k_prev)
+            && (srsi_k_now < srsi_d_now) && (srsi_k_now < srsi_k_prev)
+            && isfinite(ift_now) && (ift_now < 0.0f)
+            && isfinite(qqe_fast_now) && isfinite(qqe_slow_now)
+            && (qqe_fast_now < qqe_slow_now)
+            && prb_short_ok;
+
+        if (pos_signal == 0) {
+            if (long_entry) {
+                pos_signal = 1;
+            } else if (short_entry) {
+                pos_signal = -1;
+            }
+        } else if (pos_signal > 0) {
+            int exit_now = (isfinite(qqe_fast_now) && isfinite(qqe_slow_now) && (qqe_fast_now < qqe_slow_now))
+                || (isfinite(j_now) && (j_now >= neutral));
+            if (short_entry) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        } else {
+            int exit_now = (isfinite(qqe_fast_now) && isfinite(qqe_slow_now) && (qqe_fast_now > qqe_slow_now))
+                || (isfinite(j_now) && (j_now <= neutral));
+            if (long_entry) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        }
+
+        const int desired_exec = pos_signal;
+        const int pos_prev = pos_exec;
+        int trade_delta = 0;
+        if (desired_exec != pos_prev) {
+            if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
+            else trade_delta = no_flip ? 2 : 1;
+            if (desired_exec != 0) ++trades;
+        }
+
+        float step_r = 0.0f;
+        if (t > 0 && t < T) {
+            step_r += (float)pos_prev * lr[t];
+        }
+        if (trade_delta > 0) {
+            step_r += log_cost * (float)trade_delta;
+        }
+        log_eq += step_r;
+        log_peak = fmaxf(log_peak, log_eq);
+        max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+
+        ++n_obs;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_prev);
+        sum_pos += pos_prev;
+        pos_exec = desired_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void carm_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ coppock_row_major,
+    const float* __restrict__ ao_row_major,
+    const float* __restrict__ rocr_row_major,
+    int fast_rows,
+    int fast_stride,
+    const float* __restrict__ apo_row_major,
+    const float* __restrict__ otto_hott_row_major,
+    const float* __restrict__ otto_lott_row_major,
+    int otto_rows,
+    int otto_stride,
+    int mixed_rows,
+    int mixed_stride,
+    const int* __restrict__ combo_fast_row,
+    const int* __restrict__ combo_otto_row,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float otto_threshold,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int mixed_row = idx;
+    const int fast_row = combo_fast_row[idx];
+    const int otto_row = combo_otto_row[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (mixed_row < 0 || mixed_row >= mixed_rows
+        || fast_row < 0 || fast_row >= fast_rows
+        || otto_row < 0 || otto_row >= otto_rows
+        || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ coppock =
+        coppock_row_major + ((size_t)mixed_row * (size_t)mixed_stride);
+    const float* __restrict__ ao = ao_row_major + ((size_t)mixed_row * (size_t)mixed_stride);
+    const float* __restrict__ rocr = rocr_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ apo = apo_row_major + ((size_t)mixed_row * (size_t)mixed_stride);
+    const float* __restrict__ hott =
+        otto_hott_row_major + ((size_t)otto_row * (size_t)otto_stride);
+    const float* __restrict__ lott =
+        otto_lott_row_major + ((size_t)otto_row * (size_t)otto_stride);
+
+    int pos_signal = 0;
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const float otto_threshold_abs = fabsf(otto_threshold);
+
+    for (int t = start_t; t < end_t; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+        const int prev_t = (sig_t > 0) ? (sig_t - 1) : 0;
+
+        const float close_now = close[sig_t];
+        const float coppock_now = coppock[sig_t];
+        const float coppock_prev = coppock[prev_t];
+        const float ao_now = ao[sig_t];
+        const float rocr_now = rocr[sig_t];
+        const float apo_now = apo[sig_t];
+        const float hott_now = hott[sig_t];
+        const float lott_now = lott[sig_t];
+
+        const int coppock_up =
+            isfinite(coppock_now) && isfinite(coppock_prev)
+            && (coppock_now > 0.0f) && (coppock_now > coppock_prev);
+        const int coppock_down =
+            isfinite(coppock_now) && isfinite(coppock_prev)
+            && (coppock_now < 0.0f) && (coppock_now < coppock_prev);
+        const int ao_up = isfinite(ao_now) && (ao_now > 0.0f);
+        const int ao_down = isfinite(ao_now) && (ao_now < 0.0f);
+        const int rocr_up = isfinite(rocr_now) && (rocr_now > 1.0f);
+        const int rocr_down = isfinite(rocr_now) && (rocr_now < 1.0f);
+        const int apo_up = isfinite(apo_now) && (apo_now > 0.0f);
+        const int apo_down = isfinite(apo_now) && (apo_now < 0.0f);
+
+        float otto_spread = NAN;
+        if (isfinite(close_now) && isfinite(hott_now) && isfinite(lott_now)) {
+            const float denom = fmaxf(fabsf(close_now), 1.0e-9f);
+            otto_spread = (lott_now - hott_now) / denom;
+        }
+        const int otto_up = isfinite(otto_spread) && (otto_spread >= otto_threshold_abs);
+        const int otto_down = isfinite(otto_spread) && (otto_spread <= -otto_threshold_abs);
+
+        const int long_entry = coppock_up && ao_up && rocr_up && apo_up && otto_up;
+        const int short_entry =
+            (!long_only) && coppock_down && ao_down && rocr_down && apo_down && otto_down;
+
+        if (pos_signal == 0) {
+            if (long_entry) {
+                pos_signal = 1;
+            } else if (short_entry) {
+                pos_signal = -1;
+            }
+        } else if (pos_signal > 0) {
+            int opposing_votes = (coppock_down ? 1 : 0)
+                + (ao_down ? 1 : 0)
+                + (rocr_down ? 1 : 0)
+                + (apo_down ? 1 : 0)
+                + (otto_down ? 1 : 0);
+            int exit_now = opposing_votes >= 2;
+            if (short_entry) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        } else {
+            int opposing_votes = (coppock_up ? 1 : 0)
+                + (ao_up ? 1 : 0)
+                + (rocr_up ? 1 : 0)
+                + (apo_up ? 1 : 0)
+                + (otto_up ? 1 : 0);
+            int exit_now = opposing_votes >= 2;
+            if (long_entry) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        }
+
+        const int desired_exec = pos_signal;
+        const int pos_prev = pos_exec;
+        int trade_delta = 0;
+        if (desired_exec != pos_prev) {
+            if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
+            else trade_delta = no_flip ? 2 : 1;
+            if (desired_exec != 0) ++trades;
+        }
+
+        float step_r = 0.0f;
+        if (t > 0 && t < T) {
+            step_r += (float)pos_prev * lr[t];
+        }
+        if (trade_delta > 0) {
+            step_r += log_cost * (float)trade_delta;
+        }
+        log_eq += step_r;
+        log_peak = fmaxf(log_peak, log_eq);
+        max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+
+        ++n_obs;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_prev);
+        sum_pos += pos_prev;
+        pos_exec = desired_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void kvdf_backtest_metrics_f32(
+    const float* __restrict__ close,
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ keltner_upper_row_major,
+    const float* __restrict__ keltner_middle_row_major,
+    const float* __restrict__ keltner_lower_row_major,
+    int slow_rows,
+    int slow_stride,
+    const float* __restrict__ vwap_row_major,
+    const float* __restrict__ dti_row_major,
+    int dti_rows,
+    int dti_stride,
+    const float* __restrict__ devstop_long_row_major,
+    const float* __restrict__ devstop_short_row_major,
+    const float* __restrict__ fvg_upper_ts_row_major,
+    const float* __restrict__ fvg_lower_ts_row_major,
+    int fast_rows,
+    int fast_stride,
+    const int* __restrict__ combo_fast_row,
+    const int* __restrict__ combo_slow_row,
+    const int* __restrict__ combo_dti_row,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float dti_threshold,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row = combo_fast_row[idx];
+    const int slow_row = combo_slow_row[idx];
+    const int dti_row = combo_dti_row[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+
+    const int base = idx * out_stride;
+    if (base < 0) return;
+    if (dti_row < 0 || dti_row >= dti_rows
+        || fast_row < 0 || fast_row >= fast_rows
+        || slow_row < 0 || slow_row >= slow_rows
+        || start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) {
+        if (out_stride >= 10) {
+            out_metrics[base + 0] = 0.0f;
+            out_metrics[base + 1] = 0.0f;
+            out_metrics[base + 2] = 0.0f;
+            out_metrics[base + 3] = 0.0f;
+            out_metrics[base + 4] = 0.0f;
+            out_metrics[base + 5] = 0.0f;
+            out_metrics[base + 6] = 0.0f;
+            out_metrics[base + 7] = 0.0f;
+            out_metrics[base + 8] = 0.0f;
+            out_metrics[base + 9] = 0.0f;
+        }
+        return;
+    }
+
+    const float* __restrict__ keltner_upper =
+        keltner_upper_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ keltner_middle =
+        keltner_middle_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ keltner_lower =
+        keltner_lower_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ vwap = vwap_row_major;
+    const float* __restrict__ dti = dti_row_major + ((size_t)dti_row * (size_t)dti_stride);
+    const float* __restrict__ devstop_long =
+        devstop_long_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ devstop_short =
+        devstop_short_row_major + ((size_t)slow_row * (size_t)slow_stride);
+    const float* __restrict__ fvg_upper_ts =
+        fvg_upper_ts_row_major + ((size_t)fast_row * (size_t)fast_stride);
+    const float* __restrict__ fvg_lower_ts =
+        fvg_lower_ts_row_major + ((size_t)fast_row * (size_t)fast_stride);
+
+    int pos_signal = 0;
+    int pos_exec = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const float dti_threshold_abs = fabsf(dti_threshold);
+
+    for (int t = start_t; t < end_t; ++t) {
+        int sig_t = t - trade_on_next_bar;
+        if (sig_t < 0) sig_t = 0;
+
+        const float close_now = close[sig_t];
+        const float upper_now = keltner_upper[sig_t];
+        const float middle_now = keltner_middle[sig_t];
+        const float lower_now = keltner_lower[sig_t];
+        const float vwap_now = vwap[sig_t];
+        const float dti_now = dti[sig_t];
+        const float devstop_long_now = devstop_long[sig_t];
+        const float devstop_short_now = devstop_short[sig_t];
+        const float fvg_upper_now = fvg_upper_ts[sig_t];
+        const float fvg_lower_now = fvg_lower_ts[sig_t];
+
+        const int breakout_up =
+            isfinite(close_now) && isfinite(upper_now) && isfinite(vwap_now)
+            && (close_now > upper_now) && (close_now > vwap_now);
+        const int breakout_down =
+            isfinite(close_now) && isfinite(lower_now) && isfinite(vwap_now)
+            && (close_now < lower_now) && (close_now < vwap_now);
+        const int dti_up = isfinite(dti_now) && (dti_now >= dti_threshold_abs);
+        const int dti_down = isfinite(dti_now) && (dti_now <= -dti_threshold_abs);
+        const int long_stop_ok = !isfinite(devstop_long_now) || (close_now > devstop_long_now);
+        const int short_stop_ok = !isfinite(devstop_short_now) || (close_now < devstop_short_now);
+        const int long_fvg_ok = !isfinite(fvg_lower_now) || (close_now > fvg_lower_now);
+        const int short_fvg_ok = !isfinite(fvg_upper_now) || (close_now < fvg_upper_now);
+
+        const int long_entry = breakout_up && dti_up && long_stop_ok && long_fvg_ok;
+        const int short_entry =
+            (!long_only) && breakout_down && dti_down && short_stop_ok && short_fvg_ok;
+
+        if (pos_signal == 0) {
+            if (long_entry) {
+                pos_signal = 1;
+            } else if (short_entry) {
+                pos_signal = -1;
+            }
+        } else if (pos_signal > 0) {
+            const int hard_exit =
+                (isfinite(devstop_long_now) && (close_now <= devstop_long_now))
+                || (isfinite(fvg_lower_now) && (close_now <= fvg_lower_now));
+            int opposing_votes =
+                ((isfinite(middle_now) && (close_now < middle_now)) ? 1 : 0)
+                + ((isfinite(vwap_now) && (close_now < vwap_now)) ? 1 : 0)
+                + ((isfinite(dti_now) && (dti_now < 0.0f)) ? 1 : 0);
+            int exit_now = hard_exit || (opposing_votes >= 2);
+            if (short_entry) {
+                if (!no_flip) {
+                    pos_signal = -1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        } else {
+            const int hard_exit =
+                (isfinite(devstop_short_now) && (close_now >= devstop_short_now))
+                || (isfinite(fvg_upper_now) && (close_now >= fvg_upper_now));
+            int opposing_votes =
+                ((isfinite(middle_now) && (close_now > middle_now)) ? 1 : 0)
+                + ((isfinite(vwap_now) && (close_now > vwap_now)) ? 1 : 0)
+                + ((isfinite(dti_now) && (dti_now > 0.0f)) ? 1 : 0);
+            int exit_now = hard_exit || (opposing_votes >= 2);
+            if (long_entry) {
+                if (!no_flip) {
+                    pos_signal = 1;
+                } else {
+                    exit_now = 1;
+                }
+            } else if (exit_now) {
+                pos_signal = 0;
+            }
+        }
+
+        const int desired_exec = pos_signal;
+        const int pos_prev = pos_exec;
+        int trade_delta = 0;
+        if (desired_exec != pos_prev) {
+            if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
+            else trade_delta = no_flip ? 2 : 1;
+            if (desired_exec != 0) ++trades;
+        }
+
+        float step_r = 0.0f;
+        if (t > 0 && t < T) {
+            step_r += (float)pos_prev * lr[t];
+        }
+        if (trade_delta > 0) {
+            step_r += log_cost * (float)trade_delta;
+        }
+        log_eq += step_r;
+        log_peak = fmaxf(log_peak, log_eq);
+        max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+
+        ++n_obs;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_prev);
+        sum_pos += pos_prev;
+        pos_exec = desired_exec;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
 template <int EPS_MODE>
 static __device__ __forceinline__ float compute_eps_f32(float s, float eps_rel) {
     if constexpr (EPS_MODE == 0) {

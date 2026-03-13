@@ -1,5 +1,11 @@
+use crate::double_ma::Backend;
 use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cpu, DynamicIndicatorComputeOutput, DynamicIndicatorSeries,
+};
+#[cfg(feature = "cuda")]
+use crate::dynamic_indicator_adapter::{
+    compute_dynamic_indicator_cuda_with_inputs, DynamicIndicatorCudaComputeOutput,
+    DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
@@ -50,6 +56,44 @@ pub struct KqsrSignals {
     pub qqe_slow: Vec<f64>,
     pub prb_upper: Vec<f64>,
     pub prb_lower: Vec<f64>,
+    pub first_valid: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct KqsrFastSignals {
+    pub j: Vec<f64>,
+    pub srsi_k: Vec<f64>,
+    pub srsi_d: Vec<f64>,
+    pub ift_rsi: Vec<f64>,
+    pub first_valid: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct KqsrSlowSignals {
+    pub qqe_fast: Vec<f64>,
+    pub qqe_slow: Vec<f64>,
+    pub prb_upper: Vec<f64>,
+    pub prb_lower: Vec<f64>,
+    pub first_valid: usize,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Clone, Debug)]
+pub struct KqsrFastSignalsF32 {
+    pub j: Vec<f32>,
+    pub srsi_k: Vec<f32>,
+    pub srsi_d: Vec<f32>,
+    pub ift_rsi: Vec<f32>,
+    pub first_valid: usize,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Clone, Debug)]
+pub struct KqsrSlowSignalsF32 {
+    pub qqe_fast: Vec<f32>,
+    pub qqe_slow: Vec<f32>,
+    pub prb_upper: Vec<f32>,
+    pub prb_lower: Vec<f32>,
     pub first_valid: usize,
 }
 
@@ -160,6 +204,11 @@ fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
 }
 
+#[cfg(feature = "cuda")]
+fn first_finite_idx_local_f32(values: &[f32]) -> Option<usize> {
+    values.iter().position(|v| v.is_finite())
+}
+
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
     match out.series {
         DynamicIndicatorSeries::F64(v) => v,
@@ -168,6 +217,31 @@ fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
             v.into_iter().map(|x| if x { 1.0 } else { 0.0 }).collect()
         }
     }
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_series_to_f64(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f64>, String> {
+    match out.series {
+        DynamicIndicatorCudaSeries::HostF32(v) => Ok(v.into_iter().map(|x| x as f64).collect()),
+        DynamicIndicatorCudaSeries::DeviceF32(_) => {
+            Err("KQSR expected CUDA HostF32 output".to_string())
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_series_to_host_f32(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f32>, String> {
+    match out.series {
+        DynamicIndicatorCudaSeries::HostF32(v) => Ok(v),
+        DynamicIndicatorCudaSeries::DeviceF32(_) => {
+            Err("KQSR expected CUDA HostF32 output".to_string())
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn backend_prefers_gpu(backend: &Backend) -> bool {
+    !matches!(backend, Backend::CpuOnly)
 }
 
 fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
@@ -211,10 +285,41 @@ fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
 fn compute_indicator_f64(
     candles: &Candles,
     ma_source: &str,
+    backend: &Backend,
     indicator_id: &str,
     output_id: &str,
     params: &[IndicatorParamKV],
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<Vec<f64>, String> {
+    #[cfg(not(feature = "cuda"))]
+    let _ = backend;
+
+    #[cfg(feature = "cuda")]
+    let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
+        format!("KQSR indicator '{indicator_id}' is not registered for dynamic dispatch")
+    })?;
+
+    #[cfg(feature = "cuda")]
+    {
+        let prefer_gpu = backend_prefers_gpu(backend)
+            && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
+        if prefer_gpu {
+            if let Some(prepared) = prepared_cuda_inputs {
+                let out = compute_dynamic_indicator_cuda_with_inputs(
+                    prepared,
+                    indicator_id,
+                    Some(output_id),
+                    params,
+                    Kernel::Auto,
+                    vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                );
+                if let Ok(values) = out {
+                    return cuda_series_to_f64(values);
+                }
+            }
+        }
+    }
+
     let out = compute_dynamic_indicator_cpu(
         candles,
         ma_source,
@@ -227,20 +332,104 @@ fn compute_indicator_f64(
     Ok(series_to_f64(out))
 }
 
+#[cfg(feature = "cuda")]
+fn compute_indicator_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    indicator_id: &str,
+    output_id: &str,
+    params: &[IndicatorParamKV],
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<Vec<f32>, String> {
+    let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
+        format!("KQSR indicator '{indicator_id}' is not registered for dynamic dispatch")
+    })?;
+
+    let prefer_gpu = backend_prefers_gpu(backend)
+        && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
+    if prefer_gpu {
+        if let Some(prepared) = prepared_cuda_inputs {
+            let out = compute_dynamic_indicator_cuda_with_inputs(
+                prepared,
+                indicator_id,
+                Some(output_id),
+                params,
+                Kernel::Auto,
+                vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+            );
+            if let Ok(values) = out {
+                return cuda_series_to_host_f32(values);
+            }
+        }
+    }
+
+    Ok(compute_indicator_f64(
+        candles,
+        ma_source,
+        backend,
+        indicator_id,
+        output_id,
+        params,
+        prepared_cuda_inputs,
+    )?
+    .into_iter()
+    .map(|v| v as f32)
+    .collect())
+}
+
 pub fn compute_kqsr_signals(
     candles: &Candles,
     ma_source: &str,
+    backend: &Backend,
     periods: KqsrResolvedPeriods,
     cfg: &KqsrStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<KqsrSignals, String> {
+    let fast = compute_kqsr_fast_signals(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        cfg,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let slow = compute_kqsr_slow_signals(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let first_valid = fast.first_valid.max(slow.first_valid);
+
+    Ok(KqsrSignals {
+        j: fast.j,
+        srsi_k: fast.srsi_k,
+        srsi_d: fast.srsi_d,
+        ift_rsi: fast.ift_rsi,
+        qqe_fast: slow.qqe_fast,
+        qqe_slow: slow.qqe_slow,
+        prb_upper: slow.prb_upper,
+        prb_lower: slow.prb_lower,
+        first_valid,
+    })
+}
+
+pub fn compute_kqsr_fast_signals(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KqsrResolvedPeriods,
+    cfg: &KqsrStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KqsrFastSignals, String> {
     let kdj_j_output = resolve_output_id("kdj", &["j"])?;
     let srsi_k_output = resolve_output_id("srsi", &["k"])?;
     let srsi_d_output = resolve_output_id("srsi", &["d"])?;
     let ift_rsi_output = resolve_output_id("ift_rsi", &["value", "ift_rsi"])?;
-    let qqe_fast_output = resolve_output_id("qqe", &["fast"])?;
-    let qqe_slow_output = resolve_output_id("qqe", &["slow"])?;
-    let prb_upper_output = resolve_output_id("prb", &["upper_band", "upper"])?;
-    let prb_lower_output = resolve_output_id("prb", &["lower_band", "lower"])?;
 
     let kdj_params = vec![
         IndicatorParamKV {
@@ -292,6 +481,75 @@ pub fn compute_kqsr_signals(
             value: IndicatorParamValue::Int(i64::from(periods.ift_rsi)),
         },
     ];
+
+    let j = compute_indicator_f64(
+        candles,
+        ma_source,
+        backend,
+        "kdj",
+        kdj_j_output.as_str(),
+        kdj_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let srsi_k = compute_indicator_f64(
+        candles,
+        ma_source,
+        backend,
+        "srsi",
+        srsi_k_output.as_str(),
+        srsi_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let srsi_d = compute_indicator_f64(
+        candles,
+        ma_source,
+        backend,
+        "srsi",
+        srsi_d_output.as_str(),
+        srsi_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let ift_rsi = compute_indicator_f64(
+        candles,
+        ma_source,
+        backend,
+        "ift_rsi",
+        ift_rsi_output.as_str(),
+        ift_rsi_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let first_valid = first_finite_idx_local(&j)
+        .zip(first_finite_idx_local(&srsi_k))
+        .zip(first_finite_idx_local(&srsi_d))
+        .zip(first_finite_idx_local(&ift_rsi))
+        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+        .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
+
+    Ok(KqsrFastSignals {
+        j,
+        srsi_k,
+        srsi_d,
+        ift_rsi,
+        first_valid,
+    })
+}
+
+pub fn compute_kqsr_slow_signals(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KqsrResolvedPeriods,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KqsrSlowSignals, String> {
+    let qqe_fast_output = resolve_output_id("qqe", &["fast"])?;
+    let qqe_slow_output = resolve_output_id("qqe", &["slow"])?;
+    let prb_upper_output = resolve_output_id("prb", &["upper_band", "upper"])?;
+    let prb_lower_output = resolve_output_id("prb", &["lower_band", "lower"])?;
+
     let qqe_params = vec![
         IndicatorParamKV {
             key: "rsi_period".to_string(),
@@ -337,81 +595,283 @@ pub fn compute_kqsr_signals(
         },
     ];
 
-    let j = compute_indicator_f64(
-        candles,
-        ma_source,
-        "kdj",
-        kdj_j_output.as_str(),
-        kdj_params.as_slice(),
-    )?;
-    let srsi_k = compute_indicator_f64(
-        candles,
-        ma_source,
-        "srsi",
-        srsi_k_output.as_str(),
-        srsi_params.as_slice(),
-    )?;
-    let srsi_d = compute_indicator_f64(
-        candles,
-        ma_source,
-        "srsi",
-        srsi_d_output.as_str(),
-        srsi_params.as_slice(),
-    )?;
-    let ift_rsi = compute_indicator_f64(
-        candles,
-        ma_source,
-        "ift_rsi",
-        ift_rsi_output.as_str(),
-        ift_rsi_params.as_slice(),
-    )?;
     let qqe_fast = compute_indicator_f64(
         candles,
         ma_source,
+        backend,
         "qqe",
         qqe_fast_output.as_str(),
         qqe_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
     )?;
     let qqe_slow = compute_indicator_f64(
         candles,
         ma_source,
+        backend,
         "qqe",
         qqe_slow_output.as_str(),
         qqe_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
     )?;
     let prb_upper = compute_indicator_f64(
         candles,
         ma_source,
+        backend,
         "prb",
         prb_upper_output.as_str(),
         prb_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
     )?;
     let prb_lower = compute_indicator_f64(
         candles,
         ma_source,
+        backend,
         "prb",
         prb_lower_output.as_str(),
         prb_params.as_slice(),
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
     )?;
 
-    let first_valid = first_finite_idx_local(&j)
-        .zip(first_finite_idx_local(&srsi_k))
-        .zip(first_finite_idx_local(&srsi_d))
-        .zip(first_finite_idx_local(&ift_rsi))
-        .zip(first_finite_idx_local(&qqe_fast))
+    let first_valid = first_finite_idx_local(&qqe_fast)
         .zip(first_finite_idx_local(&qqe_slow))
         .zip(first_finite_idx_local(&prb_upper))
         .zip(first_finite_idx_local(&prb_lower))
-        .map(|(((((((a, b), c), d), e), f), g), h)| {
-            a.max(b).max(c).max(d).max(e).max(f).max(g).max(h)
-        })
-        .ok_or_else(|| "KQSR signals are all non-finite".to_string())?;
+        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+        .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
 
-    Ok(KqsrSignals {
+    Ok(KqsrSlowSignals {
+        qqe_fast,
+        qqe_slow,
+        prb_upper,
+        prb_lower,
+        first_valid,
+    })
+}
+
+#[cfg(feature = "cuda")]
+pub fn compute_kqsr_fast_signals_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KqsrResolvedPeriods,
+    cfg: &KqsrStrategyParams,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KqsrFastSignalsF32, String> {
+    let kdj_j_output = resolve_output_id("kdj", &["j"])?;
+    let srsi_k_output = resolve_output_id("srsi", &["k"])?;
+    let srsi_d_output = resolve_output_id("srsi", &["d"])?;
+    let ift_rsi_output = resolve_output_id("ift_rsi", &["value", "ift_rsi"])?;
+
+    let kdj_params = vec![
+        IndicatorParamKV {
+            key: "fast_k_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.kdj)),
+        },
+        IndicatorParamKV {
+            key: "slow_k_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(cfg.srsi_smooth.max(1))),
+        },
+        IndicatorParamKV {
+            key: "slow_k_ma_type".to_string(),
+            value: IndicatorParamValue::EnumString("sma".to_string()),
+        },
+        IndicatorParamKV {
+            key: "slow_d_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(cfg.srsi_smooth.max(1))),
+        },
+        IndicatorParamKV {
+            key: "slow_d_ma_type".to_string(),
+            value: IndicatorParamValue::EnumString("sma".to_string()),
+        },
+    ];
+    let srsi_params = vec![
+        IndicatorParamKV {
+            key: "rsi_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.srsi)),
+        },
+        IndicatorParamKV {
+            key: "stoch_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.srsi)),
+        },
+        IndicatorParamKV {
+            key: "k".to_string(),
+            value: IndicatorParamValue::Int(i64::from(cfg.srsi_smooth.max(1))),
+        },
+        IndicatorParamKV {
+            key: "d".to_string(),
+            value: IndicatorParamValue::Int(i64::from(cfg.srsi_smooth.max(1))),
+        },
+    ];
+    let ift_rsi_params = vec![
+        IndicatorParamKV {
+            key: "rsi_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.ift_rsi)),
+        },
+        IndicatorParamKV {
+            key: "wma_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.ift_rsi)),
+        },
+    ];
+
+    let j = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "kdj",
+        kdj_j_output.as_str(),
+        kdj_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let srsi_k = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "srsi",
+        srsi_k_output.as_str(),
+        srsi_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let srsi_d = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "srsi",
+        srsi_d_output.as_str(),
+        srsi_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let ift_rsi = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "ift_rsi",
+        ift_rsi_output.as_str(),
+        ift_rsi_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let first_valid = first_finite_idx_local_f32(&j)
+        .zip(first_finite_idx_local_f32(&srsi_k))
+        .zip(first_finite_idx_local_f32(&srsi_d))
+        .zip(first_finite_idx_local_f32(&ift_rsi))
+        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+        .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
+
+    Ok(KqsrFastSignalsF32 {
         j,
         srsi_k,
         srsi_d,
         ift_rsi,
+        first_valid,
+    })
+}
+
+#[cfg(feature = "cuda")]
+pub fn compute_kqsr_slow_signals_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KqsrResolvedPeriods,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KqsrSlowSignalsF32, String> {
+    let qqe_fast_output = resolve_output_id("qqe", &["fast"])?;
+    let qqe_slow_output = resolve_output_id("qqe", &["slow"])?;
+    let prb_upper_output = resolve_output_id("prb", &["upper_band", "upper"])?;
+    let prb_lower_output = resolve_output_id("prb", &["lower_band", "lower"])?;
+
+    let qqe_params = vec![
+        IndicatorParamKV {
+            key: "rsi_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.qqe)),
+        },
+        IndicatorParamKV {
+            key: "smoothing_factor".to_string(),
+            value: IndicatorParamValue::Int(5),
+        },
+        IndicatorParamKV {
+            key: "fast_factor".to_string(),
+            value: IndicatorParamValue::Float(4.236),
+        },
+    ];
+    let prb_params = vec![
+        IndicatorParamKV {
+            key: "smooth_data".to_string(),
+            value: IndicatorParamValue::Bool(true),
+        },
+        IndicatorParamKV {
+            key: "smooth_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.prb)),
+        },
+        IndicatorParamKV {
+            key: "regression_period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.prb)),
+        },
+        IndicatorParamKV {
+            key: "polynomial_order".to_string(),
+            value: IndicatorParamValue::Int(2),
+        },
+        IndicatorParamKV {
+            key: "regression_offset".to_string(),
+            value: IndicatorParamValue::Int(0),
+        },
+        IndicatorParamKV {
+            key: "ndev".to_string(),
+            value: IndicatorParamValue::Float(2.0),
+        },
+        IndicatorParamKV {
+            key: "equ_from".to_string(),
+            value: IndicatorParamValue::Int(0),
+        },
+    ];
+
+    let qqe_fast = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "qqe",
+        qqe_fast_output.as_str(),
+        qqe_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let qqe_slow = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "qqe",
+        qqe_slow_output.as_str(),
+        qqe_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let prb_upper = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "prb",
+        prb_upper_output.as_str(),
+        prb_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let prb_lower = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "prb",
+        prb_lower_output.as_str(),
+        prb_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+
+    let first_valid = first_finite_idx_local_f32(&qqe_fast)
+        .zip(first_finite_idx_local_f32(&qqe_slow))
+        .zip(first_finite_idx_local_f32(&prb_upper))
+        .zip(first_finite_idx_local_f32(&prb_lower))
+        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+        .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
+
+    Ok(KqsrSlowSignalsF32 {
         qqe_fast,
         qqe_slow,
         prb_upper,
@@ -567,6 +1027,32 @@ pub fn build_kqsr_desired_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "cuda")]
+    use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
+    #[cfg(feature = "cuda")]
+    use vector_ta::cuda::cuda_available;
+    use vector_ta::utilities::data_loader::Candles;
+
+    fn make_trending_candles(len: usize) -> Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64 * 0.05;
+            open.push(base);
+            high.push(base + 0.75);
+            low.push(base - 0.75);
+            close.push(base + ((i % 11) as f64 - 5.0) * 0.01);
+            vol.push(10_000.0 + ((i % 17) as f64) * 10.0);
+        }
+
+        Candles::new(ts, open, high, low, close, vol)
+    }
 
     #[test]
     fn validate_kqsr_params_rejects_invalid_values() {
@@ -590,7 +1076,7 @@ mod tests {
             ift_rsi: vec![f64::NAN, -0.4, 0.2, 0.4, 0.5, 0.1, -0.2],
             qqe_fast: vec![f64::NAN, -1.0, 1.0, 1.2, 1.3, -0.2, -0.4],
             qqe_slow: vec![f64::NAN, 0.0, 0.2, 0.4, 0.6, 0.1, 0.0],
-            prb_upper: vec![f64::NAN, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0],
+            prb_upper: vec![f64::NAN, 103.0, 103.0, 103.0, 103.0, 103.0, 103.0],
             prb_lower: vec![f64::NAN, 99.0, 99.0, 99.0, 99.0, 99.0, 99.0],
             first_valid: 1,
         };
@@ -602,5 +1088,35 @@ mod tests {
         let desired = build_kqsr_desired_positions(&close, &signals, 1, &strategy, &cfg);
         assert_eq!(desired[2], 1);
         assert_eq!(desired[4], 0);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn compute_kqsr_signals_gpu_smoke_runs_with_qqe_fast_and_slow() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(512);
+        let prepared = PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+            .expect("cuda inputs");
+        let cfg = KqsrStrategyParams::default();
+        let periods = resolve_kqsr_periods(&cfg, 12, 34);
+
+        let signals = compute_kqsr_signals(
+            &candles,
+            "close",
+            &Backend::GpuOnly { device_id: 0 },
+            periods,
+            &cfg,
+            Some(&prepared),
+        )
+        .expect("kqsr gpu signals");
+
+        assert_eq!(signals.qqe_fast.len(), candles.close.len());
+        assert_eq!(signals.qqe_slow.len(), candles.close.len());
+        assert!(signals.first_valid < candles.close.len());
+        assert!(signals.qqe_fast.iter().any(|v| v.is_finite()));
+        assert!(signals.qqe_slow.iter().any(|v| v.is_finite()));
     }
 }

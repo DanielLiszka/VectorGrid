@@ -689,6 +689,33 @@ pub fn build_mkcs_desired_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "cuda")]
+    use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
+    #[cfg(feature = "cuda")]
+    use vector_ta::cuda::cuda_available;
+    use vector_ta::utilities::data_loader::Candles;
+
+    fn make_trending_candles(len: usize) -> Candles {
+        let len = len.max(256);
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64 * 0.05;
+            open.push(base);
+            high.push(base + 0.75);
+            low.push(base - 0.75);
+            close.push(base + ((i % 11) as f64 - 5.0) * 0.01);
+            vol.push(10_000.0 + ((i % 17) as f64) * 10.0);
+        }
+
+        Candles::new(ts, open, high, low, close, vol)
+    }
 
     #[test]
     fn validate_mkcs_params_rejects_invalid_values() {
@@ -722,5 +749,45 @@ mod tests {
             build_mkcs_desired_positions(&close, &compression, &breakout, 2, &strategy, &cfg);
         assert_eq!(desired[3], 1);
         assert_eq!(desired[4], 0);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn compute_mkcs_signals_gpu_smoke_runs_with_stddev_and_donchian_surfaces() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(512);
+        let prepared = PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+            .expect("cuda inputs");
+        let cfg = MkcsStrategyParams::default();
+        let periods = resolve_mkcs_periods(&cfg, 12, 34);
+
+        let compression = compute_mkcs_compression_signals(
+            &candles,
+            "close",
+            &crate::double_ma::Backend::GpuOnly { device_id: 0 },
+            periods.stddev,
+            Some(&prepared),
+        )
+        .expect("mkcs gpu compression");
+        let breakout = compute_mkcs_breakout_signals(
+            &candles,
+            "close",
+            &crate::double_ma::Backend::GpuOnly { device_id: 0 },
+            periods.breakout,
+            Some(&prepared),
+        )
+        .expect("mkcs gpu breakout");
+
+        assert_eq!(compression.stddev.len(), candles.close.len());
+        assert_eq!(breakout.upper.len(), candles.close.len());
+        assert_eq!(breakout.lower.len(), candles.close.len());
+        assert!(compression.first_valid < candles.close.len());
+        assert!(breakout.first_valid < candles.close.len());
+        assert!(compression.stddev.iter().any(|v| v.is_finite()));
+        assert!(breakout.upper.iter().any(|v| v.is_finite()));
+        assert!(breakout.lower.iter().any(|v| v.is_finite()));
     }
 }
