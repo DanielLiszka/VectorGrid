@@ -1,42 +1,47 @@
-<svg width="960" height="440" viewBox="0 0 960 440" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">VectorGrid vs VectorBT benchmark chart for 250,000 exact backtests over 200,000 bars</title>
-  <desc id="desc">Log-scale wall-clock comparison. VectorGrid GPU kernel 233.660 milliseconds. VectorGrid CPU 15,202.400 milliseconds. VectorBT CPU 445,240.337 milliseconds.</desc>
-  <rect width="960" height="440" rx="24" fill="#F8FAFC"/>
-  <rect x="16" y="16" width="928" height="408" rx="18" fill="#FFFFFF" stroke="#E2E8F0"/>
-  <text x="40" y="54" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Double MA exact-grid benchmark</text>
-  <text x="40" y="82" fill="#475569" font-size="16" font-family="Segoe UI, Arial, sans-serif">250,000 backtests, 200,000 bars, ALMA/ALMA, warm app-path. Lower is better. Log scale.</text>
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">VectorGrid versus VectorBT benchmark, 250,000 exact backtests over 200,000 bars</title>
+  <desc id="desc">Horizontal log-scale benchmark chart. VectorGrid GPU kernel 233.660 milliseconds. VectorGrid CPU 15,202.400 milliseconds. VectorBT CPU workflow 445,240.337 milliseconds.</desc>
 
-  <rect x="40" y="104" width="880" height="66" rx="14" fill="#ECFDF5" stroke="#A7F3D0"/>
-  <text x="60" y="131" fill="#065F46" font-size="15" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Headline</text>
-  <text x="60" y="154" fill="#065F46" font-size="22" font-family="Segoe UI, Arial, sans-serif" font-weight="700">VectorGrid GPU was about 1,905x faster than the VectorBT CPU workflow on this scenario.</text>
+  <rect width="1200" height="760" rx="28" fill="#F8FAFC"/>
+  <rect x="20" y="20" width="1160" height="720" rx="24" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2"/>
 
-  <text x="40" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">1 ms</text>
-  <text x="144" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">10 ms</text>
-  <text x="248" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">100 ms</text>
-  <text x="356" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">1 s</text>
-  <text x="464" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">10 s</text>
-  <text x="576" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">100 s</text>
-  <text x="688" y="210" fill="#334155" font-size="13" font-family="Segoe UI, Arial, sans-serif">1000 s</text>
+  <text x="56" y="78" fill="#0F172A" font-size="38" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Double MA exact-grid benchmark</text>
+  <text x="56" y="118" fill="#475569" font-size="22" font-family="Segoe UI, Arial, sans-serif">250,000 backtests over 200,000 bars. ALMA/ALMA. Warm app-path. Lower is better.</text>
 
-  <line x1="120" y1="220" x2="120" y2="390" stroke="#CBD5E1" stroke-width="1"/>
-  <line x1="224" y1="220" x2="224" y2="390" stroke="#CBD5E1" stroke-width="1"/>
-  <line x1="328" y1="220" x2="328" y2="390" stroke="#CBD5E1" stroke-width="1"/>
-  <line x1="432" y1="220" x2="432" y2="390" stroke="#CBD5E1" stroke-width="1"/>
-  <line x1="536" y1="220" x2="536" y2="390" stroke="#CBD5E1" stroke-width="1"/>
-  <line x1="640" y1="220" x2="640" y2="390" stroke="#CBD5E1" stroke-width="1"/>
-  <line x1="744" y1="220" x2="744" y2="390" stroke="#CBD5E1" stroke-width="1"/>
+  <rect x="56" y="156" width="1088" height="112" rx="18" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="2"/>
+  <text x="84" y="198" fill="#065F46" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Headline result</text>
+  <text x="84" y="236" fill="#065F46" font-size="34" font-family="Segoe UI, Arial, sans-serif" font-weight="700">VectorGrid GPU was 1,905x faster than the VectorBT CPU workflow.</text>
 
-  <text x="40" y="255" fill="#0F172A" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="600">VectorGrid GPU kernel</text>
-  <rect x="120" y="232" width="240" height="30" rx="10" fill="#14B8A6"/>
-  <text x="374" y="252" fill="#0F172A" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="700">233.660 ms</text>
+  <text x="84" y="317" fill="#64748B" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600">Wall-clock time, log scale</text>
+  <line x1="318" y1="338" x2="318" y2="610" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="438" y1="338" x2="438" y2="610" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="558" y1="338" x2="558" y2="610" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="678" y1="338" x2="678" y2="610" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="798" y1="338" x2="798" y2="610" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="918" y1="338" x2="918" y2="610" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="1038" y1="338" x2="1038" y2="610" stroke="#CBD5E1" stroke-width="2"/>
 
-  <text x="40" y="315" fill="#0F172A" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="600">VectorGrid CPU</text>
-  <rect x="120" y="292" width="426" height="30" rx="10" fill="#F59E0B"/>
-  <text x="560" y="312" fill="#0F172A" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="700">15,202.400 ms</text>
+  <text x="292" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">1 ms</text>
+  <text x="406" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">10 ms</text>
+  <text x="516" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">100 ms</text>
+  <text x="646" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">1 s</text>
+  <text x="758" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">10 s</text>
+  <text x="872" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">100 s</text>
+  <text x="984" y="330" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif">1000 s</text>
 
-  <text x="40" y="375" fill="#0F172A" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="600">VectorBT CPU workflow</text>
-  <rect x="120" y="352" width="574" height="30" rx="10" fill="#334155"/>
-  <text x="708" y="372" fill="#0F172A" font-size="18" font-family="Segoe UI, Arial, sans-serif" font-weight="700">445,240.337 ms</text>
+  <text x="84" y="398" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="600">VectorGrid GPU kernel</text>
+  <rect x="318" y="368" width="276" height="40" rx="12" fill="#14B8A6"/>
+  <text x="616" y="396" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">233.660 ms</text>
 
-  <text x="40" y="408" fill="#64748B" font-size="12" font-family="Segoe UI, Arial, sans-serif">Hardware recorded in the benchmark environment: AMD Ryzen 9 9950X, NVIDIA GeForce RTX 4090, 200,000-bar synthetic benchmark harness.</text>
+  <text x="84" y="488" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="600">VectorGrid CPU</text>
+  <rect x="318" y="458" width="492" height="40" rx="12" fill="#F59E0B"/>
+  <text x="832" y="486" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">15,202.400 ms</text>
+
+  <text x="84" y="578" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="600">VectorBT CPU workflow</text>
+  <rect x="318" y="548" width="664" height="40" rx="12" fill="#334155"/>
+  <text x="1004" y="576" fill="#0F172A" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">445,240.337 ms</text>
+
+  <rect x="56" y="636" width="1088" height="68" rx="16" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="84" y="665" fill="#334155" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Benchmark context</text>
+  <text x="84" y="690" fill="#64748B" font-size="15" font-family="Segoe UI, Arial, sans-serif">Hardware: AMD Ryzen 9 9950X, NVIDIA GeForce RTX 4090. VectorGrid measured on warm app-path with resident market-series reuse. VectorBT measured as a CPU Python workflow.</text>
 </svg>
