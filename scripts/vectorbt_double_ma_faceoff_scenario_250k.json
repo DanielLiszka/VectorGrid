@@ -1,0 +1,43 @@
+{
+  "scenario_id": "double_ma_alma_200k_250000pairs",
+  "strategy": "double_ma",
+  "ma_case": "alma_alma",
+  "objective": "Sharpe",
+  "ranges": {
+    "fast": "5:504:1",
+    "slow": "505:1004:1"
+  },
+  "alma": {
+    "offset": 0.85,
+    "sigma": 6.0
+  },
+  "dataset": {
+    "kind": "synthetic_benchmark_harness",
+    "synth_len": 200000
+  },
+  "execution": {
+    "top_k": 10,
+    "heatmap_bins": 0,
+    "include_all": false,
+    "export_all_csv": false
+  },
+  "trials": {
+    "warmup": 1,
+    "measured": 5
+  },
+  "vectorgrid": {
+    "backends": [
+      "gpu-kernel",
+      "cpu"
+    ]
+  },
+  "vectorbt": {
+    "chunk_size": 256
+  },
+  "notes": [
+    "Expanded frozen faceoff scenario for the VectorGrid vs VectorBT double-MA benchmark.",
+    "Shared dataset is the deterministic synthetic benchmark harness exported to CSV.",
+    "Fast and slow ranges are disjoint so all 500 x 500 period combinations are valid.",
+    "Heatmap is disabled for the timed runs to avoid unrelated UI-style overhead."
+  ]
+}

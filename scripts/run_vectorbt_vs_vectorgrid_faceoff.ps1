@@ -455,9 +455,24 @@ function Write-MarkdownSummary {
   )
 
   $lines = New-Object System.Collections.Generic.List[string]
+  $firstRow = if ($null -ne $Summary.summary_rows -and $Summary.summary_rows.Count -gt 0) {
+    $Summary.summary_rows[0]
+  } else {
+    $null
+  }
+  $pairCountLabel = if ($null -ne $firstRow) { [string]$firstRow.pair_count } else { "unknown" }
+  $barsLabel = if ($Summary.dataset -and $null -ne $Summary.dataset.bars) {
+    "{0:N0}" -f [int64]$Summary.dataset.bars
+  } else {
+    "unknown"
+  }
   $lines.Add("# Double-MA Faceoff Summary")
   $lines.Add("")
-  $lines.Add('Scenario: `alma_alma`, `200,000` bars, `58,300` valid `fast < slow` pairs, objective `Sharpe`.')
+  $lines.Add(("Scenario: `{0}`, `{1}` bars, `{2}` valid `fast < slow` pairs, objective `{3}`." -f `
+      $Summary.scenario.ma_case,
+      $barsLabel,
+      $pairCountLabel,
+      $Summary.scenario.objective))
   $lines.Add("")
   $lines.Add("## Environment")
   $lines.Add("")
@@ -655,6 +670,7 @@ $summary = [ordered]@{
     }
   }
   scenario = [ordered]@{
+    scenario_id = $scenario.scenario_id
     strategy = $scenario.strategy
     ma_case = $scenario.ma_case
     objective = $scenario.objective

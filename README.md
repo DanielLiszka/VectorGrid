@@ -131,6 +131,35 @@ Notes:
 - GPU metrics-toggle bench defaults to `sma/sma` (backtest-focused). Set `$env:VECTORBT_BENCH_KERNEL_MA=\"alma\"` before running `double_ma_metrics` if you want the prior ALMA profile.
 - For stable baseline comparisons, keep GPU load constant (close other CUDA workloads) and prefer fixed clocks/power settings when possible.
 
+### Current Double-MA benchmark snapshots
+
+These are two different measurement boundaries and should not be mixed:
+
+- Criterion benchmark anchor:
+  - benchmark id: `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`
+  - historical anchor: about `89 ms`
+  - use this as the tighter engine benchmark, not as the app wall-clock benchmark
+- Warm app-path VectorBT vs VectorGrid faceoff (`scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`):
+  - dataset is loaded once
+  - app-path warmup runs before measured trials
+  - GPU measured trials reuse resident market-series buffers
+  - artifacts:
+    - `target/vectorbt_vs_vectorgrid_faceoff_58300_rerun/summary.json`
+    - `target/vectorbt_vs_vectorgrid_faceoff_250k/summary.json`
+
+Latest warm faceoff numbers:
+
+| Scenario | VectorGrid GPU kernel | VectorGrid CPU | VectorBT CPU |
+| --- | --- | --- | --- |
+| `200k bars / 58,300 pairs` | `494.757 ms` | `3522.491 ms` | `92377.801 ms` |
+| `200k bars / 250,000 pairs` | `270.248 ms` | `15483.240 ms` | `432062.619 ms` |
+
+Why the warm app-path timings are still slower than Criterion:
+
+- Criterion is a tighter in-process engine benchmark with much less orchestration around the optimization call.
+- The faceoff still includes app-path request setup, result shaping/serialization, and trial harness overhead around the optimization itself.
+- Warm app-path runs do reuse resident data, but they are still a broader product-facing timing boundary than Criterion.
+
 ### In-app GPU demo (recommended)
 
 After the app opens:
