@@ -220,6 +220,68 @@ describe('validationService', () => {
 
   })
 
+  it('auto-exports XLSX after successful validation when enabled and persists the report path', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '12',
+      seed: '1',
+      minPsr: '',
+      minDsr: '',
+      autoExportXlsx: true,
+      autoRevealReport: false,
+      autoExportTopN: '7',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-auto-export',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.objectContaining({
+      max_rows: 7,
+      report: expect.any(Object),
+    }))
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
+      path: 'runs/vectorbt_report_validation_test.xlsx',
+    })
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('reveal_path', expect.anything())
+
+    const workflowStore = useWorkflowArtifactsStore(pinia)
+    expect(workflowStore.currentRun?.reportXlsxPath).toBe('runs/vectorbt_report_validation_test.xlsx')
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(validationState.statusLine).toBe('Saved XLSX report: runs/vectorbt_report_validation_test.xlsx')
+  })
+
   it('rejects validation when the current dataset does not match the optimization artifact', async () => {
     ;(pinia.state.value as Record<string, unknown>).validation = {
       candidates: '8',
@@ -500,6 +562,81 @@ describe('validationService', () => {
     expect(req.max_candidates).toBe(16)
   })
 
+  it('keeps validation successful when auto-export XLSX fails', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '10',
+      seed: '2',
+      minPsr: '',
+      minDsr: '',
+      autoExportXlsx: true,
+      autoRevealReport: false,
+      autoExportTopN: '5',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-auto-export-fail',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'save_report_xlsx') throw new Error('save failed')
+      if (command === 'build_report_xlsx') throw new Error('fallback failed')
+      if (command === 'run_double_ma_validation' || command === 'run_composite_validation') {
+        return {
+          backend_used: 'Cpu',
+          candidates: [{ score: 1 }],
+          runtime_ms: 123,
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return {
+          path: 'runs/vectorbt_run_validation_test.json',
+          bytes: 256,
+        }
+      }
+      if (command === 'open_path' || command === 'reveal_path') return true
+      if (command === 'polygon_get_cache_info') return { datasets: [] }
+      return {}
+    })
+
+    await expect(runValidation({ switchTab: false })).resolves.toBeUndefined()
+
+    const workflowStore = useWorkflowArtifactsStore(pinia)
+    expect(workflowStore.currentValidation?.res).toBeTruthy()
+    expect(workflowStore.currentRun?.reportXlsxPath).toBe('')
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.statusLine || '')).toContain('auto-export XLSX failed')
+    expect(String(validationState.statusLine || '')).toContain('save failed')
+  })
+
   it('normalizes cross-refresh datasets from polygon cache info', async () => {
     invokeCommandMock.mockResolvedValueOnce({
       datasets: [
@@ -638,5 +775,27 @@ describe('validationService', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('build_validation_shortlist_csv', expect.any(Object))
     expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.any(Object))
     expect(invokeCommandMock).toHaveBeenCalledWith('open_reports_dir')
+  })
+
+  it('preserves Stage 3 meta XLSX fallback when no validation artifact exists', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      autoRevealReport: true,
+    }
+    ;(pinia.state.value as Record<string, unknown>).commandActions = {
+      latestMetaReportPath: 'C:/reports/meta_latest.xlsx',
+    }
+
+    await exportReportXlsx()
+
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
+      path: 'C:/reports/meta_latest.xlsx',
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/reports/meta_latest.xlsx',
+    })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(validationState.statusLine).toBe('Opened Stage 3 XLSX report: C:/reports/meta_latest.xlsx')
   })
 })

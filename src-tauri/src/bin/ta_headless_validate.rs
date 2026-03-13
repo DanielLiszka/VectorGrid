@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use ta_app_core::{
     read_candles_from_csv_compat, Backend, CrossTickerConfig, CrossTickerDataset, CscvPboConfig,
     DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, PerturbConfig,
-    TradeBootstrapConfig, WalkForwardConfigOptional,
+    TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
 };
 use ta_desktop_demo_app::commands::{
     apply_cross_ticker_validation_double_ma_headless, build_report_xlsx_bytes_headless,
@@ -152,6 +152,21 @@ struct Cli {
 
     #[arg(long, default_value_t = 0.05)]
     perturb_flip_bool_prob: f64,
+
+    #[arg(long)]
+    min_psr: Option<f64>,
+
+    #[arg(long)]
+    min_dsr: Option<f64>,
+
+    #[arg(long)]
+    min_cscv_oos_rank_frac: Option<f64>,
+
+    #[arg(long)]
+    min_cscv_oos_metric: Option<f64>,
+
+    #[arg(long)]
+    max_pbo: Option<f64>,
 
     #[arg(long, default_value_t = false)]
     bootstrap_enable: bool,
@@ -417,6 +432,13 @@ fn main() -> Result<(), String> {
     let validation_engine = ta_app_core::ValidationEngine::Vectorized;
     let iterative_cfg = ta_app_core::IterativeSimConfig::default();
     let validation_backend = to_backend(cli.backend.clone());
+    let strategy_kind = "DoubleMa".to_string();
+    let validation_context = Some(ValidationArtifactContext {
+        strategy_kind: strategy_kind.clone(),
+        csv_path: Some(cli.csv.to_string_lossy().to_string()),
+        timeframe: None,
+        label: None,
+    });
 
     let val_req = DoubleMaValidationRequest {
         data_id,
@@ -436,12 +458,12 @@ fn main() -> Result<(), String> {
         max_candidates: cli.validate_max_candidates,
         validation_engine,
         iterative: iterative_cfg.clone(),
-        min_psr: None,
-        min_dsr: None,
-        min_cscv_oos_rank_frac: None,
-        min_cscv_oos_metric: None,
-        max_pbo: None,
-        validation_context: None,
+        min_psr: cli.min_psr,
+        min_dsr: cli.min_dsr,
+        min_cscv_oos_rank_frac: cli.min_cscv_oos_rank_frac,
+        min_cscv_oos_metric: cli.min_cscv_oos_metric,
+        max_pbo: cli.max_pbo,
+        validation_context: validation_context.clone(),
     };
 
     println!("Running validation...");
@@ -497,9 +519,27 @@ fn main() -> Result<(), String> {
     let report = json!({
          "kind": "vectorbt_run_artifact",
          "ts": ts,
+         "run": {
+             "req": {
+                 "strategy_kind": strategy_kind,
+                 "ma_source": cli.ma_source.clone()
+             }
+         },
          "data": { "meta": { "min_ts": min_ts, "max_ts": max_ts } },
          "optimization": { "res": serde_json::to_value(&opt_res).map_err(|e| e.to_string())? },
-         "validation": { "res": serde_json::to_value(&val_res).map_err(|e| e.to_string())? }
+         "validation": {
+             "req": {
+                 "strategy_kind": "DoubleMa",
+                 "ma_source": cli.ma_source.clone(),
+                 "validation_context": validation_context,
+                 "min_psr": cli.min_psr,
+                 "min_dsr": cli.min_dsr,
+                 "min_cscv_oos_rank_frac": cli.min_cscv_oos_rank_frac,
+                 "min_cscv_oos_metric": cli.min_cscv_oos_metric,
+                 "max_pbo": cli.max_pbo
+             },
+             "res": serde_json::to_value(&val_res).map_err(|e| e.to_string())?
+         }
     });
 
     if let Some(out_json) = cli.out_json.as_ref() {

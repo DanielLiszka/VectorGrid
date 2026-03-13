@@ -9,6 +9,10 @@ mod commands_reports_csv;
 mod commands_reports_meta_xlsx;
 #[path = "commands_reports_shared.rs"]
 mod commands_reports_shared;
+#[path = "commands_reports_validation_common.rs"]
+mod commands_reports_validation_common;
+#[path = "commands_reports_validation_xlsx.rs"]
+mod commands_reports_validation_xlsx;
 
 pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
     commands_reports_shared::quantile(sorted, q)
@@ -41,8 +45,7 @@ pub(crate) fn build_meta_report_xlsx_bytes(
 
 pub(crate) fn build_report_xlsx_blocking(report: Value) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
-    let bytes = build_report_xlsx_analysis_v2(&report, None)
-        .or_else(|_| build_report_xlsx_bytes(&report, None))?;
+    let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, None)?;
     Ok(general_purpose::STANDARD.encode(bytes))
 }
 
@@ -52,8 +55,7 @@ pub fn build_report_xlsx_bytes_headless(
     report: &Value,
     max_rows: Option<usize>,
 ) -> Result<Vec<u8>, String> {
-    build_report_xlsx_analysis_v2(report, max_rows)
-        .or_else(|_| build_report_xlsx_bytes(report, max_rows))
+    commands_reports_validation_xlsx::build_validation_report_xlsx(report, max_rows)
 }
 
 pub(crate) fn save_report_xlsx_blocking(
@@ -62,8 +64,7 @@ pub(crate) fn save_report_xlsx_blocking(
     app: tauri::AppHandle,
 ) -> Result<SaveReportXlsxResponse, String> {
     let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
-    let bytes = build_report_xlsx_analysis_v2(&report, max_rows)
-        .or_else(|_| build_report_xlsx_bytes(&report, max_rows))?;
+    let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
     let path = commands_reports_shared::suggest_report_path(&report, &app)?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     Ok(SaveReportXlsxResponse {
@@ -72,6 +73,7 @@ pub(crate) fn save_report_xlsx_blocking(
     })
 }
 
+#[allow(dead_code)]
 fn build_report_xlsx_analysis_v2(
     report: &Value,
     max_rows: Option<usize>,
@@ -1586,6 +1588,7 @@ fn build_report_xlsx_analysis_v2(
         .map_err(|e: XlsxError| e.to_string())
 }
 
+#[allow(dead_code)]
 fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Vec<u8>, String> {
     use rust_xlsxwriter::{
         Chart, ChartFormat, ChartMarker, ChartMarkerType, ChartSolidFill, ChartType, Color,
@@ -3062,12 +3065,12 @@ mod tests {
         let mut it = csv.lines();
         let header = it.next().unwrap_or_default();
         let header_fields = parse_csv_fields(header);
-        assert_eq!(header_fields.len(), 19);
+        assert_eq!(header_fields.len(), 28);
         let row = it.next().unwrap_or_default();
         let row_fields = parse_csv_fields(row);
-        assert_eq!(row_fields.len(), 19);
-        assert!(row_fields[18].contains("\"fast_ma_type\":\"sma\""));
-        assert!(csv.contains("rank,fast_ma,fast_len"));
+        assert_eq!(row_fields.len(), 28);
+        assert!(row_fields[27].contains("\"fast_ma_type\":\"sma\""));
+        assert!(csv.contains("rank,approval_label"));
         assert!(csv.contains("params_json"));
     }
 
@@ -3101,13 +3104,13 @@ mod tests {
           }
         });
 
-        let bytes = build_report_xlsx_bytes(&report, Some(50)).expect("xlsx bytes");
+        let bytes = build_report_xlsx_bytes_headless(&report, Some(50)).expect("xlsx bytes");
         assert!(bytes.len() > 512);
         assert_eq!(&bytes[0..2], b"PK");
     }
 
     #[test]
-    fn report_xlsx_analysis_v2_smoke() {
+    fn validation_report_workbook_smoke() {
         let report = json!({
           "version": 1,
           "kind": "vectorbt_report",
@@ -3139,12 +3142,9 @@ mod tests {
           }
         });
 
-        let bytes = build_report_xlsx_analysis_v2(&report, Some(25)).expect("xlsx bytes");
+        let bytes = build_report_xlsx_bytes_headless(&report, Some(25)).expect("xlsx bytes");
         assert!(bytes.len() > 512);
         assert_eq!(&bytes[0..2], b"PK");
-        assert!(bytes
-            .windows(b"xl/media/image1.png".len())
-            .any(|w| w == b"xl/media/image1.png"));
     }
 
     #[test]

@@ -411,14 +411,16 @@ function readLatestMetaReportPath(): string {
 }
 
 function readValidationExportPrefs(): {
+  autoExport: boolean
   autoReveal: boolean
   maxRows: number | null
 } {
   const store = readValidationStoreState()
+  const autoExport = normalizeBoolean(store?.autoExportXlsx)
   const autoReveal = normalizeBoolean(store?.autoRevealReport)
   const rawTopN = Math.floor(Number(store?.autoExportTopN))
   const maxRows = Number.isFinite(rawTopN) && rawTopN > 0 ? rawTopN : null
-  return { autoReveal, maxRows }
+  return { autoExport, autoReveal, maxRows }
 }
 
 function buildCurrentReportPayloadFromStore(): {
@@ -1268,6 +1270,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const validationRows = buildValidationTableRows(shortlist.rows, shortlist.hasCross)
     const validationShortlistMeta = validationRows.length > 0 ? buildValidationShortlistMetaText(shortlist, minPsrGate, minDsrGate) : 'No validation result yet.'
     const statusLine = `Validation done in ${elapsedMs.toFixed(0)}ms (frontend)`
+    const { autoExport } = readValidationExportPrefs()
     const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes)
 
     applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
@@ -1291,6 +1294,16 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     writeDomTextContent('status', statusLine)
 
     if (switchTab) selectWorkflowResultsTab('validate', true)
+    if (autoExport) {
+      try {
+        await exportReportXlsx()
+      } catch (error) {
+        const reason = String(error || '').trim() || 'unknown error'
+        const exportStatus = `Validation complete, but auto-export XLSX failed: ${reason}`
+        patchValidationStoreState({ statusLine: exportStatus })
+        writeDomTextContent('status', exportStatus)
+      }
+    }
   } catch (error) {
     const message = String(error || '').trim() || 'Validation failed.'
     patchValidationStoreState({
