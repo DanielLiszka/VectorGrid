@@ -515,6 +515,11 @@ fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
             fast_ma: "alma",
             slow_ma: "alma",
         },
+        MaBenchCase {
+            label: "frama_sma",
+            fast_ma: "frama",
+            slow_ma: "sma",
+        },
     ];
 
     let cases: &[(&str, (u32, u32, u32), (u32, u32, u32), Option<&'static str>)] = &[
@@ -543,7 +548,11 @@ fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
     for ma in ma_cases {
         let mut group = c.benchmark_group(format!("double_ma/gpu_hybrid_kernel/{}/200k", ma.label));
         group.measurement_time(Duration::from_secs(8));
-        group.sample_size(if ma.fast_ma == "alma" || ma.slow_ma == "alma" {
+        group.sample_size(if ma.fast_ma == "alma"
+            || ma.slow_ma == "alma"
+            || ma.fast_ma == "frama"
+            || ma.slow_ma == "frama"
+        {
             10
         } else {
             20

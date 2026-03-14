@@ -3038,6 +3038,15 @@ static __device__ __forceinline__ int bin_period_i32(int v, int v_min, int v_max
     return (int)b;
 }
 
+static __device__ __forceinline__ int resolve_dense_pair_idx(
+    int compact_pair,
+    int dense_pairs,
+    const int* __restrict__ pair_index_map) {
+    const int dense_pair =
+        (pair_index_map != nullptr) ? pair_index_map[compact_pair] : compact_pair;
+    return (dense_pair >= 0 && dense_pair < dense_pairs) ? dense_pair : -1;
+}
+
 extern "C" __global__
 void fill_f32(float* __restrict__ out, int N, float value) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
@@ -3062,10 +3071,18 @@ void heatmap_update_scores_tm_f32(
     int fast_max,
     int slow_min,
     int slow_max,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
     float* __restrict__ heatmap_out
 ) {
+    const int dense_pairs = pairs;
+    const int total_pairs = (pair_count > 0) ? pair_count : pairs;
     const int stride = blockDim.x * gridDim.x;
-    for (int pair = blockIdx.x * blockDim.x + threadIdx.x; pair < pairs; pair += stride) {
+    for (int compact_pair = blockIdx.x * blockDim.x + threadIdx.x;
+         compact_pair < total_pairs;
+         compact_pair += stride) {
+        const int pair = resolve_dense_pair_idx(compact_pair, dense_pairs, pair_index_map);
+        if (pair < 0) continue;
         const int pf_local = pair / Ps_tile;
         const int ps_local = pair - pf_local * Ps_tile;
         if (pf_local < 0 || pf_local >= Pf_tile || ps_local < 0 || ps_local >= Ps_tile) continue;
@@ -3101,30 +3118,37 @@ void select_topk_from_pairs_tm_f32(
     const int* __restrict__ slow_periods,
     int objective,
     int topk,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
     int* __restrict__ out_pair_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    const int dense_pairs = pairs;
+    const int total_pairs = (pair_count > 0) ? pair_count : pairs;
     float keys[TOPK_ITEMS_PER_THREAD];
     int vals[TOPK_ITEMS_PER_THREAD];
 
 #pragma unroll
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
-        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        const int compact_idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         float score = NEG_INF_F;
         int val = -1;
-        if (idx < pairs) {
-            const int pf_local = idx / Ps_tile;
-            const int ps_local = idx - pf_local * Ps_tile;
-            if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
-                const int f = fast_periods[pf_local];
-                const int s = slow_periods[ps_local];
-                if (f < s) {
-                    const size_t base = (size_t)idx * (size_t)metrics_stride;
-                    score = objective_score_f32(metrics, base, M, objective);
-                    if (!isfinite(score)) score = NEG_INF_F;
+        if (compact_idx < total_pairs) {
+            const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
+            if (pair >= 0) {
+                const int pf_local = pair / Ps_tile;
+                const int ps_local = pair - pf_local * Ps_tile;
+                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                    const int f = fast_periods[pf_local];
+                    const int s = slow_periods[ps_local];
+                    if (f < s) {
+                        const size_t base = (size_t)pair * (size_t)metrics_stride;
+                        score = objective_score_f32(metrics, base, M, objective);
+                        if (!isfinite(score)) score = NEG_INF_F;
+                        val = pair;
+                    }
                 }
             }
-            val = idx;
         }
         keys[item] = score;
         vals[item] = val;
@@ -3217,32 +3241,39 @@ void select_topk_from_pairs_tm_f32_v2(
     float min_trades,
     int use_max_dd,
     float max_dd,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
     int* __restrict__ out_pair_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    const int dense_pairs = pairs;
+    const int total_pairs = (pair_count > 0) ? pair_count : pairs;
     float keys[TOPK_ITEMS_PER_THREAD];
     int vals[TOPK_ITEMS_PER_THREAD];
 
 #pragma unroll
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
-        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        const int compact_idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         float score = NEG_INF_F;
         int val = -1;
-        if (idx < pairs) {
-            const int pf_local = idx / Ps_tile;
-            const int ps_local = idx - pf_local * Ps_tile;
-            if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
-                const int f = fast_periods[pf_local];
-                const int s = slow_periods[ps_local];
-                if (f < s) {
-                    const size_t base = (size_t)idx * (size_t)metrics_stride;
-                    if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                        score = objective_score_f32(metrics, base, M, objective);
-                        if (!isfinite(score)) score = NEG_INF_F;
+        if (compact_idx < total_pairs) {
+            const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
+            if (pair >= 0) {
+                const int pf_local = pair / Ps_tile;
+                const int ps_local = pair - pf_local * Ps_tile;
+                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                    const int f = fast_periods[pf_local];
+                    const int s = slow_periods[ps_local];
+                    if (f < s) {
+                        const size_t base = (size_t)pair * (size_t)metrics_stride;
+                        if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                            score = objective_score_f32(metrics, base, M, objective);
+                            if (!isfinite(score)) score = NEG_INF_F;
+                            val = pair;
+                        }
                     }
                 }
             }
-            val = idx;
         }
         keys[item] = score;
         vals[item] = val;

@@ -151,6 +151,12 @@ impl PipelineTimingProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct KernelExecutorTimingMs {
+    pub(crate) gpu_indicator_prep_ms: u64,
+    pub(crate) h2d_upload_ms: u64,
+}
+
 #[inline]
 fn device_attr_u32(device: Device, attr: DeviceAttribute, fallback: u32) -> u32 {
     device
@@ -692,6 +698,23 @@ impl CudaKernelRuntime {
 
 thread_local! {
     static CUDA_KERNEL_RUNTIME: RefCell<HashMap<u32, CudaKernelRuntime>> = RefCell::new(HashMap::new());
+    static LAST_KERNEL_EXECUTOR_TIMING: RefCell<Option<KernelExecutorTimingMs>> = RefCell::new(None);
+}
+
+fn clear_last_kernel_executor_timing() {
+    LAST_KERNEL_EXECUTOR_TIMING.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+fn record_last_kernel_executor_timing(timing: KernelExecutorTimingMs) {
+    LAST_KERNEL_EXECUTOR_TIMING.with(|cell| {
+        *cell.borrow_mut() = Some(timing);
+    });
+}
+
+pub(crate) fn take_last_kernel_executor_timing() -> Option<KernelExecutorTimingMs> {
+    LAST_KERNEL_EXECUTOR_TIMING.with(|cell| cell.borrow_mut().take())
 }
 
 fn emit_progress(
@@ -3618,7 +3641,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     })?
                     .copy_from(&slow_precomputed_host_tile)
                     .map_err(|e| e.to_string())?;
-
                 unsafe {
                     let mut in_ptr = scratch.d_slow_ma.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut rows = ps as i32;
@@ -4255,6 +4277,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
     let device_id = cfg.device_id;
+    clear_last_kernel_executor_timing();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
         let mut map = cell.borrow_mut();
         if !map.contains_key(&device_id) {
@@ -4264,7 +4287,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
         let rt = map.get_mut(&device_id).expect("just inserted");
         rt.set_current()?;
 
-        optimize_double_ma_gpu_kernel_impl(
+        let (result, timing) = optimize_double_ma_gpu_kernel_impl(
             rt,
             candles,
             fast_periods,
@@ -4290,7 +4313,9 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
             eval_range,
             cancel,
             progress,
-        )
+        )?;
+        record_last_kernel_executor_timing(timing);
+        Ok(result)
     })
 }
 
@@ -4320,7 +4345,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
-) -> Result<OptimizationResult, String> {
+) -> Result<(OptimizationResult, KernelExecutorTimingMs), String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
@@ -4335,6 +4360,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         None
     };
+    let mut gpu_indicator_prep_elapsed = Duration::ZERO;
+    let mut h2d_upload_elapsed = Duration::ZERO;
 
     let export_path = export_all_csv_path.map(str::trim).filter(|s| !s.is_empty());
     if export_path.is_some() && include_all {
@@ -4731,9 +4758,12 @@ fn optimize_double_ma_gpu_kernel_impl(
             slow_ma_params
         };
     if fast_ma == "sma" || slow_ma == "sma" {
+        let t0 = Instant::now();
         ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)?;
+        gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
     }
     if fast_ma == "vwma" || slow_ma == "vwma" {
+        let t0 = Instant::now();
         ma.ensure_vwma_prefix_pv_vol_f64(
             d_ma_prices,
             d_volume
@@ -4742,6 +4772,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             n,
             first_valid,
         )?;
+        gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
     }
 
     let bt_module = &rt.module;
@@ -4977,6 +5008,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         Vec::new()
     };
+    let mut fast_precomputed_host_tile: Vec<f32> = Vec::new();
+    let mut slow_precomputed_host_tile: Vec<f32> = Vec::new();
 
     let mut global_fast_rows: Option<DeviceBuffer<i32>> = None;
     let mut global_slow_rows: Option<DeviceBuffer<i32>> = None;
@@ -5096,13 +5129,64 @@ fn optimize_double_ma_gpu_kernel_impl(
         host_p_fast.resize(pf_tile_tm, f_pad);
         // Host period vectors are pageable and mutated per tile; keep this copy
         // synchronous to avoid host-data races with async H2D semantics.
+        let h2d_t0 = Instant::now();
         scratch
             .d_fast_p
             .as_mut()
             .unwrap()
             .copy_from(&host_p_fast)
             .map_err(|e| e.to_string())?;
-        if use_fast_path {
+        h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
+        if let Some(precomputed_fast) = fast_precomputed {
+            pack_precomputed_rows_with_padding(
+                precomputed_fast,
+                f_start,
+                pf,
+                pf_tile_tm,
+                &mut fast_precomputed_host_tile,
+            )?;
+            let h2d_t0 = Instant::now();
+            scratch
+                .d_fast_ma
+                .as_mut()
+                .ok_or_else(|| {
+                    "internal error: missing d_fast_ma for precomputed fast matrix".to_string()
+                })?
+                .copy_from(&fast_precomputed_host_tile)
+                .map_err(|e| e.to_string())?;
+            h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
+            let prep_t0 = Instant::now();
+            unsafe {
+                let mut in_ptr = scratch.d_fast_ma.as_ref().unwrap().as_device_ptr().as_raw();
+                let mut rows = pf as i32;
+                let mut cols = n as i32;
+                let mut out_rows = fast_tm_rows as i32;
+                let mut out_ptr = scratch
+                    .d_fast_ma_tm
+                    .as_ref()
+                    .unwrap()
+                    .as_device_ptr()
+                    .as_raw();
+                let total = pf.saturating_mul(n);
+                let launch =
+                    choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                let block_x: u32 = launch.block_x;
+                let grid_x: u32 = launch.grid_x;
+                let args: &mut [*mut c_void] = &mut [
+                    &mut in_ptr as *mut _ as *mut c_void,
+                    &mut rows as *mut _ as *mut c_void,
+                    &mut cols as *mut _ as *mut c_void,
+                    &mut out_rows as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                bt_stream
+                    .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                    .map_err(|e| e.to_string())?;
+            }
+            gpu_indicator_prep_elapsed =
+                gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
+        } else if use_fast_path {
+            let prep_t0 = Instant::now();
             ma.compute_period_ma_tm_into(
                 fast_ma.as_str(),
                 fast_params,
@@ -5113,7 +5197,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                 scratch.d_fast_p.as_ref().unwrap(),
                 scratch.d_fast_ma_tm.as_mut().unwrap(),
             )?;
+            gpu_indicator_prep_elapsed =
+                gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
         } else {
+            let prep_t0 = Instant::now();
             ma.compute_period_ma_into(
                 fast_ma.as_str(),
                 fast_params,
@@ -5152,6 +5239,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                     .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                     .map_err(|e| e.to_string())?;
             }
+            gpu_indicator_prep_elapsed =
+                gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
         }
 
         let mut s_start = 0usize;
@@ -5182,13 +5271,64 @@ fn optimize_double_ma_gpu_kernel_impl(
             host_p_slow.resize(ps_tile_tm, s_pad);
             // Host period vectors are pageable and mutated per tile; keep this copy
             // synchronous to avoid host-data races with async H2D semantics.
+            let h2d_t0 = Instant::now();
             scratch
                 .d_slow_p
                 .as_mut()
                 .unwrap()
                 .copy_from(&host_p_slow)
                 .map_err(|e| e.to_string())?;
-            if use_fast_path {
+            h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
+            if let Some(precomputed_slow) = slow_precomputed {
+                pack_precomputed_rows_with_padding(
+                    precomputed_slow,
+                    s_start,
+                    ps,
+                    ps_tile_tm,
+                    &mut slow_precomputed_host_tile,
+                )?;
+                let h2d_t0 = Instant::now();
+                scratch
+                    .d_slow_ma
+                    .as_mut()
+                    .ok_or_else(|| {
+                        "internal error: missing d_slow_ma for precomputed slow matrix".to_string()
+                    })?
+                    .copy_from(&slow_precomputed_host_tile)
+                    .map_err(|e| e.to_string())?;
+                h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
+                let prep_t0 = Instant::now();
+                unsafe {
+                    let mut in_ptr = scratch.d_slow_ma.as_ref().unwrap().as_device_ptr().as_raw();
+                    let mut rows = ps as i32;
+                    let mut cols = n as i32;
+                    let mut out_rows = slow_tm_rows as i32;
+                    let mut out_ptr = scratch
+                        .d_slow_ma_tm
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let total = ps.saturating_mul(n);
+                    let launch =
+                        choose_launch_shape_1d(total, device_launch_caps, transpose_launch_caps);
+                    let block_x: u32 = launch.block_x;
+                    let grid_x: u32 = launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut in_ptr as *mut _ as *mut c_void,
+                        &mut rows as *mut _ as *mut c_void,
+                        &mut cols as *mut _ as *mut c_void,
+                        &mut out_rows as *mut _ as *mut c_void,
+                        &mut out_ptr as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+                gpu_indicator_prep_elapsed =
+                    gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
+            } else if use_fast_path {
+                let prep_t0 = Instant::now();
                 ma.compute_period_ma_tm_into(
                     slow_ma.as_str(),
                     slow_params,
@@ -5199,7 +5339,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                     scratch.d_slow_p.as_ref().unwrap(),
                     scratch.d_slow_ma_tm.as_mut().unwrap(),
                 )?;
+                gpu_indicator_prep_elapsed =
+                    gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
             } else {
+                let prep_t0 = Instant::now();
                 ma.compute_period_ma_into(
                     slow_ma.as_str(),
                     slow_params,
@@ -5238,6 +5381,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                         .map_err(|e| e.to_string())?;
                 }
+                gpu_indicator_prep_elapsed =
+                    gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
             }
 
             let pairs = pf
@@ -5267,12 +5412,14 @@ fn optimize_double_ma_gpu_kernel_impl(
                         launch_pairs,
                         bt_stream,
                     )?;
+                    let h2d_t0 = Instant::now();
                     scratch
                         .d_valid_pair_index
                         .as_mut()
                         .unwrap()
                         .copy_from(&valid_map)
                         .map_err(|e| e.to_string())?;
+                    h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
                     pair_index_map_ptr = scratch
                         .d_valid_pair_index
                         .as_ref()
@@ -5629,8 +5776,18 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut s_max_i = s_max as i32;
                         let mut out_ptr = h.as_device_ptr().as_raw();
 
-                        let launch =
-                            choose_launch_shape_1d(pairs, device_launch_caps, heatmap_launch_caps);
+                        let mut pair_map_ptr = pair_index_map_ptr;
+                        let mut pair_count_i = launch_pairs as i32;
+                        let heatmap_pairs = if pair_map_ptr != 0 && launch_pairs > 0 {
+                            launch_pairs
+                        } else {
+                            pairs
+                        };
+                        let launch = choose_launch_shape_1d(
+                            heatmap_pairs,
+                            device_launch_caps,
+                            heatmap_launch_caps,
+                        );
                         let block_x: u32 = launch.block_x;
                         let grid_x: u32 = launch.grid_x;
                         let args: &mut [*mut c_void] = &mut [
@@ -5649,6 +5806,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_max_i as *mut _ as *mut c_void,
                             &mut s_min_i as *mut _ as *mut c_void,
                             &mut s_max_i as *mut _ as *mut c_void,
+                            &mut pair_map_ptr as *mut _ as *mut c_void,
+                            &mut pair_count_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -5939,7 +6098,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                     continue;
                 }
 
-                let blocks1 = (pairs + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+                let pair_stage_pairs = if pair_index_map_ptr != 0 && launch_pairs > 0 {
+                    launch_pairs
+                } else {
+                    pairs
+                };
+                let blocks1 = (pair_stage_pairs + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
                 let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
                 let cand_a = scratch.d_cand_a.as_mut().unwrap();
                 let cand_b = scratch.d_cand_b.as_mut().unwrap();
@@ -5955,6 +6119,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut obj_i = objective_i;
                     let mut topk_i = topk_select as i32;
+                    let mut pair_map_ptr = pair_index_map_ptr;
+                    let mut pair_count_i = launch_pairs as i32;
                     let mut out_ptr = cand_a.as_device_ptr().as_raw();
 
                     let block_x: u32 = 256;
@@ -5979,6 +6145,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut min_trades as *mut _ as *mut c_void,
                             &mut use_max_dd as *mut _ as *mut c_void,
                             &mut max_dd as *mut _ as *mut c_void,
+                            &mut pair_map_ptr as *mut _ as *mut c_void,
+                            &mut pair_count_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -6004,6 +6172,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
                             &mut topk_i as *mut _ as *mut c_void,
+                            &mut pair_map_ptr as *mut _ as *mut c_void,
+                            &mut pair_count_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -6768,7 +6938,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     cols: n,
                     values_row_major: values.as_slice(),
                 });
-        let full = optimize_double_ma_gpu_kernel_impl(
+        let (full, _) = optimize_double_ma_gpu_kernel_impl(
             rt,
             candles,
             &fast_needed,
@@ -6839,7 +7009,13 @@ fn optimize_double_ma_gpu_kernel_impl(
         );
     }
 
-    Ok(result)
+    Ok((
+        result,
+        KernelExecutorTimingMs {
+            gpu_indicator_prep_ms: gpu_indicator_prep_elapsed.as_millis() as u64,
+            h2d_upload_ms: h2d_upload_elapsed.as_millis() as u64,
+        },
+    ))
 }
 
 #[cfg(test)]

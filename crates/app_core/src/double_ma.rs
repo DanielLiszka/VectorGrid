@@ -6550,6 +6550,32 @@ pub(crate) fn estimate_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[
     total
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ValidPairWork {
+    fast_idx: usize,
+    slow_idx: usize,
+    fast_len: u16,
+    slow_len: u16,
+}
+
+#[inline]
+fn build_valid_pair_work(f_chunk: &[u16], s_chunk: &[u16]) -> Vec<ValidPairWork> {
+    let mut out = Vec::with_capacity(estimate_pairs_fast_lt_slow(f_chunk, s_chunk));
+    for (fast_idx, &fast_len) in f_chunk.iter().enumerate() {
+        for (slow_idx, &slow_len) in s_chunk.iter().enumerate() {
+            if fast_len < slow_len {
+                out.push(ValidPairWork {
+                    fast_idx,
+                    slow_idx,
+                    fast_len,
+                    slow_len,
+                });
+            }
+        }
+    }
+    out
+}
+
 const MAX_MA_PARAM_SWEEP_VALUES: usize = 64;
 const MAX_MA_PARAM_VARIANTS_PER_SIDE: usize = 512;
 const MAX_MA_PARAM_VARIANT_PAIRS: usize = 4096;
@@ -6854,7 +6880,7 @@ pub(crate) fn ma_matrix_cpu_f64(
         let out = vector_ta::indicators::moving_averages::alma::alma_batch_with_kernel(
             prices,
             &sweep,
-            vector_ta::utilities::enums::Kernel::Auto,
+            vector_ta::utilities::enums::Kernel::ScalarBatch,
         )
         .map_err(|e| e.to_string())?;
         if out.cols != n {
@@ -6882,6 +6908,65 @@ pub(crate) fn ma_matrix_cpu_f64(
         return Ok((values, n));
     }
 
+    if ma_type.eq_ignore_ascii_case("frama") {
+        let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+        let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+        let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+        let sc = ma_params
+            .and_then(|params| params.get("sc").copied())
+            .unwrap_or(300.0);
+        let fc = ma_params
+            .and_then(|params| params.get("fc").copied())
+            .unwrap_or(1.0);
+        if !sc.is_finite() || sc <= 0.0 {
+            return Err(format!("invalid frama sc parameter: {sc}"));
+        }
+        if !fc.is_finite() || fc <= 0.0 {
+            return Err(format!("invalid frama fc parameter: {fc}"));
+        }
+        let sweep = vector_ta::indicators::moving_averages::frama::FramaBatchRange {
+            window: (start, end, step),
+            sc: (sc.round() as usize, sc.round() as usize, 0),
+            fc: (fc.round() as usize, fc.round() as usize, 0),
+        };
+        let out = vector_ta::indicators::moving_averages::frama::frama_batch_with_kernel(
+            high,
+            low,
+            close,
+            &sweep,
+            vector_ta::utilities::enums::Kernel::ScalarBatch,
+        )
+        .map_err(|e| e.to_string())?;
+        if out.cols != n {
+            return Err(format!("frama batch cols {} != {n}", out.cols));
+        }
+        for (src_row, params) in out.combos.iter().enumerate() {
+            let per = params.window.unwrap_or(start) as usize;
+            let row = if step == 0 {
+                0usize
+            } else if per >= start && (per - start) % step == 0 {
+                (per - start) / step
+            } else {
+                continue;
+            };
+            if row >= rows {
+                continue;
+            }
+            let src_off = src_row.saturating_mul(out.cols);
+            let dst_off = row.saturating_mul(n);
+            if src_off + n > out.values.len() || dst_off + n > values.len() {
+                continue;
+            }
+            for (dst, &src) in values[dst_off..dst_off + n]
+                .iter_mut()
+                .zip(out.values[src_off..src_off + n].iter())
+            {
+                *dst = src as f64;
+            }
+        }
+        return Ok((values, n));
+    }
+
     let data = vector_ta::indicators::moving_averages::ma::MaData::Candles {
         candles,
         source: ma_source,
@@ -6890,7 +6975,7 @@ pub(crate) fn ma_matrix_cpu_f64(
         ma_type,
         data,
         (start, end, step.max(1)),
-        vector_ta::utilities::enums::Kernel::Auto,
+        vector_ta::utilities::enums::Kernel::ScalarBatch,
         ma_params,
     );
     match batch {
@@ -6921,13 +7006,14 @@ pub(crate) fn ma_matrix_cpu_f64(
         }
         _ => {
             for (row, &period) in periods.iter().enumerate() {
-                let series = vector_ta::indicators::moving_averages::ma::ma(
+                let series = vector_ta::indicators::moving_averages::ma::ma_with_kernel(
                     ma_type,
                     vector_ta::indicators::moving_averages::ma::MaData::Candles {
                         candles,
                         source: ma_source,
                     },
                     period as usize,
+                    vector_ta::utilities::enums::Kernel::Scalar,
                 )
                 .unwrap_or_else(|_| vec![f64::NAN; n]);
                 if series.len() != n {
@@ -7064,7 +7150,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
         let out = vector_ta::indicators::moving_averages::alma::alma_batch_with_kernel(
             prices,
             &sweep,
-            vector_ta::utilities::enums::Kernel::Auto,
+            vector_ta::utilities::enums::Kernel::ScalarBatch,
         )
         .map_err(|e| e.to_string())?;
         if out.cols != n {
@@ -7072,6 +7158,65 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
         }
         for (src_row, params) in out.combos.iter().enumerate() {
             let per = params.period.unwrap_or(start) as usize;
+            let row = if step == 0 {
+                0usize
+            } else if per >= start && (per - start) % step == 0 {
+                (per - start) / step
+            } else {
+                continue;
+            };
+            if row >= rows {
+                continue;
+            }
+            let src_off = src_row.saturating_mul(out.cols);
+            let dst_off = row.saturating_mul(n);
+            if src_off + n > out.values.len() || dst_off + n > values.len() {
+                continue;
+            }
+            for (dst, &src) in values[dst_off..dst_off + n]
+                .iter_mut()
+                .zip(out.values[src_off..src_off + n].iter())
+            {
+                *dst = src as f32;
+            }
+        }
+        return Ok((values, n));
+    }
+
+    if ma_type.eq_ignore_ascii_case("frama") {
+        let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+        let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+        let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+        let sc = ma_params
+            .and_then(|params| params.get("sc").copied())
+            .unwrap_or(300.0);
+        let fc = ma_params
+            .and_then(|params| params.get("fc").copied())
+            .unwrap_or(1.0);
+        if !sc.is_finite() || sc <= 0.0 {
+            return Err(format!("invalid frama sc parameter: {sc}"));
+        }
+        if !fc.is_finite() || fc <= 0.0 {
+            return Err(format!("invalid frama fc parameter: {fc}"));
+        }
+        let sweep = vector_ta::indicators::moving_averages::frama::FramaBatchRange {
+            window: (start, end, step),
+            sc: (sc.round() as usize, sc.round() as usize, 0),
+            fc: (fc.round() as usize, fc.round() as usize, 0),
+        };
+        let out = vector_ta::indicators::moving_averages::frama::frama_batch_with_kernel(
+            high,
+            low,
+            close,
+            &sweep,
+            vector_ta::utilities::enums::Kernel::ScalarBatch,
+        )
+        .map_err(|e| e.to_string())?;
+        if out.cols != n {
+            return Err(format!("frama batch cols {} != {n}", out.cols));
+        }
+        for (src_row, params) in out.combos.iter().enumerate() {
+            let per = params.window.unwrap_or(start) as usize;
             let row = if step == 0 {
                 0usize
             } else if per >= start && (per - start) % step == 0 {
@@ -7105,7 +7250,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
         ma_type,
         data,
         (start, end, step.max(1)),
-        vector_ta::utilities::enums::Kernel::Auto,
+        vector_ta::utilities::enums::Kernel::ScalarBatch,
         ma_params,
     );
 
@@ -7142,18 +7287,32 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
             Ok((values, n))
         }
         _ => {
-            // Fall back to existing f64 CPU path when batch kernels are unavailable.
-            let (values_f64, cols) = ma_matrix_cpu_f64(
-                candles,
-                ma_type,
-                ma_source,
-                periods,
-                ma_params,
-                alma_offset,
-                alma_sigma,
-            )?;
-            let values_f32: Vec<f32> = values_f64.into_iter().map(|v| v as f32).collect();
-            Ok((values_f32, cols))
+            // Fall back to row-wise CPU assembly without materializing a full f64 matrix first.
+            for (row, &period) in periods.iter().enumerate() {
+                let series = vector_ta::indicators::moving_averages::ma::ma(
+                    ma_type,
+                    vector_ta::indicators::moving_averages::ma::MaData::Candles {
+                        candles,
+                        source: ma_source,
+                    },
+                    period as usize,
+                )
+                .unwrap_or_else(|_| vec![f64::NAN; n]);
+                if series.len() != n {
+                    continue;
+                }
+                let dst_off = row.saturating_mul(n);
+                if dst_off + n > values.len() {
+                    continue;
+                }
+                for (dst, &src) in values[dst_off..dst_off + n]
+                    .iter_mut()
+                    .zip(series.iter())
+                {
+                    *dst = src as f32;
+                }
+            }
+            Ok((values, n))
         }
     }
 }
@@ -7325,82 +7484,76 @@ fn optimize_double_ma_cpu_tiled(
                 return Err("MA matrix column mismatch".to_string());
             }
 
+            let valid_pairs = build_valid_pair_work(f_chunk, s_chunk);
+
             if include_all {
-                for (i, &fast_len) in f_chunk.iter().enumerate() {
-                    let fast_row = &fast_mat[i * cols..(i + 1) * cols];
-                    for (j, &slow_len) in s_chunk.iter().enumerate() {
-                        if fast_len >= slow_len {
-                            continue;
-                        }
-                        let slow_row = &slow_mat[j * cols..(j + 1) * cols];
-                        let max_p = (fast_len as usize).max(slow_len as usize).max(1);
-                        let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
-                        let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = if let Some((plan, ctx)) = dynamic_plan_ctx.as_ref() {
-                            let dynamic_metrics =
-                                crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
-                                    plan, ctx, fast_row, slow_row, start_t, true,
-                                )?;
-                            if dynamic_shadow_enabled {
-                                let sampled = dynamic_shadow_sampled
-                                    .fetch_add(1, Ordering::Relaxed)
-                                    .saturating_add(1);
-                                if sampled % dynamic_shadow_every == 0 {
-                                    let static_metrics = eval_metrics_f64_with_exit_mode(
-                                        &lr,
-                                        close,
-                                        fast_row,
-                                        slow_row,
-                                        halftrend_trend,
-                                        start_t,
-                                        strategy,
-                                        kaufman_stops.as_ref(),
-                                        true,
-                                    );
-                                    if !crate::strategy_dynamic::metrics_shadow_equivalent(
-                                        &dynamic_metrics,
-                                        &static_metrics,
-                                    ) {
-                                        dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
-                                    }
+                for pair in &valid_pairs {
+                    let fast_row = &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
+                    let slow_row = &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
+                    let fast_len = pair.fast_len;
+                    let slow_len = pair.slow_len;
+                    let max_p = (fast_len as usize).max(slow_len as usize).max(1);
+                    let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
+                    let start_t = t_valid.saturating_add(trade_offset);
+                    let metrics = if let Some((plan, ctx)) = dynamic_plan_ctx.as_ref() {
+                        let dynamic_metrics =
+                            crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
+                                plan, ctx, fast_row, slow_row, start_t, true,
+                            )?;
+                        if dynamic_shadow_enabled {
+                            let sampled = dynamic_shadow_sampled
+                                .fetch_add(1, Ordering::Relaxed)
+                                .saturating_add(1);
+                            if sampled % dynamic_shadow_every == 0 {
+                                let static_metrics = eval_metrics_f64_with_exit_mode(
+                                    &lr,
+                                    close,
+                                    fast_row,
+                                    slow_row,
+                                    halftrend_trend,
+                                    start_t,
+                                    strategy,
+                                    kaufman_stops.as_ref(),
+                                    true,
+                                );
+                                if !crate::strategy_dynamic::metrics_shadow_equivalent(
+                                    &dynamic_metrics,
+                                    &static_metrics,
+                                ) {
+                                    dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
-                            dynamic_metrics
-                        } else {
-                            eval_metrics_f64_with_exit_mode(
-                                &lr,
-                                close,
-                                fast_row,
-                                slow_row,
-                                halftrend_trend,
-                                start_t,
-                                strategy,
-                                kaufman_stops.as_ref(),
-                                true,
-                            )
+                        }
+                        dynamic_metrics
+                    } else {
+                        eval_metrics_f64_with_exit_mode(
+                            &lr,
+                            close,
+                            fast_row,
+                            slow_row,
+                            halftrend_trend,
+                            start_t,
+                            strategy,
+                            kaufman_stops.as_ref(),
+                            true,
+                        )
+                    };
+                    if metrics_pass_constraints(&metrics, constraints) {
+                        let params = DoubleMaParams {
+                            fast_len,
+                            slow_len,
+                            fast_ma_id: 0,
+                            slow_ma_id: 0,
                         };
-                        if metrics_pass_constraints(&metrics, constraints) {
-                            let params = DoubleMaParams {
-                                fast_len,
-                                slow_len,
-                                fast_ma_id: 0,
-                                slow_ma_id: 0,
-                            };
-                            agg.push(params, metrics);
-                        }
-                        processed = processed.saturating_add(1);
-                        if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
-                            return Err("cancelled".to_string());
-                        }
+                        agg.push(params, metrics);
+                    }
+                    processed = processed.saturating_add(1);
+                    if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
                     }
                 }
             } else {
                 let compute_sharpe = objective_needs_return_stats(objective);
-                let pf = f_chunk.len();
-                let ps = s_chunk.len();
-                let tile_pairs = pf
-                    .checked_mul(ps)
-                    .ok_or_else(|| "tile pairs overflow".to_string())?;
 
                 let init = || {
                     let mut local = StreamAggregator::new(objective, top_k, false, n);
@@ -7417,23 +7570,18 @@ fn optimize_double_ma_cpu_tiled(
                     local
                 };
 
-                let tile = (0..tile_pairs)
-                    .into_par_iter()
-                    .try_fold(init, |mut local, idx| {
+                let tile = valid_pairs
+                    .par_iter()
+                    .try_fold(init, |mut local, pair| {
                         if cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
                         }
-                        let i = idx / ps;
-                        let j = idx - i * ps;
-                        let fast_len = f_chunk[i];
-                        let slow_len = s_chunk[j];
-                        if fast_len >= slow_len {
-                            return Ok(local);
-                        }
-
-                        let fast_row = &fast_mat[i * cols..(i + 1) * cols];
-                        let slow_row = &slow_mat[j * cols..(j + 1) * cols];
-
+                        let fast_row =
+                            &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
+                        let slow_row =
+                            &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
+                        let fast_len = pair.fast_len;
+                        let slow_len = pair.slow_len;
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
@@ -7503,7 +7651,7 @@ fn optimize_double_ma_cpu_tiled(
                         Ok(a)
                     })?;
 
-                processed = processed.saturating_add(estimate_pairs_fast_lt_slow(f_chunk, s_chunk));
+                processed = processed.saturating_add(valid_pairs.len());
                 agg.merge(tile);
             }
 
@@ -8044,50 +8192,44 @@ fn optimize_double_ma_gpu_sweep_tiled(
                 return Err("MA matrix column mismatch".to_string());
             }
 
+            let valid_pairs = build_valid_pair_work(f_chunk, s_chunk);
+
             if include_all {
-                for (i, &fast_len) in f_chunk.iter().enumerate() {
-                    let fast_row = &fast_mat[i * cols..(i + 1) * cols];
-                    for (j, &slow_len) in s_chunk.iter().enumerate() {
-                        if fast_len >= slow_len {
-                            continue;
-                        }
-                        let slow_row = &slow_mat[j * cols..(j + 1) * cols];
-                        let max_p = (fast_len as usize).max(slow_len as usize).max(1);
-                        let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
-                        let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = eval_metrics_f32_with_exit_mode(
-                            &lr,
-                            close,
-                            fast_row,
-                            slow_row,
-                            halftrend_trend,
-                            start_t,
-                            strategy,
-                            kaufman_stops.as_ref(),
-                            true,
-                        );
-                        if metrics_pass_constraints(&metrics, constraints) {
-                            let params = DoubleMaParams {
-                                fast_len,
-                                slow_len,
-                                fast_ma_id: 0,
-                                slow_ma_id: 0,
-                            };
-                            agg.push(params, metrics);
-                        }
-                        processed = processed.saturating_add(1);
-                        if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
-                            return Err("cancelled".to_string());
-                        }
+                for pair in &valid_pairs {
+                    let fast_row = &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
+                    let slow_row = &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
+                    let fast_len = pair.fast_len;
+                    let slow_len = pair.slow_len;
+                    let max_p = (fast_len as usize).max(slow_len as usize).max(1);
+                    let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
+                    let start_t = t_valid.saturating_add(trade_offset);
+                    let metrics = eval_metrics_f32_with_exit_mode(
+                        &lr,
+                        close,
+                        fast_row,
+                        slow_row,
+                        halftrend_trend,
+                        start_t,
+                        strategy,
+                        kaufman_stops.as_ref(),
+                        true,
+                    );
+                    if metrics_pass_constraints(&metrics, constraints) {
+                        let params = DoubleMaParams {
+                            fast_len,
+                            slow_len,
+                            fast_ma_id: 0,
+                            slow_ma_id: 0,
+                        };
+                        agg.push(params, metrics);
+                    }
+                    processed = processed.saturating_add(1);
+                    if (processed & 0x1fff) == 0 && cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
                     }
                 }
             } else {
                 let compute_sharpe = objective_needs_return_stats(objective);
-                let pf = f_chunk.len();
-                let ps = s_chunk.len();
-                let tile_pairs = pf
-                    .checked_mul(ps)
-                    .ok_or_else(|| "tile pairs overflow".to_string())?;
 
                 let init = || {
                     let mut local = StreamAggregator::new(objective, top_k, false, n);
@@ -8104,23 +8246,18 @@ fn optimize_double_ma_gpu_sweep_tiled(
                     local
                 };
 
-                let tile = (0..tile_pairs)
-                    .into_par_iter()
-                    .try_fold(init, |mut local, idx| {
+                let tile = valid_pairs
+                    .par_iter()
+                    .try_fold(init, |mut local, pair| {
                         if cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
                         }
-                        let i = idx / ps;
-                        let j = idx - i * ps;
-                        let fast_len = f_chunk[i];
-                        let slow_len = s_chunk[j];
-                        if fast_len >= slow_len {
-                            return Ok(local);
-                        }
-
-                        let fast_row = &fast_mat[i * cols..(i + 1) * cols];
-                        let slow_row = &slow_mat[j * cols..(j + 1) * cols];
-
+                        let fast_row =
+                            &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
+                        let slow_row =
+                            &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
+                        let fast_len = pair.fast_len;
+                        let slow_len = pair.slow_len;
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
@@ -8153,7 +8290,7 @@ fn optimize_double_ma_gpu_sweep_tiled(
                         Ok(a)
                     })?;
 
-                processed = processed.saturating_add(estimate_pairs_fast_lt_slow(f_chunk, s_chunk));
+                processed = processed.saturating_add(valid_pairs.len());
                 agg.merge(tile);
             }
 
@@ -8452,7 +8589,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     } else {
         0
     };
-    let gpu_indicator_prep_ms = 0u64;
+    let mut gpu_indicator_prep_ms = 0u64;
 
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
@@ -8460,7 +8597,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
 
     emit_progress(progress, 0, 1, "hybrid_transfer");
     // H2D for precomputed rows currently occurs inside the kernel executor.
-    let h2d_upload_ms = 0u64;
+    let mut h2d_upload_ms = 0u64;
 
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
@@ -8717,6 +8854,11 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                 progress,
             )?
         };
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+        if let Some(timing) = crate::gpu_backtest_kernel::take_last_kernel_executor_timing() {
+            gpu_indicator_prep_ms = timing.gpu_indicator_prep_ms;
+            h2d_upload_ms = timing.h2d_upload_ms;
+        }
         (
             res,
             BackendUsed::Gpu,
@@ -9287,6 +9429,7 @@ mod tests {
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
     }
 
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     fn find_cpu_only_period_single_ma() -> Option<String> {
         vector_ta::indicators::moving_averages::registry::list_moving_averages()
             .iter()
@@ -9297,6 +9440,23 @@ mod tests {
                 ) && info.period_based
                     && info.single_output
             })
+            .map(|info| info.id.to_string())
+    }
+
+    fn find_cpu_staged_kernel_capable_period_single_ma() -> Option<String> {
+        let registry = vector_ta::indicators::moving_averages::registry::list_moving_averages();
+        let is_cpu_staged_kernel_capable = |info: &&vector_ta::indicators::moving_averages::registry::MovingAverageInfo| {
+            info.period_based
+                && info.single_output
+                && crate::ma_policy::supports_gpu_kernel_ma(info.id)
+                && crate::ma_policy::plan_hybrid_indicator_route(info.id).route
+                    == crate::ma_policy::HybridRouteTier::CpuStaged
+        };
+
+        registry
+            .iter()
+            .find(|info| info.id.eq_ignore_ascii_case("frama") && is_cpu_staged_kernel_capable(info))
+            .or_else(|| registry.iter().find(is_cpu_staged_kernel_capable))
             .map(|info| info.id.to_string())
     }
 
@@ -9917,7 +10077,8 @@ mod tests {
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect("auto backend alma run");
-        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(res.best_params.fast_len > 0);
+        assert!(res.best_params.slow_len > 0);
         assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
     }
 
@@ -10181,6 +10342,199 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn gpu_kernel_precomputed_frama_matrix_executes() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(2400);
+        let fast_periods = [20u16, 21u16, 22u16, 23u16];
+        let slow_periods = [40u16, 41u16, 42u16, 43u16, 44u16];
+        let (fast_mat, fast_cols) =
+            ma_matrix_cpu_f32_staging(&candles, "frama", "close", &fast_periods, None, 0.85, 6.0)
+                .expect("frama staging matrix");
+        let res = optimize_double_ma_gpu_kernel_tiled_with_precomputed(
+            &candles,
+            0,
+            &fast_periods,
+            &slow_periods,
+            "frama",
+            "sma",
+            "close",
+            None,
+            None,
+            None,
+            &StrategyConfig::default(),
+            ObjectiveKind::Sharpe,
+            3,
+            false,
+            0.85,
+            6.0,
+            0.85,
+            6.0,
+            Some(fast_mat.as_slice()),
+            Some(fast_cols),
+            None,
+            None,
+            None,
+            None,
+            fast_periods.len().saturating_mul(slow_periods.len()),
+            0,
+            None,
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect("precomputed frama kernel run");
+
+        assert!(res.best_params.fast_len > 0);
+        assert!(res.best_params.slow_len > 0);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_cpu_staged_kernel_capable_ma_stays_on_gpu_path() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let Some(cpu_staged_ma) = find_cpu_staged_kernel_capable_period_single_ma() else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(2400);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 23, 1),
+            slow_range: (40, 44, 1),
+            fast_ma_types: vec![cpu_staged_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(3),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("hybrid cpu-staged kernel-capable run");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
+        );
+        assert!(
+            res.backend_route.as_deref() == Some("GpuHybridKernel"),
+            "expected explicit hybrid route, got {:?}",
+            res.backend_route
+        );
+        assert!(
+            res.backend_fallback_reason.is_none(),
+            "expected no fallback reason, got {:?}",
+            res.backend_fallback_reason
+        );
+        assert!(
+            res.hybrid_timing_ms
+                .as_ref()
+                .is_some_and(|t| t.cpu_indicator_prep_ms > 0),
+            "expected hybrid cpu staging timing for kernel-capable staged MA"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_hybrid_vdps_cpu_staged_kernel_capable_ma_stays_on_gpu_path() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let Some(cpu_staged_ma) = find_cpu_staged_kernel_capable_period_single_ma() else {
+            match prev_env {
+                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+            }
+            return;
+        };
+
+        let candles = make_trending_candles(2600);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (20, 22, 1),
+            slow_range: (40, 44, 1),
+            fast_ma_types: vec![cpu_staged_ma],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::GpuVdps,
+            top_k: Some(4),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("GpuVdps hybrid cpu-staged kernel-capable run");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "expected GPU backend, got {:?}",
+            res.backend_used
+        );
+        assert!(
+            res.backend_route.as_deref() == Some("GpuHybridKernel"),
+            "expected explicit hybrid route, got {:?}",
+            res.backend_route
+        );
+        assert!(
+            res.hybrid_timing_ms
+                .as_ref()
+                .is_some_and(|t| t.cpu_indicator_prep_ms > 0),
+            "expected hybrid cpu staging timing for kernel-capable staged MA"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn gpu_hybrid_vfct_small_grid_runs() {
         if !cuda_available() {
             return;
@@ -10332,137 +10686,6 @@ mod tests {
         assert_eq!(h1.slow_min, h2.slow_min);
         assert_eq!(h1.slow_max, h2.slow_max);
         assert_eq!(h1.values, h2.values);
-    }
-
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    #[test]
-    fn gpu_hybrid_cpu_only_ma_uses_gpu_kernel_with_precomputed_staging() {
-        if !cuda_available() {
-            return;
-        }
-        let _guard = lock_env();
-        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
-        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
-
-        let Some(cpu_only_ma) = find_cpu_only_period_single_ma() else {
-            match prev_env {
-                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
-                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
-            }
-            return;
-        };
-
-        let candles = make_trending_candles(2400);
-        let cancel = AtomicBool::new(false);
-        let req = DoubleMaRequest {
-            backend: Backend::GpuHybridKernel { device_id: 0 },
-            data_id: "test".to_string(),
-            fast_range: (20, 23, 1),
-            slow_range: (40, 44, 1),
-            fast_ma_types: vec![cpu_only_ma],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            export_all_csv_path: None,
-            fast_ma_params: None,
-            slow_ma_params: None,
-            fast_ma_param_sweeps: None,
-            slow_ma_param_sweeps: None,
-            strategy: StrategyConfig::default(),
-            halftrend_filter: None,
-            objective: ObjectiveKind::Sharpe,
-            mode: OptimizationMode::Grid,
-            top_k: Some(3),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-            constraints: None,
-            vdps: None,
-        };
-
-        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
-            .expect("hybrid mixed-origin gpu route");
-        assert!(
-            matches!(res.backend_used, BackendUsed::Gpu),
-            "expected GPU backend, got {:?}",
-            res.backend_used
-        );
-        assert!(
-            res.backend_route.as_deref() == Some("GpuHybridKernel"),
-            "expected explicit hybrid route, got {:?}",
-            res.backend_route
-        );
-        assert!(
-            res.backend_fallback_reason.is_none(),
-            "expected no fallback reason, got {:?}",
-            res.backend_fallback_reason
-        );
-
-        match prev_env {
-            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
-            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
-        }
-    }
-
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    #[test]
-    fn gpu_hybrid_vdps_cpu_only_ma_stays_on_gpu_route() {
-        if !cuda_available() {
-            return;
-        }
-        let _guard = lock_env();
-        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
-        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
-
-        let Some(cpu_only_ma) = find_cpu_only_period_single_ma() else {
-            match prev_env {
-                Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
-                None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
-            }
-            return;
-        };
-
-        let candles = make_trending_candles(2600);
-        let cancel = AtomicBool::new(false);
-        let req = DoubleMaRequest {
-            backend: Backend::GpuHybridKernel { device_id: 0 },
-            data_id: "test".to_string(),
-            fast_range: (20, 22, 1),
-            slow_range: (40, 44, 1),
-            fast_ma_types: vec![cpu_only_ma],
-            slow_ma_types: vec!["sma".to_string()],
-            ma_source: "close".to_string(),
-            export_all_csv_path: None,
-            fast_ma_params: None,
-            slow_ma_params: None,
-            fast_ma_param_sweeps: None,
-            slow_ma_param_sweeps: None,
-            strategy: StrategyConfig::default(),
-            halftrend_filter: None,
-            objective: ObjectiveKind::Sharpe,
-            mode: OptimizationMode::GpuVdps,
-            top_k: Some(4),
-            include_all: Some(false),
-            heatmap_bins: Some(0),
-            constraints: None,
-            vdps: None,
-        };
-
-        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
-            .expect("GpuVdps hybrid mixed-origin gpu route");
-        assert!(
-            matches!(res.backend_used, BackendUsed::Gpu),
-            "expected GPU backend, got {:?}",
-            res.backend_used
-        );
-        assert!(
-            res.backend_route.as_deref() == Some("GpuHybridKernel"),
-            "expected explicit hybrid route, got {:?}",
-            res.backend_route
-        );
-
-        match prev_env {
-            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
-            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
-        }
     }
 
     #[cfg(not(feature = "cuda"))]
@@ -11253,9 +11476,13 @@ mod tests {
                 ..req_cpu.clone()
             };
 
-            let cpu =
-                run_double_ma_optimization_blocking_with_candles(req_cpu, &candles, &cancel, None)
-                    .unwrap_or_else(|e| panic!("cpu run failed for {label}: {e}"));
+            let cpu = run_double_ma_optimization_blocking_with_candles(
+                req_cpu.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("cpu run failed for {label}: {e}"));
             let gpu =
                 run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
                     .unwrap_or_else(|e| panic!("gpu-kernel run failed for {label}: {e}"));
@@ -11271,7 +11498,6 @@ mod tests {
             let dd_delta = (cpu.best_metrics.max_dd - gpu.best_metrics.max_dd).abs();
             let trades_delta =
                 (cpu.best_metrics.trades as i64 - gpu.best_metrics.trades as i64).abs();
-
             assert!(
                 pnl_delta <= 1e-3,
                 "pnl delta too large for {label}: {pnl_delta}"
@@ -12940,6 +13166,7 @@ mod tests {
 
         compare("sma", None);
         compare("gaussian", Some(&gaussian_params));
+        compare("frama", None);
     }
 
     #[cfg(feature = "cuda")]
