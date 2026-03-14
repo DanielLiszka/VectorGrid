@@ -1,6 +1,13 @@
 use crate::progress::ProgressSink;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+fn is_run_artifact_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_run_artifact" | "vectorgrid_run_artifact"
+    )
+}
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
@@ -802,7 +809,7 @@ fn normalize_timeframe_label(raw: &str) -> String {
 
 fn artifact_matches_request(art: &Value, req: &MetaSelectionRequest) -> bool {
     let kind = art.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    if kind != "vectorbt_run_artifact" {
+    if !is_run_artifact_kind(kind) {
         return false;
     }
 
@@ -1478,7 +1485,7 @@ mod tests {
         });
 
         let art1 = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1489,7 +1496,7 @@ mod tests {
         });
 
         let art2 = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:01:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "MSFT", "timeframe": "1m", "csv_path": "msft.csv" },
@@ -1545,7 +1552,7 @@ mod tests {
     fn strict_shortlist_respects_cross_pareto_when_present() {
         let params = json!({"fast_ma_type":"sma","slow_ma_type":"sma","fast_len":5,"slow_len":20,"halftrend":{"amplitude":2,"atr_period":100,"channel_deviation":2.0},"macz":{},"ott":{},"strategy":{}});
         let art = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1589,7 +1596,7 @@ mod tests {
     fn strict_shortlist_hard_mode_excludes_when_cross_pareto_missing() {
         let params = json!({"fast_ma_type":"sma","slow_ma_type":"sma","fast_len":5,"slow_len":20,"halftrend":{"amplitude":2,"atr_period":100,"channel_deviation":2.0},"macz":{},"ott":{},"strategy":{}});
         let art = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1633,7 +1640,7 @@ mod tests {
     fn strict_shortlist_hard_mode_excludes_when_cross_score_non_positive() {
         let params = json!({"fast_ma_type":"sma","slow_ma_type":"sma","fast_len":5,"slow_len":20,"halftrend":{"amplitude":2,"atr_period":100,"channel_deviation":2.0},"macz":{},"ott":{},"strategy":{}});
         let art = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1694,7 +1701,7 @@ mod tests {
         });
 
         let art = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1760,7 +1767,7 @@ mod tests {
         });
 
         let art = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1821,7 +1828,7 @@ mod tests {
         });
 
         let art = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1892,7 +1899,7 @@ mod tests {
         });
 
         let art1 = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:00:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
@@ -1903,7 +1910,7 @@ mod tests {
         });
 
         let art2 = json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": "2026-01-26T00:01:00Z",
             "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
             "dataset_meta": { "label": "MSFT", "timeframe": "1m", "csv_path": "msft.csv" },
@@ -1963,7 +1970,7 @@ mod tests {
         });
         let mk_art = |label: &str, ma_source: &str| {
             json!({
-                "kind": "vectorbt_run_artifact",
+                "kind": "vectorgrid_run_artifact",
                 "run": { "req": { "strategy_kind": "CompositeMo", "ma_source": ma_source }, "res": {} },
                 "dataset_meta": { "label": label, "timeframe": "1m", "csv_path": format!("{label}.csv") },
                 "validation": {
@@ -2018,7 +2025,7 @@ mod tests {
         });
         let mk_art = |label: &str| {
             json!({
-                "kind": "vectorbt_run_artifact",
+                "kind": "vectorgrid_run_artifact",
                 "run": { "req": { "strategy_kind": "CompositeMo", "feature_context": { "family": "generic" }, "run_context": { "variant": "v1" } }, "res": {} },
                 "dataset_meta": { "label": label, "timeframe": "1m", "csv_path": format!("{label}.csv") },
                 "validation": {

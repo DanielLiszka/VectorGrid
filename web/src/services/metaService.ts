@@ -146,7 +146,9 @@ const VALIDATION_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbIters: { key: 'perturbIters' },
   valPerturbMin: { key: 'perturbMin' },
   valPerturbMax: { key: 'perturbMax' },
-  valMcSims: { key: 'mcSims' }
+  valMcSims: { key: 'mcSims' },
+  valMcBlockLen: { key: 'mcBlockLen' },
+  valMcMode: { key: 'mcMode' }
 }
 
 const VALIDATION_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -211,6 +213,25 @@ function fmtFixed(value: unknown, digits: number): string {
 function fmtPct(value: unknown, digits: number): string {
   const num = Number(value)
   return Number.isFinite(num) ? `${(num * 100).toFixed(digits)}%` : '-'
+}
+
+function isMetaSelectionKind(kind: unknown): boolean {
+  const normalized = normalizeText(kind)
+  return normalized === 'vectorbt_meta_selection' || normalized === 'vectorgrid_meta_selection'
+}
+
+function isMetaStageResultKind(kind: unknown): boolean {
+  const normalized = normalizeText(kind)
+  return normalized === 'vectorbt_meta_stage4_experimental'
+    || normalized === 'vectorgrid_meta_stage4_experimental'
+    || normalized === 'vectorbt_meta_stage5_ml_confidence'
+    || normalized === 'vectorgrid_meta_stage5_ml_confidence'
+}
+
+function isMlConfidencePolicyEvalKind(kind: unknown): boolean {
+  const normalized = normalizeText(kind)
+  return normalized === 'vectorbt_ml_confidence_policy_evaluation'
+    || normalized === 'vectorgrid_ml_confidence_policy_evaluation'
 }
 
 function fileBasename(path: string): string {
@@ -1535,7 +1556,7 @@ async function loadLastBatchSummaryFromDisk(): Promise<void> {
       path
     })) as unknown
     const row = asRecord(artifact)
-    if (!row || normalizeText(row.kind) !== 'vectorbt_batch_summary') return
+    if (!row || !['vectorbt_batch_summary', 'vectorgrid_batch_summary'].includes(normalizeText(row.kind))) return
     setBatchSummaryState(row, path)
   } catch {
     // Best-effort hydration only.
@@ -1544,6 +1565,7 @@ async function loadLastBatchSummaryFromDisk(): Promise<void> {
 
 function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<string, unknown> {
   const validation = readPiniaStoreRecord('validation')
+  const strategyKind = normalizeStrategyKind(runReq.strategy_kind ?? runReq.strategyKind)
   const candidates = Math.max(1, Math.floor(Number(validation?.candidates || 32)))
   const seed = Math.max(0, Math.floor(Number(validation?.seed || 1)))
   const minPsr = normalizeProbability(validation?.minPsr)
@@ -1560,6 +1582,8 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
 
   const mcEnable = normalizeBoolean(validation?.mcEnable)
   const mcSims = Math.max(0, Math.floor(Number(validation?.mcSims || 500)))
+  const mcBlockLen = Math.max(0, Math.floor(Number(validation?.mcBlockLen || 0)))
+  const mcMode = normalizeText(validation?.mcMode).toLowerCase() === 'iid_only' ? 'iid_only' : 'compare'
 
   const cscvEnable = normalizeBoolean(validation?.cscvEnable)
   let cscvSlices = Math.max(4, Math.floor(Number(validation?.cscvSlices || 16)))
@@ -1567,6 +1591,12 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
 
   const crossEnable = normalizeBoolean(validation?.crossEnable)
   const crossMax = Math.max(0, Math.floor(Number(validation?.crossMax || 6)))
+  const crossModeRaw = normalizeText(validation?.crossMode).toLowerCase()
+  const crossMode = crossModeRaw === 'lightweight' || crossModeRaw === 'preserved_finalists'
+    ? crossModeRaw
+    : ['DoubleMa', 'Pit', 'Set', 'Mts', 'Orc', 'Marrt', 'Vfct', 'CompositeTrend', 'RegimeHybrid', 'BreakoutMomentum'].includes(strategyKind)
+      ? 'preserved_finalists'
+      : 'lightweight'
   const crossRows = Array.isArray(validation?.crossDatasets) ? (validation?.crossDatasets as unknown[]) : []
   const crossDatasets = crossRows
     .map((entry) => asRecord(entry))
@@ -1591,8 +1621,14 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
           flip_bool_prob: 0.02
         }
       : null,
-    trade_bootstrap: mcEnable ? { simulations: mcSims } : null,
-    cross_ticker: crossEnable && crossMax > 0 && crossDatasets.length > 0 ? { max_datasets: crossMax, datasets: crossDatasets } : null,
+    trade_bootstrap: mcEnable
+      ? mcMode === 'iid_only'
+        ? { simulations: mcSims, stationary_mean_block_len: 0 }
+        : mcBlockLen > 0
+          ? { simulations: mcSims, stationary_mean_block_len: mcBlockLen }
+          : { simulations: mcSims }
+      : null,
+    cross_ticker: crossEnable && crossMax > 0 && crossDatasets.length > 0 ? { max_datasets: crossMax, mode: crossMode, datasets: crossDatasets } : null,
     cscv_pbo: cscvEnable
       ? {
           slices: cscvSlices,
@@ -1961,7 +1997,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
 
     const summary: Record<string, unknown> = {
       version: 1,
-      kind: 'vectorbt_batch_summary',
+      kind: 'vectorgrid_batch_summary',
       ts: batchTs,
       strategy_kind: strategyKind,
       timeframe: batchTimeframes.size === 1 ? Array.from(batchTimeframes)[0] : null,
@@ -2166,7 +2202,7 @@ export async function loadSaved(): Promise<void> {
     })) as unknown
     const artifact = asRecord(artifactRaw)
     const kind = normalizeText(artifact?.kind)
-    if (kind !== 'vectorbt_meta_selection') {
+    if (!isMetaSelectionKind(kind)) {
       setStatusLine(`Not a meta artifact: kind='${kind}'`)
       return
     }
@@ -2281,7 +2317,7 @@ export async function loadStage4Saved(): Promise<void> {
     })) as unknown
     const artifact = asRecord(artifactRaw)
     const kind = normalizeText(artifact?.kind)
-    if (kind !== 'vectorbt_meta_stage4_experimental' && kind !== 'vectorbt_meta_stage5_ml_confidence') {
+    if (!isMetaStageResultKind(kind)) {
       setStatusLine(`Not a Stage 5 artifact: kind='${kind}'`)
       return
     }
@@ -2373,7 +2409,7 @@ export async function loadPolicyEvalSaved(): Promise<void> {
     const artifactRaw = (await invokeCommand('load_run_artifact', { path })) as unknown
     const artifact = asRecord(artifactRaw)
     const kind = normalizeText(artifact?.kind)
-    if (kind !== 'vectorbt_ml_confidence_policy_evaluation') {
+    if (!isMlConfidencePolicyEvalKind(kind)) {
       setStatusLine(`Not a policy evaluation artifact: kind='${kind}'`)
       return
     }

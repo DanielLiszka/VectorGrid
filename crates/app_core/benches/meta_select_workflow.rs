@@ -37,7 +37,7 @@ fn make_artifacts(n_artifacts: usize, n_groups: usize, cands_per_artifact: usize
         }
 
         out.push(json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "tags": ["bench"],
             "dataset_meta": { "label": label, "timeframe": timeframe, "csv_path": csv_path },
             "run": { "req": { "strategy_kind": "composite", "ma_source": "close" } },

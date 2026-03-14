@@ -39,10 +39,13 @@ interface ValidationBuildInputs {
   perturbMax?: unknown
   mcEnable?: unknown
   mcSims?: unknown
+  mcBlockLen?: unknown
+  mcMode?: unknown
   cscvEnable?: unknown
   cscvSlices?: unknown
   crossEnable?: unknown
   crossMax?: unknown
+  crossMode?: unknown
   crossDatasets?: ValidationCrossDatasetInput[]
 }
 
@@ -103,9 +106,11 @@ export interface ValidationRequestPayload {
   } | null
   trade_bootstrap: {
     simulations: number
+    stationary_mean_block_len?: number
   } | null
   cross_ticker: {
     max_datasets: number
+    mode: 'lightweight' | 'preserved_finalists'
     datasets: Array<{ csv_path: string; label: string }>
   } | null
   cscv_pbo: {
@@ -126,6 +131,13 @@ export interface ValidationRequestPayload {
     timeframe: string | null
     label: string | null
   }
+}
+
+export interface ValidationCapabilitySummary {
+  routeSummary: string
+  crossSummary: string
+  moduleSummary: string
+  warningSummary: string
 }
 
 function num(value: unknown, fallback: number): number {
@@ -208,6 +220,13 @@ function normalizeCrossDatasets(value: unknown, maxDatasets: number): Array<{ cs
   return out
 }
 
+function normalizeCrossTickerMode(value: unknown, strategyKind: string): 'lightweight' | 'preserved_finalists' {
+  const raw = normalizeText(value).toLowerCase()
+  if (raw === 'lightweight') return 'lightweight'
+  if (raw === 'preserved_finalists' || raw === 'preserved-finalists') return 'preserved_finalists'
+  return isDoubleLikeKind(strategyKind) ? 'preserved_finalists' : 'lightweight'
+}
+
 function firstNonEmptyText(...values: unknown[]): string {
   for (const value of values) {
     const next = normalizeText(value)
@@ -225,6 +244,194 @@ function normalizeValidationBackend(value: unknown): ValidationRequestPayload['b
   if (backend === 'GpuHybridKernel') return { backend: 'GpuHybridKernel', device_id: deviceId }
   if (backend === 'GpuKernel') return { backend: 'GpuKernel', device_id: deviceId }
   return { backend: 'CpuOnly' }
+}
+
+function titleCaseBackend(backend: ValidationRequestPayload['backend']['backend']): string {
+  switch (backend) {
+    case 'Auto':
+      return 'Auto'
+    case 'CpuOnly':
+      return 'CpuOnly'
+    case 'GpuOnly':
+      return 'GpuOnly'
+    case 'GpuHybridKernel':
+      return 'GpuHybridKernel'
+    case 'GpuKernel':
+      return 'GpuKernel'
+    default:
+      return String(backend || '').trim() || 'Unknown'
+  }
+}
+
+function describeEnabledModules(req: ValidationRequestPayload): string[] {
+  const enabled: string[] = ['base reruns', 'hard gates']
+  if (req.walk_forward) enabled.push('walk-forward')
+  if (req.cscv_pbo) enabled.push('CSCV/PBO')
+  if (req.spa) enabled.push('SPA')
+  if (req.reopt_walk_forward) enabled.push('reopt WF')
+  return enabled
+}
+
+type CompositeProfileKey =
+  | 'asr'
+  | 'vcc'
+  | 'vemr'
+  | 'rocb'
+  | 'mkcs'
+  | 'kqsr'
+  | 'carm'
+  | 'kvdf'
+  | 'cdmc'
+  | 'base_composite'
+  | 'unknown'
+
+function detectCompositeProfile(req: ValidationRequestPayload): CompositeProfileKey {
+  const cand = req.candidates[0]
+  if (!cand) return 'unknown'
+  if (cand.asr) return 'asr'
+  if (cand.vcc) return 'vcc'
+  if (cand.vemr) return 'vemr'
+  if (cand.rocb) return 'rocb'
+  if (cand.mkcs) return 'mkcs'
+  if (cand.kqsr) return 'kqsr'
+  if (cand.carm) return 'carm'
+  if (cand.kvdf) return 'kvdf'
+  if (cand.cdmc) return 'cdmc'
+  return 'base_composite'
+}
+
+function compositeProfileLabel(profile: CompositeProfileKey): string {
+  switch (profile) {
+    case 'base_composite':
+      return 'base composite'
+    case 'unknown':
+      return 'unknown composite'
+    default:
+      return profile.toUpperCase()
+  }
+}
+
+function compositeGpuMainRouteUnsupportedModules(req: ValidationRequestPayload): string[] {
+  const profile = detectCompositeProfile(req)
+  const supportsVectorizedModules = profile !== 'unknown'
+  const unsupported: string[] = []
+  if (req.walk_forward && !supportsVectorizedModules) unsupported.push('walk_forward')
+  if (req.reopt_walk_forward && !supportsVectorizedModules) unsupported.push('reopt_walk_forward')
+  if (req.spa && !supportsVectorizedModules) unsupported.push('spa')
+  if (req.trade_bootstrap && !supportsVectorizedModules) unsupported.push('trade_bootstrap')
+  if (req.cscv_pbo && !supportsVectorizedModules) unsupported.push('cscv_pbo')
+  return unsupported
+}
+
+function normalizeBootstrapMode(raw: unknown): 'compare' | 'iid_only' {
+  return String(raw || '').trim().toLowerCase() === 'iid_only' ? 'iid_only' : 'compare'
+}
+
+function describeTradeBootstrapConfig(
+  tradeBootstrap: ValidationRequestPayload['trade_bootstrap'],
+): string {
+  if (!tradeBootstrap) return 'not run'
+  const statBlock = tradeBootstrap.stationary_mean_block_len
+  if (statBlock === 0) return 'trade bootstrap iid-only'
+  return statBlock != null
+    ? `trade bootstrap compare (iid + stationary, stat block=${statBlock})`
+    : 'trade bootstrap compare (iid + stationary, stat block=auto)'
+}
+
+export function buildValidationCapabilitySummary(req: ValidationRequestPayload): ValidationCapabilitySummary {
+  const strategyKind = normalizeStrategyKindRaw(req?.validation_context?.strategy_kind)
+  const isDoubleLike = isDoubleLikeKind(strategyKind)
+  const backend = req.backend?.backend || 'CpuOnly'
+  const crossMode = normalizeText(req.cross_ticker?.mode)
+  const crossDatasets = Array.isArray(req.cross_ticker?.datasets) ? req.cross_ticker.datasets.length : 0
+  const enabledMain = describeEnabledModules(req)
+  const auxCpu: string[] = []
+  if (req.perturb) auxCpu.push('perturb')
+  if (req.trade_bootstrap) {
+    auxCpu.push(describeTradeBootstrapConfig(req.trade_bootstrap))
+  }
+
+  let routeSummary = `${titleCaseBackend(backend)} requested`
+  let moduleSummary = ''
+  const warningNotes: string[] = []
+
+  if (isDoubleLike) {
+    if (backend === 'CpuOnly') {
+      routeSummary = 'CpuOnly requested | CPU validation route expected'
+      moduleSummary = `CPU route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+    } else if (backend === 'GpuOnly') {
+      routeSummary = 'GpuOnly requested | expected CpuOnly fallback for fixed-candidate validation'
+      moduleSummary = `Expected CPU fallback route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      warningNotes.push('GpuOnly is not supported for fixed-candidate Double-MA validation; use GpuKernel, GpuHybridKernel, or Auto.')
+    } else if (backend === 'GpuHybridKernel') {
+      routeSummary = 'GpuHybridKernel requested | expected GPU main route (GpuKernel-compatible)'
+      moduleSummary = `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+    } else if (backend === 'GpuKernel') {
+      routeSummary = 'GpuKernel requested | expected GPU main route'
+      moduleSummary = `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+    } else {
+      routeSummary = 'Auto requested | expected GPU main route when available'
+      moduleSummary = `Expected GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+    }
+
+    if (auxCpu.length > 0 && backend !== 'CpuOnly' && backend !== 'GpuOnly') {
+      warningNotes.push(`Main GPU route is preserved; ${auxCpu.join(' + ')} currently run as auxiliary CPU work.`)
+    }
+  } else {
+    const compositeProfile = compositeProfileLabel(detectCompositeProfile(req))
+    const unsupported = compositeGpuMainRouteUnsupportedModules(req)
+    const compositeProfileFallbackReason = strategyKind === 'CompositeMo'
+      ? 'CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu only.'
+      : ''
+    if (backend === 'CpuOnly') {
+      routeSummary = `CpuOnly requested | CPU composite route expected (${compositeProfile})`
+      moduleSummary = `CPU route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+    } else if (unsupported.length > 0 || compositeProfileFallbackReason) {
+      routeSummary = `${titleCaseBackend(backend)} requested | expected CpuOnly fallback for composite validation`
+      moduleSummary = `Expected CPU fallback route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      if (compositeProfileFallbackReason) warningNotes.push(compositeProfileFallbackReason)
+      if (unsupported.length > 0) {
+        warningNotes.push(`Composite GPU fixed-candidate validation does not support: ${unsupported.join(', ')}.`)
+      }
+    } else {
+      routeSummary = `${titleCaseBackend(backend)} requested | expected GPU composite route (${compositeProfile})`
+      moduleSummary = `Expected GPU composite route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      if (auxCpu.length > 0) {
+        warningNotes.push(`${auxCpu.join(' + ')} may not share the same execution route as the main validation pass; confirm post-run route notes.`)
+      }
+    }
+    if (req.cross_ticker) {
+      warningNotes.push(
+        crossMode && crossMode !== 'lightweight'
+          ? `Composite cross reruns remain lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates; requested ${crossMode} currently uses lightweight behavior.`
+          : 'Composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.',
+      )
+    }
+  }
+
+  let crossSummary = 'not run'
+  if (crossDatasets > 0) {
+    const base = `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'} | ${crossMode || 'default'}`
+    if (isDoubleLike && crossMode === 'preserved_finalists') {
+      crossSummary = `${base} | finalists only`
+      warningNotes.push('Preserved-finalists cross reruns keep CSCV/PBO + hard gates; auxiliary cross reruns omit walk-forward, SPA, reopt WF, perturb, and trade bootstrap.')
+    } else if (isDoubleLike && crossMode === 'lightweight') {
+      crossSummary = `${base} | lightweight reruns`
+    } else if (!isDoubleLike) {
+      crossSummary = crossMode && crossMode !== 'lightweight'
+        ? `${base} | effective lightweight reruns`
+        : `${base} | lightweight reruns`
+    } else {
+      crossSummary = base
+    }
+  }
+
+  return {
+    routeSummary,
+    crossSummary,
+    moduleSummary: moduleSummary || '-',
+    warningSummary: warningNotes.join(' | ') || 'none',
+  }
 }
 
 export function buildValidationRequest(inputs: ValidationBuildInputs): ValidationRequestPayload {
@@ -489,7 +696,17 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       }
     : null
 
-  const trade_bootstrap = inputs.mcEnable ? { simulations: Math.max(0, Math.floor(num(inputs.mcSims, 500))) } : null
+  const trade_bootstrap = inputs.mcEnable
+    ? (() => {
+        const simulations = Math.max(0, Math.floor(num(inputs.mcSims, 500)))
+        const mode = normalizeBootstrapMode(inputs.mcMode)
+        const stationary_mean_block_len = Math.max(0, Math.floor(num(inputs.mcBlockLen, 0)))
+        if (mode === 'iid_only') return { simulations, stationary_mean_block_len: 0 }
+        return stationary_mean_block_len > 0
+          ? { simulations, stationary_mean_block_len }
+          : { simulations }
+      })()
+    : null
 
   const cscv_pbo = inputs.cscvEnable
     ? (() => {
@@ -505,8 +722,10 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
         if (max_datasets <= 0) return null
         const datasets = normalizeCrossDatasets(inputs.crossDatasets, max_datasets)
         if (!datasets.length) return null
+        const mode = normalizeCrossTickerMode(inputs.crossMode, kind)
         return {
           max_datasets,
+          mode,
           datasets
         }
       })()

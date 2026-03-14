@@ -450,12 +450,12 @@ export async function exportPreset(): Promise<void> {
   const preset = rawPreset && typeof rawPreset === 'object' && !Array.isArray(rawPreset) ? rawPreset : {}
   const payload = {
     version: 1,
-    kind: 'vectorbt_preset',
+    kind: 'vectorgrid_preset',
     ts,
     preset,
   }
   const downloaded = downloadText(
-    `vectorbt_preset_${ts}.json`,
+    `vectorgrid_preset_${ts}.json`,
     JSON.stringify(payload, null, 2),
     'application/json;charset=utf-8',
   )

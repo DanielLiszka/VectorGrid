@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn is_meta_selection_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_meta_selection" | "vectorgrid_meta_selection"
+    )
+}
+
 fn default_min_holdout_pass_rate() -> f64 {
     0.60
 }
@@ -445,7 +452,7 @@ fn scope_has_holdout_rows(
 
     for meta in meta_artifacts {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(kind) {
             continue;
         }
         let Some((strat, tf)) = extract_meta_scope(meta) else {
@@ -502,7 +509,7 @@ fn build_dataset_from_meta_artifacts(
 
     for meta in meta_artifacts {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(kind) {
             skipped_kind += 1;
             continue;
         }
@@ -1637,13 +1644,13 @@ mod tests {
         }
 
         let meta1 = json!({
-            "kind": "vectorbt_meta_selection",
+            "kind": "vectorgrid_meta_selection",
             "ts": "2026-01-28T00:00:00Z",
             "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
             "res": { "strategy_kind": "CompositeMo", "timeframe": "1m", "groups": groups1 }
         });
         let meta2 = json!({
-            "kind": "vectorbt_meta_selection",
+            "kind": "vectorgrid_meta_selection",
             "ts": "2026-01-28T00:01:00Z",
             "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
             "res": { "strategy_kind": "CompositeMo", "timeframe": "1m", "groups": groups2 }
@@ -1724,7 +1731,7 @@ mod tests {
         }
 
         let meta = json!({
-            "kind": "vectorbt_meta_selection",
+            "kind": "vectorgrid_meta_selection",
             "ts": "2026-01-29T12:00:00Z",
             "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
             "res": { "strategy_kind": "CompositeMo", "timeframe": "1m", "groups": groups }
@@ -1807,13 +1814,13 @@ mod tests {
             });
         }
         let meta1 = json!({
-            "kind": "vectorbt_meta_selection",
+            "kind": "vectorgrid_meta_selection",
             "ts": "2026-01-30T00:00:00Z",
             "req": { "strategy_kind": "CompositeTrend", "timeframe": "1m" },
             "res": { "strategy_kind": "CompositeTrend", "timeframe": "1m", "groups": groups1 }
         });
         let meta2 = json!({
-            "kind": "vectorbt_meta_selection",
+            "kind": "vectorgrid_meta_selection",
             "ts": "2026-01-30T00:01:00Z",
             "req": { "strategy_kind": "CompositeTrend", "timeframe": "1m" },
             "res": { "strategy_kind": "CompositeTrend", "timeframe": "1m", "groups": groups2 }

@@ -51,7 +51,7 @@ fn to_report_artifact(
     validation_res: Value,
 ) -> Value {
     json!({
-        "kind": "vectorbt_run_artifact",
+        "kind": "vectorgrid_run_artifact",
         "run": { "req": { "strategy_kind": strategy_kind }, "res": {} },
         "dataset_meta": {
             "label": label,
@@ -178,7 +178,10 @@ fn main() -> Result<(), String> {
             pct_max: 0.03,
             flip_bool_prob: 0.02,
         }),
-        trade_bootstrap: Some(ta_app_core::TradeBootstrapConfig { simulations: 128 }),
+        trade_bootstrap: Some(ta_app_core::TradeBootstrapConfig {
+            simulations: 128,
+            stationary_mean_block_len: None,
+        }),
         cross_ticker: None,
         cscv_pbo: Some(CscvPboConfig {
             slices: 8,
@@ -265,7 +268,10 @@ fn main() -> Result<(), String> {
             pct_max: 0.03,
             flip_bool_prob: 0.02,
         }),
-        trade_bootstrap: Some(ta_app_core::TradeBootstrapConfig { simulations: 128 }),
+        trade_bootstrap: Some(ta_app_core::TradeBootstrapConfig {
+            simulations: 128,
+            stationary_mean_block_len: None,
+        }),
         cross_ticker: None,
         cscv_pbo: Some(CscvPboConfig {
             slices: 8,

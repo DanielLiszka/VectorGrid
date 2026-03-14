@@ -20,7 +20,8 @@ pub trait CrossTickerCandidate {
     type Params: Serialize;
 
     fn params(&self) -> &Self::Params;
-    fn in_sample_metrics(&self) -> &Metrics;
+    fn cross_ticker_metrics(&self) -> &Metrics;
+    fn validation_passed(&self) -> bool;
     fn cross_ticker(&self) -> Option<&CrossTickerStats>;
     fn cross_ticker_pareto(&self) -> Option<bool>;
     fn set_cross_ticker(&mut self, stats: CrossTickerStats);
@@ -36,8 +37,12 @@ impl CrossTickerCandidate for CompositeValidationCandidateResult {
         &self.params
     }
 
-    fn in_sample_metrics(&self) -> &Metrics {
-        &self.in_sample
+    fn cross_ticker_metrics(&self) -> &Metrics {
+        self.iterative_in_sample.as_ref().unwrap_or(&self.in_sample)
+    }
+
+    fn validation_passed(&self) -> bool {
+        self.validation_verdict.passed
     }
 
     fn cross_ticker(&self) -> Option<&CrossTickerStats> {
@@ -72,8 +77,12 @@ impl CrossTickerCandidate for DoubleMaValidationCandidateResult {
         &self.params
     }
 
-    fn in_sample_metrics(&self) -> &Metrics {
-        &self.in_sample
+    fn cross_ticker_metrics(&self) -> &Metrics {
+        self.iterative_in_sample.as_ref().unwrap_or(&self.in_sample)
+    }
+
+    fn validation_passed(&self) -> bool {
+        self.validation_verdict.passed
     }
 
     fn cross_ticker(&self) -> Option<&CrossTickerStats> {
@@ -355,6 +364,7 @@ mod tests {
                 label: String::new(),
             }],
             max_datasets: 4,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: CrossTickerGateConfig {
                 enabled: true,
                 require_pareto: true,
@@ -419,8 +429,12 @@ mod tests {
             &self.params
         }
 
-        fn in_sample_metrics(&self) -> &Metrics {
+        fn cross_ticker_metrics(&self) -> &Metrics {
             &self.in_sample
+        }
+
+        fn validation_passed(&self) -> bool {
+            true
         }
 
         fn cross_ticker(&self) -> Option<&CrossTickerStats> {

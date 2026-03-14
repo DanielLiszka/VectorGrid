@@ -7,6 +7,7 @@ import {
   exportShortlistCsv,
   exportValidationJson,
   openReportsDir,
+  previewValidationExecutionSummaryFromStores,
   runValidation,
   toggleCrossDataset,
 } from './validationService'
@@ -73,7 +74,7 @@ function installDefaultInvokeCommandMock(): void {
     }
     if (command === 'save_run_artifact') {
       return {
-        path: 'runs/vectorbt_run_validation_test.json',
+        path: 'runs/vectorgrid_run_validation_test.json',
         bytes: 256,
       }
     }
@@ -82,7 +83,7 @@ function installDefaultInvokeCommandMock(): void {
     }
     if (command === 'save_report_xlsx') {
       return {
-        path: 'runs/vectorbt_report_validation_test.xlsx',
+        path: 'runs/vectorgrid_report_validation_test.xlsx',
       }
     }
     if (command === 'build_report_xlsx') {
@@ -205,6 +206,7 @@ describe('validationService', () => {
     })
     expect(req.cross_ticker).toEqual({
       max_datasets: 2,
+      mode: 'preserved_finalists',
       datasets: [{ csv_path: 'C:/data/a.csv', label: 'A' }],
     })
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
@@ -214,10 +216,581 @@ describe('validationService', () => {
     expect(String(validationState.validationReoptMeta || '')).toContain('reopt_wf:')
     expect(String(validationState.validationMeta || '')).toContain('backend=Cpu')
     expect(String(validationState.validationMeta || '')).toContain('route=GpuKernel->CpuOnly')
+    expect(String(validationState.validationMeta || '')).toContain('fallback=GPU validation runtime not implemented yet; using CPU validation.')
+    expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • GpuKernel->CpuOnly • fallback: GPU validation runtime not implemented yet; using CPU validation.')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('GPU validation runtime not implemented yet; using CPU validation.')
+    expect(String(validationState.validationAuxCpuSummary || '')).toContain('none')
+    expect(String(validationState.validationBootstrapSummary || '')).toContain('not run')
+    expect(String(validationState.validationCrossSummary || '')).toContain('not run')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross: unavailable')
+    expect(String(validationState.validationWarningSummary || '')).toContain('none')
     expect(String(validationState.validationMeta || '')).toContain('spa=0.170 fail')
     expect(String(validationState.validationMeta || '')).toContain('rec=evidence_too_short_min_track_record')
+    const saveCall = invokeCommandMock.mock.calls.find(([commandName]) => commandName === 'save_run_artifact')
+    const savedArtifact = (saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined)?.artifact
+    expect(savedArtifact?.kind).toBe('vectorgrid_run_artifact')
     expect(invokeCommandMock).toHaveBeenCalledWith('save_run_artifact', expect.any(Object))
 
+  })
+
+  it('surfaces skipped-module and run-note metadata in validation summary text', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_double_ma_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          candidates: [],
+          runtime_ms: 88,
+          cscv_pbo: {
+            skipped_reason: 'cscv_skipped_not_enough_bars',
+          },
+          spa: {
+            skipped_reason: 'spa_skipped_not_enough_slices',
+          },
+          run_verdict: {
+            passed: false,
+            approved: false,
+            candidates_tested: 4,
+            candidates_survived_hard_gates: 0,
+            approved_candidate_count: 0,
+            final_recommendation: 'no_candidate_survived',
+            warning_flags: ['cross_ticker_filtered_all_candidates'],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_skipped.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      reoptWfEnable: true,
+      reoptWfWindow: '8000',
+      reoptWfStep: '2000',
+      reoptWfTopN: '4',
+      perturbEnable: true,
+      perturbIters: '8',
+      perturbMin: '0.01',
+      perturbMax: '0.05',
+      mcEnable: true,
+      mcSims: '500',
+      cscvEnable: true,
+      spaEnable: true,
+      crossEnable: true,
+      crossMode: 'preserved_finalists',
+      crossMax: '1',
+      crossDatasets: [
+        { path: 'C:/data/SPY.csv', label: 'SPY', meta: 'Stocks • 1h', checked: true, disabled: false },
+      ],
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-13T00:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-skipped-meta',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationHint || '')).toContain('Validation complete with warnings:')
+    expect(String(validationState.validationHint || '')).toContain('CSCV skipped')
+    expect(String(validationState.validationHint || '')).toContain('SPA skipped')
+    expect(String(validationState.validationMeta || '')).toContain('cscv skipped=cscv_skipped_not_enough_bars')
+    expect(String(validationState.validationMeta || '')).toContain('spa skipped=spa_skipped_not_enough_slices')
+    expect(String(validationState.validationMeta || '')).toContain('note=cross_ticker_filtered_all_candidates')
+    expect(String(validationState.validationRouteSummary || '')).toContain('aux CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('none')
+    expect(String(validationState.validationAuxCpuSummary || '')).toContain('perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
+    expect(String(validationState.validationBootstrapSummary || '')).toContain('iid + stationary closed-trade compare • stat block=auto')
+    expect(String(validationState.validationCrossSummary || '')).toContain('not run')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross: unavailable')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Reopt WF: unavailable')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('CSCV: cscv_skipped_not_enough_bars')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('SPA: spa_skipped_not_enough_slices')
+    expect(String(validationState.validationWarningSummary || '')).toContain('cross_ticker_filtered_all_candidates')
+  })
+
+  it('surfaces regime and friction summaries for the top validation finalist', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_double_ma_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          candidates: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 9,
+                slow_len: 30,
+              },
+              validation_verdict: { passed: true, warning_flags: [], fail_reasons: [] },
+              regime_slice_robustness: {
+                worst_bucket_label: 'range',
+                worst_sharpe: -0.08,
+                worst_max_dd: 0.22,
+                stable_bucket_count: 3,
+                stable_bucket_frac: 0.6,
+                support_label: 'trend_only',
+                trend: { pnl: 0.12, sharpe: 0.41 },
+                range: { pnl: -0.02, sharpe: -0.08 },
+              },
+              friction_stress: {
+                pass_frac: 0.5,
+                max_rank_drift: 2,
+                worst_scenario_label: 'spread_stress',
+              },
+            },
+          ],
+          runtime_ms: 91,
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            first_approved_rank: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_regime_friction.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '1',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T01:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-regime-friction',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['alma'],
+          slow_ma_types: ['alma'],
+          strategy: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 9,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRegimeSummary || '')).toContain('selective')
+    expect(String(validationState.validationRegimeSummary || '')).toContain('support=trend_only')
+    expect(String(validationState.validationRegimeSummary || '')).toContain('worst=range')
+    expect(String(validationState.validationRegimeSummary || '')).toContain('stable=3/5 (60%)')
+    expect(String(validationState.validationFrictionSummary || '')).toContain('fragile')
+    expect(String(validationState.validationFrictionSummary || '')).toContain('worst=spread_stress')
+    expect(String(validationState.validationFrictionSummary || '')).toContain('absolute pnl/sharpe rule')
+  })
+
+  it('routes composite validation kinds through run_composite_validation', async () => {
+    const strategyKinds = ['Kqsr', 'Carm', 'Kvdf', 'Cdmc']
+    for (const strategyKind of strategyKinds) {
+      invokeCommandMock.mockClear()
+      installDefaultInvokeCommandMock()
+      ;(pinia.state.value as Record<string, unknown>).validation = {
+        candidates: '8',
+        seed: '1',
+        crossEnable: false,
+      }
+      useWorkflowArtifactsStore(pinia).clearArtifacts()
+      useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+        currentRun: {
+          ts: '2026-02-25T12:00:00Z',
+          req: {
+            strategy_kind: strategyKind,
+            data_id: `data-${strategyKind.toLowerCase()}`,
+            backend: { backend: 'CpuOnly' },
+            ma_source: 'close',
+            strategy: { fee_bps: 1.0 },
+          },
+          res: {
+            top: [
+              {
+                params: {
+                  fast_ma_type: 'ema',
+                  slow_ma_type: 'sma',
+                  fast_len: 10,
+                  slow_len: 40,
+                  [strategyKind.toLowerCase()]: { alpha: 1.0 },
+                },
+              },
+            ],
+          },
+        },
+        currentValidation: null,
+      })
+
+      await runValidation({ switchTab: false })
+
+      const [command] = firstValidationRunCall()
+      expect(command, `strategy ${strategyKind} should use composite validation`).toBe('run_composite_validation')
+    }
+  })
+
+  it('surfaces composite lightweight cross rerun semantics in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          runtime_ms: 111,
+          cross_ticker: {
+            mode: 'preserved_finalists',
+            datasets: [
+              { label: 'SPY' },
+              { label: 'QQQ' },
+            ],
+          },
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 2,
+            candidates_survived_hard_gates: 2,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_composite_cross.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '8',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: true,
+      crossMode: 'preserved_finalists',
+      crossMax: '2',
+      crossDatasets: [
+        { path: 'C:/data/SPY.csv', label: 'SPY', checked: true, disabled: false },
+        { path: 'C:/data/QQQ.csv', label: 'QQQ', checked: true, disabled: false },
+      ],
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'Mkcs',
+          data_id: 'data-composite-post-run',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          strategy: { fee_bps: 1.0 },
+          mkcs: { compression_threshold: 0.01, reexpansion_threshold: 0.03 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                mkcs: { stddev_period: 20, breakout_lookback: 30 },
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
+    expect(String(validationState.validationCrossSummary || '')).toContain('requested=preserved_finalists')
+    expect(String(validationState.validationCrossSummary || '')).toContain('effective lightweight reruns')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
+  })
+
+  it('previews validation execution summary from current workflow artifacts', () => {
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '1h',
+      baseDataMeta: { timeframe: '1h' },
+    }
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '12',
+      seed: '1',
+      wfEnable: true,
+      wfWindow: '12000',
+      wfStep: '3000',
+      reoptWfEnable: true,
+      reoptWfWindow: '12000',
+      reoptWfStep: '3000',
+      reoptWfTopN: '4',
+      spaEnable: true,
+      spaSlices: '12',
+      spaBootstrapSamples: '300',
+      spaBlockLength: '4',
+      perturbEnable: true,
+      perturbIters: '8',
+      perturbMin: '0.01',
+      perturbMax: '0.05',
+      mcEnable: true,
+      mcSims: '500',
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: true,
+      crossMax: '2',
+      crossMode: 'preserved_finalists',
+      crossDatasets: [
+        { path: 'C:/data/SPY.csv', label: 'SPY', checked: true },
+        { path: 'C:/data/QQQ.csv', label: 'QQQ', checked: true },
+      ],
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        csvPath: 'C:/data/AAPL.csv',
+        datasetMeta: { csv_path: 'C:/data/AAPL.csv', timeframe: '1h', symbol: 'AAPL' },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'aapl_1h',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 9,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const summary = previewValidationExecutionSummaryFromStores()
+    expect(summary.routeSummary).toContain('GpuKernel requested')
+    expect(summary.crossSummary).toContain('2 datasets')
+    expect(summary.crossSummary).toContain('finalists only')
+    expect(summary.moduleSummary).toContain('auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
+    expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
+  })
+
+  it('distinguishes GPU route notes from true CPU fallback in validation summary text', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_double_ma_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuHybridKernel->GpuKernel',
+          backend_fallback_reason: 'GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.',
+          candidates: [{ score: 1 }],
+          runtime_ms: 91,
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_route_note.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '1',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-13T12:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-route-note',
+          backend: { backend: 'GpuHybridKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['sma'],
+          strategy: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'sma',
+                fast_len: 10,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationMeta || '')).toContain('route=GpuHybridKernel->GpuKernel')
+    expect(String(validationState.validationMeta || '')).toContain('route_note=GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
+    expect(String(validationState.validationMeta || '')).not.toContain('fallback=GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
+    expect(String(validationState.validationHint || '')).toContain('route note: GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
+    expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuHybridKernel->GpuKernel • route note: GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
+    expect(String(validationState.validationAuxCpuSummary || '')).toBe('none')
+    expect(String(validationState.validationBootstrapSummary || '')).toBe('not run')
+  })
+
+  it('surfaces iid-only bootstrap mode in preview summaries', () => {
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '1h',
+      baseDataMeta: { timeframe: '1h' },
+    }
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '12',
+      seed: '1',
+      wfEnable: true,
+      wfWindow: '12000',
+      wfStep: '3000',
+      reoptWfEnable: true,
+      reoptWfWindow: '12000',
+      reoptWfStep: '3000',
+      reoptWfTopN: '4',
+      spaEnable: true,
+      spaSlices: '12',
+      spaBootstrapSamples: '300',
+      spaBlockLength: '4',
+      perturbEnable: true,
+      perturbIters: '8',
+      perturbMin: '0.01',
+      perturbMax: '0.05',
+      mcEnable: true,
+      mcSims: '400',
+      mcBlockLen: '9',
+      mcMode: 'iid_only',
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: true,
+      crossMax: '2',
+      crossMode: 'preserved_finalists',
+      crossDatasets: [
+        { path: 'C:/data/SPY.csv', label: 'SPY', checked: true },
+        { path: 'C:/data/QQQ.csv', label: 'QQQ', checked: true },
+      ],
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        csvPath: 'C:/data/AAPL.csv',
+        datasetMeta: { csv_path: 'C:/data/AAPL.csv', timeframe: '1h', symbol: 'AAPL' },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'aapl_1h',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 9,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const summary = previewValidationExecutionSummaryFromStores()
+    expect(summary.moduleSummary).toContain('trade bootstrap iid-only')
   })
 
   it('auto-exports XLSX after successful validation when enabled and persists the report path', async () => {
@@ -271,15 +844,15 @@ describe('validationService', () => {
       report: expect.any(Object),
     }))
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
-      path: 'runs/vectorbt_report_validation_test.xlsx',
+      path: 'runs/vectorgrid_report_validation_test.xlsx',
     })
     expect(invokeCommandMock).not.toHaveBeenCalledWith('reveal_path', expect.anything())
 
     const workflowStore = useWorkflowArtifactsStore(pinia)
-    expect(workflowStore.currentRun?.reportXlsxPath).toBe('runs/vectorbt_report_validation_test.xlsx')
+    expect(workflowStore.currentRun?.reportXlsxPath).toBe('runs/vectorgrid_report_validation_test.xlsx')
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
-    expect(validationState.statusLine).toBe('Saved XLSX report: runs/vectorbt_report_validation_test.xlsx')
+    expect(validationState.statusLine).toBe('Saved XLSX report: runs/vectorgrid_report_validation_test.xlsx')
   })
 
   it('rejects validation when the current dataset does not match the optimization artifact', async () => {
@@ -495,6 +1068,7 @@ describe('validationService', () => {
     expect(req.seed).toBe(7)
     expect(req.cross_ticker).toEqual({
       max_datasets: 1,
+      mode: 'preserved_finalists',
       datasets: [{ csv_path: 'C:/data/from_store.csv', label: 'FromStore' }],
     })
 
@@ -617,7 +1191,7 @@ describe('validationService', () => {
       }
       if (command === 'save_run_artifact') {
         return {
-          path: 'runs/vectorbt_run_validation_test.json',
+          path: 'runs/vectorgrid_run_validation_test.json',
           bytes: 256,
         }
       }
@@ -723,7 +1297,7 @@ describe('validationService', () => {
     useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
       currentRun: {
         ts: '2026-02-25T12:34:56Z',
-        artifact_path: 'runs/vectorbt_run_validation_test.json',
+        artifact_path: 'runs/vectorgrid_run_validation_test.json',
         report_xlsx_path: '',
         csv_path: 'C:/data/test.csv',
         req: {

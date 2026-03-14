@@ -23,6 +23,7 @@ import {
   normalizeWorkspaceTab,
   workflowStepFromWorkflow,
 } from '../utils/core/workflowModel'
+import { readStorageString, writeStorageString } from '../utils/storage'
 
 interface WorkflowState {
   workspace: string
@@ -83,9 +84,7 @@ function workflowStep(workflow: string): string {
 }
 
 function storageSet(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value)
-  } catch {}
+  writeStorageString(key, value)
 }
 
 function setRootAttr(name: string, value: string): void {
@@ -117,7 +116,7 @@ function parseWorkflowMemory(raw: string): WorkflowMemory {
 
 function readWorkflowMemory(): WorkflowMemory {
   try {
-    const raw = localStorage.getItem(WORKFLOW_STATE_KEY)
+    const raw = readStorageString(WORKFLOW_STATE_KEY, '')
     if (!raw) return {}
     return parseWorkflowMemory(raw)
   } catch {
@@ -128,9 +127,7 @@ function readWorkflowMemory(): WorkflowMemory {
 const workflowMemory: WorkflowMemory = readWorkflowMemory()
 
 function persistWorkflowMemory(): void {
-  try {
-    localStorage.setItem(WORKFLOW_STATE_KEY, JSON.stringify(workflowMemory))
-  } catch {}
+  writeStorageString(WORKFLOW_STATE_KEY, JSON.stringify(workflowMemory))
 }
 
 function allowedTabs(workflow: string): { controls: string[]; results: string[] } {

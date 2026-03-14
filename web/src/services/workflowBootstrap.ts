@@ -6,6 +6,7 @@ import {
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
 } from '../utils/core/storageKeys'
+import { readStorageString } from '../utils/storage'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
@@ -34,11 +35,7 @@ function normalizeFromSet(value: unknown, allowed: Set<string>): string {
 }
 
 function readStorageValue(key: string): string {
-  try {
-    return normalize(localStorage.getItem(key))
-  } catch {
-    return ''
-  }
+  return normalize(readStorageString(key, ''))
 }
 
 export function readWorkflowBootstrapState(): WorkflowBootstrapState {

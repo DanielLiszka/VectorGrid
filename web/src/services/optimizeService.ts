@@ -1609,7 +1609,7 @@ function buildRunArtifactPayload(req: Record<string, unknown>, res: unknown, ts:
   const configFingerprint = computeConfigFingerprint(req, null)
   const artifact: Record<string, unknown> = {
     version: 1,
-    kind: 'vectorbt_run_artifact',
+    kind: 'vectorgrid_run_artifact',
     ts,
     config_fingerprint: configFingerprint,
     run: { req, res },

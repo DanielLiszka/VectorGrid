@@ -38,7 +38,7 @@ function Find-LatestGpuKernelEstimate([string]$glob) {
   return $estimate
 }
 
-function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabled) {
+function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabled, [string]$estimateSnapshotPath) {
   if ($dynamicStrategyEnabled) {
     $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = "1"
     Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight ON..."
@@ -61,9 +61,17 @@ function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabl
   }
 
   $estimate = Find-LatestGpuKernelEstimate -glob $CriterionEstimatesGlob
+  if (![string]::IsNullOrWhiteSpace($estimateSnapshotPath)) {
+    $snapshotDir = Split-Path -Parent $estimateSnapshotPath
+    if ($snapshotDir) {
+      New-Item -ItemType Directory -Force -Path $snapshotDir | Out-Null
+    }
+    Copy-Item -Force $estimate.FullName $estimateSnapshotPath
+  }
   $criterion = Get-Content -Raw $estimate.FullName | ConvertFrom-Json
   return [ordered]@{
     estimate_path = $estimate.FullName
+    estimate_snapshot_path = $estimateSnapshotPath
     mean_ms = [math]::Round(([double]$criterion.mean.point_estimate) / 1000000.0, 6)
     mean_ci_lower_ms = [math]::Round(([double]$criterion.mean.confidence_interval.lower_bound) / 1000000.0, 6)
     mean_ci_upper_ms = [math]::Round(([double]$criterion.mean.confidence_interval.upper_bound) / 1000000.0, 6)
@@ -71,12 +79,70 @@ function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabl
   }
 }
 
+function Invoke-DynamicStrategyProfileRun([bool]$dynamicStrategyEnabled, [int]$iterations = 5) {
+  if ($dynamicStrategyEnabled) {
+    Write-Host "Running profile_gpu_dynamic_runner with dynamic strategy preflight ON..."
+  } else {
+    Write-Host "Running profile_gpu_dynamic_runner with dynamic strategy preflight OFF..."
+  }
+
+  $dynMode = if ($dynamicStrategyEnabled) { "on" } else { "off" }
+  $runnerCmd = @(
+    "run",
+    "-q",
+    "-p", "ta_app_core",
+    "--bin", "profile_gpu_dynamic_runner",
+    "--features", "cuda,cuda-backtest-kernel",
+    "--",
+    "--strategy", "double_ma",
+    "--workload", "small",
+    "--iterations", "$iterations",
+    "--dynamic-mode", $dynMode,
+    "--device-id", "0"
+  )
+  $output = cargo @runnerCmd 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+
+  $iterRows = @()
+  foreach ($item in $output) {
+    $line = "$item".Trim()
+    if ($line -match 'iter=(\d+).*runtime_ms=(\d+).*wall_ms=(\d+)') {
+      $iterRows += [pscustomobject]@{
+        iter = [int]$matches[1]
+        runtime_ms = [double]$matches[2]
+        wall_ms = [double]$matches[3]
+      }
+    }
+  }
+  if ($iterRows.Count -lt 1) {
+    throw "profile_gpu_dynamic_runner did not emit parseable iteration rows"
+  }
+
+  $steadyRows = if ($iterRows.Count -gt 1) { $iterRows | Select-Object -Skip 1 } else { $iterRows }
+  $steadyWallMs = [math]::Round((($steadyRows | Measure-Object -Property wall_ms -Average).Average), 6)
+  $steadyRuntimeMs = [math]::Round((($steadyRows | Measure-Object -Property runtime_ms -Average).Average), 6)
+  return [ordered]@{
+    mode = $dynMode
+    iterations = $iterRows.Count
+    steady_state_iterations = $steadyRows.Count
+    first_wall_ms = [double]$iterRows[0].wall_ms
+    first_runtime_ms = [double]$iterRows[0].runtime_ms
+    steady_state_wall_ms = $steadyWallMs
+    steady_state_runtime_ms = $steadyRuntimeMs
+  }
+}
+
 $prevDynamicFlag = [Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
+$offSnapshotPath = "target/gpu_perf/off_estimates.json"
 try {
-  $offRun = Invoke-GpuKernelBench -benchFilter $BenchFilter -dynamicStrategyEnabled $false
-  $onRun = $null
+  $offRun = Invoke-GpuKernelBench -benchFilter $BenchFilter -dynamicStrategyEnabled $false -estimateSnapshotPath $offSnapshotPath
+  $offDynRun = $null
+  $onDynRun = $null
   if ($CheckDynamicStrategyRatio) {
-    $onRun = Invoke-GpuKernelBench -benchFilter $BenchFilter -dynamicStrategyEnabled $true
+    $offDynRun = Invoke-DynamicStrategyProfileRun -dynamicStrategyEnabled $false -iterations 5
+    $onDynRun = Invoke-DynamicStrategyProfileRun -dynamicStrategyEnabled $true -iterations 5
   }
 } finally {
   if ([string]::IsNullOrWhiteSpace($prevDynamicFlag)) {
@@ -104,18 +170,21 @@ $summary = [ordered]@{
   criterion_median_ms = $offRun.median_ms
   gpu = $gpuInfo
 }
-if ($CheckDynamicStrategyRatio -and $null -ne $onRun) {
+if ($CheckDynamicStrategyRatio -and $null -ne $offDynRun -and $null -ne $onDynRun) {
   $ratio = 0.0
-  if ($offRun.mean_ms -gt 0.0) {
-    $ratio = [double]$onRun.mean_ms / [double]$offRun.mean_ms
+  if ($offDynRun.steady_state_wall_ms -gt 0.0) {
+    $ratio = [double]$onDynRun.steady_state_wall_ms / [double]$offDynRun.steady_state_wall_ms
   }
   $summary.dynamic_strategy = [ordered]@{
     checked = $true
+    method = "profile_gpu_dynamic_runner_steady_state"
     regression_pct = $DynamicStrategyRegressionPct
-    off_estimates_json = $offRun.estimate_path
-    on_estimates_json = $onRun.estimate_path
-    off_mean_ms = $offRun.mean_ms
-    on_mean_ms = $onRun.mean_ms
+    off_first_wall_ms = $offDynRun.first_wall_ms
+    on_first_wall_ms = $onDynRun.first_wall_ms
+    off_mean_ms = $offDynRun.steady_state_wall_ms
+    on_mean_ms = $onDynRun.steady_state_wall_ms
+    off_runtime_ms = $offDynRun.steady_state_runtime_ms
+    on_runtime_ms = $onDynRun.steady_state_runtime_ms
     ratio_on_over_off = [math]::Round($ratio, 6)
   }
 }

@@ -240,8 +240,17 @@ function applyVueTextFieldUpdate(state: ValidationState, field: string, value: s
     case 'valMcSims':
       state.mcSims = next
       return true
+    case 'valMcBlockLen':
+      state.mcBlockLen = next
+      return true
+    case 'valMcMode':
+      state.mcMode = next
+      return true
     case 'valCrossMax':
       state.crossMax = next
+      return true
+    case 'valCrossMode':
+      state.crossMode = next
       return true
     case 'valCrossSearch':
       state.crossSearch = next
@@ -296,6 +305,15 @@ interface ValidationState {
   activeResultsTab: string
   validationHint: string
   validationMeta: string
+  validationRouteSummary: string
+  validationRouteDetailSummary: string
+  validationAuxCpuSummary: string
+  validationBootstrapSummary: string
+  validationRegimeSummary: string
+  validationFrictionSummary: string
+  validationCrossSummary: string
+  validationSkippedSummary: string
+  validationWarningSummary: string
   validationReoptMeta: string
   validationShortlistMeta: string
   validationColumns: { label: string; alignLeft: boolean }[]
@@ -330,11 +348,14 @@ interface ValidationState {
   perturbMax: string
   mcEnable: boolean
   mcSims: string
+  mcBlockLen: string
+  mcMode: string
   cscvEnable: boolean
   spaEnable: boolean
   reoptWfEnable: boolean
   crossEnable: boolean
   crossMax: string
+  crossMode: string
   crossSearch: string
   crossDatasets: CrossDatasetEntry[]
   crossSelectedCount: number
@@ -360,6 +381,15 @@ export const useValidationStore = defineStore('validation', {
     activeResultsTab: 'overview',
     validationHint: '—',
     validationMeta: '-',
+    validationRouteSummary: '-',
+    validationRouteDetailSummary: '-',
+    validationAuxCpuSummary: '-',
+    validationBootstrapSummary: '-',
+    validationRegimeSummary: '-',
+    validationFrictionSummary: '-',
+    validationCrossSummary: '-',
+    validationSkippedSummary: '-',
+    validationWarningSummary: '-',
     validationReoptMeta: '-',
     validationShortlistMeta: '-',
     validationColumns: [],
@@ -394,11 +424,14 @@ export const useValidationStore = defineStore('validation', {
     perturbMax: '0.06',
     mcEnable: false,
     mcSims: '500',
+    mcBlockLen: '',
+    mcMode: 'compare',
     cscvEnable: true,
     spaEnable: false,
     reoptWfEnable: false,
     crossEnable: false,
     crossMax: '6',
+    crossMode: 'auto',
     crossSearch: '',
     crossDatasets: [],
     crossSelectedCount: 0,
@@ -424,6 +457,15 @@ export const useValidationStore = defineStore('validation', {
       this.activeResultsTab = String(snapshot.activeResultsTab ?? this.activeResultsTab ?? 'overview').trim() || 'overview'
       this.validationHint = String(snapshot.validationHint ?? this.validationHint ?? '—').trim() || '—'
       this.validationMeta = String(snapshot.validationMeta ?? this.validationMeta ?? '-').trim() || '-'
+      this.validationRouteSummary = String(snapshot.validationRouteSummary ?? this.validationRouteSummary ?? '-').trim() || '-'
+      this.validationRouteDetailSummary = String(snapshot.validationRouteDetailSummary ?? this.validationRouteDetailSummary ?? '-').trim() || '-'
+      this.validationAuxCpuSummary = String(snapshot.validationAuxCpuSummary ?? this.validationAuxCpuSummary ?? '-').trim() || '-'
+      this.validationBootstrapSummary = String(snapshot.validationBootstrapSummary ?? this.validationBootstrapSummary ?? '-').trim() || '-'
+      this.validationRegimeSummary = String(snapshot.validationRegimeSummary ?? this.validationRegimeSummary ?? '-').trim() || '-'
+      this.validationFrictionSummary = String(snapshot.validationFrictionSummary ?? this.validationFrictionSummary ?? '-').trim() || '-'
+      this.validationCrossSummary = String(snapshot.validationCrossSummary ?? this.validationCrossSummary ?? '-').trim() || '-'
+      this.validationSkippedSummary = String(snapshot.validationSkippedSummary ?? this.validationSkippedSummary ?? '-').trim() || '-'
+      this.validationWarningSummary = String(snapshot.validationWarningSummary ?? this.validationWarningSummary ?? '-').trim() || '-'
       this.validationReoptMeta = String(snapshot.validationReoptMeta ?? this.validationReoptMeta ?? '-').trim() || '-'
       this.validationShortlistMeta = String(snapshot.validationShortlistMeta ?? this.validationShortlistMeta ?? '-').trim() || '-'
       this.validationColumns = rawArray(snapshot.validationColumns, this.validationColumns)
@@ -458,11 +500,14 @@ export const useValidationStore = defineStore('validation', {
       this.perturbMax = String(snapshot.perturbMax ?? this.perturbMax ?? '0.06').trim() || '0.06'
       this.mcEnable = Boolean(snapshot.mcEnable ?? this.mcEnable)
       this.mcSims = String(snapshot.mcSims ?? this.mcSims ?? '500').trim() || '500'
+      this.mcBlockLen = String(snapshot.mcBlockLen ?? this.mcBlockLen ?? '').trim()
+      this.mcMode = String(snapshot.mcMode ?? this.mcMode ?? 'compare').trim() || 'compare'
       this.cscvEnable = Boolean(snapshot.cscvEnable ?? this.cscvEnable)
       this.spaEnable = Boolean(snapshot.spaEnable ?? this.spaEnable)
       this.reoptWfEnable = Boolean(snapshot.reoptWfEnable ?? this.reoptWfEnable)
       this.crossEnable = Boolean(snapshot.crossEnable ?? this.crossEnable)
       this.crossMax = String(snapshot.crossMax ?? this.crossMax ?? '6').trim() || '6'
+      this.crossMode = String(snapshot.crossMode ?? this.crossMode ?? 'auto').trim() || 'auto'
       this.crossSearch = String(snapshot.crossSearch ?? this.crossSearch ?? '').trim()
       this.crossDatasets = rawArray(snapshot.crossDatasets, this.crossDatasets)
       this.crossSelectedCount = Math.max(0, Math.floor(Number(snapshot.crossSelectedCount ?? this.crossSelectedCount ?? 0)))

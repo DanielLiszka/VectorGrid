@@ -76,7 +76,7 @@ Desired outcomes:
 
 - stable request/result naming
 - stable artifact kind naming
-- compatibility shim for older `vectorbt_meta_stage4_experimental` artifacts
+- compatibility shim for older legacy `vectorbt_meta_stage4_experimental` artifacts while the product-facing surface moves to `VectorGrid` naming
 
 ### 2. Formalize model health policy
 

@@ -190,7 +190,7 @@ describe('historyService', () => {
       kind?: string
       preset?: Record<string, unknown>
     }
-    expect(parsed.kind).toBe('vectorbt_preset')
+    expect(parsed.kind).toBe('vectorgrid_preset')
     expect(parsed.preset).toEqual({
       objective: 'Sharpe',
       backend: 'GpuKernel',
@@ -201,7 +201,7 @@ describe('historyService', () => {
     const storage = installStorageHarness()
     const fileText = JSON.stringify({
       version: 1,
-      kind: 'vectorbt_preset',
+      kind: 'vectorgrid_preset',
       preset: {
         backend: 'GpuKernel',
         objective: 'Sharpe',

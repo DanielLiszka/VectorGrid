@@ -1,5 +1,5 @@
 use super::commands_reports_validation_common::{
-    build_model_from_report, ExportCandidateRow, ValidationExportModel,
+    build_model_from_report, run_level_rejection_reason, ExportCandidateRow, ValidationExportModel,
 };
 use rust_xlsxwriter::{
     Chart, ChartType, Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError,
@@ -28,10 +28,35 @@ const COL_CSCV_SEL: u16 = 18;
 const COL_CROSS_SCORE: u16 = 19;
 const COL_CROSS_PARETO: u16 = 20;
 const COL_BOOTSTRAP_PROB: u16 = 21;
-const COL_PERTURB_MEAN: u16 = 22;
-const COL_WARNINGS: u16 = 23;
-const COL_FAIL_REASONS: u16 = 24;
-const COL_PARAMS_JSON: u16 = 25;
+const COL_BOOTSTRAP_P05: u16 = 22;
+const COL_BOOTSTRAP_DD95: u16 = 23;
+const COL_BOOTSTRAP_STAT_BLOCK: u16 = 24;
+const COL_BOOTSTRAP_STAT_P05: u16 = 25;
+const COL_BOOTSTRAP_STAT_DD95: u16 = 26;
+const COL_PERTURB_MEAN: u16 = 27;
+const COL_PLATEAU_SCORE: u16 = 28;
+const COL_PLATEAU_LABEL: u16 = 29;
+const COL_PLATEAU_SOURCE: u16 = 30;
+const COL_PLATEAU_NEIGHBORS: u16 = 31;
+const COL_PLATEAU_SHARPE: u16 = 32;
+const COL_PLATEAU_DD: u16 = 33;
+const COL_WF_PNL_EFF: u16 = 34;
+const COL_WF_SHARPE_EFF: u16 = 35;
+const COL_REGIME_BUCKET: u16 = 36;
+const COL_REGIME_SHARPE: u16 = 37;
+const COL_REGIME_DD: u16 = 38;
+const COL_REGIME_STABLE: u16 = 39;
+const COL_REGIME_FLAG: u16 = 40;
+const COL_REGIME_SUPPORT: u16 = 41;
+const COL_FRICTION_FLAG: u16 = 42;
+const COL_RANK_ROBUST: u16 = 43;
+const COL_RANK_WF: u16 = 44;
+const COL_RANK_CSCV: u16 = 45;
+const COL_RANK_CROSS: u16 = 46;
+const COL_RANK_DRIFT: u16 = 47;
+const COL_WARNINGS: u16 = 48;
+const COL_FAIL_REASONS: u16 = 49;
+const COL_PARAMS_JSON: u16 = 50;
 
 fn write_optional_number(
     sheet: &mut Worksheet,
@@ -81,12 +106,120 @@ fn display_approval_label(label: &str) -> &'static str {
     }
 }
 
+fn display_recommendation_label(label: &str) -> String {
+    if label.trim().is_empty() {
+        return "No surviving candidates".to_string();
+    }
+    label.replace('_', " ")
+}
+
+fn display_cross_mode_label(label: &str) -> &'static str {
+    match label {
+        "lightweight" => "Lightweight",
+        "preserved_finalists" => "Preserved Finalists",
+        _ => "Unspecified",
+    }
+}
+
+fn bootstrap_mode_label(row: &ExportCandidateRow) -> &'static str {
+    if row.bootstrap_stationary_mean_block_len.is_some()
+        || row.bootstrap_stationary_pnl_p05.is_some()
+        || row.bootstrap_stationary_dd_p95.is_some()
+    {
+        "Compare (IID + Stationary)"
+    } else if row.bootstrap_prob_pnl_positive.is_some()
+        || row.bootstrap_pnl_p05.is_some()
+        || row.bootstrap_dd_p95.is_some()
+    {
+        "IID only"
+    } else {
+        "not run"
+    }
+}
+
+fn display_regime_bucket_label(label: &str) -> String {
+    match label {
+        "low_vol" => "Low Vol".to_string(),
+        "mid_vol" => "Mid Vol".to_string(),
+        "high_vol" => "High Vol".to_string(),
+        "trend" => "Trend".to_string(),
+        "range" => "Range".to_string(),
+        _ if label.trim().is_empty() => "Unknown".to_string(),
+        _ => label.replace('_', " "),
+    }
+}
+
+fn display_regime_flag(label: &str) -> &'static str {
+    match label {
+        "stable" => "Stable",
+        "selective" => "Selective",
+        "fragile" => "Fragile",
+        _ => "not run",
+    }
+}
+
+fn display_regime_support(label: &str) -> &'static str {
+    match label {
+        "broad" => "Broad",
+        "trend_only" => "Trend Only",
+        "range_only" => "Range Only",
+        "vol_selective" => "Vol Selective",
+        "weak" => "Weak",
+        _ => "not run",
+    }
+}
+
+fn plateau_summary_label(row: &ExportCandidateRow) -> String {
+    if row.plateau_label.trim().is_empty() {
+        return "Unavailable".to_string();
+    }
+    let source_suffix = if row.plateau_source.eq_ignore_ascii_case("top") {
+        " | top slice"
+    } else {
+        ""
+    };
+    match row.plateau_neighbor_count {
+        Some(count) => format!("{} | n={count}{source_suffix}", row.plateau_label),
+        None => format!("{}{}", row.plateau_label, source_suffix),
+    }
+}
+
+fn median_option_f64(values: &[Option<f64>]) -> Option<f64> {
+    let mut xs: Vec<f64> = values
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
+    if xs.is_empty() {
+        return None;
+    }
+    xs.sort_by(|a, b| a.total_cmp(b));
+    let mid = xs.len() / 2;
+    if xs.len() % 2 == 0 {
+        Some((xs[mid - 1] + xs[mid]) / 2.0)
+    } else {
+        Some(xs[mid])
+    }
+}
+
 fn approval_label_counts(model: &ValidationExportModel) -> Vec<(String, usize)> {
     use std::collections::BTreeMap;
 
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for row in &model.all_rows {
         *counts.entry(row.approval_label.clone()).or_insert(0) += 1;
+    }
+    if counts.is_empty() {
+        if let Some(verdict) = model.run_verdict.as_ref() {
+            return vec![(
+                format!(
+                    "Run Verdict: {}",
+                    display_recommendation_label(&verdict.final_recommendation)
+                ),
+                1,
+            )];
+        }
     }
 
     let mut out = Vec::new();
@@ -113,7 +246,10 @@ fn top_reason_counts(model: &ValidationExportModel, limit: usize) -> Vec<(String
 
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for row in &model.all_rows {
-        if row.final_approved || row.approval_reason.trim().is_empty() || row.approval_reason == "approved" {
+        if row.final_approved
+            || row.approval_reason.trim().is_empty()
+            || row.approval_reason == "approved"
+        {
             continue;
         }
         *counts.entry(row.approval_reason.clone()).or_insert(0) += 1;
@@ -121,6 +257,15 @@ fn top_reason_counts(model: &ValidationExportModel, limit: usize) -> Vec<(String
     let mut out: Vec<(String, usize)> = counts.into_iter().collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out.truncate(limit);
+    if out.is_empty() {
+        if let Some(verdict) = model
+            .run_verdict
+            .as_ref()
+            .filter(|verdict| !verdict.approved)
+        {
+            out.push((run_level_rejection_reason(verdict), 1));
+        }
+    }
     out
 }
 
@@ -149,7 +294,31 @@ fn set_candidate_sheet_layout(sheet: &mut Worksheet) {
     let _ = sheet.set_column_width(COL_CROSS_SCORE, 12);
     let _ = sheet.set_column_width(COL_CROSS_PARETO, 12);
     let _ = sheet.set_column_width(COL_BOOTSTRAP_PROB, 12);
+    let _ = sheet.set_column_width(COL_BOOTSTRAP_P05, 12);
+    let _ = sheet.set_column_width(COL_BOOTSTRAP_DD95, 12);
+    let _ = sheet.set_column_width(COL_BOOTSTRAP_STAT_BLOCK, 11);
+    let _ = sheet.set_column_width(COL_BOOTSTRAP_STAT_P05, 12);
+    let _ = sheet.set_column_width(COL_BOOTSTRAP_STAT_DD95, 12);
     let _ = sheet.set_column_width(COL_PERTURB_MEAN, 12);
+    let _ = sheet.set_column_width(COL_PLATEAU_SCORE, 12);
+    let _ = sheet.set_column_width(COL_PLATEAU_LABEL, 16);
+    let _ = sheet.set_column_width(COL_PLATEAU_SOURCE, 11);
+    let _ = sheet.set_column_width(COL_PLATEAU_NEIGHBORS, 11);
+    let _ = sheet.set_column_width(COL_PLATEAU_SHARPE, 13);
+    let _ = sheet.set_column_width(COL_PLATEAU_DD, 13);
+    let _ = sheet.set_column_width(COL_WF_PNL_EFF, 12);
+    let _ = sheet.set_column_width(COL_WF_SHARPE_EFF, 12);
+    let _ = sheet.set_column_width(COL_REGIME_BUCKET, 13);
+    let _ = sheet.set_column_width(COL_REGIME_SHARPE, 12);
+    let _ = sheet.set_column_width(COL_REGIME_DD, 12);
+    let _ = sheet.set_column_width(COL_REGIME_STABLE, 12);
+    let _ = sheet.set_column_width(COL_REGIME_FLAG, 12);
+    let _ = sheet.set_column_width(COL_REGIME_SUPPORT, 14);
+    let _ = sheet.set_column_width(COL_RANK_ROBUST, 11);
+    let _ = sheet.set_column_width(COL_RANK_WF, 9);
+    let _ = sheet.set_column_width(COL_RANK_CSCV, 11);
+    let _ = sheet.set_column_width(COL_RANK_CROSS, 11);
+    let _ = sheet.set_column_width(COL_RANK_DRIFT, 11);
     let _ = sheet.set_column_width(COL_WARNINGS, 28);
     let _ = sheet.set_column_width(COL_FAIL_REASONS, 30);
     let _ = sheet.set_column_width(COL_PARAMS_JSON, 44);
@@ -179,7 +348,32 @@ fn write_candidate_headers(sheet: &mut Worksheet, header_fmt: &Format) -> Result
         "Cross Score",
         "Cross Pareto",
         "Bootstrap Prob+",
+        "Bootstrap P05",
+        "Bootstrap DD95",
+        "Stat Block",
+        "Stat P05",
+        "Stat DD95",
         "Perturb Mean",
+        "Plateau Score",
+        "Plateau Label",
+        "Plateau Src",
+        "Plateau N",
+        "Plateau Sharpe P50",
+        "Plateau DD Worst",
+        "WF PnL Eff",
+        "WF Sharpe Eff",
+        "Regime Worst",
+        "Regime Sharpe",
+        "Regime MaxDD",
+        "Regime Stable",
+        "Regime Flag",
+        "Regime Support",
+        "Friction Flag",
+        "Rank Robust",
+        "Rank WF",
+        "Rank CSCV",
+        "Rank Cross",
+        "Max Drift",
         "Warnings",
         "Fail Reasons",
         "Params JSON",
@@ -250,7 +444,13 @@ fn write_candidate_rows(
         write_optional_number(sheet, r, COL_PSR, row.psr, pct_fmt)?;
         write_optional_number(sheet, r, COL_DSR, row.dsr, pct_fmt)?;
         write_optional_usize(sheet, r, COL_TRACK_BARS, row.track_record_bars, int_fmt)?;
-        write_optional_usize(sheet, r, COL_MINTRL, row.min_track_record_length_bars, int_fmt)?;
+        write_optional_usize(
+            sheet,
+            r,
+            COL_MINTRL,
+            row.min_track_record_length_bars,
+            int_fmt,
+        )?;
         sheet
             .write_number_with_format(r, COL_PNL, row.pnl, num_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -284,7 +484,138 @@ fn write_candidate_rows(
             row.bootstrap_prob_pnl_positive,
             pct_fmt,
         )?;
+        write_optional_number(sheet, r, COL_BOOTSTRAP_P05, row.bootstrap_pnl_p05, num_fmt)?;
+        write_optional_number(sheet, r, COL_BOOTSTRAP_DD95, row.bootstrap_dd_p95, num_fmt)?;
+        write_optional_usize(
+            sheet,
+            r,
+            COL_BOOTSTRAP_STAT_BLOCK,
+            row.bootstrap_stationary_mean_block_len,
+            int_fmt,
+        )?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_BOOTSTRAP_STAT_P05,
+            row.bootstrap_stationary_pnl_p05,
+            num_fmt,
+        )?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_BOOTSTRAP_STAT_DD95,
+            row.bootstrap_stationary_dd_p95,
+            num_fmt,
+        )?;
         write_optional_number(sheet, r, COL_PERTURB_MEAN, row.perturb_pnl_mean, num_fmt)?;
+        write_optional_number(sheet, r, COL_PLATEAU_SCORE, row.plateau_score, num_fmt)?;
+        sheet
+            .write_string_with_format(
+                r,
+                COL_PLATEAU_LABEL,
+                if row.plateau_label.is_empty() {
+                    "unavailable"
+                } else {
+                    row.plateau_label.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                r,
+                COL_PLATEAU_SOURCE,
+                if row.plateau_source.is_empty() {
+                    "-"
+                } else {
+                    row.plateau_source.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_usize(
+            sheet,
+            r,
+            COL_PLATEAU_NEIGHBORS,
+            row.plateau_neighbor_count,
+            int_fmt,
+        )?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_PLATEAU_SHARPE,
+            row.plateau_sharpe_median,
+            num_fmt,
+        )?;
+        write_optional_number(sheet, r, COL_PLATEAU_DD, row.plateau_max_dd_worst, num_fmt)?;
+        write_optional_number(sheet, r, COL_WF_PNL_EFF, row.wf_pnl_efficiency, num_fmt)?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_WF_SHARPE_EFF,
+            row.wf_sharpe_efficiency,
+            num_fmt,
+        )?;
+        sheet
+            .write_string_with_format(
+                r,
+                COL_REGIME_BUCKET,
+                if row.regime_worst_bucket.is_empty() {
+                    "not run"
+                } else {
+                    row.regime_worst_bucket.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_REGIME_SHARPE,
+            row.regime_worst_sharpe,
+            num_fmt,
+        )?;
+        write_optional_number(sheet, r, COL_REGIME_DD, row.regime_worst_max_dd, num_fmt)?;
+        write_optional_usize(
+            sheet,
+            r,
+            COL_REGIME_STABLE,
+            row.regime_stable_bucket_count,
+            int_fmt,
+        )?;
+        sheet
+            .write_string_with_format(
+                r,
+                COL_REGIME_FLAG,
+                display_regime_flag(&row.regime_fragility_flag),
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                r,
+                COL_REGIME_SUPPORT,
+                display_regime_support(&row.regime_support_label),
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(
+                r,
+                COL_FRICTION_FLAG,
+                if row.friction_flag.is_empty() {
+                    "not run"
+                } else {
+                    row.friction_flag.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_usize(sheet, r, COL_RANK_ROBUST, row.robust_view_rank, int_fmt)?;
+        write_optional_usize(sheet, r, COL_RANK_WF, row.wf_view_rank, int_fmt)?;
+        write_optional_usize(sheet, r, COL_RANK_CSCV, row.cscv_view_rank, int_fmt)?;
+        write_optional_usize(sheet, r, COL_RANK_CROSS, row.cross_view_rank, int_fmt)?;
+        write_optional_usize(sheet, r, COL_RANK_DRIFT, row.max_view_rank_drift, int_fmt)?;
         sheet
             .write_string_with_format(r, COL_WARNINGS, &row.warning_flags, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -334,6 +665,183 @@ fn write_candidate_sheet(
     if !title_note.is_empty() {
         sheet
             .write_string_with_format(0, COL_PARAMS_JSON + 1, title_note, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+    if name == "Audit Data" {
+        let audit_col = COL_PARAMS_JSON + 1;
+        sheet
+            .write_string_with_format(2, audit_col, "Regime Slice Audit", header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        for (offset, header) in [
+            "Rank",
+            "Approval",
+            "Bucket",
+            "Bars",
+            "ActiveFrac",
+            "PnL",
+            "Sharpe",
+            "MaxDD",
+            "Trades",
+            "Stable",
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet
+                .write_string_with_format(3, audit_col + offset as u16, *header, header_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
+        let mut audit_row = 4u32;
+        for row in rows {
+            for bucket in &row.regime_bucket_rows {
+                if bucket.bars.unwrap_or(0) == 0 {
+                    continue;
+                }
+                sheet
+                    .write_number_with_format(audit_row, audit_col, row.rank as f64, int_fmt)
+                    .map_err(|e: XlsxError| e.to_string())?;
+                sheet
+                    .write_string_with_format(
+                        audit_row,
+                        audit_col + 1,
+                        display_approval_label(&row.approval_label),
+                        text_fmt,
+                    )
+                    .map_err(|e: XlsxError| e.to_string())?;
+                sheet
+                    .write_string_with_format(audit_row, audit_col + 2, &bucket.label, text_fmt)
+                    .map_err(|e: XlsxError| e.to_string())?;
+                write_optional_usize(sheet, audit_row, audit_col + 3, bucket.bars, int_fmt)?;
+                write_optional_number(sheet, audit_row, audit_col + 4, bucket.active_frac, pct_fmt)?;
+                write_optional_number(sheet, audit_row, audit_col + 5, bucket.pnl, num_fmt)?;
+                write_optional_number(sheet, audit_row, audit_col + 6, bucket.sharpe, num_fmt)?;
+                write_optional_number(sheet, audit_row, audit_col + 7, bucket.max_dd, num_fmt)?;
+                write_optional_usize(sheet, audit_row, audit_col + 8, bucket.trades, int_fmt)?;
+                sheet
+                    .write_string_with_format(
+                        audit_row,
+                        audit_col + 9,
+                        match bucket.stable {
+                            Some(true) => "yes",
+                            Some(false) => "no",
+                            None => "n/a",
+                        },
+                        text_fmt,
+                    )
+                    .map_err(|e: XlsxError| e.to_string())?;
+                audit_row += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_regime_audit_sheet(
+    workbook: &mut Workbook,
+    model: &ValidationExportModel,
+    header_fmt: &Format,
+    text_fmt: &Format,
+    num_fmt: &Format,
+    pct_fmt: &Format,
+    int_fmt: &Format,
+) -> Result<(), String> {
+    let sheet = workbook.add_worksheet();
+    sheet
+        .set_name("Regime Audit")
+        .map_err(|e: XlsxError| e.to_string())?;
+    sheet.set_zoom(110);
+    for (col, width) in [
+        (0u16, 8.0),
+        (1u16, 14.0),
+        (2u16, 34.0),
+        (3u16, 12.0),
+        (4u16, 10.0),
+        (5u16, 10.0),
+        (6u16, 12.0),
+        (7u16, 12.0),
+        (8u16, 12.0),
+        (9u16, 10.0),
+        (10u16, 10.0),
+    ] {
+        let _ = sheet.set_column_width(col, width);
+    }
+    for (col, header) in [
+        "Rank",
+        "Approval",
+        "Params",
+        "Slice",
+        "Bars",
+        "Active",
+        "PnL",
+        "Sharpe",
+        "MaxDD",
+        "Trades",
+        "Stable",
+    ]
+    .iter()
+    .enumerate()
+    {
+        sheet
+            .write_string_with_format(0, col as u16, *header, header_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
+    let mut row_idx = 1u32;
+    for row in &model.all_rows {
+        for bucket in &row.regime_bucket_rows {
+            sheet
+                .write_number_with_format(row_idx, 0, row.rank as f64, int_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+            sheet
+                .write_string_with_format(
+                    row_idx,
+                    1,
+                    display_approval_label(&row.approval_label),
+                    text_fmt,
+                )
+                .map_err(|e: XlsxError| e.to_string())?;
+            sheet
+                .write_string_with_format(row_idx, 2, &row.params_summary, text_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+            sheet
+                .write_string_with_format(
+                    row_idx,
+                    3,
+                    &display_regime_bucket_label(&bucket.label),
+                    text_fmt,
+                )
+                .map_err(|e: XlsxError| e.to_string())?;
+            write_optional_usize(sheet, row_idx, 4, bucket.bars, int_fmt)?;
+            write_optional_number(sheet, row_idx, 5, bucket.active_frac, pct_fmt)?;
+            write_optional_number(sheet, row_idx, 6, bucket.pnl, num_fmt)?;
+            write_optional_number(sheet, row_idx, 7, bucket.sharpe, num_fmt)?;
+            write_optional_number(sheet, row_idx, 8, bucket.max_dd, num_fmt)?;
+            write_optional_usize(sheet, row_idx, 9, bucket.trades, int_fmt)?;
+            sheet
+                .write_string_with_format(
+                    row_idx,
+                    10,
+                    if bucket.stable == Some(true) {
+                        "yes"
+                    } else if bucket.stable == Some(false) {
+                        "no"
+                    } else {
+                        "n/a"
+                    },
+                    text_fmt,
+                )
+                .map_err(|e: XlsxError| e.to_string())?;
+            row_idx += 1;
+        }
+    }
+    if row_idx == 1 {
+        sheet
+            .write_string_with_format(
+                1,
+                0,
+                "No regime slice robustness rows present in this artifact.",
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
     }
     Ok(())
@@ -394,6 +902,11 @@ fn build_dashboard(
         .runtime_ms
         .map(|value| format!("{value} ms"))
         .unwrap_or_else(|| "-".to_string());
+    let backend_reason_label = if model.backend_route.contains("->CpuOnly") {
+        "Fallback"
+    } else {
+        "Route Note"
+    };
     for (label, value) in [
         ("Timestamp", model.ts.as_str()),
         ("Strategy", model.strategy_kind.as_str()),
@@ -417,7 +930,7 @@ fn build_dashboard(
             },
         ),
         (
-            "Fallback",
+            backend_reason_label,
             if model.backend_fallback_reason.is_empty() {
                 "-"
             } else {
@@ -726,6 +1239,26 @@ fn build_dashboard(
             .write_string_with_format(21, 5, "Fwd PnL+", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_number(dashboard, 21, 6, reopt.forward_positive_pnl_frac, pct_fmt)?;
+        dashboard
+            .write_string_with_format(22, 5, "WFE Sharpe P50", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 22, 6, reopt.wfe_sharpe_median, num_fmt)?;
+        dashboard
+            .write_string_with_format(23, 5, "WFE Sharpe Worst", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 23, 6, reopt.wfe_sharpe_worst, num_fmt)?;
+        dashboard
+            .write_string_with_format(24, 5, "WFE Sharpe Std", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 24, 6, reopt.wfe_sharpe_std, num_fmt)?;
+        dashboard
+            .write_string_with_format(25, 5, "WFE PnL P50", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 25, 6, reopt.wfe_pnl_median, num_fmt)?;
+        dashboard
+            .write_string_with_format(26, 5, "WFE PnL Worst", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 26, 6, reopt.wfe_pnl_worst, num_fmt)?;
     } else {
         dashboard
             .write_string_with_format(15, 6, "not run", text_fmt)
@@ -733,21 +1266,27 @@ fn build_dashboard(
     }
 
     dashboard
-        .write_string_with_format(23, 5, "Cross-Ticker", label_fmt)
+        .write_string_with_format(28, 5, "Cross-Ticker", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     if let Some(cross) = model.cross_ticker.as_ref() {
         dashboard
-            .write_string_with_format(24, 5, "Datasets", label_fmt)
+            .write_string_with_format(29, 5, "Datasets", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_number_with_format(24, 6, cross.dataset_count as f64, int_fmt)
+            .write_number_with_format(29, 6, cross.dataset_count as f64, int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(25, 5, "Labels", label_fmt)
+            .write_string_with_format(30, 5, "Mode", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(30, 6, display_cross_mode_label(&cross.mode), text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(31, 5, "Labels", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
             .write_string_with_format(
-                25,
+                31,
                 6,
                 if cross.dataset_labels.is_empty() {
                     "-"
@@ -757,14 +1296,108 @@ fn build_dashboard(
                 text_fmt,
             )
             .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(32, 5, "Counts", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(32, 6, "final post-cross shortlist", text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
-            .write_string_with_format(24, 6, "not run", text_fmt)
+            .write_string_with_format(29, 6, "not run", text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
+    let mut skipped_modules: Vec<String> = Vec::new();
+    if let Some(cscv) = model.cscv_pbo.as_ref() {
+        if !cscv.skipped_reason.is_empty() {
+            skipped_modules.push(format!("CSCV: {}", cscv.skipped_reason));
+        }
+    }
+    if let Some(spa) = model.spa.as_ref() {
+        if !spa.skipped_reason.is_empty() {
+            skipped_modules.push(format!("SPA: {}", spa.skipped_reason));
+        }
+    }
+    let top_warning = run_verdict
+        .and_then(|verdict| {
+            if !verdict.fail_reasons.is_empty() {
+                Some(verdict.fail_reasons.as_str())
+            } else if !verdict.warning_flags.is_empty() {
+                Some(verdict.warning_flags.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("-");
+    let route_detail = if model.backend_fallback_reason.is_empty() {
+        "-"
+    } else {
+        model.backend_fallback_reason.as_str()
+    };
+    let skipped_modules_text = if skipped_modules.is_empty() {
+        "-".to_string()
+    } else {
+        skipped_modules.join(" | ")
+    };
+
     dashboard
-        .write_string_with_format(23, 3, "Gate Config", label_fmt)
+        .write_string_with_format(34, 5, "Execution Notes", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(35, 5, "Route Detail", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(35, 6, route_detail, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(36, 5, "Aux CPU Tails", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(36, 6, &model.actual_aux_tail_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(37, 5, "Skipped Modules", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(37, 6, &skipped_modules_text, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(38, 5, "Top Warning", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(38, 6, top_warning, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(46, 5, "Expected Execution", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(47, 5, "Expected Route", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(47, 6, &model.expected_route_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(48, 5, "Expected Cross", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(48, 6, &model.expected_cross_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(49, 5, "Expected Modules", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(49, 6, &model.expected_module_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(50, 5, "Expected Notes", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(50, 6, &model.expected_warning_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+
+    dashboard
+        .write_string_with_format(32, 3, "Gate Config", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     for (offset, label, value, is_pct) in [
         (1u32, "Min PSR", model.min_psr, true),
@@ -773,7 +1406,7 @@ fn build_dashboard(
         (4u32, "Min CSCV Metric", model.min_cscv_oos_metric, false),
         (5u32, "Max PBO", model.max_pbo, true),
     ] {
-        let row = 23 + offset;
+        let row = 32 + offset;
         dashboard
             .write_string_with_format(row, 3, label, label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -805,11 +1438,23 @@ fn build_dashboard(
         .or_else(|| model.shortlist_rows.first())
         .or_else(|| model.all_rows.first());
     if let Some(row) = top_candidate {
+        let plateau_text = plateau_summary_label(row);
         for (offset, (label, value)) in [
             ("Approval", display_approval_label(&row.approval_label)),
             ("Reason", row.approval_reason.as_str()),
             ("Profile", row.profile_kind.as_str()),
             ("Params", row.params_summary.as_str()),
+            ("Plateau", plateau_text.as_str()),
+            (
+                "Plateau Detail",
+                if row.plateau_source.is_empty() {
+                    "-"
+                } else if row.plateau_source.eq_ignore_ascii_case("top") {
+                    "top slice neighborhood"
+                } else {
+                    "full optimization surface"
+                },
+            ),
         ]
         .iter()
         .enumerate()
@@ -827,8 +1472,17 @@ fn build_dashboard(
             ("PSR", row.psr, true),
             ("DSR", row.dsr, true),
             ("WF Sharpe", row.wf_sharpe_median, false),
+            ("WF PnL Eff", row.wf_pnl_efficiency, false),
+            ("WF Sharpe Eff", row.wf_sharpe_efficiency, false),
             ("Cross Score", row.cross_score, false),
             ("Bootstrap Prob+", row.bootstrap_prob_pnl_positive, true),
+            ("Bootstrap P05", row.bootstrap_pnl_p05, false),
+            ("Bootstrap DD95", row.bootstrap_dd_p95, false),
+            ("Stat P05", row.bootstrap_stationary_pnl_p05, false),
+            ("Stat DD95", row.bootstrap_stationary_dd_p95, false),
+            ("Plateau Score", row.plateau_score, false),
+            ("Plateau Sharpe P50", row.plateau_sharpe_median, false),
+            ("Plateau DD Worst", row.plateau_max_dd_worst, false),
         ]
         .iter()
         .enumerate()
@@ -852,7 +1506,318 @@ fn build_dashboard(
     }
 
     dashboard
-        .write_string_with_format(30, 0, "Top Visible Rows", label_fmt)
+        .write_string_with_format(52, 5, "Ranking Stability", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    if let Some(stability) = model.ranking_stability.as_ref() {
+        for (offset, label, value) in [
+            (
+                1u32,
+                "Finalist Top-K",
+                format!("{}", stability.finalist_k.max(1)),
+            ),
+            (
+                2u32,
+                "WF overlap/drift",
+                match (stability.wf_overlap, stability.wf_mean_drift) {
+                    (Some(overlap), Some(drift)) => {
+                        format!("{overlap}/{} | {drift:.2}", stability.finalist_k.max(1))
+                    }
+                    _ => "not run".to_string(),
+                },
+            ),
+            (
+                3u32,
+                "CSCV overlap/drift",
+                match (stability.cscv_overlap, stability.cscv_mean_drift) {
+                    (Some(overlap), Some(drift)) => {
+                        format!("{overlap}/{} | {drift:.2}", stability.finalist_k.max(1))
+                    }
+                    _ => "not run".to_string(),
+                },
+            ),
+            (
+                4u32,
+                "Cross overlap/drift",
+                match (stability.cross_overlap, stability.cross_mean_drift) {
+                    (Some(overlap), Some(drift)) => {
+                        format!("{overlap}/{} | {drift:.2}", stability.finalist_k.max(1))
+                    }
+                    _ => "not run".to_string(),
+                },
+            ),
+            (
+                5u32,
+                "Stable finalists",
+                format!(
+                    "{}/{}",
+                    stability.stable_finalist_count,
+                    stability.finalist_k.max(1)
+                ),
+            ),
+        ] {
+            let row = 52 + offset;
+            dashboard
+                .write_string_with_format(row, 5, label, label_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+            dashboard
+                .write_string_with_format(row, 6, &value, text_fmt)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
+    } else {
+        dashboard
+            .write_string_with_format(53, 6, "not available", text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
+    dashboard
+        .write_string_with_format(59, 5, "WF Efficiency", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    let efficiency_rows = if model.approved_rows.is_empty() {
+        &model.shortlist_rows
+    } else {
+        &model.approved_rows
+    };
+    let median_wf_pnl_eff = median_option_f64(
+        &efficiency_rows
+            .iter()
+            .map(|row| row.wf_pnl_efficiency)
+            .collect::<Vec<_>>(),
+    );
+    let median_wf_sharpe_eff = median_option_f64(
+        &efficiency_rows
+            .iter()
+            .map(|row| row.wf_sharpe_efficiency)
+            .collect::<Vec<_>>(),
+    );
+    for (offset, label, value) in [
+        (
+            1u32,
+            "Top PnL Eff",
+            top_candidate.and_then(|row| row.wf_pnl_efficiency),
+        ),
+        (
+            2u32,
+            "Top Sharpe Eff",
+            top_candidate.and_then(|row| row.wf_sharpe_efficiency),
+        ),
+        (3u32, "Median PnL Eff", median_wf_pnl_eff),
+        (4u32, "Median Sharpe Eff", median_wf_sharpe_eff),
+    ] {
+        let row = 59 + offset;
+        dashboard
+            .write_string_with_format(row, 5, label, label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, row, 6, value, num_fmt)?;
+    }
+    dashboard
+        .write_string_with_format(64, 5, "Policy", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(64, 6, &model.wfe_policy_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+
+    dashboard
+        .write_string_with_format(65, 5, "Regime Robustness", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    if let Some(row) = top_candidate {
+        dashboard
+            .write_string_with_format(66, 5, "Worst Bucket", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                66,
+                6,
+                if row.regime_worst_bucket.is_empty() {
+                    "not run"
+                } else {
+                    row.regime_worst_bucket.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(67, 5, "Worst Sharpe", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 67, 6, row.regime_worst_sharpe, num_fmt)?;
+        dashboard
+            .write_string_with_format(68, 5, "Worst MaxDD", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 68, 6, row.regime_worst_max_dd, num_fmt)?;
+        dashboard
+            .write_string_with_format(69, 5, "Stable Buckets", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_usize(dashboard, 69, 6, row.regime_stable_bucket_count, int_fmt)?;
+        dashboard
+            .write_string_with_format(70, 5, "Stable Frac", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 70, 6, row.regime_stable_bucket_frac, pct_fmt)?;
+        dashboard
+            .write_string_with_format(71, 5, "Flag", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                71,
+                6,
+                display_regime_flag(&row.regime_fragility_flag),
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(72, 5, "Support", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                72,
+                6,
+                display_regime_support(&row.regime_support_label),
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(73, 5, "Slice Audit", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(73, 6, "see Audit Data -> Regime Slice Audit", text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    } else {
+        dashboard
+            .write_string_with_format(66, 6, "not available", text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
+    dashboard
+        .write_string_with_format(73, 5, "Bootstrap Compare", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    if let Some(row) = top_candidate {
+        dashboard
+            .write_string_with_format(74, 5, "Mode", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(74, 6, bootstrap_mode_label(row), text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(75, 5, "Stat Block", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_usize(
+            dashboard,
+            75,
+            6,
+            row.bootstrap_stationary_mean_block_len,
+            int_fmt,
+        )?;
+        dashboard
+            .write_string_with_format(76, 5, "IID P05", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 76, 6, row.bootstrap_pnl_p05, num_fmt)?;
+        dashboard
+            .write_string_with_format(77, 5, "IID DD95", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 77, 6, row.bootstrap_dd_p95, num_fmt)?;
+        dashboard
+            .write_string_with_format(78, 5, "Stat P05", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 78, 6, row.bootstrap_stationary_pnl_p05, num_fmt)?;
+        dashboard
+            .write_string_with_format(79, 5, "Stat DD95", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 79, 6, row.bootstrap_stationary_dd_p95, num_fmt)?;
+        dashboard
+            .write_string_with_format(80, 5, "Note", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                80,
+                6,
+                &model.bootstrap_mode_summary,
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    } else {
+        dashboard
+            .write_string_with_format(74, 6, "not available", text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
+    dashboard
+        .write_string_with_format(82, 5, "Friction Stability", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    if let Some(row) = top_candidate {
+        dashboard
+            .write_string_with_format(83, 5, "Worst Scenario", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                83,
+                6,
+                if row.friction_worst_scenario.is_empty() {
+                    "not run"
+                } else {
+                    row.friction_worst_scenario.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(84, 5, "Worst-Scenario Sharpe", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 84, 6, row.friction_worst_sharpe, num_fmt)?;
+        dashboard
+            .write_string_with_format(85, 5, "Worst-Scenario MaxDD", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 85, 6, row.friction_worst_max_dd, num_fmt)?;
+        dashboard
+            .write_string_with_format(86, 5, "Pass Frac", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dashboard, 86, 6, row.friction_pass_frac, pct_fmt)?;
+        dashboard
+            .write_string_with_format(87, 5, "Max Rank Drift", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_usize(dashboard, 87, 6, row.friction_max_rank_drift, int_fmt)?;
+        dashboard
+            .write_string_with_format(88, 5, "Flag", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                88,
+                6,
+                if row.friction_flag.is_empty() {
+                    "not run"
+                } else {
+                    row.friction_flag.as_str()
+                },
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(89, 5, "Rule", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                89,
+                6,
+                "absolute pass: pnl >= 0 and sharpe >= 0",
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(90, 5, "Note", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(
+                90,
+                6,
+                &model.friction_policy_summary,
+                text_fmt,
+            )
+            .map_err(|e: XlsxError| e.to_string())?;
+    } else {
+        dashboard
+            .write_string_with_format(83, 6, "not available", text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+    }
+
+    dashboard
+        .write_string_with_format(35, 0, "Top Visible Rows", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     for (col, header) in [
         "Rank", "Approval", "Profile", "Params", "Robust", "PSR", "DSR", "Reason",
@@ -861,7 +1826,7 @@ fn build_dashboard(
     .enumerate()
     {
         dashboard
-            .write_string_with_format(31, col as u16, *header, label_fmt)
+            .write_string_with_format(36, col as u16, *header, label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
     let mut table_rows = Vec::new();
@@ -895,7 +1860,7 @@ fn build_dashboard(
         }
     }
     for (idx, row) in table_rows.iter().enumerate() {
-        let r = 32 + idx as u32;
+        let r = 37 + idx as u32;
         let status_fmt = match row.approval_label.as_str() {
             "approved" => approved_fmt,
             "rejected" => rejected_fmt,
@@ -906,7 +1871,12 @@ fn build_dashboard(
             .write_number_with_format(r, 0, row.rank as f64, int_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(r, 1, display_approval_label(&row.approval_label), status_fmt)
+            .write_string_with_format(
+                r,
+                1,
+                display_approval_label(&row.approval_label),
+                status_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
             .write_string_with_format(r, 2, &row.profile_kind, text_fmt)
@@ -979,7 +1949,11 @@ fn build_distributions(
     let _ = dist.set_column_width(10, 12);
     let _ = dist.set_column_width(12, 12);
     let _ = dist.set_column_width(13, 12);
-    dist.merge_range(0, 0, 0, 13, "Distributions", title_fmt)
+    let _ = dist.set_column_width(15, 12);
+    let _ = dist.set_column_width(16, 12);
+    let _ = dist.set_column_width(18, 13);
+    let _ = dist.set_column_width(19, 13);
+    dist.merge_range(0, 0, 0, 19, "Distributions", title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dist.write_string_with_format(1, 0, "Visible shortlist cap", text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1045,6 +2019,14 @@ fn build_distributions(
         .map_err(|e: XlsxError| e.to_string())?;
     dist.write_string_with_format(3, 13, "Sharpe", header_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
+    dist.write_string_with_format(3, 15, "Plateau", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dist.write_string_with_format(3, 16, "Max Drift", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dist.write_string_with_format(3, 18, "WF PnL Eff", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dist.write_string_with_format(3, 19, "WF Sharpe Eff", header_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
     for (idx, row) in model.all_rows.iter().enumerate() {
         let r = 4 + idx as u32;
         dist.write_number_with_format(r, 9, row.rank as f64, int_fmt)
@@ -1055,6 +2037,10 @@ fn build_distributions(
             .map_err(|e: XlsxError| e.to_string())?;
         dist.write_number_with_format(r, 13, row.sharpe, num_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(dist, r, 15, row.plateau_score, num_fmt)?;
+        write_optional_usize(dist, r, 16, row.max_view_rank_drift, int_fmt)?;
+        write_optional_number(dist, r, 18, row.wf_pnl_efficiency, num_fmt)?;
+        write_optional_number(dist, r, 19, row.wf_sharpe_efficiency, num_fmt)?;
     }
 
     if !approval_counts.is_empty() {
@@ -1077,7 +2063,9 @@ fn build_distributions(
             .add_series()
             .set_categories(("Distributions", 4, 6, reason_max, 6))
             .set_values(("Distributions", 4, 7, reason_max, 7));
-        reason_chart.title().set_name("Top rejection / review reasons");
+        reason_chart
+            .title()
+            .set_name("Top rejection / review reasons");
         reason_chart.legend().set_hidden();
         dist.insert_chart_with_offset(20, 15, &reason_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -1104,7 +2092,9 @@ fn build_distributions(
             .add_series()
             .set_categories(("Distributions", row_min, 9, row_max, 9))
             .set_values(("Distributions", row_min, 10, row_max, 10));
-        robust_chart.title().set_name("Robust score distribution by rank");
+        robust_chart
+            .title()
+            .set_name("Robust score distribution by rank");
         robust_chart.legend().set_hidden();
         dist.insert_chart_with_offset(54, 15, &robust_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -1120,6 +2110,56 @@ fn build_distributions(
         risk_chart.legend().set_hidden();
         dist.insert_chart_with_offset(71, 15, &risk_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
+
+        if model.all_rows.iter().any(|row| row.plateau_score.is_some()) {
+            let mut plateau_chart = Chart::new(ChartType::Line);
+            plateau_chart
+                .add_series()
+                .set_categories(("Distributions", row_min, 9, row_max, 9))
+                .set_values(("Distributions", row_min, 15, row_max, 15));
+            plateau_chart
+                .title()
+                .set_name("Plateau score by robust rank");
+            plateau_chart.legend().set_hidden();
+            dist.insert_chart_with_offset(88, 15, &plateau_chart, 10, 10)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
+
+        if model
+            .all_rows
+            .iter()
+            .any(|row| row.max_view_rank_drift.is_some())
+        {
+            let mut drift_chart = Chart::new(ChartType::Column);
+            drift_chart
+                .add_series()
+                .set_categories(("Distributions", row_min, 9, row_max, 9))
+                .set_values(("Distributions", row_min, 16, row_max, 16));
+            drift_chart
+                .title()
+                .set_name("Max rank drift by robust rank");
+            drift_chart.legend().set_hidden();
+            dist.insert_chart_with_offset(105, 15, &drift_chart, 10, 10)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
+
+        if model
+            .all_rows
+            .iter()
+            .any(|row| row.wf_sharpe_efficiency.is_some())
+        {
+            let mut efficiency_chart = Chart::new(ChartType::Line);
+            efficiency_chart
+                .add_series()
+                .set_categories(("Distributions", row_min, 9, row_max, 9))
+                .set_values(("Distributions", row_min, 19, row_max, 19));
+            efficiency_chart
+                .title()
+                .set_name("WF Sharpe efficiency by robust rank");
+            efficiency_chart.legend().set_hidden();
+            dist.insert_chart_with_offset(122, 15, &efficiency_chart, 10, 10)
+                .map_err(|e: XlsxError| e.to_string())?;
+        }
     }
 
     Ok(())
@@ -1166,7 +2206,9 @@ fn build_formats() -> (
     let pct_fmt = Format::new()
         .set_num_format("0.0000")
         .set_border(FormatBorder::Thin);
-    let int_fmt = Format::new().set_num_format("0").set_border(FormatBorder::Thin);
+    let int_fmt = Format::new()
+        .set_num_format("0")
+        .set_border(FormatBorder::Thin);
     let approved_fmt = Format::new()
         .set_font_color(Color::RGB(0x166534))
         .set_background_color(Color::RGB(0xDCFCE7))
@@ -1328,6 +2370,16 @@ pub(super) fn build_validation_report_xlsx(
         &compat_fmt,
     )?;
 
+    write_regime_audit_sheet(
+        &mut workbook,
+        &model,
+        &header_fmt,
+        &text_fmt,
+        &num_fmt,
+        &pct_fmt,
+        &int_fmt,
+    )?;
+
     workbook
         .save_to_buffer()
         .map_err(|e: XlsxError| e.to_string())
@@ -1367,7 +2419,7 @@ mod tests {
     fn validation_report_workbook_contains_expected_sheets_and_charts() {
         let report = serde_json::json!({
           "version": 1,
-          "kind": "vectorbt_report",
+          "kind": "vectorgrid_report",
           "ts": "2026-03-13T00:00:00Z",
           "run": { "req": { "strategy_kind": "CompositeTrend" } },
           "validation": {
@@ -1439,7 +2491,7 @@ mod tests {
     fn validation_report_empties_approved_sheet_when_run_verdict_rejects_final_approval() {
         let report = serde_json::json!({
           "version": 1,
-          "kind": "vectorbt_report",
+          "kind": "vectorgrid_report",
           "ts": "2026-03-13T00:00:00Z",
           "run": { "req": { "strategy_kind": "Asr" } },
           "validation": {
@@ -1502,12 +2554,11 @@ mod tests {
         assert!(workbook.contains("Dashboard"));
     }
 
-
     #[test]
     fn validation_report_supports_legacy_compatibility_mode() {
         let report = serde_json::json!({
           "version": 1,
-          "kind": "vectorbt_report",
+          "kind": "vectorgrid_report",
           "ts": "2026-03-13T00:00:00Z",
           "validation": {
             "res": {

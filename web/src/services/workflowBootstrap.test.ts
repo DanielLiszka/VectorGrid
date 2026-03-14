@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { applyWorkflowBootstrapFromStorage, readWorkflowBootstrapState } from './workflowBootstrap'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { CONTROLS_TAB_KEY, RESULTS_TAB_KEY } from '../utils/core/storageKeys'
 
 type StorageMap = Record<string, string>
 
@@ -29,8 +30,8 @@ describe('workflow bootstrap service', () => {
       vta_workspace_tab_v1: 'library',
       vta_workflow_tab_v1: 'history',
       vta_workflow_step_v1: 'optimize',
-      vectorbt_controls_tab_v1: 'strategy',
-      vectorbt_results_tab_v1: 'history',
+      vectorgrid_controls_tab_v1: 'strategy',
+      vectorgrid_results_tab_v1: 'history',
       vta_aggregate_tab_v1: 'saved',
     })
 
@@ -44,13 +45,31 @@ describe('workflow bootstrap service', () => {
     })
   })
 
+  it('reads renamed vectorgrid bootstrap keys', () => {
+    installStorage({
+      vta_workspace_tab_v1: 'workflow',
+      vta_workflow_tab_v1: 'validate',
+      [CONTROLS_TAB_KEY]: 'advanced',
+      [RESULTS_TAB_KEY]: 'validate',
+    })
+
+    expect(readWorkflowBootstrapState()).toEqual({
+      workspace: 'workflow',
+      workflow: 'validate',
+      workflowStep: '',
+      controlsTab: 'advanced',
+      resultsTab: 'validate',
+      aggregateTab: '',
+    })
+  })
+
   it('ignores invalid persisted values', () => {
     installStorage({
       vta_workspace_tab_v1: 'invalid_ws',
       vta_workflow_tab_v1: 'oops',
       vta_workflow_step_v1: 'wat',
-      vectorbt_controls_tab_v1: 'x',
-      vectorbt_results_tab_v1: 'y',
+      vectorgrid_controls_tab_v1: 'x',
+      vectorgrid_results_tab_v1: 'y',
       vta_aggregate_tab_v1: 'z',
     })
 
@@ -68,8 +87,8 @@ describe('workflow bootstrap service', () => {
     installStorage({
       vta_workspace_tab_v1: 'library',
       vta_workflow_tab_v1: 'history',
-      vectorbt_controls_tab_v1: 'data',
-      vectorbt_results_tab_v1: 'history',
+      vectorgrid_controls_tab_v1: 'data',
+      vectorgrid_results_tab_v1: 'history',
       vta_aggregate_tab_v1: 'batch',
     })
 
@@ -111,8 +130,8 @@ describe('workflow bootstrap service', () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',
       vta_workflow_step_v1: 'optimize',
-      vectorbt_controls_tab_v1: 'strategy',
-      vectorbt_results_tab_v1: 'top',
+      vectorgrid_controls_tab_v1: 'strategy',
+      vectorgrid_results_tab_v1: 'top',
     })
 
     applyWorkflowBootstrapFromStorage()
@@ -128,8 +147,8 @@ describe('workflow bootstrap service', () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',
       vta_workflow_step_v1: 'finalize',
-      vectorbt_controls_tab_v1: 'advanced',
-      vectorbt_results_tab_v1: 'meta',
+      vectorgrid_controls_tab_v1: 'advanced',
+      vectorgrid_results_tab_v1: 'meta',
     })
 
     applyWorkflowBootstrapFromStorage()
@@ -139,5 +158,21 @@ describe('workflow bootstrap service', () => {
     expect(store.workflow).toBe('finalize')
     expect(store.controlsTab).toBe('advanced')
     expect(store.resultsTab).toBe('meta')
+  })
+
+  it('reads legacy vectorbt tab keys through storage aliases', () => {
+    installStorage({
+      vectorbt_controls_tab_v1: 'strategy',
+      vectorbt_results_tab_v1: 'history',
+    })
+
+    expect(readWorkflowBootstrapState()).toEqual({
+      workspace: '',
+      workflow: '',
+      workflowStep: '',
+      controlsTab: 'strategy',
+      resultsTab: 'history',
+      aggregateTab: '',
+    })
   })
 })

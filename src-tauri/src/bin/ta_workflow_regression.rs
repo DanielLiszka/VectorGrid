@@ -400,7 +400,7 @@ fn run_workflow_once(
             run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
 
         artifacts.push(json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": format!("reg_train_{i:04}"),
             "tags": ["regpack-v1"],
             "run": { "req": { "strategy_kind": "CompositeCpu", "ma_source": "close" }, "res": {} },

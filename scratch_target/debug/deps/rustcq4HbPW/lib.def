@@ -1,0 +1,4 @@
+LIBRARY
+EXPORTS
+  __rustc_proc_macro_decls_e0e1ee93fe5558c__ DATA
+  rust_metadata_dtor_proc_macro_e0e1ee93fe5558c DATA

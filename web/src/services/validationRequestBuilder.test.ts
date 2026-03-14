@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildValidationRequest } from './validationRequestBuilder'
+import { buildValidationCapabilitySummary, buildValidationRequest } from './validationRequestBuilder'
 
 describe('validationRequestBuilder', () => {
   it('builds double-like validation request from top rows with gates and aux configs', () => {
@@ -49,6 +49,7 @@ describe('validationRequestBuilder', () => {
       perturbMax: '0.05',
       mcEnable: true,
       mcSims: '500',
+      mcBlockLen: '9',
       cscvEnable: true,
       cscvSlices: '17',
       crossEnable: true,
@@ -90,7 +91,7 @@ describe('validationRequestBuilder', () => {
       pct_max: 0.05,
       flip_bool_prob: 0.02
     })
-    expect(req.trade_bootstrap).toEqual({ simulations: 500 })
+    expect(req.trade_bootstrap).toEqual({ simulations: 500, stationary_mean_block_len: 9 })
     expect(req.cscv_pbo).toEqual({
       slices: 16,
       max_combinations: 50000,
@@ -98,6 +99,7 @@ describe('validationRequestBuilder', () => {
     })
     expect(req.cross_ticker).toEqual({
       max_datasets: 2,
+      mode: 'preserved_finalists',
       datasets: [
         { csv_path: 'C:/data/a.csv', label: 'A' },
         { csv_path: 'C:/data/b.csv', label: 'B' }
@@ -677,6 +679,207 @@ describe('validationRequestBuilder', () => {
       slow_len: 40,
       vcc: { squeeze_period: 20, trend_period: 6 }
     })
+  })
+
+  it('summarizes double-ma gpu preserved-finalists capability expectations', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-gpu',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['alma'],
+        slow_ma_types: ['alma'],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'alma',
+            slow_ma_type: 'alma',
+            fast_len: 9,
+            slow_len: 30,
+          }
+        }
+      ],
+      wfEnable: true,
+      wfWindow: '12000',
+      wfStep: '3000',
+      reoptWfEnable: true,
+      reoptWfWindow: '12000',
+      reoptWfStep: '3000',
+      reoptWfTopN: '4',
+      spaEnable: true,
+      spaSlices: '12',
+      spaBootstrapSamples: '300',
+      spaBlockLength: '4',
+      perturbEnable: true,
+      perturbIters: '8',
+      perturbMin: '0.01',
+      perturbMax: '0.05',
+      mcEnable: true,
+      mcSims: '500',
+      mcBlockLen: '9',
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: true,
+      crossMax: '2',
+      crossMode: 'preserved_finalists',
+      crossDatasets: [
+        { csv_path: 'C:/data/SPY.csv', label: 'SPY' },
+        { csv_path: 'C:/data/QQQ.csv', label: 'QQQ' }
+      ]
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('GpuKernel requested')
+    expect(summary.crossSummary).toContain('2 datasets')
+    expect(summary.crossSummary).toContain('finalists only')
+    expect(summary.moduleSummary).toContain('GPU main route')
+    expect(summary.moduleSummary).toContain('auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=9)')
+    expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
+  })
+
+  it('warns when gpuonly is requested for fixed-candidate double-ma validation', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-gpuonly',
+        backend: { backend: 'GpuOnly', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['sma'],
+        slow_ma_types: ['sma'],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'sma',
+            slow_ma_type: 'sma',
+            fast_len: 8,
+            slow_len: 34,
+          }
+        }
+      ],
+      candidates: '4'
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CpuOnly fallback')
+    expect(summary.moduleSummary).toContain('Expected CPU fallback route')
+    expect(summary.warningSummary).toContain('GpuOnly is not supported for fixed-candidate Double-MA validation')
+  })
+
+  it('supports iid-only bootstrap mode for validation requests and summaries', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-iid',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['sma'],
+        slow_ma_types: ['alma'],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'sma',
+            slow_ma_type: 'alma',
+            fast_len: 10,
+            slow_len: 40,
+          }
+        }
+      ],
+      mcEnable: true,
+      mcSims: '400',
+      mcMode: 'iid_only',
+      mcBlockLen: '9',
+      candidates: '8'
+    })
+
+    expect(req.trade_bootstrap).toEqual({ simulations: 400, stationary_mean_block_len: 0 })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.moduleSummary).toContain('trade bootstrap iid-only')
+  })
+
+  it('surfaces CompositeMo cross-ticker fallback and lightweight-rerun expectations explicitly', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeMo',
+        data_id: 'data-composite-cross',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'soft_vote',
+          }
+        }
+      ],
+      wfEnable: true,
+      wfWindow: '12000',
+      wfStep: '3000',
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: true,
+      crossMax: '2',
+      crossMode: 'lightweight',
+      crossDatasets: [
+        { csv_path: 'C:/data/SPY.csv', label: 'SPY' },
+        { csv_path: 'C:/data/QQQ.csv', label: 'QQQ' }
+      ],
+      candidates: '8'
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
+    expect(summary.moduleSummary).toContain('Expected CPU fallback route (base composite)')
+    expect(summary.crossSummary).toContain('lightweight reruns')
+    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu only')
+    expect(summary.warningSummary).toContain('Composite cross reruns are lightweight and omit walk_forward')
+  })
+
+  it('treats CompositeMo GPU fixed-candidate validation as CpuOnly fallback in previews', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeMo',
+        data_id: 'data-composite-mo',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        strategy: { fee_bps: 1.0 },
+        halftrend: { amplitude: 2 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'soft_vote',
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
+    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu only')
   })
 
   it('throws for missing run context or rows', () => {

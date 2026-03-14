@@ -7,7 +7,7 @@ use ta_desktop_demo_app::commands::build_report_xlsx_bytes_headless;
 fn sample_report() -> serde_json::Value {
     json!({
       "version": 1,
-      "kind": "vectorbt_report",
+      "kind": "vectorgrid_report",
       "ts": "2026-03-13T12:00:00Z",
       "run": {
         "req": {
@@ -72,7 +72,12 @@ fn sample_report() -> serde_json::Value {
             "forward_pnl_median": 0.23,
             "forward_pnl_worst": -0.04,
             "forward_trades_median": 14,
-            "forward_trades_worst": 7
+            "forward_trades_worst": 7,
+            "window_pnl_efficiency_median": 0.84,
+            "window_pnl_efficiency_worst": -0.18,
+            "window_sharpe_efficiency_median": 0.77,
+            "window_sharpe_efficiency_worst": 0.28,
+            "window_sharpe_efficiency_std": 0.21
           },
           "cross_ticker": {
             "datasets": [

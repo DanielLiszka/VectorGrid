@@ -194,7 +194,10 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     });
 
     let mut with_mc = with_perturb.clone();
-    with_mc.trade_bootstrap = Some(TradeBootstrapConfig { simulations: 250 });
+    with_mc.trade_bootstrap = Some(TradeBootstrapConfig {
+        simulations: 250,
+        stationary_mean_block_len: None,
+    });
 
     group.bench_function("wf_perturb64_mc250", |b| {
         b.iter(|| {

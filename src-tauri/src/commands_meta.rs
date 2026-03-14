@@ -15,6 +15,20 @@ use ta_app_core::{
 };
 use tauri::Manager;
 
+fn is_run_artifact_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_run_artifact" | "vectorgrid_run_artifact"
+    )
+}
+
+fn is_meta_selection_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_meta_selection" | "vectorgrid_meta_selection"
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlConfidenceModelState {
@@ -321,7 +335,7 @@ fn load_meta_artifacts_with_paths_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("vectorbt_meta_") {
+        if !name.starts_with("vectorbt_meta_") && !name.starts_with("vectorgrid_meta_") {
             continue;
         }
         paths.push(path);
@@ -454,7 +468,7 @@ fn ensure_path_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
 fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = run_artifacts::runs_dir(app)?;
     let safe_ts = sanitize_filename_component(ts);
-    let base_name = format!("vectorbt_stage5_{safe_ts}");
+    let base_name = format!("vectorgrid_stage5_{safe_ts}");
 
     let mut path = dir.join(format!("{base_name}.json"));
     if !path.exists() {
@@ -476,7 +490,7 @@ fn suggest_ml_policy_eval_artifact_path(
 ) -> Result<PathBuf, String> {
     let dir = run_artifacts::runs_dir(app)?;
     let safe_ts = sanitize_filename_component(ts);
-    let base_name = format!("vectorbt_ml_confidence_eval_{safe_ts}");
+    let base_name = format!("vectorgrid_ml_confidence_eval_{safe_ts}");
 
     let mut path = dir.join(format!("{base_name}.json"));
     if !path.exists() {
@@ -495,7 +509,7 @@ fn suggest_ml_policy_eval_artifact_path(
 fn is_meta_selection_artifact(v: &Value) -> bool {
     v.get("kind")
         .and_then(|x| x.as_str())
-        .map(|kind| kind == "vectorbt_meta_selection")
+        .map(is_meta_selection_kind)
         .unwrap_or(false)
 }
 
@@ -684,7 +698,7 @@ fn scope_has_holdout_rows_for_ml(
 
     for meta in metas {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(kind) {
             continue;
         }
         let Some((sk, tf)) = extract_meta_scope(meta) else {
@@ -789,7 +803,7 @@ fn summarize_meta_artifacts_for_scope(
 
     for meta in metas {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(kind) {
             continue;
         }
         let Some((sk, tf)) = extract_meta_scope(meta) else {
@@ -1111,9 +1125,9 @@ fn resolve_meta_stage4_source(
         let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(kind) {
             return Err(format!(
-                "source_meta_path must point to kind='vectorbt_meta_selection' (got '{kind}')."
+                "source_meta_path must point to a meta-selection artifact kind ('vectorgrid_meta_selection' or legacy 'vectorbt_meta_selection') (got '{kind}')."
             ));
         }
         let Some((sk, tf)) = extract_meta_scope(&v) else {
@@ -1138,7 +1152,7 @@ fn resolve_meta_stage4_source(
     let mut chosen: Option<(String, PathBuf, Value, String)> = None;
     for (path, v) in metas {
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(kind) {
             continue;
         }
         let Some((sk, tf)) = extract_meta_scope(&v) else {
@@ -1476,7 +1490,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
     let ts = chrono::Utc::now().to_rfc3339();
     let out_path = suggest_ml_policy_eval_artifact_path(&ts, &app)?;
     let payload = serde_json::json!({
-        "kind": "vectorbt_ml_confidence_policy_evaluation",
+        "kind": "vectorgrid_ml_confidence_policy_evaluation",
         "ts": ts,
         "req": req,
         "res": result,
@@ -1817,7 +1831,7 @@ fn run_meta_stage4_experimental_blocking(
 
     let out_obj = serde_json::json!({
         "version": 1,
-        "kind": "vectorbt_meta_stage5_ml_confidence",
+        "kind": "vectorgrid_meta_stage5_ml_confidence",
         "ts": ts,
         "tags": [],
         "req": req,
@@ -1917,7 +1931,7 @@ fn suggest_meta_report_path(
     let dir = reports_dir(app)?;
     let safe_ts = sanitize_filename_component(ts);
 
-    let base_name = format!("vectorbt_meta_{safe_ts}");
+    let base_name = format!("vectorgrid_meta_{safe_ts}");
     let mut path = dir.join(format!("{base_name}.{ext}"));
     if !path.exists() {
         return Ok(path);
@@ -1950,7 +1964,7 @@ fn run_meta_selection_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if name.starts_with("vectorbt_meta_") {
+        if name.starts_with("vectorbt_meta_") || name.starts_with("vectorgrid_meta_") {
             continue;
         }
         paths.push(path);
@@ -2241,7 +2255,7 @@ fn run_meta_selection_blocking(
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_save");
     let meta_obj = serde_json::json!({
         "version": 1,
-        "kind": "vectorbt_meta_selection",
+        "kind": "vectorgrid_meta_selection",
         "ts": ts,
         "report_xlsx_path": report_path.to_string_lossy().to_string(),
         "tags": [],
@@ -2310,7 +2324,7 @@ fn normalize_timeframe_label(raw: &str) -> String {
 
 fn artifact_matches_meta_req(artifact: &Value, req: &MetaSelectionRequest) -> bool {
     let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    if kind != "vectorbt_run_artifact" {
+    if !is_run_artifact_kind(kind) {
         return false;
     }
 
@@ -2929,8 +2943,8 @@ mod tests {
 
     #[test]
     fn stage4_training_set_excludes_source_meta_artifact() {
-        let source = PathBuf::from("runs/vectorbt_meta_source.json");
-        let other = PathBuf::from("runs/vectorbt_meta_other.json");
+        let source = PathBuf::from("runs/vectorgrid_meta_source.json");
+        let other = PathBuf::from("runs/vectorgrid_meta_other.json");
         let metas = vec![
             (
                 source.clone(),

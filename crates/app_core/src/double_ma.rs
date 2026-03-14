@@ -9815,6 +9815,33 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_gpu_preflight_cache_reuses_identical_request_signature() {
+        let strategy = StrategyConfig::default();
+        let cache = DYNAMIC_GPU_PREFLIGHT_CACHE.get_or_init(|| Mutex::new(BTreeSet::new()));
+        cache.lock().expect("cache lock").clear();
+
+        let key_a =
+            dynamic_gpu_preflight_cache_key("close", "sma", "sma", None, None, &strategy, None)
+                .expect("key a");
+        let key_b =
+            dynamic_gpu_preflight_cache_key("close", "sma", "sma", None, None, &strategy, None)
+                .expect("key b");
+        assert_eq!(key_a, key_b, "identical preflight requests should hash identically");
+
+        maybe_compile_dynamic_gpu_plan_preflight(true, "close", "sma", "sma", None, None, &strategy, None)
+            .expect("first preflight compile");
+        let len_after_first = cache.lock().expect("cache lock").len();
+        maybe_compile_dynamic_gpu_plan_preflight(true, "close", "sma", "sma", None, None, &strategy, None)
+            .expect("second preflight compile");
+        let len_after_second = cache.lock().expect("cache lock").len();
+        assert_eq!(len_after_first, 1, "first compile should populate exactly one cache key");
+        assert_eq!(
+            len_after_second, len_after_first,
+            "identical preflight requests should reuse the cached key instead of growing the cache"
+        );
+    }
+
+    #[test]
     fn auto_backend_records_route_metadata() {
         let candles = make_trending_candles(1500);
         let cancel = AtomicBool::new(false);

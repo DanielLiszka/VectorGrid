@@ -2960,7 +2960,7 @@ export async function exportTopCsv(): Promise<void> {
     })()
     lines.push([row.rank, csvEscape(p.fast_ma_type || ''), num(p.fast_len, 0), csvEscape(p.slow_ma_type || ''), num(p.slow_len, 0), pnl, pnl * 100, num(finalEq(pnl, seed), 0), num(m.sharpe, 0), num(m.max_dd, 0), num(m.trades, 0), num(m.exposure, 0), num(m.net_exposure, 0), num(score, 0), csvEscape(paramsJson)].join(','))
   }
-  if (downloadText(`vectorbt_top_${sanitizeTs(run?.ts)}.csv`, lines.join('\n'), 'text/csv')) {
+  if (downloadText(`vectorgrid_top_${sanitizeTs(run?.ts)}.csv`, lines.join('\n'), 'text/csv')) {
     setStatus(store, 'Exported top CSV.')
     return
   }
@@ -2975,7 +2975,7 @@ export async function exportTopJson(): Promise<void> {
     setStatus(store, 'No result to export yet.')
     return
   }
-  if (downloadText(`vectorbt_run_${sanitizeTs(run?.ts)}.json`, JSON.stringify(res, null, 2), 'application/json')) {
+  if (downloadText(`vectorgrid_run_${sanitizeTs(run?.ts)}.json`, JSON.stringify(res, null, 2), 'application/json')) {
     setStatus(store, 'Exported run JSON.')
     return
   }

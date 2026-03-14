@@ -6,6 +6,7 @@ import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { previewValidationExecutionSummaryFromStores } from '../services/validationService'
 
 interface ValidationColumn {
   label: string
@@ -36,6 +37,15 @@ const { validationStage } = useUiReadiness()
 const {
   validationHint,
   validationMeta,
+  validationRouteSummary,
+  validationRouteDetailSummary,
+  validationAuxCpuSummary,
+  validationBootstrapSummary,
+  validationRegimeSummary,
+  validationFrictionSummary,
+  validationCrossSummary,
+  validationSkippedSummary,
+  validationWarningSummary,
   validationReoptMeta,
   validationShortlistMeta,
   validationColumns,
@@ -70,11 +80,14 @@ const {
   perturbMax,
   mcEnable,
   mcSims,
+  mcBlockLen,
+  mcMode,
   cscvEnable,
   spaEnable,
   reoptWfEnable,
   crossEnable,
   crossMax,
+  crossMode,
   crossSearch,
   crossDatasets,
   crossSelectedCount,
@@ -94,6 +107,7 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(validationStore)
 const { resultsTab } = storeToRefs(workflowStore)
+const expectedExecutionSummary = computed(() => previewValidationExecutionSummaryFromStores())
 
 const mountReady = ref(false)
 const panelRoot = ref<HTMLElement | null>(null)
@@ -125,11 +139,14 @@ const perturbMinDraft = ref('0.015')
 const perturbMaxDraft = ref('0.06')
 const mcEnableDraft = ref(false)
 const mcSimsDraft = ref('500')
+const mcBlockLenDraft = ref('')
+const mcModeDraft = ref('compare')
 const cscvEnableDraft = ref(false)
 const spaEnableDraft = ref(false)
 const reoptWfEnableDraft = ref(false)
 const crossEnableDraft = ref(false)
 const crossMaxDraft = ref('6')
+const crossModeDraft = ref('auto')
 const crossSearchDraft = ref('')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'validate')
@@ -180,11 +197,14 @@ watch(
     String(perturbMax.value || '0.06').trim() || '0.06',
     Boolean(mcEnable.value),
     String(mcSims.value || '500').trim() || '500',
+    String(mcBlockLen.value || '').trim(),
+    String(mcMode.value || 'compare').trim() || 'compare',
     Boolean(cscvEnable.value),
     Boolean(spaEnable.value),
     Boolean(reoptWfEnable.value),
     Boolean(crossEnable.value),
     String(crossMax.value || '6').trim() || '6',
+    String(crossMode.value || 'auto').trim() || 'auto',
     String(crossSearch.value || '').trim(),
   ] as const,
   ([
@@ -215,11 +235,14 @@ watch(
     nextPerturbMax,
     nextMcEnable,
     nextMcSims,
+    nextMcBlockLen,
+    nextMcMode,
     nextCscvEnable,
     nextSpaEnable,
     nextReoptWfEnable,
     nextCrossEnable,
     nextCrossMax,
+    nextCrossMode,
     nextCrossSearch,
   ]) => {
     if (candidatesDraft.value !== nextCandidates) candidatesDraft.value = nextCandidates
@@ -249,11 +272,14 @@ watch(
     if (perturbMaxDraft.value !== nextPerturbMax) perturbMaxDraft.value = nextPerturbMax
     if (mcEnableDraft.value !== nextMcEnable) mcEnableDraft.value = nextMcEnable
     if (mcSimsDraft.value !== nextMcSims) mcSimsDraft.value = nextMcSims
+    if (mcBlockLenDraft.value !== nextMcBlockLen) mcBlockLenDraft.value = nextMcBlockLen
+    if (mcModeDraft.value !== nextMcMode) mcModeDraft.value = nextMcMode
     if (cscvEnableDraft.value !== nextCscvEnable) cscvEnableDraft.value = nextCscvEnable
     if (spaEnableDraft.value !== nextSpaEnable) spaEnableDraft.value = nextSpaEnable
     if (reoptWfEnableDraft.value !== nextReoptWfEnable) reoptWfEnableDraft.value = nextReoptWfEnable
     if (crossEnableDraft.value !== nextCrossEnable) crossEnableDraft.value = nextCrossEnable
     if (crossMaxDraft.value !== nextCrossMax) crossMaxDraft.value = nextCrossMax
+    if (crossModeDraft.value !== nextCrossMode) crossModeDraft.value = nextCrossMode
     if (crossSearchDraft.value !== nextCrossSearch) crossSearchDraft.value = nextCrossSearch
   },
   { immediate: true },
@@ -495,6 +521,25 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="!canExportReportJson" @click="exportReportJsonAction">Export report JSON</button>
           <button type="button" :disabled="!canExportReportXlsx" @click="exportReportXlsxAction">Export report XLSX</button>
           <button type="button" :disabled="!canOpenReportsDir" @click="openReportsDirAction">Open reports folder</button>
+        </div>
+
+        <div class="gridFour compactMetaGrid">
+          <div>
+            <label>Expected Route</label>
+            <div class="metaLine mono">{{ expectedExecutionSummary.routeSummary }}</div>
+          </div>
+          <div>
+            <label>Expected Cross</label>
+            <div class="metaLine mono">{{ expectedExecutionSummary.crossSummary }}</div>
+          </div>
+          <div>
+            <label>Expected Modules</label>
+            <div class="metaLine mono">{{ expectedExecutionSummary.moduleSummary }}</div>
+          </div>
+          <div>
+            <label>Expected Notes</label>
+            <div class="metaLine mono">{{ expectedExecutionSummary.warningSummary }}</div>
+          </div>
         </div>
       </section>
 
@@ -749,6 +794,30 @@ onBeforeUnmount(() => {
               @change="commitInputValue('valMcSims', mcSimsDraft)"
             />
           </div>
+          <div>
+            <label for="vueValMcMode">Bootstrap mode</label>
+            <select
+              id="vueValMcMode"
+              :value="mcModeDraft"
+              @change="mcModeDraft = String(($event.target as HTMLSelectElement).value || 'compare'); commitInputValue('valMcMode', mcModeDraft)"
+            >
+              <option value="compare">Compare (IID + Stationary)</option>
+              <option value="iid_only">IID only</option>
+            </select>
+          </div>
+          <div>
+            <label for="vueValMcBlockLen">Bootstrap mean block length</label>
+            <input
+              id="vueValMcBlockLen"
+              type="number"
+              min="0"
+              step="1"
+              :disabled="mcModeDraft === 'iid_only'"
+              :value="mcBlockLenDraft"
+              @input="mcBlockLenDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMcBlockLen', mcBlockLenDraft)"
+              @change="commitInputValue('valMcBlockLen', mcBlockLenDraft)"
+            />
+          </div>
         </div>
 
         <div class="checks">
@@ -774,6 +843,18 @@ onBeforeUnmount(() => {
               @input="crossMaxDraft = String(($event.target as HTMLInputElement).value || '6'); queueInputValue('valCrossMax', crossMaxDraft)"
               @change="commitInputValue('valCrossMax', crossMaxDraft)"
             />
+          </div>
+          <div>
+            <label for="vueValCrossMode">Cross mode</label>
+            <select
+              id="vueValCrossMode"
+              :value="crossModeDraft"
+              @change="crossModeDraft = String(($event.target as HTMLSelectElement).value || 'auto'); setInputValue('valCrossMode', crossModeDraft)"
+            >
+              <option value="auto">Auto by strategy</option>
+              <option value="preserved_finalists">Preserved finalists</option>
+              <option value="lightweight">Lightweight</option>
+            </select>
           </div>
           <div>
             <label for="vueValCrossSearch">Search</label>
@@ -816,6 +897,44 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-if="showValidationResults" class="pane">
+        <div class="gridFour compactMetaGrid">
+          <div>
+            <label>Route</label>
+            <div class="metaLine mono">{{ validationRouteSummary }}</div>
+          </div>
+          <div>
+            <label>Route Detail</label>
+            <div class="metaLine mono">{{ validationRouteDetailSummary }}</div>
+          </div>
+          <div>
+            <label>Aux CPU</label>
+            <div class="metaLine mono">{{ validationAuxCpuSummary }}</div>
+          </div>
+          <div>
+            <label>Bootstrap</label>
+            <div class="metaLine mono">{{ validationBootstrapSummary }}</div>
+          </div>
+          <div>
+            <label>Regime</label>
+            <div class="metaLine mono">{{ validationRegimeSummary }}</div>
+          </div>
+          <div>
+            <label>Friction</label>
+            <div class="metaLine mono">{{ validationFrictionSummary }}</div>
+          </div>
+          <div>
+            <label>Cross</label>
+            <div class="metaLine mono">{{ validationCrossSummary }}</div>
+          </div>
+          <div>
+            <label>Skipped</label>
+            <div class="metaLine mono">{{ validationSkippedSummary }}</div>
+          </div>
+          <div>
+            <label>Top Warning</label>
+            <div class="metaLine mono">{{ validationWarningSummary }}</div>
+          </div>
+        </div>
         <div class="metaLine mono">{{ validationMeta }}</div>
         <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
         <div class="metaLine mono">{{ validationShortlistMeta }}</div>
@@ -916,6 +1035,13 @@ onBeforeUnmount(() => {
   gap: 0.6rem;
 }
 
+.gridFour {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
 .checks {
   margin-top: 0.6rem;
   display: flex;
@@ -942,6 +1068,15 @@ onBeforeUnmount(() => {
 .metaLine {
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+.compactMetaGrid {
+  margin-bottom: 0.35rem;
+}
+
+.compactMetaGrid label {
+  display: block;
+  margin-bottom: 0.15rem;
 }
 
 .tableWrap {
@@ -1023,6 +1158,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1100px) {
   .gridFive,
+  .gridFour,
   .gridThree {
     grid-template-columns: 1fr 1fr;
   }
@@ -1030,6 +1166,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 680px) {
   .gridFive,
+  .gridFour,
   .gridThree {
     grid-template-columns: 1fr;
   }

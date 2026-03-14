@@ -1,6 +1,6 @@
 import { invokeCommand } from '../tauri/invoke'
 import { getActivePinia } from 'pinia'
-import { buildValidationRequest } from './validationRequestBuilder'
+import { buildValidationCapabilitySummary, buildValidationRequest } from './validationRequestBuilder'
 import { applyWorkflowArtifactsPayload, readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { computeConfigFingerprint } from '../utils/core/artifactIdentity'
@@ -57,6 +57,10 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
   if (kind === 'Mkcs') return 'Mkcs'
+  if (kind === 'Kqsr') return 'Kqsr'
+  if (kind === 'Carm') return 'Carm'
+  if (kind === 'Kvdf') return 'Kvdf'
+  if (kind === 'Cdmc') return 'Cdmc'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -68,6 +72,38 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
 function isDoubleLikeKind(kindRaw: unknown): boolean {
   const kind = normalizeStrategyKindRaw(kindRaw)
   return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+}
+
+function describeTradeBootstrapRequestConfig(raw: unknown): string {
+  const tradeBootstrap = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  if (!tradeBootstrap) return 'not run'
+  const statBlockRaw = tradeBootstrap.stationary_mean_block_len
+  if (typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw === 0) {
+    return 'trade bootstrap iid-only'
+  }
+  const statBlock =
+    typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw > 0
+      ? Math.floor(statBlockRaw)
+      : null
+  return statBlock != null
+    ? `trade bootstrap compare (iid + stationary, stat block=${statBlock})`
+    : 'trade bootstrap compare (iid + stationary, stat block=auto)'
+}
+
+function buildBootstrapSummary(raw: unknown): string {
+  const tradeBootstrap = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  if (!tradeBootstrap) return 'not run'
+  const statBlockRaw = tradeBootstrap.stationary_mean_block_len
+  if (typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw === 0) {
+    return 'iid-only closed-trade bootstrap'
+  }
+  const statBlock =
+    typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw > 0
+      ? Math.floor(statBlockRaw)
+      : null
+  return statBlock != null
+    ? `iid + stationary closed-trade compare • stat block=${statBlock}`
+    : 'iid + stationary closed-trade compare • stat block=auto'
 }
 
 function resolveValidationCommand(runReq: unknown): 'run_double_ma_validation' | 'run_composite_validation' {
@@ -164,8 +200,11 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valPerturbMin: { key: 'perturbMin' },
   valPerturbMax: { key: 'perturbMax' },
   valMcSims: { key: 'mcSims' },
+  valMcBlockLen: { key: 'mcBlockLen' },
+  valMcMode: { key: 'mcMode' },
   valCscvSlices: { key: 'cscvSlices' },
-  valCrossMax: { key: 'crossMax' }
+  valCrossMax: { key: 'crossMax' },
+  valCrossMode: { key: 'crossMode' }
 }
 
 const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
@@ -440,7 +479,7 @@ function buildCurrentReportPayloadFromStore(): {
   const datasetCtx = buildRunDatasetContextState()
   return {
     version: 1,
-    kind: 'vectorbt_report',
+    kind: 'vectorgrid_report',
     ts,
     data: {
       meta: datasetCtx.currentDataMeta,
@@ -668,18 +707,29 @@ function buildValidationMetaText(result: unknown): string {
   const backendParts: string[] = []
   if (backendUsed) backendParts.push(`backend=${backendUsed}`)
   if (backendRoute) backendParts.push(`route=${backendRoute}`)
-  if (backendFallbackReason) backendParts.push(`fallback=${backendFallbackReason}`)
+  if (backendFallbackReason) {
+    const routeLabel = backendRoute.includes('->CpuOnly') ? 'fallback' : 'route_note'
+    backendParts.push(`${routeLabel}=${backendFallbackReason}`)
+  }
   const backendSummary = backendParts.length > 0 ? backendParts.join(' • ') : 'backend'
   const cross = asRecord(row?.cross_ticker)
   const crossDatasets = Array.isArray(cross?.datasets) ? cross.datasets.length : 0
-  const crossSuffix = crossDatasets > 0 ? ` • cross=${crossDatasets}` : ''
+  const crossModeRaw = normalizeText(cross?.mode).toLowerCase()
+  const crossMode = crossModeRaw === 'preserved_finalists'
+    ? 'preserved_finalists'
+    : crossModeRaw === 'lightweight'
+      ? 'lightweight'
+      : ''
+  const crossSuffix = crossDatasets > 0
+    ? ` • cross=${crossDatasets}${crossMode ? ` (${crossMode})` : ''}`
+    : ''
 
   const cscv = asRecord(row?.cscv_pbo)
   const cscvSkipped = normalizeText(cscv?.skipped_reason)
   const cscvCombos = Math.max(0, Math.floor(Number(cscv?.combinations ?? 0)))
   const cscvPbo = Number(cscv?.pbo ?? Number.NaN)
   let cscvSuffix = ''
-  if (cscvSkipped) cscvSuffix = ' • cscv skipped'
+  if (cscvSkipped) cscvSuffix = ` • cscv skipped=${cscvSkipped}`
   else if (cscv && cscvCombos > 0 && Number.isFinite(cscvPbo)) cscvSuffix = ` • pbo=${cscvPbo.toFixed(3)} (cs=${cscvCombos})`
 
   const reopt = asRecord(row?.reopt_walk_forward)
@@ -690,15 +740,24 @@ function buildValidationMetaText(result: unknown): string {
     : ''
   const spa = asRecord(row?.spa)
   const spaP = Number(spa?.p_value ?? Number.NaN)
-  const spaSuffix = spa
-    ? ` • spa=${Number.isFinite(spaP) ? spaP.toFixed(3) : '-'}${spa?.passed === false ? ' fail' : ' pass'}`
-    : ''
+  const spaSkipped = normalizeText(spa?.skipped_reason)
+  const spaSuffix = spaSkipped
+    ? ` • spa skipped=${spaSkipped}`
+    : spa
+      ? ` • spa=${Number.isFinite(spaP) ? spaP.toFixed(3) : '-'}${spa?.passed === false ? ' fail' : ' pass'}`
+      : ''
 
   const runVerdict = asRecord(row?.run_verdict)
   const survived = Math.max(0, Math.floor(Number(runVerdict?.candidates_survived_hard_gates ?? 0)))
   const tested = Math.max(0, Math.floor(Number(runVerdict?.candidates_tested ?? candidates)))
   const approved = Math.max(0, Math.floor(Number(runVerdict?.approved_candidate_count ?? 0)))
   const recommendation = normalizeText(runVerdict?.final_recommendation)
+  const warningFlags = Array.isArray(runVerdict?.warning_flags)
+    ? runVerdict?.warning_flags.map((value) => normalizeText(value)).filter((value) => value.length > 0)
+    : []
+  const failReasons = Array.isArray(runVerdict?.fail_reasons)
+    ? runVerdict?.fail_reasons.map((value) => normalizeText(value)).filter((value) => value.length > 0)
+    : []
   const topObs = Math.max(0, Math.floor(Number(runVerdict?.top_candidate_track_record_bars ?? 0)))
   const topMinTrl = Math.max(0, Math.floor(Number(runVerdict?.top_candidate_min_track_record_length_bars ?? 0)))
   const approvalSuffix = runVerdict
@@ -709,8 +768,203 @@ function buildValidationMetaText(result: unknown): string {
     : ''
   const hasRunVerdict = !!runVerdict
   const runState = hasRunVerdict ? ` • hard_gates=${survived}/${tested}${runVerdict?.passed === false ? ' fail' : ''}` : ''
+  const runReason = failReasons[0] || warningFlags[0] || ''
+  const runReasonSuffix = runReason ? ` • note=${runReason}` : ''
 
-  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${minTrlSuffix}`
+  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${runReasonSuffix}${minTrlSuffix}`
+}
+
+function buildValidationHintText(result: unknown): string {
+  const row = asRecord(result)
+  const warnings: string[] = []
+
+  const backendRoute = normalizeText(row?.backend_route)
+  const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+  if (backendFallbackReason) {
+    const label = backendRoute.includes('->CpuOnly') ? 'route fallback' : 'route note'
+    warnings.push(`${label}: ${backendFallbackReason}`)
+  }
+
+  const cscv = asRecord(row?.cscv_pbo)
+  const cscvSkipped = normalizeText(cscv?.skipped_reason)
+  if (cscvSkipped) warnings.push(`CSCV skipped`)
+
+  const spa = asRecord(row?.spa)
+  const spaSkipped = normalizeText(spa?.skipped_reason)
+  if (spaSkipped) warnings.push(`SPA skipped`)
+
+  const runVerdict = asRecord(row?.run_verdict)
+  const warningFlags = Array.isArray(runVerdict?.warning_flags)
+    ? runVerdict.warning_flags.map((value) => normalizeText(value)).filter((value) => value.length > 0)
+    : []
+  if (warningFlags.length > 0) warnings.push(`run notes: ${warningFlags[0]}`)
+
+  if (!warnings.length) return 'Validation complete.'
+  return `Validation complete with warnings: ${warnings.join(' • ')}`
+}
+
+function topValidationCandidateRecord(result: unknown): Record<string, unknown> | null {
+  const row = asRecord(result)
+  const candidates = validationCandidates(result)
+  if (candidates.length === 0) return null
+  const runVerdict = asRecord(row?.run_verdict)
+  const firstApprovedRank = Math.max(0, Math.floor(Number(runVerdict?.first_approved_rank ?? 0)))
+  if (firstApprovedRank > 0) {
+    const approvedCandidate = candidates[firstApprovedRank - 1]
+    if (approvedCandidate) return approvedCandidate
+  }
+  return candidates[0] || null
+}
+
+function deriveRegimeFragilityLabel(stableBucketCount: number, worstSharpe: number, worstMaxDd: number): string {
+  if (stableBucketCount >= 4 && worstSharpe >= 0 && worstMaxDd <= 0.35) return 'stable'
+  if (stableBucketCount >= 2 && worstSharpe >= -0.1 && worstMaxDd <= 0.45) return 'selective'
+  return 'fragile'
+}
+
+function deriveRegimeSupportLabel(regime: Record<string, unknown>): string {
+  const explicit = normalizeText(regime.support_label)
+  if (explicit) return explicit
+  const trend = asRecord(regime.trend)
+  const range = asRecord(regime.range)
+  const trendStable = Number(trend?.pnl ?? Number.NaN) >= 0 && Number(trend?.sharpe ?? Number.NaN) >= 0
+  const rangeStable = Number(range?.pnl ?? Number.NaN) >= 0 && Number(range?.sharpe ?? Number.NaN) >= 0
+  const stableBucketCount = Math.max(0, Math.floor(Number(regime.stable_bucket_count ?? 0)))
+  if (trendStable && rangeStable) return 'broad'
+  if (trendStable) return 'trend_only'
+  if (rangeStable) return 'range_only'
+  return stableBucketCount >= 2 ? 'vol_selective' : 'weak'
+}
+
+function buildValidationRegimeSummary(result: unknown): string {
+  const candidate = topValidationCandidateRecord(result)
+  const regime = asRecord(candidate?.regime_slice_robustness)
+  if (!regime) return 'not run'
+  const stableBucketCount = Math.max(0, Math.floor(Number(regime.stable_bucket_count ?? 0)))
+  const stableBucketFrac = Number(regime.stable_bucket_frac ?? Number.NaN)
+  const worstBucket = normalizeText(regime.worst_bucket_label) || 'unknown'
+  const worstSharpe = Number(regime.worst_sharpe ?? Number.NaN)
+  const worstMaxDd = Number(regime.worst_max_dd ?? Number.NaN)
+  const flag = deriveRegimeFragilityLabel(
+    stableBucketCount,
+    Number.isFinite(worstSharpe) ? worstSharpe : Number.NEGATIVE_INFINITY,
+    Number.isFinite(worstMaxDd) ? worstMaxDd : Number.POSITIVE_INFINITY,
+  )
+  const support = deriveRegimeSupportLabel(regime)
+  const sharpeSuffix = Number.isFinite(worstSharpe) ? ` • sh=${worstSharpe.toFixed(2)}` : ''
+  const stableSuffix = Number.isFinite(stableBucketFrac)
+    ? ` • stable=${stableBucketCount}/5 (${(stableBucketFrac * 100).toFixed(0)}%)`
+    : ` • stable=${stableBucketCount}/5`
+  return `${flag} • support=${support} • worst=${worstBucket}${stableSuffix}${sharpeSuffix}`
+}
+
+function buildValidationFrictionSummary(result: unknown): string {
+  const candidate = topValidationCandidateRecord(result)
+  const friction = asRecord(candidate?.friction_stress)
+  if (!friction) return 'not run'
+  const passFrac = Number(friction.pass_frac ?? Number.NaN)
+  const maxRankDrift = Math.max(0, Math.floor(Number(friction.max_rank_drift ?? 0)))
+  const worstScenario = normalizeText(friction.worst_scenario_label) || 'unknown'
+  const flag = Number.isFinite(passFrac) && passFrac >= 1 && maxRankDrift < 2 ? 'stable' : 'fragile'
+  const passSuffix = Number.isFinite(passFrac) ? ` • pass=${(passFrac * 100).toFixed(1)}%` : ''
+  return `${flag} • worst=${worstScenario}${passSuffix} • drift=${maxRankDrift} • absolute pnl/sharpe rule`
+}
+
+function buildValidationExecutionSummary(result: unknown, validationReq?: unknown): {
+  routeSummary: string
+  routeDetailSummary: string
+  auxCpuSummary: string
+  bootstrapSummary: string
+  regimeSummary: string
+  frictionSummary: string
+  crossSummary: string
+  skippedSummary: string
+  warningSummary: string
+} {
+  const row = asRecord(result)
+  const req = asRecord(validationReq)
+  const validationContext = asRecord(req?.validation_context)
+  const strategyKind = normalizeStrategyKindRaw(validationContext?.strategy_kind)
+  const isDoubleLike = isDoubleLikeKind(strategyKind)
+  const backendUsed = normalizeText(row?.backend_used) || 'unknown'
+  const backendRoute = normalizeText(row?.backend_route) || '-'
+  const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+  const routeModeLabel = backendRoute.includes('->CpuOnly') ? 'fallback' : 'route note'
+  const actualAuxCpuTails: string[] = []
+  if (backendUsed.toLowerCase() === 'gpu' && !backendRoute.includes('->CpuOnly')) {
+    if (req?.perturb && typeof req.perturb === 'object') actualAuxCpuTails.push('perturb')
+    if (req?.trade_bootstrap && typeof req.trade_bootstrap === 'object') {
+      actualAuxCpuTails.push(describeTradeBootstrapRequestConfig(req.trade_bootstrap))
+    }
+  }
+  const routeSummaryBase = backendFallbackReason
+    ? `${backendUsed} • ${backendRoute} • ${routeModeLabel}: ${backendFallbackReason}`
+    : `${backendUsed} • ${backendRoute}`
+  const routeDetailSummary = backendFallbackReason || 'none'
+  const auxCpuSummary = actualAuxCpuTails.length > 0 ? actualAuxCpuTails.join(' + ') : 'none'
+  const routeSummary = actualAuxCpuTails.length > 0
+    ? `${routeSummaryBase} • aux CPU tails: ${auxCpuSummary}`
+    : routeSummaryBase
+
+  const bootstrapSummary = buildBootstrapSummary(req?.trade_bootstrap)
+  const regimeSummary = buildValidationRegimeSummary(result)
+  const frictionSummary = buildValidationFrictionSummary(result)
+
+  const cross = asRecord(row?.cross_ticker)
+  const crossDatasets = Array.isArray(cross?.datasets) ? cross.datasets.length : 0
+  const requestedCross = asRecord(req?.cross_ticker)
+  const crossMode = normalizeText(cross?.mode) || normalizeText(requestedCross?.mode)
+  const preservedFinalistsMode = crossMode === 'preserved_finalists'
+  const crossSummary = crossDatasets > 0
+    ? isDoubleLike
+      ? `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • ${crossMode}` : ''}${preservedFinalistsMode ? ' • finalists only (cap=4)' : ''}`
+      : `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • requested=${crossMode}` : ''} • effective lightweight reruns`
+    : 'not run'
+
+  const skipped: string[] = []
+  if (req?.cross_ticker && typeof req.cross_ticker === 'object' && crossDatasets === 0) {
+    skipped.push('Cross: unavailable')
+  }
+  if (isDoubleLike && preservedFinalistsMode) {
+    skipped.push('Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
+  } else if (!isDoubleLike && requestedCross) {
+    skipped.push('Cross reruns: lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
+  }
+  if (req?.reopt_walk_forward && typeof req.reopt_walk_forward === 'object' && !asRecord(row?.reopt_walk_forward)) {
+    skipped.push('Reopt WF: unavailable')
+  }
+  const cscv = asRecord(row?.cscv_pbo)
+  const cscvSkipped = normalizeText(cscv?.skipped_reason)
+  if (req?.cscv_pbo && typeof req.cscv_pbo === 'object') {
+    skipped.push(cscvSkipped ? `CSCV: ${cscvSkipped}` : !cscv ? 'CSCV: unavailable' : '')
+  }
+  const spa = asRecord(row?.spa)
+  const spaSkipped = normalizeText(spa?.skipped_reason)
+  if (req?.spa && typeof req.spa === 'object') {
+    skipped.push(spaSkipped ? `SPA: ${spaSkipped}` : !spa ? 'SPA: unavailable' : '')
+  }
+  const skippedSummary = skipped.filter((entry) => entry.length > 0).join(' • ') || 'none'
+
+  const runVerdict = asRecord(row?.run_verdict)
+  const failReasons = Array.isArray(runVerdict?.fail_reasons)
+    ? runVerdict.fail_reasons.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
+    : []
+  const warningFlags = Array.isArray(runVerdict?.warning_flags)
+    ? runVerdict.warning_flags.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
+    : []
+  const warningSummary = failReasons[0] || warningFlags[0] || 'none'
+
+  return {
+    routeSummary,
+    routeDetailSummary,
+    auxCpuSummary,
+    bootstrapSummary,
+    regimeSummary,
+    frictionSummary,
+    crossSummary,
+    skippedSummary,
+    warningSummary,
+  }
 }
 
 function compactWinnerLabel(value: unknown): string {
@@ -1095,7 +1349,7 @@ async function persistValidationArtifact(
   const configFingerprint = computeConfigFingerprint(runReq, validationReq)
   const artifact: Record<string, unknown> = {
     version: 1,
-    kind: 'vectorbt_run_artifact',
+    kind: 'vectorgrid_run_artifact',
     ts,
     config_fingerprint: configFingerprint,
     run: { req: runReq, res: runRes },
@@ -1174,7 +1428,13 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = 'Run an optimization first.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message
+      validationHint: message,
+      validationRouteSummary: '-',
+      validationRouteDetailSummary: '-',
+      validationAuxCpuSummary: '-',
+      validationCrossSummary: '-',
+      validationSkippedSummary: '-',
+      validationWarningSummary: '-',
     })
     writeDomTextContent('status', message)
     throw new Error(message)
@@ -1187,7 +1447,13 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = 'Run artifact is unavailable. Re-run optimization first.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message
+      validationHint: message,
+      validationRouteSummary: '-',
+      validationRouteDetailSummary: '-',
+      validationAuxCpuSummary: '-',
+      validationCrossSummary: '-',
+      validationSkippedSummary: '-',
+      validationWarningSummary: '-',
     })
     writeDomTextContent('status', message)
     throw new Error(message)
@@ -1196,7 +1462,13 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const message = 'Run artifact is unavailable. Re-run optimization first.'
     patchValidationStoreState({
       statusLine: message,
-      validationHint: message
+      validationHint: message,
+      validationRouteSummary: '-',
+      validationRouteDetailSummary: '-',
+      validationAuxCpuSummary: '-',
+      validationCrossSummary: '-',
+      validationSkippedSummary: '-',
+      validationWarningSummary: '-',
     })
     writeDomTextContent('status', message)
     throw new Error(message)
@@ -1234,10 +1506,13 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     perturbMax: readStoreTextInputValue('valPerturbMax'),
     mcEnable: readStoreCheckboxValue('valMcEnable'),
     mcSims: readStoreTextInputValue('valMcSims'),
+    mcBlockLen: readStoreTextInputValue('valMcBlockLen'),
+    mcMode: readStoreTextInputValue('valMcMode'),
     cscvEnable: readStoreCheckboxValue('valCscvEnable'),
     cscvSlices: readStoreTextInputValue('valCscvSlices'),
     crossEnable: readStoreCheckboxValue('valCrossEnable'),
     crossMax: readStoreTextInputValue('valCrossMax'),
+    crossMode: readStoreTextInputValue('valCrossMode'),
     crossDatasets: readVueCrossSelection()
   }
   if (typeof options.useFiltered === 'boolean') buildInputs.useFiltered = options.useFiltered
@@ -1246,11 +1521,20 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
   const command = resolveValidationCommand(runReq)
   const switchTab = options.switchTab !== false
 
-  patchValidationStoreState({
-    validateDisabled: true,
-    statusLine: 'Running validation...',
-    validationHint: 'Running validation...',
-    validationReoptMeta: '-'
+    patchValidationStoreState({
+      validateDisabled: true,
+      statusLine: 'Running validation...',
+      validationHint: 'Running validation...',
+      validationRouteSummary: '-',
+      validationRouteDetailSummary: '-',
+      validationAuxCpuSummary: '-',
+      validationBootstrapSummary: '-',
+      validationRegimeSummary: '-',
+      validationFrictionSummary: '-',
+      validationCrossSummary: '-',
+      validationSkippedSummary: '-',
+      validationWarningSummary: '-',
+      validationReoptMeta: '-'
   })
   writeDomTextContent('status', 'Running validation...')
 
@@ -1261,6 +1545,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const elapsedMs = Math.max(0, finishedAt - startedAt)
     const validationMeta = buildValidationMetaText(validationRes)
     const validationReoptMeta = buildValidationReoptMetaText(validationRes)
+    const executionSummary = buildValidationExecutionSummary(validationRes, validationReq)
     const minPsrGate = parseProbabilityGateValue(validationReq.min_psr)
     const minDsrGate = parseProbabilityGateValue(validationReq.min_dsr)
     const minCscvRankGate = parseProbabilityGateValue(validationReq.min_cscv_oos_rank_frac)
@@ -1275,8 +1560,17 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
 
     applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
     patchValidationStoreState({
-      validationHint: 'Validation complete.',
+      validationHint: buildValidationHintText(validationRes),
       validationMeta,
+      validationRouteSummary: executionSummary.routeSummary,
+      validationRouteDetailSummary: executionSummary.routeDetailSummary,
+      validationAuxCpuSummary: executionSummary.auxCpuSummary,
+      validationBootstrapSummary: executionSummary.bootstrapSummary,
+      validationRegimeSummary: executionSummary.regimeSummary,
+      validationFrictionSummary: executionSummary.frictionSummary,
+      validationCrossSummary: executionSummary.crossSummary,
+      validationSkippedSummary: executionSummary.skippedSummary,
+      validationWarningSummary: executionSummary.warningSummary,
       validationReoptMeta,
       validationColumns,
       validationRows,
@@ -1309,12 +1603,105 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     patchValidationStoreState({
       statusLine: message,
       validationHint: message,
+      validationRouteSummary: '-',
+      validationRouteDetailSummary: '-',
+      validationAuxCpuSummary: '-',
+      validationBootstrapSummary: '-',
+      validationRegimeSummary: '-',
+      validationFrictionSummary: '-',
+      validationCrossSummary: '-',
+      validationSkippedSummary: '-',
+      validationWarningSummary: '-',
       validationReoptMeta: '-'
     })
     writeDomTextContent('status', message)
     throw error
   } finally {
     patchValidationStoreState({ validateDisabled: false })
+  }
+}
+
+export function previewValidationExecutionSummaryFromStores(): {
+  routeSummary: string
+  crossSummary: string
+  moduleSummary: string
+  warningSummary: string
+} {
+  const buildContext = resolveValidationBuildContextFromWorkflowArtifacts()
+  if (!buildContext) {
+    return {
+      routeSummary: 'Run an optimization first.',
+      crossSummary: '-',
+      moduleSummary: '-',
+      warningSummary: 'No validation preview is available without an optimization artifact.',
+    }
+  }
+
+  const runSnapshot = readRunSnapshotFromStore()
+  const workflowRun = readWorkflowRunArtifactFromStore()
+  const runReq = asRecord(runSnapshot?.req ?? buildContext.currentRunReq)
+  const runRes = runSnapshot?.res ?? buildContext.currentRunRes
+  if (!runReq || !runRes || !workflowRun) {
+    return {
+      routeSummary: 'Run artifact unavailable.',
+      crossSummary: '-',
+      moduleSummary: '-',
+      warningSummary: 'Re-run optimization before previewing validation execution.',
+    }
+  }
+
+  try {
+    assertValidationRunMatchesCurrentDataset(workflowRun, runReq)
+    const buildInputs: Parameters<typeof buildValidationRequest>[0] = {
+      currentRunReq: runReq,
+      currentRunRes: runRes,
+      runDatasetMeta: workflowRun.datasetMeta,
+      runCsvPath: workflowRun.csvPath,
+      topRows: buildContext.topRows,
+      topRowsFiltered: buildContext.topRowsFiltered,
+      candidates: readStoreTextInputValue('valCandidates'),
+      seed: readStoreTextInputValue('valSeed'),
+      minPsr: readStoreTextInputValue('valMinPsr'),
+      minDsr: readStoreTextInputValue('valMinDsr'),
+      minCscvOosRankFrac: readStoreTextInputValue('valMinCscvRank'),
+      minCscvOosMetric: readStoreTextInputValue('valMinCscvMetric'),
+      maxPbo: readStoreTextInputValue('valMaxPbo'),
+      spaEnable: readStoreCheckboxValue('valSpaEnable'),
+      spaSlices: readStoreTextInputValue('valSpaSlices'),
+      spaBootstrapSamples: readStoreTextInputValue('valSpaBootstrapSamples'),
+      spaBlockLength: readStoreTextInputValue('valSpaBlockLength'),
+      reoptWfEnable: readStoreCheckboxValue('valReoptWfEnable'),
+      reoptWfWindow: readStoreTextInputValue('valReoptWfWindow'),
+      reoptWfStep: readStoreTextInputValue('valReoptWfStep'),
+      reoptWfTopN: readStoreTextInputValue('valReoptWfTopN'),
+      wfEnable: readStoreCheckboxValue('valWfEnable'),
+      wfWindow: readStoreTextInputValue('valWfWindow'),
+      wfStep: readStoreTextInputValue('valWfStep'),
+      perturbEnable: readStoreCheckboxValue('valPerturbEnable'),
+      perturbIters: readStoreTextInputValue('valPerturbIters'),
+      perturbMin: readStoreTextInputValue('valPerturbMin'),
+      perturbMax: readStoreTextInputValue('valPerturbMax'),
+      mcEnable: readStoreCheckboxValue('valMcEnable'),
+      mcSims: readStoreTextInputValue('valMcSims'),
+      mcBlockLen: readStoreTextInputValue('valMcBlockLen'),
+      mcMode: readStoreTextInputValue('valMcMode'),
+      cscvEnable: readStoreCheckboxValue('valCscvEnable'),
+      cscvSlices: readStoreTextInputValue('valCscvSlices'),
+      crossEnable: readStoreCheckboxValue('valCrossEnable'),
+      crossMax: readStoreTextInputValue('valCrossMax'),
+      crossMode: readStoreTextInputValue('valCrossMode'),
+      crossDatasets: readVueCrossSelection(),
+    }
+    const validationReq = buildValidationRequest(buildInputs)
+    return buildValidationCapabilitySummary(validationReq)
+  } catch (error) {
+    const message = normalizeText(error)
+    return {
+      routeSummary: 'Validation preview unavailable.',
+      crossSummary: '-',
+      moduleSummary: '-',
+      warningSummary: message || 'Unable to build validation preview from the current workflow state.',
+    }
   }
 }
 
@@ -1327,7 +1714,7 @@ export async function exportShortlistCsv(): Promise<void> {
   const csv = await invokeCommand('build_validation_shortlist_csv', {
     validation_res: validationRes
   })
-  const downloaded = downloadText(`vectorbt_validation_shortlist_${ts}.csv`, String(csv || ''), 'text/csv;charset=utf-8')
+  const downloaded = downloadText(`vectorgrid_validation_shortlist_${ts}.csv`, String(csv || ''), 'text/csv;charset=utf-8')
   patchValidationStoreState({
     statusLine: downloaded ? 'Exported validation shortlist CSV.' : 'Built validation shortlist CSV (download unavailable in this environment).'
   })
@@ -1339,7 +1726,7 @@ export async function exportValidationJson(): Promise<void> {
   const validationRes = validation?.res ?? null
   if (!validationRes) return
   const ts = normalizeText(run?.ts || validation?.ts) || new Date().toISOString()
-  const downloaded = downloadText(`vectorbt_validation_${ts}.json`, safePrettyJson(validationRes), 'application/json;charset=utf-8')
+  const downloaded = downloadText(`vectorgrid_validation_${ts}.json`, safePrettyJson(validationRes), 'application/json;charset=utf-8')
   patchValidationStoreState({
     statusLine: downloaded ? 'Exported validation JSON.' : 'Built validation JSON (download unavailable in this environment).'
   })
@@ -1350,7 +1737,7 @@ export async function exportReportJson(): Promise<void> {
   const hasRun = !!(report.run && report.run.res)
   if (!hasRun) return
   const ts = normalizeText(report.ts) || new Date().toISOString()
-  const downloaded = downloadText(`vectorbt_report_${ts}.json`, safePrettyJson(report), 'application/json;charset=utf-8')
+  const downloaded = downloadText(`vectorgrid_report_${ts}.json`, safePrettyJson(report), 'application/json;charset=utf-8')
   patchValidationStoreState({
     statusLine: downloaded ? 'Exported report JSON.' : 'Built report JSON (download unavailable in this environment).'
   })
@@ -1393,7 +1780,7 @@ export async function exportReportXlsx(): Promise<void> {
   } catch (saveError) {
     try {
       const base64 = await invokeCommand('build_report_xlsx', { report })
-      const downloaded = downloadBase64(`vectorbt_report_${ts}.xlsx`, String(base64 || ''), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      const downloaded = downloadBase64(`vectorgrid_report_${ts}.xlsx`, String(base64 || ''), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
       patchValidationStoreState({
         statusLine: downloaded ? 'Exported XLSX report as a file download.' : 'Built XLSX report (download unavailable in this environment).'
       })

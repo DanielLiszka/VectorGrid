@@ -155,7 +155,8 @@ This keeps ranking robust while preserving a human-auditable review lane.
 
 Add a new artifact kind:
 
-- `vectorbt_meta_ml_selection`
+- `vectorgrid_meta_ml_selection`
+- compatibility reader for older legacy `vectorbt_*` meta artifact kinds where needed
 
 Suggested artifact payload:
 

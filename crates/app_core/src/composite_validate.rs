@@ -9030,6 +9030,25 @@ pub struct WalkForwardStats {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ReoptWalkForwardWindowStats {
+    pub train_start: usize,
+    pub train_end: usize,
+    pub test_end: usize,
+    pub winner_key: String,
+    pub train_score: f64,
+    pub train_pnl: f64,
+    pub train_sharpe: f64,
+    pub forward_pnl: f64,
+    pub forward_sharpe: f64,
+    pub forward_max_dd: f64,
+    pub forward_trades: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pnl_efficiency: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sharpe_efficiency: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ReoptWalkForwardStats {
     pub windows: usize,
     pub top_n_candidates: usize,
@@ -9048,8 +9067,20 @@ pub struct ReoptWalkForwardStats {
     pub forward_pnl_worst: f64,
     pub forward_trades_median: u32,
     pub forward_trades_worst: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_pnl_efficiency_median: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_pnl_efficiency_worst: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_sharpe_efficiency_median: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_sharpe_efficiency_worst: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_sharpe_efficiency_std: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub winner_sequence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub window_stats: Vec<ReoptWalkForwardWindowStats>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -9089,6 +9120,8 @@ fn default_mc_sims() -> usize {
 pub struct TradeBootstrapConfig {
     #[serde(default = "default_mc_sims")]
     pub simulations: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stationary_mean_block_len: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -9101,6 +9134,20 @@ pub struct TradeBootstrapStats {
     pub pnl_p95: f64,
     pub max_dd_p50: f64,
     pub max_dd_p95: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_mean_block_len: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_prob_pnl_positive: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_pnl_p05: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_pnl_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_pnl_p95: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_max_dd_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_max_dd_p95: Option<f64>,
 }
 
 fn default_cross_max_datasets() -> usize {
@@ -9131,11 +9178,22 @@ fn default_cross_gate_min_datasets() -> usize {
     1
 }
 
+fn default_cross_ticker_mode() -> CrossTickerMode {
+    CrossTickerMode::Lightweight
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct CrossTickerDataset {
     pub csv_path: String,
     #[serde(default)]
     pub label: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossTickerMode {
+    Lightweight,
+    PreservedFinalists,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -9176,6 +9234,8 @@ pub struct CrossTickerConfig {
     pub datasets: Vec<CrossTickerDataset>,
     #[serde(default = "default_cross_max_datasets")]
     pub max_datasets: usize,
+    #[serde(default = "default_cross_ticker_mode")]
+    pub mode: CrossTickerMode,
     #[serde(default)]
     pub gate: CrossTickerGateConfig,
 }
@@ -9249,6 +9309,7 @@ pub struct CrossTickerDatasetMeta {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CrossTickerValidationSummary {
+    pub mode: CrossTickerMode,
     pub datasets: Vec<CrossTickerDatasetMeta>,
 }
 
@@ -11823,7 +11884,6 @@ pub fn run_composite_validation_blocking_with_candles(
                     None
                 };
                 let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
-                    let sims = cfg.simulations.min(50_000);
                     let series = build_candidate_series(
                         candles,
                         &lr,
@@ -11840,7 +11900,7 @@ pub fn run_composite_validation_blocking_with_candles(
                     )?;
                     let trades = trades_for_series(&series);
                     Some(crate::validation_pipeline::compute_trade_bootstrap_stats(
-                        &trades, sims, rng,
+                        &trades, cfg, rng,
                     ))
                 } else {
                     None
@@ -11986,10 +12046,9 @@ pub fn run_composite_validation_blocking_with_candles(
             };
 
             let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
-                let sims = cfg.simulations.min(50_000);
                 let trades = trades_for_series(&series);
                 Some(crate::validation_pipeline::compute_trade_bootstrap_stats(
-                    &trades, sims, rng,
+                    &trades, cfg, rng,
                 ))
             } else {
                 None
@@ -12539,7 +12598,10 @@ mod tests {
                 pct_max: 0.01,
                 flip_bool_prob: 0.0,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 50 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 50,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13032,7 +13094,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 24,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13178,7 +13243,10 @@ mod tests {
             }),
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 24,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13246,7 +13314,10 @@ mod tests {
             }),
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 24,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13314,7 +13385,10 @@ mod tests {
             }),
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 24 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 24,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13527,7 +13601,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 200 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 200,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13553,6 +13630,10 @@ mod tests {
         assert!(mc.pnl_p05 <= mc.pnl_p50);
         assert!(mc.pnl_p50 <= mc.pnl_p95);
         assert!(mc.max_dd_p50 <= mc.max_dd_p95);
+        assert!(mc.stationary_mean_block_len.unwrap_or(0) >= 1);
+        assert!(mc.stationary_pnl_p05.unwrap_or(0.0) <= mc.stationary_pnl_p50.unwrap_or(0.0));
+        assert!(mc.stationary_pnl_p50.unwrap_or(0.0) <= mc.stationary_pnl_p95.unwrap_or(0.0));
+        assert!(mc.stationary_max_dd_p50.unwrap_or(0.0) <= mc.stationary_max_dd_p95.unwrap_or(0.0));
     }
 
     #[test]
@@ -14142,7 +14223,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.01,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15182,7 +15266,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15886,7 +15973,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16591,7 +16681,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16959,12 +17052,42 @@ mod tests {
             .as_ref()
             .expect("gpu walk_forward");
         assert_eq!(cpu_wf.windows, gpu_wf.windows);
-        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 1e-3);
-        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 1e-3);
-        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3);
-        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3);
-        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
-        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+        assert!(
+            (cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 1e-3,
+            "carm sharpe_median cpu={} gpu={}",
+            cpu_wf.sharpe_median,
+            gpu_wf.sharpe_median
+        );
+        assert!(
+            (cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 1e-3,
+            "carm sharpe_worst cpu={} gpu={}",
+            cpu_wf.sharpe_worst,
+            gpu_wf.sharpe_worst
+        );
+        assert!(
+            (cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3,
+            "carm max_dd_median cpu={} gpu={}",
+            cpu_wf.max_dd_median,
+            gpu_wf.max_dd_median
+        );
+        assert!(
+            (cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3,
+            "carm max_dd_worst cpu={} gpu={}",
+            cpu_wf.max_dd_worst,
+            gpu_wf.max_dd_worst
+        );
+        assert!(
+            (cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3,
+            "carm pnl_median cpu={} gpu={}",
+            cpu_wf.pnl_median,
+            gpu_wf.pnl_median
+        );
+        assert!(
+            (cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3,
+            "carm pnl_worst cpu={} gpu={}",
+            cpu_wf.pnl_worst,
+            gpu_wf.pnl_worst
+        );
         assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
         assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
@@ -17207,7 +17330,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17510,6 +17636,107 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn kqsr_validation_gpu_kernel_walk_forward_matches_cpu_metrics() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "kqsr-gpu-walk-forward".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![kqsr_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 58,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu kqsr walk_forward validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu kqsr walk_forward validation");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!(
+            (cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 1e-3,
+            "carm sharpe_median cpu={} gpu={}",
+            cpu_wf.sharpe_median,
+            gpu_wf.sharpe_median
+        );
+        assert!(
+            (cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 1e-3,
+            "carm sharpe_worst cpu={} gpu={}",
+            cpu_wf.sharpe_worst,
+            gpu_wf.sharpe_worst
+        );
+        assert!(
+            (cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3,
+            "carm max_dd_median cpu={} gpu={}",
+            cpu_wf.max_dd_median,
+            gpu_wf.max_dd_median
+        );
+        assert!(
+            (cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3,
+            "carm max_dd_worst cpu={} gpu={}",
+            cpu_wf.max_dd_worst,
+            gpu_wf.max_dd_worst
+        );
+        assert!(
+            (cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3,
+            "carm pnl_median cpu={} gpu={}",
+            cpu_wf.pnl_median,
+            gpu_wf.pnl_median
+        );
+        assert!(
+            (cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3,
+            "carm pnl_worst cpu={} gpu={}",
+            cpu_wf.pnl_worst,
+            gpu_wf.pnl_worst
+        );
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn carm_validation_gpu_kernel_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -17555,7 +17782,6 @@ mod tests {
             .all(|cand| cand.in_sample.sharpe.is_finite()));
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn kvdf_validation_gpu_kernel_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
@@ -17586,6 +17812,77 @@ mod tests {
             validation_context: None,
         };
         assert_gpu_in_sample_matches_cpu(mk, &candles, &cancel);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kvdf_validation_gpu_kernel_walk_forward_matches_cpu_metrics() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "kvdf-gpu-walk-forward".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![kvdf_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 60,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu kvdf walk_forward validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu kvdf walk_forward validation");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 1e-3);
+        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 1e-3);
+        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3);
+        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3);
+        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
+        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -17635,7 +17932,6 @@ mod tests {
             .all(|cand| cand.in_sample.sharpe.is_finite()));
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn kqsr_validation_gpu_kernel_advanced_routes_smoke() {
         let candles = make_noisy_trending_candles(8192);
@@ -17662,7 +17958,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.0,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 128 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -17718,7 +18017,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.0,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 128 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -17774,7 +18076,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.0,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 128 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -17830,7 +18135,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.0,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 128 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -18260,7 +18568,10 @@ mod tests {
             walk_forward: None,
             reopt_walk_forward: None,
             perturb: None,
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,

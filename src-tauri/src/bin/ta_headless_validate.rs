@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 
+use ta_app_core::composite_validate::{
+    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
+};
 use ta_app_core::{
     read_candles_from_csv_compat, Backend, CrossTickerConfig, CrossTickerDataset, CscvPboConfig,
     DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, PerturbConfig,
@@ -74,6 +77,18 @@ enum ObjectiveArg {
     MaxDrawdown,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum BootstrapModeArg {
+    Compare,
+    IidOnly,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum CrossModeArg {
+    Lightweight,
+    PreservedFinalists,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "ta_headless_validate")]
 #[command(about = "Headless optimize -> validate -> XLSX pipeline for Double MA")]
@@ -83,6 +98,9 @@ struct Cli {
 
     #[arg(long = "cross-csv")]
     cross_csv: Vec<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = CrossModeArg::PreservedFinalists)]
+    cross_mode: CrossModeArg,
 
     #[arg(long, default_value = "_write_test/headless_cache")]
     cache_dir: PathBuf,
@@ -139,6 +157,30 @@ struct Cli {
     wf_step_bars: usize,
 
     #[arg(long, default_value_t = false)]
+    reopt_wf_enable: bool,
+
+    #[arg(long, default_value_t = 8)]
+    reopt_top_n_candidates: usize,
+
+    #[arg(long, default_value_t = 8_000)]
+    reopt_window_bars: usize,
+
+    #[arg(long, default_value_t = 2_000)]
+    reopt_step_bars: usize,
+
+    #[arg(long, default_value_t = false)]
+    spa_enable: bool,
+
+    #[arg(long, default_value_t = 8)]
+    spa_slices: usize,
+
+    #[arg(long, default_value_t = 128)]
+    spa_bootstrap_samples: usize,
+
+    #[arg(long, default_value_t = 3)]
+    spa_block_length: usize,
+
+    #[arg(long, default_value_t = false)]
     perturb_enable: bool,
 
     #[arg(long, default_value_t = 128)]
@@ -173,6 +215,12 @@ struct Cli {
 
     #[arg(long, default_value_t = 500)]
     bootstrap_sims: usize,
+
+    #[arg(long)]
+    bootstrap_stationary_mean_block_len: Option<usize>,
+
+    #[arg(long, value_enum, default_value_t = BootstrapModeArg::Compare)]
+    bootstrap_mode: BootstrapModeArg,
 
     #[arg(long, default_value_t = false)]
     cscv_enable: bool,
@@ -220,6 +268,13 @@ fn to_objective(arg: ObjectiveArg) -> ObjectiveKind {
         ObjectiveArg::Pnl => ObjectiveKind::Pnl,
         ObjectiveArg::Sharpe => ObjectiveKind::Sharpe,
         ObjectiveArg::MaxDrawdown => ObjectiveKind::MaxDrawdown,
+    }
+}
+
+fn to_cross_mode(arg: CrossModeArg) -> ta_app_core::CrossTickerMode {
+    match arg {
+        CrossModeArg::Lightweight => ta_app_core::CrossTickerMode::Lightweight,
+        CrossModeArg::PreservedFinalists => ta_app_core::CrossTickerMode::PreservedFinalists,
     }
 }
 
@@ -394,6 +449,27 @@ fn main() -> Result<(), String> {
         None
     };
 
+    let reopt_walk_forward = if cli.reopt_wf_enable {
+        Some(ReoptWalkForwardConfigOptional {
+            window_bars: cli.reopt_window_bars,
+            step_bars: cli.reopt_step_bars,
+            top_n_candidates: cli.reopt_top_n_candidates,
+        })
+    } else {
+        None
+    };
+
+    let spa = if cli.spa_enable {
+        Some(SpaConfigOptional {
+            slices: cli.spa_slices,
+            bootstrap_samples: cli.spa_bootstrap_samples,
+            block_length: cli.spa_block_length,
+            benchmark: SpaBenchmarkKind::BuyAndHold,
+        })
+    } else {
+        None
+    };
+
     let perturb = if cli.perturb_enable {
         Some(PerturbConfig {
             iterations: cli.perturb_iterations,
@@ -408,6 +484,10 @@ fn main() -> Result<(), String> {
     let trade_bootstrap = if cli.bootstrap_enable {
         Some(TradeBootstrapConfig {
             simulations: cli.bootstrap_sims,
+            stationary_mean_block_len: match cli.bootstrap_mode {
+                BootstrapModeArg::Compare => cli.bootstrap_stationary_mean_block_len,
+                BootstrapModeArg::IidOnly => Some(0),
+            },
         })
     } else {
         None
@@ -447,13 +527,13 @@ fn main() -> Result<(), String> {
         fast_ma_params: fast_ma_params.clone(),
         slow_ma_params: slow_ma_params.clone(),
         candidates,
-        walk_forward,
-        reopt_walk_forward: None,
-        spa: None,
-        perturb,
-        trade_bootstrap,
+        walk_forward: walk_forward.clone(),
+        reopt_walk_forward: reopt_walk_forward.clone(),
+        spa: spa.clone(),
+        perturb: perturb.clone(),
+        trade_bootstrap: trade_bootstrap.clone(),
         cross_ticker: None,
-        cscv_pbo,
+        cscv_pbo: cscv_pbo.clone(),
         seed: cli.seed,
         max_candidates: cli.validate_max_candidates,
         validation_engine,
@@ -484,6 +564,7 @@ fn main() -> Result<(), String> {
         let cross_cfg = CrossTickerConfig {
             datasets,
             max_datasets: cli.cross_max_datasets,
+            mode: to_cross_mode(cli.cross_mode.clone()),
             gate: ta_app_core::CrossTickerGateConfig::default(),
         };
         println!(
@@ -493,15 +574,27 @@ fn main() -> Result<(), String> {
         apply_cross_ticker_validation_double_ma_headless(
             &mut val_res,
             cross_cfg,
+            &candles,
             validation_backend,
             &cli.ma_source,
             fast_ma_params.clone(),
             slow_ma_params.clone(),
+            walk_forward.clone(),
+            reopt_walk_forward.clone(),
+            spa.clone(),
+            perturb.clone(),
+            trade_bootstrap.clone(),
+            cscv_pbo.clone(),
             cli.seed,
             &cli.cache_dir,
             &cancel,
             validation_engine,
             iterative_cfg.clone(),
+            cli.min_psr,
+            cli.min_dsr,
+            cli.min_cscv_oos_rank_frac,
+            cli.min_cscv_oos_metric,
+            cli.max_pbo,
         )?;
     }
 
@@ -517,7 +610,7 @@ fn main() -> Result<(), String> {
         .iter()
         .fold((i64::MAX, i64::MIN), |(mn, mx), &v| (mn.min(v), mx.max(v)));
     let report = json!({
-         "kind": "vectorbt_run_artifact",
+         "kind": "vectorgrid_run_artifact",
          "ts": ts,
          "run": {
              "req": {

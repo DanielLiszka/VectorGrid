@@ -111,8 +111,8 @@ pub use composite_mo::{
 pub use composite_validate::{
     run_composite_validation_blocking_with_candles, CompositeParams, CompositeValidationRequest,
     CompositeValidationResult, CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta,
-    CrossTickerGateConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig,
-    TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
+    CrossTickerGateConfig, CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary,
+    PerturbConfig, TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
 };
 
 pub use double_ma_validate::{

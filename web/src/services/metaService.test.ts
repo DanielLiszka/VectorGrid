@@ -91,7 +91,7 @@ function mockInvokeDefaults(): void {
       return {
         ts: '2026-02-26T10:00:00Z',
         report_xlsx_path: 'C:/reports/meta.xlsx',
-        meta_json_path: 'C:/runs/vectorbt_meta.json',
+        meta_json_path: 'C:/runs/vectorgrid_meta.json',
         result: {
           strategy_kind: 'CompositeMo',
           timeframe: '1m',
@@ -112,12 +112,12 @@ function mockInvokeDefaults(): void {
     if (command === 'run_meta_stage5_ml_confidence') {
       return {
         ts: '2026-02-26T10:02:00Z',
-        stage4_json_path: 'C:/runs/vectorbt_stage5.json',
-        stage5_json_path: 'C:/runs/vectorbt_stage5.json',
+        stage4_json_path: 'C:/runs/vectorgrid_stage5.json',
+        stage5_json_path: 'C:/runs/vectorgrid_stage5.json',
         result: {
           strategy_kind: 'CompositeMo',
           timeframe: '1m',
-          source_meta_json_path: 'C:/runs/vectorbt_meta.json',
+          source_meta_json_path: 'C:/runs/vectorgrid_meta.json',
           model_path: 'C:/models/meta_model.json',
           model_state: 'healthy',
           model_healthy: true,
@@ -142,7 +142,7 @@ function mockInvokeDefaults(): void {
     if (command === 'evaluate_ml_confidence_policy') {
       return {
         ts: '2026-02-26T10:03:00Z',
-        eval_json_path: 'C:/runs/vectorbt_ml_policy_eval.json',
+        eval_json_path: 'C:/runs/vectorgrid_ml_policy_eval.json',
         result: {
           strategy_kind: 'CompositeMo',
           timeframe: '1m',
@@ -226,7 +226,7 @@ function mockInvokeDefaults(): void {
     }
 
     if (command === 'list_run_artifacts') return []
-    if (command === 'save_batch_summary') return { path: 'C:/runs/vectorbt_batch_1.json' }
+    if (command === 'save_batch_summary') return { path: 'C:/runs/vectorgrid_batch_1.json' }
     if (command === 'list_meta_artifacts') return []
     if (command === 'list_stage5_artifacts') return []
     if (command === 'list_ml_policy_eval_artifacts') return []
@@ -284,7 +284,7 @@ describe('meta service', () => {
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
-    expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorbt_meta.json')
+    expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorgrid_meta.json')
   })
 
   it('runs ML policy evaluation with auto-built request via direct invoke', async () => {
@@ -412,7 +412,7 @@ describe('meta service', () => {
 
     const analysisStore = useAnalysisStore()
     expect(analysisStore.canBatchRevealSummary).toBe(true)
-    expect(analysisStore.batchOutputPreview).toContain('vectorbt_batch_summary')
+    expect(analysisStore.batchOutputPreview).toContain('vectorgrid_batch_summary')
     expect(validationStore.autoRun).toBe(true)
     expect(validationStore.autoExportXlsx).toBe(true)
     expect(validationStore.autoRevealReport).toBe(true)
@@ -451,6 +451,6 @@ describe('meta service', () => {
     })
     await batchRevealSummary()
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', { path: 'C:/runs/vectorbt_batch_1.json' })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', { path: 'C:/runs/vectorgrid_batch_1.json' })
   })
 })

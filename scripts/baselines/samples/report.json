@@ -1,5 +1,5 @@
 {
-  "kind": "vectorbt_run_artifact",
+  "kind": "vectorgrid_run_artifact",
   "optimization": {
     "res": {
       "backend_used": "Cpu",

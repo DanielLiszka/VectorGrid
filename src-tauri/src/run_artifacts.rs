@@ -11,6 +11,54 @@ const CONFIG_FINGERPRINT_SCHEMA_VERSION: u64 = 1;
 const RESAMPLE_RULE_SESSION_RELATIVE_OHLCV: &str = "session_relative_ohlcv";
 const RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP: &str = "day_first_timestamp";
 
+fn is_run_artifact_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_run_artifact" | "vectorgrid_run_artifact"
+    )
+}
+
+fn is_meta_selection_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_meta_selection" | "vectorgrid_meta_selection"
+    )
+}
+
+fn is_meta_stage_result_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_meta_stage4_experimental"
+            | "vectorgrid_meta_stage4_experimental"
+            | "vectorbt_meta_stage5_ml_confidence"
+            | "vectorgrid_meta_stage5_ml_confidence"
+    )
+}
+
+fn is_ml_confidence_policy_eval_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "vectorbt_ml_confidence_policy_evaluation" | "vectorgrid_ml_confidence_policy_evaluation"
+    )
+}
+
+fn is_meta_artifact_file_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.starts_with("vectorbt_meta_") || trimmed.starts_with("vectorgrid_meta_")
+}
+
+fn is_meta_stage_artifact_file_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.starts_with("vectorbt_stage4_")
+        || trimmed.starts_with("vectorbt_meta_stage4_")
+        || trimmed.starts_with("vectorbt_stage5_")
+        || trimmed.starts_with("vectorbt_meta_stage5_")
+        || trimmed.starts_with("vectorgrid_stage4_")
+        || trimmed.starts_with("vectorgrid_meta_stage4_")
+        || trimmed.starts_with("vectorgrid_stage5_")
+        || trimmed.starts_with("vectorgrid_meta_stage5_")
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SaveRunArtifactResponse {
     pub path: String,
@@ -118,14 +166,14 @@ pub(super) fn suggest_meta_artifact_path(
     ts: &str,
     app: &tauri::AppHandle,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorbt_meta", ts, "json")
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_meta", ts, "json")
 }
 
 pub(super) fn suggest_batch_summary_path(
     ts: &str,
     app: &tauri::AppHandle,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorbt_batch", ts, "json")
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_batch", ts, "json")
 }
 
 fn suggest_ts_file_path(
@@ -158,7 +206,7 @@ fn run_artifact_path(artifact: &Value, app: &tauri::AppHandle) -> Result<PathBuf
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     let safe_ts = sanitize_filename_component(ts);
-    Ok(dir.join(format!("vectorbt_run_{safe_ts}.json")))
+    Ok(dir.join(format!("vectorgrid_run_{safe_ts}.json")))
 }
 
 fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
@@ -440,14 +488,20 @@ fn prune_old_artifacts_by_prefix(app: &tauri::AppHandle, keep_newest: usize, pre
 }
 
 fn prune_old_run_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_run_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_run_");
 }
 
 pub(super) fn prune_old_meta_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_");
 }
 
 pub(super) fn prune_old_stage4_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_stage4_");
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_stage4_");
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_stage5_");
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_stage5_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_stage4_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_stage4_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_stage5_");
@@ -579,7 +633,7 @@ pub(super) fn list_run_artifacts_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if name.starts_with("vectorbt_meta_") {
+        if is_meta_artifact_file_name(name) {
             continue;
         }
         let meta = match entry.metadata() {
@@ -607,7 +661,7 @@ pub(super) fn list_run_artifacts_blocking(
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string();
-        if kind != "vectorbt_run_artifact" {
+        if !is_run_artifact_kind(&kind) {
             continue;
         }
         let strategy_kind = v
@@ -744,7 +798,7 @@ pub(super) fn list_meta_artifacts_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("vectorbt_meta_") {
+        if !is_meta_artifact_file_name(name) {
             continue;
         }
 
@@ -768,7 +822,7 @@ pub(super) fn list_meta_artifacts_blocking(
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string();
-        if kind != "vectorbt_meta_selection" {
+        if !is_meta_selection_kind(&kind) {
             continue;
         }
 
@@ -858,11 +912,7 @@ pub(super) fn list_stage4_artifacts_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("vectorbt_stage4_")
-            && !name.starts_with("vectorbt_meta_stage4_")
-            && !name.starts_with("vectorbt_stage5_")
-            && !name.starts_with("vectorbt_meta_stage5_")
-        {
+        if !is_meta_stage_artifact_file_name(name) {
             continue;
         }
 
@@ -882,9 +932,7 @@ pub(super) fn list_stage4_artifacts_blocking(
         };
 
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if kind != "vectorbt_meta_stage4_experimental"
-            && kind != "vectorbt_meta_stage5_ml_confidence"
-        {
+        if !is_meta_stage_result_kind(kind) {
             continue;
         }
 
@@ -1013,7 +1061,7 @@ pub(super) fn list_ml_policy_eval_artifacts_blocking(
         };
 
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if kind != "vectorbt_ml_confidence_policy_evaluation" {
+        if !is_ml_confidence_policy_eval_kind(kind) {
             continue;
         }
 
@@ -1116,11 +1164,10 @@ pub(super) fn update_artifact_tags_blocking(
     let mut v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
     let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-    if kind != "vectorbt_run_artifact"
-        && kind != "vectorbt_meta_selection"
-        && kind != "vectorbt_meta_stage4_experimental"
-        && kind != "vectorbt_meta_stage5_ml_confidence"
-        && kind != "vectorbt_ml_confidence_policy_evaluation"
+    if !is_run_artifact_kind(kind)
+        && !is_meta_selection_kind(kind)
+        && !is_meta_stage_result_kind(kind)
+        && !is_ml_confidence_policy_eval_kind(kind)
     {
         return Err(format!("unsupported artifact kind: {kind}"));
     }
@@ -1150,7 +1197,10 @@ pub(super) fn update_artifact_tags_blocking(
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_json, compute_config_fingerprint_from_artifact, normalize_dataset_meta};
+    use super::{
+        canonical_json, compute_config_fingerprint_from_artifact, is_meta_artifact_file_name,
+        is_meta_stage_artifact_file_name, is_run_artifact_kind, normalize_dataset_meta,
+    };
     use serde_json::json;
 
     #[test]
@@ -1263,5 +1313,39 @@ mod tests {
             ds.get("resample_applied").and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    fn run_artifact_kind_alias_accepts_legacy_and_vectorgrid_names() {
+        assert!(is_run_artifact_kind("vectorbt_run_artifact"));
+        assert!(is_run_artifact_kind("vectorgrid_run_artifact"));
+        assert!(!is_run_artifact_kind("vectorbt_meta_selection"));
+    }
+
+    #[test]
+    fn meta_artifact_file_name_alias_accepts_legacy_and_vectorgrid_prefixes() {
+        assert!(is_meta_artifact_file_name("vectorbt_meta_2026-03-13.json"));
+        assert!(is_meta_artifact_file_name(
+            "vectorgrid_meta_2026-03-13.json"
+        ));
+        assert!(!is_meta_artifact_file_name(
+            "vectorgrid_run_2026-03-13.json"
+        ));
+    }
+
+    #[test]
+    fn meta_stage_file_name_alias_accepts_legacy_and_vectorgrid_prefixes() {
+        assert!(is_meta_stage_artifact_file_name(
+            "vectorbt_stage5_2026-03-13.json"
+        ));
+        assert!(is_meta_stage_artifact_file_name(
+            "vectorgrid_stage5_2026-03-13.json"
+        ));
+        assert!(is_meta_stage_artifact_file_name(
+            "vectorgrid_meta_stage4_2026-03-13.json"
+        ));
+        assert!(!is_meta_stage_artifact_file_name(
+            "vectorgrid_meta_2026-03-13.json"
+        ));
     }
 }

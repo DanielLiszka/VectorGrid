@@ -391,7 +391,7 @@ fn run_full_workflow_once(
             run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
 
         artifacts.push(json!({
-            "kind": "vectorbt_run_artifact",
+            "kind": "vectorgrid_run_artifact",
             "ts": format!("bench_train_{i:04}"),
             "tags": ["bench"],
             "run": { "req": { "strategy_kind": "CompositeCpu", "ma_source": "close" }, "res": {} },
@@ -434,7 +434,7 @@ fn run_full_workflow_once(
 
     // 4) Optional: ML training + apply (confidence ranking).
     let meta_artifact = json!({
-        "kind": "vectorbt_meta_selection",
+        "kind": "vectorgrid_meta_selection",
         "ts": "bench_meta",
         "req": meta_req,
         "res": meta_res,

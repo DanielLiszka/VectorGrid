@@ -81,7 +81,7 @@ function installDefaultInvokeCommandMock(): void {
     }
     if (command === 'save_run_artifact') {
       return {
-        path: 'runs/vectorbt_run_test.json',
+        path: 'runs/vectorgrid_run_test.json',
         bytes: 128,
       }
     }
@@ -280,6 +280,9 @@ describe('optimizeService', () => {
     expect(command).toBe('run_double_ma_optimization')
     expect((args.req as { strategy_kind?: string } | undefined)?.strategy_kind).toBe('DoubleMa')
     expect(invokeCommandMock).toHaveBeenCalledWith('save_run_artifact', expect.any(Object))
+    const saveCall = invokeCommandMock.mock.calls.find(([nextCommand]) => nextCommand === 'save_run_artifact')
+    const savedArtifact = (saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined)?.artifact
+    expect(savedArtifact?.kind).toBe('vectorgrid_run_artifact')
     expect(analysis.topRows).toBeGreaterThan(0)
     expect(String(analysis.bestTitle || '')).toContain('vs')
     expect(runValidationActionMock).toHaveBeenCalled()
@@ -319,7 +322,7 @@ describe('optimizeService', () => {
         }
       }
       if (command === 'save_run_artifact') {
-        return { path: 'runs/vectorbt_run_test.json', bytes: 128 }
+        return { path: 'runs/vectorgrid_run_test.json', bytes: 128 }
       }
       if (command === 'get_gpu_status') {
         return {
@@ -384,7 +387,7 @@ describe('optimizeService', () => {
           }
         }
         if (command === 'save_run_artifact') {
-          return { path: 'runs/vectorbt_run_test.json', bytes: 128 }
+          return { path: 'runs/vectorgrid_run_test.json', bytes: 128 }
         }
         if (command === 'get_gpu_status') {
           return {

@@ -11,12 +11,63 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use tauri::Manager;
 
+const DOUBLE_MA_CROSS_TICKER_FINALIST_LIMIT: usize = 4;
+
 trait CrossTickerValidationResultExt {
     type Candidate: validation_common::CrossTickerCandidate;
 
     fn candidates(&self) -> &Vec<Self::Candidate>;
     fn candidates_mut(&mut self) -> &mut Vec<Self::Candidate>;
     fn set_cross_ticker_summary(&mut self, summary: ta_app_core::CrossTickerValidationSummary);
+}
+
+fn slice_candles(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    start: usize,
+    end: usize,
+) -> vector_ta::utilities::data_loader::Candles {
+    let end = end.min(candles.close.len());
+    let start = start.min(end);
+    vector_ta::utilities::data_loader::Candles::new_with_fields(
+        candles.timestamp[start..end].to_vec(),
+        candles.open[start..end].to_vec(),
+        candles.high[start..end].to_vec(),
+        candles.low[start..end].to_vec(),
+        candles.close[start..end].to_vec(),
+        candles.volume[start..end].to_vec(),
+        vector_ta::utilities::data_loader::CandleFieldFlags {
+            open: candles.fields.open,
+            high: candles.fields.high,
+            low: candles.fields.low,
+            close: candles.fields.close,
+            volume: candles.fields.volume,
+        },
+    )
+}
+
+fn align_cross_ticker_candles_to_base_horizon(
+    base: &vector_ta::utilities::data_loader::Candles,
+    cross: &vector_ta::utilities::data_loader::Candles,
+) -> vector_ta::utilities::data_loader::Candles {
+    let base_len = base.close.len();
+    let cross_len = cross.close.len();
+    if base_len == 0 || cross_len == 0 {
+        return slice_candles(cross, 0, cross_len);
+    }
+
+    let base_start = *base.timestamp.first().unwrap_or(&0);
+    let base_end = *base.timestamp.last().unwrap_or(&0);
+    let start = cross.timestamp.partition_point(|&ts| ts < base_start);
+    let end = cross.timestamp.partition_point(|&ts| ts <= base_end);
+    if start < end {
+        return slice_candles(cross, start, end);
+    }
+
+    if cross_len > base_len {
+        return slice_candles(cross, cross_len.saturating_sub(base_len), cross_len);
+    }
+
+    slice_candles(cross, 0, cross_len)
 }
 
 fn normalize_timeframe_label(raw: &str) -> String {
@@ -148,6 +199,7 @@ impl CrossTickerValidationResultExt for DoubleMaValidationResult {
 fn apply_cross_ticker_validation_generic<R, Req, FMakeReq, FRun>(
     res: &mut R,
     mut cross_cfg: ta_app_core::CrossTickerConfig,
+    base_candles: &vector_ta::utilities::data_loader::Candles,
     app_cache_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
     app_for_progress: Option<tauri::AppHandle>,
@@ -211,7 +263,7 @@ where
             continue;
         }
         let outcome = crate::data_cache::load_or_build(Path::new(csv_path), app_cache_dir)?;
-        let candles2 = outcome.candles;
+        let candles2 = align_cross_ticker_candles_to_base_horizon(base_candles, &outcome.candles);
         datasets_meta.push(ta_app_core::CrossTickerDatasetMeta {
             label: validation_common::dataset_label(csv_path, &ds.label),
             csv_path: csv_path.to_string(),
@@ -243,7 +295,9 @@ where
             let Some(&idx) = key_to_idx.get(&key) else {
                 continue;
             };
-            validation_common::push_metrics(&mut accs[idx], c.in_sample_metrics());
+            if c.validation_passed() {
+                validation_common::push_metrics(&mut accs[idx], c.cross_ticker_metrics());
+            }
         }
     }
 
@@ -259,6 +313,7 @@ where
         .sort_by(|a, b| b.robust_score().total_cmp(&a.robust_score()));
 
     res.set_cross_ticker_summary(ta_app_core::CrossTickerValidationSummary {
+        mode: cross_cfg.mode.clone(),
         datasets: datasets_meta,
     });
     Ok(())
@@ -320,6 +375,7 @@ pub async fn run_composite_validation(
             apply_cross_ticker_validation(
                 &mut res,
                 cross_cfg,
+                &candles,
                 backend,
                 &ma_source,
                 fast_ma_params,
@@ -342,6 +398,7 @@ pub async fn run_composite_validation(
 pub(crate) fn apply_cross_ticker_validation(
     res: &mut CompositeValidationResult,
     cross_cfg: ta_app_core::CrossTickerConfig,
+    base_candles: &vector_ta::utilities::data_loader::Candles,
     backend: ta_app_core::Backend,
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
@@ -356,6 +413,7 @@ pub(crate) fn apply_cross_ticker_validation(
     apply_cross_ticker_validation_generic(
         res,
         cross_cfg,
+        base_candles,
         app_cache_dir,
         cancel,
         app_for_progress,
@@ -457,9 +515,20 @@ pub async fn run_double_ma_validation(
         let ma_source = base_req.ma_source.clone();
         let fast_ma_params = base_req.fast_ma_params.clone();
         let slow_ma_params = base_req.slow_ma_params.clone();
+        let walk_forward = base_req.walk_forward.clone();
+        let reopt_walk_forward = base_req.reopt_walk_forward.clone();
+        let spa = base_req.spa.clone();
+        let perturb = base_req.perturb.clone();
+        let trade_bootstrap = base_req.trade_bootstrap.clone();
+        let cscv_pbo = base_req.cscv_pbo.clone();
         let seed = base_req.seed;
         let validation_engine = base_req.validation_engine;
         let iterative_cfg = base_req.iterative.clone();
+        let min_psr = base_req.min_psr;
+        let min_dsr = base_req.min_dsr;
+        let min_cscv_oos_rank_frac = base_req.min_cscv_oos_rank_frac;
+        let min_cscv_oos_metric = base_req.min_cscv_oos_metric;
+        let max_pbo = base_req.max_pbo;
         let cross_cfg = base_req.cross_ticker.take();
         let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
             base_req,
@@ -472,16 +541,28 @@ pub async fn run_double_ma_validation(
             apply_cross_ticker_validation_double_ma(
                 &mut res,
                 cross_cfg,
+                &candles,
                 backend,
                 &ma_source,
                 fast_ma_params,
                 slow_ma_params,
+                walk_forward,
+                reopt_walk_forward,
+                spa,
+                perturb,
+                trade_bootstrap,
+                cscv_pbo,
                 seed,
                 &app_cache_dir,
                 cancel2.as_ref(),
                 Some(sink.app.clone()),
                 validation_engine,
                 iterative_cfg,
+                min_psr,
+                min_dsr,
+                min_cscv_oos_rank_frac,
+                min_cscv_oos_metric,
+                max_pbo,
             )?;
         }
         res.runtime_ms = started.elapsed().as_millis() as u64;
@@ -494,51 +575,192 @@ pub async fn run_double_ma_validation(
 fn apply_cross_ticker_validation_double_ma(
     res: &mut DoubleMaValidationResult,
     cross_cfg: ta_app_core::CrossTickerConfig,
+    base_candles: &vector_ta::utilities::data_loader::Candles,
     backend: ta_app_core::Backend,
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
+    _walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    _reopt_walk_forward: Option<ta_app_core::composite_validate::ReoptWalkForwardConfigOptional>,
+    _spa: Option<ta_app_core::composite_validate::SpaConfigOptional>,
+    _perturb: Option<ta_app_core::PerturbConfig>,
+    _trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     app_cache_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
     app_for_progress: Option<tauri::AppHandle>,
     validation_engine: ta_app_core::ValidationEngine,
     iterative_cfg: ta_app_core::IterativeSimConfig,
+    min_psr: Option<f64>,
+    min_dsr: Option<f64>,
+    min_cscv_oos_rank_frac: Option<f64>,
+    min_cscv_oos_metric: Option<f64>,
+    max_pbo: Option<f64>,
 ) -> Result<(), String> {
+    let preserved_cross_mode = matches!(
+        cross_cfg.mode,
+        ta_app_core::CrossTickerMode::PreservedFinalists
+    );
+    if preserved_cross_mode && res.candidates.len() > DOUBLE_MA_CROSS_TICKER_FINALIST_LIMIT {
+        res.candidates = select_double_ma_cross_ticker_finalists(&res.candidates);
+    }
+
     apply_cross_ticker_validation_generic(
         res,
         cross_cfg,
+        base_candles,
         app_cache_dir,
         cancel,
         app_for_progress,
         "double_ma_validate_cross",
-        |di, total_candidates, candidates| ta_app_core::DoubleMaValidationRequest {
-            data_id: format!("cross-{di}"),
-            backend: backend.clone(),
-            ma_source: ma_source.to_string(),
-            fast_ma_params: fast_ma_params.clone(),
-            slow_ma_params: slow_ma_params.clone(),
-            candidates,
-            walk_forward: None,
-            reopt_walk_forward: None,
-            spa: None,
-            perturb: None,
-            trade_bootstrap: None,
-            cross_ticker: None,
-            cscv_pbo: None,
-            seed,
-            max_candidates: total_candidates,
-            validation_engine,
-            iterative: iterative_cfg.clone(),
-            min_psr: None,
-            min_dsr: None,
-            min_cscv_oos_rank_frac: None,
-            min_cscv_oos_metric: None,
-            max_pbo: None,
-            validation_context: None,
+        |di, total_candidates, candidates| {
+            // Cross-ticker aggregation only consumes candidate-level verdicts and
+            // cross metrics. Preserve the verdict-relevant stack here rather than
+            // rerunning non-gating evidence modules whose outputs are not used by
+            // the cross filter or workbook summaries.
+            build_double_ma_cross_ticker_request(
+                di,
+                total_candidates,
+                candidates,
+                backend.clone(),
+                ma_source,
+                fast_ma_params.clone(),
+                slow_ma_params.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                if preserved_cross_mode {
+                    cscv_pbo.clone()
+                } else {
+                    None
+                },
+                seed,
+                validation_engine,
+                iterative_cfg.clone(),
+                if preserved_cross_mode { min_psr } else { None },
+                if preserved_cross_mode { min_dsr } else { None },
+                if preserved_cross_mode {
+                    min_cscv_oos_rank_frac
+                } else {
+                    None
+                },
+                if preserved_cross_mode {
+                    min_cscv_oos_metric
+                } else {
+                    None
+                },
+                if preserved_cross_mode { max_pbo } else { None },
+            )
         },
         ta_app_core::run_double_ma_validation_blocking_with_candles,
-    )
+    )?;
+
+    let hard_gates = ta_app_core::validation_pipeline::sanitize_hard_gates(
+        min_psr,
+        min_dsr,
+        min_cscv_oos_rank_frac,
+        min_cscv_oos_metric,
+        max_pbo,
+    );
+    res.run_verdict = ta_app_core::validation_pipeline::build_run_verdict(
+        &res.candidates,
+        res.candidates.len(),
+        &hard_gates,
+        res.cscv_pbo.as_ref(),
+        res.spa.as_ref(),
+    );
+    Ok(())
+}
+
+fn double_ma_candidate_is_approved(
+    cand: &ta_app_core::double_ma_validate::DoubleMaValidationCandidateResult,
+) -> bool {
+    cand.validation_verdict.passed
+        && cand
+            .min_track_record_length_bars
+            .map(|mintrl| cand.track_record_bars.max(2) >= mintrl)
+            .unwrap_or(false)
+}
+
+fn select_double_ma_cross_ticker_finalists(
+    candidates: &[ta_app_core::double_ma_validate::DoubleMaValidationCandidateResult],
+) -> Vec<ta_app_core::double_ma_validate::DoubleMaValidationCandidateResult> {
+    let mut approved: Vec<_> = candidates
+        .iter()
+        .filter(|cand| double_ma_candidate_is_approved(cand))
+        .cloned()
+        .collect();
+    if !approved.is_empty() {
+        approved.truncate(DOUBLE_MA_CROSS_TICKER_FINALIST_LIMIT);
+        return approved;
+    }
+
+    let mut hard_gate_survivors: Vec<_> = candidates
+        .iter()
+        .filter(|cand| cand.validation_verdict.passed)
+        .cloned()
+        .collect();
+    if !hard_gate_survivors.is_empty() {
+        hard_gate_survivors.truncate(DOUBLE_MA_CROSS_TICKER_FINALIST_LIMIT);
+        return hard_gate_survivors;
+    }
+
+    let mut fallback = candidates.to_vec();
+    fallback.truncate(DOUBLE_MA_CROSS_TICKER_FINALIST_LIMIT);
+    fallback
+}
+
+fn build_double_ma_cross_ticker_request(
+    dataset_index: usize,
+    total_candidates: usize,
+    candidates: Vec<ta_app_core::DoubleMaValidationParams>,
+    backend: ta_app_core::Backend,
+    ma_source: &str,
+    fast_ma_params: Option<HashMap<String, f64>>,
+    slow_ma_params: Option<HashMap<String, f64>>,
+    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    reopt_walk_forward: Option<ta_app_core::composite_validate::ReoptWalkForwardConfigOptional>,
+    spa: Option<ta_app_core::composite_validate::SpaConfigOptional>,
+    perturb: Option<ta_app_core::PerturbConfig>,
+    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    cscv_pbo: Option<ta_app_core::CscvPboConfig>,
+    seed: u64,
+    validation_engine: ta_app_core::ValidationEngine,
+    iterative_cfg: ta_app_core::IterativeSimConfig,
+    min_psr: Option<f64>,
+    min_dsr: Option<f64>,
+    min_cscv_oos_rank_frac: Option<f64>,
+    min_cscv_oos_metric: Option<f64>,
+    max_pbo: Option<f64>,
+) -> ta_app_core::DoubleMaValidationRequest {
+    ta_app_core::DoubleMaValidationRequest {
+        data_id: format!("cross-{dataset_index}"),
+        backend,
+        ma_source: ma_source.to_string(),
+        fast_ma_params,
+        slow_ma_params,
+        candidates,
+        walk_forward,
+        reopt_walk_forward,
+        spa,
+        perturb,
+        trade_bootstrap,
+        cross_ticker: None,
+        cscv_pbo,
+        seed,
+        max_candidates: total_candidates,
+        validation_engine,
+        iterative: iterative_cfg,
+        min_psr,
+        min_dsr,
+        min_cscv_oos_rank_frac,
+        min_cscv_oos_metric,
+        max_pbo,
+        validation_context: None,
+    }
 }
 
 /// Headless helper for applying cross-ticker validation to an already computed
@@ -546,29 +768,53 @@ fn apply_cross_ticker_validation_double_ma(
 pub fn apply_cross_ticker_validation_double_ma_headless(
     res: &mut DoubleMaValidationResult,
     cross_cfg: ta_app_core::CrossTickerConfig,
+    base_candles: &vector_ta::utilities::data_loader::Candles,
     backend: ta_app_core::Backend,
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
+    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    reopt_walk_forward: Option<ta_app_core::composite_validate::ReoptWalkForwardConfigOptional>,
+    spa: Option<ta_app_core::composite_validate::SpaConfigOptional>,
+    perturb: Option<ta_app_core::PerturbConfig>,
+    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     app_cache_dir: &Path,
     cancel: &AtomicBool,
     validation_engine: ta_app_core::ValidationEngine,
     iterative_cfg: ta_app_core::IterativeSimConfig,
+    min_psr: Option<f64>,
+    min_dsr: Option<f64>,
+    min_cscv_oos_rank_frac: Option<f64>,
+    min_cscv_oos_metric: Option<f64>,
+    max_pbo: Option<f64>,
 ) -> Result<(), String> {
     apply_cross_ticker_validation_double_ma(
         res,
         cross_cfg,
+        base_candles,
         backend,
         ma_source,
         fast_ma_params,
         slow_ma_params,
+        walk_forward,
+        reopt_walk_forward,
+        spa,
+        perturb,
+        trade_bootstrap,
+        cscv_pbo,
         seed,
         app_cache_dir,
         cancel,
         None,
         validation_engine,
         iterative_cfg,
+        min_psr,
+        min_dsr,
+        min_cscv_oos_rank_frac,
+        min_cscv_oos_metric,
+        max_pbo,
     )
 }
 
@@ -733,6 +979,26 @@ mod tests {
         ta_app_core::read_candles_from_csv_compat(path.to_str().expect("path utf8")).expect("csv")
     }
 
+    fn candles_with_ts(start: i64, len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let timestamp: Vec<i64> = (0..len).map(|idx| start + idx as i64).collect();
+        let values: Vec<f64> = (0..len).map(|idx| idx as f64).collect();
+        vector_ta::utilities::data_loader::Candles::new_with_fields(
+            timestamp,
+            values.clone(),
+            values.clone(),
+            values.clone(),
+            values.clone(),
+            values,
+            vector_ta::utilities::data_loader::CandleFieldFlags {
+                open: true,
+                high: true,
+                low: true,
+                close: true,
+                volume: true,
+            },
+        )
+    }
+
     fn loaded_ctx(path: &str, timeframe: Option<&str>) -> LoadedDataContext {
         LoadedDataContext {
             csv_path: path.to_string(),
@@ -779,6 +1045,16 @@ mod tests {
             err.contains("requires timeframe '1h'"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cross_ticker_alignment_uses_base_timestamp_overlap() {
+        let base = candles_with_ts(100, 10);
+        let cross = candles_with_ts(90, 30);
+        let aligned = align_cross_ticker_candles_to_base_horizon(&base, &cross);
+        assert_eq!(aligned.timestamp.first().copied(), Some(100));
+        assert_eq!(aligned.timestamp.last().copied(), Some(109));
+        assert_eq!(aligned.close.len(), 10);
     }
 
     #[test]
@@ -1014,6 +1290,7 @@ mod tests {
                 },
             ],
             max_datasets: 2,
+            mode: ta_app_core::CrossTickerMode::PreservedFinalists,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1023,8 +1300,15 @@ mod tests {
         apply_cross_ticker_validation_double_ma_headless(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::CpuOnly,
             "close",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             1,
@@ -1032,6 +1316,11 @@ mod tests {
             &cancel,
             ta_app_core::ValidationEngine::Vectorized,
             ta_app_core::IterativeSimConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .expect("cross-ticker double-ma");
 
@@ -1042,6 +1331,208 @@ mod tests {
             .map(|s| s.datasets)
             .unwrap_or(0)
             >= 1));
+    }
+
+    #[test]
+    fn cross_ticker_headless_double_ma_recomputes_run_verdict_after_filtering() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let req = ta_app_core::DoubleMaValidationRequest {
+            data_id: "base".to_string(),
+            backend: ta_app_core::Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base double-ma validation");
+        assert_eq!(res.run_verdict.approved_candidate_count, 1);
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                label: "NVDA".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::PreservedFinalists,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: true,
+                min_datasets: 2,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation_double_ma_headless(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::CpuOnly,
+            "close",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("cross-ticker double-ma");
+
+        assert!(res.candidates.is_empty());
+        assert_eq!(res.run_verdict.approved_candidate_count, 0);
+        assert!(!res.run_verdict.approved);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cross_ticker_headless_double_ma_gpu_preserved_finalists_preserves_gpu_route() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let walk_forward = Some(ta_app_core::WalkForwardConfigOptional {
+            window_bars: 20000,
+            step_bars: 20000,
+        });
+        let cscv_pbo = Some(ta_app_core::CscvPboConfig {
+            slices: 8,
+            max_combinations: 512,
+            threshold: 0.0,
+        });
+        let req = ta_app_core::DoubleMaValidationRequest {
+            data_id: "base-gpu".to_string(),
+            backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::DoubleMaValidationParams {
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_len: 9,
+                slow_len: 30,
+                fast_ma_params: Some(std::collections::HashMap::from([
+                    ("offset".to_string(), 0.85),
+                    ("sigma".to_string(), 6.0),
+                ])),
+                slow_ma_params: Some(std::collections::HashMap::from([
+                    ("offset".to_string(), 0.85),
+                    ("sigma".to_string(), 6.0),
+                ])),
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: walk_forward.clone(),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: cscv_pbo.clone(),
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base double-ma gpu validation");
+        assert!(!res.candidates.is_empty());
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                label: "NVDA".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::PreservedFinalists,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: false,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation_double_ma_headless(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::GpuKernel { device_id: 0 },
+            "close",
+            None,
+            None,
+            walk_forward,
+            None,
+            None,
+            None,
+            None,
+            cscv_pbo,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("cross-ticker double-ma gpu");
+
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(matches!(res.backend_used, ta_app_core::BackendUsed::Gpu));
+        let summary = res.cross_ticker.as_ref().expect("cross summary");
+        assert_eq!(
+            summary.mode,
+            ta_app_core::CrossTickerMode::PreservedFinalists
+        );
+        assert_eq!(summary.datasets.len(), 1);
+        assert!(summary.datasets[0].bars <= candles.close.len());
     }
 
     #[test]
@@ -1114,6 +1605,7 @@ mod tests {
                 },
             ],
             max_datasets: 2,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1123,6 +1615,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::CpuOnly,
             "close",
             None,
@@ -1192,6 +1685,147 @@ mod tests {
         assert_eq!(req.candidates.len(), 1);
     }
 
+    #[test]
+    fn double_ma_cross_ticker_request_preserves_verdict_relevant_stack() {
+        let req = build_double_ma_cross_ticker_request(
+            2,
+            5,
+            vec![ta_app_core::DoubleMaValidationParams {
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_len: 9,
+                slow_len: 30,
+                fast_ma_params: Some(std::collections::HashMap::from([
+                    ("offset".to_string(), 0.85),
+                    ("sigma".to_string(), 6.0),
+                ])),
+                slow_ma_params: Some(std::collections::HashMap::from([
+                    ("offset".to_string(), 0.85),
+                    ("sigma".to_string(), 6.0),
+                ])),
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            ta_app_core::Backend::GpuKernel { device_id: 0 },
+            "close",
+            None,
+            None,
+            Some(ta_app_core::WalkForwardConfigOptional {
+                window_bars: 1000,
+                step_bars: 250,
+            }),
+            Some(
+                ta_app_core::composite_validate::ReoptWalkForwardConfigOptional {
+                    window_bars: 800,
+                    step_bars: 200,
+                    top_n_candidates: 3,
+                },
+            ),
+            Some(ta_app_core::composite_validate::SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 32,
+                block_length: 2,
+                benchmark: ta_app_core::composite_validate::SpaBenchmarkKind::BuyAndHold,
+            }),
+            Some(ta_app_core::PerturbConfig {
+                iterations: 8,
+                pct_min: -0.05,
+                pct_max: 0.05,
+                flip_bool_prob: 0.02,
+            }),
+            Some(ta_app_core::TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
+            Some(ta_app_core::CscvPboConfig {
+                slices: 8,
+                max_combinations: 256,
+                threshold: 0.0,
+            }),
+            17,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+            Some(0.6),
+            Some(0.4),
+            Some(0.5),
+            Some(0.1),
+            Some(0.7),
+        );
+
+        assert_eq!(req.data_id, "cross-2");
+        assert_eq!(req.max_candidates, 5);
+        assert!(matches!(
+            req.backend,
+            ta_app_core::Backend::GpuKernel { device_id: 0 }
+        ));
+        assert!(req.walk_forward.is_none());
+        assert!(req.reopt_walk_forward.is_none());
+        assert!(req.spa.is_none());
+        assert!(req.perturb.is_none());
+        assert!(req.trade_bootstrap.is_none());
+        assert!(req.cscv_pbo.is_some());
+        assert_eq!(req.min_psr, Some(0.6));
+        assert_eq!(req.min_dsr, Some(0.4));
+        assert_eq!(req.min_cscv_oos_rank_frac, Some(0.5));
+        assert_eq!(req.min_cscv_oos_metric, Some(0.1));
+        assert_eq!(req.max_pbo, Some(0.7));
+        assert!(req.cross_ticker.is_none());
+    }
+
+    #[test]
+    fn double_ma_cross_ticker_selects_bounded_finalists() {
+        let candidates: Vec<ta_app_core::double_ma_validate::DoubleMaValidationCandidateResult> =
+            (0..6)
+                .map(
+                    |idx| ta_app_core::double_ma_validate::DoubleMaValidationCandidateResult {
+                        params: ta_app_core::DoubleMaValidationParams {
+                            fast_ma_type: "sma".to_string(),
+                            slow_ma_type: "sma".to_string(),
+                            fast_len: 10 + idx as u16,
+                            slow_len: 30 + idx as u16,
+                            fast_ma_params: None,
+                            slow_ma_params: None,
+                            strategy: ta_strategies::double_ma::StrategyConfig::default(),
+                            halftrend_filter: None,
+                        },
+                        in_sample: ta_strategies::double_ma::Metrics {
+                            pnl: 0.2 - idx as f64 * 0.01,
+                            sharpe: 1.0 - idx as f64 * 0.01,
+                            max_dd: 0.2,
+                            trades: 10,
+                            exposure: 0.5,
+                            ..Default::default()
+                        },
+                        iterative_in_sample: None,
+                        iterative_delta: None,
+                        psr: Some(0.8),
+                        dsr: Some(0.7),
+                        track_record_bars: 300,
+                        min_track_record_length_bars: Some(250),
+                        walk_forward: None,
+                        perturb: None,
+                        trade_bootstrap: None,
+                        cross_ticker: None,
+                        cross_ticker_pareto: None,
+                        cscv_pbo: None,
+                        validation_verdict:
+                            ta_app_core::validation_pipeline::ValidationCandidateVerdict {
+                                passed: true,
+                                warning_flags: Vec::new(),
+                                fail_reasons: Vec::new(),
+                            },
+                        robust_score: 10.0 - idx as f64,
+                        robust_pareto: idx < 4,
+                    },
+                )
+                .collect();
+
+        let finalists = select_double_ma_cross_ticker_finalists(&candidates);
+        assert_eq!(finalists.len(), DOUBLE_MA_CROSS_TICKER_FINALIST_LIMIT);
+        assert_eq!(finalists[0].params.fast_len, 10);
+        assert_eq!(finalists[3].params.fast_len, 13);
+    }
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn cross_ticker_composite_gpu_kernel_smoke_applies_stats() {
@@ -1258,6 +1892,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1267,6 +1902,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,
@@ -1355,6 +1991,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1364,6 +2001,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,
@@ -1452,6 +2090,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1461,6 +2100,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,
@@ -1549,6 +2189,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1558,6 +2199,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,
@@ -1646,6 +2288,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1655,6 +2298,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,
@@ -1743,6 +2387,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1752,6 +2397,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,
@@ -1840,6 +2486,7 @@ mod tests {
                 label: "NVDA".to_string(),
             }],
             max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig {
                 enabled: false,
                 ..ta_app_core::CrossTickerGateConfig::default()
@@ -1849,6 +2496,7 @@ mod tests {
         apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles,
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
             None,

@@ -3078,7 +3078,7 @@ mod tests {
     fn report_xlsx_bytes_smoke() {
         let report = json!({
           "version": 1,
-          "kind": "vectorbt_report",
+          "kind": "vectorgrid_report",
           "ts": "2026-01-26T00:00:00Z",
           "validation": {
             "res": {
@@ -3113,7 +3113,7 @@ mod tests {
     fn validation_report_workbook_smoke() {
         let report = json!({
           "version": 1,
-          "kind": "vectorbt_report",
+          "kind": "vectorgrid_report",
           "ts": "2026-01-26T00:00:00Z",
           "validation": {
             "res": {
@@ -3231,12 +3231,14 @@ mod tests {
                 },
             ],
             max_datasets: 8,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
             gate: ta_app_core::CrossTickerGateConfig::default(),
         };
 
         super::super::apply_cross_ticker_validation(
             &mut res,
             cross_cfg,
+            &candles1,
             ta_app_core::Backend::CpuOnly,
             "close",
             None,

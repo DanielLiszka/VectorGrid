@@ -121,11 +121,6 @@ fn gpu_validation_strategy_blocker(_strategy: &StrategyConfig) -> Option<String>
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn gpu_validation_feature_blocker(req: &DoubleMaValidationRequest) -> Option<String> {
-    if req.trade_bootstrap.is_some() {
-        return Some(
-            "GPU fixed-candidate validation does not support trade bootstrap yet".to_string(),
-        );
-    }
     if req.cross_ticker.is_some() {
         return Some(
             "GPU fixed-candidate validation does not support cross_ticker yet".to_string(),
@@ -1248,6 +1243,10 @@ pub struct DoubleMaValidationCandidateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trade_bootstrap: Option<TradeBootstrapStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub regime_slice_robustness: Option<RegimeSliceRobustnessStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub friction_stress: Option<FrictionStressStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker: Option<CrossTickerStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker_pareto: Option<bool>,
@@ -1358,6 +1357,47 @@ pub struct DoubleMaValidationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cscv_pbo: Option<CscvPboResult>,
     pub run_verdict: ValidationRunVerdict,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RegimeBucketStats {
+    pub bars: usize,
+    pub active_frac: f64,
+    pub pnl: f64,
+    pub sharpe: f64,
+    pub max_dd: f64,
+    pub trades: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RegimeSliceRobustnessStats {
+    pub vol_window: usize,
+    pub low_vol: RegimeBucketStats,
+    pub mid_vol: RegimeBucketStats,
+    pub high_vol: RegimeBucketStats,
+    pub trend: RegimeBucketStats,
+    pub range: RegimeBucketStats,
+    pub worst_bucket_label: String,
+    pub worst_sharpe: f64,
+    pub worst_max_dd: f64,
+    pub stable_bucket_count: usize,
+    pub stable_bucket_frac: f64,
+    pub trend_pass: bool,
+    pub range_pass: bool,
+    pub support_label: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FrictionStressStats {
+    pub scenario_count: usize,
+    pub pass_count: usize,
+    pub pass_frac: f64,
+    pub worst_scenario_label: String,
+    pub worst_pnl: f64,
+    pub worst_sharpe: f64,
+    pub worst_max_dd: f64,
+    pub mean_rank: f64,
+    pub max_rank_drift: usize,
 }
 
 fn emit_progress(
@@ -1652,6 +1692,506 @@ fn slice_return_sums_for_series(
         .collect()
 }
 
+const DEFAULT_REGIME_SLICE_VOL_WINDOW: usize = 48;
+const DEFAULT_REGIME_SLICE_FINALISTS: usize = 5;
+const DEFAULT_FRICTION_STRESS_FINALISTS: usize = 4;
+const DEFAULT_FRICTION_FEE_FLOOR_BPS: f64 = 2.0;
+const DEFAULT_FRICTION_SPREAD_FLOOR_BPS: f64 = 4.0;
+const DEFAULT_FRICTION_SLIPPAGE_FLOOR_BPS: f64 = 2.0;
+
+fn compute_step_returns_for_series(
+    series: &CandidateSeries<'_>,
+) -> (Vec<f64>, Vec<bool>, Vec<bool>, Vec<f64>) {
+    let mut step_returns = vec![0.0; series.n];
+    let mut active_flags = vec![false; series.n];
+    let mut trade_entries = vec![false; series.n];
+    let mut spread_ratio = vec![f64::NAN; series.n];
+    let trade_offset = if series.cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+    let mut pos: i32 = 0;
+
+    for t in series.start_t..series.n {
+        let slice_idx = t.saturating_sub(trade_offset);
+        let f = series.fast[slice_idx];
+        let s = series.slow[slice_idx];
+        let close = series.close[slice_idx].abs().max(1.0e-9);
+        if f.is_finite() && s.is_finite() {
+            spread_ratio[t] = (f - s).abs() / close;
+        }
+
+        let mut sign: i32 = 0;
+        if f.is_finite() && s.is_finite() {
+            let eps = if series.cfg.eps_rel > 0.0 {
+                series.cfg.eps_rel * 1.0_f64.max(s.abs())
+            } else {
+                0.0
+            };
+            sign = (f > s + eps) as i32 - (f < s - eps) as i32;
+            if series.cfg.long_only && sign < 0 {
+                sign = 0;
+            }
+        }
+
+        if let Some(ht) = series.halftrend_trend.as_ref() {
+            let v = ht[slice_idx];
+            if !v.is_finite() {
+                sign = 0;
+            } else if v < 0.5 {
+                sign = sign.max(0);
+            } else {
+                sign = sign.min(0);
+            }
+        }
+
+        let prev_pos = pos;
+        if sign != pos {
+            if pos == 0 || sign == 0 {
+                pos = if sign == 0 { 0 } else { sign };
+            } else if !series.cfg.allow_flip {
+                pos = 0;
+            } else {
+                pos = sign;
+            }
+        }
+        if pos != 0 && pos != prev_pos {
+            trade_entries[t] = true;
+        }
+
+        if pos != 0 {
+            active_flags[t] = true;
+            step_returns[t] = (pos as f64) * series.lr[t].exp_m1();
+        }
+    }
+
+    (step_returns, active_flags, trade_entries, spread_ratio)
+}
+
+fn rolling_volatility_tertiles(lr: &[f64], start_t: usize, window: usize) -> Vec<u8> {
+    let n = lr.len();
+    let mut states = vec![u8::MAX; n];
+    if n == 0 || start_t >= n {
+        return states;
+    }
+
+    let mut prefix = vec![0.0; n + 1];
+    let mut prefix_sq = vec![0.0; n + 1];
+    for (idx, value) in lr.iter().copied().enumerate() {
+        prefix[idx + 1] = prefix[idx] + value;
+        prefix_sq[idx + 1] = prefix_sq[idx] + value * value;
+    }
+
+    let mut vols: Vec<f64> = Vec::new();
+    let mut raw: Vec<f64> = vec![f64::NAN; n];
+    for t in start_t..n {
+        let begin = t.saturating_add(1).saturating_sub(window.max(1));
+        let count = t.saturating_sub(begin).saturating_add(1);
+        if count < window.max(1) {
+            continue;
+        }
+        let sum = prefix[t + 1] - prefix[begin];
+        let sumsq = prefix_sq[t + 1] - prefix_sq[begin];
+        let mean = sum / count as f64;
+        let variance = (sumsq / count as f64 - mean * mean).max(0.0);
+        let vol = variance.sqrt();
+        raw[t] = vol;
+        vols.push(vol);
+    }
+    if vols.is_empty() {
+        return states;
+    }
+    vols.sort_by(|a, b| a.total_cmp(b));
+    let low_thr = crate::stats_common::quantile(&vols, 1.0 / 3.0);
+    let high_thr = crate::stats_common::quantile(&vols, 2.0 / 3.0);
+    for t in start_t..n {
+        let vol = raw[t];
+        if !vol.is_finite() {
+            continue;
+        }
+        states[t] = if vol <= low_thr {
+            0
+        } else if vol <= high_thr {
+            1
+        } else {
+            2
+        };
+    }
+    states
+}
+
+fn summarize_regime_bucket(
+    step_returns: &[f64],
+    active_flags: &[bool],
+    trade_entries: &[bool],
+    membership: &[bool],
+) -> RegimeBucketStats {
+    let mut bars = 0usize;
+    let mut active_bars = 0usize;
+    let mut trades = 0usize;
+    let mut eq = 1.0_f64;
+    let mut peak = 1.0_f64;
+    let mut max_dd = 0.0_f64;
+    let mut samples: Vec<f64> = Vec::new();
+
+    for idx in 0..membership.len() {
+        if !membership[idx] {
+            continue;
+        }
+        bars += 1;
+        if active_flags[idx] {
+            active_bars += 1;
+        }
+        if trade_entries[idx] {
+            trades += 1;
+        }
+        let r = step_returns[idx];
+        samples.push(r);
+        eq *= (1.0 + r).max(1.0e-7);
+        if eq > peak {
+            peak = eq;
+        }
+        let dd = (peak - eq) / peak.max(1.0e-7);
+        if dd > max_dd {
+            max_dd = dd;
+        }
+    }
+
+    if bars == 0 {
+        return RegimeBucketStats {
+            bars: 0,
+            active_frac: 0.0,
+            pnl: 0.0,
+            sharpe: 0.0,
+            max_dd: 0.0,
+            trades: 0,
+        };
+    }
+
+    let mean = if samples.is_empty() {
+        0.0
+    } else {
+        samples.iter().copied().sum::<f64>() / samples.len() as f64
+    };
+    let std = if samples.len() <= 1 {
+        0.0
+    } else {
+        let sumsq = samples
+            .iter()
+            .map(|value| {
+                let d = *value - mean;
+                d * d
+            })
+            .sum::<f64>();
+        (sumsq / (samples.len() - 1) as f64).sqrt()
+    };
+    let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+    RegimeBucketStats {
+        bars,
+        active_frac: active_bars as f64 / bars as f64,
+        pnl: eq - 1.0,
+        sharpe,
+        max_dd,
+        trades,
+    }
+}
+
+fn derive_regime_support_label(
+    trend_pass: bool,
+    range_pass: bool,
+    stable_bucket_count: usize,
+) -> String {
+    match (trend_pass, range_pass) {
+        (true, true) => "broad".to_string(),
+        (true, false) => "trend_only".to_string(),
+        (false, true) => "range_only".to_string(),
+        (false, false) if stable_bucket_count >= 2 => "vol_selective".to_string(),
+        _ => "weak".to_string(),
+    }
+}
+
+fn compute_regime_slice_robustness_stats(
+    series: &CandidateSeries<'_>,
+) -> Option<RegimeSliceRobustnessStats> {
+    if series.n.saturating_sub(series.start_t) < DEFAULT_REGIME_SLICE_VOL_WINDOW.max(24) {
+        return None;
+    }
+
+    let (step_returns, active_flags, trade_entries, spread_ratio) =
+        compute_step_returns_for_series(series);
+    let vol_states =
+        rolling_volatility_tertiles(series.lr, series.start_t, DEFAULT_REGIME_SLICE_VOL_WINDOW);
+
+    let mut spreads: Vec<f64> = spread_ratio[series.start_t..]
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
+    if spreads.is_empty() {
+        return None;
+    }
+    spreads.sort_by(|a, b| a.total_cmp(b));
+    let spread_threshold = crate::stats_common::median(&spreads);
+
+    let mut low_mask = vec![false; series.n];
+    let mut mid_mask = vec![false; series.n];
+    let mut high_mask = vec![false; series.n];
+    let mut trend_mask = vec![false; series.n];
+    let mut range_mask = vec![false; series.n];
+    for t in series.start_t..series.n {
+        match vol_states[t] {
+            0 => low_mask[t] = true,
+            1 => mid_mask[t] = true,
+            2 => high_mask[t] = true,
+            _ => {}
+        }
+        let spread = spread_ratio[t];
+        if spread.is_finite() {
+            if spread >= spread_threshold {
+                trend_mask[t] = true;
+            } else {
+                range_mask[t] = true;
+            }
+        }
+    }
+
+    let low_vol = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &low_mask);
+    let mid_vol = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &mid_mask);
+    let high_vol =
+        summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &high_mask);
+    let trend = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &trend_mask);
+    let range = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &range_mask);
+    let trend_pass = trend.sharpe >= 0.0 && trend.pnl >= 0.0;
+    let range_pass = range.sharpe >= 0.0 && range.pnl >= 0.0;
+
+    let buckets = [
+        ("low_vol", &low_vol),
+        ("mid_vol", &mid_vol),
+        ("high_vol", &high_vol),
+        ("trend", &trend),
+        ("range", &range),
+    ];
+    let mut worst_bucket_label = String::new();
+    let mut worst_sharpe = f64::INFINITY;
+    let mut worst_max_dd = 0.0_f64;
+    let mut stable_bucket_count = 0usize;
+    for (label, stats) in buckets {
+        if stats.bars == 0 {
+            continue;
+        }
+        if stats.sharpe < worst_sharpe {
+            worst_sharpe = stats.sharpe;
+            worst_bucket_label = label.to_string();
+        }
+        if stats.max_dd > worst_max_dd {
+            worst_max_dd = stats.max_dd;
+        }
+        if stats.sharpe >= 0.0 && stats.pnl >= 0.0 {
+            stable_bucket_count += 1;
+        }
+    }
+    if !worst_sharpe.is_finite() {
+        return None;
+    }
+    let stable_bucket_frac = stable_bucket_count as f64 / 5.0;
+    let support_label = derive_regime_support_label(trend_pass, range_pass, stable_bucket_count);
+
+    Some(RegimeSliceRobustnessStats {
+        vol_window: DEFAULT_REGIME_SLICE_VOL_WINDOW,
+        low_vol,
+        mid_vol,
+        high_vol,
+        trend,
+        range,
+        worst_bucket_label,
+        worst_sharpe,
+        worst_max_dd,
+        stable_bucket_count,
+        stable_bucket_frac,
+        trend_pass,
+        range_pass,
+        support_label,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct FrictionScenarioSpec {
+    label: &'static str,
+    fee_bps: f64,
+    spread_bps: f64,
+    slippage_bps: f64,
+}
+
+fn friction_stress_scenarios(base: &StrategyConfig) -> [FrictionScenarioSpec; 4] {
+    let fee_stress = (base.fee_bps * 2.0)
+        .max(base.fee_bps + 1.0)
+        .max(DEFAULT_FRICTION_FEE_FLOOR_BPS);
+    let spread_stress = (base.spread_bps * 2.0)
+        .max(base.spread_bps + 2.0)
+        .max(DEFAULT_FRICTION_SPREAD_FLOOR_BPS);
+    let slippage_stress = (base.slippage_bps * 2.0)
+        .max(base.slippage_bps + 1.0)
+        .max(DEFAULT_FRICTION_SLIPPAGE_FLOOR_BPS);
+    [
+        FrictionScenarioSpec {
+            label: "fee_stress",
+            fee_bps: fee_stress,
+            spread_bps: base.spread_bps,
+            slippage_bps: base.slippage_bps,
+        },
+        FrictionScenarioSpec {
+            label: "spread_stress",
+            fee_bps: base.fee_bps,
+            spread_bps: spread_stress,
+            slippage_bps: base.slippage_bps,
+        },
+        FrictionScenarioSpec {
+            label: "slippage_stress",
+            fee_bps: base.fee_bps,
+            spread_bps: base.spread_bps,
+            slippage_bps: slippage_stress,
+        },
+        FrictionScenarioSpec {
+            label: "combined_stress",
+            fee_bps: fee_stress,
+            spread_bps: spread_stress,
+            slippage_bps: slippage_stress,
+        },
+    ]
+}
+
+fn compute_friction_stress_summaries(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    lr: &[f64],
+    base_first_valid: usize,
+    ma_source: &str,
+    fast_ma_params_req: Option<&HashMap<String, f64>>,
+    slow_ma_params_req: Option<&HashMap<String, f64>>,
+    finalists: &[DoubleMaValidationParams],
+) -> Result<Vec<Option<FrictionStressStats>>, String> {
+    if finalists.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let scenario_labels = friction_stress_scenarios(&StrategyConfig::default())
+        .map(|scenario| scenario.label);
+    let scenario_count = scenario_labels.len();
+    let mut base_ranks = vec![0usize; finalists.len()];
+    let mut scenario_ranks: Vec<Vec<usize>> = vec![vec![0; finalists.len()]; scenario_count];
+    let mut scenario_metrics: Vec<Vec<Metrics>> =
+        vec![Vec::with_capacity(finalists.len()); scenario_count];
+    let mut scenario_scores: Vec<Vec<f64>> = vec![vec![0.0; finalists.len()]; scenario_count];
+
+    let sort_scored = |scored: &mut Vec<(usize, Metrics, f64)>| {
+        scored.sort_by(|a, b| {
+            b.2.total_cmp(&a.2)
+                .then_with(|| b.1.sharpe.total_cmp(&a.1.sharpe))
+                .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+        });
+    };
+
+    let mut base_scored: Vec<(usize, Metrics, f64)> = Vec::with_capacity(finalists.len());
+    for (idx, params) in finalists.iter().enumerate() {
+        let series = build_candidate_series(
+            candles,
+            lr,
+            base_first_valid,
+            ma_source,
+            fast_ma_params_req,
+            slow_ma_params_req,
+            params,
+        )?;
+        let metrics = eval_metrics_window(&series, series.start_t, series.n);
+        let score = crate::validation_pipeline::robust_score_from_metrics(&metrics, None);
+        base_scored.push((idx, metrics, score));
+    }
+    sort_scored(&mut base_scored);
+    for (rank_idx, (finalist_idx, _, _)) in base_scored.into_iter().enumerate() {
+        base_ranks[finalist_idx] = rank_idx + 1;
+    }
+
+    for scenario_idx in 0..scenario_count {
+        let mut scored: Vec<(usize, Metrics, f64)> = Vec::with_capacity(finalists.len());
+        for (idx, params) in finalists.iter().enumerate() {
+            let scenario = friction_stress_scenarios(&params.strategy)[scenario_idx];
+            let mut stressed = params.clone();
+            stressed.strategy.fee_bps = scenario.fee_bps;
+            stressed.strategy.spread_bps = scenario.spread_bps;
+            stressed.strategy.slippage_bps = scenario.slippage_bps;
+            let series = build_candidate_series(
+                candles,
+                lr,
+                base_first_valid,
+                ma_source,
+                fast_ma_params_req,
+                slow_ma_params_req,
+                &stressed,
+            )?;
+            let metrics = eval_metrics_window(&series, series.start_t, series.n);
+            let score = crate::validation_pipeline::robust_score_from_metrics(&metrics, None);
+            scored.push((idx, metrics, score));
+        }
+        sort_scored(&mut scored);
+        let mut metrics_by_finalist: Vec<Option<Metrics>> = vec![None; finalists.len()];
+        let mut scores_by_finalist = vec![0.0; finalists.len()];
+        for (rank_idx, (finalist_idx, metrics, score)) in scored.into_iter().enumerate() {
+            scenario_ranks[scenario_idx][finalist_idx] = rank_idx + 1;
+            metrics_by_finalist[finalist_idx] = Some(metrics);
+            scores_by_finalist[finalist_idx] = score;
+        }
+        scenario_metrics[scenario_idx] = metrics_by_finalist
+            .into_iter()
+            .map(|metrics| metrics.expect("friction metrics for each finalist"))
+            .collect();
+        scenario_scores[scenario_idx] = scores_by_finalist;
+    }
+
+    let mut out = Vec::with_capacity(finalists.len());
+    for finalist_idx in 0..finalists.len() {
+        let mut pass_count = 0usize;
+        let mut worst_label = String::new();
+        let mut worst_score = f64::INFINITY;
+        let mut worst_pnl = 0.0_f64;
+        let mut worst_sharpe = 0.0_f64;
+        let mut worst_max_dd = 0.0_f64;
+        let mut rank_sum = 0usize;
+        let mut max_rank_drift = 0usize;
+        for scenario_idx in 0..scenario_count {
+            let metrics = &scenario_metrics[scenario_idx][finalist_idx];
+            if metrics.pnl >= 0.0 && metrics.sharpe >= 0.0 {
+                pass_count += 1;
+            }
+            let scenario_score = scenario_scores[scenario_idx][finalist_idx];
+            if scenario_score < worst_score {
+                worst_score = scenario_score;
+                worst_pnl = metrics.pnl;
+                worst_sharpe = metrics.sharpe;
+                worst_max_dd = metrics.max_dd;
+                worst_label = scenario_labels[scenario_idx].to_string();
+            }
+            let rank = scenario_ranks[scenario_idx][finalist_idx];
+            rank_sum += rank;
+            let drift = rank.abs_diff(base_ranks[finalist_idx]);
+            if drift > max_rank_drift {
+                max_rank_drift = drift;
+            }
+        }
+        out.push(Some(FrictionStressStats {
+            scenario_count,
+            pass_count,
+            pass_frac: pass_count as f64 / scenario_count as f64,
+            worst_scenario_label: worst_label,
+            worst_pnl,
+            worst_sharpe,
+            worst_max_dd,
+            mean_rank: rank_sum as f64 / scenario_count as f64,
+            max_rank_drift,
+        }));
+    }
+    Ok(out)
+}
+
 fn benchmark_slice_returns(
     lr: &[f64],
     start_t: usize,
@@ -1900,10 +2440,8 @@ fn perturb_params(
     p
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 #[allow(clippy::too_many_arguments)]
-fn compute_gpu_perturb_stats_for_candidate(
-    req: &DoubleMaValidationRequest,
+fn compute_cpu_perturb_stats_for_candidate(
     candles: &vector_ta::utilities::data_loader::Candles,
     base_first_valid: usize,
     lr: &[f64],
@@ -1915,98 +2453,55 @@ fn compute_gpu_perturb_stats_for_candidate(
     cancel: &AtomicBool,
     rng: &mut StdRng,
 ) -> Result<Option<PerturbStats>, String> {
-    let iters = cfg.iterations.min(1024);
-    if iters == 0 {
-        return Ok(None);
-    }
-
-    let mut sharpes: Vec<f64> = Vec::with_capacity(iters);
-    let mut dds: Vec<f64> = Vec::with_capacity(iters);
-    let mut pnls: Vec<f64> = Vec::with_capacity(iters);
-    let mut pnl_pos: usize = 0;
-
-    for _ in 0..iters {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-        let pp = perturb_params(base, cfg, rng);
-        let temp_req = DoubleMaValidationRequest {
-            data_id: req.data_id.clone(),
-            backend: req.backend.clone(),
-            ma_source: ma_source.to_string(),
-            fast_ma_params: fast_ma_params.cloned(),
-            slow_ma_params: slow_ma_params.cloned(),
-            candidates: vec![pp.clone()],
-            walk_forward: None,
-            reopt_walk_forward: None,
-            perturb: None,
-            trade_bootstrap: None,
-            cross_ticker: None,
-            cscv_pbo: None,
-            spa: None,
-            seed: req.seed,
-            max_candidates: 1,
-            validation_engine: ValidationEngine::Vectorized,
-            iterative: IterativeSimConfig::default(),
-            min_psr: None,
-            min_dsr: None,
-            min_cscv_oos_rank_frac: None,
-            min_cscv_oos_metric: None,
-            max_pbo: None,
-            validation_context: None,
-        };
-
-        let metric = match try_prepare_gpu_fixed_candidate_validation(
-            &temp_req,
-            candles,
-            base_first_valid,
-        ) {
-            Ok(eval) => eval.metrics.into_iter().next().ok_or_else(|| {
-                "GPU perturb validation returned no metrics for perturbed candidate".to_string()
-            })?,
-            Err(_) => {
-                let s2 = build_candidate_series(
-                    candles,
-                    lr,
-                    base_first_valid,
-                    ma_source,
-                    fast_ma_params,
-                    slow_ma_params,
-                    &pp,
-                )?;
-                eval_metrics_window(&s2, s2.start_t, s2.n)
-            }
-        };
-
-        if metric.pnl > 0.0 {
-            pnl_pos += 1;
-        }
-        sharpes.push(metric.sharpe);
-        dds.push(metric.max_dd);
-        pnls.push(metric.pnl);
-    }
-
-    Ok(Some(crate::validation_pipeline::summarize_perturb_stats(
-        cfg, iters, &sharpes, &dds, &pnls, pnl_pos,
-    )))
+    crate::validation_pipeline::compute_perturb_stats(
+        base,
+        cfg,
+        cancel,
+        rng,
+        perturb_params,
+        |pp| {
+            let s2 = build_candidate_series(
+                candles,
+                lr,
+                base_first_valid,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                pp,
+            )?;
+            Ok(eval_metrics_window(&s2, s2.start_t, s2.n))
+        },
+    )
 }
 
-#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 #[allow(clippy::too_many_arguments)]
-fn compute_gpu_perturb_stats_for_candidate(
-    _req: &DoubleMaValidationRequest,
-    _candles: &vector_ta::utilities::data_loader::Candles,
-    _base_first_valid: usize,
-    _lr: &[f64],
-    _ma_source: &str,
-    _fast_ma_params: Option<&HashMap<String, f64>>,
-    _slow_ma_params: Option<&HashMap<String, f64>>,
-    _base: &DoubleMaValidationParams,
-    _cfg: &PerturbConfig,
-    _cancel: &AtomicBool,
-    _rng: &mut StdRng,
-) -> Result<Option<PerturbStats>, String> {
-    Ok(None)
+fn compute_trade_bootstrap_for_candidate(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    lr: &[f64],
+    base_first_valid: usize,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    params: &DoubleMaValidationParams,
+    cfg: &TradeBootstrapConfig,
+    rng: &mut StdRng,
+) -> Result<Option<TradeBootstrapStats>, String> {
+    if cfg.simulations == 0 {
+        return Ok(None);
+    }
+    let series = build_candidate_series(
+        candles,
+        lr,
+        base_first_valid,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        params,
+    )?;
+    let trades = trades_for_series(&series);
+    Ok(Some(
+        crate::validation_pipeline::compute_trade_bootstrap_stats(&trades, cfg, rng),
+    ))
 }
 
 pub fn run_double_ma_validation_blocking_with_candles(
@@ -2089,7 +2584,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
         req.max_pbo,
     );
 
-    let (out, cscv_pbo) = crate::validation_core::run_validation_candidates(
+    let (mut out, cscv_pbo) = crate::validation_core::run_validation_candidates(
         &req.candidates,
         seed,
         cancel,
@@ -2114,8 +2609,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
                         .map(|w| (w.sharpe_median, w.max_dd_worst)),
                 );
                 let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
-                    compute_gpu_perturb_stats_for_candidate(
-                        &req,
+                    compute_cpu_perturb_stats_for_candidate(
                         candles,
                         base_first_valid,
                         &lr,
@@ -2125,6 +2619,21 @@ pub fn run_double_ma_validation_blocking_with_candles(
                         p,
                         cfg,
                         cancel,
+                        rng,
+                    )?
+                } else {
+                    None
+                };
+                let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
+                    compute_trade_bootstrap_for_candidate(
+                        candles,
+                        &lr,
+                        base_first_valid,
+                        &ma_source,
+                        fast_ma_params.as_ref(),
+                        slow_ma_params.as_ref(),
+                        p,
+                        cfg,
                         rng,
                     )?
                 } else {
@@ -2142,7 +2651,9 @@ pub fn run_double_ma_validation_blocking_with_candles(
                         min_track_record_length_bars: None,
                         walk_forward,
                         perturb,
-                        trade_bootstrap: None,
+                        trade_bootstrap,
+                        regime_slice_robustness: None,
+                        friction_stress: None,
                         cross_ticker: None,
                         cross_ticker_pareto: None,
                         cscv_pbo: None,
@@ -2203,10 +2714,9 @@ pub fn run_double_ma_validation_blocking_with_candles(
             };
 
             let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
-                let sims = cfg.simulations.min(50_000);
                 let trades = trades_for_series(&series);
                 Some(crate::validation_pipeline::compute_trade_bootstrap_stats(
-                    &trades, sims, rng,
+                    &trades, cfg, rng,
                 ))
             } else {
                 None
@@ -2250,6 +2760,8 @@ pub fn run_double_ma_validation_blocking_with_candles(
                     walk_forward,
                     perturb,
                     trade_bootstrap,
+                    regime_slice_robustness: None,
+                    friction_stress: None,
                     cross_ticker: None,
                     cross_ticker_pareto: None,
                     cscv_pbo: None,
@@ -2288,6 +2800,45 @@ pub fn run_double_ma_validation_blocking_with_candles(
             ))
         },
     )?;
+
+    let regime_eval_count = DEFAULT_REGIME_SLICE_FINALISTS.min(out.len());
+    for cand in out.iter_mut().take(regime_eval_count) {
+        let series = build_candidate_series(
+            candles,
+            &lr,
+            base_first_valid,
+            &ma_source,
+            fast_ma_params.as_ref(),
+            slow_ma_params.as_ref(),
+            &cand.params,
+        )?;
+        cand.regime_slice_robustness = compute_regime_slice_robustness_stats(&series);
+    }
+
+    let friction_eval_count = DEFAULT_FRICTION_STRESS_FINALISTS.min(out.len());
+    if friction_eval_count > 0 {
+        let finalist_params: Vec<DoubleMaValidationParams> = out
+            .iter()
+            .take(friction_eval_count)
+            .map(|cand| cand.params.clone())
+            .collect();
+        let summaries = compute_friction_stress_summaries(
+            candles,
+            &lr,
+            base_first_valid,
+            &ma_source,
+            fast_ma_params.as_ref(),
+            slow_ma_params.as_ref(),
+            &finalist_params,
+        )?;
+        for (cand, summary) in out
+            .iter_mut()
+            .take(friction_eval_count)
+            .zip(summaries.into_iter())
+        {
+            cand.friction_stress = summary;
+        }
+    }
 
     let reopt_walk_forward = if let Some(cfg) = reopt_walk_cfg.as_ref() {
         let finalist_params: Vec<DoubleMaValidationParams> = out
@@ -2609,7 +3160,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.02,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 50 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 50,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -2635,10 +3189,162 @@ mod tests {
         assert!(c.walk_forward.as_ref().unwrap().windows > 0);
         assert_eq!(c.perturb.as_ref().unwrap().iterations, 3);
         assert_eq!(c.trade_bootstrap.as_ref().unwrap().simulations, 50);
+        let bootstrap = c.trade_bootstrap.as_ref().unwrap();
+        if bootstrap.trade_count > 0 {
+            assert!(bootstrap.stationary_mean_block_len.unwrap_or(0) >= 1);
+            assert!(
+                bootstrap.stationary_pnl_p05.unwrap_or(0.0)
+                    <= bootstrap.stationary_pnl_p50.unwrap_or(0.0)
+            );
+            assert!(
+                bootstrap.stationary_max_dd_p50.unwrap_or(0.0)
+                    <= bootstrap.stationary_max_dd_p95.unwrap_or(0.0)
+            );
+        }
         assert!(c.robust_score.is_finite());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
         assert_eq!(res.backend_route.as_deref(), Some("CpuOnly"));
         assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[test]
+    fn double_ma_validation_populates_regime_slice_robustness_for_top_finalists() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "regime-robustness".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 9,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 12,
+                    slow_len: 42,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 1500,
+                step_bars: 750,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert_eq!(res.candidates.len(), 2);
+        for cand in &res.candidates {
+            let regime = cand
+                .regime_slice_robustness
+                .as_ref()
+                .expect("top finalists should have regime robustness stats");
+            assert!(regime.vol_window >= DEFAULT_REGIME_SLICE_VOL_WINDOW);
+            assert!(!regime.worst_bucket_label.is_empty());
+            assert!(regime.worst_sharpe.is_finite());
+            assert!(regime.worst_max_dd.is_finite());
+            assert!(regime.stable_bucket_count <= 5);
+            assert!((0.0..=1.0).contains(&regime.stable_bucket_frac));
+            assert!(!regime.support_label.is_empty());
+        }
+    }
+
+    #[test]
+    fn double_ma_validation_populates_friction_stress_for_top_finalists() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "friction-stress".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 9,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 12,
+                    slow_len: 42,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 13,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        for cand in &res.candidates {
+            let friction = cand
+                .friction_stress
+                .as_ref()
+                .expect("top finalists should have friction stress stats");
+            assert_eq!(friction.scenario_count, 4);
+            assert!(friction.pass_frac.is_finite());
+            assert!(!friction.worst_scenario_label.is_empty());
+            assert!(friction.worst_sharpe.is_finite());
+            assert!(friction.worst_max_dd.is_finite());
+        }
     }
 
     #[test]
@@ -2823,6 +3529,169 @@ mod tests {
                 cpu.track_record_bars, gpu.track_record_bars, gpu_res.backend_route
             );
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_direct_cross_ticker_request_falls_back_to_cpu() {
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "gpu-cross-direct".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: Some(CrossTickerConfig {
+                datasets: Vec::new(),
+                max_datasets: 0,
+                mode: crate::composite_validate::CrossTickerMode::Lightweight,
+                gate: crate::composite_validate::CrossTickerGateConfig::default(),
+            }),
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cross_ticker"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_iterative_engine_falls_back_to_cpu_with_reason() {
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "gpu-iterative-fallback".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Iterative,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("vectorized validation engine"));
+        assert!(res.candidates[0].iterative_in_sample.is_some());
+        assert!(res.candidates[0].iterative_delta.is_some());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_auto_iterative_engine_falls_back_to_cpu_with_reason() {
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "auto-iterative-fallback".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Iterative,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("vectorized validation engine"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -4763,6 +5632,217 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn double_ma_validation_gpu_kernel_trade_bootstrap_preserves_gpu_route() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| DoubleMaValidationRequest {
+            data_id: "gpu-bootstrap".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 11,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu bootstrap validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu bootstrap validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+
+        let cpu_bt = cpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("cpu bootstrap");
+        let gpu_bt = gpu_res.candidates[0]
+            .trade_bootstrap
+            .as_ref()
+            .expect("gpu bootstrap");
+        assert_eq!(cpu_bt.simulations, gpu_bt.simulations);
+        assert_eq!(cpu_bt.trade_count, gpu_bt.trade_count);
+        assert!((cpu_bt.prob_pnl_positive - gpu_bt.prob_pnl_positive).abs() < 1e-12);
+        assert!((cpu_bt.pnl_p05 - gpu_bt.pnl_p05).abs() < 1e-12);
+        assert!((cpu_bt.pnl_p50 - gpu_bt.pnl_p50).abs() < 1e-12);
+        assert!((cpu_bt.pnl_p95 - gpu_bt.pnl_p95).abs() < 1e-12);
+        assert!((cpu_bt.max_dd_p50 - gpu_bt.max_dd_p50).abs() < 1e-12);
+        assert!((cpu_bt.max_dd_p95 - gpu_bt.max_dd_p95).abs() < 1e-12);
+        assert_eq!(
+            cpu_bt.stationary_mean_block_len,
+            gpu_bt.stationary_mean_block_len
+        );
+        assert!(
+            (cpu_bt.stationary_prob_pnl_positive.unwrap_or(0.0)
+                - gpu_bt.stationary_prob_pnl_positive.unwrap_or(0.0))
+            .abs()
+                < 1e-12
+        );
+        assert!(
+            (cpu_bt.stationary_pnl_p05.unwrap_or(0.0) - gpu_bt.stationary_pnl_p05.unwrap_or(0.0))
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (cpu_bt.stationary_pnl_p50.unwrap_or(0.0) - gpu_bt.stationary_pnl_p50.unwrap_or(0.0))
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (cpu_bt.stationary_pnl_p95.unwrap_or(0.0) - gpu_bt.stationary_pnl_p95.unwrap_or(0.0))
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (cpu_bt.stationary_max_dd_p50.unwrap_or(0.0)
+                - gpu_bt.stationary_max_dd_p50.unwrap_or(0.0))
+            .abs()
+                < 1e-12
+        );
+        assert!(
+            (cpu_bt.stationary_max_dd_p95.unwrap_or(0.0)
+                - gpu_bt.stationary_max_dd_p95.unwrap_or(0.0))
+            .abs()
+                < 1e-12
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_supported_full_stack_preserves_route() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaValidationRequest {
+            data_id: "gpu-full-stack".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                DoubleMaValidationParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 10,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+                DoubleMaValidationParams {
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "sma".to_string(),
+                    fast_len: 12,
+                    slow_len: 36,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 1024,
+                step_bars: 512,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 1024,
+                step_bars: 512,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 16,
+                pct_min: 0.05,
+                pct_max: 0.10,
+                flip_bool_prob: 0.1,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 32,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 8,
+                max_combinations: 256,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 8,
+                bootstrap_samples: 64,
+                block_length: 3,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu full stack validation");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+        assert!(res.spa.is_some());
+        assert!(res.cscv_pbo.is_some());
+        assert!(res.reopt_walk_forward.is_some());
+        assert_eq!(res.candidates.len(), 2);
+        for candidate in &res.candidates {
+            assert!(candidate.walk_forward.is_some());
+            assert!(candidate.perturb.is_some());
+            assert!(candidate.trade_bootstrap.is_some());
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn double_ma_validation_gpu_hybrid_cscv_smoke_regime_hybrid() {
         let candles = make_choppy_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -5592,7 +6672,10 @@ mod tests {
                 pct_max: 0.02,
                 flip_bool_prob: 0.01,
             }),
-            trade_bootstrap: Some(TradeBootstrapConfig { simulations: 64 }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 64,
+                stationary_mean_block_len: None,
+            }),
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -5879,7 +6962,7 @@ mod tests {
 
         let artifacts = vec![
             json!({
-                "kind": "vectorbt_run_artifact",
+                "kind": "vectorgrid_run_artifact",
                 "ts": "ct_0001",
                 "tags": ["ct-e2e"],
                 "run": { "req": { "strategy_kind": "CompositeTrend", "ma_source": "close" }, "res": {} },
@@ -5887,7 +6970,7 @@ mod tests {
                 "validation": { "req": { "ma_source": "close" }, "res": val_a }
             }),
             json!({
-                "kind": "vectorbt_run_artifact",
+                "kind": "vectorgrid_run_artifact",
                 "ts": "ct_0002",
                 "tags": ["ct-e2e"],
                 "run": { "req": { "strategy_kind": "CompositeTrend", "ma_source": "close" }, "res": {} },

@@ -72,6 +72,24 @@ describe('metaRequestBuilder', () => {
     })
   })
 
+  it('supports iid-only trade bootstrap mode for heavy holdout validation', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'DoubleMa',
+      evalHoldout: true,
+      holdoutMode: 'heavy',
+      valMcEnable: true,
+      valMcSims: '800',
+      valMcMode: 'iid_only',
+      valMcBlockLen: '9'
+    })
+
+    expect(req).toMatchObject({
+      holdout_validation: {
+        trade_bootstrap: { simulations: 800, stationary_mean_block_len: 0 }
+      }
+    })
+  })
+
   it('disables holdout for unsupported strategy kinds', () => {
     const req = buildMetaSelectionRequest({
       strategyKind: 'UnknownStrategy',

@@ -1,7 +1,7 @@
 use crate::composite_validate::{
     PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
-    SpaConfigOptional, SpaValidationStats, TradeBootstrapStats, WalkForwardConfigOptional,
-    WalkForwardStats,
+    ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
 };
 use crate::cscv_pbo::{
     compute_cscv_pbo_from_slices, CscvCandidatePboStats, CscvPboConfig, CscvPboResult,
@@ -625,6 +625,9 @@ where
     let mut pnls: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
     let mut winner_keys: Vec<String> = Vec::new();
+    let mut window_stats: Vec<ReoptWalkForwardWindowStats> = Vec::new();
+    let mut pnl_efficiencies: Vec<f64> = Vec::new();
+    let mut sharpe_efficiencies: Vec<f64> = Vec::new();
     let mut positive_forward_pnl = 0usize;
 
     let mut t0 = common_start_t;
@@ -640,12 +643,14 @@ where
 
         let mut best_idx: Option<usize> = None;
         let mut best_score = f64::NEG_INFINITY;
+        let mut best_train_metrics: Option<Metrics> = None;
         for (idx, cand) in finalists.iter().enumerate() {
             let metrics = eval_metrics_window(cand, t0, train_end);
             let score = robust_score_from_metrics(&metrics, None);
             if score.is_finite() && score > best_score {
                 best_score = score;
                 best_idx = Some(idx);
+                best_train_metrics = Some(metrics);
             }
         }
 
@@ -653,7 +658,20 @@ where
             break;
         };
         let winner = &finalists[best_idx];
+        let train_metrics = best_train_metrics.expect("reopt winner train metrics");
         let forward = eval_metrics_window(winner, train_end, test_end);
+        let winner_key = candidate_key(winner);
+        let pnl_efficiency = if train_metrics.pnl.is_finite() && train_metrics.pnl.abs() > 1e-12 {
+            Some(forward.pnl / train_metrics.pnl)
+        } else {
+            None
+        };
+        let sharpe_efficiency =
+            if train_metrics.sharpe.is_finite() && train_metrics.sharpe.abs() > 1e-12 {
+                Some(forward.sharpe / train_metrics.sharpe)
+            } else {
+                None
+            };
 
         train_scores.push(best_score);
         sharpes.push(forward.sharpe);
@@ -663,7 +681,28 @@ where
         if forward.pnl > 0.0 {
             positive_forward_pnl = positive_forward_pnl.saturating_add(1);
         }
-        winner_keys.push(candidate_key(winner));
+        if let Some(value) = pnl_efficiency.filter(|value| value.is_finite()) {
+            pnl_efficiencies.push(value);
+        }
+        if let Some(value) = sharpe_efficiency.filter(|value| value.is_finite()) {
+            sharpe_efficiencies.push(value);
+        }
+        winner_keys.push(winner_key.clone());
+        window_stats.push(ReoptWalkForwardWindowStats {
+            train_start: t0,
+            train_end,
+            test_end,
+            winner_key,
+            train_score: best_score,
+            train_pnl: train_metrics.pnl,
+            train_sharpe: train_metrics.sharpe,
+            forward_pnl: forward.pnl,
+            forward_sharpe: forward.sharpe,
+            forward_max_dd: forward.max_dd,
+            forward_trades: forward.trades,
+            pnl_efficiency,
+            sharpe_efficiency,
+        });
 
         if test_end == n {
             break;
@@ -679,6 +718,8 @@ where
     sharpes.sort_by(|a, b| a.total_cmp(b));
     dds.sort_by(|a, b| a.total_cmp(b));
     pnls.sort_by(|a, b| a.total_cmp(b));
+    pnl_efficiencies.sort_by(|a, b| a.total_cmp(b));
+    sharpe_efficiencies.sort_by(|a, b| a.total_cmp(b));
 
     let mut winner_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
@@ -702,6 +743,11 @@ where
         drift_values.iter().sum::<f64>() / drift_values.len() as f64
     };
     let drift_max = drift_values.iter().copied().fold(0.0_f64, f64::max);
+    let sharpe_eff_mean = if sharpe_efficiencies.is_empty() {
+        None
+    } else {
+        Some(sharpe_efficiencies.iter().sum::<f64>() / sharpe_efficiencies.len() as f64)
+    };
 
     Some(ReoptWalkForwardStats {
         windows: winner_keys.len(),
@@ -729,7 +775,30 @@ where
         forward_pnl_worst: worst_min(&pnls),
         forward_trades_median: median_u32(&trades),
         forward_trades_worst: worst_min_u32(&trades),
+        window_pnl_efficiency_median: if pnl_efficiencies.is_empty() {
+            None
+        } else {
+            Some(median(&pnl_efficiencies))
+        },
+        window_pnl_efficiency_worst: if pnl_efficiencies.is_empty() {
+            None
+        } else {
+            Some(worst_min(&pnl_efficiencies))
+        },
+        window_sharpe_efficiency_median: if sharpe_efficiencies.is_empty() {
+            None
+        } else {
+            Some(median(&sharpe_efficiencies))
+        },
+        window_sharpe_efficiency_worst: if sharpe_efficiencies.is_empty() {
+            None
+        } else {
+            Some(worst_min(&sharpe_efficiencies))
+        },
+        window_sharpe_efficiency_std: sharpe_eff_mean
+            .map(|mean| sample_std(&sharpe_efficiencies, mean)),
         winner_sequence: winner_keys,
+        window_stats,
     })
 }
 
@@ -825,9 +894,10 @@ where
 
 pub fn compute_trade_bootstrap_stats(
     trades: &[Trade],
-    simulations: usize,
+    cfg: &TradeBootstrapConfig,
     rng: &mut StdRng,
 ) -> TradeBootstrapStats {
+    let simulations = cfg.simulations.min(50_000);
     let closed: Vec<f64> = trades.iter().filter(|t| !t.open).map(|t| t.pnl).collect();
     let trade_count = closed.len();
     if simulations == 0 || trade_count == 0 {
@@ -840,6 +910,13 @@ pub fn compute_trade_bootstrap_stats(
             pnl_p95: 0.0,
             max_dd_p50: 0.0,
             max_dd_p95: 0.0,
+            stationary_mean_block_len: None,
+            stationary_prob_pnl_positive: None,
+            stationary_pnl_p05: None,
+            stationary_pnl_p50: None,
+            stationary_pnl_p95: None,
+            stationary_max_dd_p50: None,
+            stationary_max_dd_p95: None,
         };
     }
 
@@ -871,6 +948,57 @@ pub fn compute_trade_bootstrap_stats(
     }
     pnls.sort_by(|a, b| a.total_cmp(b));
     dds.sort_by(|a, b| a.total_cmp(b));
+    if cfg.stationary_mean_block_len == Some(0) {
+        return TradeBootstrapStats {
+            simulations,
+            trade_count,
+            prob_pnl_positive: pos as f64 / simulations as f64,
+            pnl_p05: quantile(&pnls, 0.05),
+            pnl_p50: quantile(&pnls, 0.5),
+            pnl_p95: quantile(&pnls, 0.95),
+            max_dd_p50: quantile(&dds, 0.5),
+            max_dd_p95: quantile(&dds, 0.95),
+            stationary_mean_block_len: None,
+            stationary_prob_pnl_positive: None,
+            stationary_pnl_p05: None,
+            stationary_pnl_p50: None,
+            stationary_pnl_p95: None,
+            stationary_max_dd_p50: None,
+            stationary_max_dd_p95: None,
+        };
+    }
+    let stationary_mean_block_len = cfg
+        .stationary_mean_block_len
+        .map(|value| value.clamp(1, trade_count.max(1)))
+        .unwrap_or_else(|| trade_bootstrap_stationary_mean_block_len(trade_count));
+    let mut stationary_pnls: Vec<f64> = Vec::with_capacity(simulations);
+    let mut stationary_dds: Vec<f64> = Vec::with_capacity(simulations);
+    let mut stationary_pos = 0usize;
+    for _ in 0..simulations {
+        let indices = stationary_bootstrap_indices(trade_count, stationary_mean_block_len, rng);
+        let mut eq = 1.0_f64;
+        let mut peak = 1.0_f64;
+        let mut max_dd = 0.0_f64;
+        for idx in indices {
+            let r = (1.0 + closed[idx]).max(0.000_000_1);
+            eq *= r;
+            if eq > peak {
+                peak = eq;
+            }
+            let dd = (peak - eq) / peak.max(0.000_000_1);
+            if dd > max_dd {
+                max_dd = dd;
+            }
+        }
+        let pnl = eq - 1.0;
+        if pnl > 0.0 {
+            stationary_pos += 1;
+        }
+        stationary_pnls.push(pnl);
+        stationary_dds.push(max_dd);
+    }
+    stationary_pnls.sort_by(|a, b| a.total_cmp(b));
+    stationary_dds.sort_by(|a, b| a.total_cmp(b));
     TradeBootstrapStats {
         simulations,
         trade_count,
@@ -880,7 +1008,22 @@ pub fn compute_trade_bootstrap_stats(
         pnl_p95: quantile(&pnls, 0.95),
         max_dd_p50: quantile(&dds, 0.5),
         max_dd_p95: quantile(&dds, 0.95),
+        stationary_mean_block_len: Some(stationary_mean_block_len),
+        stationary_prob_pnl_positive: Some(stationary_pos as f64 / simulations as f64),
+        stationary_pnl_p05: Some(quantile(&stationary_pnls, 0.05)),
+        stationary_pnl_p50: Some(quantile(&stationary_pnls, 0.5)),
+        stationary_pnl_p95: Some(quantile(&stationary_pnls, 0.95)),
+        stationary_max_dd_p50: Some(quantile(&stationary_dds, 0.5)),
+        stationary_max_dd_p95: Some(quantile(&stationary_dds, 0.95)),
     }
+}
+
+fn trade_bootstrap_stationary_mean_block_len(trade_count: usize) -> usize {
+    if trade_count <= 1 {
+        return 1;
+    }
+    let heuristic = (trade_count as f64).sqrt().round() as usize;
+    heuristic.clamp(2, trade_count.min(32).max(2))
 }
 
 pub fn maybe_run_iterative_validation<F>(
@@ -1284,6 +1427,96 @@ mod tests {
         compute_probability_metrics(&mut out, &[120]);
         assert_eq!(out[0].track_record_bars, 120);
         assert!(out[0].min_track_record_length_bars.is_some());
+    }
+
+    #[test]
+    fn trade_bootstrap_honors_stationary_block_len_override() {
+        let trades = vec![
+            Trade {
+                entry_t: 0,
+                exit_t: 1,
+                direction: 1,
+                pnl: 0.05,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 2,
+                exit_t: 3,
+                direction: 1,
+                pnl: -0.03,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 4,
+                exit_t: 5,
+                direction: 1,
+                pnl: 0.08,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 6,
+                exit_t: 7,
+                direction: 1,
+                pnl: -0.02,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 8,
+                exit_t: 9,
+                direction: 1,
+                pnl: 0.04,
+                bars: 1,
+                open: false,
+            },
+        ];
+        let cfg = TradeBootstrapConfig {
+            simulations: 128,
+            stationary_mean_block_len: Some(3),
+        };
+        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
+        let stats = compute_trade_bootstrap_stats(&trades, &cfg, &mut rng);
+        assert_eq!(stats.simulations, 128);
+        assert_eq!(stats.trade_count, 5);
+        assert_eq!(stats.stationary_mean_block_len, Some(3));
+        assert!(stats.stationary_pnl_p05.is_some());
+        assert!(stats.stationary_max_dd_p95.is_some());
+    }
+
+    #[test]
+    fn trade_bootstrap_iid_only_mode_skips_stationary_stats() {
+        let trades = vec![
+            Trade {
+                entry_t: 0,
+                exit_t: 1,
+                direction: 1,
+                pnl: 0.05,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 2,
+                exit_t: 4,
+                direction: 1,
+                pnl: -0.05,
+                bars: 2,
+                open: false,
+            },
+        ];
+        let cfg = TradeBootstrapConfig {
+            simulations: 32,
+            stationary_mean_block_len: Some(0),
+        };
+        let mut rng = StdRng::seed_from_u64(7);
+        let stats = compute_trade_bootstrap_stats(&trades, &cfg, &mut rng);
+        assert_eq!(stats.trade_count, 2);
+        assert!(stats.pnl_p50.is_finite());
+        assert!(stats.stationary_mean_block_len.is_none());
+        assert!(stats.stationary_pnl_p05.is_none());
+        assert!(stats.stationary_max_dd_p95.is_none());
     }
 
     #[test]

@@ -57,11 +57,26 @@ fn row_count(sheet_xml: &str) -> usize {
 fn baseline_report() -> serde_json::Value {
     json!({
       "version": 1,
-      "kind": "vectorbt_report",
+      "kind": "vectorgrid_report",
       "ts": "2026-03-13T00:00:00Z",
       "run": { "req": { "strategy_kind": "CompositeTrend" } },
       "validation": {
         "req": {
+          "backend": { "backend": "GpuKernel", "device_id": 0 },
+          "walk_forward": { "window_bars": 12000, "step_bars": 3000 },
+          "reopt_walk_forward": { "window_bars": 12000, "step_bars": 3000, "top_n_candidates": 3 },
+          "spa": { "slices": 12, "bootstrap_samples": 500, "block_length": 4, "benchmark": "buy_hold" },
+          "perturb": { "iterations": 8, "pct_min": 0.015, "pct_max": 0.06, "flip_bool_prob": 0.02 },
+          "trade_bootstrap": { "simulations": 500, "stationary_mean_block_len": 9 },
+          "cross_ticker": {
+            "max_datasets": 2,
+            "mode": "preserved_finalists",
+            "datasets": [
+              { "csv_path": "C:/data/eth.csv", "label": "ETHUSD" },
+              { "csv_path": "C:/data/sol.csv", "label": "SOLUSD" }
+            ]
+          },
+          "cscv_pbo": { "slices": 12, "max_combinations": 50000, "threshold": 0.0 },
           "min_psr": 0.50,
           "min_dsr": 0.20,
           "min_cscv_oos_rank_frac": 0.55,
@@ -119,9 +134,15 @@ fn baseline_report() -> serde_json::Value {
             "forward_pnl_median": 0.18,
             "forward_pnl_worst": -0.03,
             "forward_trades_median": 10,
-            "forward_trades_worst": 5
+            "forward_trades_worst": 5,
+            "window_pnl_efficiency_median": 0.82,
+            "window_pnl_efficiency_worst": -0.21,
+            "window_sharpe_efficiency_median": 0.79,
+            "window_sharpe_efficiency_worst": 0.31,
+            "window_sharpe_efficiency_std": 0.18
           },
           "cross_ticker": {
+            "mode": "preserved_finalists",
             "datasets": [
               { "label": "ETHUSD", "csv_path": "C:/data/eth.csv", "bars": 1000 },
               { "label": "SOLUSD", "csv_path": "C:/data/sol.csv", "bars": 900 }
@@ -153,8 +174,43 @@ fn baseline_report() -> serde_json::Value {
                 "vcc": { "adx_period": 14, "squeeze_period": 20 }
               },
               "in_sample": { "pnl": 0.61, "sharpe": 1.92, "max_dd": 0.16, "trades": 11, "exposure": 0.58 },
-              "walk_forward": { "sharpe_median": 1.34, "max_dd_worst": 0.29 },
-              "trade_bootstrap": { "prob_pnl_positive": 0.81, "pnl_p50": 0.22, "max_dd_p95": 0.41 },
+              "walk_forward": { "sharpe_median": 1.34, "pnl_median": 0.29, "max_dd_worst": 0.29 },
+              "trade_bootstrap": {
+                "prob_pnl_positive": 0.81,
+                "pnl_p05": -0.04,
+                "pnl_p50": 0.22,
+                "max_dd_p95": 0.41,
+                "stationary_mean_block_len": 9,
+                "stationary_pnl_p05": -0.08,
+                "stationary_max_dd_p95": 0.46
+              },
+              "regime_slice_robustness": {
+                "vol_window": 48,
+                "low_vol": { "bars": 120, "active_frac": 0.42, "pnl": 0.08, "sharpe": 0.61, "max_dd": 0.12, "trades": 3 },
+                "mid_vol": { "bars": 118, "active_frac": 0.49, "pnl": 0.11, "sharpe": 0.82, "max_dd": 0.15, "trades": 4 },
+                "high_vol": { "bars": 116, "active_frac": 0.57, "pnl": -0.02, "sharpe": -0.18, "max_dd": 0.26, "trades": 4 },
+                "trend": { "bars": 175, "active_frac": 0.63, "pnl": 0.14, "sharpe": 0.94, "max_dd": 0.17, "trades": 5 },
+                "range": { "bars": 179, "active_frac": 0.31, "pnl": 0.01, "sharpe": 0.09, "max_dd": 0.19, "trades": 2 },
+                "worst_bucket_label": "high_vol",
+                "worst_sharpe": -0.18,
+                "worst_max_dd": 0.26,
+                "stable_bucket_count": 4,
+                "stable_bucket_frac": 0.8,
+                "trend_pass": true,
+                "range_pass": true,
+                "support_label": "broad"
+              },
+              "friction_stress": {
+                "scenario_count": 4,
+                "pass_count": 3,
+                "pass_frac": 0.75,
+                "worst_scenario_label": "combined_stress",
+                "worst_pnl": -0.01,
+                "worst_sharpe": -0.04,
+                "worst_max_dd": 0.29,
+                "mean_rank": 1.5,
+                "max_rank_drift": 1
+              },
               "cross_ticker": { "score": 0.39 },
               "cross_ticker_pareto": true,
               "cscv_pbo": { "is_selected_frac": 0.72, "oos_rank_frac_p50": 0.69, "oos_metric_p50": 0.21 },
@@ -176,8 +232,43 @@ fn baseline_report() -> serde_json::Value {
                 "asr": { "angle_deg_min": 10, "z_entry": 2.0 }
               },
               "in_sample": { "pnl": 0.42, "sharpe": 1.31, "max_dd": 0.21, "trades": 13, "exposure": 0.49 },
-              "walk_forward": { "sharpe_median": 1.01, "max_dd_worst": 0.31 },
-              "trade_bootstrap": { "prob_pnl_positive": 0.72, "pnl_p50": 0.17, "max_dd_p95": 0.43 },
+              "walk_forward": { "sharpe_median": 1.01, "pnl_median": 0.21, "max_dd_worst": 0.31 },
+              "trade_bootstrap": {
+                "prob_pnl_positive": 0.72,
+                "pnl_p05": -0.06,
+                "pnl_p50": 0.17,
+                "max_dd_p95": 0.43,
+                "stationary_mean_block_len": 9,
+                "stationary_pnl_p05": -0.10,
+                "stationary_max_dd_p95": 0.48
+              },
+              "regime_slice_robustness": {
+                "vol_window": 48,
+                "low_vol": { "bars": 120, "active_frac": 0.35, "pnl": 0.02, "sharpe": 0.18, "max_dd": 0.18, "trades": 3 },
+                "mid_vol": { "bars": 118, "active_frac": 0.41, "pnl": 0.05, "sharpe": 0.29, "max_dd": 0.22, "trades": 4 },
+                "high_vol": { "bars": 116, "active_frac": 0.52, "pnl": -0.05, "sharpe": -0.31, "max_dd": 0.33, "trades": 5 },
+                "trend": { "bars": 175, "active_frac": 0.48, "pnl": 0.07, "sharpe": 0.36, "max_dd": 0.23, "trades": 5 },
+                "range": { "bars": 179, "active_frac": 0.28, "pnl": -0.02, "sharpe": -0.11, "max_dd": 0.24, "trades": 2 },
+                "worst_bucket_label": "high_vol",
+                "worst_sharpe": -0.31,
+                "worst_max_dd": 0.33,
+                "stable_bucket_count": 3,
+                "stable_bucket_frac": 0.6,
+                "trend_pass": true,
+                "range_pass": false,
+                "support_label": "trend_only"
+              },
+              "friction_stress": {
+                "scenario_count": 4,
+                "pass_count": 2,
+                "pass_frac": 0.50,
+                "worst_scenario_label": "combined_stress",
+                "worst_pnl": -0.04,
+                "worst_sharpe": -0.16,
+                "worst_max_dd": 0.37,
+                "mean_rank": 2.5,
+                "max_rank_drift": 2
+              },
               "cross_ticker": { "score": 0.28 },
               "cross_ticker_pareto": true,
               "cscv_pbo": { "is_selected_frac": 0.61, "oos_rank_frac_p50": 0.63, "oos_metric_p50": 0.10 },
@@ -240,6 +331,7 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(workbook_xml.contains("Distributions"));
     assert!(workbook_xml.contains("Audit Data"));
     assert!(workbook_xml.contains("Dashboard"));
+    assert!(workbook_xml.contains("Regime Audit"));
     assert!(workbook_xml.contains("activeTab=\"4\""));
 
     let names: Vec<String> = xml_entries(&bytes)
@@ -247,13 +339,24 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
         .map(|(name, _)| name)
         .filter(|name| name.starts_with("xl/charts/chart"))
         .collect();
-    assert!(names.len() >= 6, "expected dashboard and distribution charts, got {:?}", names);
+    assert!(
+        names.len() >= 6,
+        "expected dashboard and distribution charts, got {:?}",
+        names
+    );
     let titles = chart_titles(&bytes);
     assert!(titles.iter().any(|title| title == "Approval state counts"));
-    assert!(titles.iter().any(|title| title == "Top rejection / review reasons"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Top rejection / review reasons"));
     assert!(titles.iter().any(|title| title == "Profile counts"));
-    assert!(titles.iter().any(|title| title == "Robust score distribution by rank"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Robust score distribution by rank"));
     assert!(titles.iter().any(|title| title == "Sharpe vs MaxDD"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "WF Sharpe efficiency by robust rank"));
 
     let approved_sheet = read_entry(&bytes, "xl/worksheets/sheet1.xml");
     let shortlist_sheet = read_entry(&bytes, "xl/worksheets/sheet2.xml");
@@ -271,11 +374,58 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(xml.contains("not run"));
     assert!(xml.contains("Gate Config"));
     assert!(xml.contains("Min DSR"));
+    assert!(xml.contains("Ranking Stability"));
+    assert!(xml.contains("WF overlap/drift"));
+    assert!(xml.contains("CSCV overlap/drift"));
+    assert!(xml.contains("Cross overlap/drift"));
+    assert!(xml.contains("Stable finalists"));
+    assert!(xml.contains("WF PnL Eff"));
+    assert!(xml.contains("WF Sharpe Eff"));
+    assert!(xml.contains("WF Efficiency"));
+    assert!(xml.contains("Median Sharpe Eff"));
+    assert!(xml.contains("explanatory + tie-break ordering only; no approval gate"));
+    assert!(xml.contains("WFE Sharpe P50"));
+    assert!(xml.contains("WFE Sharpe Worst"));
+    assert!(xml.contains("Bootstrap P05"));
+    assert!(xml.contains("Bootstrap DD95"));
+    assert!(xml.contains("Stat Block"));
+    assert!(xml.contains("Stat P05"));
+    assert!(xml.contains("Stat DD95"));
+    assert!(xml.contains("Bootstrap Compare"));
+    assert!(xml.contains("iid + stationary closed-trade comparison"));
+    assert!(xml.contains("Compare (IID + Stationary)"));
+    assert!(xml.contains("Regime Worst"));
+    assert!(xml.contains("Regime Sharpe"));
+    assert!(xml.contains("Regime MaxDD"));
+    assert!(xml.contains("Regime Stable"));
+    assert!(xml.contains("Stable Frac"));
+    assert!(xml.contains("Regime Flag"));
+    assert!(xml.contains("Regime Support"));
+    assert!(xml.contains("Regime Robustness"));
+    assert!(xml.contains("Worst Bucket"));
+    assert!(xml.contains("Support"));
+    assert!(xml.contains("see Audit Data -&gt; Regime Slice Audit") || xml.contains("see Audit Data -> Regime Slice Audit"));
+    assert!(xml.contains("Regime Slice Audit"));
+    assert!(xml.contains("Low Vol"));
+    assert!(xml.contains("Broad") || xml.contains("Trend OK") || xml.contains("Mixed"));
+    assert!(xml.contains("Friction Stability"));
+    assert!(xml.contains("Worst Scenario"));
+    assert!(xml.contains("Worst-Scenario Sharpe"));
+    assert!(xml.contains("Worst-Scenario MaxDD"));
+    assert!(xml.contains("Pass Frac"));
+    assert!(xml.contains("Friction Flag"));
+    assert!(xml.contains("absolute pass: pnl &gt;= 0 and sharpe &gt;= 0") || xml.contains("absolute pass: pnl >= 0 and sharpe >= 0"));
+    assert!(xml.contains("finalist-only fee/spread/slippage stress; absolute pass uses pnl &gt;= 0 and sharpe &gt;= 0")
+        || xml.contains("finalist-only fee/spread/slippage stress; absolute pass uses pnl >= 0 and sharpe >= 0"));
     assert!(xml.contains("Approval State"));
     assert!(xml.contains("Top Rejection / Review Reason"));
+    assert!(xml.contains("Preserved Finalists"));
+    assert!(xml.contains("perturb + trade bootstrap compare (iid + stationary, stat block=9)"));
     assert!(xml.contains("Approval state counts"));
     assert!(xml.contains("Approved"));
     assert!(xml.contains("Rejected"));
+    assert!(xml.contains("Rank Robust"));
+    assert!(xml.contains("Max Drift"));
     assert!(xml.contains("psr_below_min:0.50"));
     assert!(xml.contains("high_turnover"));
 }
@@ -316,7 +466,11 @@ fn workbook_respects_run_level_rejection_and_zero_approved_rows() {
 
     let bytes = build_report_xlsx_bytes_headless(&report, Some(25)).expect("xlsx");
     let approved_sheet = read_entry(&bytes, "xl/worksheets/sheet1.xml");
-    assert_eq!(row_count(&approved_sheet), 1, "approved sheet should only have header");
+    assert_eq!(
+        row_count(&approved_sheet),
+        1,
+        "approved sheet should only have header"
+    );
 
     let xml = all_xml(&bytes);
     assert!(xml.contains("spa_not_significant"));
@@ -324,10 +478,40 @@ fn workbook_respects_run_level_rejection_and_zero_approved_rows() {
 }
 
 #[test]
+fn workbook_surfaces_iid_only_bootstrap_mode_when_requested() {
+    let mut report = baseline_report();
+    let trade_bootstrap = report
+        .pointer_mut("/validation/req/trade_bootstrap")
+        .and_then(|value| value.as_object_mut())
+        .expect("trade bootstrap req");
+    trade_bootstrap.insert("stationary_mean_block_len".to_string(), json!(0));
+
+    let candidates = report
+        .pointer_mut("/validation/res/candidates")
+        .and_then(|value| value.as_array_mut())
+        .expect("candidates");
+    for candidate in candidates {
+        if let Some(trade_bootstrap) = candidate
+            .get_mut("trade_bootstrap")
+            .and_then(|value| value.as_object_mut())
+        {
+            trade_bootstrap.remove("stationary_mean_block_len");
+            trade_bootstrap.remove("stationary_pnl_p05");
+            trade_bootstrap.remove("stationary_max_dd_p95");
+        }
+    }
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(25)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("iid-only closed-trade bootstrap"));
+    assert!(xml.contains("IID only"));
+}
+
+#[test]
 fn workbook_supports_legacy_compatibility_mode() {
     let report = json!({
       "version": 1,
-      "kind": "vectorbt_report",
+      "kind": "vectorgrid_report",
       "ts": "2026-03-13T00:00:00Z",
       "validation": {
         "res": {
@@ -349,7 +533,9 @@ fn workbook_supports_legacy_compatibility_mode() {
 
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
     let xml = all_xml(&bytes);
-    assert!(xml.contains("Compatibility mode: workbook generated from a legacy validation artifact"));
+    assert!(
+        xml.contains("Compatibility mode: workbook generated from a legacy validation artifact")
+    );
     assert!(xml.contains("legacy shortlist compatibility mode"));
     assert!(xml.contains("not run"));
 }
@@ -363,7 +549,7 @@ fn workbook_supports_all_profile_families_in_strategy_agnostic_mode() {
     for profile in profiles {
         let report = json!({
           "version": 1,
-          "kind": "vectorbt_report",
+          "kind": "vectorgrid_report",
           "ts": "2026-03-13T00:00:00Z",
           "run": { "req": { "strategy_kind": "CompositeTrend" } },
           "validation": {
@@ -413,4 +599,246 @@ fn workbook_supports_all_profile_families_in_strategy_agnostic_mode() {
             profile
         );
     }
+}
+
+#[test]
+fn workbook_zero_survivor_runs_still_emit_fallback_charts() {
+    let report = json!({
+      "version": 1,
+      "kind": "vectorgrid_report",
+      "ts": "2026-03-13T00:00:00Z",
+      "run": { "req": { "strategy_kind": "DoubleMa" } },
+      "validation": {
+        "req": {
+          "backend": { "backend": "GpuKernel", "device_id": 0 },
+          "perturb": { "iterations": 8, "pct_min": 0.015, "pct_max": 0.06, "flip_bool_prob": 0.02 },
+          "trade_bootstrap": { "simulations": 500 },
+          "cross_ticker": {
+            "max_datasets": 1,
+            "mode": "preserved_finalists",
+            "datasets": [
+              { "csv_path": "C:/data/SPY.csv", "label": "SPY" }
+            ]
+          }
+        },
+        "res": {
+          "data_id": "zero_survivor",
+          "backend_used": "Gpu",
+          "backend_route": "GpuKernel",
+          "run_verdict": {
+            "passed": false,
+            "approved": false,
+            "candidates_tested": 0,
+            "candidates_survived_hard_gates": 0,
+            "approved_candidate_count": 0,
+            "final_recommendation": "no_candidate_survived",
+            "warning_flags": [],
+            "fail_reasons": ["no_candidates_survived_hard_gates"]
+          },
+          "cross_ticker": {
+            "mode": "preserved_finalists",
+            "datasets": [
+              { "label": "SPY", "csv_path": "C:/data/SPY.csv", "bars": 1000 }
+            ]
+          },
+          "candidates": []
+        }
+      }
+    });
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let charts: Vec<String> = xml_entries(&bytes)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("xl/charts/chart"))
+        .collect();
+    assert!(
+        !charts.is_empty(),
+        "expected fallback charts for zero-survivor workbook"
+    );
+
+    let titles = chart_titles(&bytes);
+    assert!(titles.iter().any(|title| title == "Approval state counts"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Top rejection / review reasons"));
+
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Run Verdict: no candidate survived"));
+    assert!(xml.contains("run verdict: no_candidates_survived_hard_gates"));
+    assert!(xml.contains("Preserved Finalists"));
+    assert!(xml.contains("Cross-Ticker"));
+    assert!(xml.contains("final post-cross shortlist"));
+    assert!(xml.contains("GpuKernel"));
+    assert!(xml.contains("Execution Notes"));
+    assert!(xml.contains("Top Warning"));
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Route"));
+    assert!(xml.contains("Expected Cross"));
+    assert!(xml.contains("Expected Modules"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains("GpuKernel requested"));
+    assert!(xml.contains("1 dataset"));
+    assert!(xml.contains("finalists only"));
+    assert!(xml.contains(
+        "auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)"
+    ));
+    assert!(xml.contains("Preserved-finalists cross reruns keep CSCV/PBO + hard gates"));
+}
+
+#[test]
+fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
+    let report = json!({
+      "version": 1,
+      "kind": "vectorgrid_report",
+      "ts": "2026-03-13T00:00:00Z",
+      "run": { "req": { "strategy_kind": "DoubleMa" } },
+      "validation": {
+        "res": {
+          "data_id": "gpu_route_note",
+          "backend_used": "Gpu",
+          "backend_route": "GpuHybridKernel->GpuKernel",
+          "backend_fallback_reason": "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.",
+          "cscv_pbo": {
+            "skipped_reason": "cscv_skipped_not_enough_bars"
+          },
+          "spa": {
+            "skipped_reason": "spa_skipped_not_enough_slices"
+          },
+          "run_verdict": {
+            "passed": false,
+            "approved": false,
+            "candidates_tested": 1,
+            "candidates_survived_hard_gates": 0,
+            "approved_candidate_count": 0,
+            "final_recommendation": "no_candidate_survived",
+            "warning_flags": ["cross_ticker_filtered_all_candidates"],
+            "fail_reasons": []
+          },
+          "candidates": []
+        }
+      }
+    });
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Route Note"));
+    assert!(xml.contains(
+        "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
+    ));
+    assert!(xml.contains("Execution Notes"));
+    assert!(xml.contains("cscv_skipped_not_enough_bars"));
+    assert!(xml.contains("spa_skipped_not_enough_slices"));
+    assert!(xml.contains("Top Warning"));
+    assert!(xml.contains("cross_ticker_filtered_all_candidates"));
+}
+
+#[test]
+fn workbook_surfaces_double_ma_plateau_analysis() {
+    let report = json!({
+      "version": 1,
+      "kind": "vectorgrid_report",
+      "ts": "2026-03-13T00:00:00Z",
+      "run": { "req": { "strategy_kind": "DoubleMa" } },
+      "optimization": {
+        "res": {
+          "top": [
+            [
+              { "fast_ma_type": "alma", "fast_len": 9, "slow_ma_type": "alma", "slow_len": 30 },
+              { "pnl": 1.20, "sharpe": 1.40, "max_dd": 0.18, "trades": 22 }
+            ],
+            [
+              { "fast_ma_type": "alma", "fast_len": 10, "slow_ma_type": "alma", "slow_len": 30 },
+              { "pnl": 1.16, "sharpe": 1.34, "max_dd": 0.19, "trades": 21 }
+            ],
+            [
+              { "fast_ma_type": "alma", "fast_len": 9, "slow_ma_type": "alma", "slow_len": 32 },
+              { "pnl": 1.14, "sharpe": 1.31, "max_dd": 0.20, "trades": 20 }
+            ],
+            [
+              { "fast_ma_type": "alma", "fast_len": 10, "slow_ma_type": "alma", "slow_len": 32 },
+              { "pnl": 1.10, "sharpe": 1.28, "max_dd": 0.21, "trades": 20 }
+            ],
+            [
+              { "fast_ma_type": "alma", "fast_len": 8, "slow_ma_type": "alma", "slow_len": 30 },
+              { "pnl": 1.08, "sharpe": 1.26, "max_dd": 0.20, "trades": 23 }
+            ],
+            [
+              { "fast_ma_type": "alma", "fast_len": 14, "slow_ma_type": "alma", "slow_len": 42 },
+              { "pnl": 0.70, "sharpe": 0.82, "max_dd": 0.29, "trades": 18 }
+            ]
+          ]
+        }
+      },
+      "validation": {
+        "res": {
+          "data_id": "double_ma_plateau",
+          "backend_used": "Gpu",
+          "backend_route": "GpuKernel",
+          "run_verdict": {
+            "passed": true,
+            "approved": true,
+            "candidates_tested": 2,
+            "candidates_survived_hard_gates": 1,
+            "approved_candidate_count": 1,
+            "final_recommendation": "single_candidate_supported",
+            "warning_flags": [],
+            "fail_reasons": [],
+            "first_approved_rank": 1
+          },
+          "candidates": [
+            {
+              "params": {
+                "fast_ma_type": "alma",
+                "fast_len": 9,
+                "slow_ma_type": "alma",
+                "slow_len": 30
+              },
+              "in_sample": { "pnl": 1.20, "sharpe": 1.40, "max_dd": 0.18, "trades": 22 },
+              "psr": 0.88,
+              "dsr": 0.81,
+              "track_record_bars": 300,
+              "min_track_record_length_bars": 240,
+              "validation_verdict": { "passed": true, "warning_flags": [], "fail_reasons": [] },
+              "robust_score": 1.52,
+              "robust_pareto": true
+            },
+            {
+              "params": {
+                "fast_ma_type": "alma",
+                "fast_len": 14,
+                "slow_ma_type": "alma",
+                "slow_len": 42
+              },
+              "in_sample": { "pnl": 0.70, "sharpe": 0.82, "max_dd": 0.29, "trades": 18 },
+              "psr": 0.44,
+              "dsr": 0.31,
+              "track_record_bars": 210,
+              "min_track_record_length_bars": 240,
+              "validation_verdict": { "passed": false, "warning_flags": ["min_track_record_length_not_met:210/240"], "fail_reasons": ["psr_below_min:0.50"] },
+              "robust_score": 0.74,
+              "robust_pareto": false
+            }
+          ]
+        }
+      }
+    });
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let titles = chart_titles(&bytes);
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Plateau Score"));
+    assert!(xml.contains("Plateau Label"));
+    assert!(xml.contains("Plateau Src"));
+    assert!(xml.contains("Plateau N"));
+    assert!(xml.contains("Plateau Sharpe P50"));
+    assert!(xml.contains("Plateau DD Worst"));
+    assert!(xml.contains("Top Candidate Snapshot"));
+    assert!(xml.contains("Plateau"));
+    assert!(xml.contains("Strong"));
+    assert!(xml.contains("n=5"));
+    assert!(xml.contains("top"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Plateau score by robust rank"));
 }

@@ -17,6 +17,10 @@ function supportsHoldout(strategyKind: string): boolean {
   return strategyKind === 'CompositeCpu' || strategyKind === 'CompositeMo' || strategyKind === 'DoubleMa' || strategyKind === 'Pit' || strategyKind === 'Set' || strategyKind === 'Mts' || strategyKind === 'Orc' || strategyKind === 'Marrt' || strategyKind === 'Vfct' || strategyKind === 'Rocb' || strategyKind === 'Asr' || strategyKind === 'Vcc' || strategyKind === 'Vemr' || strategyKind === 'CompositeTrend' || strategyKind === 'RegimeHybrid' || strategyKind === 'BreakoutMomentum'
 }
 
+function normalizeBootstrapMode(raw: unknown): 'compare' | 'iid_only' {
+  return normalizeText(raw).toLowerCase() === 'iid_only' ? 'iid_only' : 'compare'
+}
+
 export interface MetaSelectionBuildInputs {
   strategyKind?: unknown
   timeframe?: unknown
@@ -43,6 +47,8 @@ export interface MetaSelectionBuildInputs {
   valPerturbMax?: unknown
   valMcEnable?: unknown
   valMcSims?: unknown
+  valMcBlockLen?: unknown
+  valMcMode?: unknown
 }
 
 export function buildMetaSelectionRequest(inputs: MetaSelectionBuildInputs): Record<string, unknown> {
@@ -83,9 +89,16 @@ export function buildMetaSelectionRequest(inputs: MetaSelectionBuildInputs): Rec
               }
             : null
           const trade_bootstrap = normalizeBoolean(inputs.valMcEnable)
-            ? {
-                simulations: Math.max(0, Math.floor(num(inputs.valMcSims, 500)))
-              }
+            ? (() => {
+                const simulations = Math.max(0, Math.floor(num(inputs.valMcSims, 500)))
+                const mode = normalizeBootstrapMode(inputs.valMcMode)
+                const statBlock = Math.max(0, Math.floor(num(inputs.valMcBlockLen, 0)))
+                return mode === 'iid_only'
+                  ? { simulations, stationary_mean_block_len: 0 }
+                  : statBlock > 0
+                    ? { simulations, stationary_mean_block_len: statBlock }
+                    : { simulations }
+              })()
             : null
           const validation_engine = 'iterative'
           const iterative = {

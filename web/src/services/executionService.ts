@@ -6,6 +6,7 @@ import {
 } from './analysisService'
 import { buildOptimizationRequestFromVueStores } from './optimizeService'
 import { EXEC_KEYS_STORAGE_KEY } from '../utils/core/storageKeys'
+import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
 
 interface ExecutionStoredKeysPayload {
   api_key?: unknown
@@ -310,7 +311,7 @@ function parseStoredExecutionKeys(raw: unknown): { apiKey: string; apiSecret: st
 
 export function loadPersistedExecutionKeys(): { apiKey: string; apiSecret: string } {
   try {
-    const parsed = JSON.parse(localStorage.getItem(EXEC_KEYS_STORAGE_KEY) || 'null')
+    const parsed = JSON.parse(readStorageString(EXEC_KEYS_STORAGE_KEY, 'null'))
     return parseStoredExecutionKeys(parsed)
   } catch {
     return { apiKey: '', apiSecret: '' }
@@ -323,14 +324,14 @@ function syncPersistedExecutionKeys(options: ExecutionActionOptions): void {
       const apiKey = text(options.apiKey)
       const apiSecret = text(options.apiSecret)
       if (apiKey && apiSecret) {
-        localStorage.setItem(
+        writeStorageString(
           EXEC_KEYS_STORAGE_KEY,
           JSON.stringify({ api_key: apiKey, api_secret: apiSecret }),
         )
         return
       }
     }
-    localStorage.removeItem(EXEC_KEYS_STORAGE_KEY)
+    removeStorageKey(EXEC_KEYS_STORAGE_KEY)
   } catch {
     // best effort only
   }
@@ -649,7 +650,7 @@ export async function refreshStatuses(): Promise<ExecutionActionResult> {
 
 export async function clearKeys(): Promise<ExecutionActionResult> {
   try {
-    localStorage.removeItem(EXEC_KEYS_STORAGE_KEY)
+    removeStorageKey(EXEC_KEYS_STORAGE_KEY)
   } catch {
     // best-effort local key cleanup only
   }
