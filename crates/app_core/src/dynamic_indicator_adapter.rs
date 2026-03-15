@@ -285,6 +285,13 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+#[cfg(all(feature = "cuda", test))]
+pub(crate) fn reset_test_cuda_input_cache() {
+    PREPARED_CUDA_INPUT_CACHE.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+}
+
 #[cfg(feature = "cuda")]
 #[inline]
 fn prepared_cuda_dataset_signature(candles: &Candles) -> PreparedCudaDatasetSignature {
@@ -342,6 +349,8 @@ impl PreparedCudaIndicatorInputs {
         ma_source: &str,
         device_id: usize,
     ) -> Result<Self, DynamicIndicatorAdapterError> {
+        #[cfg(test)]
+        let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
         let signature = prepared_cuda_dataset_signature(candles);
         let source_key = normalize_prepared_cuda_source_key(ma_source);
 
@@ -859,6 +868,8 @@ pub fn compute_dynamic_indicator_cuda_with_inputs(
     kernel: Kernel,
     target: vector_ta::indicators::dispatch::CudaOutputTarget,
 ) -> Result<DynamicIndicatorCudaComputeOutput, DynamicIndicatorAdapterError> {
+    #[cfg(test)]
+    let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         DynamicIndicatorAdapterError::UnsupportedIndicator {
             indicator_id: indicator_id.to_string(),
@@ -936,6 +947,8 @@ pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
     kernel: Kernel,
     target: vector_ta::indicators::dispatch::CudaOutputTarget,
 ) -> Result<DynamicIndicatorCudaComputeOutput, DynamicIndicatorAdapterError> {
+    #[cfg(test)]
+    let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
     let normalized_id = indicator_id.trim();
     if normalized_id.is_empty() {
         return Err(DynamicIndicatorAdapterError::UnsupportedIndicator {

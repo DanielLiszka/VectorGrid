@@ -1131,6 +1131,7 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
     - `CompositeMo`:
       - CPU-preferred today for fixed-candidate validation
       - current GPU fixed-candidate path still requires plain `CompositeCpu`, so `CompositeMo` should be treated as a fallback-to-CPU route in previews
+      - post-run validation summaries now also state that `CompositeMo` used the CPU validation route because fixed-candidate GPU validation currently supports plain `CompositeCpu` only
     - `Asr`, `Vcc`, `Vemr`, `Rocb`, `Mkcs`:
       - GPU fixed-candidate base validation: implemented
       - GPU `walk_forward`: implemented
@@ -1148,9 +1149,16 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
       - GPU `trade_bootstrap`: implemented in the shared composite GPU route
       - current gap is evidence depth:
         - `Kqsr` now has a dedicated GPU-vs-CPU walk-forward parity test in addition to the existing advanced-route smoke
-        - `Carm` still needs deeper verification; a first walk-forward parity attempt exposed a real CPU-vs-GPU drift on the current fixture, especially in trade counts
+        - `Carm` now has stronger fixed-candidate prep coverage:
+          - the fixed-candidate GPU validation path now uses CPU-reference `CARM` signal surfaces for `ROCR`, mixed momentum, and `OTTO`, then uploads those arrays for GPU metric evaluation
+          - this mitigates the prior drift caused by threshold-sensitive `HostF32` signal outputs while keeping the GPU metrics route intact
+          - remaining gap is deeper evidence for strict full in-sample parity and standalone direct GPU indicator parity
         - `Kvdf` now also has a dedicated GPU-vs-CPU walk-forward parity test in addition to the existing advanced-route smoke
-        - `Cdmc` still needs deeper verification; a first walk-forward parity attempt did not satisfy the strict CPU-vs-GPU tolerance on the current fixture
+        - `Cdmc` now has stronger fixed-candidate prep coverage:
+          - the fixed-candidate GPU prep path now uses CPU-reference `CDMC` signal surfaces and the tested `start_t` mismatch is closed
+          - the GPU `reopt_walk_forward` prep path now uses the same CPU-reference `CDMC` signal construction policy instead of the older hybrid sweep path
+          - dedicated `start_t` parity coverage is now present for the current fixture
+          - a strict full in-sample GPU-vs-CPU metrics parity assertion still does not hold on the noisy fixture, so evidence depth is improved but not fully closed yet
 - [x] Make composite-family cross-ticker semantics explicit in frontend capability surfacing:
   - pre-run summaries now distinguish composite GPU main-route expectations from composite cross-ticker behavior
   - composite `cross_ticker` no longer incorrectly implies a full CPU fallback in the preview summary when the main validation route is otherwise GPU-capable
@@ -1523,7 +1531,9 @@ Guardrails:
 5. Continue the composite-family validation support audit from the current surfacing baseline before attempting broader backend parity work.
    - the strategy/profile support matrix is now documented
    - `Kqsr` and `Kvdf` now have added walk-forward parity coverage
-   - the next useful step is drift analysis and deeper verification for `Carm` and `Cdmc`, plus any explicit user-facing note for profiles that remain CPU-preferred such as `CompositeMo`
+   - `Carm` fixed-candidate and reopt prep now use CPU-reference signal uploads where direct GPU signal parity was fragile
+   - `Cdmc` fixed-candidate and reopt prep now use CPU-reference signal uploads where the earlier hybrid prep path was producing warmup drift
+   - the next useful step is deeper strict parity evidence for `Carm` / `Cdmc` plus any explicit user-facing note for profiles that remain CPU-preferred such as `CompositeMo`
 
 ## Working Notes
 

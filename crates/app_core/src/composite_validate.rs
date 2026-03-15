@@ -20,7 +20,7 @@ use crate::carm::{
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::carm::{
-    compute_carm_mixed_signals_f32, compute_carm_otto_signals_f32, compute_carm_rocr_signal_f32,
+    compute_carm_mixed_signals, compute_carm_otto_signals, compute_carm_rocr_signal,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::carm_gpu_kernel::{
@@ -29,12 +29,6 @@ use crate::carm_gpu_kernel::{
 use crate::cdmc::{
     build_cdmc_desired_positions, compute_cdmc_signals, compute_cdmc_start_t, resolve_cdmc_periods,
     validate_cdmc_params, CdmcSignals, CdmcStrategyParams,
-};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::cdmc::{
-    compute_cdmc_correlation_cycle_output_sweep_cuda_device,
-    compute_cdmc_decycler_sweep_cuda_device, compute_cdmc_dpo_sweep_cuda_device,
-    compute_cdmc_mama_pair_cuda_device,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::cdmc_gpu_kernel::{
@@ -6593,10 +6587,10 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
     let mut rocr_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(fast_rows);
     for &fast_len in &fast_periods {
         let periods = resolve_carm_periods(first_carm, fast_len, slow_seed);
-        let rocr = compute_carm_rocr_signal_f32(
+        let rocr = compute_carm_rocr_signal(
             candles,
             &req.ma_source,
-            &req.backend,
+            &Backend::CpuOnly,
             periods,
             Some(&prepared_cuda_inputs),
         )?;
@@ -6604,7 +6598,7 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             fast_len,
             rocr.iter().position(|v| v.is_finite()).unwrap_or(n),
         );
-        rocr_row_major.extend_from_slice(&rocr);
+        rocr_row_major.extend(rocr.into_iter().map(|value| value as f32));
     }
 
     let total = req.candidates.len();
@@ -6663,20 +6657,20 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             periods.coppock_short.max(2),
             periods.ao_slow.max(periods.otto),
         );
-        let mixed = compute_carm_mixed_signals_f32(
+        let mixed = compute_carm_mixed_signals(
             candles,
             &req.ma_source,
-            &req.backend,
+            &Backend::CpuOnly,
             periods,
             Some(&prepared_cuda_inputs),
         )?;
         let otto_row = if let Some(&row) = otto_row_lookup.get(&otto_key) {
             row
         } else {
-            let otto = compute_carm_otto_signals_f32(
+            let otto = compute_carm_otto_signals(
                 candles,
                 &req.ma_source,
-                &req.backend,
+                &Backend::CpuOnly,
                 periods,
                 first_carm,
                 Some(&prepared_cuda_inputs),
@@ -6684,8 +6678,8 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             let row = i32::try_from(otto_first_valid_by_row.len())
                 .map_err(|_| "CARM OTTO row index exceeds i32 range".to_string())?;
             otto_first_valid_by_row.push(otto.first_valid);
-            otto_hott_row_major.extend_from_slice(&otto.hott);
-            otto_lott_row_major.extend_from_slice(&otto.lott);
+            otto_hott_row_major.extend(otto.hott.into_iter().map(|value| value as f32));
+            otto_lott_row_major.extend(otto.lott.into_iter().map(|value| value as f32));
             otto_row_lookup.insert(otto_key, row);
             row
         };
@@ -6711,9 +6705,9 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             return Err("not enough candles after CARM GPU warmup".to_string());
         }
 
-        coppock_row_major.extend_from_slice(&mixed.coppock);
-        ao_row_major.extend_from_slice(&mixed.ao);
-        apo_row_major.extend_from_slice(&mixed.apo);
+        coppock_row_major.extend(mixed.coppock.into_iter().map(|value| value as f32));
+        ao_row_major.extend(mixed.ao.into_iter().map(|value| value as f32));
+        apo_row_major.extend(mixed.apo.into_iter().map(|value| value as f32));
         combo_fast_row_idx.push(*fast_row_lookup.get(&cand.fast_len).ok_or_else(|| {
             format!("missing CARM fast row index for fast_len={}", cand.fast_len)
         })?);
@@ -6913,10 +6907,10 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
     let mut rocr_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(fast_rows);
     for &fast_len in &fast_periods {
         let periods = resolve_carm_periods(first_carm, fast_len, slow_seed);
-        let rocr = compute_carm_rocr_signal_f32(
+        let rocr = compute_carm_rocr_signal(
             candles,
             &req.ma_source,
-            &req.backend,
+            &Backend::CpuOnly,
             periods,
             Some(&prepared_cuda_inputs),
         )?;
@@ -6924,7 +6918,7 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
             fast_len,
             rocr.iter().position(|v| v.is_finite()).unwrap_or(n),
         );
-        rocr_row_major.extend_from_slice(&rocr);
+        rocr_row_major.extend(rocr.into_iter().map(|value| value as f32));
     }
 
     let total = finalists.len();
@@ -6988,20 +6982,20 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
             periods.coppock_short.max(2),
             periods.ao_slow.max(periods.otto),
         );
-        let mixed = compute_carm_mixed_signals_f32(
+        let mixed = compute_carm_mixed_signals(
             candles,
             &req.ma_source,
-            &req.backend,
+            &Backend::CpuOnly,
             periods,
             Some(&prepared_cuda_inputs),
         )?;
         let otto_row = if let Some(&row) = otto_row_lookup.get(&otto_key) {
             row
         } else {
-            let otto = compute_carm_otto_signals_f32(
+            let otto = compute_carm_otto_signals(
                 candles,
                 &req.ma_source,
-                &req.backend,
+                &Backend::CpuOnly,
                 periods,
                 first_carm,
                 Some(&prepared_cuda_inputs),
@@ -7009,8 +7003,8 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
             let row = i32::try_from(otto_first_valid_by_row.len())
                 .map_err(|_| "CARM GPU reopt OTTO row index exceeds i32 range".to_string())?;
             otto_first_valid_by_row.push(otto.first_valid);
-            otto_hott_row_major.extend_from_slice(&otto.hott);
-            otto_lott_row_major.extend_from_slice(&otto.lott);
+            otto_hott_row_major.extend(otto.hott.into_iter().map(|value| value as f32));
+            otto_lott_row_major.extend(otto.lott.into_iter().map(|value| value as f32));
             otto_row_lookup.insert(otto_key, row);
             row
         };
@@ -7036,9 +7030,9 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
             return Err("not enough candles after CARM GPU reopt warmup".to_string());
         }
 
-        coppock_row_major.extend_from_slice(&mixed.coppock);
-        ao_row_major.extend_from_slice(&mixed.ao);
-        apo_row_major.extend_from_slice(&mixed.apo);
+        coppock_row_major.extend(mixed.coppock.into_iter().map(|value| value as f32));
+        ao_row_major.extend(mixed.ao.into_iter().map(|value| value as f32));
+        apo_row_major.extend(mixed.apo.into_iter().map(|value| value as f32));
         combo_fast_row_idx.push(*fast_row_lookup.get(&cand.fast_len).ok_or_else(|| {
             format!("missing CARM fast row index for fast_len={}", cand.fast_len)
         })?);
@@ -8234,116 +8228,18 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
             .map_err(|e| e.to_string())?;
 
-    let mut dpo_keys: Vec<u16> = finalists
-        .iter()
-        .map(|cand| resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len).dpo)
-        .collect();
-    dpo_keys.sort_unstable();
-    dpo_keys.dedup();
-    let dpo_min = *dpo_keys
-        .first()
-        .ok_or_else(|| "CDMC reopt DPO period set is empty".to_string())?;
-    let dpo_max = *dpo_keys.last().unwrap_or(&dpo_min);
-    let dpo_sweep = compute_cdmc_dpo_sweep_cuda_device(&prepared_cuda_inputs, dpo_min, dpo_max, 1)?;
-    let mut dpo_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(dpo_keys.len());
-    let mut dpo_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(dpo_keys.len());
-    for period in dpo_keys.iter().copied() {
-        let row = dpo_sweep
-            .row_index_for_period(period)
-            .ok_or_else(|| format!("CDMC reopt DPO row missing for period={period}"))?;
-        dpo_row_lookup.insert(
-            period,
-            i32::try_from(row).map_err(|_| "CDMC reopt DPO row exceeds i32 range".to_string())?,
-        );
-        dpo_first_valid_lookup.insert(period, dpo_sweep.first_valid_for_period(period));
-    }
-
-    let mut cycle_keys: Vec<u16> = finalists
-        .iter()
-        .map(|cand| {
-            resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len).correlation_cycle
-        })
-        .collect();
-    cycle_keys.sort_unstable();
-    cycle_keys.dedup();
-    let cycle_min = *cycle_keys
-        .first()
-        .ok_or_else(|| "CDMC reopt correlation-cycle period set is empty".to_string())?;
-    let cycle_max = *cycle_keys.last().unwrap_or(&cycle_min);
-    let angle_sweep = compute_cdmc_correlation_cycle_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["angle"],
-        cycle_min,
-        cycle_max,
-        1,
-    )?;
-    let state_sweep = compute_cdmc_correlation_cycle_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["state"],
-        cycle_min,
-        cycle_max,
-        1,
-    )?;
-    let mut cycle_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(cycle_keys.len());
-    let mut cycle_first_valid_lookup: HashMap<u16, usize> =
-        HashMap::with_capacity(cycle_keys.len());
-    for period in cycle_keys.iter().copied() {
-        let row = angle_sweep.row_index_for_period(period).ok_or_else(|| {
-            format!("CDMC reopt correlation-cycle row missing for period={period}")
-        })?;
-        if state_sweep.row_index_for_period(period).is_none() {
-            return Err(format!(
-                "CDMC reopt correlation-cycle state row missing for period={period}"
-            ));
-        }
-        cycle_row_lookup.insert(
-            period,
-            i32::try_from(row)
-                .map_err(|_| "CDMC reopt correlation-cycle row exceeds i32 range".to_string())?,
-        );
-        cycle_first_valid_lookup.insert(period, angle_sweep.first_valid_for_period(period));
-    }
-
-    let mut decycler_keys: Vec<u16> = finalists
-        .iter()
-        .map(|cand| resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len).decycler)
-        .collect();
-    decycler_keys.sort_unstable();
-    decycler_keys.dedup();
-    let decycler_min = *decycler_keys
-        .first()
-        .ok_or_else(|| "CDMC reopt decycler period set is empty".to_string())?;
-    let decycler_max = *decycler_keys.last().unwrap_or(&decycler_min);
-    let decycler_sweep = compute_cdmc_decycler_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        decycler_min,
-        decycler_max,
-        1,
-    )?;
-    let mut decycler_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(decycler_keys.len());
-    let mut decycler_first_valid_lookup: HashMap<u16, usize> =
-        HashMap::with_capacity(decycler_keys.len());
-    for period in decycler_keys.iter().copied() {
-        let row = decycler_sweep
-            .row_index_for_period(period)
-            .ok_or_else(|| format!("CDMC reopt decycler row missing for period={period}"))?;
-        decycler_row_lookup.insert(
-            period,
-            i32::try_from(row)
-                .map_err(|_| "CDMC reopt decycler row exceeds i32 range".to_string())?,
-        );
-        decycler_first_valid_lookup.insert(period, decycler_sweep.first_valid_for_period(period));
-    }
-
-    let ((mama_matrix, fama_matrix), mama_first_valid) =
-        compute_cdmc_mama_pair_cuda_device(&prepared_cuda_inputs, first_cdmc)?;
-    let fama_first_valid = mama_first_valid;
-
-    let mut combo_dpo_row_idx: Vec<i32> = Vec::with_capacity(finalists.len());
-    let mut combo_cycle_row_idx: Vec<i32> = Vec::with_capacity(finalists.len());
-    let mut combo_decycler_row_idx: Vec<i32> = Vec::with_capacity(finalists.len());
-    let mut combo_start_t: Vec<i32> = Vec::with_capacity(finalists.len());
-    let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(finalists.len());
+    let total = finalists.len();
+    let mut dpo_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut cycle_angle_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut cycle_state_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut decycler_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut mama_row_major: Option<Vec<f32>> = None;
+    let mut fama_row_major: Option<Vec<f32>> = None;
+    let mut combo_dpo_row_idx: Vec<i32> = Vec::with_capacity(total);
+    let mut combo_cycle_row_idx: Vec<i32> = Vec::with_capacity(total);
+    let mut combo_decycler_row_idx: Vec<i32> = Vec::with_capacity(total);
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(total);
+    let mut finalist_entries: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(total);
 
     for (idx, cand) in finalists.iter().enumerate() {
         let cdmc = cand.cdmc.as_ref().ok_or_else(|| {
@@ -8378,31 +8274,19 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         }
 
         let periods = resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len);
-        let signals_first_valid = *dpo_first_valid_lookup
-            .get(&periods.dpo)
-            .ok_or_else(|| format!("missing CDMC DPO first_valid for period={}", periods.dpo))?
-            .max(
-                cycle_first_valid_lookup
-                    .get(&periods.correlation_cycle)
-                    .ok_or_else(|| {
-                        format!(
-                            "missing CDMC correlation-cycle first_valid for period={}",
-                            periods.correlation_cycle
-                        )
-                    })?,
-            )
-            .max(
-                decycler_first_valid_lookup
-                    .get(&periods.decycler)
-                    .ok_or_else(|| {
-                        format!(
-                            "missing CDMC decycler first_valid for period={}",
-                            periods.decycler
-                        )
-                    })?,
-            )
-            .max(&mama_first_valid)
-            .max(&fama_first_valid);
+        let signals = compute_cdmc_signals(
+            candles,
+            &req.ma_source,
+            &Backend::CpuOnly,
+            periods,
+            first_cdmc,
+            Some(&prepared_cuda_inputs),
+        )?;
+        if mama_row_major.is_none() {
+            mama_row_major = Some(signals.mama.iter().map(|value| *value as f32).collect());
+            fama_row_major = Some(signals.fama.iter().map(|value| *value as f32).collect());
+        }
+        let signals_first_valid = signals.first_valid;
         let start_t = compute_cdmc_start_t(
             first_valid_close,
             signals_first_valid,
@@ -8412,26 +8296,15 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
             return Err("not enough candles after CDMC GPU reopt warmup".to_string());
         }
 
-        combo_dpo_row_idx.push(
-            *dpo_row_lookup
-                .get(&periods.dpo)
-                .ok_or_else(|| format!("missing CDMC DPO row for period={}", periods.dpo))?,
-        );
-        combo_cycle_row_idx.push(
-            *cycle_row_lookup
-                .get(&periods.correlation_cycle)
-                .ok_or_else(|| {
-                    format!(
-                        "missing CDMC correlation-cycle row for period={}",
-                        periods.correlation_cycle
-                    )
-                })?,
-        );
-        combo_decycler_row_idx.push(
-            *decycler_row_lookup.get(&periods.decycler).ok_or_else(|| {
-                format!("missing CDMC decycler row for period={}", periods.decycler)
-            })?,
-        );
+        dpo_row_major.extend(signals.dpo.iter().map(|value| *value as f32));
+        cycle_angle_row_major.extend(signals.cycle_angle.iter().map(|value| *value as f32));
+        cycle_state_row_major.extend(signals.cycle_state.iter().map(|value| *value as f32));
+        decycler_row_major.extend(signals.decycler.iter().map(|value| *value as f32));
+        let row_idx =
+            i32::try_from(idx).map_err(|_| "CDMC GPU reopt row index exceeds i32 range".to_string())?;
+        combo_dpo_row_idx.push(row_idx);
+        combo_cycle_row_idx.push(row_idx);
+        combo_decycler_row_idx.push(row_idx);
         combo_start_t.push(
             i32::try_from(start_t)
                 .map_err(|_| "CDMC GPU reopt start_t exceeds i32 range".to_string())?,
@@ -8446,21 +8319,49 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
+    let runtime = prepared_cuda_inputs.runtime();
+    let d_dpo = runtime
+        .upload_f32(dpo_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_cycle_angle = runtime
+        .upload_f32(cycle_angle_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_cycle_state = runtime
+        .upload_f32(cycle_state_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_mama = runtime
+        .upload_f32(
+            mama_row_major
+                .as_deref()
+                .ok_or_else(|| "CDMC GPU reopt missing MAMA row".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let d_fama = runtime
+        .upload_f32(
+            fama_row_major
+                .as_deref()
+                .ok_or_else(|| "CDMC GPU reopt missing FAMA row".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let d_decycler = runtime
+        .upload_f32(decycler_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+
     let signals = CdmcGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
         cols: n,
-        dpo_row_major_ptr: dpo_sweep.matrix.device_ptr,
-        dpo_rows: dpo_sweep.matrix.rows,
-        dpo_stride: dpo_sweep.matrix.cols,
-        cycle_angle_row_major_ptr: angle_sweep.matrix.device_ptr,
-        cycle_state_row_major_ptr: state_sweep.matrix.device_ptr,
-        cycle_rows: angle_sweep.matrix.rows,
-        cycle_stride: angle_sweep.matrix.cols,
-        mama_ptr: mama_matrix.device_ptr,
-        fama_ptr: fama_matrix.device_ptr,
-        decycler_row_major_ptr: decycler_sweep.matrix.device_ptr,
-        decycler_rows: decycler_sweep.matrix.rows,
-        decycler_stride: decycler_sweep.matrix.cols,
+        dpo_row_major_ptr: d_dpo.buffer().as_device_ptr().as_raw() as u64,
+        dpo_rows: total,
+        dpo_stride: n,
+        cycle_angle_row_major_ptr: d_cycle_angle.buffer().as_device_ptr().as_raw() as u64,
+        cycle_state_row_major_ptr: d_cycle_state.buffer().as_device_ptr().as_raw() as u64,
+        cycle_rows: total,
+        cycle_stride: n,
+        mama_ptr: d_mama.buffer().as_device_ptr().as_raw() as u64,
+        fama_ptr: d_fama.buffer().as_device_ptr().as_raw() as u64,
+        decycler_row_major_ptr: d_decycler.buffer().as_device_ptr().as_raw() as u64,
+        decycler_rows: total,
+        decycler_stride: n,
     };
 
     let common_start_t = finalist_start_ts
@@ -8605,120 +8506,19 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
         PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
             .map_err(|e| e.to_string())?;
 
-    let mut dpo_keys: Vec<u16> = req
-        .candidates
-        .iter()
-        .map(|cand| resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len).dpo)
-        .collect();
-    dpo_keys.sort_unstable();
-    dpo_keys.dedup();
-    let dpo_min = *dpo_keys
-        .first()
-        .ok_or_else(|| "CDMC validation DPO period set is empty".to_string())?;
-    let dpo_max = *dpo_keys.last().unwrap_or(&dpo_min);
-    let dpo_sweep = compute_cdmc_dpo_sweep_cuda_device(&prepared_cuda_inputs, dpo_min, dpo_max, 1)?;
-    let mut dpo_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(dpo_keys.len());
-    let mut dpo_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(dpo_keys.len());
-    for period in dpo_keys.iter().copied() {
-        let row = dpo_sweep
-            .row_index_for_period(period)
-            .ok_or_else(|| format!("CDMC DPO row missing for period={period}"))?;
-        dpo_row_lookup.insert(
-            period,
-            i32::try_from(row).map_err(|_| "CDMC DPO row exceeds i32 range".to_string())?,
-        );
-        dpo_first_valid_lookup.insert(period, dpo_sweep.first_valid_for_period(period));
-    }
-
-    let mut cycle_keys: Vec<u16> = req
-        .candidates
-        .iter()
-        .map(|cand| {
-            resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len).correlation_cycle
-        })
-        .collect();
-    cycle_keys.sort_unstable();
-    cycle_keys.dedup();
-    let cycle_min = *cycle_keys
-        .first()
-        .ok_or_else(|| "CDMC validation correlation-cycle period set is empty".to_string())?;
-    let cycle_max = *cycle_keys.last().unwrap_or(&cycle_min);
-    let angle_sweep = compute_cdmc_correlation_cycle_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["angle"],
-        cycle_min,
-        cycle_max,
-        1,
-    )?;
-    let state_sweep = compute_cdmc_correlation_cycle_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["state"],
-        cycle_min,
-        cycle_max,
-        1,
-    )?;
-    let mut cycle_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(cycle_keys.len());
-    let mut cycle_first_valid_lookup: HashMap<u16, usize> =
-        HashMap::with_capacity(cycle_keys.len());
-    for period in cycle_keys.iter().copied() {
-        let row = angle_sweep
-            .row_index_for_period(period)
-            .ok_or_else(|| format!("CDMC correlation-cycle row missing for period={period}"))?;
-        if state_sweep.row_index_for_period(period).is_none() {
-            return Err(format!(
-                "CDMC correlation-cycle state row missing for period={period}"
-            ));
-        }
-        cycle_row_lookup.insert(
-            period,
-            i32::try_from(row)
-                .map_err(|_| "CDMC correlation-cycle row exceeds i32 range".to_string())?,
-        );
-        cycle_first_valid_lookup.insert(period, angle_sweep.first_valid_for_period(period));
-    }
-
-    let mut decycler_keys: Vec<u16> = req
-        .candidates
-        .iter()
-        .map(|cand| resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len).decycler)
-        .collect();
-    decycler_keys.sort_unstable();
-    decycler_keys.dedup();
-    let decycler_min = *decycler_keys
-        .first()
-        .ok_or_else(|| "CDMC validation decycler period set is empty".to_string())?;
-    let decycler_max = *decycler_keys.last().unwrap_or(&decycler_min);
-    let decycler_sweep = compute_cdmc_decycler_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        decycler_min,
-        decycler_max,
-        1,
-    )?;
-    let mut decycler_row_lookup: HashMap<u16, i32> = HashMap::with_capacity(decycler_keys.len());
-    let mut decycler_first_valid_lookup: HashMap<u16, usize> =
-        HashMap::with_capacity(decycler_keys.len());
-    for period in decycler_keys.iter().copied() {
-        let row = decycler_sweep
-            .row_index_for_period(period)
-            .ok_or_else(|| format!("CDMC decycler row missing for period={period}"))?;
-        decycler_row_lookup.insert(
-            period,
-            i32::try_from(row).map_err(|_| "CDMC decycler row exceeds i32 range".to_string())?,
-        );
-        decycler_first_valid_lookup.insert(period, decycler_sweep.first_valid_for_period(period));
-    }
-
-    let ((mama_matrix, fama_matrix), mama_first_valid) =
-        compute_cdmc_mama_pair_cuda_device(&prepared_cuda_inputs, first_cdmc)?;
-    let fama_first_valid = mama_first_valid;
-
     let total = req.candidates.len();
+    let mut dpo_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut cycle_angle_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut cycle_state_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut decycler_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut mama_row_major: Option<Vec<f32>> = None;
+    let mut fama_row_major: Option<Vec<f32>> = None;
     let mut combo_dpo_row_idx: Vec<i32> = Vec::with_capacity(total);
     let mut combo_cycle_row_idx: Vec<i32> = Vec::with_capacity(total);
     let mut combo_decycler_row_idx: Vec<i32> = Vec::with_capacity(total);
     let mut combo_start_t: Vec<i32> = Vec::with_capacity(total);
     let mut start_ts: Vec<usize> = Vec::with_capacity(total);
-    for cand in &req.candidates {
+    for (idx, cand) in req.candidates.iter().enumerate() {
         if cand.cdmc.is_none()
             || cand.asr.is_some()
             || cand.vcc.is_some()
@@ -8746,30 +8546,19 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
         }
 
         let periods = resolve_cdmc_periods(first_cdmc, cand.fast_len, cand.slow_len);
-        let dpo_row = *dpo_row_lookup
-            .get(&periods.dpo)
-            .ok_or_else(|| "CDMC DPO row lookup miss".to_string())?;
-        let cycle_row = *cycle_row_lookup
-            .get(&periods.correlation_cycle)
-            .ok_or_else(|| "CDMC correlation-cycle row lookup miss".to_string())?;
-        let decycler_row = *decycler_row_lookup
-            .get(&periods.decycler)
-            .ok_or_else(|| "CDMC decycler row lookup miss".to_string())?;
-        let signals_first_valid = (*dpo_first_valid_lookup
-            .get(&periods.dpo)
-            .ok_or_else(|| "CDMC DPO first_valid lookup miss".to_string())?)
-        .max(
-            *cycle_first_valid_lookup
-                .get(&periods.correlation_cycle)
-                .ok_or_else(|| "CDMC correlation-cycle first_valid lookup miss".to_string())?,
-        )
-        .max(mama_first_valid)
-        .max(fama_first_valid)
-        .max(
-            *decycler_first_valid_lookup
-                .get(&periods.decycler)
-                .ok_or_else(|| "CDMC decycler first_valid lookup miss".to_string())?,
-        );
+        let signals = compute_cdmc_signals(
+            candles,
+            &req.ma_source,
+            &Backend::CpuOnly,
+            periods,
+            first_cdmc,
+            Some(&prepared_cuda_inputs),
+        )?;
+        if mama_row_major.is_none() {
+            mama_row_major = Some(signals.mama.iter().map(|value| *value as f32).collect());
+            fama_row_major = Some(signals.fama.iter().map(|value| *value as f32).collect());
+        }
+        let signals_first_valid = signals.first_valid;
         let start_t = compute_cdmc_start_t(
             fv_close,
             signals_first_valid,
@@ -8779,30 +8568,64 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
             return Err("not enough candles after CDMC GPU warmup".to_string());
         }
 
-        combo_dpo_row_idx.push(dpo_row);
-        combo_cycle_row_idx.push(cycle_row);
-        combo_decycler_row_idx.push(decycler_row);
+        dpo_row_major.extend(signals.dpo.iter().map(|value| *value as f32));
+        cycle_angle_row_major.extend(signals.cycle_angle.iter().map(|value| *value as f32));
+        cycle_state_row_major.extend(signals.cycle_state.iter().map(|value| *value as f32));
+        decycler_row_major.extend(signals.decycler.iter().map(|value| *value as f32));
+        let row_idx =
+            i32::try_from(idx).map_err(|_| "CDMC row index exceeds i32 range".to_string())?;
+        combo_dpo_row_idx.push(row_idx);
+        combo_cycle_row_idx.push(row_idx);
+        combo_decycler_row_idx.push(row_idx);
         combo_start_t.push(
             i32::try_from(start_t).map_err(|_| "CDMC start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
 
+    let runtime = prepared_cuda_inputs.runtime();
+    let d_dpo = runtime
+        .upload_f32(dpo_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_cycle_angle = runtime
+        .upload_f32(cycle_angle_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_cycle_state = runtime
+        .upload_f32(cycle_state_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+    let d_mama = runtime
+        .upload_f32(
+            mama_row_major
+                .as_deref()
+                .ok_or_else(|| "CDMC GPU validation missing MAMA row".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let d_fama = runtime
+        .upload_f32(
+            fama_row_major
+                .as_deref()
+                .ok_or_else(|| "CDMC GPU validation missing FAMA row".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let d_decycler = runtime
+        .upload_f32(decycler_row_major.as_slice())
+        .map_err(|e| e.to_string())?;
+
     let signals = CdmcGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
         cols: n,
-        dpo_row_major_ptr: dpo_sweep.matrix.device_ptr,
-        dpo_rows: dpo_sweep.matrix.rows,
-        dpo_stride: dpo_sweep.matrix.cols,
-        cycle_angle_row_major_ptr: angle_sweep.matrix.device_ptr,
-        cycle_state_row_major_ptr: state_sweep.matrix.device_ptr,
-        cycle_rows: angle_sweep.matrix.rows,
-        cycle_stride: angle_sweep.matrix.cols,
-        mama_ptr: mama_matrix.device_ptr,
-        fama_ptr: fama_matrix.device_ptr,
-        decycler_row_major_ptr: decycler_sweep.matrix.device_ptr,
-        decycler_rows: decycler_sweep.matrix.rows,
-        decycler_stride: decycler_sweep.matrix.cols,
+        dpo_row_major_ptr: d_dpo.buffer().as_device_ptr().as_raw() as u64,
+        dpo_rows: total,
+        dpo_stride: n,
+        cycle_angle_row_major_ptr: d_cycle_angle.buffer().as_device_ptr().as_raw() as u64,
+        cycle_state_row_major_ptr: d_cycle_state.buffer().as_device_ptr().as_raw() as u64,
+        cycle_rows: total,
+        cycle_stride: n,
+        mama_ptr: d_mama.buffer().as_device_ptr().as_raw() as u64,
+        fama_ptr: d_fama.buffer().as_device_ptr().as_raw() as u64,
+        decycler_row_major_ptr: d_decycler.buffer().as_device_ptr().as_raw() as u64,
+        decycler_rows: total,
+        decycler_stride: n,
     };
     let combo_end_t =
         vec![i32::try_from(n).map_err(|_| "CDMC end_t exceeds i32 range".to_string())?; total];
@@ -17780,6 +17603,108 @@ mod tests {
             .candidates
             .iter()
             .all(|cand| cand.in_sample.sharpe.is_finite()));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_gpu_kernel_start_t_matches_cpu_series() {
+        let candles = make_noisy_trending_candles(4096);
+        let candidate = carm_test_candidate(10, 30);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = compute_log_returns_f64(close);
+        let prepared_cuda_inputs =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+                .expect("prepared cuda inputs");
+        let cpu_series = build_carm_candidate_series(
+            &candles,
+            &lr,
+            &[],
+            "close",
+            &candidate,
+            candidate.carm.as_ref().expect("carm params"),
+            Some(&prepared_cuda_inputs),
+        )
+        .expect("cpu carm series");
+
+        let req = CompositeValidationRequest {
+            data_id: "carm-gpu-start-t".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 81,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let gpu_eval = try_prepare_carm_gpu_fixed_candidate_validation(&req, &candles)
+            .expect("gpu carm eval");
+        assert_eq!(gpu_eval.start_ts, vec![series_start_t(&cpu_series)]);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_gpu_kernel_start_t_matches_cpu_series() {
+        let candles = make_noisy_trending_candles(4096);
+        let candidate = cdmc_test_candidate(10, 30);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = compute_log_returns_f64(close);
+        let prepared_cuda_inputs =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+                .expect("prepared cuda inputs");
+        let cpu_series = build_cdmc_candidate_series(
+            &candles,
+            &lr,
+            &[],
+            "close",
+            &candidate,
+            candidate.cdmc.as_ref().expect("cdmc params"),
+            Some(&prepared_cuda_inputs),
+        )
+        .expect("cpu cdmc series");
+
+        let req = CompositeValidationRequest {
+            data_id: "cdmc-gpu-start-t".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 82,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let gpu_eval = try_prepare_cdmc_gpu_fixed_candidate_validation(&req, &candles)
+            .expect("gpu cdmc eval");
+        assert_eq!(gpu_eval.start_ts, vec![series_start_t(&cpu_series)]);
     }
 
     #[test]

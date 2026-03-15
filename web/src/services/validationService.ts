@@ -889,7 +889,15 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   const backendUsed = normalizeText(row?.backend_used) || 'unknown'
   const backendRoute = normalizeText(row?.backend_route) || '-'
   const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
-  const routeModeLabel = backendRoute.includes('->CpuOnly') ? 'fallback' : 'route note'
+  const compositeMoCpuPreferred = strategyKind === 'CompositeMo'
+    && backendUsed.toLowerCase() === 'cpu'
+    && backendRoute.toLowerCase().includes('cpuonly')
+  const compositeMoRouteNote = compositeMoCpuPreferred
+    ? 'CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.'
+    : ''
+  const routeNoteParts = [backendFallbackReason, compositeMoRouteNote].filter((entry) => entry.length > 0)
+  const routeNoteSummary = routeNoteParts.join(' • ')
+  const routeModeLabel = backendRoute.includes('->CpuOnly') || compositeMoCpuPreferred ? 'fallback' : 'route note'
   const actualAuxCpuTails: string[] = []
   if (backendUsed.toLowerCase() === 'gpu' && !backendRoute.includes('->CpuOnly')) {
     if (req?.perturb && typeof req.perturb === 'object') actualAuxCpuTails.push('perturb')
@@ -897,10 +905,10 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
       actualAuxCpuTails.push(describeTradeBootstrapRequestConfig(req.trade_bootstrap))
     }
   }
-  const routeSummaryBase = backendFallbackReason
-    ? `${backendUsed} • ${backendRoute} • ${routeModeLabel}: ${backendFallbackReason}`
+  const routeSummaryBase = routeNoteSummary
+    ? `${backendUsed} • ${backendRoute} • ${routeModeLabel}: ${routeNoteSummary}`
     : `${backendUsed} • ${backendRoute}`
-  const routeDetailSummary = backendFallbackReason || 'none'
+  const routeDetailSummary = routeNoteSummary || 'none'
   const auxCpuSummary = actualAuxCpuTails.length > 0 ? actualAuxCpuTails.join(' + ') : 'none'
   const routeSummary = actualAuxCpuTails.length > 0
     ? `${routeSummaryBase} • aux CPU tails: ${auxCpuSummary}`
@@ -952,7 +960,7 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   const warningFlags = Array.isArray(runVerdict?.warning_flags)
     ? runVerdict.warning_flags.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
     : []
-  const warningSummary = failReasons[0] || warningFlags[0] || 'none'
+  const warningSummary = failReasons[0] || warningFlags[0] || compositeMoRouteNote || 'none'
 
   return {
     routeSummary,

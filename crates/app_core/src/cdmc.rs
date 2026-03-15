@@ -8,8 +8,10 @@ use crate::dynamic_indicator_adapter::{
     DynamicIndicatorCudaComputeOutput, DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
+#[cfg(feature = "cuda")]
+use crate::indicator_catalog::IndicatorInputKind;
 use serde::{Deserialize, Serialize};
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
@@ -17,7 +19,9 @@ use vector_ta::cuda::moving_averages::{CudaMama, DeviceArrayF32};
 use vector_ta::indicators::decycler::DecyclerBuilder;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
-use vector_ta::indicators::moving_averages::mama::{MamaBatchRange, MamaBuilder};
+use vector_ta::indicators::moving_averages::mama::MamaBuilder;
+#[cfg(feature = "cuda")]
+use vector_ta::indicators::moving_averages::mama::MamaBatchRange;
 use vector_ta::utilities::data_loader::{source_type, Candles};
 use vector_ta::utilities::enums::Kernel;
 
@@ -276,6 +280,7 @@ fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     Ok(descriptor.outputs[0].id.clone())
 }
 
+#[cfg(feature = "cuda")]
 fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         format!("CDMC indicator '{indicator_id}' is not registered for dynamic dispatch")
@@ -479,6 +484,10 @@ pub fn compute_cdmc_mama_pair_cuda_device(
 
     let device_id = prepared_inputs.source_device().device_id();
     let cuda = CudaMama::new(device_id as usize).map_err(|e| e.to_string())?;
+    let sweep = MamaBatchRange {
+        fast_limit: (cfg.mama_fast_limit, cfg.mama_fast_limit, 0.0),
+        slow_limit: (cfg.mama_slow_limit, cfg.mama_slow_limit, 0.0),
+    };
     let mut d_inv_dp = unsafe { cust::memory::DeviceBuffer::<f32>::uninitialized(prices.len()) }
         .map_err(|e| e.to_string())?;
     let d_fast_limits = cust::memory::DeviceBuffer::from_slice(&[cfg.mama_fast_limit as f32])
@@ -510,6 +519,17 @@ pub fn compute_cdmc_mama_pair_cuda_device(
     )
     .map_err(|e| e.to_string())?;
 
+    let mut host_mama = vec![f32::NAN; prices.len()];
+    let mut host_fama = vec![f32::NAN; prices.len()];
+    cuda.mama_batch_into_host_f32(prepared_inputs.source(), &sweep, &mut host_mama, &mut host_fama)
+        .map_err(|e| e.to_string())?;
+    let mama_first_valid = host_mama.iter().position(|value| value.is_finite());
+    let fama_first_valid = host_fama.iter().position(|value| value.is_finite());
+    let first_output_valid = mama_first_valid
+        .zip(fama_first_valid)
+        .map(|(mama, fama)| mama.max(fama))
+        .ok_or_else(|| "CDMC MAMA/FAMA outputs are all non-finite".to_string())?;
+
     Ok((
         (
             CdmcDeviceMatrix::from_cuda_mama(
@@ -529,7 +549,7 @@ pub fn compute_cdmc_mama_pair_cuda_device(
                 device_id,
             ),
         ),
-        first_valid + 10,
+        first_output_valid,
     ))
 }
 
@@ -594,6 +614,8 @@ fn compute_mama_pair_f64(
     cfg: &CdmcStrategyParams,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<(Vec<f64>, Vec<f64>), String> {
+    #[cfg(not(feature = "cuda"))]
+    let _ = backend;
     #[cfg(feature = "cuda")]
     {
         if backend_prefers_gpu(backend) {
@@ -637,6 +659,8 @@ fn compute_decycler_f64(
     periods: CdmcResolvedPeriods,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<Vec<f64>, String> {
+    #[cfg(not(feature = "cuda"))]
+    let _ = backend;
     #[cfg(feature = "cuda")]
     {
         if backend_prefers_gpu(backend) {

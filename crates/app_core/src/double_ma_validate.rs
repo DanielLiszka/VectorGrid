@@ -5207,6 +5207,115 @@ mod tests {
         assert!((cpu_f32_gpu_start.max_dd - gpu.max_dd).abs() < 1e-5);
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn composite_trend_optimizer_gpu_kernel_matches_cpu_f32_same_start_diagnostic() {
+        let len = 8_000usize;
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+        for i in 0..len {
+            let base = 100.0 + i as f64;
+            ts.push(i as i64);
+            open.push(base);
+            high.push(base + 1.0);
+            low.push(base - 1.0);
+            close.push(base + 0.5);
+            vol.push(1_000.0);
+        }
+        let candles = vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol);
+
+        let strategy = crate::strategy_presets::trend_quality_strategy_for_kernel();
+        let params = DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 9,
+            slow_len: 21,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: strategy.clone(),
+            halftrend_filter: None,
+        };
+
+        let lr = compute_log_returns_f64(&candles.close);
+        let base_first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
+            &candles, "close",
+        ))
+        .expect("base first valid");
+        let series = build_candidate_series(
+            &candles,
+            &lr,
+            base_first_valid,
+            "close",
+            None,
+            None,
+            &params,
+        )
+        .expect("cpu series");
+        let gpu_like_start_t =
+            candidate_start_t(&candles, "close", base_first_valid, &params).expect("gpu start_t");
+        let fast_f32: Vec<f32> = series.fast.iter().map(|&v| v as f32).collect();
+        let slow_f32: Vec<f32> = series.slow.iter().map(|&v| v as f32).collect();
+        let regime = series
+            .halftrend_trend
+            .as_deref()
+            .expect("composite-trend regime filter");
+        let cpu_f32_gpu_start =
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
+                &lr,
+                &fast_f32,
+                &slow_f32,
+                regime,
+                gpu_like_start_t,
+                &series.cfg,
+            );
+
+        let regime = compute_combined_regime_filter(&candles, "close", &strategy, None)
+            .expect("regime filter");
+        let kernel = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel(
+            &candles,
+            &[params.fast_len],
+            &[params.slow_len],
+            "sma",
+            "sma",
+            "close",
+            None,
+            None,
+            regime.as_deref(),
+            &strategy,
+            ta_optimizer::ObjectiveKind::Pnl,
+            1,
+            true,
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id: 0,
+                fast_alma_offset: 0.85,
+                fast_alma_sigma: 6.0,
+                slow_alma_offset: 0.85,
+                slow_alma_sigma: 6.0,
+            },
+            None,
+            None,
+            1,
+            0,
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect("gpu kernel metrics");
+        let gpu = kernel
+            .all
+            .as_ref()
+            .and_then(|all| all.first().map(|(_, m)| m.clone()))
+            .expect("gpu metric");
+
+        assert_eq!(series.start_t, gpu_like_start_t);
+        assert!((cpu_f32_gpu_start.pnl - gpu.pnl).abs() < 1e-4);
+        assert!((cpu_f32_gpu_start.sharpe - gpu.sharpe).abs() < 2e-4);
+        assert!((cpu_f32_gpu_start.max_dd - gpu.max_dd).abs() < 1e-5);
+    }
+
     #[test]
     fn fold_cscv_into_robust_score_uses_oos_median_sharpe_as_lower_bound() {
         let st_low = CscvCandidatePboStats {

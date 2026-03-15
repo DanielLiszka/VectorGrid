@@ -15,6 +15,8 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
@@ -36,6 +38,88 @@ const STRAT_ENFORCE_FAST_LT_SLOW: u32 = 1u32 << 3;
 const STRAT_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 const STRAT_STOP_LOSS: u32 = 1u32 << 5;
 const STRAT_TAKE_PROFIT: u32 = 1u32 << 6;
+
+#[cfg(test)]
+thread_local! {
+    static GPU_TEST_LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static GPU_TEST_LOCK_GUARD: RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct GpuTestLockGuard;
+
+#[cfg(test)]
+impl Drop for GpuTestLockGuard {
+    fn drop(&mut self) {
+        GPU_TEST_LOCK_DEPTH.with(|depth| {
+            let current = depth.get();
+            debug_assert!(current > 0, "gpu test lock depth underflow");
+            if current <= 1 {
+                GPU_TEST_LOCK_GUARD.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+                depth.set(0);
+            } else {
+                depth.set(current - 1);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_gpu_test() -> GpuTestLockGuard {
+    static GPU_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    GPU_TEST_LOCK_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current == 0 {
+            let guard = GPU_TEST_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            GPU_TEST_LOCK_GUARD.with(|slot| {
+                *slot.borrow_mut() = Some(guard);
+            });
+        }
+        depth.set(current + 1);
+    });
+    GpuTestLockGuard
+}
+
+#[cfg(test)]
+pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_runtime() {
+    CUDA_KERNEL_RUNTIME.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+    LAST_KERNEL_EXECUTOR_TIMING.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_VRAM_BUDGET_MB: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOnce() -> T) -> T {
+    let prev = TEST_VRAM_BUDGET_MB.with(|cell| cell.replace(budget_mb));
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    TEST_VRAM_BUDGET_MB.with(|cell| cell.set(prev));
+    match out {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
 
 const METRICS_COUNT: usize = 7;
 const TOPK_BLOCK_ITEMS: usize = 512;
@@ -726,6 +810,38 @@ fn emit_progress(
     crate::progress::emit_double_ma_progress(progress, processed_pairs, total_pairs, phase);
 }
 
+fn fill_device_buffer_f32(
+    stream: &Stream,
+    fill_kernel: &Function,
+    device_launch_caps: DeviceLaunchCaps,
+    fill_launch_caps: KernelLaunchCaps,
+    buffer: &DeviceBuffer<f32>,
+    len: usize,
+    value: f32,
+) -> Result<(), String> {
+    if len == 0 {
+        return Ok(());
+    }
+
+    unsafe {
+        let mut out_ptr = buffer.as_device_ptr().as_raw();
+        let mut n_i = len as i32;
+        let mut v = value;
+        let launch = choose_launch_shape_1d(len, device_launch_caps, fill_launch_caps);
+        let block_x: u32 = launch.block_x;
+        let grid_x: u32 = launch.grid_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut out_ptr as *mut _ as *mut c_void,
+            &mut n_i as *mut _ as *mut c_void,
+            &mut v as *mut _ as *mut c_void,
+        ];
+        stream
+            .launch(fill_kernel, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub struct KernelConfig {
     pub device_id: u32,
     pub fast_alma_offset: f64,
@@ -742,12 +858,19 @@ pub struct PrecomputedHostMaMatrix<'a> {
 
 pub(crate) struct DeviceRegimeFilter {
     buffer: DeviceBuffer<f32>,
+    scratch_f32: Vec<DeviceBuffer<f32>>,
     len: usize,
     first_valid: usize,
     device_id: u32,
 }
 
 impl DeviceRegimeFilter {
+    #[inline]
+    pub(crate) fn with_scratch_buffers(mut self, scratch_f32: Vec<DeviceBuffer<f32>>) -> Self {
+        self.scratch_f32 = scratch_f32;
+        self
+    }
+
     #[inline]
     fn as_device_ptr_raw(&self) -> u64 {
         self.buffer.as_device_ptr().as_raw()
@@ -767,6 +890,35 @@ impl DeviceRegimeFilter {
     fn device_id(&self) -> u32 {
         self.device_id
     }
+}
+
+pub(crate) fn upload_device_series_f32(
+    device_id: u32,
+    values: &[f32],
+) -> Result<(CudaDeviceSliceF32Ref, DeviceBuffer<f32>), String> {
+    if values.is_empty() {
+        return Err("device upload requires a non-empty series".to_string());
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<(CudaDeviceSliceF32Ref, DeviceBuffer<f32>), String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let buffer = DeviceBuffer::from_slice(values).map_err(|e| e.to_string())?;
+        let slice = unsafe {
+            CudaDeviceSliceF32Ref::from_raw_parts(
+                buffer.as_device_ptr().as_raw(),
+                values.len(),
+                device_id,
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        Ok((slice, buffer))
+    })
 }
 
 pub(crate) fn upload_host_regime_filter(
@@ -794,6 +946,7 @@ pub(crate) fn upload_host_regime_filter(
         let buffer = DeviceBuffer::from_slice(regime).map_err(|e| e.to_string())?;
         Ok(DeviceRegimeFilter {
             buffer,
+            scratch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -908,6 +1061,7 @@ pub(crate) fn build_vfct_regime_filter(
 
         Ok(DeviceRegimeFilter {
             buffer: out,
+            scratch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1006,6 +1160,7 @@ pub(crate) fn build_pit_regime_filter(
 
         Ok(DeviceRegimeFilter {
             buffer: out,
+            scratch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1099,6 +1254,7 @@ pub(crate) fn build_set_regime_filter(
 
         Ok(DeviceRegimeFilter {
             buffer: out,
+            scratch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1181,6 +1337,7 @@ pub(crate) fn build_mts_regime_filter(
 
         Ok(DeviceRegimeFilter {
             buffer: out,
+            scratch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1265,6 +1422,7 @@ pub(crate) fn build_orc_regime_filter(
 
         Ok(DeviceRegimeFilter {
             buffer: out,
+            scratch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1277,6 +1435,7 @@ pub(crate) fn download_device_regime_filter(
     device_id: u32,
     regime: &DeviceRegimeFilter,
 ) -> Result<Vec<f32>, String> {
+    let _gpu_guard = lock_gpu_test();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<Vec<f32>, String> {
         let mut map = cell.borrow_mut();
         if !map.contains_key(&device_id) {
@@ -1622,6 +1781,17 @@ fn first_valid_idx_required(
 fn vram_budget_bytes() -> usize {
     let headroom = 512usize * 1024 * 1024;
     let min_budget = 64usize * 1024 * 1024;
+
+    #[cfg(test)]
+    if let Some(mb) = TEST_VRAM_BUDGET_MB.with(|cell| cell.get()) {
+        let mut bytes = mb.saturating_mul(1024).saturating_mul(1024);
+        if bytes > headroom {
+            bytes = bytes.saturating_sub(headroom);
+        } else {
+            bytes = bytes / 2;
+        }
+        return bytes.max(min_budget);
+    }
 
     match std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB")
         .ok()
@@ -3372,6 +3542,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_fast_launch_caps = backtest_fast_warp
         .as_ref()
         .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
+    let fill_launch_caps = detect_kernel_launch_caps(&fill_f32, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
@@ -3560,6 +3731,26 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 scratch.d_fast_ma_tm.as_mut().unwrap(),
             )?;
         } else {
+            if fast_ma == "nma" {
+                fill_device_buffer_f32(
+                    bt_stream,
+                    &fill_f32,
+                    device_launch_caps,
+                    fill_launch_caps,
+                    scratch.d_fast_ma.as_ref().unwrap(),
+                    pf.saturating_mul(n),
+                    f32::NAN,
+                )?;
+                fill_device_buffer_f32(
+                    bt_stream,
+                    &fill_f32,
+                    device_launch_caps,
+                    fill_launch_caps,
+                    scratch.d_fast_ma_tm.as_ref().unwrap(),
+                    fast_tm_rows.saturating_mul(n),
+                    f32::NAN,
+                )?;
+            }
             ma.compute_period_ma_into(
                 fast_ma.as_str(),
                 fast_params,
@@ -3680,6 +3871,26 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     scratch.d_slow_ma_tm.as_mut().unwrap(),
                 )?;
             } else {
+                if slow_ma == "nma" {
+                    fill_device_buffer_f32(
+                        bt_stream,
+                        &fill_f32,
+                        device_launch_caps,
+                        fill_launch_caps,
+                        scratch.d_slow_ma.as_ref().unwrap(),
+                        ps.saturating_mul(n),
+                        f32::NAN,
+                    )?;
+                    fill_device_buffer_f32(
+                        bt_stream,
+                        &fill_f32,
+                        device_launch_caps,
+                        fill_launch_caps,
+                        scratch.d_slow_ma_tm.as_ref().unwrap(),
+                        slow_tm_rows.saturating_mul(n),
+                        f32::NAN,
+                    )?;
+                }
                 ma.compute_period_ma_into(
                     slow_ma.as_str(),
                     slow_params,
@@ -4276,6 +4487,8 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
+    #[cfg(test)]
+    let _gpu_guard = lock_gpu_test();
     let device_id = cfg.device_id;
     clear_last_kernel_executor_timing();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
@@ -4776,7 +4989,9 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     let bt_module = &rt.module;
-    let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
+    let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str())
+        && !fast_precomputed_enabled
+        && !slow_precomputed_enabled;
     let use_valid_pair_map = kernel_valid_pair_map_enabled();
     let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
 
@@ -4866,6 +5081,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         .ok();
     let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
     let device_launch_caps = rt.launch_caps;
+    let fill_launch_caps = detect_kernel_launch_caps(&fill_f32, device_launch_caps);
     let lockstep_time_enabled = kernel_lockstep_time_enabled();
     let lockstep_time_min_pairs = kernel_lockstep_time_min_pairs();
     let m7_specialize_enabled = kernel_m7_specialize_enabled();
@@ -5200,6 +5416,26 @@ fn optimize_double_ma_gpu_kernel_impl(
             gpu_indicator_prep_elapsed =
                 gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
         } else {
+            if fast_ma == "nma" {
+                fill_device_buffer_f32(
+                    bt_stream,
+                    &fill_f32,
+                    device_launch_caps,
+                    fill_launch_caps,
+                    scratch.d_fast_ma.as_ref().unwrap(),
+                    pf.saturating_mul(n),
+                    f32::NAN,
+                )?;
+                fill_device_buffer_f32(
+                    bt_stream,
+                    &fill_f32,
+                    device_launch_caps,
+                    fill_launch_caps,
+                    scratch.d_fast_ma_tm.as_ref().unwrap(),
+                    fast_tm_rows.saturating_mul(n),
+                    f32::NAN,
+                )?;
+            }
             let prep_t0 = Instant::now();
             ma.compute_period_ma_into(
                 fast_ma.as_str(),
@@ -5342,6 +5578,26 @@ fn optimize_double_ma_gpu_kernel_impl(
                 gpu_indicator_prep_elapsed =
                     gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
             } else {
+                if slow_ma == "nma" {
+                    fill_device_buffer_f32(
+                        bt_stream,
+                        &fill_f32,
+                        device_launch_caps,
+                        fill_launch_caps,
+                        scratch.d_slow_ma.as_ref().unwrap(),
+                        ps.saturating_mul(n),
+                        f32::NAN,
+                    )?;
+                    fill_device_buffer_f32(
+                        bt_stream,
+                        &fill_f32,
+                        device_launch_caps,
+                        fill_launch_caps,
+                        scratch.d_slow_ma_tm.as_ref().unwrap(),
+                        slow_tm_rows.saturating_mul(n),
+                        f32::NAN,
+                    )?;
+                }
                 let prep_t0 = Instant::now();
                 ma.compute_period_ma_into(
                     slow_ma.as_str(),
@@ -7024,14 +7280,21 @@ mod tests {
         kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_h2d_enabled,
         kernel_should_use_m7_specialize,
     };
-    use std::sync::{Mutex, OnceLock};
 
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned")
+    struct TestEnvGuard {
+        _env: std::sync::MutexGuard<'static, ()>,
+        _gpu: super::GpuTestLockGuard,
+    }
+
+    fn lock_env() -> TestEnvGuard {
+        let env = super::lock_test_env();
+        let gpu = super::lock_gpu_test();
+        super::reset_test_runtime();
+        crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
+        TestEnvGuard {
+            _env: env,
+            _gpu: gpu,
+        }
     }
 
     #[test]

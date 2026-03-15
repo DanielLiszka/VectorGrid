@@ -9731,13 +9731,20 @@ fn optimize_composite_cpu_tiled(
 mod tests {
     use super::*;
 
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+    struct TestEnvGuard {
+        _env: std::sync::MutexGuard<'static, ()>,
+        _gpu: crate::gpu_backtest_kernel::GpuTestLockGuard,
+    }
+
+    fn lock_env() -> TestEnvGuard {
+        let env = crate::gpu_backtest_kernel::lock_test_env();
+        let gpu = crate::gpu_backtest_kernel::lock_gpu_test();
+        crate::gpu_backtest_kernel::reset_test_runtime();
+        crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
+        TestEnvGuard {
+            _env: env,
+            _gpu: gpu,
+        }
     }
 
     fn with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {

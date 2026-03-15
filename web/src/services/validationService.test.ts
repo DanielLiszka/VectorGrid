@@ -573,6 +573,85 @@ describe('validationService', () => {
     expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
   })
 
+  it('surfaces CompositeMo CPU-preferred validation fallback explicitly in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Cpu',
+          backend_route: 'CpuOnly',
+          runtime_ms: 88,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_composite_mo_cpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'CompositeMo',
+          data_id: 'data-composite-mo-post-run',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          strategy: { fee_bps: 1.0 },
+          signal_mode: 'hard_gate',
+          halftrend: {},
+          macz: {},
+          ott: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                signal_mode: 'hard_gate',
+                strategy: { fee_bps: 1.0 },
+                halftrend: {},
+                macz: {},
+                ott: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • CpuOnly • fallback: CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.')
+    expect(String(validationState.validationWarningSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.')
+  })
+
   it('previews validation execution summary from current workflow artifacts', () => {
     ;(pinia.state.value as Record<string, unknown>).data = {
       csvPath: 'C:/data/AAPL.csv',

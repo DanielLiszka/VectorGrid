@@ -30,6 +30,11 @@ It intentionally excludes ideas that were not strongly supported by the current 
   currently fails on `composite_trend` with
   `pnl delta too large for composite_trend: 0.5724107124129776`
   and should be investigated separately from the pure throughput track
+- Test-harness follow-up completed on `2026-03-14`:
+- the earlier `gpu_kernel_batched_matches_unbatched_best_params_nma` failure was narrowed to shared CUDA test-state interference, not an `nma` backend bug
+- `pit_device_regime_matches_cpu_regime_small` was fixed by staging PIT component series into the active kernel runtime before launching the PIT regime kernel
+- the parallel `double_ma::tests` CUDA subset now passes
+- the serialized full `ta_app_core` CUDA lib suite passes with `421 passed; 0 failed; 10 ignored`
 
 ## Scope
 
