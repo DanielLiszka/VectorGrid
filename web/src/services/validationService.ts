@@ -53,6 +53,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Vcet') return 'Vcet'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -870,9 +871,116 @@ function buildValidationFrictionSummary(result: unknown): string {
   return `${flag} • worst=${worstScenario}${passSuffix} • drift=${maxRankDrift} • absolute pnl/sharpe rule`
 }
 
+type ValidationModuleCategory =
+  | 'GPU-native'
+  | 'GPU main + CPU tail'
+  | 'CPU-only'
+  | 'lightweight rerun only'
+  | 'not supported'
+
+function enabledExecutionCategoryModules(req: Record<string, unknown> | null | undefined): string[] {
+  const modules = ['base reruns', 'hard gates']
+  if (req?.walk_forward && typeof req.walk_forward === 'object') modules.push('walk_forward')
+  if (req?.reopt_walk_forward && typeof req.reopt_walk_forward === 'object') modules.push('reopt_walk_forward')
+  if (req?.cscv_pbo && typeof req.cscv_pbo === 'object') modules.push('cscv_pbo')
+  if (req?.spa && typeof req.spa === 'object') modules.push('spa')
+  if (req?.perturb && typeof req.perturb === 'object') modules.push('perturb')
+  if (req?.trade_bootstrap && typeof req.trade_bootstrap === 'object') modules.push('trade_bootstrap')
+  return modules
+}
+
+function formatExecutionCategorySummary(groups: Array<[ValidationModuleCategory, string[]]>): string {
+  const parts = groups
+    .filter(([, labels]) => labels.length > 0)
+    .map(([category, labels]) => `${category}: ${labels.join(' + ')}`)
+  return parts.join(' | ') || 'none'
+}
+
+function buildActualValidationCategorySummary(
+  validationReq: Record<string, unknown> | null | undefined,
+  row: Record<string, unknown> | null | undefined,
+  strategyKind: string,
+): string {
+  const modules = enabledExecutionCategoryModules(validationReq)
+  const backendUsed = normalizeText(row?.backend_used).toLowerCase()
+  const backendRoute = normalizeText(row?.backend_route)
+  if (modules.length === 0) return 'none'
+  if (backendUsed !== 'gpu' || backendRoute.includes('->CpuOnly')) {
+    return formatExecutionCategorySummary([['CPU-only', modules]])
+  }
+  if (!isDoubleLikeKind(strategyKind)) {
+    return formatExecutionCategorySummary([['GPU-native', modules]])
+  }
+  const gpuNative: string[] = ['base reruns', 'hard gates']
+  if (validationReq?.walk_forward && typeof validationReq.walk_forward === 'object') gpuNative.push('walk_forward')
+  if (validationReq?.reopt_walk_forward && typeof validationReq.reopt_walk_forward === 'object') gpuNative.push('reopt_walk_forward')
+  if (validationReq?.cscv_pbo && typeof validationReq.cscv_pbo === 'object') gpuNative.push('cscv_pbo')
+  if (validationReq?.spa && typeof validationReq.spa === 'object') gpuNative.push('spa')
+  const gpuMainCpuTail: string[] = []
+  if (validationReq?.perturb && typeof validationReq.perturb === 'object') gpuMainCpuTail.push('perturb')
+  if (validationReq?.trade_bootstrap && typeof validationReq.trade_bootstrap === 'object') gpuMainCpuTail.push('trade_bootstrap')
+  return formatExecutionCategorySummary([
+    ['GPU-native', gpuNative],
+    ['GPU main + CPU tail', gpuMainCpuTail],
+  ])
+}
+
+function compositeValidationRouteDetailNote(strategyKind: string): string {
+  switch (strategyKind) {
+    case 'CompositeCpu':
+      return 'Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU.'
+    case 'Asr':
+      return 'ASR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Vcc':
+      return 'VCC GPU validation currently falls back on the measured 50k/8 advanced-stack workload because the requested momentum rows are not fp32-stable.'
+    case 'Vemr':
+      return 'VEMR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Rocb':
+      return 'ROCB GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Vcet':
+      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward currently uses the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
+    case 'Mkcs':
+      return 'MKCS GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Kqsr':
+      return 'KQSR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Kvdf':
+      return 'KVDF GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Carm':
+      return 'CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+    case 'Cdmc':
+      return 'CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads, and the remaining small walk-forward / CSCV / SPA metric drift is currently accepted because candidate ordering and verdict semantics still match on the fixture.'
+    default:
+      return ''
+  }
+}
+
+function compositeValidationAutoCpuPreferenceNote(strategyKind: string): string {
+  switch (strategyKind) {
+    case 'Asr':
+      return 'Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Vcc':
+      return 'Auto composite validation currently prefers CPU for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check.'
+    case 'Vemr':
+      return 'Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Rocb':
+      return 'Auto composite validation currently prefers CPU for ROCB because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Mkcs':
+      return 'Auto composite validation currently prefers CPU for MKCS because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Kqsr':
+      return 'Auto composite validation currently prefers CPU for KQSR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Kvdf':
+      return 'Auto composite validation currently prefers CPU for KVDF because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'Carm':
+      return 'Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+    default:
+      return ''
+  }
+}
+
 function buildValidationExecutionSummary(result: unknown, validationReq?: unknown): {
   routeSummary: string
   routeDetailSummary: string
+  categorySummary: string
   auxCpuSummary: string
   bootstrapSummary: string
   regimeSummary: string
@@ -889,15 +997,33 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   const backendUsed = normalizeText(row?.backend_used) || 'unknown'
   const backendRoute = normalizeText(row?.backend_route) || '-'
   const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+  const requestedBackend = normalizeText(asRecord(asRecord(validationReq)?.backend)?.backend)
   const compositeMoCpuPreferred = strategyKind === 'CompositeMo'
     && backendUsed.toLowerCase() === 'cpu'
     && backendRoute.toLowerCase().includes('cpuonly')
   const compositeMoRouteNote = compositeMoCpuPreferred
-    ? 'CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.'
+    ? 'CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.'
     : ''
-  const routeNoteParts = [backendFallbackReason, compositeMoRouteNote].filter((entry) => entry.length > 0)
+  const compositeAutoCpuPreferred = strategyKind === 'Carm'
+    && requestedBackend === 'Auto'
+    && backendUsed.toLowerCase() === 'cpu'
+    && backendRoute.toLowerCase().includes('cpuonly')
+  const compositeAutoCpuRouteNote = compositeAutoCpuPreferred
+    ? compositeValidationAutoCpuPreferenceNote(strategyKind)
+    : ''
+  const compositeGpuRouteDetail = backendUsed.toLowerCase() === 'gpu'
+    ? compositeValidationRouteDetailNote(strategyKind)
+    : ''
+  const routeNoteParts = [
+    backendFallbackReason,
+    compositeMoRouteNote,
+    compositeAutoCpuRouteNote,
+    compositeGpuRouteDetail,
+  ].filter((entry) => entry.length > 0)
   const routeNoteSummary = routeNoteParts.join(' • ')
-  const routeModeLabel = backendRoute.includes('->CpuOnly') || compositeMoCpuPreferred ? 'fallback' : 'route note'
+  const routeModeLabel = (backendRoute.includes('->CpuOnly') && !compositeMoCpuPreferred && !compositeAutoCpuPreferred)
+    ? 'fallback'
+    : 'route note'
   const actualAuxCpuTails: string[] = []
   if (backendUsed.toLowerCase() === 'gpu' && !backendRoute.includes('->CpuOnly')) {
     if (req?.perturb && typeof req.perturb === 'object') actualAuxCpuTails.push('perturb')
@@ -913,6 +1039,10 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   const routeSummary = actualAuxCpuTails.length > 0
     ? `${routeSummaryBase} • aux CPU tails: ${auxCpuSummary}`
     : routeSummaryBase
+  const auxCpuDesignNote = actualAuxCpuTails.length > 0
+    ? `Aux CPU tails are intentional in the current validation route: ${auxCpuSummary}.`
+    : ''
+  const categorySummary = buildActualValidationCategorySummary(req, row, strategyKind)
 
   const bootstrapSummary = buildBootstrapSummary(req?.trade_bootstrap)
   const regimeSummary = buildValidationRegimeSummary(result)
@@ -936,7 +1066,7 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   if (isDoubleLike && preservedFinalistsMode) {
     skipped.push('Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
   } else if (!isDoubleLike && requestedCross) {
-    skipped.push('Cross reruns: lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
+    skipped.push('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
   }
   if (req?.reopt_walk_forward && typeof req.reopt_walk_forward === 'object' && !asRecord(row?.reopt_walk_forward)) {
     skipped.push('Reopt WF: unavailable')
@@ -960,11 +1090,12 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   const warningFlags = Array.isArray(runVerdict?.warning_flags)
     ? runVerdict.warning_flags.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
     : []
-  const warningSummary = failReasons[0] || warningFlags[0] || compositeMoRouteNote || 'none'
+  const warningSummary = failReasons[0] || warningFlags[0] || compositeMoRouteNote || auxCpuDesignNote || 'none'
 
   return {
     routeSummary,
     routeDetailSummary,
+    categorySummary,
     auxCpuSummary,
     bootstrapSummary,
     regimeSummary,
@@ -1439,6 +1570,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationHint: message,
       validationRouteSummary: '-',
       validationRouteDetailSummary: '-',
+      validationCategorySummary: '-',
       validationAuxCpuSummary: '-',
       validationCrossSummary: '-',
       validationSkippedSummary: '-',
@@ -1458,6 +1590,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationHint: message,
       validationRouteSummary: '-',
       validationRouteDetailSummary: '-',
+      validationCategorySummary: '-',
       validationAuxCpuSummary: '-',
       validationCrossSummary: '-',
       validationSkippedSummary: '-',
@@ -1473,6 +1606,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationHint: message,
       validationRouteSummary: '-',
       validationRouteDetailSummary: '-',
+      validationCategorySummary: '-',
       validationAuxCpuSummary: '-',
       validationCrossSummary: '-',
       validationSkippedSummary: '-',
@@ -1529,12 +1663,13 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
   const command = resolveValidationCommand(runReq)
   const switchTab = options.switchTab !== false
 
-    patchValidationStoreState({
+  patchValidationStoreState({
       validateDisabled: true,
       statusLine: 'Running validation...',
       validationHint: 'Running validation...',
       validationRouteSummary: '-',
       validationRouteDetailSummary: '-',
+      validationCategorySummary: '-',
       validationAuxCpuSummary: '-',
       validationBootstrapSummary: '-',
       validationRegimeSummary: '-',
@@ -1572,6 +1707,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationMeta,
       validationRouteSummary: executionSummary.routeSummary,
       validationRouteDetailSummary: executionSummary.routeDetailSummary,
+      validationCategorySummary: executionSummary.categorySummary,
       validationAuxCpuSummary: executionSummary.auxCpuSummary,
       validationBootstrapSummary: executionSummary.bootstrapSummary,
       validationRegimeSummary: executionSummary.regimeSummary,
@@ -1613,6 +1749,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationHint: message,
       validationRouteSummary: '-',
       validationRouteDetailSummary: '-',
+      validationCategorySummary: '-',
       validationAuxCpuSummary: '-',
       validationBootstrapSummary: '-',
       validationRegimeSummary: '-',
@@ -1633,6 +1770,8 @@ export function previewValidationExecutionSummaryFromStores(): {
   routeSummary: string
   crossSummary: string
   moduleSummary: string
+  categorySummary: string
+  skippedSummary: string
   warningSummary: string
 } {
   const buildContext = resolveValidationBuildContextFromWorkflowArtifacts()
@@ -1641,6 +1780,8 @@ export function previewValidationExecutionSummaryFromStores(): {
       routeSummary: 'Run an optimization first.',
       crossSummary: '-',
       moduleSummary: '-',
+      categorySummary: '-',
+      skippedSummary: '-',
       warningSummary: 'No validation preview is available without an optimization artifact.',
     }
   }
@@ -1654,6 +1795,8 @@ export function previewValidationExecutionSummaryFromStores(): {
       routeSummary: 'Run artifact unavailable.',
       crossSummary: '-',
       moduleSummary: '-',
+      categorySummary: '-',
+      skippedSummary: '-',
       warningSummary: 'Re-run optimization before previewing validation execution.',
     }
   }
@@ -1708,6 +1851,8 @@ export function previewValidationExecutionSummaryFromStores(): {
       routeSummary: 'Validation preview unavailable.',
       crossSummary: '-',
       moduleSummary: '-',
+      categorySummary: '-',
+      skippedSummary: '-',
       warningSummary: message || 'Unable to build validation preview from the current workflow state.',
     }
   }

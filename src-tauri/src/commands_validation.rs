@@ -93,6 +93,7 @@ fn normalize_strategy_kind(raw: &str) -> String {
         "Marrt" => "Marrt".to_string(),
         "Vfct" => "Vfct".to_string(),
         "Rocb" => "Rocb".to_string(),
+        "Vcet" => "Vcet".to_string(),
         "Mkcs" => "Mkcs".to_string(),
         "Kqsr" => "Kqsr".to_string(),
         "Carm" => "Carm".to_string(),
@@ -336,6 +337,7 @@ pub async fn run_composite_validation(
             "Vcc",
             "Vemr",
             "Rocb",
+            "Vcet",
             "Mkcs",
             "Kqsr",
             "Carm",
@@ -1423,6 +1425,115 @@ mod tests {
         assert!(!res.run_verdict.approved);
     }
 
+    #[test]
+    fn cross_ticker_headless_double_ma_repo_local_multi_dataset_summary_respects_cap() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let req = ta_app_core::DoubleMaValidationRequest {
+            data_id: "base-multi-cross".to_string(),
+            backend: ta_app_core::Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_double_ma_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base double-ma validation");
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![
+                ta_app_core::CrossTickerDataset {
+                    csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                    label: "NVDA".to_string(),
+                },
+                ta_app_core::CrossTickerDataset {
+                    csv_path: data_csv("SPY.csv").to_string_lossy().to_string(),
+                    label: "SPY".to_string(),
+                },
+                ta_app_core::CrossTickerDataset {
+                    csv_path: data_csv("TSLA.csv").to_string_lossy().to_string(),
+                    label: "TSLA".to_string(),
+                },
+            ],
+            max_datasets: 2,
+            mode: ta_app_core::CrossTickerMode::PreservedFinalists,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: false,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation_double_ma_headless(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::CpuOnly,
+            "close",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("cross-ticker double-ma");
+
+        let summary = res.cross_ticker.as_ref().expect("cross summary");
+        assert_eq!(
+            summary.mode,
+            ta_app_core::CrossTickerMode::PreservedFinalists
+        );
+        assert_eq!(summary.datasets.len(), 2);
+        assert_eq!(summary.datasets[0].label, "NVDA");
+        assert_eq!(summary.datasets[1].label, "SPY");
+        assert!(res.candidates.iter().all(|cand| cand
+            .cross_ticker
+            .as_ref()
+            .map(|stats| stats.datasets)
+            .unwrap_or(0)
+            >= 1));
+    }
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn cross_ticker_headless_double_ma_gpu_preserved_finalists_preserves_gpu_route() {
@@ -1564,6 +1675,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -1639,6 +1751,215 @@ mod tests {
     }
 
     #[test]
+    fn cross_ticker_composite_repo_local_multi_dataset_summary_respects_cap() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let req = ta_app_core::CompositeValidationRequest {
+            data_id: "comp-base-multi-cross".to_string(),
+            backend: ta_app_core::Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::CompositeParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: Some(ta_app_core::AsrStrategyParams::default()),
+                vcc: None,
+                vemr: None,
+                rocb: None,
+                mkcs: None,
+                kqsr: None,
+                carm: None,
+                kvdf: None,
+                cdmc: None,
+                vcet: None,
+                macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+                ott: ta_app_core::composite_cpu::OttGateParams::default(),
+                signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base composite validation");
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![
+                ta_app_core::CrossTickerDataset {
+                    csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                    label: "NVDA".to_string(),
+                },
+                ta_app_core::CrossTickerDataset {
+                    csv_path: data_csv("SPY.csv").to_string_lossy().to_string(),
+                    label: "SPY".to_string(),
+                },
+                ta_app_core::CrossTickerDataset {
+                    csv_path: data_csv("QQQ.csv").to_string_lossy().to_string(),
+                    label: "QQQ".to_string(),
+                },
+            ],
+            max_datasets: 2,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: false,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::CpuOnly,
+            "close",
+            None,
+            None,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+        .expect("cross-ticker composite");
+
+        let summary = res.cross_ticker.as_ref().expect("cross summary");
+        assert_eq!(summary.mode, ta_app_core::CrossTickerMode::Lightweight);
+        assert_eq!(summary.datasets.len(), 2);
+        assert_eq!(summary.datasets[0].label, "NVDA");
+        assert_eq!(summary.datasets[1].label, "SPY");
+        assert!(res.candidates.iter().all(|cand| cand
+            .cross_ticker
+            .as_ref()
+            .map(|stats| stats.datasets)
+            .unwrap_or(0)
+            >= 1));
+    }
+
+    #[test]
+    fn cross_ticker_composite_mo_cpu_smoke_applies_stats() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let req = ta_app_core::CompositeValidationRequest {
+            data_id: "base-mo".to_string(),
+            backend: ta_app_core::Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::CompositeParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: None,
+                vcc: None,
+                vemr: None,
+                rocb: None,
+                mkcs: None,
+                kqsr: None,
+                carm: None,
+                kvdf: None,
+                cdmc: None,
+                vcet: None,
+                macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+                ott: ta_app_core::composite_cpu::OttGateParams::default(),
+                signal_mode: ta_app_core::CompositeSignalMode::EntryCoreExitOverlay,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base composite mo validation");
+        assert!(!res.candidates.is_empty());
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                label: "NVDA".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: false,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::CpuOnly,
+            "close",
+            None,
+            None,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+        .expect("cross-ticker composite mo");
+
+        assert!(res.cross_ticker.is_some());
+        assert!(res.candidates.iter().all(|c| c
+            .cross_ticker
+            .as_ref()
+            .map(|s| s.datasets)
+            .unwrap_or(0)
+            >= 1));
+    }
+
+    #[test]
     fn composite_cross_ticker_request_preserves_backend() {
         let req = build_composite_cross_ticker_request(
             1,
@@ -1662,6 +1983,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -1683,6 +2005,55 @@ mod tests {
             ta_app_core::Backend::GpuKernel { device_id: 0 }
         ));
         assert_eq!(req.candidates.len(), 1);
+    }
+
+    #[test]
+    fn composite_cross_ticker_request_strips_full_validation_stack() {
+        let req = build_composite_cross_ticker_request(
+            2,
+            9,
+            vec![ta_app_core::CompositeParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: Some(ta_app_core::AsrStrategyParams::default()),
+                vcc: None,
+                vemr: None,
+                rocb: None,
+                mkcs: None,
+                kqsr: None,
+                carm: None,
+                kvdf: None,
+                cdmc: None,
+                vcet: None,
+                macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+                ott: ta_app_core::composite_cpu::OttGateParams::default(),
+                signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+            }],
+            ta_app_core::Backend::GpuKernel { device_id: 0 },
+            "close",
+            None,
+            None,
+            13,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        );
+
+        assert_eq!(req.data_id, "cross-2");
+        assert!(req.walk_forward.is_none());
+        assert!(req.reopt_walk_forward.is_none());
+        assert!(req.spa.is_none());
+        assert!(req.perturb.is_none());
+        assert!(req.trade_bootstrap.is_none());
+        assert!(req.cscv_pbo.is_none());
+        assert!(req.cross_ticker.is_none());
     }
 
     #[test]
@@ -1805,6 +2176,8 @@ mod tests {
                         walk_forward: None,
                         perturb: None,
                         trade_bootstrap: None,
+                        regime_slice_robustness: None,
+                        friction_stress: None,
                         cross_ticker: None,
                         cross_ticker_pareto: None,
                         cscv_pbo: None,
@@ -2113,6 +2486,204 @@ mod tests {
             ta_app_core::IterativeSimConfig::default(),
         )
         .expect("cross-ticker vcc gpu");
+
+        assert!(res.cross_ticker.is_some());
+        assert!(res.candidates.iter().all(|c| c
+            .cross_ticker
+            .as_ref()
+            .map(|s| s.datasets)
+            .unwrap_or(0)
+            >= 1));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cross_ticker_rocb_gpu_kernel_smoke_applies_stats() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let req = ta_app_core::CompositeValidationRequest {
+            data_id: "rocb-gpu".to_string(),
+            backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::CompositeParams {
+                fast_ma_type: "ema".to_string(),
+                slow_ma_type: "ema".to_string(),
+                fast_len: 8,
+                slow_len: 24,
+                halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: None,
+                vcc: None,
+                vemr: None,
+                rocb: Some(ta_app_core::RocbStrategyParams::default()),
+                mkcs: None,
+                kqsr: None,
+                carm: None,
+                kvdf: None,
+                cdmc: None,
+                macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+                ott: ta_app_core::composite_cpu::OttGateParams::default(),
+                signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base rocb gpu validation");
+        assert!(!res.candidates.is_empty());
+        assert!(res.backend_route.is_some());
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                label: "NVDA".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: false,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::GpuKernel { device_id: 0 },
+            "close",
+            None,
+            None,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+        .expect("cross-ticker rocb gpu");
+
+        assert!(res.cross_ticker.is_some());
+        assert!(res.candidates.iter().all(|c| c
+            .cross_ticker
+            .as_ref()
+            .map(|s| s.datasets)
+            .unwrap_or(0)
+            >= 1));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cross_ticker_vemr_gpu_kernel_smoke_applies_stats() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let req = ta_app_core::CompositeValidationRequest {
+            data_id: "vemr-gpu".to_string(),
+            backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![ta_app_core::CompositeParams {
+                fast_ma_type: "ema".to_string(),
+                slow_ma_type: "ema".to_string(),
+                fast_len: 8,
+                slow_len: 24,
+                halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: None,
+                vcc: None,
+                vemr: Some(ta_app_core::VemrStrategyParams::default()),
+                rocb: None,
+                mkcs: None,
+                kqsr: None,
+                carm: None,
+                kvdf: None,
+                cdmc: None,
+                macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+                ott: ta_app_core::composite_cpu::OttGateParams::default(),
+                signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+                strategy: ta_strategies::double_ma::StrategyConfig::default(),
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
+            req, &candles, &cancel, None,
+        )
+        .expect("base vemr gpu validation");
+        assert!(!res.candidates.is_empty());
+        assert!(res.backend_route.is_some());
+
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                label: "NVDA".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: ta_app_core::CrossTickerGateConfig {
+                enabled: false,
+                ..ta_app_core::CrossTickerGateConfig::default()
+            },
+        };
+
+        apply_cross_ticker_validation(
+            &mut res,
+            cross_cfg,
+            &candles,
+            ta_app_core::Backend::GpuKernel { device_id: 0 },
+            "close",
+            None,
+            None,
+            1,
+            &make_cache_dir(),
+            &cancel,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+        .expect("cross-ticker vemr gpu");
 
         assert!(res.cross_ticker.is_some());
         assert!(res.candidates.iter().all(|c| c

@@ -307,6 +307,7 @@ interface ValidationState {
   validationMeta: string
   validationRouteSummary: string
   validationRouteDetailSummary: string
+  validationCategorySummary: string
   validationAuxCpuSummary: string
   validationBootstrapSummary: string
   validationRegimeSummary: string
@@ -383,6 +384,7 @@ export const useValidationStore = defineStore('validation', {
     validationMeta: '-',
     validationRouteSummary: '-',
     validationRouteDetailSummary: '-',
+    validationCategorySummary: '-',
     validationAuxCpuSummary: '-',
     validationBootstrapSummary: '-',
     validationRegimeSummary: '-',
@@ -459,6 +461,7 @@ export const useValidationStore = defineStore('validation', {
       this.validationMeta = String(snapshot.validationMeta ?? this.validationMeta ?? '-').trim() || '-'
       this.validationRouteSummary = String(snapshot.validationRouteSummary ?? this.validationRouteSummary ?? '-').trim() || '-'
       this.validationRouteDetailSummary = String(snapshot.validationRouteDetailSummary ?? this.validationRouteDetailSummary ?? '-').trim() || '-'
+      this.validationCategorySummary = String(snapshot.validationCategorySummary ?? this.validationCategorySummary ?? '-').trim() || '-'
       this.validationAuxCpuSummary = String(snapshot.validationAuxCpuSummary ?? this.validationAuxCpuSummary ?? '-').trim() || '-'
       this.validationBootstrapSummary = String(snapshot.validationBootstrapSummary ?? this.validationBootstrapSummary ?? '-').trim() || '-'
       this.validationRegimeSummary = String(snapshot.validationRegimeSummary ?? this.validationRegimeSummary ?? '-').trim() || '-'

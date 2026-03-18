@@ -404,7 +404,10 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(xml.contains("Regime Robustness"));
     assert!(xml.contains("Worst Bucket"));
     assert!(xml.contains("Support"));
-    assert!(xml.contains("see Audit Data -&gt; Regime Slice Audit") || xml.contains("see Audit Data -> Regime Slice Audit"));
+    assert!(
+        xml.contains("see Audit Data -&gt; Regime Slice Audit")
+            || xml.contains("see Audit Data -> Regime Slice Audit")
+    );
     assert!(xml.contains("Regime Slice Audit"));
     assert!(xml.contains("Low Vol"));
     assert!(xml.contains("Broad") || xml.contains("Trend OK") || xml.contains("Mixed"));
@@ -414,7 +417,12 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(xml.contains("Worst-Scenario MaxDD"));
     assert!(xml.contains("Pass Frac"));
     assert!(xml.contains("Friction Flag"));
-    assert!(xml.contains("absolute pass: pnl &gt;= 0 and sharpe &gt;= 0") || xml.contains("absolute pass: pnl >= 0 and sharpe >= 0"));
+    assert!(xml.contains("Shortlist Count"));
+    assert!(xml.contains("Semantics"));
+    assert!(
+        xml.contains("absolute pass: pnl &gt;= 0 and sharpe &gt;= 0")
+            || xml.contains("absolute pass: pnl >= 0 and sharpe >= 0")
+    );
     assert!(xml.contains("finalist-only fee/spread/slippage stress; absolute pass uses pnl &gt;= 0 and sharpe &gt;= 0")
         || xml.contains("finalist-only fee/spread/slippage stress; absolute pass uses pnl >= 0 and sharpe >= 0"));
     assert!(xml.contains("Approval State"));
@@ -668,14 +676,26 @@ fn workbook_zero_survivor_runs_still_emit_fallback_charts() {
     assert!(xml.contains("run verdict: no_candidates_survived_hard_gates"));
     assert!(xml.contains("Preserved Finalists"));
     assert!(xml.contains("Cross-Ticker"));
+    assert!(xml.contains("Shortlist Count"));
+    assert!(xml.contains("Semantics"));
     assert!(xml.contains("final post-cross shortlist"));
     assert!(xml.contains("GpuKernel"));
     assert!(xml.contains("Execution Notes"));
+    assert!(xml.contains("Route Fallback"));
+    assert!(xml.contains("Route Note"));
+    assert!(xml.contains("Aux CPU Tails (inferred)"));
+    assert!(xml.contains("Disabled Modules"));
+    assert!(xml.contains("Cross Omitted Modules"));
     assert!(xml.contains("Top Warning"));
     assert!(xml.contains("Expected Execution"));
     assert!(xml.contains("Expected Route"));
     assert!(xml.contains("Expected Cross"));
     assert!(xml.contains("Expected Modules"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Fallback"));
+    assert!(xml.contains("Expected Route Notes"));
+    assert!(xml.contains("Expected Disabled"));
+    assert!(xml.contains("Expected Cross Omitted"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains("GpuKernel requested"));
     assert!(xml.contains("1 dataset"));
@@ -683,7 +703,13 @@ fn workbook_zero_survivor_runs_still_emit_fallback_charts() {
     assert!(xml.contains(
         "auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)"
     ));
+    assert!(xml.contains("GPU-native: base reruns + hard gates"));
+    assert!(xml.contains("GPU main + CPU tail: perturb + trade_bootstrap"));
+    assert!(xml.contains(
+        "Main GPU route is preserved; perturb + trade bootstrap compare (iid + stationary, stat block=auto) currently run as intentional auxiliary CPU work."
+    ));
     assert!(xml.contains("Preserved-finalists cross reruns keep CSCV/PBO + hard gates"));
+    assert!(xml.contains("walk_forward + reopt_walk_forward + spa + perturb + trade_bootstrap"));
 }
 
 #[test]
@@ -722,6 +748,7 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
 
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
     let xml = all_xml(&bytes);
+    assert!(xml.contains("Route Fallback"));
     assert!(xml.contains("Route Note"));
     assert!(xml.contains(
         "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
@@ -731,6 +758,117 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
     assert!(xml.contains("spa_skipped_not_enough_slices"));
     assert!(xml.contains("Top Warning"));
     assert!(xml.contains("cross_ticker_filtered_all_candidates"));
+}
+
+#[test]
+fn workbook_surfaces_disabled_modules_and_disabled_statuses() {
+    let mut report = baseline_report();
+    let req = report
+        .pointer_mut("/validation/req")
+        .and_then(|value| value.as_object_mut())
+        .expect("validation req");
+    req.remove("reopt_walk_forward");
+    req.remove("cscv_pbo");
+    req.remove("spa");
+    req.remove("cross_ticker");
+
+    let res = report
+        .pointer_mut("/validation/res")
+        .and_then(|value| value.as_object_mut())
+        .expect("validation res");
+    res.remove("reopt_walk_forward");
+    res.remove("cscv_pbo");
+    res.remove("spa");
+    res.remove("cross_ticker");
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("reopt_walk_forward + cscv_pbo + spa + cross_ticker"));
+    assert!(xml.contains("Expected Disabled"));
+    assert!(xml.contains("disabled"));
+}
+
+#[test]
+fn workbook_uses_validation_context_strategy_kind_when_run_req_is_missing() {
+    let mut report = baseline_report();
+    report.as_object_mut().expect("report").remove("run");
+    report["validation"]["req"]["validation_context"] = json!({
+      "strategy_kind": "Carm",
+      "csv_path": "C:/Rust Projects/ta_desktop_demo/data/AAPL.csv",
+      "label": "AAPL"
+    });
+    report["validation"]["res"]["backend_used"] = json!("Gpu");
+    report["validation"]["res"]["backend_route"] = json!("GpuKernel");
+    report["validation"]["res"]["backend_fallback_reason"] = serde_json::Value::Null;
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains(
+        "CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation."
+    ));
+    assert!(!xml.contains(">Unknown<"));
+}
+
+#[test]
+fn workbook_surfaces_composite_route_detail_note_in_expected_execution() {
+    let mut report = baseline_report();
+    report["run"]["req"]["strategy_kind"] = json!("Carm");
+    report["validation"]["res"]["backend_used"] = json!("Gpu");
+    report["validation"]["res"]["backend_route"] = json!("GpuKernel");
+    report["validation"]["res"]["backend_fallback_reason"] = serde_json::Value::Null;
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains(
+        "CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation."
+    ));
+}
+
+#[test]
+fn workbook_surfaces_composite_auto_cpu_preference_note_in_expected_execution() {
+    let mut report = baseline_report();
+    report["run"]["req"]["strategy_kind"] = json!("Carm");
+    report["validation"]["req"]["backend"] = json!({ "backend": "Auto", "device_id": 0 });
+    report["validation"]["res"]["backend_used"] = json!("Cpu");
+    report["validation"]["res"]["backend_route"] = json!("Auto->CpuOnly");
+    report["validation"]["res"]["backend_fallback_reason"] =
+        json!("Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on measured workloads.");
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains("Auto requested | expected CPU-preferred composite route (Carm)"));
+    assert!(xml.contains("CPU-only: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
+    assert!(xml
+        .contains("Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."));
+}
+
+#[test]
+fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
+    let mut report = baseline_report();
+    report["run"]["req"]["strategy_kind"] = json!("Cdmc");
+    report["validation"]["res"]["backend_used"] = json!("Gpu");
+    report["validation"]["res"]["backend_route"] = json!("GpuKernel");
+    report["validation"]["res"]["backend_fallback_reason"] = serde_json::Value::Null;
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains(
+        "CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation."
+    ));
+    assert!(xml.contains("GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
+    assert!(xml.contains("WF Efficiency"));
+    assert!(xml.contains("Bootstrap Compare"));
+    assert!(xml.contains("Regime Flag"));
+    assert!(xml.contains("Friction Stability"));
 }
 
 #[test]

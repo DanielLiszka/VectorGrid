@@ -325,6 +325,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
+  if (kind === 'Vcet') return 'Vcet'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'

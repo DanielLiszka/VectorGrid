@@ -802,17 +802,39 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
 
 ### Documentation and policy
 
-- [ ] Document the current strategy-family split between double-MA validation and composite validation in product-facing or engineering-facing docs.
-- [ ] Document which validation modules are optional evidence surfaces versus true approval gates.
-- [ ] Document the current meaning of cross-ticker validation:
-  - secondary lightweight rerun filter
-  - or full-stack revalidation across additional datasets
-- [ ] Decide explicitly whether perturbation and trade bootstrap should remain non-gating or become optional gate inputs later.
+- [x] Document the current strategy-family split between double-MA validation and composite validation in product-facing or engineering-facing docs.
+  - `DoubleMa`, `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, `Vfct`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` currently use the double-MA-family validation contract in `double_ma_validate.rs`
+  - `Asr`, `Vcc`, `Vemr`, `Rocb`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, `Cdmc`, `CompositeCpu`, and `CompositeMo` currently use the composite-family validation contract in `composite_validate.rs`
+  - product-facing route/category notes now reflect that family split in preview, post-run UI, and XLSX `Expected Execution`
+- [x] Document which validation modules are optional evidence surfaces versus true approval gates.
+  - current true gate/approval inputs are:
+    - PSR / DSR thresholds
+    - min-track-record sufficiency
+    - CSCV/PBO thresholds when enabled
+    - run-level verdict / recommendation assembly
+    - cross-ticker filtering when enabled
+  - current evidence-oriented surfaces are:
+    - perturbation
+    - trade bootstrap / bootstrap compare
+    - WFE / efficiency summaries
+    - regime robustness
+    - friction stress
+    - ranking stability / plateau summaries
+- [x] Document the current meaning of cross-ticker validation:
+  - double-MA family supports explicit cross modes:
+    - `Preserved Finalists`: verdict-relevant preserved-stack reruns on bounded finalists
+    - `Lightweight`: secondary lightweight rerun filter
+  - composite-family cross-ticker currently remains `lightweight rerun only`
+  - inline fixed-candidate GPU validation does not currently preserve full cross-ticker stack on either family
+- [x] Decide explicitly whether perturbation and trade bootstrap should remain non-gating or become optional gate inputs later.
+  - current product policy: keep both as non-gating evidence surfaces
+  - both remain visible in UI/XLSX/headless exports, but neither currently changes final approval directly
+  - revisit only if an explicit optional-gate mode is later added
 
 ### Route-level parity audit
 
-- [ ] Build a strategy-by-strategy parity matrix covering CPU, Auto, GpuKernel, and GpuHybridKernel validation routes.
-- [ ] Mark each strategy/route pair for support status of:
+- [x] Build a strategy-by-strategy parity matrix covering CPU, Auto, GpuKernel, and GpuHybridKernel validation routes.
+- [x] Mark each strategy/route pair for support status of:
   - walk-forward
   - reopt walk-forward
   - SPA
@@ -823,14 +845,239 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - PSR/DSR gates
   - min-track-record checks
   - run verdict
-- [ ] Mark each unsupported cell as one of:
+  - current route/status matrix:
+    - `DoubleMa` / `Pit` / `Set` / `Mts` / `Orc` / `Marrt` / `Vfct` / `CompositeTrend` / `RegimeHybrid` / `BreakoutMomentum`
+      - CPU: full validation contract
+      - Auto: double-like GPU-main route with intentional CPU tails for `perturb` + `trade_bootstrap`
+      - GpuKernel: same feature categories as Auto on the GPU-main route
+      - GpuHybridKernel: route-conditional for ADX-bearing double-like profiles; parity target remains the same user-visible feature contract
+    - `Asr` / `Vemr` / `Rocb` / `Mkcs` / `Kqsr` / `Kvdf` / `Carm`
+      - CPU: full validation contract
+      - Auto: CPU-canonical
+      - GpuKernel: direct route exists, but current product policy keeps CPU canonical where it is faster or more stable
+      - GpuHybridKernel: unsupported for fixed-candidate validation; falls back to CPU
+    - `Vcc`
+      - CPU: full validation contract
+      - Auto: CPU-canonical
+      - GpuKernel: fp32-stability-conditional and currently treated as CPU-canonical on the measured advanced-stack path
+      - GpuHybridKernel: unsupported for fixed-candidate validation; falls back to CPU
+    - `Cdmc`
+      - CPU: full validation contract
+      - Auto: GPU-canonical
+      - GpuKernel: supported, with CPU-reference signal prep + GPU metric evaluation
+      - GpuHybridKernel: unsupported for fixed-candidate validation; falls back to CPU
+    - `CompositeCpu`
+      - CPU: full validation contract
+      - Auto: conditional GPU route only for uniform `HardGate`-compatible finalists
+      - GpuKernel: same conditional route as Auto
+      - GpuHybridKernel: unsupported for fixed-candidate validation; falls back to CPU
+    - `CompositeMo`
+      - CPU: full validation contract
+      - Auto: CPU-canonical
+      - GpuKernel: fallback to CPU because fixed-candidate GPU validation currently supports plain `CompositeCpu` `HardGate` candidates only
+      - GpuHybridKernel: unsupported for fixed-candidate validation; falls back to CPU
+- [x] Mark each unsupported cell as one of:
   - intentional
   - deferred
   - unknown / needs investigation
+  - current unsupported-cell policy:
+    - `GpuOnly` and `GpuHybridKernel` fixed-candidate composite routes: intentional current fallback-to-CPU boundary
+    - non-`HardGate` / non-plain-`CompositeCpu` fixed-candidate GPU composite routes: intentional current fallback-to-CPU boundary
+    - VCC fp32-stability-triggered GPU fallback: deferred deeper GPU-path investigation, but currently treated as CPU-canonical by product policy
+    - direct inline composite cross-ticker main-route support: intentional not-supported boundary; composite cross remains `lightweight rerun only`
+
+### Full validation feature access rollout
+
+- [x] Freeze the Double-MA family as the reference validation contract for broadening support to all existing strategies.
+  - reference feature set:
+    - `walk_forward`
+    - `reopt_walk_forward`
+    - `spa`
+    - `perturb`
+    - `trade_bootstrap`
+    - `cscv_pbo`
+    - `cross_ticker`
+    - hard gates / `validation_verdict` / `run_verdict`
+    - regime robustness
+    - friction stress
+    - WFE / bootstrap-compare / XLSX-report surfaces
+  - reference acceptance rule:
+    - same approval semantics as the Double-MA family where strategy structure allows
+    - same workbook / UI visibility for active validation evidence
+    - explicit route / fallback / skipped-module notes
+- [x] Freeze execution-category labels for every validation feature on every strategy/profile.
+  - allowed labels:
+    - `GPU-native`
+    - `GPU main + CPU tail`
+    - `CPU-only`
+    - `lightweight rerun only`
+    - `not supported`
+  - do not call a feature “full support” unless its execution category is explicitly documented
+- [x] Build a per-strategy feature-access matrix for all currently implemented strategies/profiles.
+  - include:
+    - `DoubleMa`
+    - `Pit`
+    - `Set`
+    - `Mts`
+    - `Orc`
+    - `Marrt`
+    - `Vfct`
+    - `CompositeTrend`
+    - `RegimeHybrid`
+    - `BreakoutMomentum`
+    - `Asr`
+    - `Vcc`
+    - `Vemr`
+    - `Rocb`
+    - `Mkcs`
+    - `Kqsr`
+    - `Carm`
+    - `Kvdf`
+    - `Cdmc`
+    - `CompositeCpu`
+    - `CompositeMo`
+  - classify, for each strategy/profile:
+    - current `Auto` route policy
+    - feature-by-feature execution category
+    - whether the route is CPU-canonical, GPU-canonical, hybrid, or conditional
+  - concise current matrix snapshot:
+    - `DoubleMa` / `Pit` / `Set` / `Mts` / `Orc` / `Marrt` / `Vfct` / `CompositeTrend` / `RegimeHybrid` / `BreakoutMomentum`:
+      - `GPU main + CPU tail`
+      - current double-like GPU-main validation keeps `perturb` and `trade_bootstrap` as intentional CPU tails
+      - cross-ticker is the separate preserved-finalists / lightweight orchestration path, not direct GPU fixed-candidate support
+    - `Asr` / `Vemr` / `Rocb` / `Mkcs` / `Kqsr` / `Kvdf` / `Carm`:
+      - `CPU-canonical under Auto`
+      - explicit `GpuKernel` remains available for direct parity/profiling use
+      - cross-ticker is currently `lightweight rerun only`
+    - `Vcc`:
+      - `CPU-canonical under Auto` on the current measured path
+      - the measured `GpuKernel` validation route falls back on the fp32-stability check for the current advanced-stack fixture
+      - cross-ticker is currently `lightweight rerun only`
+    - `Cdmc`:
+      - `GPU-canonical under Auto`
+      - current GPU route still uses CPU-reference signal prep with GPU metric evaluation
+      - cross-ticker is currently `lightweight rerun only`
+    - `CompositeCpu`:
+      - currently conditional rather than cleanly GPU-canonical
+      - the current base-composite GPU validation path still has uniform-HalfTrend restrictions that can force fallback on mixed finalists
+      - cross-ticker is currently `lightweight rerun only`
+    - `CompositeMo`:
+      - `CPU-canonical`
+      - GPU fixed-candidate validation currently supports plain `CompositeCpu` `HardGate` candidates only
+      - cross-ticker is currently `lightweight rerun only`
+- [x] Run a CPU-completion pass for every strategy/profile before treating GPU parity as the blocker.
+  - CPU target per strategy/profile:
+    - `walk_forward`
+    - `reopt_walk_forward`
+    - `spa`
+    - `cscv_pbo`
+    - `perturb`
+    - `trade_bootstrap`
+    - `cross_ticker`
+    - hard gates / verdict assembly
+    - regime robustness
+    - friction stress
+    - WFE / efficiency summaries
+    - XLSX / report surfacing
+  - first concrete closure on this track:
+    - composite-family validation now populates finalist-only `regime_slice_robustness` and `friction_stress` in `composite_validate.rs`
+    - focused Rust coverage now exists for those composite finalist enrichments
+    - this closes one real CPU-completion gap without forcing new GPU-route work
+  - current progress:
+    - a broad composite-family CPU full-stack smoke now runs `walk_forward`, `reopt_walk_forward`, `spa`, `cscv_pbo`, `perturb`, `trade_bootstrap`, regime robustness, and friction stress across:
+      - `CompositeCpu`
+      - `CompositeMo`
+      - `Asr`
+      - `Vcc`
+      - `Vemr`
+      - `Rocb`
+      - `Mkcs`
+      - `Kqsr`
+      - `Carm`
+      - `Kvdf`
+      - `Cdmc`
+    - this confirms the CPU baseline is feature-access-complete across the current composite profile set, even where GPU policy remains profile-conditional
+    - combined with the already broader Double-MA-family CPU path, the current CPU baseline is now the feature-access-complete reference across all implemented strategy families
+- [x] Run a GPU-native expansion pass only for features and strategies where GPU execution is both viable and worth the complexity.
+  - default priority:
+    - `walk_forward`
+    - `reopt_walk_forward`
+    - `spa`
+    - `cscv_pbo`
+    - `cross_ticker`
+  - defer or archive deeper GPU work where fresh benchmark evidence shows CPU remains faster and product semantics are already satisfied
+  - current result:
+    - double-like validation keeps the GPU main route for the heavy reruns
+    - composite `Cdmc` remains GPU-canonical under `Auto`
+    - CPU-faster composite profiles remain CPU-canonical under `Auto`
+    - deeper GPU expansion is archived by default unless fresh benchmarks justify it
+- [x] Run a GPU-main-plus-CPU-tail acceptance pass for strategies/features where full GPU-native execution is not justified.
+  - acceptance criteria:
+    - main rerun-heavy route stays on GPU
+    - CPU tail cost is measured and acceptable
+    - outcome semantics match the CPU baseline closely enough
+    - route notes and report surfaces explicitly disclose the CPU tail
+  - current accepted cases:
+    - double-like `perturb`: intentional auxiliary CPU tail on top of the GPU-main route
+    - double-like `trade_bootstrap`: intentional auxiliary CPU tail on top of the GPU-main route
+  - both are now surfaced explicitly in preview, post-run UI, XLSX, and headless/export notes rather than appearing as silent fallback
+- [x] Keep cross-ticker as a separate support track for every strategy/profile.
+  - classify each strategy/profile cross mode as:
+    - full-stack preserved parity
+    - verdict-relevant preserved stack
+    - lightweight rerun only
+    - not supported
+  - do not call cross-ticker support “full” unless the intended validation stack is preserved
+  - current matrix state:
+    - double-MA family: explicit `Preserved Finalists` vs `Lightweight`
+    - composite family: `lightweight rerun only`
+    - workbook/UI/headless summaries now surface that cross policy explicitly
+  - current composite-family progress:
+    - command-layer lightweight cross-ticker smokes now cover `CompositeCpu`, `CompositeMo`, `Asr`, `Vcc`, `Vemr`, `Rocb`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc`
+    - the remaining product policy is unchanged: composite cross-ticker remains `lightweight rerun only`, not inline fixed-candidate main-route support
+- [x] Add route-policy and benchmark evidence for every strategy/profile before freezing `Auto` behavior.
+  - CPU baseline test exists
+  - GPU route test exists where applicable
+  - outcome parity test exists where applicable
+  - benchmark evidence exists for the chosen `Auto` policy
+  - archived GPU work is explicitly documented when CPU stays canonical
+  - current progress:
+    - composite validation request shaping now defaults non-double-like runs to `Auto`, so route-policy evidence is no longer bypassed by a copied optimization backend
+    - the dedicated `composite_validation_workflow` bench harness now includes `base_composite`, `Asr`, `Vcc`, `Vemr`, `Rocb`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` profile generators for the next route-policy measurement pass
+    - fresh advanced-stack benchmark evidence now exists for:
+      - `Asr` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~185 ms`, GPU `~2.65-3.10 s`
+      - `Vemr` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~50 ms`, GPU `~768-855 ms`
+      - `Rocb` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~68 ms`, GPU `~333-377 ms`
+      - `Mkcs` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~69-72 ms`, GPU `~734 ms-1.33 s`
+      - `Vcc` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~212-217 ms`; the measured `GpuKernel` request currently falls back to CPU on the fp32-stability check
+    - closure rule for the current rollout:
+      - composite profiles use explicit per-profile route-policy benchmarks because their validation routes genuinely differ
+      - double-like profiles use the shared double-MA-family validation contract, so family-level route-policy evidence is sufficient unless a profile introduces a genuinely different validation route
+- [x] Track product-facing completion separately from backend completion.
+  - backend support complete
+  - frontend preview complete
+  - post-run route summaries complete
+  - XLSX `Expected Execution` notes complete
+  - headless path complete
+  - tests complete
+  - benchmark / route-policy evidence complete
+  - current progress:
+    - workbook regressions now cover both the CPU-preferred composite note path (`Carm`) and the GPU-kept composite note path (`Cdmc`)
+    - shared composite robustness surfaces (`WF Efficiency`, `Bootstrap Compare`, `Regime Flag`, `Friction Stability`) are now explicitly asserted on a composite-family workbook path, not only on the double-like baseline fixture
+    - preview and post-run validation UI now also surface explicit per-module execution categories using the frozen rollout labels:
+      - `GPU-native`
+      - `GPU main + CPU tail`
+      - `CPU-only`
+      - `lightweight rerun only`
+      - `not supported`
+    - XLSX `Expected Execution` now mirrors that same category summary through a dedicated `Expected Categories` row
+    - route-policy evidence and archived CPU-canonical decisions are now also recorded in this tracker instead of living only in backend tests/bench notes
 
 ### Double-MA family gaps
 
-- [ ] Add parameter-surface stability / plateau analysis for the Double-MA family as the highest-ROI next robustness feature.
+- [x] Add parameter-surface stability / plateau analysis for the Double-MA family as the highest-ROI next robustness feature.
+  - current closure scope: first-pass explanatory/tie-break implementation is in place
+  - future richer neighborhood PSR/DSR/robust-score statistics remain optional follow-up work, not a blocker for the current rollout
   - goal: prefer broad stable neighborhoods over narrow isolated spikes
   - initial scope: analyze local robustness around the final Double-MA shortlist using nearby optimization-surface neighbors from `run.res.top` / `run.res.all`
   - first implementation target:
@@ -846,7 +1093,9 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - first selection-policy target:
     - [ ] use plateau stability as a secondary ranking/selection signal for Double-MA finalists
     - [x] do not immediately make it a hard gate until evidence quality is reviewed
-- [ ] Add finalist ranking-stability checks for the Double-MA family.
+- [x] Add finalist ranking-stability checks for the Double-MA family.
+  - current closure scope: rank-overlap / drift summaries are implemented and exported
+  - future selection-policy escalation beyond explanatory/tie-break use remains optional follow-up work
   - goal: verify that the same top candidates remain near the top across validation evidence views instead of only winning on one metric slice
   - initial scope:
     - compare ranking by in-sample robust score
@@ -860,7 +1109,9 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
     - [ ] use ranking stability as an explanatory and tie-break signal before considering any hard-gate role
     - [x] do not change approval semantics until the stability summaries have been reviewed on real artifacts
 
-- [ ] Add literature-backed practical robustness additions for the Double-MA family.
+- [x] Add literature-backed practical robustness additions for the Double-MA family.
+  - current closure scope: first-pass `WFE`, regime-slice robustness, dependence-aware bootstrap, and friction-stability stress are implemented for the Double-MA family
+  - future deeper variants (`stationary_only`, `moving_block`, per-bar bootstrap migration, soft-gate escalation) remain optional follow-up work
   - implementation policy:
     - prioritize low-churn additions that reuse existing Double-MA validation outputs first
     - add new request/result modules only where the current payload is insufficient
@@ -970,11 +1221,11 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
     - broader multiple-testing controls beyond SPA
     - nested outer-loop evaluation of the selection rule itself
 
-- [ ] Treat the double-MA family as the validation golden standard for the application.
-- [ ] Define the parity target explicitly:
+- [x] Treat the double-MA family as the validation golden standard for the application.
+- [x] Define the parity target explicitly:
   - the same validation-stage feature set should be available for double-MA-family runs on CPU and GPU validation routes
   - CPU and GPU runs may differ internally in execution strategy, but not in user-visible feature availability or final semantics
-- [ ] Freeze the double-MA parity scope across:
+- [x] Freeze the double-MA parity scope across:
   - `DoubleMa`
   - `Pit`
   - `Set`
@@ -985,7 +1236,7 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - `CompositeTrend`
   - `RegimeHybrid`
   - `BreakoutMomentum`
-- [ ] Build a double-MA-family CPU vs GPU validation parity matrix covering:
+- [x] Build a double-MA-family CPU vs GPU validation parity matrix covering:
   - walk-forward
   - reopt walk-forward
   - SPA
@@ -997,10 +1248,31 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - min-track-record checks
   - candidate `validation_verdict`
   - run `run_verdict`
-- [ ] Record, for each double-MA-family route, whether the current limitation is:
+  - current matrix snapshot:
+    - CPU route:
+      - full stack available
+      - `walk_forward`, `reopt_walk_forward`, `SPA`, `perturb`, `trade_bootstrap`, `cross_ticker`, `CSCV/PBO`, hard gates, `validation_verdict`, and `run_verdict` are all available on the canonical CPU path
+    - `Auto` / `GpuKernel` main route:
+      - `walk_forward`: GPU-main
+      - `reopt_walk_forward`: GPU-main
+      - `SPA`: GPU-main
+      - `CSCV/PBO`: GPU-main
+      - PSR / DSR gates, min-track-record checks, candidate `validation_verdict`, and run `run_verdict`: parity target preserved
+      - `perturb`: `GPU main + CPU tail`
+      - `trade_bootstrap`: `GPU main + CPU tail`
+      - `cross_ticker`: separate orchestration path rather than inline fixed-candidate GPU support
+    - `GpuHybridKernel`:
+      - remains route-conditional for the ADX-bearing double-like profiles
+      - parity target is still the same feature visibility and verdict semantics, even when the internal route is hybrid rather than pure `GpuKernel`
+- [x] Record, for each double-MA-family route, whether the current limitation is:
   - intentional short-term
   - accidental / incomplete
   - blocked by CUDA/runtime architecture
+  - current classification:
+    - `perturb` GPU-native gap: blocked by current non-uniform perturbed-config batching constraints in the fixed-candidate GPU route
+    - `trade_bootstrap` GPU-native gap: blocked by the current GPU validation route returning aggregate metrics rather than trade-sequence outputs
+    - inline fixed-candidate `cross_ticker` GPU support gap: intentional short-term product/orchestration decision; current preserved-finalists / lightweight cross modes remain separate orchestration paths
+    - iterative direct GPU validation fallback cases: intentional current boundary until deeper backend work is justified
 - [x] Add a real-run Double-MA validation cost profiler comparing optimization versus optional validation modules:
   - `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
 - [x] Add a Double-MA validation workflow benchmark for regression tracking:
@@ -1009,12 +1281,15 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - `_write_test/perf/double_ma_validation_cost_aapl_cpu.json`
 - [x] Capture equivalent GPU evidence on the same dataset family and compare module cost ratios:
   - `_write_test/perf/double_ma_validation_cost_aapl_gpu.json`
-- [ ] Keep final hard-gate and run-verdict semantics identical across CPU and GPU validation routes, even if the expensive reruns are GPU-executed and the cheap reductions remain CPU-side.
-- [ ] Ensure the XLSX/report output for double-MA-family runs is semantically identical across CPU and GPU validation routes:
+- [x] Keep final hard-gate and run-verdict semantics identical across CPU and GPU validation routes, even if the expensive reruns are GPU-executed and the cheap reductions remain CPU-side.
+  - current route policy already preserves the same hard-gate / verdict contract while allowing module-local CPU tails where needed
+  - post-cross filtering now recomputes run-level verdict semantics instead of leaving stale run approval state behind
+- [x] Ensure the XLSX/report output for double-MA-family runs is semantically identical across CPU and GPU validation routes:
   - same sections
   - same feature visibility
   - same “not run” behavior
   - same approval/rejection reasoning
+  - workbook/UI/headless surfaces now derive from the shared validation export model, with route/category/fallback differences represented only as execution notes rather than layout/semantic divergence
 - [x] Add at least one broad-stack double-MA CPU reference artifact that exercises the full intended validation surface:
   - `_write_test/headless_reports/aapl_alma_validation_full_stack_no_cross.xlsx`
   - `_write_test/headless_reports/aapl_alma_validation_full_stack_no_cross.json`
@@ -1064,7 +1339,9 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - `perturb`
   - `trade_bootstrap`
   - rationale: they do not feed cross aggregation or candidate-level pass/fail semantics
-- [ ] If full GPU parity is not planned, document forced CPU fallback behavior clearly in UX/status text.
+- [x] If full GPU parity is not planned, document forced CPU fallback behavior clearly in UX/status text.
+  - post-run validation summaries now explicitly state that `perturb` / `trade_bootstrap` aux CPU tails are intentional current-route design, not silent whole-route fallback
+  - XLSX `Expected Notes` / `Execution Notes` now use the same intentional auxiliary-CPU wording
 - [x] Add pre-run and post-run route-capability surfacing for the Double-MA golden path:
   - validation UI now shows `Expected Route`, `Expected Cross`, `Expected Modules`, and `Expected Notes`
   - XLSX dashboard now mirrors the same expected-execution summary block alongside actual execution notes
@@ -1075,13 +1352,29 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - `Carm`
   - `Kvdf`
   - `Cdmc`
-- [ ] Add GPU parity for `reopt_walk_forward` if any route still falls back or degrades there.
-- [ ] Add GPU parity for `SPA` if any route still depends on a CPU-only prep path.
-- [ ] Add a true GPU-native batched `perturb` implementation if the current auxiliary CPU perturb tail remains too expensive for target workloads.
+- [x] Add GPU parity for `reopt_walk_forward` if any route still falls back or degrades there.
+  - current status: no known Double-MA-family route still falls back there on the supported GPU paths
+  - evidence:
+    - `double_ma_validation_gpu_kernel_reopt_walk_forward_matches_cpu_plain`
+    - `double_ma_validation_gpu_hybrid_reopt_walk_forward_matches_cpu_regime_hybrid`
+    - `double_ma_validation_gpu_kernel_supported_full_stack_preserves_route`
+- [x] Add GPU parity for `SPA` if any route still depends on a CPU-only prep path.
+  - current status: no known Double-MA-family route still depends on a CPU-only SPA prep path on the supported GPU paths
+  - evidence:
+    - `double_ma_validation_gpu_kernel_spa_matches_cpu_plain`
+    - `double_ma_validation_gpu_hybrid_spa_smoke_regime_hybrid`
+    - `double_ma_validation_gpu_kernel_supported_full_stack_preserves_route`
+- [x] Add a true GPU-native batched `perturb` implementation if the current auxiliary CPU perturb tail remains too expensive for target workloads.
+  - current decision: do not pursue this in the current rollout
+  - rationale:
+    - the user chose to keep `perturb` as the intentional faster CPU-tail implementation for now
+    - a faithful GPU-native port still requires deeper backend support for non-uniform perturbed candidate configs
+    - revisit only if future target workloads justify that architectural cost
 - [x] Investigate and fix the current GPU `perturb` performance pathology before treating that module as parity-complete:
   - immediate fix applied by removing the catastrophic per-iteration GPU-prep loop and preserving `GpuKernel` for the main route
 - [x] Preserve GPU main-route execution when `trade_bootstrap` is enabled, even if the bootstrap statistics themselves remain CPU-computed.
-- [ ] Add GPU parity for `trade_bootstrap` or explicitly decide that CPU fallback remains acceptable for that module.
+- [x] Add GPU parity for `trade_bootstrap` or explicitly decide that CPU fallback remains acceptable for that module.
+  - current decision: keep `trade_bootstrap` as intentional module-local auxiliary CPU work while preserving the main GPU validation route
 - [x] Double-MA-family `cross_ticker` now supports a finalist-bounded verdict-preserving revalidation pass.
 - [x] Make the preserved-finalist cross mode an explicit selectable policy because of runtime cost:
   - headless now supports `--cross-mode`
@@ -1089,7 +1382,13 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
   - request shaping defaults to `auto by strategy`
 - [x] Improve XLSX behavior for the zero-survivor cross-ticker edge case so the workbook still provides meaningful charts or explicit chart placeholders when post-cross filtering removes every candidate.
 - [x] Improve XLSX behavior for the zero-survivor cross-ticker edge case so the workbook still provides meaningful fallback charts based on the run verdict.
-- [ ] Review whether the uniform-candidate constraints on MA types / params / strategy config are acceptable long-term or should be relaxed.
+- [x] Review whether the uniform-candidate constraints on MA types / params / strategy config are acceptable long-term or should be relaxed.
+  - current decision: acceptable for the current product rollout
+  - rationale:
+    - these constraints apply to the fixed-candidate GPU batching path, not the canonical CPU path
+    - the normal product flow feeds fixed-candidate validation from a single strategy run, so MA types / params / strategy config are already effectively uniform in practice
+    - the constraints only become a real blocker for future deeper work such as mixed-batch GPU validation or true GPU-native `perturb`
+  - revisit only if future product goals require heterogeneous fixed-candidate GPU batches
 - [x] Add explicit tests proving fallback behavior when unsupported modules are requested on GPU validation routes:
   - `GpuKernel + cross_ticker` direct request falls back to `CpuOnly`
   - `GpuKernel + iterative validation engine` falls back to `CpuOnly`
@@ -1123,15 +1422,15 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
       - GPU `spa`: implemented
       - GPU `reopt_walk_forward`: implemented with extra restrictions
       - GPU `trade_bootstrap`: implemented
-      - GPU `perturb`: not audited to the same parity depth yet
+      - GPU `perturb`: implemented, but parity depth still varies by profile
       - restrictions:
         - plain `CompositeCpu` only
         - `signal_mode=HardGate`
         - uniform strategy / HalfTrend / MACZ / OTT / MA-type configuration
     - `CompositeMo`:
       - CPU-preferred today for fixed-candidate validation
-      - current GPU fixed-candidate path still requires plain `CompositeCpu`, so `CompositeMo` should be treated as a fallback-to-CPU route in previews
-      - post-run validation summaries now also state that `CompositeMo` used the CPU validation route because fixed-candidate GPU validation currently supports plain `CompositeCpu` only
+      - current GPU fixed-candidate path still requires plain `CompositeCpu` `HardGate`, so `CompositeMo` should be treated as a fallback-to-CPU route in previews
+      - post-run validation summaries now also state that `CompositeMo` used the CPU validation route because fixed-candidate GPU validation currently supports plain `CompositeCpu` `HardGate` candidates only
     - `Asr`, `Vcc`, `Vemr`, `Rocb`, `Mkcs`:
       - GPU fixed-candidate base validation: implemented
       - GPU `walk_forward`: implemented
@@ -1140,6 +1439,10 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
       - GPU `reopt_walk_forward`: implemented
       - GPU `trade_bootstrap`: implemented
       - dedicated CPU-vs-GPU parity tests are present in `composite_validate.rs`
+      - `Asr`, `Vcc`, `Vemr`, and `Rocb` now also have explicit advanced-stack GPU smoke coverage, matching the earlier `Mkcs` depth more closely
+      - perturb evidence is now more explicit:
+        - `Rocb`, `Vcc`, and `Mkcs` now have dedicated single-candidate GPU-vs-CPU perturb parity tests on the current fixture
+        - `Asr` and `Vemr` still expose GPU perturb in the shared route, but strict perturb parity drifted on the current noisy fixture, so they remain feature-access-complete without a locked strict-parity guarantee
     - `Kqsr`, `Carm`, `Kvdf`, `Cdmc`:
       - GPU fixed-candidate base validation: implemented
       - GPU `walk_forward`: implemented in code
@@ -1149,16 +1452,54 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
       - GPU `trade_bootstrap`: implemented in the shared composite GPU route
       - current gap is evidence depth:
         - `Kqsr` now has a dedicated GPU-vs-CPU walk-forward parity test in addition to the existing advanced-route smoke
+          - first direct advanced-stack benchmark coverage now exists for the current 50k / 8-candidate workload:
+            - CPU `wf_reopt_cscv_spa`: `~167.7 ms`
+            - GPU `wf_reopt_cscv_spa`: `~2.28 s`
+            - current implication: `Kqsr` GPU validation is materially slower than CPU on the measured workload
         - `Carm` now has stronger fixed-candidate prep coverage:
           - the fixed-candidate GPU validation path now uses CPU-reference `CARM` signal surfaces for `ROCR`, mixed momentum, and `OTTO`, then uploads those arrays for GPU metric evaluation
           - this mitigates the prior drift caused by threshold-sensitive `HostF32` signal outputs while keeping the GPU metrics route intact
-          - remaining gap is deeper evidence for strict full in-sample parity and standalone direct GPU indicator parity
+          - dedicated GPU-vs-CPU `reopt_walk_forward` parity coverage is now present for the current fixture
+          - dedicated advanced-route outcome parity coverage is now present for the current fixture:
+            - CPU and GPU preserve the same candidate ordering plus the same `run_verdict` / `validation_verdict` semantics under the full advanced stack
+          - measured near-parity coverage is now present for `walk_forward`, `cscv_pbo`, and `spa` on the noisy fixture:
+            - `walk_forward` now matches trade-count summaries on the current fixture (`trades_median 7`, `trades_worst 5`) while metric drift stays in a small tolerance band (`~0.0155` sharpe median, `~0.0047` pnl median)
+            - `cscv_pbo` run-level outputs match and candidate OOS metric drift stays small (`~0.0031` worst observed)
+            - `spa` best-candidate key / p-value / pass semantics match, with small mean-diff drift (`~0.00136`)
+          - remaining gap is deeper evidence for strict full in-sample parity and standalone direct GPU indicator parity; one noisy-fixture outcome probe still showed a `robust_pareto` bit can differ without changing verdicts
+          - first direct advanced-stack benchmark coverage now exists for the current 50k / 8-candidate workload:
+            - CPU `wf_reopt_cscv_spa`: `~39.7 ms`
+            - GPU `wf_reopt_cscv_spa`: `~91.2 ms`
+            - current implication: the hardened GPU route preserves semantics, but is not yet a speed win for `Carm` at this smaller workload
+          - larger-workload benchmark follow-up now exists for 100k / 32 candidates:
+            - CPU `wf_reopt_cscv_spa`: `~261.4 ms`
+            - GPU `wf_reopt_cscv_spa`: `~333.8 ms`
+            - current implication: `Carm` GPU validation is still slower than CPU on the measured larger workload, so route-policy questions are now justified
         - `Kvdf` now also has a dedicated GPU-vs-CPU walk-forward parity test in addition to the existing advanced-route smoke
+          - first direct advanced-stack benchmark coverage now exists for the current 50k / 8-candidate workload:
+            - CPU `wf_reopt_cscv_spa`: `~108.9 ms`
+            - GPU `wf_reopt_cscv_spa`: `~4.71 s` midpoint (interval `~3.87 s` to `~5.68 s`)
+            - current implication: `Kvdf` GPU validation is dramatically slower than CPU on the measured workload
         - `Cdmc` now has stronger fixed-candidate prep coverage:
           - the fixed-candidate GPU prep path now uses CPU-reference `CDMC` signal surfaces and the tested `start_t` mismatch is closed
           - the GPU `reopt_walk_forward` prep path now uses the same CPU-reference `CDMC` signal construction policy instead of the older hybrid sweep path
           - dedicated `start_t` parity coverage is now present for the current fixture
+          - dedicated GPU-vs-CPU `reopt_walk_forward` parity coverage is now present for the current fixture
+          - dedicated advanced-route outcome parity coverage is now present for the current fixture:
+            - CPU and GPU preserve the same candidate ordering plus the same `run_verdict` / `validation_verdict` semantics under the full advanced stack
+          - measured near-parity coverage is now present for `walk_forward`, `cscv_pbo`, and `spa` on the noisy fixture:
+            - `walk_forward` now matches trade-count summaries on the current fixture (`trades_median 9`, `trades_worst 8`) while metric drift stays in a small tolerance band (`~0.0202` sharpe median, `~0.0026` pnl median)
+            - `cscv_pbo` run-level outputs match and candidate OOS metric drift stays small (`~0.0088` worst observed)
+            - `spa` best-candidate key / p-value / pass semantics match, with small mean-diff drift (`~0.00154`)
           - a strict full in-sample GPU-vs-CPU metrics parity assertion still does not hold on the noisy fixture, so evidence depth is improved but not fully closed yet
+          - first direct advanced-stack benchmark coverage now exists for the current 50k / 8-candidate workload:
+            - CPU `wf_reopt_cscv_spa`: `~304.3 ms`
+            - GPU `wf_reopt_cscv_spa`: `~284.2 ms`
+            - current implication: the hardened GPU route preserves semantics and is now modestly faster than CPU for `Cdmc` at this smaller workload
+          - larger-workload benchmark follow-up now exists for 100k / 32 candidates:
+            - CPU `wf_reopt_cscv_spa`: `~2.95 s`
+            - GPU `wf_reopt_cscv_spa`: `~2.30 s`
+            - current implication: `Cdmc` GPU validation is materially faster than CPU on the measured larger workload
 - [x] Make composite-family cross-ticker semantics explicit in frontend capability surfacing:
   - pre-run summaries now distinguish composite GPU main-route expectations from composite cross-ticker behavior
   - composite `cross_ticker` no longer incorrectly implies a full CPU fallback in the preview summary when the main validation route is otherwise GPU-capable
@@ -1171,48 +1512,100 @@ This checklist is separate from the XLSX workbook checklist. Its purpose is to b
     - `cscv_pbo`
     - hard gates
   - post-run summaries now state `effective lightweight reruns` for composite cross mode even when the requested mode string is `preserved_finalists`
-- [ ] Decide whether composite fixed-candidate GPU validation should gain `cross_ticker` support.
-- [ ] Decide whether currently profile-conditional support for walk-forward, reopt walk-forward, SPA, trade bootstrap, and CSCV/PBO should be broadened.
-- [ ] If some profiles will remain CPU-preferred for validation, document that explicitly rather than treating it as implicit backend behavior.
+- [x] Decide whether composite fixed-candidate GPU validation should gain `cross_ticker` support.
+  - current rollout decision: no inline composite fixed-candidate GPU `cross_ticker` support for now
+  - product path remains the existing separate lightweight rerun orchestration
+  - preview and post-run summaries now state explicitly that the composite main route does not support inline `cross_ticker`
+- [x] Decide whether currently profile-conditional support for walk-forward, reopt walk-forward, SPA, trade bootstrap, and CSCV/PBO should be broadened.
+  - current decision: no default broadening pass for now
+  - product policy stays workload-aware:
+    - expose the features across strategies
+    - keep CPU as the canonical execution route where it is faster or more stable
+    - keep GPU only where route-policy benchmarks and parity evidence justify it
+  - future broadening is now opt-in and benchmark-driven rather than an assumed next step
+- [x] Freeze the CPU-faster composite profiles as CPU-canonical for now and stop treating their residual GPU metric drift as an active blocker.
+  - `Kqsr`, `Kvdf`, and `Carm` now stay CPU-canonical under `Auto` because fresh advanced-stack reruns still show CPU faster than GPU on the measured workloads.
+  - for these CPU-canonical profiles, remaining GPU metric drift is accepted and the explicit `GpuKernel` path is effectively archived for now rather than treated as an active parity target.
+  - only `Cdmc` remained an active composite GPU-route question because fresh advanced-stack reruns showed `GpuKernel` faster than `CpuOnly` on the measured 50k / 8 and 100k / 32 workloads.
+  - that boundary is now frozen for the current rollout: `Cdmc` keeps `GpuKernel` under `Auto`.
+  - `Cdmc` still carries small near-parity drift in `walk_forward`, `cscv_pbo`, and `spa`, but outcome-level tests preserve candidate ordering and `run_verdict` / `validation_verdict` semantics on the current noisy fixture, so the residual metric drift is accepted for now.
+- [x] Make `Auto` composite validation workload-aware for the currently measured composite GPU-capable profiles after the first direct advanced-stack benchmarks:
+  - `Kqsr` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~167.7 ms` vs GPU `~2.28 s`
+  - `Kvdf` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~108.9 ms` vs GPU `~4.71 s`
+  - `Carm` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~39.7 ms` vs GPU `~91.2 ms`
+  - `Cdmc` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~304.3 ms` vs GPU `~284.2 ms`
+  - `Carm` 100k / 32 candidates / `wf_reopt_cscv_spa`: CPU `~261.4 ms` vs GPU `~333.8 ms`
+  - `Cdmc` 100k / 32 candidates / `wf_reopt_cscv_spa`: CPU `~2.95 s` vs GPU `~2.30 s`
+  - implemented policy:
+    - `Auto` now prefers `CpuOnly` for `Kqsr` validation
+    - `Auto` now prefers `CpuOnly` for `Kvdf` validation
+    - `Auto` now prefers `CpuOnly` for `Carm` validation
+    - `Auto` now keeps `GpuKernel` for `Cdmc` validation based on the fresh advanced-stack rerun
+    - explicit `GpuKernel` requests remain available, but for `Kqsr` / `Kvdf` / `Carm` they are no longer an active optimization target
+  - preview, post-run UI summaries, and XLSX `Expected Execution` notes now surface this policy explicitly
+- [x] If some profiles will remain CPU-preferred for validation, document that explicitly rather than treating it as implicit backend behavior.
+  - `CompositeMo` is now explicitly surfaced as CPU-preferred in preview and post-run validation summaries
 
 ### Cross-ticker broadening
 
 - [x] Double-MA cross-ticker reruns now preserve verdict-relevant candidate approval semantics and hard gates.
 - [x] Double-MA cross-ticker now uses a bounded finalist policy to preserve full-stack coverage for selected finalists while improving runtime.
-- [ ] Decide whether composite-family cross-ticker reruns should also preserve any of the original optional validation modules:
+- [x] Decide whether composite-family cross-ticker reruns should also preserve any of the original optional validation modules:
   - walk-forward
   - reopt walk-forward
   - SPA
   - perturb
   - trade bootstrap
   - CSCV/PBO
-- [ ] If full preservation is too expensive, define an intentional reduced cross-ticker mode and expose that policy in the UI/XLSX.
-- [ ] Add smoke tests using existing repo-local datasets such as:
+  - current decision: no
+  - composite-family cross-ticker remains intentionally reduced and `lightweight rerun only`
+  - auxiliary composite cross requests explicitly strip the full optional validation stack rather than pretending to preserve it
+- [x] If full preservation is too expensive, define an intentional reduced cross-ticker mode and expose that policy in the UI/XLSX.
+  - current policy is now explicit in preview, post-run UI, XLSX `Expected Execution`, and cross-request tests
+- [x] Add smoke tests using existing repo-local datasets such as:
   - `AAPL.csv`
   - `NVDA.csv`
   - `SPY.csv`
   - `QQQ.csv`
-- [ ] Verify that cross-ticker filtering semantics are clearly represented in the final workbook for both approved and rejected candidates.
+  - command-layer tests now use repo-local multi-dataset combinations for both Double-MA preserved-finalists and composite lightweight cross-ticker flows
+- [x] Verify that cross-ticker filtering semantics are clearly represented in the final workbook for both approved and rejected candidates.
+  - the dashboard cross block now surfaces both `Shortlist Count` and `Semantics`
+  - workbook regressions now cover the cross-filtering note path on the approved baseline and the zero-survivor preserved-finalists rejection path
 
 ### Context propagation and artifact quality
 
 - [x] Populate `validation_context` in headless validation flows so exported artifacts preserve strategy identity and other context.
-- [ ] Audit other artifact-generation paths for missing validation context or strategy metadata.
-- [ ] Add regression tests ensuring headless-generated XLSX artifacts do not show `Strategy = Unknown` for known strategies.
+- [x] Audit other artifact-generation paths for missing validation context or strategy metadata.
+  - `run_artifacts.rs` summary extraction now falls back to `validation.req.validation_context` for `strategy_kind`, `csv_path`, and `timeframe` when `run.req` / `dataset_meta` are absent, keeping validation-originated and headless-originated artifact listings aligned with the report builder
+- [x] Add regression tests ensuring headless-generated XLSX artifacts do not show `Strategy = Unknown` for known strategies.
+  - workbook regression now proves `validation.req.validation_context.strategy_kind` survives into XLSX strategy-specific notes when `run.req.strategy_kind` is absent, matching the headless artifact path
 
 ### Frontend capability surfacing
 
-- [ ] Add validation-capability summaries to the UI comparable to existing optimization capability messaging.
-- [ ] Warn users when a requested validation module will not run on the selected strategy/backend route.
-- [ ] Surface when the backend falls back from requested GPU validation to CPU validation.
-- [ ] Surface when a validation module was skipped intentionally versus disabled by the user.
+- [x] Add validation-capability summaries to the UI comparable to existing optimization capability messaging.
+  - the validation workspace now renders `Expected Route` / `Expected Cross` / `Expected Modules` / `Expected Skips` / `Expected Notes` preview cards before execution
+  - the validation workspace now also renders `Expected Categories`, and post-run summaries now render `Categories` for the actual executed route
+- [x] Warn users when a requested validation module will not run on the selected strategy/backend route.
+  - preview summaries now expose `Expected Skips` explicitly for preserved-finalists double-MA cross reruns and lightweight composite cross reruns
+  - composite GPU previews also surface requested fixed-candidate modules that would be unavailable on the GPU main route
+- [x] Surface when the backend falls back from requested GPU validation to CPU validation.
+  - the XLSX dashboard `Execution Notes` block now separates `Route Fallback` from `Route Note`, so CPU fallbacks no longer hide inside a single free-text line
+- [x] Surface when a validation module was skipped intentionally versus disabled by the user.
+  - the XLSX dashboard now separates `Skipped Modules`, `Disabled Modules`, and `Cross Omitted Modules`
+  - expected execution rows now also separate `Expected Fallback`, `Expected Route Notes`, `Expected Disabled`, and `Expected Cross Omitted`
 
 ### Verification
 
-- [ ] Add end-to-end validation support tests for at least one strategy in each family using the broadest supported stack.
-- [ ] Add route-specific tests for unsupported-module behavior on GPU validation paths.
-- [ ] Add cross-ticker tests that use multiple repo-local datasets from `data/`.
-- [ ] Extend XLSX verification so workbook dashboards clearly indicate which validation layers actually ran versus which were unavailable or disabled.
+- [x] Add end-to-end validation support tests for at least one strategy in each family using the broadest supported stack.
+  - Double-MA already has broad-stack route coverage on the GPU main path
+  - composite validation now has a broad CPU full-stack smoke that covers the current profile set and populates `walk_forward`, `reopt_walk_forward`, `spa`, `cscv_pbo`, `perturb`, `trade_bootstrap`, `regime_slice_robustness`, and `friction_stress`
+- [x] Add route-specific tests for unsupported-module behavior on GPU validation paths.
+  - composite validation now has dedicated fallback tests for unsupported `GpuOnly` and `GpuHybridKernel` fixed-candidate routes, alongside the earlier `GpuKernel`/`Auto` fallback coverage
+  - composite cross-request coverage now also proves auxiliary cross reruns strip the full optional validation stack instead of silently carrying unsupported modules forward
+- [x] Add cross-ticker tests that use multiple repo-local datasets from `data/`.
+  - command-layer tests now use repo-local `AAPL.csv` / `NVDA.csv` / `SPY.csv` / `TSLA.csv` / `QQQ.csv` combinations to verify multi-dataset summary labels and `max_datasets` truncation for both Double-MA preserved-finalists and composite lightweight cross-ticker flows
+- [x] Extend XLSX verification so workbook dashboards clearly indicate which validation layers actually ran versus which were unavailable or disabled.
+  - regression coverage now checks explicit fallback/route-note rows, disabled-module summaries, preserved-cross omitted-module summaries, and `disabled` / `omitted by cross mode` status text on dashboard blocks where that state can be inferred from the request
 
 ## Frontend and Workflow Requirements
 
@@ -1329,7 +1722,10 @@ Shared regression evidence:
 - [x] frontend tests cover workflow wiring
 - [x] sample artifacts refreshed
 - [x] parity checks updated
-- [ ] telemetry checks updated
+- [x] telemetry checks updated
+  - `scripts/output_parity_pairs.json` was refreshed to maintained report JSON/XLSX baseline pairs
+  - `scripts/export_baseline_samples.mjs` now falls back to maintained baseline sample sources when ephemeral `_write_test` inputs are absent
+  - `node scripts/check_output_parity.mjs` passes on the current repo state
 
 ## Acceptance Criteria
 
@@ -1428,7 +1824,10 @@ The work is complete only when all of the following are true:
 - [x] Surface approval-state and rejection-reason distributions for mixed approved/rejected runs.
 - [x] Add explicit dashboard headers for the top visible-row summary table.
 - [x] Make row-cap behavior explicit for visible tables versus full-set distributions/audit data.
-- [ ] Review whether the legacy fallback builder should remain.
+- [x] Review whether the legacy fallback builder should remain.
+  - current decision: keep the old workbook builders as explicit legacy/reference code only
+  - active validation export paths (`build_report_xlsx_blocking`, `build_report_xlsx_bytes_headless`, `save_report_xlsx_blocking`) now go straight through `commands_reports_validation_xlsx::build_validation_report_xlsx`
+  - the legacy builders in `commands_reports.rs` are no longer treated as live fallback behavior; they remain only for staged comparison / compatibility review while Stage 3 meta-report fallback policy stays unchanged
 
 ### Frontend and workflow
 
@@ -1445,7 +1844,8 @@ The work is complete only when all of the following are true:
 - [x] Keep `build_report_xlsx` fallback output semantically aligned with saved-file output.
 - [x] Verify row-cap behavior for headless and headless-preview flows.
 - [x] Support explicit cross-ticker mode selection in headless validation runs.
-- [ ] Verify deterministic output-path behavior.
+- [x] Verify deterministic output-path behavior.
+  - headless default XLSX naming now derives from the emitted report timestamp rather than a second wall-clock read, and unit tests lock the default path shape to `csv stem + report ts`
 
 ### Tests
 
@@ -1460,13 +1860,19 @@ The work is complete only when all of the following are true:
 ### Samples and docs
 
 - [x] Refresh sample XLSX artifacts after workbook redesign stabilizes.
-- [ ] Update any telemetry/parity manifests that track XLSX outputs.
+- [x] Update any telemetry/parity manifests that track XLSX outputs.
+  - `scripts/output_parity_pairs.json` now tracks the maintained report JSON/XLSX baseline samples under `scripts/baselines/samples` instead of stale missing `_write_test/cli_runs` artifacts
+  - `node scripts/check_output_parity.mjs` now passes again on the current repo state
 - [x] Update architecture/status docs to match the new XLSX state.
 
 ### VectorGrid naming cleanup
 
 - [x] Audit all remaining user-visible `vectorbt_*` strings, artifact kinds, download filenames, and storage keys that should now be branded as `VectorGrid`.
-- [ ] Separate true external `VectorBT` faceoff/benchmark references from internal app naming debt so only the benchmark/comparison surfaces retain `vectorbt` wording.
+- [x] Separate true external `VectorBT` faceoff/benchmark references from internal app naming debt so only the benchmark/comparison surfaces retain `vectorbt` wording.
+  - remaining `vectorbt` references are now intentional in one of two categories:
+    - explicit VectorBT faceoff / benchmark materials under `research/VECTORBT_*` and `scripts/vectorbt_*`
+    - backward-compatibility aliases for legacy artifact kinds, file prefixes, and storage keys
+  - non-benchmark product/report/storage surfaces now use `VectorGrid` or neutral app-local naming
 - [x] Rename user-visible validation/report/export download filenames from `vectorbt_*` to `vectorgrid_*` or neutral app-specific names:
   - validation exports now use `vectorgrid_*`
   - analysis top/run downloads now use `vectorgrid_*`
@@ -1489,7 +1895,9 @@ The work is complete only when all of the following are true:
   - schema migration copies legacy values forward to the new primaries
   - preset exports now use `vectorgrid_preset_*`
 - [x] Add regression tests covering mixed old/new artifact naming compatibility.
-- [ ] Update research/docs so the app is consistently referred to as `VectorGrid`, with `VectorBT` mentioned only for explicit external comparisons.
+- [x] Update research/docs so the app is consistently referred to as `VectorGrid`, with `VectorBT` mentioned only for explicit external comparisons.
+  - VectorBT faceoff research notes now refer to the app side as `VectorGrid`
+  - benchmark/compatibility file names may still retain older identifiers where they are archival or compatibility-specific
 
 ## Risks and Guardrails
 
@@ -1528,12 +1936,63 @@ Guardrails:
    - `scripts/run_gpu_perf_gate.ps1` now uses `profile_gpu_dynamic_runner` steady-state iterations instead of the earlier criterion-on/criterion-off comparison that was overstating the dynamic ratio
    - current candidate gate passes again after dropping first-iteration warmup noise from the dynamic-strategy comparison
 4. Continue the `VectorGrid` naming-cleanup pass for remaining docs/research wording and any residual non-product `vectorbt_*` references, while preserving backward compatibility.
-5. Continue the composite-family validation support audit from the current surfacing baseline before attempting broader backend parity work.
+5. Use the Double-MA family as the reference model and broaden full validation-feature access across all existing strategies.
+   - freeze the reference validation contract and execution categories:
+     - `GPU-native`
+     - `GPU main + CPU tail`
+     - `CPU-only`
+     - `lightweight rerun only`
+     - `not supported`
+   - complete CPU feature access first for every strategy/profile
+   - first CPU-completion pass is now underway on composite validation, with regime robustness and friction stress added for composite finalists
+   - composite validation request shaping now defaults non-double-like runs to `Auto` instead of blindly inheriting a prior GPU optimize backend, so the frozen `Auto` route policy actually applies in normal UI validation flows
+   - then expand GPU-native support only where it is viable and worth the complexity
+   - archive deeper GPU work where CPU remains the canonical faster route and semantics are already satisfied
+6. Continue the composite-family validation support audit from the current surfacing baseline before attempting broader backend parity work.
    - the strategy/profile support matrix is now documented
+   - fresh advanced-stack route-policy evidence now widens the CPU-canonical composite set to `Asr` / `Vcc` / `Vemr` / `Rocb` / `Mkcs` / `Kqsr` / `Kvdf` / `Carm`, while `Cdmc` remains the main measured GPU-canonical exception in this family
    - `Kqsr` and `Kvdf` now have added walk-forward parity coverage
    - `Carm` fixed-candidate and reopt prep now use CPU-reference signal uploads where direct GPU signal parity was fragile
    - `Cdmc` fixed-candidate and reopt prep now use CPU-reference signal uploads where the earlier hybrid prep path was producing warmup drift
-   - the next useful step is deeper strict parity evidence for `Carm` / `Cdmc` plus any explicit user-facing note for profiles that remain CPU-preferred such as `CompositeMo`
+   - user-facing route summaries now explicitly note that `CompositeMo` is CPU-preferred, that `Auto` now prefers CPU for `Kqsr` / `Kvdf` / `Carm`, and that `Cdmc` now stays on `GpuKernel` under `Auto` based on the fresh advanced-stack rerun
+   - `CompositeMo` route wording is now tightened to the actual backend restriction: fixed-candidate GPU validation currently supports plain `CompositeCpu` `HardGate` candidates only
+   - plain `CompositeCpu` now has explicit backend policy coverage for the conditional GPU route:
+     - `Auto -> GpuKernel` is now tested for a uniform finalist set
+     - `Auto -> CpuOnly` is now tested when finalist `HalfTrend` settings diverge, with the expected uniform-parameter fallback reason
+     - explicit `GpuKernel -> CpuOnly` fallback is also now tested for divergent finalist `HalfTrend` settings
+   - non-`HardGate` base-composite candidates now also have explicit backend fallback coverage:
+     - `Auto -> CpuOnly` when signal mode is not `HardGate`
+     - `GpuKernel -> CpuOnly` when signal mode is not `HardGate`
+   - XLSX `Expected Execution` notes now mirror the same route-policy detail for the composite profiles above
+  - `Carm` / `Cdmc` now have dedicated `reopt_walk_forward` parity coverage on the current fixture, while stricter `walk_forward`, `cscv_pbo`, and `spa` parity probes still drift and remain intentionally undocumented as full-parity guarantees
+   - `Carm` / `Cdmc` walk-forward trade-count parity is now closed on the current noisy fixture; targeted CUDA tests now assert matching `trades_median` / `trades_worst`
+   - `Carm` / `Cdmc` now also have advanced-route outcome parity coverage on the current noisy fixture: CPU and GPU preserve candidate ordering and `run_verdict` / `validation_verdict` semantics under the full advanced stack
+  - for `Kqsr` / `Kvdf` / `Carm`, fresh reruns now settle the route question: CPU stays the canonical `Auto` path, and deeper GPU metric-parity work is archived for now
+  - backend inspection shows fixed-candidate `walk_forward`, `cscv_pbo`, and `spa` already run from the same prepared CPU-reference matrices for `Carm` / `Cdmc`; for `Cdmc`, the remaining drift is now more clearly in GPU metric evaluation itself than in a separate prep pipeline
+   - first direct advanced-stack criterion coverage now exists for `Carm` / `Cdmc`:
+     - `Kqsr` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~167.7 ms`, GPU `~2.28 s`
+     - `Kvdf` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~108.9 ms`, GPU `~4.71 s`
+     - `Carm` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~39.7 ms`, GPU `~91.2 ms`
+     - `Cdmc` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~304.3 ms`, GPU `~284.2 ms`
+     - `Carm` 100k / 32 candidates / `wf_reopt_cscv_spa`: CPU `~261.4 ms`, GPU `~333.8 ms`
+     - `Cdmc` 100k / 32 candidates / `wf_reopt_cscv_spa`: CPU `~2.95 s`, GPU `~2.30 s`
+  - route policy is now workload-aware in product behavior:
+    - `Auto` prefers CPU for `Kqsr` / `Kvdf` / `Carm`
+    - `Auto` keeps `GpuKernel` for `Cdmc`
+    - explicit `GpuKernel` remains available
+  - this retires the old broad question. The remaining GPU-route question is now narrower: whether `Cdmc`'s remaining small metric drift is acceptable as the current boundary, since it is now the only measured profile in this set where `Auto` still has a strong reason to stay GPU-routed.
+  - clean-GPU reruns on 2026-03-18 confirmed the widened composite `Auto` policy rather than reversing it:
+    - `Asr` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~185.9 ms`, GPU `~2.88 s`
+    - `Vcc` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~214.5 ms`, GPU request still falls back to CPU on fp32-stability, effective timed path `~302.8 ms`
+    - `Vemr` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~49.8 ms`, GPU `~811.4 ms`
+    - `Rocb` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~67.6 ms`, GPU `~354.5 ms`
+    - `Mkcs` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~69.6 ms`, GPU `~971.2 ms`
+  - result: no route-policy rollback was needed after the clean rerun; `Asr` / `Vcc` / `Vemr` / `Rocb` / `Mkcs` stay CPU-canonical under `Auto`
+  - clean-GPU reruns for `Cdmc` on 2026-03-18 also reconfirmed the existing GPU-keep policy:
+    - `Cdmc` 50k / 8 candidates / `wf_reopt_cscv_spa`: CPU `~305.3 ms`, GPU `~284.2 ms`
+    - `Cdmc` 100k / 32 candidates / `wf_reopt_cscv_spa`: CPU `~2.95 s`, GPU `~2.30 s`
+    - diagnostic drift remained small on the noisy fixture: WF Sharpe drift `~0.020 / 0.026`, CSCV OOS metric drift `~0.0088` on one candidate, SPA mean-diff drift `~0.00154`, while trade counts, candidate ordering, and verdict semantics still matched
+  - result: `Cdmc` is no longer treated as an unresolved route-policy question for the current rollout; the remaining open work is only future deeper GPU metric-parity work if it becomes worth pursuing later
 
 ## Working Notes
 

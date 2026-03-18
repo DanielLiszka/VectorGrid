@@ -500,7 +500,7 @@ describe('validationRequestBuilder', () => {
     expect(req.data_id).toBe('mkcs-data')
     expect(req.seed).toBe(5)
     expect(req.validation_context.strategy_kind).toBe('Mkcs')
-    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
     expect(req.candidates).toHaveLength(1)
     expect(req.candidates[0]).toMatchObject({
       fast_ma_type: 'ema',
@@ -509,6 +509,9 @@ describe('validationRequestBuilder', () => {
       slow_len: 48,
       mkcs: { stddev_period: 20, breakout_lookback: 30 }
     })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (MKCS)')
+    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for MKCS')
   })
 
   it('builds KQSR validation request using run-level KQSR config', () => {
@@ -671,6 +674,7 @@ describe('validationRequestBuilder', () => {
 
     expect(req.data_id).toBe('vcc-data')
     expect(req.seed).toBe(4)
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
     expect(req.candidates).toHaveLength(1)
     expect(req.candidates[0]).toMatchObject({
       fast_ma_type: 'ema',
@@ -679,6 +683,9 @@ describe('validationRequestBuilder', () => {
       slow_len: 40,
       vcc: { squeeze_period: 20, trend_period: 6 }
     })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (VCC)')
+    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for VCC')
   })
 
   it('summarizes double-ma gpu preserved-finalists capability expectations', () => {
@@ -737,6 +744,8 @@ describe('validationRequestBuilder', () => {
     expect(summary.crossSummary).toContain('finalists only')
     expect(summary.moduleSummary).toContain('GPU main route')
     expect(summary.moduleSummary).toContain('auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=9)')
+    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa')
+    expect(summary.categorySummary).toContain('GPU main + CPU tail: perturb + trade_bootstrap')
     expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
   })
 
@@ -767,6 +776,7 @@ describe('validationRequestBuilder', () => {
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected CpuOnly fallback')
     expect(summary.moduleSummary).toContain('Expected CPU fallback route')
+    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates')
     expect(summary.warningSummary).toContain('GpuOnly is not supported for fixed-candidate Double-MA validation')
   })
 
@@ -844,9 +854,237 @@ describe('validationRequestBuilder', () => {
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
     expect(summary.moduleSummary).toContain('Expected CPU fallback route (base composite)')
+    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates + walk_forward + cscv_pbo')
     expect(summary.crossSummary).toContain('lightweight reruns')
-    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu only')
-    expect(summary.warningSummary).toContain('Composite cross reruns are lightweight and omit walk_forward')
+    expect(summary.skippedSummary).toContain('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap + CSCV + hard gates')
+    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only')
+    expect(summary.warningSummary).toContain('Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward')
+  })
+
+  it('surfaces plain CompositeCpu GPU route restrictions explicitly in previews', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeCpu',
+        data_id: 'data-composite-cpu',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        strategy: { fee_bps: 1.0 },
+        halftrend: { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'hard_gate',
+            strategy: { fee_bps: 1.0 },
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected GPU composite route (base composite)')
+    expect(summary.warningSummary).toContain('Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists')
+  })
+
+  it('defaults Carm composite validation to Auto so CPU-preferred policy applies after GPU optimization', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Carm',
+        data_id: 'data-carm-preview',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 10,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            carm: {},
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'hard_gate',
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (CARM)')
+    expect(summary.moduleSummary).toContain('Expected CPU route (CARM)')
+    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates')
+    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for CARM')
+  })
+
+  it('defaults VCET validation to Auto and carries vcet params into candidates', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Vcet',
+        data_id: 'data-vcet',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        vcet: {
+          vidya_short_period: 6,
+          vidya_long_period: 24,
+          ce_period: 22,
+          ce_mult: 3.0,
+        },
+        strategy: { fee_bps: 1.0 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'vidya',
+            slow_ma_type: 'vidya',
+            fast_len: 8,
+            slow_len: 34,
+            vcet: {
+              vidya_short_period: 8,
+              vidya_long_period: 34,
+              ce_period: 34,
+              ce_mult: 2.8,
+            },
+            strategy: { fee_bps: 1.0 },
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
+    expect(req.candidates[0]).toMatchObject({
+      fast_ma_type: 'vidya',
+      slow_ma_type: 'vidya',
+      fast_len: 8,
+      slow_len: 34,
+      vcet: {
+        vidya_short_period: 8,
+        vidya_long_period: 34,
+        ce_period: 34,
+        ce_mult: 2.8,
+      },
+    })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected GPU composite route (VCET)')
+    expect(summary.warningSummary).toContain('VCET')
+  })
+
+  it('treats Carm Auto composite validation as CPU-preferred in previews', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Carm',
+        data_id: 'data-carm-auto-preview',
+        backend: { backend: 'Auto', device_id: 0 },
+        ma_source: 'close',
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 10,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            carm: {},
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'hard_gate',
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (CARM)')
+    expect(summary.moduleSummary).toContain('Expected CPU route (CARM)')
+    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates')
+    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for CARM')
+  })
+
+  it('treats Cdmc Auto composite validation as GPU-routed in previews', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Cdmc',
+        data_id: 'data-cdmc-auto-preview',
+        backend: { backend: 'Auto', device_id: 0 },
+        ma_source: 'close',
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 10,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            cdmc: {},
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'hard_gate',
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
+    expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
+    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
+    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+  })
+
+  it('defaults Cdmc composite validation to Auto so the measured GPU-preferred policy remains active', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Cdmc',
+        data_id: 'data-cdmc-preview',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 10,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            cdmc: {},
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'hard_gate',
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
+    expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
+    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
+    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
   })
 
   it('treats CompositeMo GPU fixed-candidate validation as CpuOnly fallback in previews', () => {
@@ -879,7 +1117,7 @@ describe('validationRequestBuilder', () => {
 
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
-    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu only')
+    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only')
   })
 
   it('throws for missing run context or rows', () => {

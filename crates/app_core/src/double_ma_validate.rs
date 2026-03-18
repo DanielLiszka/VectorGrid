@@ -2074,8 +2074,8 @@ fn compute_friction_stress_summaries(
         return Ok(Vec::new());
     }
 
-    let scenario_labels = friction_stress_scenarios(&StrategyConfig::default())
-        .map(|scenario| scenario.label);
+    let scenario_labels =
+        friction_stress_scenarios(&StrategyConfig::default()).map(|scenario| scenario.label);
     let scenario_count = scenario_labels.len();
     let mut base_ranks = vec![0usize; finalists.len()];
     let mut scenario_ranks: Vec<Vec<usize>> = vec![vec![0; finalists.len()]; scenario_count];
@@ -5226,7 +5226,8 @@ mod tests {
             close.push(base + 0.5);
             vol.push(1_000.0);
         }
-        let candles = vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol);
+        let candles =
+            vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol);
 
         let strategy = crate::strategy_presets::trend_quality_strategy_for_kernel();
         let params = DoubleMaValidationParams {

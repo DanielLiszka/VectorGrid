@@ -121,6 +121,14 @@ fn display_cross_mode_label(label: &str) -> &'static str {
     }
 }
 
+fn display_cross_semantics_label(label: &str) -> &'static str {
+    match label {
+        "lightweight" => "lightweight rerun filter",
+        "preserved_finalists" => "final post-cross shortlist",
+        _ => "post-cross candidate summary",
+    }
+}
+
 fn bootstrap_mode_label(row: &ExportCandidateRow) -> &'static str {
     if row.bootstrap_stationary_mean_block_len.is_some()
         || row.bootstrap_stationary_pnl_p05.is_some()
@@ -166,6 +174,25 @@ fn display_regime_support(label: &str) -> &'static str {
         "vol_selective" => "Vol Selective",
         "weak" => "Weak",
         _ => "not run",
+    }
+}
+
+fn summary_mentions_module(summary: &str, module: &str) -> bool {
+    summary
+        .split(" + ")
+        .any(|part| part.trim().eq_ignore_ascii_case(module))
+        || summary
+            .split(" | ")
+            .any(|part| part.trim().eq_ignore_ascii_case(module))
+}
+
+fn disabled_or_omitted_status(model: &ValidationExportModel, module: &str) -> &'static str {
+    if summary_mentions_module(&model.actual_disabled_module_summary, module) {
+        "disabled"
+    } else if summary_mentions_module(&model.actual_cross_omitted_summary, module) {
+        "omitted by cross mode"
+    } else {
+        "not run"
     }
 }
 
@@ -712,7 +739,13 @@ fn write_candidate_sheet(
                     .write_string_with_format(audit_row, audit_col + 2, &bucket.label, text_fmt)
                     .map_err(|e: XlsxError| e.to_string())?;
                 write_optional_usize(sheet, audit_row, audit_col + 3, bucket.bars, int_fmt)?;
-                write_optional_number(sheet, audit_row, audit_col + 4, bucket.active_frac, pct_fmt)?;
+                write_optional_number(
+                    sheet,
+                    audit_row,
+                    audit_col + 4,
+                    bucket.active_frac,
+                    pct_fmt,
+                )?;
                 write_optional_number(sheet, audit_row, audit_col + 5, bucket.pnl, num_fmt)?;
                 write_optional_number(sheet, audit_row, audit_col + 6, bucket.sharpe, num_fmt)?;
                 write_optional_number(sheet, audit_row, audit_col + 7, bucket.max_dd, num_fmt)?;
@@ -766,17 +799,8 @@ fn write_regime_audit_sheet(
         let _ = sheet.set_column_width(col, width);
     }
     for (col, header) in [
-        "Rank",
-        "Approval",
-        "Params",
-        "Slice",
-        "Bars",
-        "Active",
-        "PnL",
-        "Sharpe",
-        "MaxDD",
-        "Trades",
-        "Stable",
+        "Rank", "Approval", "Params", "Slice", "Bars", "Active", "PnL", "Sharpe", "MaxDD",
+        "Trades", "Stable",
     ]
     .iter()
     .enumerate()
@@ -1123,21 +1147,22 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(8, 5, "CSCV Status", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
+        let cscv_status = if cscv.skipped_reason.is_empty() {
+            "completed".to_string()
+        } else {
+            format!("skipped: {}", cscv.skipped_reason)
+        };
         dashboard
-            .write_string_with_format(
-                8,
-                6,
-                if cscv.skipped_reason.is_empty() {
-                    "completed"
-                } else {
-                    cscv.skipped_reason.as_str()
-                },
-                text_fmt,
-            )
+            .write_string_with_format(8, 6, &cscv_status, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
-            .write_string_with_format(3, 6, "not run", text_fmt)
+            .write_string_with_format(
+                3,
+                6,
+                disabled_or_omitted_status(model, "cscv_pbo"),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -1174,25 +1199,21 @@ fn build_dashboard(
         dashboard
             .write_string_with_format(13, 5, "SPA Status", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
+        let spa_status = if !spa.skipped_reason.is_empty() {
+            format!("skipped: {}", spa.skipped_reason)
+        } else if spa.passed == Some(true) {
+            "pass".to_string()
+        } else if spa.passed == Some(false) {
+            "fail".to_string()
+        } else {
+            "not run".to_string()
+        };
         dashboard
-            .write_string_with_format(
-                13,
-                6,
-                if !spa.skipped_reason.is_empty() {
-                    spa.skipped_reason.as_str()
-                } else if spa.passed == Some(true) {
-                    "pass"
-                } else if spa.passed == Some(false) {
-                    "fail"
-                } else {
-                    "not run"
-                },
-                text_fmt,
-            )
+            .write_string_with_format(13, 6, &spa_status, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
-            .write_string_with_format(10, 6, "not run", text_fmt)
+            .write_string_with_format(10, 6, disabled_or_omitted_status(model, "spa"), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -1261,7 +1282,12 @@ fn build_dashboard(
         write_optional_number(dashboard, 26, 6, reopt.wfe_pnl_worst, num_fmt)?;
     } else {
         dashboard
-            .write_string_with_format(15, 6, "not run", text_fmt)
+            .write_string_with_format(
+                15,
+                6,
+                disabled_or_omitted_status(model, "reopt_walk_forward"),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -1297,28 +1323,28 @@ fn build_dashboard(
             )
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(32, 5, "Counts", label_fmt)
+            .write_string_with_format(32, 5, "Shortlist Count", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(32, 6, "final post-cross shortlist", text_fmt)
+            .write_number_with_format(32, 6, cross.shortlist_count as f64, int_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(33, 5, "Semantics", label_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        dashboard
+            .write_string_with_format(33, 6, display_cross_semantics_label(&cross.mode), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
-            .write_string_with_format(29, 6, "not run", text_fmt)
+            .write_string_with_format(
+                29,
+                6,
+                disabled_or_omitted_status(model, "cross_ticker"),
+                text_fmt,
+            )
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    let mut skipped_modules: Vec<String> = Vec::new();
-    if let Some(cscv) = model.cscv_pbo.as_ref() {
-        if !cscv.skipped_reason.is_empty() {
-            skipped_modules.push(format!("CSCV: {}", cscv.skipped_reason));
-        }
-    }
-    if let Some(spa) = model.spa.as_ref() {
-        if !spa.skipped_reason.is_empty() {
-            skipped_modules.push(format!("SPA: {}", spa.skipped_reason));
-        }
-    }
     let top_warning = run_verdict
         .and_then(|verdict| {
             if !verdict.fail_reasons.is_empty() {
@@ -1330,70 +1356,108 @@ fn build_dashboard(
             }
         })
         .unwrap_or("-");
-    let route_detail = if model.backend_fallback_reason.is_empty() {
-        "-"
-    } else {
-        model.backend_fallback_reason.as_str()
-    };
-    let skipped_modules_text = if skipped_modules.is_empty() {
-        "-".to_string()
-    } else {
-        skipped_modules.join(" | ")
-    };
 
     dashboard
         .write_string_with_format(34, 5, "Execution Notes", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(35, 5, "Route Detail", label_fmt)
+        .write_string_with_format(35, 5, "Route Fallback", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(35, 6, route_detail, text_fmt)
+        .write_string_with_format(35, 6, &model.actual_fallback_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(36, 5, "Aux CPU Tails", label_fmt)
+        .write_string_with_format(36, 5, "Route Note", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(36, 6, &model.actual_aux_tail_summary, text_fmt)
+        .write_string_with_format(36, 6, &model.actual_route_note_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(37, 5, "Skipped Modules", label_fmt)
+        .write_string_with_format(37, 5, "Aux CPU Tails (inferred)", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(37, 6, &skipped_modules_text, text_fmt)
+        .write_string_with_format(37, 6, &model.actual_aux_tail_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(38, 5, "Top Warning", label_fmt)
+        .write_string_with_format(38, 5, "Skipped Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(38, 6, top_warning, text_fmt)
+        .write_string_with_format(38, 6, &model.actual_skipped_module_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(46, 5, "Expected Execution", label_fmt)
+        .write_string_with_format(39, 5, "Disabled Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(47, 5, "Expected Route", label_fmt)
+        .write_string_with_format(39, 6, &model.actual_disabled_module_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(47, 6, &model.expected_route_summary, text_fmt)
+        .write_string_with_format(40, 5, "Cross Omitted Modules", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(48, 5, "Expected Cross", label_fmt)
+        .write_string_with_format(40, 6, &model.actual_cross_omitted_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(48, 6, &model.expected_cross_summary, text_fmt)
+        .write_string_with_format(41, 5, "Top Warning", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(49, 5, "Expected Modules", label_fmt)
+        .write_string_with_format(41, 6, top_warning, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(49, 6, &model.expected_module_summary, text_fmt)
+        .write_string_with_format(42, 5, "Expected Execution", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(50, 5, "Expected Notes", label_fmt)
+        .write_string_with_format(43, 5, "Expected Route", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dashboard
-        .write_string_with_format(50, 6, &model.expected_warning_summary, text_fmt)
+        .write_string_with_format(43, 6, &model.expected_route_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(44, 5, "Expected Cross", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(44, 6, &model.expected_cross_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(45, 5, "Expected Modules", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(45, 6, &model.expected_module_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(46, 5, "Expected Categories", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(46, 6, &model.expected_category_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(47, 5, "Expected Fallback", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(47, 6, &model.expected_fallback_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(48, 5, "Expected Route Notes", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(48, 6, &model.expected_route_note_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(49, 5, "Expected Disabled", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(49, 6, &model.expected_disabled_module_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(50, 5, "Expected Cross Omitted", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(50, 6, &model.expected_cross_omitted_summary, text_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(51, 5, "Expected Notes", label_fmt)
+        .map_err(|e: XlsxError| e.to_string())?;
+    dashboard
+        .write_string_with_format(51, 6, &model.expected_warning_summary, text_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
 
     dashboard
@@ -1725,12 +1789,7 @@ fn build_dashboard(
             .write_string_with_format(80, 5, "Note", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(
-                80,
-                6,
-                &model.bootstrap_mode_summary,
-                text_fmt,
-            )
+            .write_string_with_format(80, 6, &model.bootstrap_mode_summary, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
@@ -1792,23 +1851,13 @@ fn build_dashboard(
             .write_string_with_format(89, 5, "Rule", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(
-                89,
-                6,
-                "absolute pass: pnl >= 0 and sharpe >= 0",
-                text_fmt,
-            )
+            .write_string_with_format(89, 6, "absolute pass: pnl >= 0 and sharpe >= 0", text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
             .write_string_with_format(90, 5, "Note", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(
-                90,
-                6,
-                &model.friction_policy_summary,
-                text_fmt,
-            )
+            .write_string_with_format(90, 6, &model.friction_policy_summary, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard

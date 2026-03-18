@@ -70,6 +70,12 @@ const {
   rocbAtrPeriod,
   rocbAtrStopMult,
   rocbMaxTradeBars,
+  vcetVidyaShortPeriod,
+  vcetVidyaLongPeriod,
+  vcetVidyaAlpha,
+  vcetCePeriod,
+  vcetCeMult,
+  vcetMaxTradeBars,
   vemrZPeriod,
   vemrZMaType,
   vemrZNbdev,
@@ -88,6 +94,11 @@ const {
   vccRequireMomentumAccel,
   rocbMapFastToChannelPeriod,
   rocbMapSlowToAtrPeriod,
+  vcetMapFastToVidyaShortPeriod,
+  vcetMapSlowToVidyaLongPeriod,
+  vcetMapSlowToCePeriod,
+  vcetCeUseClose,
+  vcetRequireVidyaSlope,
   vemrMapFastToZPeriod,
   vemrMapFastToBbPeriod,
   vemrMapSlowToAtrPeriod,
@@ -213,6 +224,12 @@ const rocbChannelPeriodDraft = ref('20')
 const rocbAtrPeriodDraft = ref('14')
 const rocbAtrStopMultDraft = ref('2.0')
 const rocbMaxTradeBarsDraft = ref('80')
+const vcetVidyaShortPeriodDraft = ref('6')
+const vcetVidyaLongPeriodDraft = ref('24')
+const vcetVidyaAlphaDraft = ref('0.2')
+const vcetCePeriodDraft = ref('22')
+const vcetCeMultDraft = ref('3.0')
+const vcetMaxTradeBarsDraft = ref('120')
 const vemrZPeriodDraft = ref('20')
 const vemrZMaTypeDraft = ref('sma')
 const vemrZNbdevDraft = ref('1.0')
@@ -230,7 +247,7 @@ const visible = computed(() => String(controlsTab.value || '').trim() === 'strat
 const strategyKindNormalized = computed(() => String(strategyKind.value || 'DoubleMa').trim() || 'DoubleMa')
 const isDoubleLikeKind = computed(() => {
   const kind = strategyKindNormalized.value
-  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'Asr' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Kqsr' || kind === 'Carm' || kind === 'Kvdf' || kind === 'Mkcs' || kind === 'Cdmc' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'Asr' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Vcet' || kind === 'Kqsr' || kind === 'Carm' || kind === 'Kvdf' || kind === 'Mkcs' || kind === 'Cdmc' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
 })
 const showDmConstraints = computed(() => isDoubleLikeKind.value)
 const showAsrControls = computed(() => strategyKindNormalized.value === 'Asr')
@@ -238,6 +255,7 @@ const showVccControls = computed(() => strategyKindNormalized.value === 'Vcc')
 const showPitControls = computed(() => strategyKindNormalized.value === 'Pit')
 const showVfctControls = computed(() => strategyKindNormalized.value === 'Vfct')
 const showRocbControls = computed(() => strategyKindNormalized.value === 'Rocb')
+const showVcetControls = computed(() => strategyKindNormalized.value === 'Vcet')
 const showVemrControls = computed(() => strategyKindNormalized.value === 'Vemr')
 const showKaufmanFields = computed(() => {
   const mode = String(exitMode.value || 'cross').trim() || 'cross'
@@ -321,6 +339,12 @@ watch(
     String(rocbAtrPeriod.value || '14'),
     String(rocbAtrStopMult.value || '2.0'),
     String(rocbMaxTradeBars.value || '80'),
+    String(vcetVidyaShortPeriod.value || '6'),
+    String(vcetVidyaLongPeriod.value || '24'),
+    String(vcetVidyaAlpha.value || '0.2'),
+    String(vcetCePeriod.value || '22'),
+    String(vcetCeMult.value || '3.0'),
+    String(vcetMaxTradeBars.value || '120'),
     String(vemrZPeriod.value || '20'),
     String(vemrZMaType.value || 'sma'),
     String(vemrZNbdev.value || '1.0'),
@@ -388,6 +412,12 @@ watch(
     nextRocbAtrPeriod,
     nextRocbAtrStopMult,
     nextRocbMaxTradeBars,
+    nextVcetVidyaShortPeriod,
+    nextVcetVidyaLongPeriod,
+    nextVcetVidyaAlpha,
+    nextVcetCePeriod,
+    nextVcetCeMult,
+    nextVcetMaxTradeBars,
     nextVemrZPeriod,
     nextVemrZMaType,
     nextVemrZNbdev,
@@ -454,6 +484,12 @@ watch(
     if (rocbAtrPeriodDraft.value !== nextRocbAtrPeriod) rocbAtrPeriodDraft.value = nextRocbAtrPeriod
     if (rocbAtrStopMultDraft.value !== nextRocbAtrStopMult) rocbAtrStopMultDraft.value = nextRocbAtrStopMult
     if (rocbMaxTradeBarsDraft.value !== nextRocbMaxTradeBars) rocbMaxTradeBarsDraft.value = nextRocbMaxTradeBars
+    if (vcetVidyaShortPeriodDraft.value !== nextVcetVidyaShortPeriod) vcetVidyaShortPeriodDraft.value = nextVcetVidyaShortPeriod
+    if (vcetVidyaLongPeriodDraft.value !== nextVcetVidyaLongPeriod) vcetVidyaLongPeriodDraft.value = nextVcetVidyaLongPeriod
+    if (vcetVidyaAlphaDraft.value !== nextVcetVidyaAlpha) vcetVidyaAlphaDraft.value = nextVcetVidyaAlpha
+    if (vcetCePeriodDraft.value !== nextVcetCePeriod) vcetCePeriodDraft.value = nextVcetCePeriod
+    if (vcetCeMultDraft.value !== nextVcetCeMult) vcetCeMultDraft.value = nextVcetCeMult
+    if (vcetMaxTradeBarsDraft.value !== nextVcetMaxTradeBars) vcetMaxTradeBarsDraft.value = nextVcetMaxTradeBars
     if (vemrZPeriodDraft.value !== nextVemrZPeriod) vemrZPeriodDraft.value = nextVemrZPeriod
     if (vemrZMaTypeDraft.value !== nextVemrZMaType) vemrZMaTypeDraft.value = nextVemrZMaType
     if (vemrZNbdevDraft.value !== nextVemrZNbdev) vemrZNbdevDraft.value = nextVemrZNbdev
@@ -1202,6 +1238,63 @@ onBeforeUnmount(() => {
             <label for="vueRocbMaxTradeBars">Max trade bars</label>
             <input id="vueRocbMaxTradeBars" type="number" min="1" step="1" :value="rocbMaxTradeBarsDraft" @input="rocbMaxTradeBarsDraft = String(($event.target as HTMLInputElement).value || '80'); queueInputValue('rocbMaxTradeBars', rocbMaxTradeBarsDraft)" @change="commitInputValue('rocbMaxTradeBars', rocbMaxTradeBarsDraft)" />
           </div>
+        </div>
+      </section>
+
+      <section class="pane" v-if="showVcetControls">
+        <h3>VCET parameters</h3>
+        <p class="muted">VCET combines a mapped VIDYA trend anchor with a Chandelier Exit regime filter. It now supports unified GPU execution with CPU fallback while optimizing over the global fast/slow lattice.</p>
+        <div class="rowThree">
+          <label class="checkboxRow" for="vueVcetMapFastToVidyaShortPeriod">
+            <input id="vueVcetMapFastToVidyaShortPeriod" type="checkbox" :checked="Boolean(vcetMapFastToVidyaShortPeriod)" @change="strategyStore.setCheckboxField('vcetMapFastToVidyaShortPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map fast length to VIDYA short</span>
+          </label>
+          <label class="checkboxRow" for="vueVcetMapSlowToVidyaLongPeriod">
+            <input id="vueVcetMapSlowToVidyaLongPeriod" type="checkbox" :checked="Boolean(vcetMapSlowToVidyaLongPeriod)" @change="strategyStore.setCheckboxField('vcetMapSlowToVidyaLongPeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map slow length to VIDYA long</span>
+          </label>
+          <label class="checkboxRow" for="vueVcetMapSlowToCePeriod">
+            <input id="vueVcetMapSlowToCePeriod" type="checkbox" :checked="Boolean(vcetMapSlowToCePeriod)" @change="strategyStore.setCheckboxField('vcetMapSlowToCePeriod', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Map slow length to Chandelier period</span>
+          </label>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVcetVidyaShortPeriod">VIDYA short</label>
+            <input id="vueVcetVidyaShortPeriod" type="number" min="1" step="1" :disabled="Boolean(vcetMapFastToVidyaShortPeriod)" :value="vcetVidyaShortPeriodDraft" @input="vcetVidyaShortPeriodDraft = String(($event.target as HTMLInputElement).value || '6'); queueInputValue('vcetVidyaShortPeriod', vcetVidyaShortPeriodDraft)" @change="commitInputValue('vcetVidyaShortPeriod', vcetVidyaShortPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVcetVidyaLongPeriod">VIDYA long</label>
+            <input id="vueVcetVidyaLongPeriod" type="number" min="2" step="1" :disabled="Boolean(vcetMapSlowToVidyaLongPeriod)" :value="vcetVidyaLongPeriodDraft" @input="vcetVidyaLongPeriodDraft = String(($event.target as HTMLInputElement).value || '24'); queueInputValue('vcetVidyaLongPeriod', vcetVidyaLongPeriodDraft)" @change="commitInputValue('vcetVidyaLongPeriod', vcetVidyaLongPeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVcetVidyaAlpha">VIDYA alpha</label>
+            <input id="vueVcetVidyaAlpha" type="number" min="0.0001" step="0.01" :value="vcetVidyaAlphaDraft" @input="vcetVidyaAlphaDraft = String(($event.target as HTMLInputElement).value || '0.2'); queueInputValue('vcetVidyaAlpha', vcetVidyaAlphaDraft)" @change="commitInputValue('vcetVidyaAlpha', vcetVidyaAlphaDraft)" />
+          </div>
+        </div>
+        <div class="rowThree">
+          <div>
+            <label for="vueVcetCePeriod">Chandelier period</label>
+            <input id="vueVcetCePeriod" type="number" min="1" step="1" :disabled="Boolean(vcetMapSlowToCePeriod)" :value="vcetCePeriodDraft" @input="vcetCePeriodDraft = String(($event.target as HTMLInputElement).value || '22'); queueInputValue('vcetCePeriod', vcetCePeriodDraft)" @change="commitInputValue('vcetCePeriod', vcetCePeriodDraft)" />
+          </div>
+          <div>
+            <label for="vueVcetCeMult">Chandelier mult</label>
+            <input id="vueVcetCeMult" type="number" min="0.0001" step="0.1" :value="vcetCeMultDraft" @input="vcetCeMultDraft = String(($event.target as HTMLInputElement).value || '3.0'); queueInputValue('vcetCeMult', vcetCeMultDraft)" @change="commitInputValue('vcetCeMult', vcetCeMultDraft)" />
+          </div>
+          <div>
+            <label for="vueVcetMaxTradeBars">Max trade bars</label>
+            <input id="vueVcetMaxTradeBars" type="number" min="1" step="1" :value="vcetMaxTradeBarsDraft" @input="vcetMaxTradeBarsDraft = String(($event.target as HTMLInputElement).value || '120'); queueInputValue('vcetMaxTradeBars', vcetMaxTradeBarsDraft)" @change="commitInputValue('vcetMaxTradeBars', vcetMaxTradeBarsDraft)" />
+          </div>
+        </div>
+        <div class="rowTwo">
+          <label class="checkboxRow" for="vueVcetCeUseClose">
+            <input id="vueVcetCeUseClose" type="checkbox" :checked="Boolean(vcetCeUseClose)" @change="strategyStore.setCheckboxField('vcetCeUseClose', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Use close in Chandelier Exit</span>
+          </label>
+          <label class="checkboxRow" for="vueVcetRequireVidyaSlope">
+            <input id="vueVcetRequireVidyaSlope" type="checkbox" :checked="Boolean(vcetRequireVidyaSlope)" @change="strategyStore.setCheckboxField('vcetRequireVidyaSlope', !!(($event.target as HTMLInputElement).checked))" />
+            <span>Require VIDYA slope confirmation</span>
+          </label>
         </div>
       </section>
 

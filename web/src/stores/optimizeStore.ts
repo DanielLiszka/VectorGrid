@@ -24,6 +24,7 @@ const STRATEGY_OPTIONS_DEFAULT: OptimizeOption[] = [
   { value: 'Marrt', label: 'MA Ribbon Regime Trend (MARRT)', disabled: false },
   { value: 'Vfct', label: 'Volume Flow Confirmation Trend (VFCT)', disabled: false },
   { value: 'Rocb', label: 'Risk Overlay Channel Breakout (ROCB)', disabled: false },
+  { value: 'Vcet', label: 'VIDYA Chandelier Exit Trend (VCET)', disabled: false },
   { value: 'Kqsr', label: 'KDJ QQE Stochastic Reversion (KQSR)', disabled: false },
   { value: 'Carm', label: 'Coppock AO Relative Momentum (CARM)', disabled: false },
   { value: 'Kvdf', label: 'Keltner VWAP Directional Flow (KVDF)', disabled: false },

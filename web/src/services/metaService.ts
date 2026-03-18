@@ -1336,6 +1336,7 @@ function normalizeStrategyKind(kindRaw: unknown): string {
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
+  if (kind === 'Vcet') return 'Vcet'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
@@ -1748,8 +1749,8 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
 
     const optimizeStore = getOptimizeStore()
     const strategyKind = normalizeStrategyKind(optimizeStore?.strategyKind)
-    if (strategyKind !== 'CompositeCpu' && strategyKind !== 'CompositeMo') {
-      setStatusLine('Batch runs currently support Composite strategies only (Composite [CPU] or Composite [CPU + MO]).')
+    if (strategyKind !== 'CompositeCpu' && strategyKind !== 'CompositeMo' && strategyKind !== 'Vcet') {
+      setStatusLine('Batch runs currently support Composite strategies only (Composite [CPU], Composite [CPU + MO], or VCET).')
       return
     }
 
@@ -2035,7 +2036,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
 
     if (autoMeta && !cancelled) {
       if (analysisStore) {
-        analysisStore.metaStrategyKind = strategyKind === 'CompositeCpu' ? 'CompositeCpu' : 'CompositeMo'
+        analysisStore.metaStrategyKind = strategyKind
         if (batchTimeframes.size === 1 && !normalizeText(analysisStore.metaTimeframe)) {
           analysisStore.metaTimeframe = normalizeText(Array.from(batchTimeframes)[0])
         }

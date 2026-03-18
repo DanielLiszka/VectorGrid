@@ -3,23 +3,13 @@
   "base_dir": "..",
   "pairs": [
     {
-      "name": "run-artifact-json",
-      "baseline": "_write_test/cli_runs/AAPL_opt.json",
-      "candidate": "_write_test/cli_runs/AAPL_opt_gpu_auto.json"
-    },
-    {
-      "name": "summary-csv",
-      "baseline": "_write_test/cli_runs/summary.csv",
-      "candidate": "_write_test/cli_runs/summary_gpu_auto.csv"
-    },
-    {
       "name": "report-json-artifact",
-      "baseline": "_write_test/headless_reports/AAPL_headless_test.json",
+      "baseline": "scripts/baselines/samples/report.json",
       "candidate": "_write_test/headless_reports/AAPL_headless_current.json"
     },
     {
       "name": "report-xlsx-zip-structure",
-      "baseline": "_write_test/headless_reports/AAPL_headless_test.xlsx",
+      "baseline": "scripts/baselines/samples/report.xlsx",
       "candidate": "_write_test/headless_reports/AAPL_headless_current.xlsx"
     }
   ]

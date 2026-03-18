@@ -243,6 +243,7 @@ fn main() -> Result<(), String> {
         carm: None,
         kvdf: None,
         cdmc: None,
+        vcet: None,
         macz: ta_app_core::composite_cpu::MaczGateParams::default(),
         ott: ta_app_core::composite_cpu::OttGateParams::default(),
         signal_mode: CompositeSignalMode::HardGate,

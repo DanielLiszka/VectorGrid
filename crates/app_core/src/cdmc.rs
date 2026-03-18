@@ -7,11 +7,11 @@ use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_direct_with_inputs, compute_dynamic_indicator_cuda_with_inputs,
     DynamicIndicatorCudaComputeOutput, DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
+#[cfg(feature = "cuda")]
+use crate::indicator_catalog::IndicatorInputKind;
 use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
-#[cfg(feature = "cuda")]
-use crate::indicator_catalog::IndicatorInputKind;
 use serde::{Deserialize, Serialize};
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
@@ -19,9 +19,9 @@ use vector_ta::cuda::moving_averages::{CudaMama, DeviceArrayF32};
 use vector_ta::indicators::decycler::DecyclerBuilder;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
-use vector_ta::indicators::moving_averages::mama::MamaBuilder;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::moving_averages::mama::MamaBatchRange;
+use vector_ta::indicators::moving_averages::mama::MamaBuilder;
 use vector_ta::utilities::data_loader::{source_type, Candles};
 use vector_ta::utilities::enums::Kernel;
 
@@ -521,8 +521,13 @@ pub fn compute_cdmc_mama_pair_cuda_device(
 
     let mut host_mama = vec![f32::NAN; prices.len()];
     let mut host_fama = vec![f32::NAN; prices.len()];
-    cuda.mama_batch_into_host_f32(prepared_inputs.source(), &sweep, &mut host_mama, &mut host_fama)
-        .map_err(|e| e.to_string())?;
+    cuda.mama_batch_into_host_f32(
+        prepared_inputs.source(),
+        &sweep,
+        &mut host_mama,
+        &mut host_fama,
+    )
+    .map_err(|e| e.to_string())?;
     let mama_first_valid = host_mama.iter().position(|value| value.is_finite());
     let fama_first_valid = host_fama.iter().position(|value| value.is_finite());
     let first_output_valid = mama_first_valid

@@ -339,6 +339,82 @@ describe('validationService', () => {
     expect(String(validationState.validationWarningSummary || '')).toContain('cross_ticker_filtered_all_candidates')
   })
 
+  it('surfaces intentional aux CPU tails in post-run validation warnings', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_double_ma_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          runtime_ms: 77,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_aux_cpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: true,
+      perturbIters: '8',
+      perturbMin: '-10',
+      perturbMax: '10',
+      mcEnable: true,
+      mcSims: '200',
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-double-aux-cpu',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['alma'],
+          slow_ma_types: ['alma'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 9,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('aux CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
+    expect(String(validationState.validationWarningSummary || '')).toContain('Aux CPU tails are intentional in the current validation route')
+    expect(String(validationState.validationWarningSummary || '')).toContain('perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
+  })
+
   it('surfaces regime and friction summaries for the top validation finalist', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === 'run_double_ma_validation') {
@@ -570,7 +646,7 @@ describe('validationService', () => {
     expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
     expect(String(validationState.validationCrossSummary || '')).toContain('requested=preserved_finalists')
     expect(String(validationState.validationCrossSummary || '')).toContain('effective lightweight reruns')
-    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
   })
 
   it('surfaces CompositeMo CPU-preferred validation fallback explicitly in post-run summaries', async () => {
@@ -647,10 +723,249 @@ describe('validationService', () => {
     await runValidation({ switchTab: false })
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
-    expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • CpuOnly • fallback: CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.')
-    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.')
-    expect(String(validationState.validationWarningSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu only.')
+    expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • CpuOnly • route note: CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.')
+    expect(String(validationState.validationWarningSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.')
   })
+
+  it('surfaces Carm GPU validation route detail explicitly in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          runtime_ms: 88,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_carm_gpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'Carm',
+          data_id: 'data-carm-post-run',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          signal_mode: 'hard_gate',
+          halftrend: {},
+          macz: {},
+          ott: {},
+          carm: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                signal_mode: 'hard_gate',
+                halftrend: {},
+                macz: {},
+                ott: {},
+                carm: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(String(validationState.validationWarningSummary || '')).toContain('none')
+  })
+
+  it('surfaces Carm Auto CPU-preferred policy explicitly in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Cpu',
+          backend_route: 'Auto->CpuOnly',
+          backend_fallback_reason: 'Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on measured workloads.',
+          runtime_ms: 41,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_carm_auto_cpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'Carm',
+          data_id: 'data-carm-auto-post-run',
+          backend: { backend: 'Auto', device_id: 0 },
+          ma_source: 'close',
+          signal_mode: 'hard_gate',
+          halftrend: {},
+          macz: {},
+          ott: {},
+          carm: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                signal_mode: 'hard_gate',
+                halftrend: {},
+                macz: {},
+                ott: {},
+                carm: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • Auto->CpuOnly • route note: Auto composite validation currently prefers CPU for CARM')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('Auto composite validation currently prefers CPU for CARM')
+    expect(String(validationState.validationWarningSummary || '')).toContain('none')
+  })
+
+  it('surfaces Cdmc Auto GPU route explicitly in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'Auto->GpuKernel',
+          runtime_ms: 284,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_cdmc_auto_gpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'Cdmc',
+          data_id: 'data-cdmc-auto-post-run',
+          backend: { backend: 'Auto', device_id: 0 },
+          ma_source: 'close',
+          signal_mode: 'hard_gate',
+          halftrend: {},
+          macz: {},
+          ott: {},
+          cdmc: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                signal_mode: 'hard_gate',
+                halftrend: {},
+                macz: {},
+                ott: {},
+                cdmc: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • Auto->GpuKernel')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(String(validationState.validationWarningSummary || '')).toContain('none')
+  })
+
 
   it('previews validation execution summary from current workflow artifacts', () => {
     ;(pinia.state.value as Record<string, unknown>).data = {
@@ -721,8 +1036,92 @@ describe('validationService', () => {
     expect(summary.crossSummary).toContain('2 datasets')
     expect(summary.crossSummary).toContain('finalists only')
     expect(summary.moduleSummary).toContain('auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
+    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa')
+    expect(summary.categorySummary).toContain('GPU main + CPU tail: perturb + trade_bootstrap')
+    expect(summary.skippedSummary).toContain('Cross reruns: preserved-finalists omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap')
     expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
   })
+
+  it('surfaces Cdmc GPU validation route detail explicitly in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          runtime_ms: 88,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_cdmc_gpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'Cdmc',
+          data_id: 'data-cdmc-post-run',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          signal_mode: 'hard_gate',
+          halftrend: {},
+          macz: {},
+          ott: {},
+          cdmc: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                signal_mode: 'hard_gate',
+                halftrend: {},
+                macz: {},
+                ott: {},
+                cdmc: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(String(validationState.validationCategorySummary || '')).toContain('GPU-native: base reruns + hard gates')
+    expect(String(validationState.validationWarningSummary || '')).toContain('none')
+  })
+
 
   it('distinguishes GPU route notes from true CPU fallback in validation summary text', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
@@ -798,6 +1197,7 @@ describe('validationService', () => {
     expect(String(validationState.validationHint || '')).toContain('route note: GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
     expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuHybridKernel->GpuKernel • route note: GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
     expect(String(validationState.validationRouteDetailSummary || '')).toContain('GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.')
+    expect(String(validationState.validationCategorySummary || '')).toContain('GPU-native: base reruns + hard gates')
     expect(String(validationState.validationAuxCpuSummary || '')).toBe('none')
     expect(String(validationState.validationBootstrapSummary || '')).toBe('not run')
   })
@@ -870,6 +1270,7 @@ describe('validationService', () => {
 
     const summary = previewValidationExecutionSummaryFromStores()
     expect(summary.moduleSummary).toContain('trade bootstrap iid-only')
+    expect(summary.categorySummary).toContain('GPU main + CPU tail: perturb + trade_bootstrap')
   })
 
   it('auto-exports XLSX after successful validation when enabled and persists the report path', async () => {
@@ -1076,7 +1477,7 @@ describe('validationService', () => {
     expect(command).toBe('run_composite_validation')
     const req = (args.req && typeof args.req === 'object') ? args.req as Record<string, unknown> : {}
     const candidates = Array.isArray(req.candidates) ? req.candidates as Array<Record<string, unknown>> : []
-    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
     expect(candidates[0]?.mkcs).toEqual({ stddev_period: 20, breakout_lookback: 30 })
   })
 

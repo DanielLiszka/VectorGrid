@@ -1,8 +1,8 @@
 use serde_json::{Map, Value};
 
 const CSCV_RANK_FRAC_MIN: f64 = 0.55;
-const ACTIVE_PROFILE_KEYS: [&str; 9] = [
-    "asr", "vcc", "vemr", "rocb", "mkcs", "kqsr", "carm", "kvdf", "cdmc",
+const ACTIVE_PROFILE_KEYS: [&str; 10] = [
+    "asr", "vcc", "vemr", "rocb", "mkcs", "kqsr", "carm", "kvdf", "cdmc", "vcet",
 ];
 const AUX_PROFILE_KEYS: [&str; 4] = ["halftrend", "halftrend_filter", "macz", "ott"];
 
@@ -77,6 +77,7 @@ pub(super) struct ExportCrossSummary {
     pub dataset_count: usize,
     pub mode: String,
     pub dataset_labels: String,
+    pub shortlist_count: usize,
 }
 
 #[allow(dead_code)]
@@ -188,10 +189,20 @@ pub(super) struct ValidationExportModel {
     pub backend_used: String,
     pub backend_route: String,
     pub backend_fallback_reason: String,
+    pub actual_fallback_summary: String,
+    pub actual_route_note_summary: String,
     pub actual_aux_tail_summary: String,
+    pub actual_disabled_module_summary: String,
+    pub actual_skipped_module_summary: String,
+    pub actual_cross_omitted_summary: String,
     pub expected_route_summary: String,
     pub expected_cross_summary: String,
     pub expected_module_summary: String,
+    pub expected_category_summary: String,
+    pub expected_fallback_summary: String,
+    pub expected_route_note_summary: String,
+    pub expected_disabled_module_summary: String,
+    pub expected_cross_omitted_summary: String,
     pub expected_warning_summary: String,
     pub bootstrap_mode_summary: String,
     pub wfe_policy_summary: String,
@@ -212,6 +223,19 @@ pub(super) struct ValidationExportModel {
     pub all_rows: Vec<ExportCandidateRow>,
     pub approved_rows: Vec<ExportCandidateRow>,
     pub shortlist_rows: Vec<ExportCandidateRow>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExpectedExecutionSummary {
+    route_summary: String,
+    cross_summary: String,
+    module_summary: String,
+    category_summary: String,
+    fallback_summary: String,
+    route_note_summary: String,
+    disabled_module_summary: String,
+    cross_omitted_summary: String,
+    warning_summary: String,
 }
 
 fn normalize_text(value: Option<&str>) -> String {
@@ -287,7 +311,10 @@ fn bucket_stable(pnl: Option<f64>, sharpe: Option<f64>) -> Option<bool> {
 }
 
 fn parse_regime_bucket_rows(cand: &Value) -> Vec<ExportRegimeBucketRow> {
-    let Some(regime) = cand.get("regime_slice_robustness").and_then(Value::as_object) else {
+    let Some(regime) = cand
+        .get("regime_slice_robustness")
+        .and_then(Value::as_object)
+    else {
         return Vec::new();
     };
     let labels = [
@@ -301,7 +328,10 @@ fn parse_regime_bucket_rows(cand: &Value) -> Vec<ExportRegimeBucketRow> {
         .iter()
         .filter_map(|(key, label)| {
             let bucket = regime.get(*key)?.as_object()?;
-            let pnl = bucket.get("pnl").and_then(Value::as_f64).filter(|v| v.is_finite());
+            let pnl = bucket
+                .get("pnl")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite());
             let sharpe = bucket
                 .get("sharpe")
                 .and_then(Value::as_f64)
@@ -311,7 +341,10 @@ fn parse_regime_bucket_rows(cand: &Value) -> Vec<ExportRegimeBucketRow> {
                 approval_label: String::new(),
                 params_summary: String::new(),
                 label: (*label).to_string(),
-                bars: bucket.get("bars").and_then(Value::as_u64).map(|v| v as usize),
+                bars: bucket
+                    .get("bars")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as usize),
                 active_frac: bucket
                     .get("active_frac")
                     .and_then(Value::as_f64)
@@ -322,7 +355,10 @@ fn parse_regime_bucket_rows(cand: &Value) -> Vec<ExportRegimeBucketRow> {
                     .get("max_dd")
                     .and_then(Value::as_f64)
                     .filter(|v| v.is_finite()),
-                trades: bucket.get("trades").and_then(Value::as_u64).map(|v| v as usize),
+                trades: bucket
+                    .get("trades")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as usize),
                 stable: bucket_stable(pnl, sharpe),
             })
         })
@@ -835,6 +871,11 @@ fn parse_cscv_summary(validation_res: &Value) -> Option<ExportCscvSummary> {
 fn parse_cross_summary(validation_res: &Value) -> Option<ExportCrossSummary> {
     let cross = validation_res.get("cross_ticker")?.as_object()?;
     let datasets = cross.get("datasets")?.as_array()?;
+    let candidates = validation_res
+        .get("candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let labels = datasets
         .iter()
         .filter_map(|entry| entry.as_object())
@@ -851,10 +892,23 @@ fn parse_cross_summary(validation_res: &Value) -> Option<ExportCrossSummary> {
         })
         .collect::<Vec<_>>()
         .join(" | ");
+    let shortlist_count = candidates
+        .iter()
+        .filter(|cand| {
+            cand.get("robust_pareto")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && cand
+                    .get("cross_ticker_pareto")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .count();
     Some(ExportCrossSummary {
         dataset_count: datasets.len(),
         mode: normalize_text(cross.get("mode").and_then(Value::as_str)),
         dataset_labels: labels,
+        shortlist_count,
     })
 }
 
@@ -1426,18 +1480,287 @@ fn describe_aux_cpu_tails(validation_req: &Value) -> Vec<String> {
     aux_cpu
 }
 
+fn describe_disabled_modules(validation_req: &Value) -> Vec<String> {
+    let mut disabled = Vec::new();
+    for module in [
+        "walk_forward",
+        "reopt_walk_forward",
+        "cscv_pbo",
+        "spa",
+        "perturb",
+        "trade_bootstrap",
+        "cross_ticker",
+    ] {
+        if !validation_req
+            .get(module)
+            .is_some_and(|value| !value.is_null())
+        {
+            disabled.push(module.to_string());
+        }
+    }
+    disabled
+}
+
+fn describe_cross_omitted_modules(strategy_kind: &str, validation_req: &Value) -> Vec<String> {
+    let Some(cross) = validation_req
+        .get("cross_ticker")
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mode = cross
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .trim();
+    if is_double_like_strategy(strategy_kind) && mode == "preserved_finalists" {
+        return vec![
+            "walk_forward".to_string(),
+            "reopt_walk_forward".to_string(),
+            "spa".to_string(),
+            "perturb".to_string(),
+            "trade_bootstrap".to_string(),
+        ];
+    }
+    Vec::new()
+}
+
+fn summary_or_dash(items: Vec<String>, delimiter: &str) -> String {
+    if items.is_empty() {
+        "-".to_string()
+    } else {
+        items.join(delimiter)
+    }
+}
+
+fn split_actual_route_reason(
+    backend_route: &str,
+    backend_fallback_reason: &str,
+) -> (String, String) {
+    if backend_fallback_reason.trim().is_empty() {
+        return ("-".to_string(), "-".to_string());
+    }
+    if backend_route.contains("->CpuOnly") {
+        (backend_fallback_reason.trim().to_string(), "-".to_string())
+    } else {
+        ("-".to_string(), backend_fallback_reason.trim().to_string())
+    }
+}
+
+fn enabled_execution_category_modules(validation_req: &Value) -> Vec<&'static str> {
+    let mut modules = vec!["base reruns", "hard gates"];
+    if validation_req
+        .get("walk_forward")
+        .is_some_and(|v| !v.is_null())
+    {
+        modules.push("walk_forward");
+    }
+    if validation_req
+        .get("reopt_walk_forward")
+        .is_some_and(|v| !v.is_null())
+    {
+        modules.push("reopt_walk_forward");
+    }
+    if validation_req.get("cscv_pbo").is_some_and(|v| !v.is_null()) {
+        modules.push("cscv_pbo");
+    }
+    if validation_req.get("spa").is_some_and(|v| !v.is_null()) {
+        modules.push("spa");
+    }
+    if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
+        modules.push("perturb");
+    }
+    if validation_req
+        .get("trade_bootstrap")
+        .is_some_and(|v| !v.is_null())
+    {
+        modules.push("trade_bootstrap");
+    }
+    modules
+}
+
+fn format_execution_category_summary(groups: Vec<(&'static str, Vec<&'static str>)>) -> String {
+    let parts: Vec<String> = groups
+        .into_iter()
+        .filter(|(_, labels)| !labels.is_empty())
+        .map(|(category, labels)| format!("{category}: {}", labels.join(" + ")))
+        .collect();
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(" | ")
+    }
+}
+
+fn build_expected_execution_category_summary(
+    strategy_kind: &str,
+    validation_req: &Value,
+    backend: &str,
+) -> String {
+    let modules = enabled_execution_category_modules(validation_req);
+    if is_double_like_strategy(strategy_kind) {
+        if backend == "CpuOnly" || backend == "GpuOnly" {
+            return format_execution_category_summary(vec![("CPU-only", modules)]);
+        }
+        let mut gpu_native = vec!["base reruns", "hard gates"];
+        if validation_req
+            .get("walk_forward")
+            .is_some_and(|v| !v.is_null())
+        {
+            gpu_native.push("walk_forward");
+        }
+        if validation_req
+            .get("reopt_walk_forward")
+            .is_some_and(|v| !v.is_null())
+        {
+            gpu_native.push("reopt_walk_forward");
+        }
+        if validation_req.get("cscv_pbo").is_some_and(|v| !v.is_null()) {
+            gpu_native.push("cscv_pbo");
+        }
+        if validation_req.get("spa").is_some_and(|v| !v.is_null()) {
+            gpu_native.push("spa");
+        }
+        let mut gpu_tail = Vec::new();
+        if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
+            gpu_tail.push("perturb");
+        }
+        if validation_req
+            .get("trade_bootstrap")
+            .is_some_and(|v| !v.is_null())
+        {
+            gpu_tail.push("trade_bootstrap");
+        }
+        return format_execution_category_summary(vec![
+            ("GPU-native", gpu_native),
+            ("GPU main + CPU tail", gpu_tail),
+        ]);
+    }
+
+    let cpu_preferred = describe_composite_auto_cpu_preference(strategy_kind, backend).is_some();
+    let cpu_fallback = strategy_kind == "CompositeMo";
+    if backend == "CpuOnly" || cpu_preferred || cpu_fallback {
+        return format_execution_category_summary(vec![("CPU-only", modules)]);
+    }
+    format_execution_category_summary(vec![("GPU-native", modules)])
+}
+
+fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option<String> {
+    if backend == "CpuOnly" {
+        return None;
+    }
+    match strategy_kind {
+        "CompositeCpu" => Some(
+            "Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU."
+                .to_string(),
+        ),
+        "Asr" => Some(
+            "ASR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Vcc" => Some(
+            "VCC GPU validation currently falls back on the measured 50k/8 advanced-stack workload because the requested momentum rows are not fp32-stable."
+                .to_string(),
+        ),
+        "Vemr" => Some(
+            "VEMR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Rocb" => Some(
+            "ROCB GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Vcet" => Some(
+            "VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward currently uses the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work."
+                .to_string(),
+        ),
+        "Mkcs" => Some(
+            "MKCS GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "CompositeMo" => Some(
+            "CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+                .to_string(),
+        ),
+        "Kqsr" => Some(
+            "KQSR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Kvdf" => Some(
+            "KVDF GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Carm" => Some(
+            "CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
+                .to_string(),
+        ),
+        "Cdmc" => Some(
+            "CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads, and the remaining small walk-forward / CSCV / SPA metric drift is currently accepted because candidate ordering and verdict semantics still match on the fixture."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn describe_composite_auto_cpu_preference(strategy_kind: &str, backend: &str) -> Option<String> {
+    if backend != "Auto" {
+        return None;
+    }
+    match strategy_kind {
+        "Asr" => Some(
+            "Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Vcc" => Some(
+            "Auto composite validation currently prefers CPU for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check."
+                .to_string(),
+        ),
+        "Vemr" => Some(
+            "Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Rocb" => Some(
+            "Auto composite validation currently prefers CPU for ROCB because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Mkcs" => Some(
+            "Auto composite validation currently prefers CPU for MKCS because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Kqsr" => Some(
+            "Auto composite validation currently prefers CPU for KQSR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Kvdf" => Some(
+            "Auto composite validation currently prefers CPU for KVDF because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
+                .to_string(),
+        ),
+        "Carm" => Some(
+            "Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn build_expected_execution_summary(
     strategy_kind: &str,
     validation_req: Option<&Value>,
-) -> (String, String, String, String) {
+) -> ExpectedExecutionSummary {
     let Some(validation_req) = validation_req else {
-        return (
-            "validation request unavailable".to_string(),
-            "not available".to_string(),
-            "-".to_string(),
-            "Artifact does not include validation.req; expected execution preview unavailable."
-                .to_string(),
-        );
+        return ExpectedExecutionSummary {
+            route_summary: "validation request unavailable".to_string(),
+            cross_summary: "not available".to_string(),
+            module_summary: "-".to_string(),
+            category_summary: "-".to_string(),
+            fallback_summary: "-".to_string(),
+            route_note_summary: "-".to_string(),
+            disabled_module_summary: "-".to_string(),
+            cross_omitted_summary: "-".to_string(),
+            warning_summary:
+                "Artifact does not include validation.req; expected execution preview unavailable."
+                    .to_string(),
+        };
     };
     let backend = validation_req
         .pointer("/backend/backend")
@@ -1446,10 +1769,19 @@ fn build_expected_execution_summary(
         .trim();
     let enabled_main = describe_enabled_modules(validation_req);
     let aux_cpu = describe_aux_cpu_tails(validation_req);
+    let disabled_module_summary = summary_or_dash(describe_disabled_modules(validation_req), " + ");
+    let cross_omitted_summary = summary_or_dash(
+        describe_cross_omitted_modules(strategy_kind, validation_req),
+        " + ",
+    );
+    let category_summary =
+        build_expected_execution_category_summary(strategy_kind, validation_req, backend);
 
     let mut route_summary = format!("{backend} requested");
     let module_summary: String;
     let mut warning_summary = "none".to_string();
+    let mut fallback_summary = "-".to_string();
+    let mut route_note_summary = "-".to_string();
     let is_double_like = is_double_like_strategy(strategy_kind);
 
     if is_double_like {
@@ -1479,7 +1811,7 @@ fn build_expected_execution_summary(
                         format!(" + {}", aux_cpu.join(" + "))
                     }
                 );
-                warning_summary = "GpuOnly is not supported for fixed-candidate Double-MA validation; use GpuKernel, GpuHybridKernel, or Auto.".to_string();
+                fallback_summary = "GpuOnly is not supported for fixed-candidate Double-MA validation; use GpuKernel, GpuHybridKernel, or Auto.".to_string();
             }
             "GpuHybridKernel" => {
                 route_summary =
@@ -1527,12 +1859,21 @@ fn build_expected_execution_summary(
             && backend != "CpuOnly"
             && backend != "GpuOnly"
         {
-            warning_summary = format!(
-                "Main GPU route is preserved; {} currently run as auxiliary CPU work.",
+            route_note_summary = format!(
+                "Main GPU route is preserved; {} currently run as intentional auxiliary CPU work.",
                 aux_cpu.join(" + ")
             );
         }
     } else {
+        let mut warning_notes = Vec::new();
+        if let Some(auto_pref) = describe_composite_auto_cpu_preference(strategy_kind, backend) {
+            route_summary = format!(
+                "Auto requested | expected CPU-preferred composite route ({strategy_kind})"
+            );
+            fallback_summary = auto_pref;
+        } else if let Some(route_detail) = describe_composite_route_detail(strategy_kind, backend) {
+            route_note_summary = route_detail;
+        }
         module_summary = format!(
             "Enabled modules: {}{}",
             enabled_main.join(" + "),
@@ -1543,10 +1884,14 @@ fn build_expected_execution_summary(
             }
         );
         if !aux_cpu.is_empty() && backend != "CpuOnly" {
-            warning_summary = format!(
-                "{} may not share the same execution route as the main validation pass; confirm post-run route notes.",
+            warning_notes.push(format!(
+                "{} may not share the same execution route as the main validation pass; confirm post-run route notes because these are intentional auxiliary CPU work today.",
                 aux_cpu.join(" + ")
-            );
+            ));
+        }
+        warning_summary = warning_notes.join(" | ");
+        if warning_summary.is_empty() {
+            warning_summary = "none".to_string();
         }
     }
 
@@ -1587,16 +1932,21 @@ fn build_expected_execution_summary(
         }
     }
 
-    (
+    ExpectedExecutionSummary {
         route_summary,
         cross_summary,
         module_summary,
-        if warning_summary.is_empty() {
+        category_summary,
+        fallback_summary,
+        route_note_summary,
+        disabled_module_summary,
+        cross_omitted_summary,
+        warning_summary: if warning_summary.is_empty() {
             "none".to_string()
         } else {
             warning_summary
         },
-    )
+    }
 }
 
 fn resolve_strategy_kind(report: &Value) -> String {
@@ -1708,11 +2058,8 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
             let wf_sharpe_median = opt_f64(cand, "/walk_forward/sharpe_median");
             let wf_pnl_median = opt_f64(cand, "/walk_forward/pnl_median");
             let regime_bucket_rows = parse_regime_bucket_rows(cand);
-            let regime_stable_bucket_count = opt_u64(
-                cand,
-                "/regime_slice_robustness/stable_bucket_count",
-            )
-            .map(|v| v as usize);
+            let regime_stable_bucket_count =
+                opt_u64(cand, "/regime_slice_robustness/stable_bucket_count").map(|v| v as usize);
             let regime_worst_sharpe = opt_f64(cand, "/regime_slice_robustness/worst_sharpe");
             let regime_worst_max_dd = opt_f64(cand, "/regime_slice_robustness/worst_max_dd");
             let trend_stable = regime_bucket_rows
@@ -1887,6 +2234,21 @@ pub(super) fn run_level_rejection_reason(run_verdict: &ExportRunVerdict) -> Stri
     }
 }
 
+fn summarize_actual_skipped_modules(model: &ValidationExportModel) -> String {
+    let mut skipped = Vec::new();
+    if let Some(cscv) = model.cscv_pbo.as_ref() {
+        if !cscv.skipped_reason.is_empty() {
+            skipped.push(format!("cscv_pbo: {}", cscv.skipped_reason));
+        }
+    }
+    if let Some(spa) = model.spa.as_ref() {
+        if !spa.skipped_reason.is_empty() {
+            skipped.push(format!("spa: {}", spa.skipped_reason));
+        }
+    }
+    summary_or_dash(skipped, " | ")
+}
+
 fn shortlist_rows(rows: &[ExportCandidateRow], visible_cap: usize) -> Vec<ExportCandidateRow> {
     use std::collections::HashSet;
 
@@ -1933,11 +2295,21 @@ pub(super) fn build_model_from_report(
         build_model_from_validation_res_with_context(validation_res, max_rows, ts, strategy_kind)?;
     apply_plateau_analysis(&mut model, report);
     if let Some(validation_req) = report.pointer("/validation/req") {
+        let (actual_fallback_summary, actual_route_note_summary) =
+            split_actual_route_reason(&model.backend_route, &model.backend_fallback_reason);
         model.min_psr = opt_f64(validation_req, "/min_psr");
         model.min_dsr = opt_f64(validation_req, "/min_dsr");
         model.min_cscv_oos_rank_frac = opt_f64(validation_req, "/min_cscv_oos_rank_frac");
         model.min_cscv_oos_metric = opt_f64(validation_req, "/min_cscv_oos_metric");
         model.max_pbo = opt_f64(validation_req, "/max_pbo");
+        model.actual_fallback_summary = actual_fallback_summary;
+        model.actual_route_note_summary = actual_route_note_summary;
+        model.actual_disabled_module_summary =
+            summary_or_dash(describe_disabled_modules(validation_req), " + ");
+        model.actual_cross_omitted_summary = summary_or_dash(
+            describe_cross_omitted_modules(&model.strategy_kind, validation_req),
+            " + ",
+        );
         let aux_cpu = describe_aux_cpu_tails(validation_req);
         if model.backend_used.eq_ignore_ascii_case("gpu")
             && !model.backend_route.contains("->CpuOnly")
@@ -1945,12 +2317,17 @@ pub(super) fn build_model_from_report(
         {
             model.actual_aux_tail_summary = aux_cpu.join(" + ");
         }
-        let (route, cross, modules, warnings) =
-            build_expected_execution_summary(&model.strategy_kind, Some(validation_req));
-        model.expected_route_summary = route;
-        model.expected_cross_summary = cross;
-        model.expected_module_summary = modules;
-        model.expected_warning_summary = warnings;
+        model.actual_skipped_module_summary = summarize_actual_skipped_modules(&model);
+        let expected = build_expected_execution_summary(&model.strategy_kind, Some(validation_req));
+        model.expected_route_summary = expected.route_summary;
+        model.expected_cross_summary = expected.cross_summary;
+        model.expected_module_summary = expected.module_summary;
+        model.expected_category_summary = expected.category_summary;
+        model.expected_fallback_summary = expected.fallback_summary;
+        model.expected_route_note_summary = expected.route_note_summary;
+        model.expected_disabled_module_summary = expected.disabled_module_summary;
+        model.expected_cross_omitted_summary = expected.cross_omitted_summary;
+        model.expected_warning_summary = expected.warning_summary;
         model.bootstrap_mode_summary = build_bootstrap_mode_summary(Some(validation_req));
         model.wfe_policy_summary =
             "explanatory + tie-break ordering only; no approval gate".to_string();
@@ -2011,10 +2388,20 @@ fn build_model_from_validation_res_with_context(
                 .get("backend_fallback_reason")
                 .and_then(Value::as_str),
         ),
+        actual_fallback_summary: "-".to_string(),
+        actual_route_note_summary: "-".to_string(),
         actual_aux_tail_summary: "-".to_string(),
+        actual_disabled_module_summary: "-".to_string(),
+        actual_skipped_module_summary: "-".to_string(),
+        actual_cross_omitted_summary: "-".to_string(),
         expected_route_summary: "validation request unavailable".to_string(),
         expected_cross_summary: "not available".to_string(),
         expected_module_summary: "-".to_string(),
+        expected_category_summary: "-".to_string(),
+        expected_fallback_summary: "-".to_string(),
+        expected_route_note_summary: "-".to_string(),
+        expected_disabled_module_summary: "-".to_string(),
+        expected_cross_omitted_summary: "-".to_string(),
         expected_warning_summary:
             "Artifact does not include validation.req; expected execution preview unavailable."
                 .to_string(),

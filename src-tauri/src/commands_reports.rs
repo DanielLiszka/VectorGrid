@@ -49,8 +49,11 @@ pub(crate) fn build_report_xlsx_blocking(report: Value) -> Result<String, String
     Ok(general_purpose::STANDARD.encode(bytes))
 }
 
-/// Headless helper that mirrors `save_report_xlsx` generation behavior:
-/// try analysis-v2 workbook first, then fall back to legacy workbook.
+/// Headless helper that mirrors `save_report_xlsx` generation behavior.
+///
+/// The active product path now goes straight through the validation workbook builder.
+/// Older report builders below are retained only as legacy/reference code while
+/// Stage 3 meta-report fallback compatibility remains intentionally unchanged.
 pub fn build_report_xlsx_bytes_headless(
     report: &Value,
     max_rows: Option<usize>,
@@ -73,6 +76,8 @@ pub(crate) fn save_report_xlsx_blocking(
     })
 }
 
+// Legacy/reference builder kept only for workbook-history comparison and staged
+// fallback review. It is not part of the current validation export path.
 #[allow(dead_code)]
 fn build_report_xlsx_analysis_v2(
     report: &Value,
@@ -1588,6 +1593,8 @@ fn build_report_xlsx_analysis_v2(
         .map_err(|e: XlsxError| e.to_string())
 }
 
+// Legacy/reference builder kept only for workbook-history comparison and staged
+// fallback review. It is not part of the current validation export path.
 #[allow(dead_code)]
 fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Vec<u8>, String> {
     use rust_xlsxwriter::{
@@ -3182,6 +3189,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: ta_app_core::composite_cpu::MaczGateParams::default(),
             ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,

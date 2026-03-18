@@ -39,6 +39,7 @@ const {
   validationMeta,
   validationRouteSummary,
   validationRouteDetailSummary,
+  validationCategorySummary,
   validationAuxCpuSummary,
   validationBootstrapSummary,
   validationRegimeSummary,
@@ -537,6 +538,14 @@ onBeforeUnmount(() => {
             <div class="metaLine mono">{{ expectedExecutionSummary.moduleSummary }}</div>
           </div>
           <div>
+            <label>Expected Categories</label>
+            <div class="metaLine mono">{{ expectedExecutionSummary.categorySummary }}</div>
+          </div>
+          <div>
+            <label>Expected Skips</label>
+            <div class="metaLine mono">{{ expectedExecutionSummary.skippedSummary }}</div>
+          </div>
+          <div>
             <label>Expected Notes</label>
             <div class="metaLine mono">{{ expectedExecutionSummary.warningSummary }}</div>
           </div>
@@ -905,6 +914,10 @@ onBeforeUnmount(() => {
           <div>
             <label>Route Detail</label>
             <div class="metaLine mono">{{ validationRouteDetailSummary }}</div>
+          </div>
+          <div>
+            <label>Categories</label>
+            <div class="metaLine mono">{{ validationCategorySummary }}</div>
           </div>
           <div>
             <label>Aux CPU</label>

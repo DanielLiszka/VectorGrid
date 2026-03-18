@@ -48,6 +48,9 @@ use crate::double_ma::{
     resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed,
     HalfTrendRegimeFilter,
 };
+use crate::double_ma_validate::{
+    FrictionStressStats, RegimeBucketStats, RegimeSliceRobustnessStats,
+};
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::kqsr::{
     build_kqsr_desired_positions, compute_kqsr_signals, compute_kqsr_start_t, resolve_kqsr_periods,
@@ -94,6 +97,20 @@ use crate::rocb::{
     build_rocb_desired_positions, compute_rocb_breakout_signals, compute_rocb_risk_signals,
     compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbBreakoutSignals,
     RocbRiskSignals, RocbStrategyParams,
+};
+use crate::vcet::{
+    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
+    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params,
+    VcetChandelierSignals, VcetStrategyParams, VcetVidyaSignals,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcet::{
+    compute_vcet_chandelier_signal_cuda_device, compute_vcet_vidya_signal_cuda_device,
+    VcetOwnedDeviceMatrix,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcet_gpu_kernel::{
+    eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::rocb_gpu_kernel::{
@@ -172,6 +189,8 @@ pub struct CompositeParams {
     pub vemr: Option<VemrStrategyParams>,
     #[serde(default)]
     pub rocb: Option<RocbStrategyParams>,
+    #[serde(default)]
+    pub vcet: Option<VcetStrategyParams>,
     #[serde(default)]
     pub mkcs: Option<MkcsStrategyParams>,
     #[serde(default)]
@@ -315,6 +334,55 @@ impl BaseCompositeGpuValidationInputs {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn composite_auto_cpu_preference_reason(req: &CompositeValidationRequest) -> Option<&'static str> {
+    if !matches!(req.backend, Backend::Auto { .. }) {
+        return None;
+    }
+    let first = req.candidates.first()?;
+    if first.asr.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
+        );
+    }
+    if first.vcc.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check.",
+        );
+    }
+    if first.vemr.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
+        );
+    }
+    if first.rocb.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for ROCB because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
+        );
+    }
+    if first.mkcs.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for MKCS because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
+        );
+    }
+    if first.carm.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for CARM because current advanced-stack benches show CPU faster than GPU on measured workloads.",
+        );
+    }
+    if first.kqsr.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for KQSR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
+        );
+    }
+    if first.kvdf.is_some() {
+        return Some(
+            "Auto composite validation currently prefers CpuOnly for KVDF because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
+        );
+    }
+    None
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn composite_validation_supports_gpu_fixed_candidates(
     req: &CompositeValidationRequest,
 ) -> Result<u32, String> {
@@ -328,7 +396,14 @@ fn composite_validation_supports_gpu_fixed_candidates(
             "fixed-candidate composite GPU validation requires GpuKernel-compatible execution"
                 .to_string(),
         ),
-        Backend::GpuKernel { device_id } | Backend::Auto { device_id } => Ok(device_id),
+        Backend::GpuKernel { device_id } => Ok(device_id),
+        Backend::Auto { device_id } => {
+            if let Some(reason) = composite_auto_cpu_preference_reason(req) {
+                Err(reason.to_string())
+            } else {
+                Ok(device_id)
+            }
+        }
     }
 }
 
@@ -342,6 +417,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
                 cand.asr.is_some()
                     || cand.vcc.is_some()
                     || cand.rocb.is_some()
+                    || cand.vcet.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
                     || cand.kqsr.is_some()
@@ -366,6 +442,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
                 cand.asr.is_some()
                     || cand.vcc.is_some()
                     || cand.rocb.is_some()
+                    || cand.vcet.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
                     || cand.kqsr.is_some()
@@ -390,6 +467,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
                 cand.asr.is_some()
                     || cand.vcc.is_some()
                     || cand.rocb.is_some()
+                    || cand.vcet.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
                     || cand.kqsr.is_some()
@@ -413,6 +491,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
                 cand.asr.is_some()
                     || cand.vcc.is_some()
                     || cand.rocb.is_some()
+                    || cand.vcet.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
                     || cand.kqsr.is_some()
@@ -443,6 +522,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
                 cand.asr.is_some()
                     || cand.vcc.is_some()
                     || cand.rocb.is_some()
+                    || cand.vcet.is_some()
                     || cand.vemr.is_some()
                     || cand.mkcs.is_some()
                     || cand.kqsr.is_some()
@@ -480,6 +560,7 @@ fn is_plain_base_composite_candidate(cand: &CompositeParams) -> bool {
         && cand.vcc.is_none()
         && cand.vemr.is_none()
         && cand.rocb.is_none()
+        && cand.vcet.is_none()
         && cand.mkcs.is_none()
         && cand.kqsr.is_none()
         && cand.carm.is_none()
@@ -558,6 +639,37 @@ fn summarize_walk_forward_metric_samples(
         trades_median: crate::stats_common::median_u32(&trades),
         trades_worst: crate::stats_common::worst_min_u32(&trades),
     }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn count_trade_events_from_desired_window(
+    desired_pos: &[i32],
+    start_t: usize,
+    end_t: usize,
+    strategy: &StrategyConfig,
+) -> u32 {
+    let end_t = end_t.min(desired_pos.len());
+    if start_t >= end_t {
+        return 0;
+    }
+    let mut pos = 0i32;
+    let mut trades = 0u32;
+    for &desired in &desired_pos[start_t..end_t] {
+        let desired = desired.clamp(-1, 1);
+        if desired != pos {
+            if pos == 0 || desired == 0 {
+                trades = trades.saturating_add(1);
+                pos = desired;
+            } else if !strategy.allow_flip {
+                trades = trades.saturating_add(1);
+                pos = 0;
+            } else {
+                trades = trades.saturating_add(2);
+                pos = desired;
+            }
+        }
+    }
+    trades
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3355,6 +3467,337 @@ fn compute_rocb_gpu_cscv_slice_stats_for_candidates(
     }
 
     Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_vcet_gpu_cscv_slice_stats_for_candidates(
+    req: &CompositeValidationRequest,
+    signals: &VcetGpuDeviceSignalMatrices<'_>,
+    vidya_row_index: &[i32],
+    ce_row_index: &[i32],
+    combo_start_t: &[i32],
+    start_ts: &[usize],
+    vcet: &VcetStrategyParams,
+    device_id: u32,
+    cfg: &CscvPboConfig,
+) -> Result<Option<HashMap<Vec<u8>, Vec<SliceReturnStats>>>, String> {
+    let slices = sanitize_gpu_cscv_slices(cfg.slices);
+    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let slice_bars = signals.cols.saturating_sub(common_start_t) / slices;
+    if slice_bars < 2 || req.candidates.len() < 2 {
+        return Ok(None);
+    }
+
+    let candidate_keys: Vec<Vec<u8>> = req
+        .candidates
+        .iter()
+        .map(serialize_composite_candidate_key)
+        .collect::<Result<_, _>>()?;
+    let mut out: HashMap<Vec<u8>, Vec<SliceReturnStats>> =
+        HashMap::with_capacity(candidate_keys.len());
+    for key in &candidate_keys {
+        out.insert(key.clone(), vec![SliceReturnStats::default(); slices]);
+    }
+
+    for slice_idx in 0..slices {
+        let t0 = common_start_t + slice_idx * slice_bars;
+        let end = t0.saturating_add(slice_bars).min(signals.cols);
+        let end_i =
+            i32::try_from(end).map_err(|_| "VCET GPU CSCV end_t exceeds i32 range".to_string())?;
+        let slice_start: Vec<i32> = combo_start_t
+            .iter()
+            .map(|&st| {
+                let start = usize::try_from(st).unwrap_or(0).max(t0);
+                i32::try_from(start)
+                    .map_err(|_| "VCET GPU CSCV start_t exceeds i32 range".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let slice_end = vec![end_i; slice_start.len()];
+        let combos = VcetGpuComboBatch {
+            vidya_row_index,
+            ce_row_index,
+            start_t: &slice_start,
+            end_t: &slice_end,
+        };
+        let metrics = eval_vcet_metrics_gpu_kernel_device_rows(
+            device_id,
+            signals,
+            &combos,
+            &req.candidates[0].strategy,
+            vcet,
+        )?;
+        for (key, metric) in candidate_keys.iter().zip(metrics.iter()) {
+            if let Some(slice_vec) = out.get_mut(key) {
+                slice_vec[slice_idx] = slice_return_stats_from_metrics(metric, slice_bars);
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn try_prepare_vcet_gpu_fixed_candidate_validation(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<GpuCompositeFixedCandidateValidationEval, String> {
+    let device_id = composite_validation_supports_gpu_fixed_candidates(req)?;
+    if let Some(reason) = composite_gpu_validation_feature_blocker(req) {
+        return Err(reason);
+    }
+    if req.candidates.is_empty() {
+        return Err("no candidates to validate".to_string());
+    }
+
+    let first = req
+        .candidates
+        .first()
+        .ok_or_else(|| "no candidates to validate".to_string())?;
+    let first_vcet = first.vcet.as_ref().ok_or_else(|| {
+        "GPU composite validation currently supports VCET candidates only".to_string()
+    })?;
+    if first.asr.is_some() || first.vcc.is_some() || first.vemr.is_some() || first.rocb.is_some() {
+        return Err(
+            "GPU composite validation currently supports VCET candidates only".to_string(),
+        );
+    }
+    validate_strategy_cfg(&first.strategy)?;
+    validate_vcet_params(first_vcet)?;
+    if first.strategy.uses_execution_overlays()
+        || first.strategy.stop_loss_pct().is_some()
+        || first.strategy.take_profit_pct().is_some()
+    {
+        return Err(
+            "GPU composite VCET validation currently supports strategy execution without overlays/stop-loss/take-profit."
+                .to_string(),
+        );
+    }
+
+    let mut vidya_keys: Vec<(u16, u16)> = Vec::with_capacity(req.candidates.len());
+    let mut ce_keys: Vec<u16> = Vec::with_capacity(req.candidates.len());
+    let mut periods_by_candidate: Vec<((u16, u16), u16)> = Vec::with_capacity(req.candidates.len());
+
+    for cand in &req.candidates {
+        if cand.vcet.is_none()
+            || cand.asr.is_some()
+            || cand.vcc.is_some()
+            || cand.vemr.is_some()
+            || cand.rocb.is_some()
+        {
+            return Err(
+                "GPU composite validation currently requires all candidates to use VCET"
+                    .to_string(),
+            );
+        }
+        if !serialized_eq(&cand.strategy, &first.strategy)? {
+            return Err(
+                "GPU composite validation currently requires a uniform StrategyConfig".to_string(),
+            );
+        }
+        if !serialized_eq(cand.vcet.as_ref().unwrap(), first_vcet)? {
+            return Err(
+                "GPU composite validation currently requires uniform VCET parameters".to_string(),
+            );
+        }
+
+        let periods = resolve_vcet_periods(first_vcet, cand.fast_len, cand.slow_len);
+        let vidya_key = (periods.vidya_short, periods.vidya_long);
+        vidya_keys.push(vidya_key);
+        ce_keys.push(periods.ce);
+        periods_by_candidate.push((vidya_key, periods.ce));
+    }
+    vidya_keys.sort_unstable();
+    vidya_keys.dedup();
+    ce_keys.sort_unstable();
+    ce_keys.dedup();
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let n = close.len();
+    if n < 2 || high.len() != n || low.len() != n {
+        return Err("not enough candles or mismatched OHLC series lengths".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_high =
+        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let first_valid_low =
+        first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+        candles,
+        &req.ma_source,
+        device_id as usize,
+    )
+    .map_err(|e| e.to_string())?;
+    let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
+
+    let mut vidya_lookup: HashMap<(u16, u16), (i32, usize)> =
+        HashMap::with_capacity(vidya_keys.len());
+    let mut ce_lookup: HashMap<u16, (i32, usize)> = HashMap::with_capacity(ce_keys.len());
+    let mut vidya_rows: Vec<u64> = Vec::with_capacity(vidya_keys.len());
+    let mut ce_long_rows: Vec<u64> = Vec::with_capacity(ce_keys.len());
+    let mut ce_short_rows: Vec<u64> = Vec::with_capacity(ce_keys.len());
+    let mut vidya_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(vidya_keys.len());
+    let mut ce_long_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(ce_keys.len());
+    let mut ce_short_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(ce_keys.len());
+
+    for &(vidya_short, vidya_long) in &vidya_keys {
+        let matrix = compute_vcet_vidya_signal_cuda_device(
+            &prepared_cuda_inputs,
+            crate::vcet::VcetResolvedPeriods {
+                vidya_short,
+                vidya_long,
+                ce: 1,
+            },
+            first_vcet.vidya_alpha,
+        )?;
+        if matrix.rows != 1 || matrix.cols != n {
+            return Err("VCET GPU VIDYA matrix shape mismatch".to_string());
+        }
+        let idx = i32::try_from(vidya_rows.len())
+            .map_err(|_| "VCET GPU VIDYA row index exceeds i32 range".to_string())?;
+        vidya_lookup.insert((vidya_short, vidya_long), (idx, usize::from(vidya_long.saturating_sub(1))));
+        vidya_rows.push(matrix.device_ptr());
+        vidya_keepalive.push(matrix);
+    }
+
+    for &ce_period in &ce_keys {
+        let (long_matrix, short_matrix) = compute_vcet_chandelier_signal_cuda_device(
+            &prepared_cuda_inputs,
+            ce_period,
+            first_vcet.ce_mult,
+            first_vcet.ce_use_close,
+        )?;
+        if long_matrix.rows != 1
+            || short_matrix.rows != 1
+            || long_matrix.cols != n
+            || short_matrix.cols != n
+        {
+            return Err("VCET GPU chandelier matrix shape mismatch".to_string());
+        }
+        let idx = i32::try_from(ce_long_rows.len())
+            .map_err(|_| "VCET GPU chandelier row index exceeds i32 range".to_string())?;
+        ce_lookup.insert(ce_period, (idx, usize::from(ce_period.saturating_sub(1))));
+        ce_long_rows.push(long_matrix.device_ptr());
+        ce_short_rows.push(short_matrix.device_ptr());
+        ce_long_keepalive.push(long_matrix);
+        ce_short_keepalive.push(short_matrix);
+    }
+
+    let mut vidya_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
+    let mut ce_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
+    let mut combo_start_t: Vec<i32> = Vec::with_capacity(req.candidates.len());
+    let mut start_ts: Vec<usize> = Vec::with_capacity(req.candidates.len());
+
+    for (vidya_key, ce_period) in periods_by_candidate {
+        let (vidya_row, vidya_first_valid) = *vidya_lookup
+            .get(&vidya_key)
+            .ok_or_else(|| "VCET GPU VIDYA row lookup miss".to_string())?;
+        let (ce_row, ce_first_valid) = *ce_lookup
+            .get(&ce_period)
+            .ok_or_else(|| "VCET GPU chandelier row lookup miss".to_string())?;
+        let start_t = compute_vcet_start_t(
+            first_valid_close,
+            first_valid_high,
+            first_valid_low,
+            vidya_first_valid,
+            ce_first_valid,
+            first.strategy.trade_on_next_bar,
+        );
+        if start_t >= n {
+            return Err("not enough candles after VCET GPU warmup".to_string());
+        }
+
+        vidya_row_index.push(vidya_row);
+        ce_row_index.push(ce_row);
+        combo_start_t.push(
+            i32::try_from(start_t)
+                .map_err(|_| "VCET GPU start_t exceeds i32 range".to_string())?,
+        );
+        start_ts.push(start_t);
+    }
+
+    let signals = VcetGpuDeviceSignalMatrices {
+        close_f32: &close_f32,
+        cols: n,
+        vidya_rows_ptr: &vidya_rows,
+        ce_long_rows_ptr: &ce_long_rows,
+        ce_short_rows_ptr: &ce_short_rows,
+        vidya_rows: vidya_rows.len(),
+        ce_rows: ce_long_rows.len(),
+    };
+    let combo_end_t = vec![
+        i32::try_from(n).map_err(|_| "VCET GPU end_t exceeds i32 range".to_string())?;
+        vidya_row_index.len()
+    ];
+    let combos = VcetGpuComboBatch {
+        vidya_row_index: &vidya_row_index,
+        ce_row_index: &ce_row_index,
+        start_t: &combo_start_t,
+        end_t: &combo_end_t,
+    };
+    let metrics =
+        eval_vcet_metrics_gpu_kernel_device_rows(device_id, &signals, &combos, &first.strategy, first_vcet)?;
+    if metrics.len() != req.candidates.len() {
+        return Err("VCET GPU validation output length mismatch".to_string());
+    }
+    let cscv_slices = if let Some(cscv_cfg) = req.cscv_pbo.as_ref() {
+        compute_vcet_gpu_cscv_slice_stats_for_candidates(
+            req,
+            &signals,
+            &vidya_row_index,
+            &ce_row_index,
+            &combo_start_t,
+            &start_ts,
+            first_vcet,
+            device_id,
+            cscv_cfg,
+        )?
+    } else {
+        None
+    };
+    let spa_slice_sums = if let Some(spa_cfg) = req.spa.as_ref() {
+        let slice_stats = compute_vcet_gpu_cscv_slice_stats_for_candidates(
+            req,
+            &signals,
+            &vidya_row_index,
+            &ce_row_index,
+            &combo_start_t,
+            &start_ts,
+            first_vcet,
+            device_id,
+            &CscvPboConfig {
+                slices: spa_cfg.slices.max(4),
+                max_combinations: usize::MAX,
+                threshold: 0.0,
+            },
+        )?;
+        slice_stats.as_ref().map(spa_slice_sums_from_slice_stats)
+    } else {
+        None
+    };
+
+    let backend_route = match req.backend {
+        Backend::Auto { .. } => Some("Auto->GpuKernel".to_string()),
+        _ => Some(validation_backend_label(&req.backend).to_string()),
+    };
+
+    let _ = (&vidya_keepalive, &ce_long_keepalive, &ce_short_keepalive);
+
+    Ok(GpuCompositeFixedCandidateValidationEval {
+        metrics,
+        start_ts,
+        candidate_indices: composite_candidate_index_map(&req.candidates)?,
+        walk_forward_stats: None,
+        cscv_slices,
+        spa_slice_sums,
+        base_composite_ctx: None,
+        backend_used: BackendUsed::Gpu,
+        backend_route,
+        backend_fallback_reason: None,
+    })
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -6361,6 +6804,7 @@ fn compute_carm_gpu_walk_forward_stats_batch(
     fast_row_index: &[i32],
     otto_row_index: &[i32],
     combo_start_t: &[i32],
+    desired_row_major: &[i32],
     strategy: &StrategyConfig,
     carm: &CarmStrategyParams,
     device_id: u32,
@@ -6429,10 +6873,15 @@ fn compute_carm_gpu_walk_forward_stats_batch(
             eval_carm_metrics_gpu_kernel_device_rows(device_id, signals, &combos, strategy, carm)?;
         for (idx, metric) in metrics.into_iter().enumerate() {
             if active_mask[idx] {
+                let start = usize::try_from(start_vec[idx]).unwrap_or(0);
+                let end = usize::try_from(end_vec[idx]).unwrap_or(n);
+                let desired = &desired_row_major[idx * n..(idx + 1) * n];
                 sharpes[idx].push(metric.sharpe);
                 dds[idx].push(metric.max_dd);
                 pnls[idx].push(metric.pnl);
-                trades[idx].push(metric.trades);
+                trades[idx].push(count_trade_events_from_desired_window(
+                    desired, start, end, strategy,
+                ));
             }
         }
         current_t0 = next_t0;
@@ -6624,6 +7073,7 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
     let mut combo_otto_row_idx: Vec<i32> = Vec::with_capacity(total);
     let mut combo_start_t: Vec<i32> = Vec::with_capacity(total);
     let mut start_ts: Vec<usize> = Vec::with_capacity(total);
+    let mut desired_row_major: Vec<i32> = Vec::with_capacity(total * n);
     for cand in &req.candidates {
         if cand.carm.is_none()
             || cand.asr.is_some()
@@ -6657,6 +7107,13 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             periods.coppock_short.max(2),
             periods.ao_slow.max(periods.otto),
         );
+        let rocr_for_desired = compute_carm_rocr_signal(
+            candles,
+            &req.ma_source,
+            &Backend::CpuOnly,
+            periods,
+            Some(&prepared_cuda_inputs),
+        )?;
         let mixed = compute_carm_mixed_signals(
             candles,
             &req.ma_source,
@@ -6664,22 +7121,22 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             periods,
             Some(&prepared_cuda_inputs),
         )?;
+        let otto_for_desired = compute_carm_otto_signals(
+            candles,
+            &req.ma_source,
+            &Backend::CpuOnly,
+            periods,
+            first_carm,
+            Some(&prepared_cuda_inputs),
+        )?;
         let otto_row = if let Some(&row) = otto_row_lookup.get(&otto_key) {
             row
         } else {
-            let otto = compute_carm_otto_signals(
-                candles,
-                &req.ma_source,
-                &Backend::CpuOnly,
-                periods,
-                first_carm,
-                Some(&prepared_cuda_inputs),
-            )?;
             let row = i32::try_from(otto_first_valid_by_row.len())
                 .map_err(|_| "CARM OTTO row index exceeds i32 range".to_string())?;
-            otto_first_valid_by_row.push(otto.first_valid);
-            otto_hott_row_major.extend(otto.hott.into_iter().map(|value| value as f32));
-            otto_lott_row_major.extend(otto.lott.into_iter().map(|value| value as f32));
+            otto_first_valid_by_row.push(otto_for_desired.first_valid);
+            otto_hott_row_major.extend(otto_for_desired.hott.iter().map(|value| *value as f32));
+            otto_lott_row_major.extend(otto_for_desired.lott.iter().map(|value| *value as f32));
             otto_row_lookup.insert(otto_key, row);
             row
         };
@@ -6704,6 +7161,23 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
         if start_t >= n {
             return Err("not enough candles after CARM GPU warmup".to_string());
         }
+
+        let desired = build_carm_desired_positions(
+            close,
+            &CarmSignals {
+                coppock: mixed.coppock.clone(),
+                ao: mixed.ao.clone(),
+                rocr: rocr_for_desired,
+                apo: mixed.apo.clone(),
+                otto_hott: otto_for_desired.hott.clone(),
+                otto_lott: otto_for_desired.lott.clone(),
+                first_valid: signals_first_valid,
+            },
+            start_t,
+            &cand.strategy,
+            first_carm,
+        );
+        desired_row_major.extend(desired);
 
         coppock_row_major.extend(mixed.coppock.into_iter().map(|value| value as f32));
         ao_row_major.extend(mixed.ao.into_iter().map(|value| value as f32));
@@ -6778,6 +7252,7 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
             &combo_fast_row_idx,
             &combo_otto_row_idx,
             &combo_start_t,
+            &desired_row_major,
             &first.strategy,
             first_carm,
             device_id,
@@ -8059,6 +8534,7 @@ fn compute_cdmc_gpu_walk_forward_stats_batch(
     cycle_row_index: &[i32],
     decycler_row_index: &[i32],
     combo_start_t: &[i32],
+    desired_row_major: &[i32],
     strategy: &StrategyConfig,
     cdmc: &CdmcStrategyParams,
     device_id: u32,
@@ -8099,7 +8575,10 @@ fn compute_cdmc_gpu_walk_forward_stats_batch(
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
-            trades.push(metric.trades);
+            let desired = &desired_row_major[idx * n..(idx + 1) * n];
+            trades.push(count_trade_events_from_desired_window(
+                desired, t0, end, strategy,
+            ));
             if end == n {
                 break;
             }
@@ -8300,8 +8779,8 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         cycle_angle_row_major.extend(signals.cycle_angle.iter().map(|value| *value as f32));
         cycle_state_row_major.extend(signals.cycle_state.iter().map(|value| *value as f32));
         decycler_row_major.extend(signals.decycler.iter().map(|value| *value as f32));
-        let row_idx =
-            i32::try_from(idx).map_err(|_| "CDMC GPU reopt row index exceeds i32 range".to_string())?;
+        let row_idx = i32::try_from(idx)
+            .map_err(|_| "CDMC GPU reopt row index exceeds i32 range".to_string())?;
         combo_dpo_row_idx.push(row_idx);
         combo_cycle_row_idx.push(row_idx);
         combo_decycler_row_idx.push(row_idx);
@@ -8511,6 +8990,7 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
     let mut cycle_angle_row_major: Vec<f32> = Vec::with_capacity(total * n);
     let mut cycle_state_row_major: Vec<f32> = Vec::with_capacity(total * n);
     let mut decycler_row_major: Vec<f32> = Vec::with_capacity(total * n);
+    let mut desired_row_major: Vec<i32> = Vec::with_capacity(total * n);
     let mut mama_row_major: Option<Vec<f32>> = None;
     let mut fama_row_major: Option<Vec<f32>> = None;
     let mut combo_dpo_row_idx: Vec<i32> = Vec::with_capacity(total);
@@ -8572,6 +9052,9 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
         cycle_angle_row_major.extend(signals.cycle_angle.iter().map(|value| *value as f32));
         cycle_state_row_major.extend(signals.cycle_state.iter().map(|value| *value as f32));
         decycler_row_major.extend(signals.decycler.iter().map(|value| *value as f32));
+        let desired =
+            build_cdmc_desired_positions(close, &signals, start_t, &cand.strategy, first_cdmc);
+        desired_row_major.extend(desired);
         let row_idx =
             i32::try_from(idx).map_err(|_| "CDMC row index exceeds i32 range".to_string())?;
         combo_dpo_row_idx.push(row_idx);
@@ -8653,6 +9136,7 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
             &combo_cycle_row_idx,
             &combo_decycler_row_idx,
             &combo_start_t,
+            &desired_row_major,
             &first.strategy,
             first_cdmc,
             device_id,
@@ -8731,6 +9215,9 @@ fn try_prepare_composite_gpu_fixed_candidate_validation(
     }
     if first.rocb.is_some() {
         return try_prepare_rocb_gpu_fixed_candidate_validation(req, candles);
+    }
+    if first.vcet.is_some() {
+        return try_prepare_vcet_gpu_fixed_candidate_validation(req, candles);
     }
     if first.mkcs.is_some() {
         return try_prepare_mkcs_gpu_fixed_candidate_validation(req, candles);
@@ -9173,6 +9660,10 @@ pub struct CompositeValidationCandidateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trade_bootstrap: Option<TradeBootstrapStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub regime_slice_robustness: Option<RegimeSliceRobustnessStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub friction_stress: Option<FrictionStressStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker: Option<CrossTickerStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker_pareto: Option<bool>,
@@ -9344,6 +9835,15 @@ struct RocbCandidateSeries<'a> {
     cfg: StrategyConfig,
 }
 
+struct VcetCandidateSeries<'a> {
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    n: usize,
+    lr: &'a [f64],
+    desired: Vec<i32>,
+    start_t: usize,
+    cfg: StrategyConfig,
+}
+
 struct MkcsCandidateSeries<'a> {
     candles: &'a vector_ta::utilities::data_loader::Candles,
     n: usize,
@@ -9395,6 +9895,7 @@ enum CandidateSeries<'a> {
     Vcc(VccCandidateSeries<'a>),
     Vemr(VemrCandidateSeries<'a>),
     Rocb(RocbCandidateSeries<'a>),
+    Vcet(VcetCandidateSeries<'a>),
     Mkcs(MkcsCandidateSeries<'a>),
     Kqsr(KqsrCandidateSeries<'a>),
     Carm(CarmCandidateSeries<'a>),
@@ -9418,6 +9919,7 @@ fn build_candidate_series<'a>(
         + usize::from(params.vcc.is_some())
         + usize::from(params.vemr.is_some())
         + usize::from(params.rocb.is_some())
+        + usize::from(params.vcet.is_some())
         + usize::from(params.mkcs.is_some())
         + usize::from(params.kqsr.is_some())
         + usize::from(params.carm.is_some())
@@ -9425,7 +9927,7 @@ fn build_candidate_series<'a>(
         + usize::from(params.cdmc.is_some());
     if custom_strategy_count > 1 {
         return Err(
-            "Select only one of ASR, VCC, VEMR, ROCB, MKCS, KQSR, CARM, KVDF, or CDMC strategy config."
+            "Select only one of ASR, VCC, VEMR, ROCB, VCET, MKCS, KQSR, CARM, KVDF, or CDMC strategy config."
                 .to_string(),
         );
     }
@@ -9473,6 +9975,18 @@ fn build_candidate_series<'a>(
             ma_source,
             params,
             rocb_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs,
+        );
+    }
+    if let Some(vcet_cfg) = params.vcet.as_ref() {
+        return build_vcet_candidate_series(
+            candles,
+            lr,
+            ott_prices,
+            ma_source,
+            params,
+            vcet_cfg,
             #[cfg(feature = "cuda")]
             prepared_cuda_inputs,
         );
@@ -10092,6 +10606,92 @@ fn build_rocb_candidate_series<'a>(
     }))
 }
 
+fn build_vcet_candidate_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ott_prices: &'a [f64],
+    ma_source: &str,
+    params: &CompositeParams,
+    vcet_cfg: &VcetStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CandidateSeries<'a>, String> {
+    validate_strategy_cfg(&params.strategy)?;
+    validate_vcet_params(vcet_cfg)?;
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    if lr.len() != n || ott_prices.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+
+    let fast_ma = params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = params.slow_ma_type.trim().to_ascii_lowercase();
+    if fast_ma.is_empty() || slow_ma.is_empty() {
+        return Err("fast/slow MA type cannot be empty".to_string());
+    }
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    if close.len() != n || high.len() != n || low.len() != n {
+        return Err("series length mismatch".to_string());
+    }
+    let first_valid_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let first_valid_high =
+        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let first_valid_low =
+        first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    let backend = Backend::CpuOnly;
+
+    let periods = resolve_vcet_periods(vcet_cfg, params.fast_len, params.slow_len);
+    let vidya: VcetVidyaSignals = compute_vcet_vidya_signals(
+        candles,
+        ma_source,
+        &backend,
+        periods,
+        vcet_cfg.vidya_alpha,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let ce: VcetChandelierSignals = compute_vcet_chandelier_signals(
+        candles,
+        &backend,
+        periods.ce,
+        vcet_cfg.ce_mult,
+        vcet_cfg.ce_use_close,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )?;
+    let start_t = compute_vcet_start_t(
+        first_valid_close,
+        first_valid_high,
+        first_valid_low,
+        vidya.first_valid,
+        ce.first_valid,
+        params.strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup".to_string());
+    }
+
+    let desired = build_vcet_desired_positions(close, &vidya, &ce, start_t, &params.strategy, vcet_cfg);
+
+    Ok(CandidateSeries::Vcet(VcetCandidateSeries {
+        candles,
+        n,
+        lr,
+        desired,
+        start_t,
+        cfg: params.strategy.clone(),
+    }))
+}
+
 fn build_mkcs_candidate_series<'a>(
     candles: &'a vector_ta::utilities::data_loader::Candles,
     lr: &'a [f64],
@@ -10483,6 +11083,14 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
             end_t.min(series.n),
             &series.cfg,
         ),
+        CandidateSeries::Vcet(series) => eval_asr_metrics_window_from_desired(
+            series.candles,
+            series.lr,
+            &series.desired,
+            start_t,
+            end_t.min(series.n),
+            &series.cfg,
+        ),
         CandidateSeries::Mkcs(series) => eval_asr_metrics_window_from_desired(
             series.candles,
             series.lr,
@@ -10578,6 +11186,17 @@ fn trades_for_series(series: &CandidateSeries<'_>) -> Vec<Trade> {
             .trades
         }
         CandidateSeries::Rocb(series) => {
+            eval_asr_curves_from_desired(
+                series.candles,
+                series.lr,
+                &series.desired,
+                series.start_t,
+                &series.cfg,
+                1,
+            )
+            .trades
+        }
+        CandidateSeries::Vcet(series) => {
             eval_asr_curves_from_desired(
                 series.candles,
                 series.lr,
@@ -10730,6 +11349,18 @@ fn desired_positions_for_series(
             out
         }
         CandidateSeries::Rocb(series) => {
+            let n = series.n;
+            let end_t = end_t.min(n);
+            let mut out: Vec<i32> = vec![0; n];
+            if start_t >= end_t || n == 0 {
+                return out;
+            }
+            for t in start_t..end_t {
+                out[t] = *series.desired.get(t).unwrap_or(&0);
+            }
+            out
+        }
+        CandidateSeries::Vcet(series) => {
             let n = series.n;
             let end_t = end_t.min(n);
             let mut out: Vec<i32> = vec![0; n];
@@ -10970,6 +11601,31 @@ fn slice_return_stats_for_series(
             }
             out
         }
+        CandidateSeries::Vcet(series) => {
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
+            }
+
+            for t in start_t..end_t {
+                let slice_idx = (t - start_t) / slice_bars;
+                if slice_idx >= slices {
+                    break;
+                }
+                let pos = series.desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+                let lr_t = series.lr[t];
+                let step_r = if pos == 0 {
+                    0.0
+                } else {
+                    (pos as f64) * lr_t.exp_m1()
+                };
+                out[slice_idx].sum += step_r;
+                out[slice_idx].sumsq += step_r * step_r;
+            }
+            out
+        }
         CandidateSeries::Mkcs(series) => {
             let end_t = start_t
                 .saturating_add(slice_bars.saturating_mul(slices))
@@ -11105,6 +11761,7 @@ fn series_n(series: &CandidateSeries<'_>) -> usize {
         CandidateSeries::Vcc(series) => series.n,
         CandidateSeries::Vemr(series) => series.n,
         CandidateSeries::Rocb(series) => series.n,
+        CandidateSeries::Vcet(series) => series.n,
         CandidateSeries::Mkcs(series) => series.n,
         CandidateSeries::Kqsr(series) => series.n,
         CandidateSeries::Carm(series) => series.n,
@@ -11120,6 +11777,7 @@ fn series_start_t(series: &CandidateSeries<'_>) -> usize {
         CandidateSeries::Vcc(series) => series.start_t,
         CandidateSeries::Vemr(series) => series.start_t,
         CandidateSeries::Rocb(series) => series.start_t,
+        CandidateSeries::Vcet(series) => series.start_t,
         CandidateSeries::Mkcs(series) => series.start_t,
         CandidateSeries::Kqsr(series) => series.start_t,
         CandidateSeries::Carm(series) => series.start_t,
@@ -11135,6 +11793,7 @@ fn series_lr<'a>(series: &'a CandidateSeries<'a>) -> &'a [f64] {
         CandidateSeries::Vcc(series) => series.lr,
         CandidateSeries::Vemr(series) => series.lr,
         CandidateSeries::Rocb(series) => series.lr,
+        CandidateSeries::Vcet(series) => series.lr,
         CandidateSeries::Mkcs(series) => series.lr,
         CandidateSeries::Kqsr(series) => series.lr,
         CandidateSeries::Carm(series) => series.lr,
@@ -11150,6 +11809,7 @@ fn series_cfg<'a>(series: &'a CandidateSeries<'a>) -> &'a StrategyConfig {
         CandidateSeries::Vcc(series) => &series.cfg,
         CandidateSeries::Vemr(series) => &series.cfg,
         CandidateSeries::Rocb(series) => &series.cfg,
+        CandidateSeries::Vcet(series) => &series.cfg,
         CandidateSeries::Mkcs(series) => &series.cfg,
         CandidateSeries::Kqsr(series) => &series.cfg,
         CandidateSeries::Carm(series) => &series.cfg,
@@ -11651,7 +12311,7 @@ pub fn run_composite_validation_blocking_with_candles(
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let _gpu_fixed_eval = None::<()>;
 
-    let (out, cscv_pbo) = crate::validation_core::run_validation_candidates(
+    let (mut out, cscv_pbo) = crate::validation_core::run_validation_candidates(
         &req.candidates,
         seed,
         cancel,
@@ -11700,6 +12360,27 @@ pub fn run_composite_validation_blocking_with_candles(
                         Some(compute_vemr_gpu_walk_forward_stats_for_candidate(
                             &req, candles, p, cfg,
                         )?)
+                    } else if p.vcet.is_some() {
+                        let series = build_candidate_series(
+                            candles,
+                            &lr,
+                            ma_prices,
+                            base_first_valid,
+                            &ma_source,
+                            fast_ma_params.as_ref(),
+                            slow_ma_params.as_ref(),
+                            p,
+                            #[cfg(feature = "cuda")]
+                            &req.backend,
+                            #[cfg(feature = "cuda")]
+                            prepared_cuda_inputs.as_ref(),
+                        )?;
+                        Some(crate::validation_pipeline::compute_walk_forward_stats(
+                            series_n(&series),
+                            series_start_t(&series),
+                            cfg,
+                            |t0, end| eval_metrics_window(&series, t0, end),
+                        ))
                     } else {
                         None
                     }
@@ -11766,6 +12447,8 @@ pub fn run_composite_validation_blocking_with_candles(
                         walk_forward,
                         perturb,
                         trade_bootstrap,
+                        regime_slice_robustness: None,
+                        friction_stress: None,
                         cross_ticker: None,
                         cross_ticker_pareto: None,
                         cscv_pbo: None,
@@ -11818,6 +12501,13 @@ pub fn run_composite_validation_blocking_with_candles(
                     Some(compute_vemr_gpu_walk_forward_stats_for_candidate(
                         &req, candles, p, cfg,
                     )?)
+                } else if gpu_fixed_eval.is_some() && p.vcet.is_some() {
+                    Some(crate::validation_pipeline::compute_walk_forward_stats(
+                        n_total,
+                        start_t0,
+                        cfg,
+                        |t0, end| eval_metrics_window(&series, t0, end),
+                    ))
                 } else {
                     Some(crate::validation_pipeline::compute_walk_forward_stats(
                         n_total,
@@ -11915,6 +12605,8 @@ pub fn run_composite_validation_blocking_with_candles(
                     walk_forward,
                     perturb,
                     trade_bootstrap,
+                    regime_slice_robustness: None,
+                    friction_stress: None,
                     cross_ticker: None,
                     cross_ticker_pareto: None,
                     cscv_pbo: None,
@@ -11960,6 +12652,51 @@ pub fn run_composite_validation_blocking_with_candles(
             ))
         },
     )?;
+
+    let regime_eval_count = DEFAULT_COMPOSITE_REGIME_SLICE_FINALISTS.min(out.len());
+    for cand in out.iter_mut().take(regime_eval_count) {
+        let series = build_candidate_series(
+            candles,
+            &lr,
+            ma_prices,
+            base_first_valid,
+            &ma_source,
+            fast_ma_params.as_ref(),
+            slow_ma_params.as_ref(),
+            &cand.params,
+            #[cfg(feature = "cuda")]
+            &Backend::CpuOnly,
+            #[cfg(feature = "cuda")]
+            None,
+        )?;
+        cand.regime_slice_robustness = compute_composite_regime_slice_robustness_stats(&series);
+    }
+
+    let friction_eval_count = DEFAULT_COMPOSITE_FRICTION_STRESS_FINALISTS.min(out.len());
+    if friction_eval_count > 0 {
+        let finalist_params: Vec<CompositeParams> = out
+            .iter()
+            .take(friction_eval_count)
+            .map(|cand| cand.params.clone())
+            .collect();
+        let summaries = compute_composite_friction_stress_summaries(
+            candles,
+            &lr,
+            ma_prices,
+            base_first_valid,
+            &ma_source,
+            fast_ma_params.as_ref(),
+            slow_ma_params.as_ref(),
+            &finalist_params,
+        )?;
+        for (cand, summary) in out
+            .iter_mut()
+            .take(friction_eval_count)
+            .zip(summaries.into_iter())
+        {
+            cand.friction_stress = summary;
+        }
+    }
 
     let reopt_walk_forward = if let Some(cfg) = reopt_walk_cfg.as_ref() {
         let finalist_params: Vec<CompositeParams> = out
@@ -12311,6 +13048,514 @@ fn benchmark_slice_returns(
     out
 }
 
+const DEFAULT_COMPOSITE_REGIME_SLICE_VOL_WINDOW: usize = 48;
+const DEFAULT_COMPOSITE_REGIME_SLICE_FINALISTS: usize = 5;
+const DEFAULT_COMPOSITE_FRICTION_STRESS_FINALISTS: usize = 4;
+const DEFAULT_COMPOSITE_FRICTION_FEE_FLOOR_BPS: f64 = 2.0;
+const DEFAULT_COMPOSITE_FRICTION_SPREAD_FLOOR_BPS: f64 = 4.0;
+const DEFAULT_COMPOSITE_FRICTION_SLIPPAGE_FLOOR_BPS: f64 = 2.0;
+
+fn compute_step_returns_for_candidate_series(
+    series: &CandidateSeries<'_>,
+) -> (Vec<f64>, Vec<bool>, Vec<bool>) {
+    let n = series_n(series);
+    let start_t = series_start_t(series);
+    let lr = series_lr(series);
+    let desired = desired_positions_for_series(series, start_t, n);
+    let mut step_returns = vec![0.0; n];
+    let mut active_flags = vec![false; n];
+    let mut trade_entries = vec![false; n];
+    let mut prev_pos = 0i32;
+
+    for t in start_t..n {
+        let pos = *desired.get(t).unwrap_or(&0);
+        if pos != 0 {
+            active_flags[t] = true;
+            step_returns[t] = (pos as f64) * lr[t].exp_m1();
+        }
+        if pos != 0 && pos != prev_pos {
+            trade_entries[t] = true;
+        }
+        prev_pos = pos;
+    }
+
+    (step_returns, active_flags, trade_entries)
+}
+
+fn rolling_volatility_tertiles_generic(lr: &[f64], start_t: usize, window: usize) -> Vec<u8> {
+    let n = lr.len();
+    let mut states = vec![u8::MAX; n];
+    if n == 0 || start_t >= n {
+        return states;
+    }
+
+    let mut prefix = vec![0.0; n + 1];
+    let mut prefix_sq = vec![0.0; n + 1];
+    for (idx, value) in lr.iter().copied().enumerate() {
+        prefix[idx + 1] = prefix[idx] + value;
+        prefix_sq[idx + 1] = prefix_sq[idx] + value * value;
+    }
+
+    let mut vols = Vec::new();
+    let mut raw = vec![f64::NAN; n];
+    for t in start_t..n {
+        let begin = t.saturating_add(1).saturating_sub(window.max(1));
+        let count = t.saturating_sub(begin).saturating_add(1);
+        if count < window.max(1) {
+            continue;
+        }
+        let sum = prefix[t + 1] - prefix[begin];
+        let sumsq = prefix_sq[t + 1] - prefix_sq[begin];
+        let mean = sum / count as f64;
+        let variance = (sumsq / count as f64 - mean * mean).max(0.0);
+        let vol = variance.sqrt();
+        raw[t] = vol;
+        vols.push(vol);
+    }
+    if vols.is_empty() {
+        return states;
+    }
+    vols.sort_by(|a, b| a.total_cmp(b));
+    let low_thr = crate::stats_common::quantile(&vols, 1.0 / 3.0);
+    let high_thr = crate::stats_common::quantile(&vols, 2.0 / 3.0);
+    for t in start_t..n {
+        let vol = raw[t];
+        if !vol.is_finite() {
+            continue;
+        }
+        states[t] = if vol <= low_thr {
+            0
+        } else if vol <= high_thr {
+            1
+        } else {
+            2
+        };
+    }
+    states
+}
+
+fn rolling_trend_efficiency_scores(lr: &[f64], start_t: usize, window: usize) -> Vec<f64> {
+    let n = lr.len();
+    let mut out = vec![f64::NAN; n];
+    if n == 0 || start_t >= n {
+        return out;
+    }
+    let mut prefix = vec![0.0; n + 1];
+    let mut abs_prefix = vec![0.0; n + 1];
+    for (idx, value) in lr.iter().copied().enumerate() {
+        prefix[idx + 1] = prefix[idx] + value;
+        abs_prefix[idx + 1] = abs_prefix[idx] + value.abs();
+    }
+    for t in start_t..n {
+        let begin = t.saturating_add(1).saturating_sub(window.max(1));
+        let count = t.saturating_sub(begin).saturating_add(1);
+        if count < window.max(1) {
+            continue;
+        }
+        let net = prefix[t + 1] - prefix[begin];
+        let gross = abs_prefix[t + 1] - abs_prefix[begin];
+        if gross > 0.0 {
+            out[t] = net.abs() / gross;
+        }
+    }
+    out
+}
+
+fn summarize_regime_bucket_generic(
+    step_returns: &[f64],
+    active_flags: &[bool],
+    trade_entries: &[bool],
+    membership: &[bool],
+) -> RegimeBucketStats {
+    let mut bars = 0usize;
+    let mut active_bars = 0usize;
+    let mut trades = 0usize;
+    let mut eq = 1.0_f64;
+    let mut peak = 1.0_f64;
+    let mut max_dd = 0.0_f64;
+    let mut samples = Vec::new();
+
+    for idx in 0..membership.len() {
+        if !membership[idx] {
+            continue;
+        }
+        bars += 1;
+        if active_flags[idx] {
+            active_bars += 1;
+        }
+        if trade_entries[idx] {
+            trades += 1;
+        }
+        let r = step_returns[idx];
+        samples.push(r);
+        eq *= (1.0 + r).max(1.0e-7);
+        if eq > peak {
+            peak = eq;
+        }
+        let dd = (peak - eq) / peak.max(1.0e-7);
+        if dd > max_dd {
+            max_dd = dd;
+        }
+    }
+
+    if bars == 0 {
+        return RegimeBucketStats {
+            bars: 0,
+            active_frac: 0.0,
+            pnl: 0.0,
+            sharpe: 0.0,
+            max_dd: 0.0,
+            trades: 0,
+        };
+    }
+
+    let mean = if samples.is_empty() {
+        0.0
+    } else {
+        samples.iter().copied().sum::<f64>() / samples.len() as f64
+    };
+    let std = if samples.len() <= 1 {
+        0.0
+    } else {
+        let sumsq = samples
+            .iter()
+            .map(|value| {
+                let d = *value - mean;
+                d * d
+            })
+            .sum::<f64>();
+        (sumsq / (samples.len() - 1) as f64).sqrt()
+    };
+    let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+    RegimeBucketStats {
+        bars,
+        active_frac: active_bars as f64 / bars as f64,
+        pnl: eq - 1.0,
+        sharpe,
+        max_dd,
+        trades,
+    }
+}
+
+fn derive_regime_support_label_generic(
+    trend_pass: bool,
+    range_pass: bool,
+    stable_bucket_count: usize,
+) -> String {
+    match (trend_pass, range_pass) {
+        (true, true) => "broad".to_string(),
+        (true, false) => "trend_only".to_string(),
+        (false, true) => "range_only".to_string(),
+        (false, false) if stable_bucket_count >= 2 => "vol_selective".to_string(),
+        _ => "weak".to_string(),
+    }
+}
+
+fn compute_composite_regime_slice_robustness_stats(
+    series: &CandidateSeries<'_>,
+) -> Option<RegimeSliceRobustnessStats> {
+    let n = series_n(series);
+    let start_t = series_start_t(series);
+    let lr = series_lr(series);
+    if n.saturating_sub(start_t) < DEFAULT_COMPOSITE_REGIME_SLICE_VOL_WINDOW.max(24) {
+        return None;
+    }
+
+    let (step_returns, active_flags, trade_entries) =
+        compute_step_returns_for_candidate_series(series);
+    let vol_states =
+        rolling_volatility_tertiles_generic(lr, start_t, DEFAULT_COMPOSITE_REGIME_SLICE_VOL_WINDOW);
+    let trend_eff =
+        rolling_trend_efficiency_scores(lr, start_t, DEFAULT_COMPOSITE_REGIME_SLICE_VOL_WINDOW);
+    let mut eff_values: Vec<f64> = trend_eff[start_t..]
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
+    if eff_values.is_empty() {
+        return None;
+    }
+    eff_values.sort_by(|a, b| a.total_cmp(b));
+    let trend_threshold = crate::stats_common::median(&eff_values);
+
+    let mut low_mask = vec![false; n];
+    let mut mid_mask = vec![false; n];
+    let mut high_mask = vec![false; n];
+    let mut trend_mask = vec![false; n];
+    let mut range_mask = vec![false; n];
+    for t in start_t..n {
+        match vol_states[t] {
+            0 => low_mask[t] = true,
+            1 => mid_mask[t] = true,
+            2 => high_mask[t] = true,
+            _ => {}
+        }
+        let eff = trend_eff[t];
+        if eff.is_finite() {
+            if eff >= trend_threshold {
+                trend_mask[t] = true;
+            } else {
+                range_mask[t] = true;
+            }
+        }
+    }
+
+    let low_vol =
+        summarize_regime_bucket_generic(&step_returns, &active_flags, &trade_entries, &low_mask);
+    let mid_vol =
+        summarize_regime_bucket_generic(&step_returns, &active_flags, &trade_entries, &mid_mask);
+    let high_vol =
+        summarize_regime_bucket_generic(&step_returns, &active_flags, &trade_entries, &high_mask);
+    let trend =
+        summarize_regime_bucket_generic(&step_returns, &active_flags, &trade_entries, &trend_mask);
+    let range =
+        summarize_regime_bucket_generic(&step_returns, &active_flags, &trade_entries, &range_mask);
+    let trend_pass = trend.sharpe >= 0.0 && trend.pnl >= 0.0;
+    let range_pass = range.sharpe >= 0.0 && range.pnl >= 0.0;
+
+    let buckets = [
+        ("low_vol", &low_vol),
+        ("mid_vol", &mid_vol),
+        ("high_vol", &high_vol),
+        ("trend", &trend),
+        ("range", &range),
+    ];
+    let mut worst_bucket_label = String::new();
+    let mut worst_sharpe = f64::INFINITY;
+    let mut worst_max_dd = 0.0_f64;
+    let mut stable_bucket_count = 0usize;
+    for (label, stats) in buckets {
+        if stats.bars == 0 {
+            continue;
+        }
+        if stats.sharpe < worst_sharpe {
+            worst_sharpe = stats.sharpe;
+            worst_bucket_label = label.to_string();
+        }
+        if stats.max_dd > worst_max_dd {
+            worst_max_dd = stats.max_dd;
+        }
+        if stats.sharpe >= 0.0 && stats.pnl >= 0.0 {
+            stable_bucket_count += 1;
+        }
+    }
+    if !worst_sharpe.is_finite() {
+        return None;
+    }
+    let stable_bucket_frac = stable_bucket_count as f64 / 5.0;
+    let support_label =
+        derive_regime_support_label_generic(trend_pass, range_pass, stable_bucket_count);
+
+    Some(RegimeSliceRobustnessStats {
+        vol_window: DEFAULT_COMPOSITE_REGIME_SLICE_VOL_WINDOW,
+        low_vol,
+        mid_vol,
+        high_vol,
+        trend,
+        range,
+        worst_bucket_label,
+        worst_sharpe,
+        worst_max_dd,
+        stable_bucket_count,
+        stable_bucket_frac,
+        trend_pass,
+        range_pass,
+        support_label,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct CompositeFrictionScenarioSpec {
+    label: &'static str,
+    fee_bps: f64,
+    spread_bps: f64,
+    slippage_bps: f64,
+}
+
+fn composite_friction_stress_scenarios(
+    base: &StrategyConfig,
+) -> [CompositeFrictionScenarioSpec; 4] {
+    let fee_stress = (base.fee_bps * 2.0)
+        .max(base.fee_bps + 1.0)
+        .max(DEFAULT_COMPOSITE_FRICTION_FEE_FLOOR_BPS);
+    let spread_stress = (base.spread_bps * 2.0)
+        .max(base.spread_bps + 2.0)
+        .max(DEFAULT_COMPOSITE_FRICTION_SPREAD_FLOOR_BPS);
+    let slippage_stress = (base.slippage_bps * 2.0)
+        .max(base.slippage_bps + 1.0)
+        .max(DEFAULT_COMPOSITE_FRICTION_SLIPPAGE_FLOOR_BPS);
+    [
+        CompositeFrictionScenarioSpec {
+            label: "fee_stress",
+            fee_bps: fee_stress,
+            spread_bps: base.spread_bps,
+            slippage_bps: base.slippage_bps,
+        },
+        CompositeFrictionScenarioSpec {
+            label: "spread_stress",
+            fee_bps: base.fee_bps,
+            spread_bps: spread_stress,
+            slippage_bps: base.slippage_bps,
+        },
+        CompositeFrictionScenarioSpec {
+            label: "slippage_stress",
+            fee_bps: base.fee_bps,
+            spread_bps: base.spread_bps,
+            slippage_bps: slippage_stress,
+        },
+        CompositeFrictionScenarioSpec {
+            label: "combined_stress",
+            fee_bps: fee_stress,
+            spread_bps: spread_stress,
+            slippage_bps: slippage_stress,
+        },
+    ]
+}
+
+fn compute_composite_friction_stress_summaries(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    lr: &[f64],
+    ott_prices: &[f64],
+    base_first_valid: usize,
+    ma_source: &str,
+    fast_ma_params_req: Option<&HashMap<String, f64>>,
+    slow_ma_params_req: Option<&HashMap<String, f64>>,
+    finalists: &[CompositeParams],
+) -> Result<Vec<Option<FrictionStressStats>>, String> {
+    if finalists.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let scenario_labels = composite_friction_stress_scenarios(&StrategyConfig::default())
+        .map(|scenario| scenario.label);
+    let scenario_count = scenario_labels.len();
+    let mut base_ranks = vec![0usize; finalists.len()];
+    let mut scenario_ranks = vec![vec![0usize; finalists.len()]; scenario_count];
+    let mut scenario_metrics: Vec<Vec<Metrics>> =
+        vec![Vec::with_capacity(finalists.len()); scenario_count];
+    let mut scenario_scores = vec![vec![0.0_f64; finalists.len()]; scenario_count];
+
+    let sort_scored = |scored: &mut Vec<(usize, Metrics, f64)>| {
+        scored.sort_by(|a, b| {
+            b.2.total_cmp(&a.2)
+                .then_with(|| b.1.sharpe.total_cmp(&a.1.sharpe))
+                .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+        });
+    };
+
+    let mut base_scored = Vec::with_capacity(finalists.len());
+    for (idx, params) in finalists.iter().enumerate() {
+        let series = build_candidate_series(
+            candles,
+            lr,
+            ott_prices,
+            base_first_valid,
+            ma_source,
+            fast_ma_params_req,
+            slow_ma_params_req,
+            params,
+            #[cfg(feature = "cuda")]
+            &Backend::CpuOnly,
+            #[cfg(feature = "cuda")]
+            None,
+        )?;
+        let start_t = series_start_t(&series);
+        let metrics = eval_metrics_window(&series, start_t, series_n(&series));
+        let score = crate::validation_pipeline::robust_score_from_metrics(&metrics, None);
+        base_scored.push((idx, metrics, score));
+    }
+    sort_scored(&mut base_scored);
+    for (rank_idx, (finalist_idx, _, _)) in base_scored.into_iter().enumerate() {
+        base_ranks[finalist_idx] = rank_idx + 1;
+    }
+
+    for scenario_idx in 0..scenario_count {
+        let mut scored = Vec::with_capacity(finalists.len());
+        for (idx, params) in finalists.iter().enumerate() {
+            let scenario = composite_friction_stress_scenarios(&params.strategy)[scenario_idx];
+            let mut stressed = params.clone();
+            stressed.strategy.fee_bps = scenario.fee_bps;
+            stressed.strategy.spread_bps = scenario.spread_bps;
+            stressed.strategy.slippage_bps = scenario.slippage_bps;
+            let series = build_candidate_series(
+                candles,
+                lr,
+                ott_prices,
+                base_first_valid,
+                ma_source,
+                fast_ma_params_req,
+                slow_ma_params_req,
+                &stressed,
+                #[cfg(feature = "cuda")]
+                &Backend::CpuOnly,
+                #[cfg(feature = "cuda")]
+                None,
+            )?;
+            let start_t = series_start_t(&series);
+            let metrics = eval_metrics_window(&series, start_t, series_n(&series));
+            let score = crate::validation_pipeline::robust_score_from_metrics(&metrics, None);
+            scored.push((idx, metrics, score));
+        }
+        sort_scored(&mut scored);
+        let mut metrics_by_finalist: Vec<Option<Metrics>> = vec![None; finalists.len()];
+        let mut scores_by_finalist = vec![0.0_f64; finalists.len()];
+        for (rank_idx, (finalist_idx, metrics, score)) in scored.into_iter().enumerate() {
+            scenario_ranks[scenario_idx][finalist_idx] = rank_idx + 1;
+            metrics_by_finalist[finalist_idx] = Some(metrics);
+            scores_by_finalist[finalist_idx] = score;
+        }
+        scenario_metrics[scenario_idx] = metrics_by_finalist
+            .into_iter()
+            .map(|metrics| metrics.expect("friction metrics for each finalist"))
+            .collect();
+        scenario_scores[scenario_idx] = scores_by_finalist;
+    }
+
+    let mut out = Vec::with_capacity(finalists.len());
+    for finalist_idx in 0..finalists.len() {
+        let mut pass_count = 0usize;
+        let mut worst_label = String::new();
+        let mut worst_score = f64::INFINITY;
+        let mut worst_pnl = 0.0_f64;
+        let mut worst_sharpe = 0.0_f64;
+        let mut worst_max_dd = 0.0_f64;
+        let mut rank_sum = 0usize;
+        let mut max_rank_drift = 0usize;
+        for scenario_idx in 0..scenario_count {
+            let metrics = &scenario_metrics[scenario_idx][finalist_idx];
+            if metrics.pnl >= 0.0 && metrics.sharpe >= 0.0 {
+                pass_count += 1;
+            }
+            let scenario_score = scenario_scores[scenario_idx][finalist_idx];
+            if scenario_score < worst_score {
+                worst_score = scenario_score;
+                worst_pnl = metrics.pnl;
+                worst_sharpe = metrics.sharpe;
+                worst_max_dd = metrics.max_dd;
+                worst_label = scenario_labels[scenario_idx].to_string();
+            }
+            let rank = scenario_ranks[scenario_idx][finalist_idx];
+            rank_sum += rank;
+            let drift = rank.abs_diff(base_ranks[finalist_idx]);
+            if drift > max_rank_drift {
+                max_rank_drift = drift;
+            }
+        }
+        out.push(Some(FrictionStressStats {
+            scenario_count,
+            pass_count,
+            pass_frac: pass_count as f64 / scenario_count as f64,
+            worst_scenario_label: worst_label,
+            worst_pnl,
+            worst_sharpe,
+            worst_max_dd,
+            mean_rank: rank_sum as f64 / scenario_count as f64,
+            max_rank_drift,
+        }));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12343,6 +13588,146 @@ mod tests {
         }
 
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn mkcs_validation_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: Some(MkcsStrategyParams::default()),
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
+    }
+
+    fn asr_validation_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: Some(AsrStrategyParams::default()),
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
+    }
+
+    fn rocb_validation_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: Some(RocbStrategyParams::default()),
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
+    }
+
+    fn vemr_validation_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: Some(VemrStrategyParams::default()),
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
+    }
+
+    fn base_composite_validation_test_candidate(
+        fast_len: u16,
+        slow_len: u16,
+        halftrend: HalfTrendRegimeFilter,
+    ) -> CompositeParams {
+        CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len,
+            slow_len,
+            halftrend,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -12397,6 +13782,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -12453,6 +13839,114 @@ mod tests {
     }
 
     #[test]
+    fn composite_validation_populates_regime_slice_robustness_for_top_finalists() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeValidationRequest {
+            data_id: "composite-regime-robustness".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                mkcs_validation_test_candidate(8, 24),
+                mkcs_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 1500,
+                step_bars: 750,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 41,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert_eq!(res.candidates.len(), 2);
+        for cand in &res.candidates {
+            let regime = cand
+                .regime_slice_robustness
+                .as_ref()
+                .expect("top finalists should have regime robustness stats");
+            assert!(regime.vol_window >= DEFAULT_COMPOSITE_REGIME_SLICE_VOL_WINDOW);
+            assert!(regime.stable_bucket_count <= 5);
+            assert!((0.0..=1.0).contains(&regime.stable_bucket_frac));
+            assert!(!regime.worst_bucket_label.is_empty());
+            assert!(regime.worst_sharpe.is_finite());
+            assert!(regime.worst_max_dd.is_finite());
+            assert!(!regime.support_label.is_empty());
+        }
+    }
+
+    #[test]
+    fn composite_validation_populates_friction_stress_for_top_finalists() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeValidationRequest {
+            data_id: "composite-friction-stress".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                mkcs_validation_test_candidate(8, 24),
+                mkcs_validation_test_candidate(12, 36),
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 43,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert_eq!(res.candidates.len(), 2);
+        for cand in &res.candidates {
+            let stress = cand
+                .friction_stress
+                .as_ref()
+                .expect("top finalists should have friction stress stats");
+            assert_eq!(stress.scenario_count, 4);
+            assert!(stress.pass_count <= stress.scenario_count);
+            assert!((0.0..=1.0).contains(&stress.pass_frac));
+            assert!(!stress.worst_scenario_label.is_empty());
+            assert!(stress.worst_pnl.is_finite());
+            assert!(stress.worst_sharpe.is_finite());
+            assert!(stress.worst_max_dd.is_finite());
+            assert!(stress.mean_rank.is_finite());
+        }
+    }
+
+    #[test]
     fn composite_validation_cpu_request_reports_backend_route() {
         let candles = make_trending_candles(2048);
         let cancel = AtomicBool::new(false);
@@ -12476,6 +13970,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -12544,6 +14039,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -12578,7 +14074,13 @@ mod tests {
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
             .expect("composite gpu-route in-sample");
-        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "backend_used={:?} route={:?} fallback={:?}",
+            res.backend_used,
+            res.backend_route,
+            res.backend_fallback_reason
+        );
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
     }
@@ -12612,6 +14114,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -12649,11 +14152,490 @@ mod tests {
 
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
             .expect("composite gpu-route walk-forward");
-        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "backend_used={:?} route={:?} fallback={:?}",
+            res.backend_used,
+            res.backend_route,
+            res.backend_fallback_reason
+        );
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
         assert_eq!(res.candidates.len(), 1);
         assert!(res.candidates[0].walk_forward.is_some());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_auto_keeps_gpu_route_when_uniform() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-auto-gpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                base_composite_validation_test_candidate(10, 30, halftrend.clone()),
+                base_composite_validation_test_candidate(14, 42, halftrend),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 301,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite auto gpu policy validation");
+        if !matches!(res.backend_used, BackendUsed::Gpu) {
+            panic!(
+                "backend_used={:?} route={:?} fallback={:?}",
+                res.backend_used, res.backend_route, res.backend_fallback_reason
+            );
+        }
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_auto_falls_back_to_cpu_when_halftrend_differs() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                base_composite_validation_test_candidate(
+                    10,
+                    30,
+                    HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                ),
+                base_composite_validation_test_candidate(
+                    14,
+                    42,
+                    HalfTrendRegimeFilter {
+                        amplitude: 3,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                ),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 302,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("uniform HalfTrend parameters"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_kernel_falls_back_to_cpu_when_halftrend_differs() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-gpu-fallback-halftrend".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                base_composite_validation_test_candidate(
+                    10,
+                    30,
+                    HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                ),
+                base_composite_validation_test_candidate(
+                    14,
+                    42,
+                    HalfTrendRegimeFilter {
+                        amplitude: 3,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                ),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 303,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite gpu fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("uniform HalfTrend parameters"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_auto_falls_back_to_cpu_when_signal_mode_is_not_hard_gate() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+        let mut first = base_composite_validation_test_candidate(10, 30, halftrend.clone());
+        let mut second = base_composite_validation_test_candidate(14, 42, halftrend);
+        first.signal_mode = CompositeSignalMode::EntryCoreExitOverlay;
+        second.signal_mode = CompositeSignalMode::EntryCoreExitOverlay;
+
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-auto-cpu-policy-soft-vote".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![first, second],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 304,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite auto signal-mode fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("supports signal_mode=HardGate only"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_kernel_falls_back_to_cpu_when_signal_mode_is_not_hard_gate() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+        let mut first = base_composite_validation_test_candidate(10, 30, halftrend.clone());
+        let mut second = base_composite_validation_test_candidate(14, 42, halftrend);
+        first.signal_mode = CompositeSignalMode::EntryCoreExitOverlay;
+        second.signal_mode = CompositeSignalMode::EntryCoreExitOverlay;
+
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-gpu-fallback-soft-vote".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![first, second],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 305,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite gpu signal-mode fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("supports signal_mode=HardGate only"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_only_falls_back_to_cpu_with_reason() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-gpu-only-fallback".to_string(),
+            backend: Backend::GpuOnly { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                base_composite_validation_test_candidate(10, 30, halftrend.clone()),
+                base_composite_validation_test_candidate(14, 42, halftrend),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 306,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite gpu-only fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuOnly->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+                == false
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn base_composite_validation_gpu_hybrid_kernel_falls_back_to_cpu_with_reason() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+        let req = CompositeValidationRequest {
+            data_id: "base-composite-gpu-hybrid-fallback".to_string(),
+            backend: Backend::GpuHybridKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                base_composite_validation_test_candidate(10, 30, halftrend.clone()),
+                base_composite_validation_test_candidate(14, 42, halftrend),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 307,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("base composite gpu-hybrid fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(
+            res.backend_route.as_deref(),
+            Some("GpuHybridKernel->CpuOnly")
+        );
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("does not support GpuHybridKernel yet"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -12692,6 +14674,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -12716,6 +14699,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -12798,6 +14782,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -12822,6 +14807,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -12909,6 +14895,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -12984,6 +14971,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -13047,6 +15035,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13118,6 +15107,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13189,6 +15179,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13234,6 +15225,253 @@ mod tests {
         assert!(c.in_sample.sharpe.is_finite());
         assert!(c.robust_score.is_finite());
         assert!(c.walk_forward.as_ref().map(|w| w.windows).unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn vcet_validation_smoke_runs_and_returns_stats() {
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 12,
+            slow_len: 48,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: Some(VcetStrategyParams::default()),
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "vcet-test".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 600,
+                step_bars: 300,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 24,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vcet validation run");
+        assert_eq!(res.candidates.len(), 1);
+        let c = &res.candidates[0];
+        assert!(c.in_sample.sharpe.is_finite());
+        assert!(c.robust_score.is_finite());
+        assert!(c.walk_forward.as_ref().map(|w| w.windows).unwrap_or(0) > 0);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_validation_gpu_kernel_smoke_runs_and_returns_stats() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 12,
+            slow_len: 48,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: Some(VcetStrategyParams::default()),
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "vcet-gpu-test".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 600,
+                step_bars: 300,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 24,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 16,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 32,
+                block_length: 8,
+                benchmark: SpaBenchmarkKind::Flat,
+            }),
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vcet gpu validation run");
+        assert_eq!(res.candidates.len(), 1);
+        if !matches!(res.backend_used, BackendUsed::Gpu) {
+            panic!(
+                "backend_used={:?} route={:?} fallback={:?}",
+                res.backend_used, res.backend_route, res.backend_fallback_reason
+            );
+        }
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        let c = &res.candidates[0];
+        assert!(c.in_sample.sharpe.is_finite());
+        assert!(c.robust_score.is_finite());
+        assert!(c.walk_forward.as_ref().map(|w| w.windows).unwrap_or(0) > 0);
+        assert!(res.spa.is_some());
+        assert!(res.cscv_pbo.is_some());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_validation_gpu_kernel_falls_back_to_cpu_with_stop_loss_overlay() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 12,
+            slow_len: 48,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: Some(VcetStrategyParams::default()),
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "vcet-gpu-fallback-test".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 600,
+                step_bars: 300,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vcet gpu fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("without overlays/stop-loss/take-profit")
+        );
     }
 
     #[test]
@@ -13294,6 +15532,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams {
                 fast_length: 0,
                 slow_length: 0,
@@ -13347,6 +15586,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13408,6 +15648,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13483,6 +15724,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13562,6 +15804,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13611,6 +15854,190 @@ mod tests {
     }
 
     #[test]
+    fn composite_validation_cpu_full_stack_smoke_covers_current_profiles() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let halftrend = HalfTrendRegimeFilter {
+            amplitude: 2,
+            channel_deviation: 2.0,
+            atr_period: 100,
+        };
+
+        let mut composite_mo_first =
+            base_composite_validation_test_candidate(10, 30, halftrend.clone());
+        composite_mo_first.signal_mode = CompositeSignalMode::EntryCoreExitOverlay;
+        let mut composite_mo_second =
+            base_composite_validation_test_candidate(14, 42, halftrend.clone());
+        composite_mo_second.signal_mode = CompositeSignalMode::EntryCoreExitOverlay;
+
+        let profile_cases: [(&str, Vec<CompositeParams>); 11] = [
+            (
+                "CompositeCpu",
+                vec![
+                    base_composite_validation_test_candidate(10, 30, halftrend.clone()),
+                    base_composite_validation_test_candidate(14, 42, halftrend.clone()),
+                ],
+            ),
+            ("CompositeMo", vec![composite_mo_first, composite_mo_second]),
+            (
+                "Asr",
+                vec![
+                    asr_validation_test_candidate(8, 24),
+                    asr_validation_test_candidate(12, 36),
+                ],
+            ),
+            (
+                "Vcc",
+                vec![vcc_test_candidate(10, 30), vcc_test_candidate(14, 42)],
+            ),
+            (
+                "Vemr",
+                vec![
+                    vemr_validation_test_candidate(8, 24),
+                    vemr_validation_test_candidate(12, 36),
+                ],
+            ),
+            (
+                "Rocb",
+                vec![
+                    rocb_validation_test_candidate(8, 24),
+                    rocb_validation_test_candidate(12, 36),
+                ],
+            ),
+            (
+                "Mkcs",
+                vec![mkcs_test_candidate(10, 30), mkcs_test_candidate(14, 42)],
+            ),
+            (
+                "Kqsr",
+                vec![kqsr_test_candidate(10, 30), kqsr_test_candidate(14, 42)],
+            ),
+            (
+                "Carm",
+                vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            ),
+            (
+                "Kvdf",
+                vec![kvdf_test_candidate(10, 30), kvdf_test_candidate(14, 42)],
+            ),
+            (
+                "Cdmc",
+                vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            ),
+        ];
+
+        for (label, candidates) in profile_cases {
+            let req = CompositeValidationRequest {
+                data_id: format!("cpu-full-stack-{label}"),
+                backend: Backend::CpuOnly,
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates,
+                walk_forward: Some(WalkForwardConfigOptional {
+                    window_bars: 800,
+                    step_bars: 400,
+                }),
+                reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                    window_bars: 800,
+                    step_bars: 400,
+                    top_n_candidates: 2,
+                }),
+                perturb: Some(PerturbConfig {
+                    iterations: 8,
+                    pct_min: 0.05,
+                    pct_max: 0.10,
+                    flip_bool_prob: 0.1,
+                }),
+                trade_bootstrap: Some(TradeBootstrapConfig {
+                    simulations: 64,
+                    stationary_mean_block_len: Some(6),
+                }),
+                cross_ticker: None,
+                cscv_pbo: Some(CscvPboConfig {
+                    slices: 6,
+                    max_combinations: 128,
+                    threshold: 0.0,
+                }),
+                spa: Some(SpaConfigOptional {
+                    slices: 6,
+                    bootstrap_samples: 32,
+                    block_length: 2,
+                    benchmark: SpaBenchmarkKind::BuyAndHold,
+                }),
+                seed: 17,
+                max_candidates: 8,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            };
+
+            let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+                .unwrap_or_else(|err| panic!("{label} cpu full-stack validation failed: {err}"));
+
+            assert!(matches!(res.backend_used, BackendUsed::Cpu), "{label}");
+            assert!(
+                res.backend_route
+                    .as_deref()
+                    .map(|route| route.contains("CpuOnly"))
+                    .unwrap_or(false),
+                "{label}"
+            );
+            assert!(res.reopt_walk_forward.is_some(), "{label}");
+            assert!(res.cscv_pbo.is_some(), "{label}");
+            assert!(res.spa.is_some(), "{label}");
+            assert!(!res.candidates.is_empty(), "{label}");
+            assert!(
+                res.candidates
+                    .iter()
+                    .all(|cand| cand.walk_forward.is_some()),
+                "{label}"
+            );
+            assert!(
+                res.candidates.iter().all(|cand| cand.perturb.is_some()),
+                "{label}"
+            );
+            assert!(
+                res.candidates
+                    .iter()
+                    .all(|cand| cand.trade_bootstrap.is_some()),
+                "{label}"
+            );
+            assert!(
+                res.candidates.iter().all(|cand| cand.cscv_pbo.is_some()),
+                "{label}"
+            );
+            assert!(
+                res.candidates
+                    .iter()
+                    .all(|cand| cand.validation_verdict.passed
+                        || !cand.validation_verdict.fail_reasons.is_empty()
+                        || !cand.validation_verdict.warning_flags.is_empty()),
+                "{label}"
+            );
+            assert!(
+                res.candidates
+                    .iter()
+                    .take(DEFAULT_COMPOSITE_REGIME_SLICE_FINALISTS.min(res.candidates.len()))
+                    .all(|cand| cand.regime_slice_robustness.is_some()),
+                "{label}"
+            );
+            assert!(
+                res.candidates
+                    .iter()
+                    .take(DEFAULT_COMPOSITE_FRICTION_STRESS_FINALISTS.min(res.candidates.len()))
+                    .all(|cand| cand.friction_stress.is_some()),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn composite_validation_iterative_engine_emits_delta_fields() {
         let candles = make_trending_candles(2048);
         let cancel = AtomicBool::new(false);
@@ -13634,6 +16061,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -13705,6 +16133,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             data_id: "opt-comp".to_string(),
             fast_range: (5, 9, 1),
             slow_range: (18, 28, 2),
@@ -13750,6 +16179,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: macz.clone(),
                 ott: ott.clone(),
                 signal_mode,
@@ -13915,6 +16345,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: pt.params.macz.clone(),
                 ott: pt.params.ott.clone(),
                 signal_mode: pt.params.signal_mode,
@@ -14022,6 +16453,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -14108,6 +16540,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -14192,6 +16625,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -14259,6 +16693,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -14326,6 +16761,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -14393,6 +16829,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -14468,6 +16905,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14492,6 +16930,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14594,6 +17033,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -14717,6 +17157,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14741,6 +17182,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14844,6 +17286,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14868,6 +17311,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14959,6 +17403,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -14983,6 +17428,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15081,6 +17527,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -15176,6 +17623,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15200,6 +17648,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15302,6 +17751,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -15424,6 +17874,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15448,6 +17899,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15551,6 +18003,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15575,6 +18028,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15666,6 +18120,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15690,6 +18145,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15788,6 +18244,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -15883,6 +18340,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -15907,6 +18365,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16009,6 +18468,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -16132,6 +18592,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16156,6 +18617,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16259,6 +18721,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16283,6 +18746,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16374,6 +18838,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16398,6 +18863,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16496,6 +18962,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: MaczGateParams::default(),
                 ott: OttGateParams::default(),
                 signal_mode: CompositeSignalMode::HardGate,
@@ -16591,6 +19058,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16615,6 +19083,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16723,6 +19192,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16747,6 +19217,7 @@ mod tests {
                     carm: None,
                     kvdf: None,
                     cdmc: None,
+                    vcet: None,
                     macz: MaczGateParams::default(),
                     ott: OttGateParams::default(),
                     signal_mode: CompositeSignalMode::HardGate,
@@ -16809,6 +19280,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -17229,6 +19701,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -17257,6 +19730,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -17285,6 +19759,7 @@ mod tests {
             carm: Some(CarmStrategyParams::default()),
             kvdf: None,
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -17313,6 +19788,7 @@ mod tests {
             carm: None,
             kvdf: Some(KvdfStrategyParams::default()),
             cdmc: None,
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -17341,6 +19817,7 @@ mod tests {
             carm: None,
             kvdf: None,
             cdmc: Some(CdmcStrategyParams::default()),
+            vcet: None,
             macz: MaczGateParams::default(),
             ott: OttGateParams::default(),
             signal_mode: CompositeSignalMode::HardGate,
@@ -17422,6 +19899,382 @@ mod tests {
             .unwrap_or(0)
             > 0));
         assert!(res.candidates.iter().all(|cand| cand.cscv_pbo.is_some()));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_single_candidate_gpu_perturb_matches_cpu(
+        data_id: &str,
+        candidate: CompositeParams,
+        seed: u64,
+    ) {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: data_id.to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate.clone()],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: Some(PerturbConfig {
+                iterations: 32,
+                pct_min: 0.05,
+                pct_max: 0.10,
+                flip_bool_prob: 0.1,
+            }),
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu perturb validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu perturb validation");
+
+        let cpu_pt = cpu_res.candidates[0].perturb.as_ref().expect("cpu perturb");
+        let gpu_pt = gpu_res.candidates[0].perturb.as_ref().expect("gpu perturb");
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(cpu_pt.iterations, gpu_pt.iterations);
+        assert!((cpu_pt.sharpe_mean - gpu_pt.sharpe_mean).abs() < 1e-4);
+        assert!((cpu_pt.sharpe_worst - gpu_pt.sharpe_worst).abs() < 1e-4);
+        assert!((cpu_pt.max_dd_mean - gpu_pt.max_dd_mean).abs() < 1e-4);
+        assert!((cpu_pt.max_dd_worst - gpu_pt.max_dd_worst).abs() < 1e-4);
+        assert!((cpu_pt.pnl_mean - gpu_pt.pnl_mean).abs() < 1e-4);
+        assert!((cpu_pt.pnl_worst - gpu_pt.pnl_worst).abs() < 1e-4);
+        assert!((cpu_pt.pnl_positive_frac - gpu_pt.pnl_positive_frac).abs() < 1e-12);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn asr_validation_gpu_kernel_advanced_routes_smoke() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "asr-gpu-advanced".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                asr_validation_test_candidate(8, 24),
+                asr_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: -0.02,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 57,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("asr advanced gpu validation");
+        assert_gpu_native_advanced_validation_surfaces(&res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn rocb_validation_gpu_kernel_advanced_routes_smoke() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "rocb-gpu-advanced".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                rocb_validation_test_candidate(8, 24),
+                rocb_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: -0.02,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 58,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("rocb advanced gpu validation");
+        assert_gpu_native_advanced_validation_surfaces(&res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_validation_gpu_kernel_advanced_routes_smoke() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "vemr-gpu-advanced".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                vemr_validation_test_candidate(8, 24),
+                vemr_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: -0.02,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 59,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vemr advanced gpu validation");
+        assert_gpu_native_advanced_validation_surfaces(&res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_advanced_routes_smoke_when_fp32_stable() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "vcc-gpu-advanced".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(10, 30), vcc_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: -0.02,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 60,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vcc advanced gpu validation");
+        assert_gpu_native_advanced_validation_surfaces(&res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_composite_validation_outcome_parity(
+        cpu_res: &CompositeValidationResult,
+        gpu_res: &CompositeValidationResult,
+    ) {
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+        assert_eq!(cpu_res.run_verdict.passed, gpu_res.run_verdict.passed);
+        assert_eq!(cpu_res.run_verdict.approved, gpu_res.run_verdict.approved);
+        assert_eq!(
+            cpu_res.run_verdict.candidates_tested,
+            gpu_res.run_verdict.candidates_tested
+        );
+        assert_eq!(
+            cpu_res.run_verdict.candidates_survived_hard_gates,
+            gpu_res.run_verdict.candidates_survived_hard_gates
+        );
+        assert_eq!(
+            cpu_res.run_verdict.approved_candidate_count,
+            gpu_res.run_verdict.approved_candidate_count
+        );
+        assert_eq!(
+            cpu_res.run_verdict.final_recommendation,
+            gpu_res.run_verdict.final_recommendation
+        );
+        assert_eq!(
+            cpu_res.run_verdict.first_approved_rank,
+            gpu_res.run_verdict.first_approved_rank
+        );
+        assert_eq!(
+            cpu_res.run_verdict.warning_flags,
+            gpu_res.run_verdict.warning_flags
+        );
+        assert_eq!(
+            cpu_res.run_verdict.fail_reasons,
+            gpu_res.run_verdict.fail_reasons
+        );
+
+        let cpu_keys: Vec<Vec<u8>> = cpu_res
+            .candidates
+            .iter()
+            .map(|cand| serialize_composite_candidate_key(&cand.params).expect("cpu candidate key"))
+            .collect();
+        let gpu_keys: Vec<Vec<u8>> = gpu_res
+            .candidates
+            .iter()
+            .map(|cand| serialize_composite_candidate_key(&cand.params).expect("gpu candidate key"))
+            .collect();
+        assert_eq!(cpu_keys, gpu_keys);
+
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert_eq!(cpu.validation_verdict.passed, gpu.validation_verdict.passed);
+            assert_eq!(
+                cpu.validation_verdict.warning_flags,
+                gpu.validation_verdict.warning_flags
+            );
+            assert_eq!(
+                cpu.validation_verdict.fail_reasons,
+                gpu.validation_verdict.fail_reasons
+            );
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -17560,6 +20413,177 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn vcc_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "vcc-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![vcc_test_candidate(8, 24), vcc_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 256,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vcc auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for VCC"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn mkcs_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "mkcs-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![mkcs_test_candidate(10, 30), mkcs_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 257,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("mkcs auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for MKCS"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kqsr_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "kqsr-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![kqsr_test_candidate(10, 30), kqsr_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 258,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("kqsr auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for KQSR"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn carm_validation_gpu_kernel_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -17651,9 +20675,489 @@ mod tests {
             max_pbo: None,
             validation_context: None,
         };
-        let gpu_eval = try_prepare_carm_gpu_fixed_candidate_validation(&req, &candles)
-            .expect("gpu carm eval");
+        let gpu_eval =
+            try_prepare_carm_gpu_fixed_candidate_validation(&req, &candles).expect("gpu carm eval");
         assert_eq!(gpu_eval.start_ts, vec![series_start_t(&cpu_series)]);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_gpu_kernel_reopt_walk_forward_matches_cpu() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-reopt".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 86,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm reopt validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm reopt validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_stats = cpu_res.reopt_walk_forward.as_ref().expect("cpu reopt");
+        let gpu_stats = gpu_res.reopt_walk_forward.as_ref().expect("gpu reopt");
+        assert_eq!(cpu_stats.windows, gpu_stats.windows);
+        assert_eq!(
+            cpu_stats.forward_positive_pnl_frac,
+            gpu_stats.forward_positive_pnl_frac
+        );
+        assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
+        assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_gpu_kernel_walk_forward_near_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-walk-forward".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 83,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm walk_forward validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm walk_forward validation");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 3e-2);
+        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 3e-2);
+        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3);
+        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3);
+        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-2);
+        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-2);
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        assert!(cpu_wf.windows > 0);
+        assert!(gpu_wf.windows > 0);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_gpu_kernel_cscv_near_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-cscv".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: None,
+            seed: 84,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm cscv validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm cscv validation");
+
+        let cpu_cscv = cpu_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
+        assert_eq!(cpu_cscv.slices, gpu_cscv.slices);
+        assert_eq!(cpu_cscv.slice_bars, gpu_cscv.slice_bars);
+        assert!((cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-9);
+        assert!((cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-9);
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-9);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-9
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-2
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_gpu_kernel_spa_near_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-spa".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 4,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+                bootstrap_samples: 64,
+                block_length: 1,
+            }),
+            seed: 85,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm spa validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm spa validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_spa = cpu_res.spa.as_ref().expect("cpu spa");
+        let gpu_spa = gpu_res.spa.as_ref().expect("gpu spa");
+        assert_eq!(cpu_spa.slice_count, gpu_spa.slice_count);
+        assert_eq!(cpu_spa.bootstrap_samples, gpu_spa.bootstrap_samples);
+        assert_eq!(cpu_spa.best_candidate_key, gpu_spa.best_candidate_key);
+        assert!((cpu_spa.best_candidate_mean_diff - gpu_spa.best_candidate_mean_diff).abs() < 2e-3);
+        assert!((cpu_spa.best_candidate_t_stat - gpu_spa.best_candidate_t_stat).abs() < 1e-9);
+        assert!((cpu_spa.p_value - gpu_spa.p_value).abs() < 1e-9);
+        assert_eq!(cpu_spa.passed, gpu_spa.passed);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic drift characterization"]
+    fn carm_validation_gpu_kernel_advanced_route_drift_diagnostic() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let wf_req = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-walk-forward-drift".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 183,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_wf_res = run_composite_validation_blocking_with_candles(
+            wf_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm walk_forward diagnostic");
+        let gpu_wf_res = run_composite_validation_blocking_with_candles(
+            wf_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm walk_forward diagnostic");
+        let cpu_wf = cpu_wf_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu wf");
+        let gpu_wf = gpu_wf_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu wf");
+        println!(
+            "CARM WF drift: windows_cpu={} windows_gpu={} trades_median_cpu={} trades_median_gpu={} trades_worst_cpu={} trades_worst_gpu={} sharpe_median={} sharpe_worst={} max_dd_median={} max_dd_worst={} pnl_median={} pnl_worst={}",
+            cpu_wf.windows,
+            gpu_wf.windows,
+            cpu_wf.trades_median,
+            gpu_wf.trades_median,
+            cpu_wf.trades_worst,
+            gpu_wf.trades_worst,
+            (cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs(),
+            (cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs(),
+            (cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs(),
+            (cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs(),
+            (cpu_wf.pnl_median - gpu_wf.pnl_median).abs(),
+            (cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs(),
+        );
+
+        let cscv_req = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-cscv-drift".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: None,
+            seed: 184,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_cscv_res = run_composite_validation_blocking_with_candles(
+            cscv_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm cscv diagnostic");
+        let gpu_cscv_res = run_composite_validation_blocking_with_candles(
+            cscv_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm cscv diagnostic");
+        let cpu_cscv = cpu_cscv_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_cscv_res.cscv_pbo.as_ref().expect("gpu cscv");
+        println!(
+            "CARM CSCV run drift: pbo={} lambda_p50={}",
+            (cpu_cscv.pbo - gpu_cscv.pbo).abs(),
+            (cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs(),
+        );
+        for (idx, (cpu, gpu)) in cpu_cscv_res
+            .candidates
+            .iter()
+            .zip(gpu_cscv_res.candidates.iter())
+            .enumerate()
+        {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            println!(
+                "CARM CSCV cand#{idx} drift: selected_frac={} oos_rank={} oos_metric={}",
+                (cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs(),
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs(),
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs(),
+            );
+        }
+
+        let spa_req = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-spa-drift".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 4,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+                bootstrap_samples: 64,
+                block_length: 1,
+            }),
+            seed: 185,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_spa_res = run_composite_validation_blocking_with_candles(
+            spa_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm spa diagnostic");
+        let gpu_spa_res = run_composite_validation_blocking_with_candles(
+            spa_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm spa diagnostic");
+        let cpu_spa = cpu_spa_res.spa.as_ref().expect("cpu spa");
+        let gpu_spa = gpu_spa_res.spa.as_ref().expect("gpu spa");
+        println!(
+            "CARM SPA drift: mean_diff={} t_stat={} p_value={} passed={} cpu_key={} gpu_key={}",
+            (cpu_spa.best_candidate_mean_diff - gpu_spa.best_candidate_mean_diff).abs(),
+            (cpu_spa.best_candidate_t_stat - gpu_spa.best_candidate_t_stat).abs(),
+            (cpu_spa.p_value - gpu_spa.p_value).abs(),
+            cpu_spa.passed == gpu_spa.passed,
+            cpu_spa.best_candidate_key,
+            gpu_spa.best_candidate_key,
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -17702,8 +21206,8 @@ mod tests {
             max_pbo: None,
             validation_context: None,
         };
-        let gpu_eval = try_prepare_cdmc_gpu_fixed_candidate_validation(&req, &candles)
-            .expect("gpu cdmc eval");
+        let gpu_eval =
+            try_prepare_cdmc_gpu_fixed_candidate_validation(&req, &candles).expect("gpu cdmc eval");
         assert_eq!(gpu_eval.start_ts, vec![series_start_t(&cpu_series)]);
     }
 
@@ -17812,6 +21316,63 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn kvdf_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "kvdf-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![kvdf_test_candidate(10, 30), kvdf_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 260,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("kvdf auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for KVDF"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn cdmc_validation_gpu_kernel_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -17855,6 +21416,486 @@ mod tests {
             .candidates
             .iter()
             .all(|cand| cand.in_sample.sharpe.is_finite()));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_gpu_kernel_reopt_walk_forward_matches_cpu() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-reopt".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 90,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc reopt validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc reopt validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_stats = cpu_res.reopt_walk_forward.as_ref().expect("cpu reopt");
+        let gpu_stats = gpu_res.reopt_walk_forward.as_ref().expect("gpu reopt");
+        assert_eq!(cpu_stats.windows, gpu_stats.windows);
+        assert_eq!(
+            cpu_stats.forward_positive_pnl_frac,
+            gpu_stats.forward_positive_pnl_frac
+        );
+        assert_eq!(cpu_stats.winner_sequence, gpu_stats.winner_sequence);
+        assert!(
+            (cpu_stats.winner_param_drift_mean - gpu_stats.winner_param_drift_mean).abs() < 1e-6
+        );
+        assert!((cpu_stats.winner_param_drift_max - gpu_stats.winner_param_drift_max).abs() < 1e-6);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_gpu_kernel_walk_forward_near_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-walk-forward".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 87,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc walk_forward validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc walk_forward validation");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu walk_forward");
+        assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 3e-2);
+        assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 3e-2);
+        assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-3);
+        assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-3);
+        assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-2);
+        assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-2);
+        assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
+        assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
+        assert!(cpu_wf.windows > 0);
+        assert!(gpu_wf.windows > 0);
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_gpu_kernel_cscv_near_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-cscv".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: None,
+            seed: 88,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc cscv validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc cscv validation");
+
+        let cpu_cscv = cpu_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
+        assert_eq!(cpu_cscv.slices, gpu_cscv.slices);
+        assert_eq!(cpu_cscv.slice_bars, gpu_cscv.slice_bars);
+        assert!((cpu_cscv.pbo - gpu_cscv.pbo).abs() < 1e-9);
+        assert!((cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs() < 1e-9);
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            assert!((cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs() < 1e-9);
+            assert!(
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs()
+                    < 1e-9
+            );
+            assert!(
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs()
+                    < 1e-2
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_gpu_kernel_spa_near_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-spa".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 4,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+                bootstrap_samples: 64,
+                block_length: 1,
+            }),
+            seed: 89,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc spa validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc spa validation");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        let cpu_spa = cpu_res.spa.as_ref().expect("cpu spa");
+        let gpu_spa = gpu_res.spa.as_ref().expect("gpu spa");
+        assert_eq!(cpu_spa.slice_count, gpu_spa.slice_count);
+        assert_eq!(cpu_spa.bootstrap_samples, gpu_spa.bootstrap_samples);
+        assert_eq!(cpu_spa.best_candidate_key, gpu_spa.best_candidate_key);
+        assert!((cpu_spa.best_candidate_mean_diff - gpu_spa.best_candidate_mean_diff).abs() < 2e-3);
+        assert!((cpu_spa.best_candidate_t_stat - gpu_spa.best_candidate_t_stat).abs() < 1e-9);
+        assert!((cpu_spa.p_value - gpu_spa.p_value).abs() < 1e-9);
+        assert_eq!(cpu_spa.passed, gpu_spa.passed);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    #[ignore = "diagnostic drift characterization"]
+    fn cdmc_validation_gpu_kernel_advanced_route_drift_diagnostic() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let wf_req = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-walk-forward-drift".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 187,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_wf_res = run_composite_validation_blocking_with_candles(
+            wf_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc walk_forward diagnostic");
+        let gpu_wf_res = run_composite_validation_blocking_with_candles(
+            wf_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc walk_forward diagnostic");
+        let cpu_wf = cpu_wf_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu wf");
+        let gpu_wf = gpu_wf_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("gpu wf");
+        println!(
+            "CDMC WF drift: windows_cpu={} windows_gpu={} trades_median_cpu={} trades_median_gpu={} trades_worst_cpu={} trades_worst_gpu={} sharpe_median={} sharpe_worst={} max_dd_median={} max_dd_worst={} pnl_median={} pnl_worst={}",
+            cpu_wf.windows,
+            gpu_wf.windows,
+            cpu_wf.trades_median,
+            gpu_wf.trades_median,
+            cpu_wf.trades_worst,
+            gpu_wf.trades_worst,
+            (cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs(),
+            (cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs(),
+            (cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs(),
+            (cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs(),
+            (cpu_wf.pnl_median - gpu_wf.pnl_median).abs(),
+            (cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs(),
+        );
+
+        let cscv_req = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-cscv-drift".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: None,
+            seed: 188,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_cscv_res = run_composite_validation_blocking_with_candles(
+            cscv_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc cscv diagnostic");
+        let gpu_cscv_res = run_composite_validation_blocking_with_candles(
+            cscv_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc cscv diagnostic");
+        let cpu_cscv = cpu_cscv_res.cscv_pbo.as_ref().expect("cpu cscv");
+        let gpu_cscv = gpu_cscv_res.cscv_pbo.as_ref().expect("gpu cscv");
+        println!(
+            "CDMC CSCV run drift: pbo={} lambda_p50={}",
+            (cpu_cscv.pbo - gpu_cscv.pbo).abs(),
+            (cpu_cscv.lambda_p50 - gpu_cscv.lambda_p50).abs(),
+        );
+        for (idx, (cpu, gpu)) in cpu_cscv_res
+            .candidates
+            .iter()
+            .zip(gpu_cscv_res.candidates.iter())
+            .enumerate()
+        {
+            let cpu_st = cpu.cscv_pbo.as_ref().expect("cpu candidate cscv");
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu candidate cscv");
+            println!(
+                "CDMC CSCV cand#{idx} drift: selected_frac={} oos_rank={} oos_metric={}",
+                (cpu_st.is_selected_frac - gpu_st.is_selected_frac).abs(),
+                (cpu_st.oos_rank_frac_p50.unwrap_or_default()
+                    - gpu_st.oos_rank_frac_p50.unwrap_or_default())
+                .abs(),
+                (cpu_st.oos_metric_p50.unwrap_or_default()
+                    - gpu_st.oos_metric_p50.unwrap_or_default())
+                .abs(),
+            );
+        }
+
+        let spa_req = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-spa-drift".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 4,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+                bootstrap_samples: 64,
+                block_length: 1,
+            }),
+            seed: 189,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_spa_res = run_composite_validation_blocking_with_candles(
+            spa_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc spa diagnostic");
+        let gpu_spa_res = run_composite_validation_blocking_with_candles(
+            spa_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc spa diagnostic");
+        let cpu_spa = cpu_spa_res.spa.as_ref().expect("cpu spa");
+        let gpu_spa = gpu_spa_res.spa.as_ref().expect("gpu spa");
+        println!(
+            "CDMC SPA drift: mean_diff={} t_stat={} p_value={} passed={} cpu_key={} gpu_key={}",
+            (cpu_spa.best_candidate_mean_diff - gpu_spa.best_candidate_mean_diff).abs(),
+            (cpu_spa.best_candidate_t_stat - gpu_spa.best_candidate_t_stat).abs(),
+            (cpu_spa.p_value - gpu_spa.p_value).abs(),
+            cpu_spa.passed == gpu_spa.passed,
+            cpu_spa.best_candidate_key,
+            gpu_spa.best_candidate_key,
+        );
     }
 
     #[test]
@@ -17976,6 +22017,136 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn carm_validation_gpu_kernel_advanced_route_outcome_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-advanced-outcome".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: -0.02,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 162,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm advanced validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu carm advanced validation");
+
+        assert_gpu_native_advanced_validation_surfaces(&gpu_res);
+        assert_composite_validation_outcome_parity(&cpu_res, &gpu_res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "carm-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30), carm_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 262,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("carm auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for CARM"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn kvdf_validation_gpu_kernel_advanced_routes_smoke() {
         let candles = make_noisy_trending_candles(8192);
         let cancel = AtomicBool::new(false);
@@ -18090,6 +22261,136 @@ mod tests {
         let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
             .expect("cdmc advanced gpu validation");
         assert_gpu_native_advanced_validation_surfaces(&res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_gpu_kernel_advanced_route_outcome_parity_on_current_fixture() {
+        let candles = make_noisy_trending_candles(8192);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-advanced-outcome".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: Some(PerturbConfig {
+                iterations: 8,
+                pct_min: -0.02,
+                pct_max: 0.02,
+                flip_bool_prob: 0.0,
+            }),
+            trade_bootstrap: Some(TradeBootstrapConfig {
+                simulations: 128,
+                stationary_mean_block_len: None,
+            }),
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 187,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc advanced validation");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu cdmc advanced validation");
+
+        assert_gpu_native_advanced_validation_surfaces(&gpu_res);
+        assert_composite_validation_outcome_parity(&cpu_res, &gpu_res);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_validation_auto_keeps_gpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "cdmc-auto-gpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30), cdmc_test_candidate(14, 42)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 287,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cdmc auto gpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .is_empty());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -18549,67 +22850,32 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn rocb_validation_gpu_kernel_perturb_matches_cpu() {
+        assert_single_candidate_gpu_perturb_matches_cpu(
+            "rocb-gpu-perturb",
+            rocb_validation_test_candidate(8, 24),
+            57,
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_validation_gpu_kernel_perturb_matches_cpu_when_fp32_stable() {
+        assert_single_candidate_gpu_perturb_matches_cpu(
+            "vcc-gpu-perturb",
+            vcc_test_candidate(10, 30),
+            58,
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn mkcs_validation_gpu_kernel_perturb_matches_cpu() {
-        let candles = make_noisy_trending_candles(4096);
-        let cancel = AtomicBool::new(false);
-
-        let mk = |backend: Backend| CompositeValidationRequest {
-            data_id: "mkcs-gpu-perturb".to_string(),
-            backend,
-            ma_source: "close".to_string(),
-            fast_ma_params: None,
-            slow_ma_params: None,
-            candidates: vec![mkcs_test_candidate(10, 30)],
-            walk_forward: None,
-            reopt_walk_forward: None,
-            perturb: Some(PerturbConfig {
-                iterations: 32,
-                pct_min: 0.05,
-                pct_max: 0.10,
-                flip_bool_prob: 0.1,
-            }),
-            trade_bootstrap: None,
-            cross_ticker: None,
-            cscv_pbo: None,
-            spa: None,
-            seed: 61,
-            max_candidates: 8,
-            validation_engine: ValidationEngine::Vectorized,
-            iterative: IterativeSimConfig::default(),
-            min_psr: None,
-            min_dsr: None,
-            min_cscv_oos_rank_frac: None,
-            min_cscv_oos_metric: None,
-            max_pbo: None,
-            validation_context: None,
-        };
-
-        let cpu_res = run_composite_validation_blocking_with_candles(
-            mk(Backend::CpuOnly),
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("cpu mkcs perturb validation");
-        let gpu_res = run_composite_validation_blocking_with_candles(
-            mk(Backend::GpuKernel { device_id: 0 }),
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("gpu mkcs perturb validation");
-
-        let cpu_pt = cpu_res.candidates[0].perturb.as_ref().expect("cpu perturb");
-        let gpu_pt = gpu_res.candidates[0].perturb.as_ref().expect("gpu perturb");
-        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
-        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
-        assert_eq!(cpu_pt.iterations, gpu_pt.iterations);
-        assert!((cpu_pt.sharpe_mean - gpu_pt.sharpe_mean).abs() < 1e-4);
-        assert!((cpu_pt.sharpe_worst - gpu_pt.sharpe_worst).abs() < 1e-4);
-        assert!((cpu_pt.max_dd_mean - gpu_pt.max_dd_mean).abs() < 1e-4);
-        assert!((cpu_pt.max_dd_worst - gpu_pt.max_dd_worst).abs() < 1e-4);
-        assert!((cpu_pt.pnl_mean - gpu_pt.pnl_mean).abs() < 1e-4);
-        assert!((cpu_pt.pnl_worst - gpu_pt.pnl_worst).abs() < 1e-4);
-        assert!((cpu_pt.pnl_positive_frac - gpu_pt.pnl_positive_frac).abs() < 1e-12);
+        assert_single_candidate_gpu_perturb_matches_cpu(
+            "mkcs-gpu-perturb",
+            mkcs_test_candidate(10, 30),
+            59,
+        );
     }
 }
+

@@ -65,6 +65,7 @@ interface ValidationCandidateLike {
   carm?: unknown
   kvdf?: unknown
   cdmc?: unknown
+  vcet?: unknown
   strategy?: unknown
   halftrend_filter?: unknown
   halftrend?: unknown
@@ -137,6 +138,8 @@ export interface ValidationCapabilitySummary {
   routeSummary: string
   crossSummary: string
   moduleSummary: string
+  categorySummary: string
+  skippedSummary: string
   warningSummary: string
 }
 
@@ -158,6 +161,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Vcet') return 'Vcet'
   if (kind === 'Asr') return 'Asr'
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
@@ -235,10 +239,16 @@ function firstNonEmptyText(...values: unknown[]): string {
   return ''
 }
 
-function normalizeValidationBackend(value: unknown): ValidationRequestPayload['backend'] {
+function normalizeValidationBackend(
+  value: unknown,
+  strategyKind: string,
+): ValidationRequestPayload['backend'] {
   const row = asRecord(value)
   const backend = normalizeText(row?.backend ?? value)
   const deviceId = Math.max(0, Math.floor(num(row?.device_id, 0)))
+  if (!isDoubleLikeKind(strategyKind) && backend !== 'CpuOnly') {
+    return { backend: 'Auto', device_id: deviceId }
+  }
   if (backend === 'Auto') return { backend: 'Auto', device_id: deviceId }
   if (backend === 'GpuOnly') return { backend: 'GpuOnly', device_id: deviceId }
   if (backend === 'GpuHybridKernel') return { backend: 'GpuHybridKernel', device_id: deviceId }
@@ -277,6 +287,7 @@ type CompositeProfileKey =
   | 'vcc'
   | 'vemr'
   | 'rocb'
+  | 'vcet'
   | 'mkcs'
   | 'kqsr'
   | 'carm'
@@ -292,6 +303,7 @@ function detectCompositeProfile(req: ValidationRequestPayload): CompositeProfile
   if (cand.vcc) return 'vcc'
   if (cand.vemr) return 'vemr'
   if (cand.rocb) return 'rocb'
+  if (cand.vcet) return 'vcet'
   if (cand.mkcs) return 'mkcs'
   if (cand.kqsr) return 'kqsr'
   if (cand.carm) return 'carm'
@@ -308,6 +320,58 @@ function compositeProfileLabel(profile: CompositeProfileKey): string {
       return 'unknown composite'
     default:
       return profile.toUpperCase()
+  }
+}
+
+function compositeProfileGpuRouteNote(profile: CompositeProfileKey): string {
+  switch (profile) {
+    case 'base_composite':
+      return 'Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU.'
+    case 'asr':
+      return 'ASR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'vcc':
+      return 'VCC GPU validation currently falls back on the measured 50k/8 advanced-stack workload because the requested momentum rows are not fp32-stable.'
+    case 'vemr':
+      return 'VEMR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'rocb':
+      return 'ROCB GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'vcet':
+      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward currently uses the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
+    case 'mkcs':
+      return 'MKCS GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'kqsr':
+      return 'KQSR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'kvdf':
+      return 'KVDF GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'carm':
+      return 'CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+    case 'cdmc':
+      return 'CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads, and the remaining small walk-forward / CSCV / SPA metric drift is currently accepted because candidate ordering and verdict semantics still match on the fixture.'
+    default:
+      return ''
+  }
+}
+
+function compositeProfileAutoCpuPreferenceNote(profile: CompositeProfileKey): string {
+  switch (profile) {
+    case 'asr':
+      return 'Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'vcc':
+      return 'Auto composite validation currently prefers CPU for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check.'
+    case 'vemr':
+      return 'Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'rocb':
+      return 'Auto composite validation currently prefers CPU for ROCB because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'mkcs':
+      return 'Auto composite validation currently prefers CPU for MKCS because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'kqsr':
+      return 'Auto composite validation currently prefers CPU for KQSR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'kvdf':
+      return 'Auto composite validation currently prefers CPU for KVDF because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+    case 'carm':
+      return 'Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+    default:
+      return ''
   }
 }
 
@@ -338,6 +402,56 @@ function describeTradeBootstrapConfig(
     : 'trade bootstrap compare (iid + stationary, stat block=auto)'
 }
 
+type ValidationModuleCategory =
+  | 'GPU-native'
+  | 'GPU main + CPU tail'
+  | 'CPU-only'
+  | 'lightweight rerun only'
+  | 'not supported'
+
+function enabledExecutionCategoryModules(req: ValidationRequestPayload): string[] {
+  const modules = ['base reruns', 'hard gates']
+  if (req.walk_forward) modules.push('walk_forward')
+  if (req.reopt_walk_forward) modules.push('reopt_walk_forward')
+  if (req.cscv_pbo) modules.push('cscv_pbo')
+  if (req.spa) modules.push('spa')
+  if (req.perturb) modules.push('perturb')
+  if (req.trade_bootstrap) modules.push('trade_bootstrap')
+  return modules
+}
+
+function formatExecutionCategorySummary(groups: Array<[ValidationModuleCategory, string[]]>): string {
+  const parts = groups
+    .filter(([, labels]) => labels.length > 0)
+    .map(([category, labels]) => `${category}: ${labels.join(' + ')}`)
+  return parts.join(' | ') || 'none'
+}
+
+function buildValidationCategorySummaryForMode(
+  req: ValidationRequestPayload,
+  mode: 'double_gpu' | 'composite_gpu' | 'cpu',
+): string {
+  const cpuOnly = enabledExecutionCategoryModules(req)
+  if (mode === 'cpu') return formatExecutionCategorySummary([['CPU-only', cpuOnly]])
+
+  if (mode === 'double_gpu') {
+    const gpuNative: string[] = ['base reruns', 'hard gates']
+    if (req.walk_forward) gpuNative.push('walk_forward')
+    if (req.reopt_walk_forward) gpuNative.push('reopt_walk_forward')
+    if (req.cscv_pbo) gpuNative.push('cscv_pbo')
+    if (req.spa) gpuNative.push('spa')
+    const gpuMainCpuTail: string[] = []
+    if (req.perturb) gpuMainCpuTail.push('perturb')
+    if (req.trade_bootstrap) gpuMainCpuTail.push('trade_bootstrap')
+    return formatExecutionCategorySummary([
+      ['GPU-native', gpuNative],
+      ['GPU main + CPU tail', gpuMainCpuTail],
+    ])
+  }
+
+  return formatExecutionCategorySummary([['GPU-native', cpuOnly]])
+}
+
 export function buildValidationCapabilitySummary(req: ValidationRequestPayload): ValidationCapabilitySummary {
   const strategyKind = normalizeStrategyKindRaw(req?.validation_context?.strategy_kind)
   const isDoubleLike = isDoubleLikeKind(strategyKind)
@@ -353,49 +467,71 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
 
   let routeSummary = `${titleCaseBackend(backend)} requested`
   let moduleSummary = ''
+  let categorySummary = 'none'
+  const skippedNotes: string[] = []
   const warningNotes: string[] = []
 
   if (isDoubleLike) {
     if (backend === 'CpuOnly') {
       routeSummary = 'CpuOnly requested | CPU validation route expected'
       moduleSummary = `CPU route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
     } else if (backend === 'GpuOnly') {
       routeSummary = 'GpuOnly requested | expected CpuOnly fallback for fixed-candidate validation'
       moduleSummary = `Expected CPU fallback route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
       warningNotes.push('GpuOnly is not supported for fixed-candidate Double-MA validation; use GpuKernel, GpuHybridKernel, or Auto.')
     } else if (backend === 'GpuHybridKernel') {
       routeSummary = 'GpuHybridKernel requested | expected GPU main route (GpuKernel-compatible)'
       moduleSummary = `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'double_gpu')
     } else if (backend === 'GpuKernel') {
       routeSummary = 'GpuKernel requested | expected GPU main route'
       moduleSummary = `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'double_gpu')
     } else {
       routeSummary = 'Auto requested | expected GPU main route when available'
       moduleSummary = `Expected GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'double_gpu')
     }
 
     if (auxCpu.length > 0 && backend !== 'CpuOnly' && backend !== 'GpuOnly') {
       warningNotes.push(`Main GPU route is preserved; ${auxCpu.join(' + ')} currently run as auxiliary CPU work.`)
     }
   } else {
-    const compositeProfile = compositeProfileLabel(detectCompositeProfile(req))
+    const compositeProfileKey = detectCompositeProfile(req)
+    const compositeProfile = compositeProfileLabel(compositeProfileKey)
+    const compositeGpuRouteNote = compositeProfileGpuRouteNote(compositeProfileKey)
+    const compositeAutoCpuPreferenceNote = backend === 'Auto'
+      ? compositeProfileAutoCpuPreferenceNote(compositeProfileKey)
+      : ''
     const unsupported = compositeGpuMainRouteUnsupportedModules(req)
     const compositeProfileFallbackReason = strategyKind === 'CompositeMo'
-      ? 'CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu only.'
+      ? 'CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.'
       : ''
     if (backend === 'CpuOnly') {
       routeSummary = `CpuOnly requested | CPU composite route expected (${compositeProfile})`
       moduleSummary = `CPU route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
+    } else if (compositeAutoCpuPreferenceNote) {
+      routeSummary = `Auto requested | expected CPU-preferred composite route (${compositeProfile})`
+      moduleSummary = `Expected CPU route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
+      warningNotes.push(compositeAutoCpuPreferenceNote)
     } else if (unsupported.length > 0 || compositeProfileFallbackReason) {
       routeSummary = `${titleCaseBackend(backend)} requested | expected CpuOnly fallback for composite validation`
       moduleSummary = `Expected CPU fallback route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
       if (compositeProfileFallbackReason) warningNotes.push(compositeProfileFallbackReason)
       if (unsupported.length > 0) {
         warningNotes.push(`Composite GPU fixed-candidate validation does not support: ${unsupported.join(', ')}.`)
+        skippedNotes.push(`GPU main route unavailable for: ${unsupported.join(', ')}`)
       }
     } else {
       routeSummary = `${titleCaseBackend(backend)} requested | expected GPU composite route (${compositeProfile})`
       moduleSummary = `Expected GPU composite route (${compositeProfile}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      categorySummary = buildValidationCategorySummaryForMode(req, 'composite_gpu')
+      if (compositeGpuRouteNote) warningNotes.push(compositeGpuRouteNote)
       if (auxCpu.length > 0) {
         warningNotes.push(`${auxCpu.join(' + ')} may not share the same execution route as the main validation pass; confirm post-run route notes.`)
       }
@@ -403,9 +539,10 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
     if (req.cross_ticker) {
       warningNotes.push(
         crossMode && crossMode !== 'lightweight'
-          ? `Composite cross reruns remain lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates; requested ${crossMode} currently uses lightweight behavior.`
-          : 'Composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.',
+          ? `Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns remain lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates; requested ${crossMode} currently uses lightweight behavior.`
+          : 'Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.',
       )
+      skippedNotes.push('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap + CSCV + hard gates')
     }
   }
 
@@ -415,6 +552,7 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
     if (isDoubleLike && crossMode === 'preserved_finalists') {
       crossSummary = `${base} | finalists only`
       warningNotes.push('Preserved-finalists cross reruns keep CSCV/PBO + hard gates; auxiliary cross reruns omit walk-forward, SPA, reopt WF, perturb, and trade bootstrap.')
+      skippedNotes.push('Cross reruns: preserved-finalists omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap')
     } else if (isDoubleLike && crossMode === 'lightweight') {
       crossSummary = `${base} | lightweight reruns`
     } else if (!isDoubleLike) {
@@ -430,6 +568,8 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
     routeSummary,
     crossSummary,
     moduleSummary: moduleSummary || '-',
+    categorySummary,
+    skippedSummary: skippedNotes.join(' | ') || 'none',
     warningSummary: warningNotes.join(' | ') || 'none',
   }
 }
@@ -554,6 +694,21 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
         }
       }
 
+      if (kind === 'Vcet') {
+        const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
+        const vcet = asRecord(p.vcet) || asRecord(currentRunReq.vcet) || {}
+        return {
+          fast_ma_type,
+          slow_ma_type,
+          fast_len,
+          slow_len,
+          fast_ma_params: asRecord(p.fast_ma_params) || undefined,
+          slow_ma_params: asRecord(p.slow_ma_params) || undefined,
+          vcet,
+          strategy
+        }
+      }
+
       if (kind === 'Mkcs') {
         const strategy = currentRunReq.strategy || currentRunReq.base_strategy || {}
         const mkcs = asRecord(p.mkcs) || asRecord(currentRunReq.mkcs) || {}
@@ -653,6 +808,7 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       if (kind === 'Vcc') return true
       if (kind === 'Vemr') return true
       if (kind === 'Rocb') return true
+      if (kind === 'Vcet') return true
       if (kind === 'Mkcs') return true
       if (kind === 'Kqsr') return true
       if (kind === 'Carm') return true
@@ -733,7 +889,7 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
 
   return {
     data_id: dataId,
-    backend: normalizeValidationBackend(currentRunReq.backend),
+    backend: normalizeValidationBackend(currentRunReq.backend, kind),
     ma_source: normalizeText(currentRunReq.ma_source || 'close') || 'close',
     fast_ma_params: currentRunReq.fast_ma_params || null,
     slow_ma_params: currentRunReq.slow_ma_params || null,

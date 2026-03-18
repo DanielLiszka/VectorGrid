@@ -548,15 +548,17 @@ fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
     for ma in ma_cases {
         let mut group = c.benchmark_group(format!("double_ma/gpu_hybrid_kernel/{}/200k", ma.label));
         group.measurement_time(Duration::from_secs(8));
-        group.sample_size(if ma.fast_ma == "alma"
-            || ma.slow_ma == "alma"
-            || ma.fast_ma == "frama"
-            || ma.slow_ma == "frama"
-        {
-            10
-        } else {
-            20
-        });
+        group.sample_size(
+            if ma.fast_ma == "alma"
+                || ma.slow_ma == "alma"
+                || ma.fast_ma == "frama"
+                || ma.slow_ma == "frama"
+            {
+                10
+            } else {
+                20
+            },
+        );
 
         for (label, fast_range, slow_range, budget_mb) in cases.iter().copied() {
             match budget_mb {

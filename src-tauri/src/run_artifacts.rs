@@ -224,6 +224,25 @@ fn non_empty_string(v: Option<&Value>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn resolve_run_artifact_strategy_kind(v: &Value) -> String {
+    non_empty_string(v.pointer("/run/req/strategy_kind"))
+        .or_else(|| non_empty_string(v.pointer("/validation/req/validation_context/strategy_kind")))
+        .or_else(|| non_empty_string(v.pointer("/validation/req/strategy_kind")))
+        .unwrap_or_default()
+}
+
+fn resolve_run_artifact_csv_path(v: &Value) -> String {
+    non_empty_string(v.pointer("/data/csv_path"))
+        .or_else(|| non_empty_string(v.pointer("/validation/req/validation_context/csv_path")))
+        .unwrap_or_default()
+}
+
+fn resolve_run_artifact_timeframe(v: &Value) -> String {
+    non_empty_string(v.pointer("/dataset_meta/timeframe"))
+        .or_else(|| non_empty_string(v.pointer("/validation/req/validation_context/timeframe")))
+        .unwrap_or_default()
+}
+
 fn normalize_dataset_meta(ds: &mut serde_json::Map<String, Value>, csv_path: &str) {
     if !csv_path.trim().is_empty() {
         ds.entry("csv_path".to_string())
@@ -664,11 +683,7 @@ pub(super) fn list_run_artifacts_blocking(
         if !is_run_artifact_kind(&kind) {
             continue;
         }
-        let strategy_kind = v
-            .pointer("/run/req/strategy_kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
+        let strategy_kind = resolve_run_artifact_strategy_kind(&v);
         let config_fingerprint = v
             .get("config_fingerprint")
             .and_then(|x| x.as_str())
@@ -693,17 +708,9 @@ pub(super) fn list_run_artifacts_blocking(
             .unwrap_or("")
             .to_string();
 
-        let csv_path = v
-            .pointer("/data/csv_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
+        let csv_path = resolve_run_artifact_csv_path(&v);
 
-        let timeframe = v
-            .pointer("/dataset_meta/timeframe")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
+        let timeframe = resolve_run_artifact_timeframe(&v);
         let base_timeframe = v
             .pointer("/dataset_meta/base_timeframe")
             .and_then(|x| x.as_str())
@@ -1200,6 +1207,8 @@ mod tests {
     use super::{
         canonical_json, compute_config_fingerprint_from_artifact, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_run_artifact_kind, normalize_dataset_meta,
+        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
+        resolve_run_artifact_timeframe,
     };
     use serde_json::json;
 
@@ -1299,6 +1308,53 @@ mod tests {
             ds.get("resample_anchor").and_then(|v| v.as_str()),
             Some("day_first_timestamp")
         );
+    }
+
+    #[test]
+    fn run_artifact_resolution_falls_back_to_validation_context_metadata() {
+        let artifact = json!({
+            "validation": {
+                "req": {
+                    "validation_context": {
+                        "strategy_kind": "Carm",
+                        "csv_path": "C:/Rust Projects/ta_desktop_demo/data/AAPL.csv",
+                        "timeframe": "1h"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(resolve_run_artifact_strategy_kind(&artifact), "Carm");
+        assert_eq!(
+            resolve_run_artifact_csv_path(&artifact),
+            "C:/Rust Projects/ta_desktop_demo/data/AAPL.csv"
+        );
+        assert_eq!(resolve_run_artifact_timeframe(&artifact), "1h");
+    }
+
+    #[test]
+    fn run_artifact_resolution_prefers_run_req_and_dataset_meta_when_present() {
+        let artifact = json!({
+            "run": { "req": { "strategy_kind": "Mkcs" } },
+            "data": { "csv_path": "C:/data/from_run.csv" },
+            "dataset_meta": { "timeframe": "15m" },
+            "validation": {
+                "req": {
+                    "validation_context": {
+                        "strategy_kind": "Carm",
+                        "csv_path": "C:/data/from_context.csv",
+                        "timeframe": "1h"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(resolve_run_artifact_strategy_kind(&artifact), "Mkcs");
+        assert_eq!(
+            resolve_run_artifact_csv_path(&artifact),
+            "C:/data/from_run.csv"
+        );
+        assert_eq!(resolve_run_artifact_timeframe(&artifact), "15m");
     }
 
     #[test]

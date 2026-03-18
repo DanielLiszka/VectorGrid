@@ -378,6 +378,7 @@ fn strategy_supports_holdout(strategy_kind: &str) -> bool {
             | "Asr"
             | "Vcc"
             | "Vemr"
+            | "Vcet"
             | "CompositeTrend"
             | "RegimeHybrid"
             | "BreakoutMomentum"
@@ -3010,6 +3011,7 @@ mod tests {
         assert!(strategy_supports_holdout("Asr"));
         assert!(strategy_supports_holdout("Vcc"));
         assert!(strategy_supports_holdout("Vemr"));
+        assert!(strategy_supports_holdout("Vcet"));
         assert!(strategy_supports_holdout("DoubleMa"));
         assert!(strategy_supports_holdout("Pit"));
         assert!(strategy_supports_holdout("Set"));

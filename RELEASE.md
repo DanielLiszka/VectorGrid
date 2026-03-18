@@ -1,4 +1,4 @@
-# VectorTA Optimizer — Windows Release Notes
+# VectorGrid — Windows Release Notes
 
 This repo currently contains both the app and the `vector-ta` library for convenience. Long-term, the desktop app will likely move to its own repo and depend on `vector-ta` as an external crate.
 
@@ -68,6 +68,8 @@ Environment toggles:
 
 - `VECTORBT_USE_PREBUILT_PTX=1` forces using the prebuilt PTX (recommended for CI/packaging).
 - `VECTORBT_REQUIRE_NVCC=1` fails the build if `nvcc` is missing or compilation fails.
+
+Those environment variable names are legacy internal names kept for compatibility; they do not change the product branding, which is `VectorGrid`.
 
 ## Vue + Vite Migration Notes (2026-02-26)
 

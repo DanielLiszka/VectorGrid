@@ -1,4 +1,4 @@
-# VectorBT vs TA Desktop Demo Double-MA Faceoff Results
+# VectorBT vs VectorGrid Double-MA Faceoff Results
 
 Date: 2026-03-12
 

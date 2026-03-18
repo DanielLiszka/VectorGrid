@@ -1,4 +1,4 @@
-# VectorBT vs TA Desktop Demo Double-MA Capture Runbook
+# VectorBT vs VectorGrid Double-MA Capture Runbook
 
 Date: 2026-03-12
 

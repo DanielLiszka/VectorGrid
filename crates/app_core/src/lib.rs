@@ -59,6 +59,9 @@ pub mod timeframe;
 pub(crate) mod validation_core;
 pub mod validation_pipeline;
 pub mod validation_stats;
+pub mod vcet;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod vcet_gpu_kernel;
 pub mod vcc;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vcc_gpu_kernel;
@@ -98,6 +101,7 @@ pub use kqsr::KqsrStrategyParams;
 pub use kvdf::KvdfStrategyParams;
 pub use mkcs::MkcsStrategyParams;
 pub use rocb::RocbStrategyParams;
+pub use vcet::VcetStrategyParams;
 pub use vcc::VccStrategyParams;
 pub use vemr::VemrStrategyParams;
 

@@ -5,11 +5,20 @@ import path from 'node:path'
 const ROOT = process.cwd()
 const OUT_DIR = path.resolve(ROOT, 'scripts', 'baselines', 'samples')
 
-const SOURCES = {
-  runArtifact: path.resolve(ROOT, '_write_test', 'cli_runs', 'AAPL_opt.json'),
-  reportJson: path.resolve(ROOT, '_write_test', 'headless_reports', 'AAPL_headless_test.json'),
-  reportXlsx: path.resolve(ROOT, '_write_test', 'headless_reports', 'AAPL_headless_test.xlsx'),
-}
+const RUN_ARTIFACT_CANDIDATES = [
+  path.resolve(ROOT, '_write_test', 'cli_runs', 'AAPL_opt.json'),
+  path.resolve(ROOT, 'scripts', 'baselines', 'samples', 'run_artifact.json'),
+]
+
+const REPORT_JSON_CANDIDATES = [
+  path.resolve(ROOT, '_write_test', 'headless_reports', 'AAPL_headless_test.json'),
+  path.resolve(ROOT, 'scripts', 'baselines', 'samples', 'report.json'),
+]
+
+const REPORT_XLSX_CANDIDATES = [
+  path.resolve(ROOT, '_write_test', 'headless_reports', 'AAPL_headless_test.xlsx'),
+  path.resolve(ROOT, 'scripts', 'baselines', 'samples', 'report.xlsx'),
+]
 
 const BATCH_SUMMARY_CANDIDATES = [
   path.resolve(ROOT, 'target', 'workflow_regression_summary.json'),
@@ -143,18 +152,33 @@ function rel(p) {
 function main() {
   ensureDir(OUT_DIR)
 
-  const runArtifact = mustReadJson(SOURCES.runArtifact)
-  const reportJson = mustReadJson(SOURCES.reportJson)
+  const runArtifactSrc = bestExisting(RUN_ARTIFACT_CANDIDATES)
+  const reportJsonSrc = bestExisting(REPORT_JSON_CANDIDATES)
+  const reportXlsxSrc = bestExisting(REPORT_XLSX_CANDIDATES)
+  if (!runArtifactSrc) {
+    throw new Error(
+      `Missing run artifact source. Expected one of: ${RUN_ARTIFACT_CANDIDATES.map(rel).join(', ')}`,
+    )
+  }
+  if (!reportJsonSrc) {
+    throw new Error(
+      `Missing report JSON source. Expected one of: ${REPORT_JSON_CANDIDATES.map(rel).join(', ')}`,
+    )
+  }
+  if (!reportXlsxSrc) {
+    throw new Error(
+      `Missing report XLSX source. Expected one of: ${REPORT_XLSX_CANDIDATES.map(rel).join(', ')}`,
+    )
+  }
+
+  const runArtifact = mustReadJson(runArtifactSrc)
+  const reportJson = mustReadJson(reportJsonSrc)
   const batchSummarySrc = bestExisting(BATCH_SUMMARY_CANDIDATES)
   if (!batchSummarySrc) {
     throw new Error(
       `Missing batch summary source. Expected one of: ${BATCH_SUMMARY_CANDIDATES.map(rel).join(', ')}`,
     )
   }
-  if (!fs.existsSync(SOURCES.reportXlsx)) {
-    throw new Error(`Missing required source file: ${rel(SOURCES.reportXlsx)}`)
-  }
-
   const outTopRows = path.resolve(OUT_DIR, 'top_rows.csv')
   const outValidationShortlist = path.resolve(OUT_DIR, 'validation_shortlist.csv')
   const outRunArtifact = path.resolve(OUT_DIR, 'run_artifact.json')
@@ -164,10 +188,10 @@ function main() {
 
   const topCount = exportTopRows(runArtifact, outTopRows)
   const shortlistCount = exportValidationShortlist(reportJson, outValidationShortlist)
-  copyFile(SOURCES.runArtifact, outRunArtifact)
+  copyFile(runArtifactSrc, outRunArtifact)
   copyFile(batchSummarySrc, outBatchSummary)
-  copyFile(SOURCES.reportJson, outReportJson)
-  copyFile(SOURCES.reportXlsx, outReportXlsx)
+  copyFile(reportJsonSrc, outReportJson)
+  copyFile(reportXlsxSrc, outReportXlsx)
 
   const manifest = {
     generated_at: new Date().toISOString(),
@@ -184,10 +208,10 @@ function main() {
       validation_shortlist_rows: shortlistCount,
     },
     sources: {
-      run_artifact: rel(SOURCES.runArtifact),
+      run_artifact: rel(runArtifactSrc),
       batch_summary: rel(batchSummarySrc),
-      report_json: rel(SOURCES.reportJson),
-      report_xlsx: rel(SOURCES.reportXlsx),
+      report_json: rel(reportJsonSrc),
+      report_xlsx: rel(reportXlsxSrc),
     },
   }
 

@@ -2,10 +2,14 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ta_app_core::{
-    CompositeParams, CompositeValidationRequest, CscvPboConfig, PerturbConfig,
-    TradeBootstrapConfig, WalkForwardConfigOptional,
+use ta_app_core::composite_validate::{
+    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
 };
+use ta_app_core::{
+    CarmStrategyParams, CdmcStrategyParams, CompositeParams, CompositeValidationRequest,
+    CscvPboConfig, PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional,
+};
+use ta_app_core::{KqsrStrategyParams, KvdfStrategyParams};
 use ta_strategies::double_ma::StrategyConfig;
 
 use vector_ta::utilities::data_loader::Candles;
@@ -66,6 +70,10 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
             vemr: None,
             rocb: None,
             mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
             macz,
             ott,
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -97,6 +105,290 @@ fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
             vemr: None,
             rocb: None,
             mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_vcc_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 8u16.saturating_add(i_u16 % 12);
+        let slow_len = fast_len.saturating_add(24);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: Some(ta_app_core::VccStrategyParams::default()),
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_vemr_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 8u16.saturating_add(i_u16 % 12);
+        let slow_len = fast_len.saturating_add(24);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: Some(ta_app_core::VemrStrategyParams::default()),
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_rocb_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 8u16.saturating_add(i_u16 % 12);
+        let slow_len = fast_len.saturating_add(24);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: Some(ta_app_core::RocbStrategyParams::default()),
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_mkcs_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 8u16.saturating_add(i_u16 % 12);
+        let slow_len = fast_len.saturating_add(24);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: Some(ta_app_core::MkcsStrategyParams::default()),
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_carm_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 10u16.saturating_add(i_u16.saturating_mul(2));
+        let slow_len = fast_len.saturating_add(20);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: Some(CarmStrategyParams::default()),
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_cdmc_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 10u16.saturating_add(i_u16.saturating_mul(2));
+        let slow_len = fast_len.saturating_add(20);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: Some(CdmcStrategyParams::default()),
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_kqsr_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 10u16.saturating_add(i_u16.saturating_mul(2));
+        let slow_len = fast_len.saturating_add(20);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: Some(KqsrStrategyParams::default()),
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_kvdf_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 10u16.saturating_add(i_u16.saturating_mul(2));
+        let slow_len = fast_len.saturating_add(20);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: Some(KvdfStrategyParams::default()),
+            cdmc: None,
             macz: ta_app_core::composite_cpu::MaczGateParams::default(),
             ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -231,6 +523,109 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     });
 
     group.finish();
+
+    let mut bench_cpu_profile = |name: &str,
+                                 candles_len: usize,
+                                 candidates: Vec<CompositeParams>| {
+        let candidate_count = candidates.len();
+        let candles = make_synth_candles(candles_len);
+        let cancel = AtomicBool::new(false);
+        let mut group = c.benchmark_group(format!(
+            "composite_validate/cpu/{name}/{candles_len}/{}candidates",
+            candidate_count
+        ));
+        group.measurement_time(Duration::from_secs(6));
+        group.sample_size(10);
+
+        let base = CompositeValidationRequest {
+            data_id: format!("bench-cpu-{name}"),
+            backend: ta_app_core::Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 10_000,
+                step_bars: 10_000,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 15_000,
+                step_bars: 10_000,
+                top_n_candidates: 4,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 64,
+                threshold: 0.0,
+            }),
+            seed: 321,
+            max_candidates: candidate_count,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let route_probe = ta_app_core::run_composite_validation_blocking_with_candles(
+            base.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu profile validation route probe");
+        println!(
+            "benchmark route composite_validate/cpu/{}/{}/{}candidates: backend_used={:?} backend_route={} fallback={}",
+            name,
+            candles_len,
+            candidate_count,
+            route_probe.backend_used,
+            route_probe.backend_route.as_deref().unwrap_or("<none>"),
+            route_probe
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("<none>")
+        );
+
+        group.bench_function("wf_reopt_cscv_spa", |b| {
+            b.iter(|| {
+                let _ = ta_app_core::run_composite_validation_blocking_with_candles(
+                    base.clone(),
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("cpu profile wf+reopt+cscv+spa validate");
+            })
+        });
+
+        group.finish();
+    };
+
+    bench_cpu_profile("base_composite", 50_000, make_candidates(8));
+    bench_cpu_profile("asr", 50_000, make_asr_candidates(8));
+    bench_cpu_profile("vcc", 50_000, make_vcc_candidates(8));
+    bench_cpu_profile("vemr", 50_000, make_vemr_candidates(8));
+    bench_cpu_profile("rocb", 50_000, make_rocb_candidates(8));
+    bench_cpu_profile("mkcs", 50_000, make_mkcs_candidates(8));
+    bench_cpu_profile("kqsr", 50_000, make_kqsr_candidates(8));
+    bench_cpu_profile("carm", 50_000, make_carm_candidates(8));
+    bench_cpu_profile("kvdf", 50_000, make_kvdf_candidates(8));
+    bench_cpu_profile("cdmc", 50_000, make_cdmc_candidates(8));
+    bench_cpu_profile("carm", 100_000, make_carm_candidates(32));
+    bench_cpu_profile("cdmc", 100_000, make_cdmc_candidates(32));
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -324,6 +719,107 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
     });
 
     group.finish();
+
+    let mut bench_profile = |name: &str, candles_len: usize, candidates: Vec<CompositeParams>| {
+        let candidate_count = candidates.len();
+        let candles = make_synth_candles(candles_len);
+        let cancel = AtomicBool::new(false);
+        let mut group = c.benchmark_group(format!(
+            "composite_validate/gpu_kernel/{name}/{candles_len}/{}candidates",
+            candidate_count
+        ));
+        group.measurement_time(Duration::from_secs(6));
+        group.sample_size(10);
+
+        let base = CompositeValidationRequest {
+            data_id: format!("bench-gpu-{name}"),
+            backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 10_000,
+                step_bars: 10_000,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 15_000,
+                step_bars: 10_000,
+                top_n_candidates: 4,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 64,
+                threshold: 0.0,
+            }),
+            seed: 321,
+            max_candidates: candidate_count,
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let route_probe = ta_app_core::run_composite_validation_blocking_with_candles(
+            base.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu profile validation route probe");
+        println!(
+            "benchmark route composite_validate/gpu_kernel/{}/{}/{}candidates: backend_used={:?} backend_route={} fallback={}",
+            name,
+            candles_len,
+            candidate_count,
+            route_probe.backend_used,
+            route_probe.backend_route.as_deref().unwrap_or("<none>"),
+            route_probe
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("<none>")
+        );
+
+        group.bench_function("wf_reopt_cscv_spa", |b| {
+            b.iter(|| {
+                let _ = ta_app_core::run_composite_validation_blocking_with_candles(
+                    base.clone(),
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("gpu profile wf+reopt+cscv+spa validate");
+            })
+        });
+
+        group.finish();
+    };
+
+    bench_profile("base_composite", 50_000, make_candidates(8));
+    bench_profile("asr", 50_000, make_asr_candidates(8));
+    bench_profile("vcc", 50_000, make_vcc_candidates(8));
+    bench_profile("vemr", 50_000, make_vemr_candidates(8));
+    bench_profile("rocb", 50_000, make_rocb_candidates(8));
+    bench_profile("mkcs", 50_000, make_mkcs_candidates(8));
+    bench_profile("kqsr", 50_000, make_kqsr_candidates(8));
+    bench_profile("carm", 50_000, make_carm_candidates(8));
+    bench_profile("kvdf", 50_000, make_kvdf_candidates(8));
+    bench_profile("cdmc", 50_000, make_cdmc_candidates(8));
+    bench_profile("carm", 100_000, make_carm_candidates(32));
+    bench_profile("cdmc", 100_000, make_cdmc_candidates(32));
 }
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]

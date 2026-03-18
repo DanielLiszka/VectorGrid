@@ -544,6 +544,67 @@ describe('optimizeRequestBuilder', () => {
     })
   })
 
+  it('builds a VCET optimization request from typed inputs', () => {
+    const req = buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: 'Vcet',
+        data_id: 'data-vcet',
+        current_data_meta: {
+          has_high: true,
+          has_low: true,
+          has_close: true,
+        },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'vidya',
+      slowMaType: 'vidya',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '12',
+      includeAll: 'false',
+      vcetMapFastToVidyaShortPeriod: true,
+      vcetMapSlowToVidyaLongPeriod: true,
+      vcetMapSlowToCePeriod: true,
+      vcetVidyaShortPeriod: '6',
+      vcetVidyaLongPeriod: '24',
+      vcetVidyaAlpha: '0.22',
+      vcetCePeriod: '22',
+      vcetCeMult: '3.2',
+      vcetCeUseClose: true,
+      vcetRequireVidyaSlope: true,
+      vcetMaxTradeBars: '90',
+    })
+
+    expect(req).toBeTruthy()
+    expect(req).toMatchObject({
+      strategy_kind: 'Vcet',
+      data_id: 'data-vcet',
+      backend: { backend: 'GpuKernel' },
+      fast_ma_types: ['vidya'],
+      slow_ma_types: ['vidya'],
+      vcet: {
+        map_fast_to_vidya_short_period: true,
+        map_slow_to_vidya_long_period: true,
+        map_slow_to_ce_period: true,
+        vidya_short_period: 6,
+        vidya_long_period: 24,
+        vidya_alpha: 0.22,
+        ce_period: 22,
+        ce_mult: 3.2,
+        ce_use_close: true,
+        require_vidya_slope: true,
+        max_trade_bars: 90,
+      },
+    })
+  })
+
   it('builds a CompositeTrend request through the double-MA builder path with GPU kernel when ADX is off', () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {

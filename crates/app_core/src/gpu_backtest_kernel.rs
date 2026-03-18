@@ -900,25 +900,27 @@ pub(crate) fn upload_device_series_f32(
         return Err("device upload requires a non-empty series".to_string());
     }
 
-    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<(CudaDeviceSliceF32Ref, DeviceBuffer<f32>), String> {
-        let mut map = cell.borrow_mut();
-        if !map.contains_key(&device_id) {
-            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
-        }
-        let rt = map.get_mut(&device_id).expect("just inserted");
-        rt.set_current()?;
+    CUDA_KERNEL_RUNTIME.with(
+        |cell| -> Result<(CudaDeviceSliceF32Ref, DeviceBuffer<f32>), String> {
+            let mut map = cell.borrow_mut();
+            if !map.contains_key(&device_id) {
+                map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+            }
+            let rt = map.get_mut(&device_id).expect("just inserted");
+            rt.set_current()?;
 
-        let buffer = DeviceBuffer::from_slice(values).map_err(|e| e.to_string())?;
-        let slice = unsafe {
-            CudaDeviceSliceF32Ref::from_raw_parts(
-                buffer.as_device_ptr().as_raw(),
-                values.len(),
-                device_id,
-            )
-        }
-        .map_err(|e| e.to_string())?;
-        Ok((slice, buffer))
-    })
+            let buffer = DeviceBuffer::from_slice(values).map_err(|e| e.to_string())?;
+            let slice = unsafe {
+                CudaDeviceSliceF32Ref::from_raw_parts(
+                    buffer.as_device_ptr().as_raw(),
+                    values.len(),
+                    device_id,
+                )
+            }
+            .map_err(|e| e.to_string())?;
+            Ok((slice, buffer))
+        },
+    )
 }
 
 pub(crate) fn upload_host_regime_filter(

@@ -1,8 +1,8 @@
-# VectorTA Optimizer
+# VectorGrid
 
 GPU-accelerated Tauri desktop app for exact-grid trading strategy optimization and validation.
 
-In benchmark docs and scripts, the app's execution engine is referred to as **VectorGrid**. The desktop product and the benchmarked engine live in this repository.
+The desktop product and the benchmarked execution engine are both referred to as **VectorGrid** in this repository. `VectorBT` is mentioned only for explicit external benchmark comparisons.
 
 ## Benchmark
 

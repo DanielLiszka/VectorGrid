@@ -1,4 +1,4 @@
-# VectorBT vs TA Desktop Demo Double-MA Faceoff Plan
+# VectorBT vs VectorGrid Double-MA Faceoff Plan
 
 Date: 2026-03-11
 
@@ -37,7 +37,7 @@ Current status:
 
 Produce a fair, screen-captured, side-by-side benchmark and product demonstration comparing:
 
-- this app's exact `double_ma` optimization path
+- VectorGrid's exact `double_ma` optimization path
 - `vectorbt` running an equivalent double moving-average optimization workload
 
 The intended story is not "GPU is fast" in the abstract. The intended story is:

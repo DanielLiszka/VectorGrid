@@ -167,6 +167,12 @@ interface StrategyState {
   rocbAtrPeriod: string
   rocbAtrStopMult: string
   rocbMaxTradeBars: string
+  vcetVidyaShortPeriod: string
+  vcetVidyaLongPeriod: string
+  vcetVidyaAlpha: string
+  vcetCePeriod: string
+  vcetCeMult: string
+  vcetMaxTradeBars: string
   vemrZPeriod: string
   vemrZMaType: string
   vemrZNbdev: string
@@ -205,6 +211,11 @@ interface StrategyState {
   vccRequireMomentumAccel: boolean
   rocbMapFastToChannelPeriod: boolean
   rocbMapSlowToAtrPeriod: boolean
+  vcetMapFastToVidyaShortPeriod: boolean
+  vcetMapSlowToVidyaLongPeriod: boolean
+  vcetMapSlowToCePeriod: boolean
+  vcetCeUseClose: boolean
+  vcetRequireVidyaSlope: boolean
   vemrMapFastToZPeriod: boolean
   vemrMapFastToBbPeriod: boolean
   vemrMapSlowToAtrPeriod: boolean
@@ -304,6 +315,12 @@ const STRATEGY_TEXT_FIELDS = [
   'rocbAtrPeriod',
   'rocbAtrStopMult',
   'rocbMaxTradeBars',
+  'vcetVidyaShortPeriod',
+  'vcetVidyaLongPeriod',
+  'vcetVidyaAlpha',
+  'vcetCePeriod',
+  'vcetCeMult',
+  'vcetMaxTradeBars',
   'vemrZPeriod',
   'vemrZMaType',
   'vemrZNbdev',
@@ -344,6 +361,11 @@ const STRATEGY_CHECKBOX_FIELDS = [
   'vccRequireMomentumAccel',
   'rocbMapFastToChannelPeriod',
   'rocbMapSlowToAtrPeriod',
+  'vcetMapFastToVidyaShortPeriod',
+  'vcetMapSlowToVidyaLongPeriod',
+  'vcetMapSlowToCePeriod',
+  'vcetCeUseClose',
+  'vcetRequireVidyaSlope',
   'vemrMapFastToZPeriod',
   'vemrMapFastToBbPeriod',
   'vemrMapSlowToAtrPeriod',
@@ -467,6 +489,12 @@ export const useStrategyStore = defineStore('strategy', {
     rocbAtrPeriod: '14',
     rocbAtrStopMult: '2.0',
     rocbMaxTradeBars: '80',
+    vcetVidyaShortPeriod: '6',
+    vcetVidyaLongPeriod: '24',
+    vcetVidyaAlpha: '0.2',
+    vcetCePeriod: '22',
+    vcetCeMult: '3.0',
+    vcetMaxTradeBars: '120',
     vemrZPeriod: '20',
     vemrZMaType: 'sma',
     vemrZNbdev: '1.0',
@@ -505,6 +533,11 @@ export const useStrategyStore = defineStore('strategy', {
     vccRequireMomentumAccel: true,
     rocbMapFastToChannelPeriod: true,
     rocbMapSlowToAtrPeriod: true,
+    vcetMapFastToVidyaShortPeriod: true,
+    vcetMapSlowToVidyaLongPeriod: true,
+    vcetMapSlowToCePeriod: true,
+    vcetCeUseClose: true,
+    vcetRequireVidyaSlope: true,
     vemrMapFastToZPeriod: true,
     vemrMapFastToBbPeriod: true,
     vemrMapSlowToAtrPeriod: true,
@@ -613,6 +646,12 @@ export const useStrategyStore = defineStore('strategy', {
       this.rocbAtrPeriod = String(snapshot.rocbAtrPeriod ?? this.rocbAtrPeriod ?? '14').trim() || '14'
       this.rocbAtrStopMult = String(snapshot.rocbAtrStopMult ?? this.rocbAtrStopMult ?? '2.0').trim() || '2.0'
       this.rocbMaxTradeBars = String(snapshot.rocbMaxTradeBars ?? this.rocbMaxTradeBars ?? '80').trim() || '80'
+      this.vcetVidyaShortPeriod = String(snapshot.vcetVidyaShortPeriod ?? this.vcetVidyaShortPeriod ?? '6').trim() || '6'
+      this.vcetVidyaLongPeriod = String(snapshot.vcetVidyaLongPeriod ?? this.vcetVidyaLongPeriod ?? '24').trim() || '24'
+      this.vcetVidyaAlpha = String(snapshot.vcetVidyaAlpha ?? this.vcetVidyaAlpha ?? '0.2').trim() || '0.2'
+      this.vcetCePeriod = String(snapshot.vcetCePeriod ?? this.vcetCePeriod ?? '22').trim() || '22'
+      this.vcetCeMult = String(snapshot.vcetCeMult ?? this.vcetCeMult ?? '3.0').trim() || '3.0'
+      this.vcetMaxTradeBars = String(snapshot.vcetMaxTradeBars ?? this.vcetMaxTradeBars ?? '120').trim() || '120'
       this.vemrZPeriod = String(snapshot.vemrZPeriod ?? this.vemrZPeriod ?? '20').trim() || '20'
       this.vemrZMaType = String(snapshot.vemrZMaType ?? this.vemrZMaType ?? 'sma').trim() || 'sma'
       this.vemrZNbdev = String(snapshot.vemrZNbdev ?? this.vemrZNbdev ?? '1.0').trim() || '1.0'
@@ -651,6 +690,11 @@ export const useStrategyStore = defineStore('strategy', {
       this.vccRequireMomentumAccel = Boolean(snapshot.vccRequireMomentumAccel ?? this.vccRequireMomentumAccel)
       this.rocbMapFastToChannelPeriod = Boolean(snapshot.rocbMapFastToChannelPeriod ?? this.rocbMapFastToChannelPeriod)
       this.rocbMapSlowToAtrPeriod = Boolean(snapshot.rocbMapSlowToAtrPeriod ?? this.rocbMapSlowToAtrPeriod)
+      this.vcetMapFastToVidyaShortPeriod = Boolean(snapshot.vcetMapFastToVidyaShortPeriod ?? this.vcetMapFastToVidyaShortPeriod)
+      this.vcetMapSlowToVidyaLongPeriod = Boolean(snapshot.vcetMapSlowToVidyaLongPeriod ?? this.vcetMapSlowToVidyaLongPeriod)
+      this.vcetMapSlowToCePeriod = Boolean(snapshot.vcetMapSlowToCePeriod ?? this.vcetMapSlowToCePeriod)
+      this.vcetCeUseClose = Boolean(snapshot.vcetCeUseClose ?? this.vcetCeUseClose)
+      this.vcetRequireVidyaSlope = Boolean(snapshot.vcetRequireVidyaSlope ?? this.vcetRequireVidyaSlope)
       this.vemrMapFastToZPeriod = Boolean(snapshot.vemrMapFastToZPeriod ?? this.vemrMapFastToZPeriod)
       this.vemrMapFastToBbPeriod = Boolean(snapshot.vemrMapFastToBbPeriod ?? this.vemrMapFastToBbPeriod)
       this.vemrMapSlowToAtrPeriod = Boolean(snapshot.vemrMapSlowToAtrPeriod ?? this.vemrMapSlowToAtrPeriod)

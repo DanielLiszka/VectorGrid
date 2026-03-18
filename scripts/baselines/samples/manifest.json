@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-20T02:57:59.881Z",
+  "generated_at": "2026-03-18T21:33:25.305Z",
   "outputs": {
     "top_rows_csv": "scripts/baselines/samples/top_rows.csv",
     "validation_shortlist_csv": "scripts/baselines/samples/validation_shortlist.csv",
@@ -13,7 +13,7 @@
     "validation_shortlist_rows": 12
   },
   "sources": {
-    "run_artifact": "_write_test/cli_runs/AAPL_opt.json",
+    "run_artifact": "scripts/baselines/samples/run_artifact.json",
     "batch_summary": "target/workflow_regression_summary.json",
     "report_json": "_write_test/headless_reports/AAPL_headless_test.json",
     "report_xlsx": "_write_test/headless_reports/AAPL_headless_test.xlsx"

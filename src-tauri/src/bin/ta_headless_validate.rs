@@ -289,12 +289,22 @@ fn alma_params_if_needed(ma: &str, offset: f64, sigma: f64) -> Option<HashMap<St
     }
 }
 
-fn make_default_xlsx_path(csv_path: &Path) -> PathBuf {
+fn report_ts_path_fragment(ts: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.format("%Y%m%d_%H%M%S").to_string())
+        .unwrap_or_else(|_| {
+            ts.chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .collect()
+        })
+}
+
+fn make_default_xlsx_path(csv_path: &Path, report_ts: &str) -> PathBuf {
     let stem = csv_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("dataset");
-    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let ts = report_ts_path_fragment(report_ts);
     PathBuf::from("_write_test")
         .join("headless_reports")
         .join(format!("{stem}_report_{ts}.xlsx"))
@@ -647,7 +657,7 @@ fn main() -> Result<(), String> {
     let out_xlsx = cli
         .out_xlsx
         .clone()
-        .unwrap_or_else(|| make_default_xlsx_path(&cli.csv));
+        .unwrap_or_else(|| make_default_xlsx_path(&cli.csv, &ts));
     if let Some(parent) = out_xlsx.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -656,4 +666,29 @@ fn main() -> Result<(), String> {
     println!("Saved XLSX report: {}", out_xlsx.to_string_lossy());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{make_default_xlsx_path, report_ts_path_fragment};
+    use std::path::Path;
+
+    #[test]
+    fn report_ts_path_fragment_uses_report_timestamp_shape() {
+        assert_eq!(
+            report_ts_path_fragment("2026-03-18T16:04:05Z"),
+            "20260318_160405"
+        );
+    }
+
+    #[test]
+    fn default_xlsx_path_derives_from_csv_stem_and_report_ts() {
+        let path = make_default_xlsx_path(Path::new("C:/data/AAPL.csv"), "2026-03-18T16:04:05Z");
+        assert_eq!(
+            path,
+            Path::new("_write_test")
+                .join("headless_reports")
+                .join("AAPL_report_20260318_160405.xlsx")
+        );
+    }
 }

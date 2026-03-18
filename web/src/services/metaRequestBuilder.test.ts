@@ -147,6 +147,20 @@ describe('metaRequestBuilder', () => {
     })
   })
 
+  it('keeps holdout enabled for VCET strategy', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'Vcet',
+      evalHoldout: true,
+      holdoutMode: 'light'
+    })
+
+    expect(req).toMatchObject({
+      strategy_kind: 'Vcet',
+      eval_holdout: true,
+      holdout_mode: 'light'
+    })
+  })
+
   it('keeps holdout enabled for Set strategy', () => {
     const req = buildMetaSelectionRequest({
       strategyKind: 'Set',

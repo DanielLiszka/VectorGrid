@@ -1,16 +1,66 @@
-# GPT-5.4 feature review map
+# GPT-5.4 optimization/performance review map
 
-This file is a repo-grounded map of which files own which optimization and validation features, so each implementation can be presented to a reviewer model in isolation.
+This file is a repo-grounded map for sending tightly scoped optimization and performance review bundles to another model.
+
+It is intentionally narrower than a general backend feature map.
+
+## Purpose
+
+Use this document when you want a reviewer model to:
+
+- audit optimization paths
+- audit performance-sensitive fallback behavior
+- audit validation cost and throughput
+- audit benchmark fidelity and regression-gate alignment
+- suggest measured, parity-safe improvements
+
+Do not use this document to ask for broad feature ideation.
+
+## Hard scope guard
+
+The current repo posture is optimization-first, benchmark-first, and parity-preserving.
+
+The review prompt should not drift into:
+
+- new strategies unless directly required to remove a measured performance bottleneck
+- new UI surfaces or workflow panels
+- generic architecture rewrites
+- GPU expansion claims without route, fallback, and parity evidence
+- "add more knobs" proposals that are not tied to benchmark-backed value
+
+Out of scope unless directly implicated in a measured optimization problem:
+
+- live execution and broker integration
+- reporting/export UX
+- artifact management
+- meta-selection / ML confidence feature expansion
+- broad data-ingestion work beyond residency/cache effects on optimize/validate latency
+
+## Current repo optimization posture
+
+The highest-signal current themes are:
+
+1. `double_ma` remains the main optimization hotspot and route owner.
+2. Composite strategy performance is now largely about route policy:
+   `CompositeTrend`, `BreakoutMomentum`, and `RegimeHybrid` route through the `double_ma` family with `GpuKernel` vs `GpuHybridKernel` vs CPU fallback decisions.
+3. Warm-path latency matters more than speculative redesign.
+4. Price-data residency and VRAM reuse are active performance surfaces.
+5. Validation cost and fallback behavior are still important and not fully "done".
+6. Strategy-local GPU-native routes are performance-critical enough to merit their own isolated reviews.
+7. `CompositeMo` is its own search-efficiency surface because sampler cost and GPU prescan can dominate.
+8. Perf-gate discipline already exists, so proposed improvements should be benchmark- and gate-aware.
 
 ## Recommended review order
 
-1. `double_ma` optimization backend
-2. composite strategy route policy
-3. validation stage core
-4. cross-ticker validation orchestration
-5. frontend request shaping
-6. frontend optimization orchestration
-7. presets and tests
+1. `double_ma` optimization backend and route/fallback behavior
+2. composite route policy and frontend request shaping
+3. GPU runtime, residency, and dynamic-strategy overhead
+4. validation throughput and fallback rules
+5. strategy-local GPU-native optimization/validation routes
+6. `CompositeMo` search efficiency and prescan behavior
+7. benchmark harnesses, perf gates, and timing-boundary fidelity
+8. frontend orchestration and benchmark-backed defaults
+9. frontend validation orchestration and artifact-heavy validation flows
 
 ## 1. Double MA optimization backend
 
@@ -23,562 +73,165 @@ This file is a repo-grounded map of which files own which optimization and valid
 - `crates/app_core/src/double_ma_strategy.rs`
 - `src-tauri/src/commands_optimize.rs`
 
-### What each file owns
+### What this bundle owns
 
-- `crates/app_core/src/double_ma.rs`
-  - Main optimization engine for the Double MA family.
-  - Owns request types, backend enums, optimization execution, objective scoring, drilldown, local stability, GPU/CPU execution paths, regime filters, and VDPS/grid search logic.
-  - Main entry points:
-    - `run_double_ma_optimization_blocking_with_candles`
-    - `compute_double_ma_drilldown_blocking_with_candles`
-    - `compute_double_ma_local_stability_blocking_with_candles`
-  - Strategy-specific logic is also concentrated here:
-    - `compute_trend_quality_regime`
-    - `compute_combined_regime_filter`
-    - `compute_breakout_momentum_regime`
-    - `compute_pressure_impulse_trend_regime`
-    - `compute_slope_efficiency_trend_regime`
-    - `compute_momentum_triple_stack_regime`
-    - `compute_oscillator_reversion_confluence_regime`
-    - `compute_volume_flow_confirmation_regime`
+- main optimization execution for the Double-MA family
+- backend selection, fallback reasons, and route summaries
+- mode selection including exact grid and VDPS-related search behavior
+- result shaping for top-k / include-all / heatmap flows
+- strategy-config validation that affects route eligibility and work shape
+- Tauri command boundary and product-level normalization
 
-- `crates/app_core/src/double_ma_backend.rs`
-  - Backend gating and route-summary helper layer.
-  - Owns backend labels, hybrid enable toggle, GPU kernel blockers, and per-indicator route-plan summaries.
-  - Review this when the question is "why did a request take this backend path or fall back?"
+### Performance review focus
 
-- `crates/app_core/src/double_ma_mode.rs`
-  - Optimization mode selection and validation.
-  - Owns the `Auto -> Grid/CoarseToFine` decision and validation for `CoarseToFine` and `GpuVdps`.
+- CPU/GPU parity and fallback-path performance cliffs
+- route-summary correctness and blocker transparency
+- repeated recomputation or unnecessary allocations in hot paths
+- hybrid-kernel downgrade behavior
+- search-efficiency questions that are already in-repo, especially VDPS
+- consistency between optimization output and drilldown/local-stability follow-up paths
 
-- `crates/app_core/src/double_ma_result.rs`
-  - Converts raw optimizer outputs into the public `BackendOptimizationResult`.
-  - Owns resolved-parameter mapping, matrix-index generation, top/best column metadata, and output assembly.
+### Ask for
 
-- `crates/app_core/src/double_ma_strategy.rs`
-  - Validation layer for `StrategyConfig` within the Double MA flow.
-  - Owns configuration correctness rules and incompatibility guards between regime profiles.
-  - This is where many "allowed combination vs forbidden combination" questions should start.
+- route/fallback performance review
+- hot-path allocation/recompute review
+- VDPS/search-efficiency review
+- parity-risk review
 
-- `src-tauri/src/commands_optimize.rs`
-  - Tauri command boundary for optimization.
-  - Owns run cancellation wiring, progress emission, candle lookup, async `spawn_blocking` handoff, and product-level normalization.
-  - Important detail: it forces product optimization mode to `Grid`.
-
-### Review focus
-
-- CPU/GPU parity and fallback behavior
-- objective scoring correctness, especially inverted objectives like volatility and max drawdown
-- backend blocker logic and route summaries
-- mode-selection correctness and hidden product constraints
-- regime-profile interactions and configuration incompatibility rules
-- drilldown/local-stability consistency with main optimization results
-
-## 2. Composite strategy route policy
+## 2. Composite route policy and request shaping
 
 ### Primary files
 
 - `crates/app_core/src/composite_profile_route.rs`
 - `web/src/services/optimizeRequestBuilder.ts`
 - `web/src/utils/strategyOptimizationCapabilities.ts`
+- `web/src/strategies/compositeProfileGpuPolicy.ts`
+- `web/src/services/optimizeRequestBuilder.test.ts`
 
-### What each file owns
+### What this bundle owns
 
-- `crates/app_core/src/composite_profile_route.rs`
-  - Maps `StrategyConfig` flags to runtime profile identity.
-  - Decides whether a composite strategy targets `CpuOnly`, `GpuKernel`, or `GpuHybridKernel`.
-  - Important mappings:
-    - `trend_quality_enable` -> `CompositeTrend`
-    - `breakout_momentum_enable` -> `BreakoutMomentum`
-    - `regime_hybrid_enable` -> `RegimeHybrid`
-  - ADX-enabled variants flip `CompositeTrend` and `BreakoutMomentum` from `GpuKernel` to `GpuHybridKernel`.
+- runtime profile identity for `CompositeTrend`, `BreakoutMomentum`, and `RegimeHybrid`
+- `GpuKernel` vs `GpuHybridKernel` vs CPU fallback targeting
+- frontend request normalization and guardrails
+- capability summaries that control which optimization knobs are exposed
+- request-size guardrails for pair counts and `include_all`
 
-- `web/src/services/optimizeRequestBuilder.ts`
-  - Frontend request builder for optimization payloads.
-  - Owns strategy-kind-specific request normalization, backend payload shaping, MA support checks, range/sweep parsing, and user-facing guardrails before the request reaches Rust.
-  - Main entry points:
-    - `buildDoubleMaOptimizationRequest`
-    - `buildCompositeCpuOptimizationRequest`
-    - `buildCompositeMoOptimizationRequest`
+### Performance review focus
 
-- `web/src/utils/strategyOptimizationCapabilities.ts`
-  - Frontend capability matrix.
-  - Owns which global controls a given strategy kind exposes, such as backend choice, mode, top-k, heatmap, export behavior, and related affordances.
-  - Main entry point: `describeStrategyOptimizationCapabilities`
+- frontend/backend route drift
+- stale backend vocabulary or legacy naming drift
+- request shaping that can accidentally explode work size
+- ADX branch correctness and fallback visibility
+- whether capability exposure matches real backend support
+- whether defaults and guardrails are benchmark-backed rather than arbitrary
 
-### Review focus
+### Ask for
 
-- frontend/backend route-policy drift
-- ADX branch consistency
-- capability exposure matching actual backend support
-- invalid combinations being blocked on the frontend before Tauri invocation
+- route-policy fidelity review
+- combinatorial guardrail review
+- support-matrix drift review
+- benchmark-backed defaults review
 
-## 3. Double MA validation stage
+## 3. GPU runtime, residency, and dynamic-strategy overhead
+
+### Primary files
+
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+- `crates/app_core/src/dynamic_indicator_adapter.rs`
+- `crates/app_core/src/strategy_dynamic.rs`
+- `crates/app_core/src/strategy_plan.rs`
+- `crates/app_core/src/strategy_gpu_program.rs`
+- `crates/app_core/src/vram_ma.rs`
+- `src-tauri/src/state.rs`
+- `src-tauri/src/data_cache.rs`
+- `src-tauri/src/bin/ta_app_path_faceoff.rs`
+
+### Supporting research / tracker files
+
+- `research/PRICE_DATA_RESIDENCY_AND_VRAM_CACHE_IMPLEMENTATION_PLAN_2026-03-12.md`
+- `research/DOUBLE_MA_WARM_APP_PATH_OPTIMIZATION_PLAN_2026-03-13.md`
+- `research/DOUBLE_MA_GPU_KERNEL_OPTIMIZATION_CHECKLIST_2026-03-13.md`
+- `research/OPEN_IMPLEMENTATION_COMPLETION_TRACKER_2026-03-12.md`
+
+### What this bundle owns
+
+- shared GPU runtime behavior for the Double-MA family
+- resident market-series caching and raw-field reuse
+- dynamic indicator/device staging reuse
+- dynamic-strategy experimental/shadow perf surfaces
+- app-path timing that includes real request + runtime behavior rather than only Criterion microbench numbers
+
+### Performance review focus
+
+- upload reuse and cache invalidation correctness
+- warm-path vs cold-path timing boundaries
+- dynamic-strategy preflight overhead
+- route metadata and runtime attribution
+- whether proposed work is smaller and safer than a redesign
+- process-level instability or bimodality before deeper feature work
+
+### Ask for
+
+- residency/cache review
+- dynamic-strategy overhead review
+- warm app-path latency review
+- benchmark-boundary review
+
+## 4. Validation throughput and fallback behavior
 
 ### Primary files
 
 - `crates/app_core/src/double_ma_validate.rs`
 - `crates/app_core/src/validation_pipeline.rs`
 - `src-tauri/src/commands_validation.rs`
-
-### What each file owns
-
-- `crates/app_core/src/double_ma_validate.rs`
-  - Main Double MA validation implementation.
-  - Owns candidate scoring, walk-forward validation, perturbation stats, trade bootstrap, SPA/re-optimization branches, GPU fixed-candidate preparation, backend runtime selection, and final `DoubleMaValidationResult` assembly.
-  - Main entry points:
-    - `run_double_ma_validation_blocking_with_candles`
-    - `try_prepare_gpu_fixed_candidate_validation`
-    - `compute_cpu_perturb_stats_for_candidate`
-
-- `crates/app_core/src/validation_pipeline.rs`
-  - Shared validation reduction/math layer.
-  - Owns hard-gate sanitation, probability metrics, Pareto marking, CSCV/PBO folding, final verdict construction, walk-forward helpers, perturbation/bootstrap helpers, and parallel candidate collection.
-  - Key abstraction boundary: `ValidationPostCandidate`
-
-- `src-tauri/src/commands_validation.rs`
-  - Tauri orchestration layer for validation.
-  - Owns command entry points, progress/cancel behavior, validation context checks, and cross-ticker orchestration.
-  - Main entry points include:
-    - `run_double_ma_validation`
-    - `run_composite_validation`
-    - `apply_cross_ticker_validation`
-    - `apply_cross_ticker_validation_double_ma`
-    - `apply_cross_ticker_validation_double_ma_headless`
-
-### Review focus
-
-- GPU validation support rules and fallback reasons
-- candidate reduction correctness and gate precedence
-- deterministic behavior in perturbation/bootstrap branches
-- correctness of cross-ticker aggregation and finalist pruning
-- cancellation and async boundary integrity
-
-## 4. Cross-ticker validation orchestration
-
-### Primary files
-
-- `src-tauri/src/commands_validation.rs`
-- `crates/app_core/src/validation_pipeline.rs`
 - `src-tauri/src/validation_common.rs`
+- `web/src/services/validationRequestBuilder.ts`
+- `web/src/services/validationRequestBuilder.test.ts`
 
-### What this bundle is for
+### Supporting benchmark / tool files
 
-- Review this bundle separately when the question is specifically about multi-dataset validation behavior rather than single-dataset scoring.
-- `commands_validation.rs` owns cross-ticker reruns, candidate-key grouping, overlap alignment, and final shortlist assembly.
-- `validation_pipeline.rs` owns the reduction rules that decide whether those rerun results become warnings, failures, or robust candidates.
-- `validation_common.rs` is the adjacent helper surface for candidate identity/canonicalization and should be inspected whenever candidates seem to merge, split, or disappear across datasets.
+- `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
+- `crates/app_core/benches/double_ma_validation_workflow.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs`
 
-### Main entry points
+### What this bundle owns
 
-- `src-tauri/src/commands_validation.rs`
-  - `apply_cross_ticker_validation`
-  - `apply_cross_ticker_validation_double_ma`
-  - `apply_cross_ticker_validation_double_ma_headless`
-- `src-tauri/src/validation_common.rs`
-  - start with the candidate-key canonicalization helpers
+- Double-MA validation execution and fixed-candidate GPU validation support
+- shared reduction/gate/verdict logic
+- command-layer cross-ticker orchestration
+- frontend validation backend summaries and backend-selection expectations
+- measurement surfaces for validation cost relative to optimization
 
-### Recommended edit order
+### Performance review focus
 
-1. `src-tauri/src/commands_validation.rs`
-2. `src-tauri/src/validation_common.rs`
-3. `crates/app_core/src/validation_pipeline.rs`
+- GPU validation support boundaries and fallback reasons
+- validation-stage work duplication or rerun amplification
+- cross-ticker cost and finalist-preservation tradeoffs
+- deterministic behavior in perturb/bootstrap paths that affect measurement fidelity
+- CPU-preferred vs GPU-preferred cases encoded in current frontend/backend logic
 
-### Review focus
+### Ask for
 
-- horizon alignment and empty-overlap handling
-- duplicate or dropped candidates caused by canonical keying
-- whether cross-ticker gates run before or after base validation decisions
-- preserved-finalist behavior versus fully reranked behavior
+- validation-cost review
+- fallback transparency review
+- cross-ticker throughput review
+- deterministic-measurement review
 
-## 5. Frontend optimization request shaping
+## 5. Strategy-local GPU-native optimization and validation routes
 
-### Primary files
+### Primary strategy files
 
-- `web/src/services/optimizeRequestBuilder.ts`
-- `web/src/services/optimizeRequestBuilder.test.ts`
-- `web/src/utils/strategyOptimizationCapabilities.ts`
-
-### What each file owns
-
-- `web/src/services/optimizeRequestBuilder.ts`
-  - Converts frontend inputs into typed optimization payloads.
-  - Owns input normalization, validation errors, backend field construction, MA parameter sweep shaping, data-field preconditions, and request-size guardrails.
-
-- `web/src/services/optimizeRequestBuilder.test.ts`
-  - Contract tests for request construction.
-  - Covers positive and negative cases such as alias normalization, MA whitelist errors, and composite routing behavior.
-
-- `web/src/utils/strategyOptimizationCapabilities.ts`
-  - Single-source capability matrix used to decide what the UI should expose for each strategy kind.
-
-### Review focus
-
-- malformed or partial input handling
-- request-shape compatibility with Rust-side request structs
-- guardrail coverage for extreme ranges and sweep counts
-- capability matrix drift versus real backend support
-
-## 6. Frontend optimization orchestration
-
-### Primary files
-
-- `web/src/services/optimizeService.ts`
-- `web/src/services/optimizeService.test.ts`
-- `src-tauri/src/commands_optimize.rs`
-
-### What each file owns
-
-- `web/src/services/optimizeService.ts`
-  - Frontend orchestration boundary for optimization actions.
-  - Owns reading store state, choosing the backend command, invoking Tauri, surfacing backend metadata, triggering parity checks, updating UI status, and related post-run flows such as validation/artifact handling.
-  - Main entry points include:
-    - `applyPreset`
-    - `presetKernel`
-    - `refreshGpuStatus`
-    - `runGpuParityCheck`
-    - `buildOptimizationRequestFromVueStores`
-    - `runOptimization`
-    - `cancelOptimization`
-    - `runValidation`
-
-- `web/src/services/optimizeService.test.ts`
-  - Integration-style tests for service orchestration.
-  - Covers command selection, preset application, auto-build behavior, artifact persistence, backend metadata surfacing, and auto-validation triggers.
-
-- `src-tauri/src/commands_optimize.rs`
-  - Rust-side command boundary paired with the frontend service.
-  - Review together with `optimizeService.ts` when debugging UI-to-backend command mismatches.
-
-### Review focus
-
-- coupling between UI state, DOM/state reads, and command dispatch
-- mismatch risk between frontend command selection and Rust command surface
-- parity-check assumptions and tolerance thresholds
-- error-path coverage for failures, missing metadata, and cancellation races
-
-## 7. Presets and test fixtures
-
-### Primary files
-
-- `crates/app_core/src/strategy_presets.rs`
-- `crates/app_core/src/double_ma_test_support.rs`
-- `web/src/services/optimizeRequestBuilder.test.ts`
-- `web/src/services/optimizeService.test.ts`
-
-### What each file owns
-
-- `crates/app_core/src/strategy_presets.rs`
-  - Canonical strategy fixtures and named kernel-oriented preset constructors.
-  - Useful when reviewing whether benchmark/test inputs still represent the intended product behavior.
-
-- `crates/app_core/src/double_ma_test_support.rs`
-  - Test-only wrappers exposing preset builders into `double_ma.rs` test code.
-
-- `web/src/services/optimizeRequestBuilder.test.ts`
-  - Request construction contract coverage.
-
-- `web/src/services/optimizeService.test.ts`
-  - Frontend orchestration coverage.
-
-### Review focus
-
-- preset drift versus production defaults
-- missing edge-case coverage
-- silent contract drift between test helpers and production code
-
-## 8. Tauri command registry and module boundaries
-
-### Primary files
-
-- `src-tauri/src/main.rs`
-- `src-tauri/src/lib.rs`
-- `src-tauri/src/commands.rs`
-- `src-tauri/src/commands_optimize.rs`
-- `src-tauri/src/commands_validation.rs`
-
-### What this bundle is for
-
-- `src-tauri/src/commands.rs` is the public command aggregation layer.
-- Review this bundle when the issue is about which commands are exposed, how the Tauri boundary is organized, or where a feature enters the app from the frontend.
-- If a command exists in one module but is not reachable from the app, inspect `src-tauri/src/lib.rs` next.
-
-## Suggested isolated review bundles for GPT-5.4
-
-### Bundle A: Double MA optimizer internals
-
-- `crates/app_core/src/double_ma.rs`
-- `crates/app_core/src/double_ma_backend.rs`
-- `crates/app_core/src/double_ma_mode.rs`
-- `crates/app_core/src/double_ma_result.rs`
-- `crates/app_core/src/double_ma_strategy.rs`
-
-Ask for:
-
-- backend-routing review
-- CPU/GPU parity review
-- optimization-mode review
-- strategy-config validation review
-
-### Bundle B: Validation engine
-
-- `crates/app_core/src/double_ma_validate.rs`
-- `crates/app_core/src/validation_pipeline.rs`
-
-Ask for:
-
-- validation-statistics review
-- hard-gate/verdict review
-- determinism/reproducibility review
-
-### Bundle C: Cross-ticker validation orchestration
-
-- `src-tauri/src/commands_validation.rs`
-- `crates/app_core/src/validation_pipeline.rs`
-
-Ask for:
-
-- cross-ticker aggregation review
-- async/cancellation review
-- finalist-selection review
-
-### Bundle D: Frontend request shaping
-
-- `web/src/services/optimizeRequestBuilder.ts`
-- `web/src/utils/strategyOptimizationCapabilities.ts`
-- `web/src/services/optimizeRequestBuilder.test.ts`
-
-Ask for:
-
-- request-contract review
-- frontend/backend support-matrix review
-- guardrail/error-message review
-
-### Bundle E: Frontend orchestration
-
-- `web/src/services/optimizeService.ts`
-- `web/src/services/optimizeService.test.ts`
-- `src-tauri/src/commands_optimize.rs`
-
-Ask for:
-
-- service-boundary review
-- command-selection review
-- failure/cancellation review
-
-## Backend-wide repo map extension
-
-This section expands the map beyond optimization/validation so it covers the rest of the backend/runtime repo, excluding frontend/UI code.
-
-## 9. Workspace and crate boundaries
-
-### Workspace members
-
-- `src-tauri`
-- `crates/app_core`
-- `crates/strategies`
-- `crates/optimizer`
-
-### What each crate owns
-
-- `src-tauri`
-  - Desktop host, Tauri command boundary, runtime integration, app state, external side effects, file dialogs, and desktop-facing orchestration.
-  - Start here when the question is "how does the app expose this backend feature?"
-
-- `crates/app_core`
-  - Main business-logic/orchestration crate.
-  - Owns optimization, validation, strategy planning, dynamic indicator/GPU plumbing, composite strategy runtimes, meta-selection, ML confidence, statistics helpers, and public request/result types used by Tauri.
-
-- `crates/strategies`
-  - Pure strategy/math crate.
-  - Owns strategy evaluation primitives, metrics, trade/curve types, and strategy record structures.
-
-- `crates/optimizer`
-  - Generic optimization/search crate.
-  - Owns objective definitions, optimization modes, grid search, multi-objective search, and streaming aggregation.
-
-## 10. Tauri application shell and command registry
-
-### Primary files
-
-- `src-tauri/src/main.rs`
-- `src-tauri/src/lib.rs`
-- `src-tauri/src/commands.rs`
-
-### What these files own
-
-- `src-tauri/src/main.rs`
-  - Thin executable entry point.
-  - Delegates to the library app bootstrap.
-
-- `src-tauri/src/lib.rs`
-  - Real Tauri app bootstrap and state initialization.
-  - Command registration boundary and app-wide dependency wiring.
-
-- `src-tauri/src/commands.rs`
-  - Aggregates command modules and re-exports their public command surface.
-  - Best file for identifying which backend capabilities are exposed to the desktop app.
-
-### Review focus
-
-- command exposure completeness and accidental omissions
-- global state setup and lifecycle ownership
-- feature wiring from app shell into `ta_app_core`
-
-## 11. Data ingestion, catalog, and market-data operations
-
-### Primary files
-
-- `src-tauri/src/commands_data.rs`
-- `crates/app_core/src/csv_compat.rs`
-- `crates/app_core/src/timeframe.rs`
-- `crates/app_core/src/indicator_catalog.rs`
-- `crates/app_core/src/indicator_factory.rs`
-- `crates/app_core/src/cuda_device.rs`
-- `src-tauri/src/lib.rs`
-
-### What each file owns
-
-- `src-tauri/src/commands_data.rs`
-  - Backend data-service surface.
-  - Owns:
-    - CSV loading and resampling
-    - moving-average and dynamic-indicator listing
-    - GPU speedup table loading
-    - sample/repo dataset discovery
-    - market-data directory configuration
-    - Polygon cache/key management
-    - Polygon live stream start/stop/status
-    - Polygon dataset validation, repair, and 1-minute download/load flow
-    - native file/folder pickers
-  - Main entry points:
-    - `load_price_data`
-    - `resample_price_data`
-    - `list_moving_averages`
-    - `list_dynamic_indicators`
-    - `list_gpu_speedups`
-    - `list_repo_data_csvs`
-    - `get_market_data_dir_info`
-    - `set_market_data_dir`
-    - `polygon_start_live_candle_stream`
-    - `polygon_stop_live_candle_stream`
-    - `polygon_validate_dataset`
-    - `polygon_repair_dataset`
-    - `polygon_download_1m_and_load`
-
-- `crates/app_core/src/csv_compat.rs`
-  - Candle CSV compatibility/loading helpers.
-  - Review this when investigating CSV schema tolerance or ingestion edge cases.
-
-- `crates/app_core/src/timeframe.rs`
-  - Timeframe parsing and candle resampling primitives.
-  - Review this for resample correctness and base/derived timeframe identity handling.
-
-- `crates/app_core/src/indicator_catalog.rs`
-  - Dynamic indicator metadata and descriptor layer.
-
-- `crates/app_core/src/indicator_factory.rs`
-  - Indicator construction/instantiation layer.
-
-- `crates/app_core/src/cuda_device.rs`
-  - Preferred CUDA-device discovery and selection helpers.
-
-### Recommended edit order
-
-1. `src-tauri/src/commands_data.rs`
-2. `crates/app_core/src/csv_compat.rs` or `crates/app_core/src/timeframe.rs`, depending on whether the issue is ingestion or resampling
-3. `crates/app_core/src/indicator_catalog.rs` and `crates/app_core/src/indicator_factory.rs` for indicator-support issues
-4. `src-tauri/src/lib.rs` if the problem is command exposure or state wiring
-
-### Review focus
-
-- CSV schema compatibility and silent coercion risk
-- resampling correctness and timeframe identity semantics
-- Polygon operational safety, cache behavior, and stream lifecycle
-- indicator discovery metadata staying aligned with runtime support
-
-## 12. Strategy math layer
-
-### Primary files
-
-- `crates/strategies/src/lib.rs`
-- `crates/strategies/src/double_ma/mod.rs`
-- `crates/strategies/src/composite_cpu/mod.rs`
-- `crates/strategies/src/records.rs`
-
-### What each file owns
-
-- `crates/strategies/src/double_ma/mod.rs`
-  - Core Double MA strategy math.
-  - Owns `DoubleMaParams`, `Metrics`, `Trade`, `TradeStats`, `StrategyConfig`, grid expansion, MA matrix construction, and the raw evaluation functions for curves and metrics across f64/f32 and filtered/unfiltered variants.
-
-- `crates/strategies/src/composite_cpu/mod.rs`
-  - Composite CPU signal and metric evaluation layer.
-  - Owns composite desired-position logic, execution overlays, and composite metric/curve evaluation.
-
-- `crates/strategies/src/records.rs`
-  - Trade record containers and record-oriented helpers.
-
-- `crates/strategies/src/lib.rs`
-  - Export boundary for the strategy crate.
-
-### Review focus
-
-- raw strategy-evaluation correctness
-- consistency between fast and full evaluation variants
-- overlay semantics and trade accounting
-- data-structure contracts used by `app_core` and `optimizer`
-
-## 13. Generic optimization/search engine
-
-### Primary files
-
-- `crates/optimizer/src/lib.rs`
-- `crates/optimizer/src/grid.rs`
-- `crates/optimizer/src/stream.rs`
-- `crates/optimizer/src/mo.rs`
-
-### What each file owns
-
-- `crates/optimizer/src/lib.rs`
-  - Public optimization contracts.
-  - Owns `ObjectiveKind`, `OptimizationMode`, `BacktestEngine`, `CpuEngine`, `OptimizationResult`, and `OptimizationHeatmap`.
-
-- `crates/optimizer/src/grid.rs`
-  - Generic single-objective grid search.
-
-- `crates/optimizer/src/stream.rs`
-  - Streaming aggregation layer for optimization result collection and heatmap aggregation.
-
-- `crates/optimizer/src/mo.rs`
-  - Multi-objective search engine.
-  - Owns parameter domains/search spaces, NSGA-II, random search, QMC search, and TPE-based search.
-
-### Review focus
-
-- objective/scoring consistency with strategy backends
-- result aggregation determinism
-- multi-objective constraint handling and Pareto logic
-- search-space explosion and guardrail behavior
-
-## 14. Composite strategy runtimes and strategy-specific modules
-
-### Primary files
-
-- `crates/app_core/src/composite_cpu.rs`
-- `crates/app_core/src/composite_mo.rs`
-- `crates/app_core/src/composite_validate.rs`
 - `crates/app_core/src/asr.rs`
 - `crates/app_core/src/vcc.rs`
 - `crates/app_core/src/vemr.rs`
 - `crates/app_core/src/rocb.rs`
 - `crates/app_core/src/mkcs.rs`
 - `crates/app_core/src/kqsr.rs`
-- `crates/app_core/src/kvdf.rs`
 - `crates/app_core/src/carm.rs`
+- `crates/app_core/src/kvdf.rs`
 - `crates/app_core/src/cdmc.rs`
 
-### GPU companion modules
+### GPU companion files
 
 - `crates/app_core/src/asr_gpu_kernel.rs`
 - `crates/app_core/src/vcc_gpu_kernel.rs`
@@ -586,525 +239,419 @@ This section expands the map beyond optimization/validation so it covers the res
 - `crates/app_core/src/rocb_gpu_kernel.rs`
 - `crates/app_core/src/mkcs_gpu_kernel.rs`
 - `crates/app_core/src/kqsr_gpu_kernel.rs`
-- `crates/app_core/src/kvdf_gpu_kernel.rs`
 - `crates/app_core/src/carm_gpu_kernel.rs`
+- `crates/app_core/src/kvdf_gpu_kernel.rs`
 - `crates/app_core/src/cdmc_gpu_kernel.rs`
 
-### Adjacent files
+### Supporting benchmark files
 
-- `crates/app_core/src/composite_profile_route.rs`
-- `crates/app_core/src/strategy_presets.rs`
-
-### What this bundle owns
-
-- Strategy-specific parameter models and runtime logic for the composite strategy family.
-- CPU optimization/validation path for composite strategies.
-- Multi-objective composite optimization path.
-- GPU-kernel implementations for the supported composite strategies listed above.
-
-### Recommended edit order
-
-1. strategy-specific file such as `crates/app_core/src/asr.rs` or `crates/app_core/src/vcc.rs`
-2. `crates/app_core/src/composite_cpu.rs` or `crates/app_core/src/composite_mo.rs`
-3. matching `*_gpu_kernel.rs` file if GPU parity is in scope
-4. `crates/app_core/src/composite_validate.rs`
-5. `crates/app_core/src/composite_profile_route.rs` if route selection must change
-
-### Review focus
-
-- parity between CPU strategy modules and GPU kernel modules
-- consistency of parameter semantics across strategies
-- composite validation correctness
-- route policy alignment with which strategies truly support GPU kernels
-
-## 15. Dynamic strategy planning and GPU program generation
-
-### Primary files
-
-- `crates/app_core/src/strategy_ir.rs`
-- `crates/app_core/src/strategy_plan.rs`
-- `crates/app_core/src/strategy_gpu_program.rs`
-- `crates/app_core/src/strategy_dynamic.rs`
-- `crates/app_core/src/dynamic_indicator_adapter.rs`
-- `crates/app_core/src/ma_policy.rs`
-- `crates/app_core/src/vram_ma.rs`
-- `crates/app_core/src/gpu_backtest_kernel.rs`
-
-### Recommended edit order
-
-1. `crates/app_core/src/strategy_ir.rs`
-2. `crates/app_core/src/strategy_plan.rs`
-3. `crates/app_core/src/strategy_gpu_program.rs` or `crates/app_core/src/strategy_dynamic.rs`
-4. `crates/app_core/src/dynamic_indicator_adapter.rs`
-5. `crates/app_core/src/ma_policy.rs`, `crates/app_core/src/vram_ma.rs`, and `crates/app_core/src/gpu_backtest_kernel.rs` for route/runtime issues
+- `crates/app_core/benches/gpu_native_expansion_opt.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs`
 
 ### What this bundle owns
 
-- Internal strategy representation and planning for execution/runtime paths.
-- GPU program shape and dynamic strategy compilation/plumbing.
-- Dynamic indicator CUDA adaptation and device-data bridging.
-- MA capability/routing policy and VRAM-resident MA support.
-- Shared GPU backtest-kernel runtime plumbing.
+- strategy-local GPU-native optimization logic
+- strategy-local CPU reference vs GPU scoring parity surfaces
+- per-strategy staging costs, fp32-stability constraints, and route blockers
+- strategy-specific validation cost differences that can be lost inside broad composite reviews
 
-### Review focus
+### Performance review focus
 
-- IR-to-runtime fidelity
-- dynamic indicator/device-data correctness
-- MA route planning and support-matrix correctness
-- GPU kernel shared-runtime assumptions and reuse boundaries
+- one strategy at a time, not all strategies in one review
+- strategy-local staging or upload waste
+- CPU-reference prep that can erase GPU benefit
+- per-strategy fallback reasons and fp32-stability blockers
+- strategy-specific validation throughput, not just optimizer throughput
+- whether a strategy should remain CPU-preferred on current measured workloads
 
-## 16. Analysis and diagnostic surfaces
+### Ask for
 
-### Primary files
+- strategy-local hot-path review
+- CPU/GPU payoff review
+- staging/fallback review
+- per-strategy benchmark review
 
-- `src-tauri/src/commands_analysis.rs`
-- `crates/app_core/src/double_ma.rs`
-- `crates/app_core/src/composite_cpu.rs`
-- `crates/app_core/src/matrix_index.rs`
-
-### What this bundle owns
-
-- Drilldown and local-stability command surfaces for Double MA and composite CPU.
-- Matrix indexing and result-coordinate support for analysis output.
-- Use this bundle when the question is about explanation, sensitivity analysis, or post-optimization inspection rather than raw optimization.
-
-### Main entry points
-
-- `src-tauri/src/commands_analysis.rs`
-  - `compute_double_ma_drilldown`
-  - `compute_composite_cpu_drilldown`
-  - `compute_double_ma_local_stability`
-  - `compute_composite_cpu_local_stability`
-- `crates/app_core/src/double_ma.rs`
-  - `compute_double_ma_drilldown_blocking_with_candles`
-  - `compute_double_ma_local_stability_blocking_with_candles`
-
-### Review focus
-
-- drilldown/local-stability numerical consistency
-- matrix-coordinate correctness
-- analysis output stability relative to optimization output
-
-## 17. Validation statistics and robustness math
+## 6. `CompositeMo` search efficiency and GPU prescan
 
 ### Primary files
 
-- `crates/app_core/src/validation_pipeline.rs`
-- `crates/app_core/src/validation_core.rs`
-- `crates/app_core/src/validation_stats.rs`
-- `crates/app_core/src/cscv_pbo.rs`
-- `crates/app_core/src/sharpe_stats.rs`
-- `crates/app_core/src/stats_common.rs`
-- `crates/app_core/src/prescan_predictive.rs`
-- `crates/app_core/src/iterative_sim.rs`
-
-### What this bundle owns
-
-- Shared validation/reduction math and verdict logic
-- CSCV/PBO and related robustness statistics
-- Sharpe/statistical helper functions
-- common stats utilities
-- predictive prescan and iterative-simulation helpers used in advanced validation or meta workflows
-
-### Review focus
-
-- statistical soundness
-- determinism and seeded randomness
-- gate/failure semantics
-- reuse boundaries between core validation and meta-selection workflows
-
-## 18. Live execution and broker integration
-
-### Primary files
-
-- `src-tauri/src/commands_execution.rs`
-- `src-tauri/src/commands.rs`
-- `src-tauri/src/lib.rs`
-
-### What this file owns
-
-- Single-shot strategy signal execution
-- live execution runner lifecycle
-- live runner status reporting
-- broker connectivity checks
-- live execution snapshots for orders, positions, and risk state
-
-### Main entry points
-
-- `execute_strategy_signal_once`
-- `start_live_execution_runner`
-- `stop_live_execution_runner`
-- `live_execution_runner_status`
-- `test_alpaca_connection`
-- `get_live_execution_snapshot`
-
-### Recommended edit order
-
-1. `src-tauri/src/commands_execution.rs`
-2. `src-tauri/src/commands.rs`
-3. `src-tauri/src/lib.rs` if lifecycle wiring or state registration must change
-
-### Review focus
-
-- live runner lifecycle and cancellation safety
-- broker request/response handling
-- state snapshot correctness
-- boundaries between paper/live execution modes and risk overrides
-
-## 19. Meta-selection and ML confidence workflows
-
-### Primary files
-
-- `src-tauri/src/commands_meta.rs`
-- `crates/app_core/src/meta_select.rs`
-- `crates/app_core/src/ml_confidence.rs`
-- `crates/app_core/src/cscv_pbo.rs`
-- `crates/app_core/src/validation_stats.rs`
-
-### What each file owns
-
-- `src-tauri/src/commands_meta.rs`
-  - Tauri command surface for:
-    - ML confidence model status/train/apply/delete
-    - meta stage 4 experimental run
-    - meta stage 5 ML confidence run
-    - ML confidence policy evaluation
-    - meta-selection run orchestration
-  - Main entry points:
-    - `ml_confidence_model_status`
-    - `train_ml_confidence_model`
-    - `apply_ml_confidence_model`
-    - `delete_ml_confidence_model`
-    - `run_meta_stage4_experimental`
-    - `run_meta_stage5_ml_confidence`
-    - `evaluate_ml_confidence_policy`
-    - `run_meta_selection`
-
-- `crates/app_core/src/meta_select.rs`
-  - Core meta-selection logic, result models, and selection workflow primitives.
-
-- `crates/app_core/src/ml_confidence.rs`
-  - ML confidence model types, training/apply logic, policy artifacts, and related scoring interfaces.
-
-- `crates/app_core/src/cscv_pbo.rs`
-  - Statistical robustness helpers reused by meta/validation workflows.
-
-- `crates/app_core/src/validation_stats.rs`
-  - Validation-statistics support layer that often sits next to meta-ranking decisions.
-
-### Recommended edit order
-
-1. `src-tauri/src/commands_meta.rs`
-2. `crates/app_core/src/meta_select.rs`
-3. `crates/app_core/src/ml_confidence.rs`
-4. `crates/app_core/src/cscv_pbo.rs` and `crates/app_core/src/validation_stats.rs` if the issue touches scoring methodology
-
-### Review focus
-
-- artifact-to-meta-selection contract correctness
-- model lifecycle and persistence safety
-- stage 4/stage 5 scoring semantics
-- policy-evaluation methodology and leakage risk
-
-## 20. Reporting and exported deliverables
-
-### Primary files
-
-- `src-tauri/src/commands_reports.rs`
-- `src-tauri/src/commands_reports_api.rs`
-- `src-tauri/src/run_artifacts.rs`
-
-### What each file owns
-
-- `src-tauri/src/commands_reports.rs`
-  - Headless report-generation internals, including XLSX byte construction and related report helpers.
-
-- `src-tauri/src/commands_reports_api.rs`
-  - Tauri-facing report/export API:
-    - build report XLSX
-    - build validation shortlist CSV
-    - save report XLSX
-    - open reports directory
-    - reveal/open a generated path
-
-- `src-tauri/src/run_artifacts.rs`
-  - Adjacent artifact schema/persistence context.
-  - Inspect this when a report field seems stale, missing, or inconsistent with saved run metadata.
-
-### Recommended edit order
-
-1. `src-tauri/src/commands_reports_api.rs`
-2. `src-tauri/src/commands_reports.rs`
-3. `src-tauri/src/run_artifacts.rs`
-
-### Review focus
-
-- export correctness and format stability
-- file-path sanitization and reveal/open safety
-- consistency between report content and stored artifacts
-
-## 21. Run artifacts and persistence
-
-### Primary files
-
-- `src-tauri/src/commands_artifacts.rs`
-- `src-tauri/src/run_artifacts.rs`
-- `src-tauri/src/validation_common.rs`
-
-### What each file owns
-
-- `src-tauri/src/commands_artifacts.rs`
-  - Artifact API surface:
-    - save run artifact
-    - save batch summary
-    - list run/meta/stage4/stage5/ML-policy artifacts
-    - load artifact
-    - delete artifact
-    - update artifact tags
-    - open runs directory
-
-- `src-tauri/src/run_artifacts.rs`
-  - Artifact persistence internals and summary extraction.
-  - Owns artifact-kind recognition, metadata normalization, fingerprint extraction, summary loading, and path-safety checks.
-
-- `src-tauri/src/validation_common.rs`
-  - Shared validation/artifact helper layer.
-  - Important when reviewing candidate-keying or validation artifact identity behavior.
-
-### Review focus
-
-- artifact kind/version compatibility
-- config fingerprint correctness
-- path safety and in-directory enforcement
-- metadata normalization and summary extraction drift
-
-## 22. System/platform utilities
-
-### Primary files
-
-- `src-tauri/src/commands_system.rs`
-
-### What this file owns
-
-- GPU status reporting
-- window effect/platform-specific shell integration
-
-### Main entry points
-
-- `get_gpu_status`
-- `set_window_effect`
-
-### Review focus
-
-- runtime environment detection
-- platform guard correctness
-- whether system-facing commands leak UI-specific concerns into backend logic
-
-## Suggested backend-only review bundles for GPT-5.4
-
-### Bundle F: Data and market-data operations
-
-- `src-tauri/src/commands_data.rs`
-- `crates/app_core/src/csv_compat.rs`
-- `crates/app_core/src/timeframe.rs`
-- `crates/app_core/src/indicator_catalog.rs`
-- `crates/app_core/src/indicator_factory.rs`
-- `crates/app_core/src/cuda_device.rs`
-
-Ask for:
-
-- ingestion/resampling review
-- market-data operational review
-- indicator catalog/runtime support review
-
-### Bundle G: Strategy math and generic optimization
-
-- `crates/strategies/src/double_ma/mod.rs`
-- `crates/strategies/src/composite_cpu/mod.rs`
-- `crates/strategies/src/records.rs`
-- `crates/optimizer/src/lib.rs`
-- `crates/optimizer/src/grid.rs`
-- `crates/optimizer/src/stream.rs`
-- `crates/optimizer/src/mo.rs`
-
-Ask for:
-
-- strategy-math review
-- optimizer correctness review
-- multi-objective search review
-
-### Bundle H: Composite strategy runtimes
-
-- `crates/app_core/src/composite_cpu.rs`
 - `crates/app_core/src/composite_mo.rs`
-- `crates/app_core/src/composite_validate.rs`
-- `crates/app_core/src/asr.rs`
-- `crates/app_core/src/vcc.rs`
-- `crates/app_core/src/vemr.rs`
-- `crates/app_core/src/rocb.rs`
-- `crates/app_core/src/mkcs.rs`
-- `crates/app_core/src/kqsr.rs`
-- `crates/app_core/src/kvdf.rs`
-- `crates/app_core/src/carm.rs`
-- `crates/app_core/src/cdmc.rs`
+- `crates/optimizer/src/mo.rs`
+- `crates/optimizer/src/lib.rs`
+- `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/utils/strategyOptimizationCapabilities.ts`
 
-Ask for:
+### Supporting benchmark files
 
-- strategy-runtime review
-- parameter-contract review
-- CPU/GPU parity review
+- `crates/app_core/benches/dynamic_strategy_cpu.rs`
 
-### Bundle I: Dynamic strategy and GPU infrastructure
+### What this bundle owns
 
-- `crates/app_core/src/strategy_ir.rs`
-- `crates/app_core/src/strategy_plan.rs`
-- `crates/app_core/src/strategy_gpu_program.rs`
-- `crates/app_core/src/strategy_dynamic.rs`
-- `crates/app_core/src/dynamic_indicator_adapter.rs`
-- `crates/app_core/src/ma_policy.rs`
-- `crates/app_core/src/vram_ma.rs`
-- `crates/app_core/src/gpu_backtest_kernel.rs`
+- multi-objective search-space construction and evaluation cost
+- sampler selection (`Random`, `Qmc`, `Tpe`, `Nsga2`)
+- optional GPU prescan narrowing for MA domains
+- request-shaping and capability exposure for `CompositeMo`
 
-Ask for:
+### Performance review focus
 
-- IR/planning review
-- dynamic GPU pipeline review
-- support-matrix and route-policy review
+- search-space explosion and avoidable evaluation waste
+- whether GPU prescan actually narrows cost in worthwhile ways
+- stale or over-broad defaults for sampler/prescan settings
+- progress/reporting overhead relative to evaluation cost
+- constraint handling or domain-shaping behavior that silently multiplies work
 
-### Bundle J: Live execution and broker integration
+### Ask for
 
-- `src-tauri/src/commands_execution.rs`
+- search-efficiency review
+- GPU-prescan payoff review
+- sampler-overhead review
+- request-shape and default-value review
 
-Ask for:
+## 7. Benchmark harnesses, perf gates, and timing boundaries
 
-- live-execution safety review
-- broker integration review
-- state-machine/race review
+### Primary files
 
-### Bundle K: Meta-selection and ML confidence
+- `scripts/run_cpu_perf_gate.ps1`
+- `scripts/run_gpu_perf_gate.ps1`
+- `scripts/run_workflow_gate.ps1`
+- `scripts/profile_gpu_backtest_ncu.ps1`
+- `scripts/profile_gpu_backtest_nsys.ps1`
+- `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`
+- `scripts/run_vectorgrid_double_ma_faceoff.ps1`
 
-- `src-tauri/src/commands_meta.rs`
-- `crates/app_core/src/meta_select.rs`
-- `crates/app_core/src/ml_confidence.rs`
-- `crates/app_core/src/cscv_pbo.rs`
-- `crates/app_core/src/validation_stats.rs`
+### Primary benchmark binaries / benches
 
-Ask for:
+- `crates/app_core/benches/double_ma_opt.rs`
+- `crates/app_core/benches/double_ma_metrics.rs`
+- `crates/app_core/benches/dynamic_strategy_cpu.rs`
+- `crates/app_core/benches/gpu_native_expansion_opt.rs`
+- `crates/app_core/benches/double_ma_validation_workflow.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs`
+- `src-tauri/src/bin/ta_profile_route_matrix.rs`
+- `src-tauri/src/bin/ta_app_path_faceoff.rs`
+- `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
 
-- meta-selection methodology review
-- ML-confidence pipeline review
-- leakage/overfitting-risk review
+### Useful benchmark/tracker artifacts
 
-### Bundle L: Reporting and artifact persistence
+- `benchmark_run_summary_2026-02-26.md`
+- `benchmark_unification_matrix_alma_2026-02-28.md`
+- `benchmark_unification_matrix_alma_2026-02-28.csv`
+- `benchmark_asr_gpu_route_200k_2026-03-05.csv`
+- `gpu_speedups.csv`
 
-- `src-tauri/src/commands_reports.rs`
-- `src-tauri/src/commands_reports_api.rs`
-- `src-tauri/src/commands_artifacts.rs`
-- `src-tauri/src/run_artifacts.rs`
-- `src-tauri/src/validation_common.rs`
+### What this bundle owns
 
-Ask for:
+- regression-budget enforcement
+- criterion-based engine measurement
+- warm app-path measurement
+- route-matrix and validation-cost measurement
+- Nsight capture entrypoints
+- CPU dynamic-strategy overhead ratio checks
 
-- artifact-contract review
-- report/export review
-- persistence/path-safety review
+### Performance review focus
 
-## General high-quality review prompt
+- whether a claimed improvement is measured on the correct timing boundary
+- whether the gates actually reflect the intended production hotspot
+- stale benchmark targets or benchmark-shape mismatch
+- route metadata visibility inside perf evidence
+- whether perf conclusions are supported by existing harnesses before suggesting new ones
 
-Use this prompt when sending one feature bundle to another model for evaluation.
+### Ask for
+
+- perf-evidence quality review
+- timing-boundary review
+- perf-gate relevance review
+- stale-benchmark-target review
+
+## 8. Frontend orchestration and defaults
+
+### Primary files
+
+- `web/src/services/optimizeService.ts`
+- `web/src/services/optimizeService.test.ts`
+- `web/src/services/recommendedOptimizationDefaults.ts`
+- `src-tauri/src/commands_optimize.rs`
+
+### What this bundle owns
+
+- optimization command selection
+- GPU status refresh and parity-check orchestration
+- coupling from optimization into artifacts, analysis refresh, and optional validation
+- benchmark-sensitive defaults such as top-k / heatmap shaping
+
+### Performance review focus
+
+- unnecessary orchestration work around the actual optimization run
+- failure/cancellation behavior that can create wasted work
+- stale default shaping that no longer matches measured workloads
+- command-selection mismatch with backend route reality
+
+### Ask for
+
+- orchestration-overhead review
+- command-selection and cancellation review
+- benchmark-backed default review
+
+## 9. Frontend validation orchestration and artifact-heavy flows
+
+### Primary files
+
+- `web/src/services/validationService.ts`
+- `web/src/services/validationService.test.ts`
+- `web/src/services/validationRequestBuilder.ts`
+- `web/src/services/validationRequestBuilder.test.ts`
+- `src-tauri/src/commands_validation.rs`
+
+### What this bundle owns
+
+- frontend validation command selection and request execution
+- route-summary text, warning summaries, and backend expectation shaping
+- validation table/shortlist shaping and cross-ticker summaries
+- artifact persistence and export-adjacent validation follow-up work
+
+### Performance review focus
+
+- redundant frontend work around validation execution
+- stale route-summary or CPU/GPU preference messaging
+- cross-ticker and shortlist shaping overhead
+- artifact persistence or export follow-up that may inflate validation latency
+- mismatch between frontend route expectations and backend reality
+
+### Ask for
+
+- validation orchestration overhead review
+- route-summary fidelity review
+- shortlist/artifact follow-up review
+- frontend/backend validation drift review
+
+## Prompt rules for GPT-5.4
+
+Use these rules for every bundle.
+
+- Base the review only on the provided files and explicitly cited adjacent files.
+- Prioritize measured optimization/performance issues over broad architecture advice.
+- Do not propose new product features unless they are directly required to remove a confirmed performance bottleneck or fallback bug.
+- Prefer smaller parity-safe changes before larger refactors.
+- Separate confirmed issue, likely issue, open question, and optimization opportunity.
+- Cite the file and function/module for every material claim.
+- When discussing performance, say which timing boundary the claim belongs to:
+  app-path, Criterion, validation-cost harness, route matrix, or Nsight diagnostic evidence.
+- Treat existing perf gates and benchmark scripts as the default evidence path before suggesting new instrumentation.
+- Keep each review bundle small enough for one deep long-think run.
+- For strategy-local routes, prefer one strategy family per prompt unless two files are tightly coupled.
+
+## General optimization/performance review prompt
 
 ```text
-You are reviewing a specific backend feature implementation from my Rust/Tauri project.
+You are reviewing a specific optimization/performance surface from my Rust/Tauri project.
 
-Your job is to evaluate this feature for:
-1. correctness of behavior and feature implementation
-2. architectural quality and code quality
-3. optimization/performance opportunities
-4. edge cases, failure modes, and regression risks
-5. test coverage gaps
-6. maintainability and future-change risk
+Your job is to evaluate this implementation for:
+1. confirmed performance bottlenecks or wasted work
+2. CPU/GPU route correctness, fallback transparency, and parity risk
+3. benchmark fidelity and timing-boundary correctness
+4. regression risk, edge cases, and test gaps
+5. realistic, measured, parity-safe optimization opportunities
 
 Important constraints:
 - Base your review only on the files I provide.
-- Do not assume behavior that is not supported by the code.
-- If something is unclear, say what is unclear and what file likely contains the missing context.
-- Prefer concrete findings over general advice.
-- Prioritize bugs, behavioral mismatches, hidden assumptions, and performance risks over style comments.
-- When making a claim, cite the file and the relevant function or module name.
+- Do not propose broad new product features, new strategies, or UI expansion unless directly required to address a confirmed performance problem.
+- Prefer benchmark-backed or gate-backed conclusions over speculation.
+- If something is unclear, say what is unclear and what adjacent file likely holds the missing context.
 - Distinguish clearly between:
   - confirmed issue
   - likely issue
-  - open question or missing context
+  - open question
   - optimization opportunity
-- Do not give shallow praise. Be critical and specific.
-
-Review this feature as if I may ask another model to implement improvements afterward.
+- When making a performance claim, identify the relevant timing boundary:
+  - warm app-path runtime
+  - Criterion benchmark
+  - validation-cost harness
+  - route-matrix / route-summary evidence
+  - Nsight / profiling diagnostic evidence
+- Prioritize route/fallback bugs, repeated recomputation, allocation waste, cache misuse, validation throughput cliffs, and stale benchmark assumptions over style comments.
+- Do not give generic praise.
 
 For each finding, use this format:
 - Severity: critical / high / medium / low
-- Type: correctness / performance / code quality / architecture / testing / maintainability
+- Type: performance / correctness / parity / benchmark-fidelity / testing / maintainability
 - Location: file + function or module
+- Timing boundary affected: app-path / Criterion / validation-cost / route-matrix / profiling-only / unknown
 - Why it matters
 - Recommended change
 
 Then provide these sections:
-1. Feature understanding
-   - What this feature appears to do
-   - Main entry points
-   - Main dependency files in the provided set
-
+1. Surface understanding
 2. Findings
-   - Ordered by severity, most important first
+3. Safe optimization opportunities
+4. Higher-risk optimization opportunities
+5. Benchmark and perf-gate review
+6. Test review
+7. Suggested improvement plan
 
-3. Optimization opportunities
-   - Only include changes that are realistically worth making
-   - Separate safe optimization from higher-risk refactor
-
-4. Implementation-risk review
-   - Areas where the feature may not faithfully implement intended behavior
-   - For validation-stage logic, inspect fallback-path drift, determinism, candidate filtering, metric interpretation, and cross-stage leakage risk
-
-5. Test review
-   - What is well covered
-   - What is missing
-   - Highest-value tests to add
-
-6. Suggested improvement plan
-   - Small, medium, and large improvement options
-   - Include which file should be edited first for each
-
-If the implemented behavior appears to differ from the intended feature behavior, prioritize that over performance or style comments.
-
-Feature under review:
-[describe the feature here in 1-3 sentences]
+Surface under review:
+[describe the surface here in 1-3 sentences]
 
 Files to review:
 [paste file list here]
 
 Extra context:
-[paste intended behavior, product expectation, or known concerns here]
+[paste intended behavior, benchmark context, current route policy, or known perf concern here]
 ```
 
-### Optional add-on for validation-stage reviews
+## Optional add-on: route/fallback audit
 
 ```text
 Pay extra attention to:
-- whether the validation logic matches the intended methodology
-- fallback-path consistency
-- determinism and reproducibility
-- candidate filtering and gate correctness
-- metric interpretation
-- cross-stage leakage or selection bias
+- requested backend vs backend used
+- fallback reasons and blocker visibility
+- frontend/backend route-policy drift
+- hybrid-route toggle sensitivity
+- whether route summaries are preserved into benchmark and user-visible paths
 ```
 
-### Optional add-on for optimization-heavy reviews
+## Optional add-on: validation-cost audit
 
 ```text
 Pay extra attention to:
-- unnecessary allocations
-- repeated recomputation
-- CPU/GPU parity risks
-- fallback-path performance cliffs
-- large-search-space inefficiencies
-- opportunities for simpler or safer optimizations before major refactors
+- duplicate work between optimization and validation
+- fixed-candidate GPU validation support boundaries
+- cross-ticker rerun amplification
+- deterministic behavior in perturb/bootstrap branches
+- CPU-preferred versus GPU-preferred cases already encoded in the current code
 ```
+
+## Optional add-on: benchmark-fidelity audit
+
+```text
+Pay extra attention to:
+- whether app-path, Criterion, and profiling evidence are being mixed incorrectly
+- whether the current benchmark shape still matches the claimed production hotspot
+- whether perf-gate targets are stale or too narrow
+- whether route metadata and fallback evidence are visible in the benchmark output
+```
+
+## Quick bundle picks
+
+Use these when you want a narrow review.
+
+### Bundle A: Double-MA optimizer internals
+
+- `crates/app_core/src/double_ma.rs`
+- `crates/app_core/src/double_ma_backend.rs`
+- `crates/app_core/src/double_ma_mode.rs`
+- `crates/app_core/src/double_ma_result.rs`
+- `crates/app_core/src/double_ma_strategy.rs`
+
+Ask for:
+
+- hot-path performance review
+- route/fallback review
+- VDPS/search-efficiency review
+
+### Bundle B: Composite route policy and frontend shaping
+
+- `crates/app_core/src/composite_profile_route.rs`
+- `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/utils/strategyOptimizationCapabilities.ts`
+- `web/src/strategies/compositeProfileGpuPolicy.ts`
+
+Ask for:
+
+- route-policy fidelity review
+- request explosion / guardrail review
+- stale terminology and support-matrix review
+
+### Bundle C: GPU runtime and residency
+
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+- `crates/app_core/src/dynamic_indicator_adapter.rs`
+- `crates/app_core/src/strategy_dynamic.rs`
+- `crates/app_core/src/vram_ma.rs`
+- `src-tauri/src/state.rs`
+- `src-tauri/src/bin/ta_app_path_faceoff.rs`
+
+Ask for:
+
+- warm-path latency review
+- cache/residency review
+- dynamic-strategy overhead review
+
+### Bundle D: Validation throughput
+
+- `crates/app_core/src/double_ma_validate.rs`
+- `crates/app_core/src/validation_pipeline.rs`
+- `src-tauri/src/commands_validation.rs`
+- `web/src/services/validationRequestBuilder.ts`
+
+Ask for:
+
+- validation-cost review
+- fallback transparency review
+- cross-ticker throughput review
+
+### Bundle E: Perf harnesses and gates
+
+- `scripts/run_cpu_perf_gate.ps1`
+- `scripts/run_gpu_perf_gate.ps1`
+- `scripts/run_workflow_gate.ps1`
+- `crates/app_core/benches/double_ma_opt.rs`
+- `crates/app_core/benches/dynamic_strategy_cpu.rs`
+- `src-tauri/src/bin/ta_profile_route_matrix.rs`
+- `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
+
+Ask for:
+
+- perf-evidence quality review
+- timing-boundary review
+- stale-benchmark-target review
+
+### Bundle F: One GPU-native strategy at a time
+
+Pick one strategy family such as:
+
+- `crates/app_core/src/asr.rs` + `crates/app_core/src/asr_gpu_kernel.rs`
+- `crates/app_core/src/vcc.rs` + `crates/app_core/src/vcc_gpu_kernel.rs`
+- `crates/app_core/src/vemr.rs` + `crates/app_core/src/vemr_gpu_kernel.rs`
+- `crates/app_core/src/rocb.rs` + `crates/app_core/src/rocb_gpu_kernel.rs`
+- `crates/app_core/src/mkcs.rs` + `crates/app_core/src/mkcs_gpu_kernel.rs`
+- `crates/app_core/src/kqsr.rs` + `crates/app_core/src/kqsr_gpu_kernel.rs`
+- `crates/app_core/src/carm.rs` + `crates/app_core/src/carm_gpu_kernel.rs`
+- `crates/app_core/src/kvdf.rs` + `crates/app_core/src/kvdf_gpu_kernel.rs`
+- `crates/app_core/src/cdmc.rs` + `crates/app_core/src/cdmc_gpu_kernel.rs`
+
+Optionally add:
+
+- `crates/app_core/benches/gpu_native_expansion_opt.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs`
+
+Ask for:
+
+- strategy-local hot-path review
+- staging/payoff review
+- fallback/parity review
+
+### Bundle G: `CompositeMo` search and prescan
+
+- `crates/app_core/src/composite_mo.rs`
+- `crates/optimizer/src/mo.rs`
+- `crates/optimizer/src/lib.rs`
+- `web/src/services/optimizeRequestBuilder.ts`
+
+Ask for:
+
+- search-space efficiency review
+- sampler-overhead review
+- GPU-prescan review
+
+### Bundle H: Frontend validation orchestration
+
+- `web/src/services/validationService.ts`
+- `web/src/services/validationService.test.ts`
+- `web/src/services/validationRequestBuilder.ts`
+- `src-tauri/src/commands_validation.rs`
+
+Ask for:
+
+- validation orchestration overhead review
+- route-summary fidelity review
+- shortlist/artifact follow-up review

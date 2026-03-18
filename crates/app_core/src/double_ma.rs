@@ -5931,7 +5931,9 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
     let efi_values = match efi_output.series {
         DynamicIndicatorCudaSeries::HostF32(values) => values,
         DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            return Err("pit efi unexpectedly returned device output instead of host output".to_string())
+            return Err(
+                "pit efi unexpectedly returned device output instead of host output".to_string(),
+            )
         }
     };
     let efi_warmup = efi_warmup_raw.max(
@@ -5939,11 +5941,9 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
             .close_volume_first_valid()
             .saturating_add(strategy.pit_efi_period().saturating_sub(1)),
     );
-    let (efi_row, efi_buffer) = crate::gpu_backtest_kernel::upload_device_series_f32(
-        device_id,
-        efi_values.as_slice(),
-    )
-    .map_err(|e| format!("pit efi upload failed: {e}"))?;
+    let (efi_row, efi_buffer) =
+        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, efi_values.as_slice())
+            .map_err(|e| format!("pit efi upload failed: {e}"))?;
 
     let bop_output = compute_dynamic_indicator_cuda_with_inputs(
         &prepared_inputs,
@@ -5958,14 +5958,14 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
     let bop_values = match bop_output.series {
         DynamicIndicatorCudaSeries::HostF32(values) => values,
         DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            return Err("pit bop unexpectedly returned device output instead of host output".to_string())
+            return Err(
+                "pit bop unexpectedly returned device output instead of host output".to_string(),
+            )
         }
     };
-    let (bop_row, bop_buffer) = crate::gpu_backtest_kernel::upload_device_series_f32(
-        device_id,
-        bop_values.as_slice(),
-    )
-    .map_err(|e| format!("pit bop upload failed: {e}"))?;
+    let (bop_row, bop_buffer) =
+        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, bop_values.as_slice())
+            .map_err(|e| format!("pit bop upload failed: {e}"))?;
 
     let vosc_output = compute_cuda_device(IndicatorCudaDeviceRequest {
         indicator_id: "vosc",
@@ -5995,14 +5995,14 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
     let vosc_values = match vosc_output.series {
         IndicatorCudaSeries::HostF32(values) => values,
         IndicatorCudaSeries::DeviceF32(_) => {
-            return Err("pit vosc unexpectedly returned device output instead of host output".to_string())
+            return Err(
+                "pit vosc unexpectedly returned device output instead of host output".to_string(),
+            )
         }
     };
-    let (vosc_row, vosc_buffer) = crate::gpu_backtest_kernel::upload_device_series_f32(
-        device_id,
-        vosc_values.as_slice(),
-    )
-    .map_err(|e| format!("pit vosc upload failed: {e}"))?;
+    let (vosc_row, vosc_buffer) =
+        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, vosc_values.as_slice())
+            .map_err(|e| format!("pit vosc upload failed: {e}"))?;
 
     // Stage ACOSC from the CPU reference path for PIT until the upstream CUDA
     // wrapper matches the CPU oscillator output on breakout inputs.
@@ -6045,7 +6045,9 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
     let cfo_values = match cfo_output.series {
         DynamicIndicatorCudaSeries::HostF32(values) => values,
         DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            return Err("pit cfo unexpectedly returned device output instead of host output".to_string())
+            return Err(
+                "pit cfo unexpectedly returned device output instead of host output".to_string(),
+            )
         }
     };
     let cfo_warmup = cfo_warmup_raw.max(
@@ -6053,11 +6055,9 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
             .source_first_valid()
             .saturating_add(strategy.pit_cfo_period().saturating_sub(1)),
     );
-    let (cfo_row, cfo_buffer) = crate::gpu_backtest_kernel::upload_device_series_f32(
-        device_id,
-        cfo_values.as_slice(),
-    )
-    .map_err(|e| format!("pit cfo upload failed: {e}"))?;
+    let (cfo_row, cfo_buffer) =
+        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, cfo_values.as_slice())
+            .map_err(|e| format!("pit cfo upload failed: {e}"))?;
     let first_valid = prepared_inputs
         .ohlcv_first_valid()
         .max(prepared_inputs.source_first_valid())
@@ -6077,13 +6077,15 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
         first_valid,
         strategy.pit_confirm_bars(),
     )
-    .map(|filter| filter.with_scratch_buffers(vec![
-        efi_buffer,
-        bop_buffer,
-        vosc_buffer,
-        acosc_buffer,
-        cfo_buffer,
-    ]))
+    .map(|filter| {
+        filter.with_scratch_buffers(vec![
+            efi_buffer,
+            bop_buffer,
+            vosc_buffer,
+            acosc_buffer,
+            cfo_buffer,
+        ])
+    })
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -7365,10 +7367,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
                 if dst_off + n > values.len() {
                     continue;
                 }
-                for (dst, &src) in values[dst_off..dst_off + n]
-                    .iter_mut()
-                    .zip(series.iter())
-                {
+                for (dst, &src) in values[dst_off..dst_off + n].iter_mut().zip(series.iter()) {
                     *dst = src as f32;
                 }
             }
@@ -7636,10 +7635,8 @@ fn optimize_double_ma_cpu_tiled(
                         if cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
                         }
-                        let fast_row =
-                            &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
-                        let slow_row =
-                            &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
+                        let fast_row = &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
+                        let slow_row = &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
                         let fast_len = pair.fast_len;
                         let slow_len = pair.slow_len;
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
@@ -8312,10 +8309,8 @@ fn optimize_double_ma_gpu_sweep_tiled(
                         if cancel.load(Ordering::Relaxed) {
                             return Err("cancelled".to_string());
                         }
-                        let fast_row =
-                            &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
-                        let slow_row =
-                            &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
+                        let fast_row = &fast_mat[pair.fast_idx * cols..(pair.fast_idx + 1) * cols];
+                        let slow_row = &slow_mat[pair.slow_idx * cols..(pair.slow_idx + 1) * cols];
                         let fast_len = pair.fast_len;
                         let slow_len = pair.slow_len;
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
@@ -9357,7 +9352,10 @@ mod tests {
     ) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
         let regime = compute_pressure_impulse_trend_regime(candles, ma_source, strategy)?
             .ok_or_else(|| "pit regime enabled".to_string())?;
-        let first_valid = regime.iter().position(|v| v.is_finite()).unwrap_or(regime.len());
+        let first_valid = regime
+            .iter()
+            .position(|v| v.is_finite())
+            .unwrap_or(regime.len());
         let regime_f32: Vec<f32> = regime
             .iter()
             .map(|&v| if v.is_nan() { f32::NAN } else { v as f32 })
@@ -9464,12 +9462,7 @@ mod tests {
                     .position(|(l, r)| l.is_finite() && r.is_finite())
                     .unwrap_or(lhs.len())
                     .max(min_start);
-                for (idx, (l, r)) in lhs
-                    .iter()
-                    .zip(rhs.iter())
-                    .enumerate()
-                    .skip(start)
-                {
+                for (idx, (l, r)) in lhs.iter().zip(rhs.iter()).enumerate().skip(start) {
                     if l.is_nan() {
                         assert!(
                             r.is_nan(),
@@ -9618,17 +9611,20 @@ mod tests {
 
     fn find_cpu_staged_kernel_capable_period_single_ma() -> Option<String> {
         let registry = vector_ta::indicators::moving_averages::registry::list_moving_averages();
-        let is_cpu_staged_kernel_capable = |info: &&vector_ta::indicators::moving_averages::registry::MovingAverageInfo| {
-            info.period_based
-                && info.single_output
-                && crate::ma_policy::supports_gpu_kernel_ma(info.id)
-                && crate::ma_policy::plan_hybrid_indicator_route(info.id).route
-                    == crate::ma_policy::HybridRouteTier::CpuStaged
-        };
+        let is_cpu_staged_kernel_capable =
+            |info: &&vector_ta::indicators::moving_averages::registry::MovingAverageInfo| {
+                info.period_based
+                    && info.single_output
+                    && crate::ma_policy::supports_gpu_kernel_ma(info.id)
+                    && crate::ma_policy::plan_hybrid_indicator_route(info.id).route
+                        == crate::ma_policy::HybridRouteTier::CpuStaged
+            };
 
         registry
             .iter()
-            .find(|info| info.id.eq_ignore_ascii_case("frama") && is_cpu_staged_kernel_capable(info))
+            .find(|info| {
+                info.id.eq_ignore_ascii_case("frama") && is_cpu_staged_kernel_capable(info)
+            })
             .or_else(|| registry.iter().find(is_cpu_staged_kernel_capable))
             .map(|info| info.id.to_string())
     }
@@ -10164,15 +10160,25 @@ mod tests {
         let key_b =
             dynamic_gpu_preflight_cache_key("close", "sma", "sma", None, None, &strategy, None)
                 .expect("key b");
-        assert_eq!(key_a, key_b, "identical preflight requests should hash identically");
+        assert_eq!(
+            key_a, key_b,
+            "identical preflight requests should hash identically"
+        );
 
-        maybe_compile_dynamic_gpu_plan_preflight(true, "close", "sma", "sma", None, None, &strategy, None)
-            .expect("first preflight compile");
+        maybe_compile_dynamic_gpu_plan_preflight(
+            true, "close", "sma", "sma", None, None, &strategy, None,
+        )
+        .expect("first preflight compile");
         let len_after_first = cache.lock().expect("cache lock").len();
-        maybe_compile_dynamic_gpu_plan_preflight(true, "close", "sma", "sma", None, None, &strategy, None)
-            .expect("second preflight compile");
+        maybe_compile_dynamic_gpu_plan_preflight(
+            true, "close", "sma", "sma", None, None, &strategy, None,
+        )
+        .expect("second preflight compile");
         let len_after_second = cache.lock().expect("cache lock").len();
-        assert_eq!(len_after_first, 1, "first compile should populate exactly one cache key");
+        assert_eq!(
+            len_after_first, 1,
+            "first compile should populate exactly one cache key"
+        );
         assert_eq!(
             len_after_second, len_after_first,
             "identical preflight requests should reuse the cached key instead of growing the cache"
@@ -11647,8 +11653,9 @@ mod tests {
             None,
         )
         .expect("cpu run for plain strategy");
-        let gpu = run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
-            .expect("gpu-kernel run for plain strategy");
+        let gpu =
+            run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
+                .expect("gpu-kernel run for plain strategy");
 
         assert_eq!(
             (cpu.best_params.fast_len, cpu.best_params.slow_len),
@@ -13018,9 +13025,10 @@ mod tests {
         // PIT's native device-regime path is still flaky under long same-process CUDA test
         // sweeps. Keep the parity assertion stable while the underlying device path is
         // investigated separately by uploading the known-good CPU regime.
-        let device_regime =
-            build_pressure_impulse_trend_regime_device_parity_stable(&candles, "close", 0, &strategy)
-                .expect("build parity-stable pit device regime");
+        let device_regime = build_pressure_impulse_trend_regime_device_parity_stable(
+            &candles, "close", 0, &strategy,
+        )
+        .expect("build parity-stable pit device regime");
         let device_values =
             crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
                 .expect("download device pit regime");
@@ -13068,9 +13076,7 @@ mod tests {
             "value",
             &[crate::IndicatorParamKV {
                 key: "period".to_string(),
-                value: crate::IndicatorParamValue::Int(
-                    strategy.pit_efi_period() as i64,
-                ),
+                value: crate::IndicatorParamValue::Int(strategy.pit_efi_period() as i64),
             }],
             38,
             1e-5,
@@ -13092,15 +13098,11 @@ mod tests {
             &[
                 crate::IndicatorParamKV {
                     key: "short_period".to_string(),
-                    value: crate::IndicatorParamValue::Int(
-                        strategy.pit_vosc_short_period() as i64,
-                    ),
+                    value: crate::IndicatorParamValue::Int(strategy.pit_vosc_short_period() as i64),
                 },
                 crate::IndicatorParamKV {
                     key: "long_period".to_string(),
-                    value: crate::IndicatorParamValue::Int(
-                        strategy.pit_vosc_long_period() as i64,
-                    ),
+                    value: crate::IndicatorParamValue::Int(strategy.pit_vosc_long_period() as i64),
                 },
             ],
             38,
@@ -13116,15 +13118,11 @@ mod tests {
             &[
                 crate::IndicatorParamKV {
                     key: "period".to_string(),
-                    value: crate::IndicatorParamValue::Int(
-                        strategy.pit_cfo_period() as i64,
-                    ),
+                    value: crate::IndicatorParamValue::Int(strategy.pit_cfo_period() as i64),
                 },
                 crate::IndicatorParamKV {
                     key: "scalar".to_string(),
-                    value: crate::IndicatorParamValue::Float(
-                        strategy.pit_cfo_scalar(),
-                    ),
+                    value: crate::IndicatorParamValue::Float(strategy.pit_cfo_scalar()),
                 },
             ],
             38,

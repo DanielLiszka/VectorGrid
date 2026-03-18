@@ -5,6 +5,7 @@ export type StrategyOptimizationKind =
   | 'Vcc'
   | 'Vemr'
   | 'Rocb'
+  | 'Vcet'
   | 'Kqsr'
   | 'Carm'
   | 'Kvdf'
@@ -39,6 +40,7 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
     case 'Vcc':
     case 'Vemr':
     case 'Rocb':
+    case 'Vcet':
     case 'Kqsr':
     case 'Carm':
     case 'Kvdf':
@@ -101,6 +103,7 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
     || kind === 'Vcc'
     || kind === 'Vemr'
     || kind === 'Rocb'
+    || kind === 'Vcet'
     || kind === 'Kqsr'
     || kind === 'Carm'
     || kind === 'Kvdf'
@@ -119,6 +122,8 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
         ? 'MKCS can use CPU or unified GPU execution, with fast/slow ranges mapped into compression and breakout periods.'
         : kind === 'Kqsr'
           ? 'KQSR can use CPU or unified GPU execution, with GPU scoring fed by staged oscillator and band signal matrices.'
+        : kind === 'Vcet'
+          ? 'VCET can use CPU or unified GPU execution, with GPU scoring fed by VIDYA trend-state rows and Chandelier Exit stop overlays.'
         : kind === 'Carm'
           ? 'CARM can use CPU or unified GPU execution, with GPU scoring fed by staged Coppock, AO, ROCR, APO, and OTTO HOTT/LOTT signal matrices.'
         : kind === 'Kvdf'

@@ -247,6 +247,17 @@ export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuild
   rocbAtrPeriod?: unknown
   rocbAtrStopMult?: unknown
   rocbMaxTradeBars?: unknown
+  vcetMapFastToVidyaShortPeriod?: unknown
+  vcetMapSlowToVidyaLongPeriod?: unknown
+  vcetMapSlowToCePeriod?: unknown
+  vcetVidyaShortPeriod?: unknown
+  vcetVidyaLongPeriod?: unknown
+  vcetVidyaAlpha?: unknown
+  vcetCePeriod?: unknown
+  vcetCeMult?: unknown
+  vcetCeUseClose?: unknown
+  vcetRequireVidyaSlope?: unknown
+  vcetMaxTradeBars?: unknown
   fastMaParams?: unknown
   slowMaParams?: unknown
 }
@@ -363,6 +374,7 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'Marrt') return 'Marrt'
   if (kind === 'Vfct') return 'Vfct'
   if (kind === 'Rocb') return 'Rocb'
+  if (kind === 'Vcet') return 'Vcet'
   if (kind === 'Kqsr') return 'Kqsr'
   if (kind === 'Carm') return 'Carm'
   if (kind === 'Kvdf') return 'Kvdf'
@@ -1294,6 +1306,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     && kind !== 'Vcc'
     && kind !== 'Vemr'
     && kind !== 'Rocb'
+    && kind !== 'Vcet'
     && kind !== 'Kqsr'
     && kind !== 'Carm'
     && kind !== 'Kvdf'
@@ -1318,7 +1331,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   if (kind === 'Kqsr' && (!hasOpen || !hasHigh || !hasLow || !hasClose)) {
     throw new Error('KQSR requires open/high/low/close candle fields.')
   }
-  if ((kind === 'Carm' || kind === 'Mkcs' || kind === 'CompositeCpu' || kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb') && (!hasHigh || !hasLow || !hasClose)) {
+  if ((kind === 'Carm' || kind === 'Mkcs' || kind === 'CompositeCpu' || kind === 'Asr' || kind === 'Vcc' || kind === 'Vemr' || kind === 'Rocb' || kind === 'Vcet') && (!hasHigh || !hasLow || !hasClose)) {
     throw new Error('Composite strategy requires high/low candle fields. Load a CSV with high+low columns.')
   }
   if (kind === 'Kvdf' && (!hasHigh || !hasLow || !hasClose || !hasVolume)) {
@@ -1353,6 +1366,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     && kind !== 'Vcc'
     && kind !== 'Vemr'
     && kind !== 'Rocb'
+    && kind !== 'Vcet'
     && kind !== 'Kqsr'
     && kind !== 'Carm'
     && kind !== 'Kvdf'
@@ -1433,6 +1447,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     || kind === 'Vcc'
     || kind === 'Vemr'
     || kind === 'Rocb'
+    || kind === 'Vcet'
     || kind === 'Kqsr'
     || kind === 'Carm'
     || kind === 'Kvdf'
@@ -1638,6 +1653,67 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     }
   }
 
+  let vcet: Record<string, unknown> | undefined
+  if (kind === 'Vcet') {
+    const mapFastToVidyaShortPeriod = inputs.vcetMapFastToVidyaShortPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vcetMapFastToVidyaShortPeriod)
+    const mapSlowToVidyaLongPeriod = inputs.vcetMapSlowToVidyaLongPeriod == null
+      ? true
+      : normalizeBoolean(inputs.vcetMapSlowToVidyaLongPeriod)
+    const mapSlowToCePeriod = inputs.vcetMapSlowToCePeriod == null
+      ? true
+      : normalizeBoolean(inputs.vcetMapSlowToCePeriod)
+    const vidyaShortPeriod = Math.floor(num(inputs.vcetVidyaShortPeriod, 6))
+    const vidyaLongPeriod = Math.floor(num(inputs.vcetVidyaLongPeriod, 24))
+    const vidyaAlpha = num(inputs.vcetVidyaAlpha, 0.2)
+    const cePeriod = Math.floor(num(inputs.vcetCePeriod, 22))
+    const ceMult = num(inputs.vcetCeMult, 3.0)
+    const ceUseClose = inputs.vcetCeUseClose == null
+      ? true
+      : normalizeBoolean(inputs.vcetCeUseClose)
+    const requireVidyaSlope = inputs.vcetRequireVidyaSlope == null
+      ? true
+      : normalizeBoolean(inputs.vcetRequireVidyaSlope)
+    const maxTradeBars = Math.floor(num(inputs.vcetMaxTradeBars, 120))
+
+    if (!Number.isFinite(vidyaShortPeriod) || vidyaShortPeriod < 1 || vidyaShortPeriod > 65535) {
+      throw new Error('VCET VIDYA short period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(vidyaLongPeriod) || vidyaLongPeriod < 1 || vidyaLongPeriod > 65535) {
+      throw new Error('VCET VIDYA long period must be in [1, 65535].')
+    }
+    if (!mapFastToVidyaShortPeriod && !mapSlowToVidyaLongPeriod && vidyaLongPeriod <= vidyaShortPeriod) {
+      throw new Error('VCET VIDYA long period must be > short period.')
+    }
+    if (!Number.isFinite(vidyaAlpha) || vidyaAlpha <= 0) {
+      throw new Error('VCET VIDYA alpha must be > 0.')
+    }
+    if (!Number.isFinite(cePeriod) || cePeriod < 1 || cePeriod > 65535) {
+      throw new Error('VCET Chandelier period must be in [1, 65535].')
+    }
+    if (!Number.isFinite(ceMult) || ceMult <= 0) {
+      throw new Error('VCET Chandelier multiplier must be > 0.')
+    }
+    if (!Number.isFinite(maxTradeBars) || maxTradeBars < 1 || maxTradeBars > 65535) {
+      throw new Error('VCET max trade bars must be in [1, 65535].')
+    }
+
+    vcet = {
+      map_fast_to_vidya_short_period: mapFastToVidyaShortPeriod,
+      map_slow_to_vidya_long_period: mapSlowToVidyaLongPeriod,
+      map_slow_to_ce_period: mapSlowToCePeriod,
+      vidya_short_period: vidyaShortPeriod,
+      vidya_long_period: vidyaLongPeriod,
+      vidya_alpha: vidyaAlpha,
+      ce_period: cePeriod,
+      ce_mult: ceMult,
+      ce_use_close: ceUseClose,
+      require_vidya_slope: requireVidyaSlope,
+      max_trade_bars: maxTradeBars,
+    }
+  }
+
   const mkcs = kind === 'Mkcs'
     ? {
         map_fast_to_stddev_period: true,
@@ -1719,6 +1795,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     vcc,
     vemr,
     rocb,
+    vcet,
     kqsr,
     carm,
     kvdf,
