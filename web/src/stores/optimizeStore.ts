@@ -3,6 +3,7 @@ import {
   applyPreset as applyPresetAction,
   cancelOptimization as cancelOptimizationAction,
   presetKernel as presetKernelAction,
+  previewDynamicStrategyIr as previewDynamicStrategyIrAction,
   refreshGpuStatus as refreshGpuStatusAction,
   runGpuParityCheck as runGpuParityCheckAction,
   runOptimization as runOptimizationAction,
@@ -38,6 +39,7 @@ const STRATEGY_OPTIONS_DEFAULT: OptimizeOption[] = [
   { value: 'RegimeHybrid', label: 'Regime Hybrid', disabled: false },
   { value: 'BreakoutMomentum', label: 'Breakout Momentum', disabled: false },
   { value: 'CompositeMo', label: 'Composite MO', disabled: false },
+  { value: 'DynamicDoubleMa', label: 'Dynamic Double MA', disabled: false },
 ]
 
 const BACKEND_OPTIONS_DEFAULT: OptimizeOption[] = [
@@ -241,6 +243,11 @@ interface OptimizeState {
   runPlanMeta: string
   runReadinessHint: string
   runReadinessBadges: string[]
+  dynamicStrategyIrJson: string
+  dynamicStrategyBuilderStateJson: string
+  dynamicStrategyPreviewMeta: string
+  dynamicStrategyPreviewReasons: string
+  dynamicStrategyPreviewPrettyJson: string
   statusLine: string
   runDisabled: boolean
   canCancel: boolean
@@ -297,6 +304,11 @@ export const useOptimizeStore = defineStore('optimize', {
     runPlanMeta: 'Plan: —',
     runReadinessHint: 'Readiness: Load data first.',
     runReadinessBadges: [],
+    dynamicStrategyIrJson: '',
+    dynamicStrategyBuilderStateJson: '',
+    dynamicStrategyPreviewMeta: 'Dynamic strategy preview: —',
+    dynamicStrategyPreviewReasons: 'Reasons: —',
+    dynamicStrategyPreviewPrettyJson: '',
     statusLine: 'Ready.',
     runDisabled: false,
     canCancel: false,
@@ -347,6 +359,11 @@ export const useOptimizeStore = defineStore('optimize', {
             .map((badge) => String(badge || '').trim())
             .filter((badge) => badge.length > 0)
         : this.runReadinessBadges
+      this.dynamicStrategyIrJson = String(snapshot.dynamicStrategyIrJson ?? this.dynamicStrategyIrJson ?? '')
+      this.dynamicStrategyBuilderStateJson = String(snapshot.dynamicStrategyBuilderStateJson ?? this.dynamicStrategyBuilderStateJson ?? '')
+      this.dynamicStrategyPreviewMeta = String(snapshot.dynamicStrategyPreviewMeta ?? this.dynamicStrategyPreviewMeta ?? 'Dynamic strategy preview: —').trim() || 'Dynamic strategy preview: —'
+      this.dynamicStrategyPreviewReasons = String(snapshot.dynamicStrategyPreviewReasons ?? this.dynamicStrategyPreviewReasons ?? 'Reasons: —').trim() || 'Reasons: —'
+      this.dynamicStrategyPreviewPrettyJson = String(snapshot.dynamicStrategyPreviewPrettyJson ?? this.dynamicStrategyPreviewPrettyJson ?? '')
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
       this.runDisabled = Boolean(snapshot.runDisabled ?? this.runDisabled)
       this.canCancel = Boolean(snapshot.canCancel ?? this.canCancel)
@@ -375,6 +392,18 @@ export const useOptimizeStore = defineStore('optimize', {
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
       }
+    },
+
+    setDynamicStrategyIrJson(value: string): void {
+      this.dynamicStrategyIrJson = String(value ?? '')
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
+    },
+
+    setDynamicStrategyBuilderStateJson(value: string): void {
+      this.dynamicStrategyBuilderStateJson = String(value ?? '')
+      this.source = 'vue'
+      this.updatedAtUnixMs = Date.now()
     },
 
     syncMaParamState(state: { fast?: MaParamStateInput | null; slow?: MaParamStateInput | null }): void {
@@ -418,6 +447,10 @@ export const useOptimizeStore = defineStore('optimize', {
 
     runGpuParityCheck(): void {
       void runGpuParityCheckAction()
+    },
+
+    previewDynamicStrategyIr(): void {
+      void previewDynamicStrategyIrAction()
     },
 
     runOptimization(): void {

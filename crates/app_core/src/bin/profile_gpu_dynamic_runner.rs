@@ -319,6 +319,7 @@ fn main() {
         heatmap_bins: Some(64),
         constraints: None,
         vdps: None,
+        dynamic_strategy_ir: None,
     };
 
     for i in 0..iterations {

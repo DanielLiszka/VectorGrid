@@ -67,4 +67,84 @@ describe('OptimizeWorkspacePanel', () => {
 
     wrapper.unmount()
   })
+
+  it('shows constrained dynamic builder controls for DynamicDoubleMa and keeps the normal search-space pane visible', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    workflow.selectControlsTab('opt', { persist: false })
+    optimize.strategyKind = 'DynamicDoubleMa'
+    vi.spyOn(optimize, 'refreshGpuStatus').mockImplementation(() => {})
+
+    const wrapper = mount(OptimizeWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(document.querySelector('#vueDynamicStrategyIrJson')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('Constrained Dynamic Double-MA builder')
+    expect(document.body.textContent || '').toContain('Preview Builder IR')
+    expect(document.body.textContent || '').toContain('Constant')
+    expect(document.body.textContent || '').toContain('Desktop-only preview commands are unavailable in this plain browser session')
+    expect(document.body.textContent || '').toContain('Fast and slow sweep ranges')
+    expect((document.querySelector('button[title*="desktop shell"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('restores persisted DynamicDoubleMa builder state from the store snapshot', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    workflow.selectControlsTab('opt', { persist: false })
+    optimize.strategyKind = 'DynamicDoubleMa'
+    optimize.dynamicStrategyBuilderStateJson = JSON.stringify({
+      longOnly: true,
+      allowFlip: false,
+      indicators: [
+        {
+          id: 'saved_indicator',
+          indicatorId: 'vidya',
+          outputId: 'vidya',
+          params: {},
+        },
+      ],
+      conditions: [
+        {
+          id: 'saved_condition',
+          op: 'gt',
+          lhs: { kind: 'indicator', value: 'saved_indicator' },
+          rhs: { kind: 'close', value: 'close' },
+        },
+      ],
+      groups: [
+        {
+          id: 'saved_group',
+          mode: 'all',
+          conditionIds: ['saved_condition'],
+        },
+      ],
+      signals: {
+        longEntryGroup: 'saved_group',
+        longExitGroup: '',
+        shortEntryGroup: '',
+        shortExitGroup: '',
+      },
+    })
+    vi.spyOn(optimize, 'refreshGpuStatus').mockImplementation(() => {})
+
+    const wrapper = mount(OptimizeWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('saved_indicator')
+    expect(document.body.textContent || '').toContain('saved_group')
+
+    wrapper.unmount()
+  })
 })

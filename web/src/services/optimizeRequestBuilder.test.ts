@@ -98,6 +98,56 @@ describe('optimizeRequestBuilder', () => {
     expect(req).toBeNull()
   })
 
+  it('builds a DynamicDoubleMa optimization request with a validated dynamic strategy IR', () => {
+    const dynamicStrategyIr = {
+      schema_version: 2,
+      profile: 'DoubleMa',
+      ma_source: 'close',
+      fast_ma: { ma_type: 'sma', params: {} },
+      slow_ma: { ma_type: 'ema', params: {} },
+      program: {
+        indicators: [],
+        conditions: [],
+        groups: [],
+        signals: {
+          long_entry_group: null,
+          long_exit_group: null,
+          short_entry_group: null,
+          short_exit_group: null,
+        },
+      },
+      execution: {
+        strategy: {
+          long_only: true,
+          allow_flip: false,
+          trade_on_next_bar: true,
+          exit_mode: 'cross',
+        },
+      },
+    }
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DynamicDoubleMa',
+        data_id: 'data-dyn',
+        current_data_meta: { has_close: true },
+      },
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      dynamicStrategyIr,
+    })
+    expect(req).toBeTruthy()
+    expect(req).toMatchObject({
+      strategy_kind: 'DynamicDoubleMa',
+      dynamic_strategy_ir: dynamicStrategyIr,
+    })
+  })
+
   it('normalizes removed approximate-mode aliases back to exact Grid mode', () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -137,6 +187,134 @@ describe('optimizeRequestBuilder', () => {
 
     expect(req).toBeTruthy()
     expect(req?.mode).toBe('Grid')
+  })
+
+  it('preserves non-grid double-ma modes when exact-grid outputs are disabled', () => {
+    const coarseToFineReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-ctf',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'CoarseToFine',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+    })
+    const autoReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-auto',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Auto',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+    })
+    const vdpsReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-vdps',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'GpuVdps',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+    })
+
+    expect(coarseToFineReq?.mode).toBe('CoarseToFine')
+    expect(autoReq?.mode).toBe('Auto')
+    expect(vdpsReq?.mode).toBe('GpuVdps')
+  })
+
+  it('pins non-grid double-ma modes back to Grid when exact-grid outputs are requested', () => {
+    const heatmapReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-heatmap',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'CoarseToFine',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
+    })
+    const includeAllReq = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-include-all',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'GpuVdps',
+      topK: '20',
+      includeAll: 'true',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+    })
+
+    expect(heatmapReq?.mode).toBe('Grid')
+    expect(includeAllReq?.mode).toBe('Grid')
   })
 
   it('preserves Marrt strategy kind on the double-ma request path', () => {

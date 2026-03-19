@@ -13,16 +13,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=VECTORBT_REQUIRE_NVCC");
 
     if env::var("CARGO_FEATURE_CUDA_BACKTEST_KERNEL").is_ok() {
-        build_double_crossover_ptx();
+        build_double_crossover_artifacts();
     }
 }
 
-fn build_double_crossover_ptx() {
+fn build_double_crossover_artifacts() {
     let arch = resolve_cuda_arch();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let kernel = Path::new("src/kernels/double_crossover.cu");
     let prebuilt = Path::new("src/kernels/double_crossover.prebuilt.ptx");
     let ptx_out = out_dir.join("double_crossover.ptx");
+    let cubin_out = out_dir.join("double_crossover.sm_89.cubin");
 
     let use_prebuilt = matches!(env::var("VECTORBT_USE_PREBUILT_PTX"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
     let require_nvcc = matches!(env::var("VECTORBT_REQUIRE_NVCC"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
@@ -41,6 +42,7 @@ fn build_double_crossover_ptx() {
             prebuilt.display(),
             ptx_out.display()
         );
+        write_empty_file(&cubin_out);
         return;
     }
 
@@ -56,6 +58,7 @@ fn build_double_crossover_ptx() {
                 prebuilt.display(),
                 ptx_out.display()
             );
+            write_empty_file(&cubin_out);
             return;
         }
         panic!(
@@ -64,16 +67,100 @@ fn build_double_crossover_ptx() {
         );
     };
 
-    let mut cmd = Command::new(&nvcc);
+    let mut out = build_nvcc_output(&nvcc, kernel, &ptx_out, NvccArtifact::Ptx, arch.as_str());
+    if !out.status.success() {
+        let out_s = String::from_utf8_lossy(&out.stdout);
+        let err_s = String::from_utf8_lossy(&out.stderr);
+        let maybe_arch_fail = err_s.contains("unsupported gpu architecture")
+            || err_s.contains("Value 'compute_")
+            || out_s.contains("unsupported gpu architecture");
+
+        if arch != "compute_80" && maybe_arch_fail {
+            eprintln!(
+                "Falling back to -arch=compute_80 (nvcc doesn't support {})",
+                arch
+            );
+            out = build_nvcc_output(
+                &nvcc,
+                kernel,
+                &ptx_out,
+                NvccArtifact::Ptx,
+                "compute_80",
+            );
+        }
+    }
+
+    if !out.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&out.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&out.stderr));
+        if !require_nvcc && prebuilt.exists() {
+            std::fs::copy(prebuilt, &ptx_out)
+                .unwrap_or_else(|e| panic!("failed to copy prebuilt PTX to OUT_DIR: {e}"));
+            eprintln!(
+                "[ta_app_core] NVCC failed; using prebuilt PTX: {} -> {}",
+                prebuilt.display(),
+                ptx_out.display()
+            );
+            write_empty_file(&cubin_out);
+            return;
+        }
+        if cfg!(target_os = "windows")
+            && String::from_utf8_lossy(&out.stdout).contains("Cannot find compiler 'cl.exe'")
+        {
+            eprintln!("\n=== CUDA Build Error: Missing Visual Studio C++ Compiler ===");
+            eprintln!("nvcc requires Microsoft Visual C++ (cl.exe).");
+            eprintln!(
+                "Run from a 'Developer PowerShell for VS' / 'x64 Native Tools Command Prompt'"
+            );
+            eprintln!("or install VS Build Tools 2022 with the Desktop C++ workload.");
+            eprintln!("===========================================================\n");
+        }
+        panic!("nvcc failed");
+    }
+
+    build_sm89_cubin_best_effort(&nvcc, kernel, &cubin_out);
+}
+
+#[derive(Clone, Copy)]
+enum NvccArtifact {
+    Ptx,
+    Cubin,
+}
+
+fn build_nvcc_output(
+    nvcc: &Path,
+    kernel: &Path,
+    out_path: &Path,
+    artifact: NvccArtifact,
+    arch: &str,
+) -> std::process::Output {
+    let mut cmd = Command::new(nvcc);
+    configure_nvcc_command(&mut cmd);
+    cmd.arg(match artifact {
+        NvccArtifact::Ptx => "-ptx",
+        NvccArtifact::Cubin => "-cubin",
+    })
+    .arg("-O3")
+    .arg(format!("-arch={}", arch))
+    .arg("-o")
+    .arg(out_path)
+    .arg(kernel);
+    eprintln!("[ta_app_core] nvcc: {:?}", cmd);
+    cmd.output().unwrap_or_else(|e| {
+        panic!(
+            "failed to run nvcc for {}: {e}",
+            match artifact {
+                NvccArtifact::Ptx => "ptx",
+                NvccArtifact::Cubin => "cubin",
+            }
+        )
+    })
+}
+
+fn configure_nvcc_command(cmd: &mut Command) {
     cmd.arg("-std=c++17")
         .arg("--expt-relaxed-constexpr")
-        .arg("--extended-lambda")
-        .arg("-ptx")
-        .arg("-O3")
-        .arg(format!("-arch={}", arch))
-        .arg("-o")
-        .arg(&ptx_out)
-        .arg(kernel);
+        .arg("--extended-lambda");
 
     if cfg!(target_os = "windows") {
         cmd.arg("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
@@ -92,78 +179,29 @@ fn build_double_crossover_ptx() {
             }
         }
     }
+}
 
-    eprintln!("[ta_app_core] nvcc: {:?}", cmd);
-    let mut out = cmd.output().expect("failed to run nvcc");
-    if !out.status.success() {
-        let out_s = String::from_utf8_lossy(&out.stdout);
-        let err_s = String::from_utf8_lossy(&out.stderr);
-        let maybe_arch_fail = err_s.contains("unsupported gpu architecture")
-            || err_s.contains("Value 'compute_")
-            || out_s.contains("unsupported gpu architecture");
-
-        if arch != "compute_80" && maybe_arch_fail {
-            eprintln!(
-                "Falling back to -arch=compute_80 (nvcc doesn't support {})",
-                arch
-            );
-            let mut cmd2 = Command::new(&nvcc);
-            cmd2.arg("-std=c++17")
-                .arg("--expt-relaxed-constexpr")
-                .arg("--extended-lambda")
-                .arg("-ptx")
-                .arg("-O3")
-                .arg("-arch=compute_80")
-                .arg("-o")
-                .arg(&ptx_out)
-                .arg(kernel);
-            if cfg!(target_os = "windows") {
-                cmd2.arg("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
-                cmd2.arg("-allow-unsupported-compiler");
-                if which::which("cl.exe").is_err() {
-                    if let Ok(vs_path) = find_vs_installation() {
-                        cmd2.arg("-ccbin").arg(vs_path);
-                    }
-                }
-            }
-            if let Ok(extra) = env::var("NVCC_ARGS") {
-                for tok in extra.split_whitespace() {
-                    if !tok.is_empty() {
-                        cmd2.arg(tok);
-                    }
-                }
-            }
-            eprintln!("[ta_app_core] nvcc: {:?}", cmd2);
-            out = cmd2.output().expect("failed to run nvcc (fallback)");
-        }
+fn build_sm89_cubin_best_effort(nvcc: &Path, kernel: &Path, cubin_out: &Path) {
+    let out = build_nvcc_output(nvcc, kernel, cubin_out, NvccArtifact::Cubin, "sm_89");
+    if out.status.success() {
+        return;
     }
 
-    if !out.status.success() {
-        eprintln!("stdout: {}", String::from_utf8_lossy(&out.stdout));
-        eprintln!("stderr: {}", String::from_utf8_lossy(&out.stderr));
-        if !require_nvcc && prebuilt.exists() {
-            std::fs::copy(prebuilt, &ptx_out)
-                .unwrap_or_else(|e| panic!("failed to copy prebuilt PTX to OUT_DIR: {e}"));
-            eprintln!(
-                "[ta_app_core] NVCC failed; using prebuilt PTX: {} -> {}",
-                prebuilt.display(),
-                ptx_out.display()
-            );
-            return;
-        }
-        if cfg!(target_os = "windows")
-            && String::from_utf8_lossy(&out.stdout).contains("Cannot find compiler 'cl.exe'")
-        {
-            eprintln!("\n=== CUDA Build Error: Missing Visual Studio C++ Compiler ===");
-            eprintln!("nvcc requires Microsoft Visual C++ (cl.exe).");
-            eprintln!(
-                "Run from a 'Developer PowerShell for VS' / 'x64 Native Tools Command Prompt'"
-            );
-            eprintln!("or install VS Build Tools 2022 with the Desktop C++ workload.");
-            eprintln!("===========================================================\n");
-        }
-        panic!("nvcc failed");
-    }
+    eprintln!(
+        "[ta_app_core] sm_89 cubin build failed; runtime will fall back to PTX.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    write_empty_file(cubin_out);
+}
+
+fn write_empty_file(path: &Path) {
+    std::fs::write(path, []).unwrap_or_else(|e| {
+        panic!(
+            "failed to write placeholder CUDA artifact '{}': {e}",
+            path.display()
+        )
+    });
 }
 
 fn resolve_cuda_arch() -> String {

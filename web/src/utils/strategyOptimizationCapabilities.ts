@@ -1,5 +1,6 @@
 export type StrategyOptimizationKind =
   | 'DoubleMa'
+  | 'DynamicDoubleMa'
   | 'Vfct'
   | 'Asr'
   | 'Vcc'
@@ -35,6 +36,7 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
   const kind = String(value || '').trim()
   switch (kind) {
     case 'DoubleMa':
+    case 'DynamicDoubleMa':
     case 'Vfct':
     case 'Asr':
     case 'Vcc':
@@ -61,6 +63,7 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
   const kind = normalizeKind(value)
   if (
     kind === 'DoubleMa'
+    || kind === 'DynamicDoubleMa'
     || kind === 'Vfct'
     || kind === 'CompositeTrend'
     || kind === 'RegimeHybrid'
@@ -75,7 +78,9 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
       supportsTopK: true,
       supportsIncludeAll: true,
       executionSummary:
-        kind === 'Vfct'
+        kind === 'DynamicDoubleMa'
+          ? 'DynamicDoubleMa is the constrained Double-MA builder path. It validates a previewed strategy_ir, previews GPU-unified eligibility and explicit CPU fallback reasons, and then runs through the normal optimizer path.'
+          : kind === 'Vfct'
           ? 'VFCT reuses the double-MA optimizer with volume-backed confirmation filters and unified GPU routing where supported.'
           : kind === 'CompositeTrend'
             ? 'CompositeTrend runs through the double-MA optimizer. ADX-off uses the GPU kernel path where supported; ADX-on uses the hybrid GPU route.'
@@ -85,13 +90,17 @@ export function describeStrategyOptimizationCapabilities(value: unknown): Strate
                 ? 'BreakoutMomentum runs through the double-MA optimizer. ADX-off uses the GPU kernel path where supported; ADX-on uses the hybrid GPU route.'
           : 'Double MA supports CPU, Auto, and unified GPU routing.',
       modeSummary:
-        kind === 'Vfct'
-          ? 'VFCT uses exact Grid search through the double-MA backend.'
+        kind === 'DynamicDoubleMa'
+          ? 'DynamicDoubleMa uses the normal optimization-mode selector after builder preview. Exact-grid outputs still require Grid.'
+          : kind === 'Vfct'
+          ? 'VFCT uses the Double-MA mode selector. Exact-grid outputs still require Grid.'
           : kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
-            ? `${kind} uses exact Grid search through the double-MA backend.`
-          : 'Double MA uses exact Grid search.',
+            ? `${kind} uses the Double-MA mode selector. Exact-grid outputs still require Grid.`
+          : 'Double MA uses the global mode selector. Exact-grid outputs still require Grid.',
       outputSummary:
-        kind === 'Vfct'
+        kind === 'DynamicDoubleMa'
+          ? 'DynamicDoubleMa builds constrained strategy_ir payloads, previews the resolved backend, and runs through the normal optimizer path after validation.'
+          : kind === 'Vfct'
           ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend.'
           : kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
             ? `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend.`

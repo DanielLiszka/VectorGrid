@@ -29,11 +29,16 @@ function normalizedOptions(values: unknown): AdvancedOption[] {
 function normalizeOptimizationMode(value: unknown): string {
   const mode = String(value || '').trim()
   if (
-    mode === 'CoarseToFine'
+    mode === 'Grid'
+    || mode === 'CoarseToFine'
     || mode === 'GpuVdps'
-    || mode === 'GpuProgressive'
-    || mode === 'GpuProgressiveSearch'
     || mode === 'Auto'
+  ) {
+    return mode
+  }
+  if (
+    mode === 'GpuProgressive'
+    || mode === 'GpuProgressiveSearch'
   ) {
     return 'Grid'
   }
@@ -44,7 +49,7 @@ function normalizeModeOptions(values: unknown): AdvancedOption[] {
   const entries = normalizedOptions(values)
     .map((option) => ({
       value: normalizeOptimizationMode(option.value),
-      label: 'Grid',
+      label: normalizeOptimizationMode(option.value),
       disabled: Boolean(option.disabled),
     }))
     .filter((option, index, arr) => arr.findIndex((row) => row.value === option.value) === index)

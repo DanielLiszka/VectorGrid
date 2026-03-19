@@ -92,6 +92,27 @@ interface PresetProfile {
   valCrossMax: number
 }
 
+interface RawDynamicDoubleMaStrategyIrPreview {
+  capability?: unknown
+  requested_backend?: unknown
+  resolved_backend?: unknown
+  plan_fingerprint_hex?: unknown
+  indicator_count?: unknown
+  condition_count?: unknown
+  group_count?: unknown
+}
+
+interface RawDynamicDoubleMaStrategyIrJsonPreviewResponse {
+  schema_compatibility?: unknown
+  ir?: unknown
+  pretty_json?: unknown
+  preview?: unknown
+}
+
+interface RawDynamicStrategyConstantBitsResponse {
+  bits?: unknown
+}
+
 type DoubleMaParityBackend = 'GpuKernel'
 
 interface DoubleMaRequestOverrides {
@@ -107,6 +128,7 @@ interface DoubleMaRequestOverrides {
   includeAll?: unknown
   heatmapBins?: unknown
   exportAllCsvPath?: unknown
+  dynamicStrategyIr?: unknown
   fastMaParamSweeps?: unknown
   slowMaParamSweeps?: unknown
 }
@@ -648,6 +670,89 @@ function applyGpuSummaryToOptimizeStore(summary: GpuStatusSummary): void {
   writeDomTextContent('gpuStatus', summary.text)
 }
 
+function normalizeDynamicStrategyPreviewBackend(value: unknown): 'cpu' | 'gpu_unified' {
+  const backend = normalizeText(value)
+  if (backend === 'CpuOnly' || backend === 'cpu') return 'cpu'
+  return 'gpu_unified'
+}
+
+function normalizeDynamicStrategyPreviewResponse(
+  value: unknown,
+): RawDynamicDoubleMaStrategyIrJsonPreviewResponse | null {
+  if (!value || typeof value !== 'object') return null
+  return value as RawDynamicDoubleMaStrategyIrJsonPreviewResponse
+}
+
+function normalizeDynamicStrategyConstantBitsResponse(
+  value: unknown,
+): RawDynamicStrategyConstantBitsResponse | null {
+  if (!value || typeof value !== 'object') return null
+  return value as RawDynamicStrategyConstantBitsResponse
+}
+
+function summarizeDynamicStrategyPreview(
+  response: RawDynamicDoubleMaStrategyIrJsonPreviewResponse,
+): { meta: string; reasons: string; prettyJson: string } {
+  const preview = asRecord(response.preview) as RawDynamicDoubleMaStrategyIrPreview | null
+  const capability = asRecord(preview?.capability)
+  const schema = normalizeText(response.schema_compatibility) || 'Unknown'
+  const requestedBackend = normalizeText(preview?.requested_backend) || '—'
+  const resolvedBackend = normalizeText(preview?.resolved_backend) || '—'
+  const gpuDynamic = normalizeBoolean(capability?.gpu_dynamic_supported)
+  const cpuDynamic = normalizeBoolean(capability?.cpu_dynamic_supported)
+  const indicatorCount = Number(preview?.indicator_count ?? 0)
+  const conditionCount = Number(preview?.condition_count ?? 0)
+  const groupCount = Number(preview?.group_count ?? 0)
+  const fingerprint = normalizeText(preview?.plan_fingerprint_hex)
+  const reasonList = Array.isArray(capability?.reasons)
+    ? capability?.reasons.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
+    : []
+  const metaParts = [
+    `schema=${schema}`,
+    `requested=${requestedBackend}`,
+    `resolved=${resolvedBackend}`,
+    `gpu_dynamic=${gpuDynamic}`,
+    `cpu_dynamic=${cpuDynamic}`,
+    `indicators=${Number.isFinite(indicatorCount) ? indicatorCount : 0}`,
+    `conditions=${Number.isFinite(conditionCount) ? conditionCount : 0}`,
+    `groups=${Number.isFinite(groupCount) ? groupCount : 0}`,
+  ]
+  if (fingerprint) metaParts.push(`plan=${fingerprint}`)
+  return {
+    meta: `Dynamic strategy preview: ${metaParts.join(' • ')}`,
+    reasons: reasonList.length > 0 ? `Reasons: ${reasonList.join(' | ')}` : 'Reasons: none',
+    prettyJson: normalizeText(response.pretty_json),
+  }
+}
+
+async function requestDynamicStrategyPreview(
+  irJson: string,
+  backend: unknown,
+  objective: unknown,
+  topK: unknown,
+  includeAll: unknown,
+): Promise<{
+  response: RawDynamicDoubleMaStrategyIrJsonPreviewResponse
+  summary: { meta: string; reasons: string; prettyJson: string }
+}> {
+  const response = normalizeDynamicStrategyPreviewResponse(
+    await invokeCommand('preview_dynamic_double_ma_strategy_ir_json', {
+      ir_json: irJson,
+      requested_backend: normalizeDynamicStrategyPreviewBackend(backend),
+      objective: normalizeText(objective || 'Sharpe') || 'Sharpe',
+      top_k: Math.max(1, parseNonNegativeInt(topK, 20)),
+      include_all: normalizeBoolean(includeAll),
+    }),
+  )
+  if (!response) {
+    throw new Error('Dynamic strategy preview returned an invalid payload.')
+  }
+  return {
+    response,
+    summary: summarizeDynamicStrategyPreview(response),
+  }
+}
+
 export async function applyPreset(): Promise<void> {
   const optimizeStore = readPiniaStoreState('optimize')
   if (normalizeBoolean(optimizeStore?.canCancel)) return
@@ -897,6 +1002,58 @@ export async function runGpuParityCheck(): Promise<void> {
   }
 }
 
+export async function previewDynamicStrategyIr(): Promise<void> {
+  const optimizeStore = readPiniaStoreState('optimize')
+  const advancedStore = readPiniaStoreState('advanced')
+  const irJson = normalizeText(optimizeStore?.dynamicStrategyIrJson)
+  if (!irJson) {
+    const message = 'Dynamic strategy IR JSON is empty.'
+    patchStoreState('optimize', {
+      dynamicStrategyPreviewMeta: 'Dynamic strategy preview: —',
+      dynamicStrategyPreviewReasons: 'Reasons: —',
+      statusLine: message,
+    })
+    return
+  }
+
+  try {
+    const { summary } = await requestDynamicStrategyPreview(
+      irJson,
+      optimizeStore?.backend,
+      advancedStore?.objective,
+      advancedStore?.topK,
+      advancedStore?.includeAll,
+    )
+    patchStoreState('optimize', {
+      dynamicStrategyIrJson: summary.prettyJson || irJson,
+      dynamicStrategyPreviewMeta: summary.meta,
+      dynamicStrategyPreviewReasons: summary.reasons,
+      dynamicStrategyPreviewPrettyJson: summary.prettyJson,
+      statusLine: 'Dynamic strategy preview refreshed.',
+    })
+  } catch (error) {
+    patchStoreState('optimize', {
+      dynamicStrategyPreviewMeta: 'Dynamic strategy preview: failed',
+      dynamicStrategyPreviewReasons: `Reasons: ${String(error || '')}`.trim(),
+      statusLine: `Dynamic strategy preview failed: ${String(error || '')}`.trim(),
+    })
+  }
+}
+
+export async function encodeDynamicStrategyConstantBits(value: number): Promise<string> {
+  if (!Number.isFinite(value)) {
+    throw new Error('Dynamic strategy constant must be finite.')
+  }
+  const response = normalizeDynamicStrategyConstantBitsResponse(
+    await invokeCommand('encode_dynamic_strategy_constant_bits', { value }),
+  )
+  const bits = normalizeText(response?.bits)
+  if (!bits) {
+    throw new Error('Dynamic strategy constant encoder returned an invalid payload.')
+  }
+  return bits
+}
+
 function normalizeRequestPayload(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object') return null
   return value as Record<string, unknown>
@@ -920,6 +1077,7 @@ function normalizeDataId(value: unknown): string {
 
 type OptimizeStrategyKind =
   | 'DoubleMa'
+  | 'DynamicDoubleMa'
   | 'Pit'
   | 'Set'
   | 'Mts'
@@ -944,6 +1102,7 @@ type OptimizeStrategyKind =
 
 function normalizeStrategyKindRaw(kindRaw: unknown): OptimizeStrategyKind {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'DynamicDoubleMa') return 'DynamicDoubleMa'
   if (kind === 'Pit') return 'Pit'
   if (kind === 'Set') return 'Set'
   if (kind === 'Mts') return 'Mts'
@@ -1186,6 +1345,7 @@ async function buildAutoDoubleMaRequest(
     includeAll: overrides.includeAll ?? readStoreTextInputValue('includeAll'),
     heatmapBins: overrides.heatmapBins ?? readStoreTextInputValue('heatmapBins'),
     exportAllCsvPath: overrides.exportAllCsvPath ?? readStoreTextInputValue('exportAllCsvPath'),
+    dynamicStrategyIr: overrides.dynamicStrategyIr,
     startingEquity: readStoreTextInputValue('startingEquity'),
     costPreset: readStoreTextInputValue('costPreset'),
     feeBps: readStoreTextInputValue('feeBps'),
@@ -1263,7 +1423,151 @@ async function buildAutoDoubleMaRequest(
   })
 }
 
+async function buildDynamicDoubleMaRuntimeRequest(
+  context: LegacyOptimizeBuildContext,
+): Promise<Record<string, unknown>> {
+  const optimizeStore = readPiniaStoreState('optimize')
+  const advancedStore = readPiniaStoreState('advanced')
+  const irJson = normalizeText(optimizeStore?.dynamicStrategyIrJson)
+  if (!irJson) {
+    throw new Error('Dynamic strategy IR JSON is empty.')
+  }
+
+  const { response, summary } = await requestDynamicStrategyPreview(
+    irJson,
+    optimizeStore?.backend,
+    advancedStore?.objective,
+    advancedStore?.topK,
+    advancedStore?.includeAll,
+  )
+  const ir = normalizeRequestPayload(response.ir)
+  if (!ir) {
+    throw new Error('Dynamic strategy preview did not return a normalized strategy_ir payload.')
+  }
+
+  patchStoreState('optimize', {
+    dynamicStrategyIrJson: summary.prettyJson || irJson,
+    dynamicStrategyPreviewMeta: summary.meta,
+    dynamicStrategyPreviewReasons: summary.reasons,
+    dynamicStrategyPreviewPrettyJson: summary.prettyJson,
+  })
+
+  const maSupportMap = await getMovingAverageSupportMap()
+  const storeMaParamState = readOptimizeStoreMaParamState()
+  const emptyParamState: MaParamsAndSweeps = { params: null, sweeps: null }
+  const fastParamState: MaParamsAndSweeps = storeMaParamState?.fast ?? emptyParamState
+  const slowParamState: MaParamsAndSweeps = storeMaParamState?.slow ?? emptyParamState
+
+  const req = buildDoubleMaOptimizationRequest({
+    context,
+    dynamicStrategyIr: ir,
+    maSupportMap,
+    backend: readStoreTextInputValue('backend'),
+    fastStart: readStoreTextInputValue('fastStart'),
+    fastEnd: readStoreTextInputValue('fastEnd'),
+    fastStep: readStoreTextInputValue('fastStep'),
+    slowStart: readStoreTextInputValue('slowStart'),
+    slowEnd: readStoreTextInputValue('slowEnd'),
+    slowStep: readStoreTextInputValue('slowStep'),
+    fastMaType: readStoreTextInputValue('fastMaType'),
+    slowMaType: readStoreTextInputValue('slowMaType'),
+    maSource: readStoreTextInputValue('maSource'),
+    objective: readStoreTextInputValue('objective'),
+    mode: readStoreTextInputValue('mode'),
+    topK: readStoreTextInputValue('topK'),
+    includeAll: readStoreTextInputValue('includeAll'),
+    heatmapBins: readStoreTextInputValue('heatmapBins'),
+    exportAllCsvPath: readStoreTextInputValue('exportAllCsvPath'),
+    startingEquity: readStoreTextInputValue('startingEquity'),
+    costPreset: readStoreTextInputValue('costPreset'),
+    feeBps: readStoreTextInputValue('feeBps'),
+    spreadBps: readStoreTextInputValue('spreadBps'),
+    slippageBps: readStoreTextInputValue('slippageBps'),
+    epsRel: readStoreTextInputValue('epsRel'),
+    stopLossPct: readStoreTextInputValue('stopLossPct'),
+    takeProfitPct: readStoreTextInputValue('takeProfitPct'),
+    cooldownBars: readStoreTextInputValue('cooldownBars'),
+    signalPersistenceBars: readStoreTextInputValue('signalPersistenceBars'),
+    exitMode: readStoreTextInputValue('exitMode'),
+    kaufmanStopPeriod: readStoreTextInputValue('kaufmanStopPeriod'),
+    kaufmanStopMult: readStoreTextInputValue('kaufmanStopMult'),
+    kaufmanStopMaType: readStoreTextInputValue('kaufmanStopMaType'),
+    trendLrPeriod: readStoreTextInputValue('trendLrPeriod'),
+    trendLrMinDeg: readStoreTextInputValue('trendLrMinDeg'),
+    trendBbwPeriod: readStoreTextInputValue('trendBbwPeriod'),
+    trendBbwMult: readStoreTextInputValue('trendBbwMult'),
+    trendBbwMin: readStoreTextInputValue('trendBbwMin'),
+    trendRocPeriod: readStoreTextInputValue('trendRocPeriod'),
+    trendUseRoc: readStoreCheckboxValue('trendUseRoc'),
+    trendUseAdx: readStoreCheckboxValue('trendUseAdx'),
+    trendAdxPeriod: readStoreTextInputValue('trendAdxPeriod'),
+    trendAdxMin: readStoreTextInputValue('trendAdxMin'),
+    regimeAdxPeriod: readStoreTextInputValue('regimeAdxPeriod'),
+    regimeAdxEnter: readStoreTextInputValue('regimeAdxEnter'),
+    regimeAdxExit: readStoreTextInputValue('regimeAdxExit'),
+    regimeRevEntryRel: readStoreTextInputValue('regimeRevEntryRel'),
+    regimeRevExitRel: readStoreTextInputValue('regimeRevExitRel'),
+    breakoutBbPeriod: readStoreTextInputValue('breakoutBbPeriod'),
+    breakoutBbMult: readStoreTextInputValue('breakoutBbMult'),
+    breakoutConfirmBars: readStoreTextInputValue('breakoutConfirmBars'),
+    breakoutMacdFast: readStoreTextInputValue('breakoutMacdFast'),
+    breakoutMacdSlow: readStoreTextInputValue('breakoutMacdSlow'),
+    breakoutMacdSignal: readStoreTextInputValue('breakoutMacdSignal'),
+    breakoutCmoPeriod: readStoreTextInputValue('breakoutCmoPeriod'),
+    breakoutCmoMinAbs: readStoreTextInputValue('breakoutCmoMinAbs'),
+    breakoutAdoscShort: readStoreTextInputValue('breakoutAdoscShort'),
+    breakoutAdoscLong: readStoreTextInputValue('breakoutAdoscLong'),
+    breakoutUseAdx: readStoreCheckboxValue('breakoutUseAdx'),
+    breakoutAdxPeriod: readStoreTextInputValue('breakoutAdxPeriod'),
+    breakoutAdxMin: readStoreTextInputValue('breakoutAdxMin'),
+    pitEfiPeriod: readStoreTextInputValue('pitEfiPeriod'),
+    pitVoscShortPeriod: readStoreTextInputValue('pitVoscShortPeriod'),
+    pitVoscLongPeriod: readStoreTextInputValue('pitVoscLongPeriod'),
+    pitCfoPeriod: readStoreTextInputValue('pitCfoPeriod'),
+    pitCfoScalar: readStoreTextInputValue('pitCfoScalar'),
+    pitConfirmBars: readStoreTextInputValue('pitConfirmBars'),
+    vfctObvSmoothPeriod: readStoreTextInputValue('vfctObvSmoothPeriod'),
+    vfctMfiPeriod: readStoreTextInputValue('vfctMfiPeriod'),
+    vfctMfiLongMin: readStoreTextInputValue('vfctMfiLongMin'),
+    vfctMfiShortMax: readStoreTextInputValue('vfctMfiShortMax'),
+    vfctConfirmBars: readStoreTextInputValue('vfctConfirmBars'),
+    longOnly: readStoreCheckboxValue('longOnly'),
+    allowFlip: readStoreCheckboxValue('allowFlip'),
+    tradeOnNext: readStoreCheckboxValue('tradeOnNext'),
+    dmConstraintMinTrades: readStoreTextInputValue('dmConstraintMinTrades'),
+    dmConstraintMaxDd: readStoreTextInputValue('dmConstraintMaxDd'),
+    fastMaParams: fastParamState.params,
+    slowMaParams: slowParamState.params,
+    fastMaParamSweeps: fastParamState.sweeps,
+    slowMaParamSweeps: slowParamState.sweeps,
+    vdpsEta: readStoreTextInputValue('vdpsEta'),
+    vdpsRungs: readStoreTextInputValue('vdpsRungs'),
+    vdpsMinInitialPairs: readStoreTextInputValue('vdpsMinInitialPairs'),
+    vdpsMaxSurvivorSeeds: readStoreTextInputValue('vdpsMaxSurvivorSeeds'),
+    vdpsMaxPeriodCandidates: readStoreTextInputValue('vdpsMaxPeriodCandidates'),
+    vdpsRandomInjectionRatio: readStoreTextInputValue('vdpsRandomInjectionRatio'),
+    vdpsEliteMutationRatio: readStoreTextInputValue('vdpsEliteMutationRatio'),
+    vdpsDifferentialRatio: readStoreTextInputValue('vdpsDifferentialRatio'),
+    vdpsDeterministic: readStoreCheckboxValue('vdpsDeterministic'),
+    vdpsSeed: readStoreTextInputValue('vdpsSeed'),
+    vdpsQualityCheckMaxPairs: readStoreTextInputValue('vdpsQualityCheckMaxPairs'),
+    vdpsQualityCheckTopK: readStoreTextInputValue('vdpsQualityCheckTopK'),
+  })
+  if (!req) {
+    throw new Error('Failed to build DynamicDoubleMa optimization request.')
+  }
+  return req
+}
+
 export async function buildOptimizationRequestFromVueStores(): Promise<Record<string, unknown>> {
+  const optimizeStore = readPiniaStoreState('optimize')
+  if (normalizeStrategyKindRaw(optimizeStore?.strategyKind) === 'DynamicDoubleMa') {
+    const context = readOptimizeBuildContextFromVueStores()
+    if (!context) {
+      throw new Error('Load data first, then configure strategy/optimization settings.')
+    }
+    return buildDynamicDoubleMaRuntimeRequest(context)
+  }
   const req = await tryBuildAutoOptimizationRequest()
   if (!req) {
     throw new Error('Load data first, then configure strategy/optimization settings.')
@@ -1280,6 +1584,9 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<string, unknown
   if (!hasStrategy || !hasDataId || !hasDataMeta) return null
 
   const kind = normalizeText(context.strategy_kind)
+  if (kind === 'DynamicDoubleMa') {
+    return buildDynamicDoubleMaRuntimeRequest(context)
+  }
   const fastMaType = readStoreTextInputValue('fastMaType')
   const slowMaType = readStoreTextInputValue('slowMaType')
   const storeMaParamState = readOptimizeStoreMaParamState()

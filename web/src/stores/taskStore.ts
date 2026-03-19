@@ -408,13 +408,19 @@ export function formatCommandLabel(command: string): string {
   const key = String(command || '')
   const cached = commandLabelCache.get(key)
   if (cached) return cached
-  const label = key
-    .replace(/^run_/, '')
-    .replace(/^compute_/, '')
-    .replace(/^list_/, '')
-    .replace(/^get_/, '')
-    .replace(/_/g, ' ')
-    .replace(/\b[a-z]/g, (s) => s.toUpperCase())
+  const label = key === 'preview_dynamic_double_ma_strategy_ir_json'
+    ? 'Preview Dynamic Double MA Strategy IR'
+    : key === 'encode_dynamic_strategy_constant_bits'
+      ? 'Encode Dynamic Strategy Constant'
+    : key === 'format_dynamic_strategy_ir_json'
+      ? 'Format Dynamic Strategy IR JSON'
+      : key
+          .replace(/^run_/, '')
+          .replace(/^compute_/, '')
+          .replace(/^list_/, '')
+          .replace(/^get_/, '')
+          .replace(/_/g, ' ')
+          .replace(/\b[a-z]/g, (s) => s.toUpperCase())
   if (commandLabelCache.size > 256) commandLabelCache.clear()
   commandLabelCache.set(key, label)
   return label

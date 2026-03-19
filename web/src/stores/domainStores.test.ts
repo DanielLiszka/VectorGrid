@@ -429,6 +429,11 @@ describe('domain stores', () => {
       maSource: 'hlc3',
       objective: 'Sortino',
       mode: 'GpuVdps',
+      modeOptions: [
+        { value: 'Grid', label: 'Grid', disabled: false },
+        { value: 'CoarseToFine', label: 'CoarseToFine', disabled: false },
+        { value: 'GpuVdps', label: 'GpuVdps', disabled: false },
+      ],
       vdpsVisible: true,
       compositeMoVisible: true,
       heatmapBins: '256',
@@ -440,7 +445,8 @@ describe('domain stores', () => {
     expect(store.activeControlsTab).toBe('advanced')
     expect(store.maSource).toBe('hlc3')
     expect(store.objective).toBe('Sortino')
-    expect(store.mode).toBe('Grid')
+    expect(store.mode).toBe('GpuVdps')
+    expect(store.modeOptions.map((option) => option.value)).toEqual(['Grid', 'CoarseToFine', 'GpuVdps'])
     expect(store.vdpsVisible).toBe(true)
     expect(store.compositeMoVisible).toBe(true)
     expect(store.heatmapBins).toBe('256')

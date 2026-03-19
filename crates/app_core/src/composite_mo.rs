@@ -942,6 +942,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         heatmap_bins: Some(0),
                         constraints: None,
                         vdps: None,
+                        dynamic_strategy_ir: None,
                     };
 
                     let dm_res = run_double_ma_optimization_blocking_with_candles(

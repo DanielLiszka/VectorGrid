@@ -28,7 +28,1033 @@
 #ifndef STRAT_SIGNED_EXPOSURE
 #define STRAT_SIGNED_EXPOSURE        (1u<<4)
 #endif
+#ifndef STRAT_STOP_LOSS
+#define STRAT_STOP_LOSS              (1u<<5)
+#endif
+#ifndef STRAT_TAKE_PROFIT
+#define STRAT_TAKE_PROFIT            (1u<<6)
+#endif
 
+struct GpuValueOperandAbi {
+    uint32_t source;
+    uint32_t index;
+    uint64_t constant_bits;
+};
+
+struct GpuConditionAbi {
+    uint32_t op;
+    GpuValueOperandAbi lhs;
+    GpuValueOperandAbi rhs;
+};
+
+struct GpuConditionGroupAbi {
+    uint32_t mode;
+    uint32_t condition_offset;
+    uint32_t condition_count;
+};
+
+struct GpuSignalBindingsAbi {
+    int32_t long_entry_group;
+    int32_t long_exit_group;
+    int32_t short_entry_group;
+    int32_t short_exit_group;
+};
+
+struct GpuIndicatorSlotAbi {
+    uint32_t indicator_index;
+    uint32_t route;
+};
+
+extern "C" __global__
+void strategy_program_probe_f32(
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    const GpuConditionAbi* __restrict__ conditions,
+    int condition_count,
+    const GpuConditionGroupAbi* __restrict__ groups,
+    int group_count,
+    const uint32_t* __restrict__ group_condition_indexes,
+    int group_condition_index_count,
+    const GpuSignalBindingsAbi* __restrict__ signals,
+    uint32_t abi_version,
+    uint32_t* __restrict__ out_summary
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    if (!out_summary) return;
+
+    out_summary[0] = abi_version;
+    out_summary[1] = (uint32_t)max(indicator_slot_count, 0);
+    out_summary[2] = (uint32_t)max(condition_count, 0);
+    out_summary[3] = (uint32_t)max(group_count, 0);
+    out_summary[4] = (uint32_t)max(group_condition_index_count, 0);
+
+    uint32_t bound_signals = 0;
+    if (signals) {
+        if (signals->long_entry_group >= 0) bound_signals += 1u;
+        if (signals->long_exit_group >= 0) bound_signals += 1u;
+        if (signals->short_entry_group >= 0) bound_signals += 1u;
+        if (signals->short_exit_group >= 0) bound_signals += 1u;
+    }
+    out_summary[5] = bound_signals;
+
+    uint32_t checksum = 0;
+    if (indicator_slots && indicator_slot_count > 0) {
+        checksum ^= indicator_slots[0].indicator_index;
+        checksum ^= indicator_slots[0].route << 16;
+    }
+    if (conditions && condition_count > 0) {
+        checksum ^= conditions[0].op;
+    }
+    if (groups && group_count > 0) {
+        checksum ^= groups[0].condition_count << 8;
+    }
+    if (group_condition_indexes && group_condition_index_count > 0) {
+        checksum ^= group_condition_indexes[0] << 4;
+    }
+    out_summary[6] = checksum;
+}
+
+static __device__ __forceinline__ float strategy_program_decode_constant_f32(uint64_t bits) {
+    return (float)__longlong_as_double((long long)bits);
+}
+
+static __device__ __forceinline__ float ld_tm(const float* __restrict__ a, int dim, int t, int i);
+template <int EPS_MODE>
+static __device__ __forceinline__ float compute_eps_f32(float s, float eps_rel);
+static __device__ __forceinline__ float ld_tm_fast_warp_dedup(
+    const float* __restrict__ a,
+    int dim,
+    int t,
+    int pf_local);
+static __device__ __forceinline__ int desired_sign_plain_f32(
+    float f,
+    float s,
+    float eps,
+    unsigned int flags);
+
+static __device__ __forceinline__ float strategy_program_load_indicator_value_f32(
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    uint32_t indicator_slot_index,
+    const float* __restrict__ fast_row,
+    const float* __restrict__ slow_row,
+    int t
+) {
+    if (!indicator_slots || indicator_slot_index >= (uint32_t)indicator_slot_count || t < 0) {
+        return NAN;
+    }
+    const GpuIndicatorSlotAbi slot = indicator_slots[indicator_slot_index];
+    switch (slot.indicator_index) {
+        case 0u:
+            return fast_row ? fast_row[t] : NAN;
+        case 1u:
+            return slow_row ? slow_row[t] : NAN;
+        default:
+            return NAN;
+    }
+}
+
+static __device__ __forceinline__ float strategy_program_eval_operand_f32(
+    const GpuValueOperandAbi operand,
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    const float* __restrict__ fast_row,
+    const float* __restrict__ slow_row,
+    int t
+) {
+    switch (operand.source) {
+        case 0u:
+            return strategy_program_load_indicator_value_f32(
+                indicator_slots,
+                indicator_slot_count,
+                operand.index,
+                fast_row,
+                slow_row,
+                t
+            );
+        case 3u:
+            return strategy_program_decode_constant_f32(operand.constant_bits);
+        default:
+            return NAN;
+    }
+}
+
+static __device__ __forceinline__ int strategy_program_eval_condition_f32(
+    const GpuConditionAbi condition,
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    const float* __restrict__ fast_row,
+    const float* __restrict__ slow_row,
+    int sig_t,
+    int prev_t
+) {
+    const float lhs_now = strategy_program_eval_operand_f32(
+        condition.lhs,
+        indicator_slots,
+        indicator_slot_count,
+        fast_row,
+        slow_row,
+        sig_t
+    );
+    const float rhs_now = strategy_program_eval_operand_f32(
+        condition.rhs,
+        indicator_slots,
+        indicator_slot_count,
+        fast_row,
+        slow_row,
+        sig_t
+    );
+    if (!isfinite(lhs_now) || !isfinite(rhs_now)) {
+        return 0;
+    }
+
+    switch (condition.op) {
+        case 0u:
+            return lhs_now > rhs_now;
+        case 1u:
+            return lhs_now >= rhs_now;
+        case 2u:
+            return lhs_now < rhs_now;
+        case 3u:
+            return lhs_now <= rhs_now;
+        case 4u:
+        case 5u: {
+            const float lhs_prev = strategy_program_eval_operand_f32(
+                condition.lhs,
+                indicator_slots,
+                indicator_slot_count,
+                fast_row,
+                slow_row,
+                prev_t
+            );
+            const float rhs_prev = strategy_program_eval_operand_f32(
+                condition.rhs,
+                indicator_slots,
+                indicator_slot_count,
+                fast_row,
+                slow_row,
+                prev_t
+            );
+            if (!isfinite(lhs_prev) || !isfinite(rhs_prev)) {
+                return 0;
+            }
+            if (condition.op == 4u) {
+                return lhs_prev <= rhs_prev && lhs_now > rhs_now;
+            }
+            return lhs_prev >= rhs_prev && lhs_now < rhs_now;
+        }
+        default:
+            return 0;
+    }
+}
+
+static __device__ __forceinline__ int strategy_program_eval_group_f32(
+    int group_index,
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    const GpuConditionAbi* __restrict__ conditions,
+    int condition_count,
+    const GpuConditionGroupAbi* __restrict__ groups,
+    int group_count,
+    const uint32_t* __restrict__ group_condition_indexes,
+    int group_condition_index_count,
+    const float* __restrict__ fast_row,
+    const float* __restrict__ slow_row,
+    int sig_t,
+    int prev_t
+) {
+    if (group_index < 0 || group_index >= group_count || !groups) {
+        return 0;
+    }
+
+    const GpuConditionGroupAbi group = groups[group_index];
+    if (group.condition_count == 0u) {
+        return 0;
+    }
+
+    const int is_all = (group.mode == 0u) ? 1 : 0;
+    int aggregate = is_all ? 1 : 0;
+    for (uint32_t i = 0; i < group.condition_count; ++i) {
+        const uint32_t idx_offset = group.condition_offset + i;
+        if (!group_condition_indexes || idx_offset >= (uint32_t)group_condition_index_count) {
+            return 0;
+        }
+        const uint32_t condition_index = group_condition_indexes[idx_offset];
+        if ((int)condition_index >= condition_count || !conditions) {
+            return 0;
+        }
+        const int condition_ok = strategy_program_eval_condition_f32(
+            conditions[condition_index],
+            indicator_slots,
+            indicator_slot_count,
+            fast_row,
+            slow_row,
+            sig_t,
+            prev_t
+        );
+        if (is_all) {
+            aggregate = aggregate && condition_ok;
+            if (!aggregate) {
+                break;
+            }
+        } else {
+            aggregate = aggregate || condition_ok;
+            if (aggregate) {
+                break;
+            }
+        }
+    }
+    return aggregate;
+}
+
+extern "C" __global__
+void strategy_program_double_ma_backtest_f32(
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ fast_row_major,
+    int fast_rows,
+    int fast_stride,
+    const float* __restrict__ slow_row_major,
+    int slow_rows,
+    int slow_stride,
+    const int* __restrict__ combo_fast_row_idx,
+    const int* __restrict__ combo_slow_row_idx,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    const GpuConditionAbi* __restrict__ conditions,
+    int condition_count,
+    const GpuConditionGroupAbi* __restrict__ groups,
+    int group_count,
+    const uint32_t* __restrict__ group_condition_indexes,
+    int group_condition_index_count,
+    const GpuSignalBindingsAbi* __restrict__ signals,
+    unsigned int flags,
+    float commission,
+    float eps_rel,
+    float stop_log,
+    float take_log,
+    int out_stride,
+    float* __restrict__ out_metrics
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row_index = combo_fast_row_idx[idx];
+    const int slow_row_index = combo_slow_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+    const int use_stop = (flags & STRAT_STOP_LOSS) ? 1 : 0;
+    const int use_take = (flags & STRAT_TAKE_PROFIT) ? 1 : 0;
+    const int base = idx * out_stride;
+
+    if (base < 0) return;
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = 0.0f;
+        out_metrics[base + 1] = 0.0f;
+        out_metrics[base + 2] = 0.0f;
+        out_metrics[base + 3] = 0.0f;
+        out_metrics[base + 4] = 0.0f;
+        out_metrics[base + 5] = 0.0f;
+        out_metrics[base + 6] = 0.0f;
+        out_metrics[base + 7] = 0.0f;
+        out_metrics[base + 8] = 0.0f;
+        out_metrics[base + 9] = 0.0f;
+    }
+    if (!lr || !fast_row_major || !slow_row_major || !signals) return;
+    if (fast_row_index < 0 || fast_row_index >= fast_rows || slow_row_index < 0 || slow_row_index >= slow_rows) return;
+    if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
+
+    const float* __restrict__ fast_row = fast_row_major + ((size_t)fast_row_index * (size_t)fast_stride);
+    const float* __restrict__ slow_row = slow_row_major + ((size_t)slow_row_index * (size_t)slow_stride);
+
+    int pos = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+    float trade_log_ret = 0.0f;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    float sum_neg_sq = 0.0f;
+    float sum_pos_r = 0.0f;
+    float sum_neg_abs_r = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+    const float clamp_max = 1.0e6f;
+    const float eps_denom = 1.0e-12f;
+
+    for (int t = start_t; t < end_t; ++t) {
+        const int sig_t = max(0, t - trade_on_next_bar);
+        const int prev_t = max(0, sig_t - 1);
+
+        const int long_entry = strategy_program_eval_group_f32(
+            signals->long_entry_group,
+            indicator_slots,
+            indicator_slot_count,
+            conditions,
+            condition_count,
+            groups,
+            group_count,
+            group_condition_indexes,
+            group_condition_index_count,
+            fast_row,
+            slow_row,
+            sig_t,
+            prev_t
+        );
+        const int long_exit = strategy_program_eval_group_f32(
+            signals->long_exit_group,
+            indicator_slots,
+            indicator_slot_count,
+            conditions,
+            condition_count,
+            groups,
+            group_count,
+            group_condition_indexes,
+            group_condition_index_count,
+            fast_row,
+            slow_row,
+            sig_t,
+            prev_t
+        );
+        const int short_entry = strategy_program_eval_group_f32(
+            signals->short_entry_group,
+            indicator_slots,
+            indicator_slot_count,
+            conditions,
+            condition_count,
+            groups,
+            group_count,
+            group_condition_indexes,
+            group_condition_index_count,
+            fast_row,
+            slow_row,
+            sig_t,
+            prev_t
+        );
+        const int short_exit = strategy_program_eval_group_f32(
+            signals->short_exit_group,
+            indicator_slots,
+            indicator_slot_count,
+            conditions,
+            condition_count,
+            groups,
+            group_count,
+            group_condition_indexes,
+            group_condition_index_count,
+            fast_row,
+            slow_row,
+            sig_t,
+            prev_t
+        );
+
+        int seeded_entry = 0;
+        int seeded_short = 0;
+        if (t == start_t && pos == 0 && indicator_slot_count >= 2) {
+            const float fast_now = strategy_program_load_indicator_value_f32(
+                indicator_slots,
+                indicator_slot_count,
+                0u,
+                fast_row,
+                slow_row,
+                sig_t
+            );
+            const float slow_now = strategy_program_load_indicator_value_f32(
+                indicator_slots,
+                indicator_slot_count,
+                1u,
+                fast_row,
+                slow_row,
+                sig_t
+            );
+            if (isfinite(fast_now) && isfinite(slow_now)) {
+                const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(slow_now))) : 0.0f;
+                seeded_entry = fast_now > (slow_now + eps);
+                seeded_short = fast_now < (slow_now - eps);
+            }
+        }
+
+        int desired = pos;
+        if (pos == 0) {
+            if (long_entry || seeded_entry) {
+                desired = 1;
+            } else if (!long_only && (short_entry || seeded_short)) {
+                desired = -1;
+            }
+        } else if (pos > 0) {
+            if (!long_only && short_entry) {
+                desired = no_flip ? 0 : -1;
+            } else if (long_exit) {
+                desired = 0;
+            }
+        } else {
+            if (long_entry) {
+                desired = no_flip ? 0 : 1;
+            } else if (short_exit) {
+                desired = 0;
+            }
+        }
+        if (long_only && desired < 0) {
+            desired = 0;
+        }
+
+        if (desired != pos) {
+            if (pos == 0 || desired == 0) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                    if (pos != 0) {
+                        trade_log_ret += log_cost;
+                    }
+                }
+                trades += 1;
+                pos = desired;
+                trade_log_ret = (pos != 0 && log_cost != 0.0f) ? log_cost : 0.0f;
+            } else if (no_flip) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                    trade_log_ret += log_cost;
+                }
+                trades += 1;
+                pos = 0;
+                trade_log_ret = 0.0f;
+            } else {
+                if (log_cost != 0.0f) {
+                    log_eq += 2.0f * log_cost;
+                    trade_log_ret += log_cost;
+                }
+                trades += 2;
+                pos = desired;
+                trade_log_ret = (log_cost != 0.0f) ? log_cost : 0.0f;
+            }
+        }
+
+        const int pos_bar = pos;
+        const float lr_t = lr[t];
+        const float step_log = (float)pos_bar * lr_t;
+        log_eq += step_log;
+
+        if (pos_bar != 0) {
+            trade_log_ret += step_log;
+            const int hit_stop = use_stop && (trade_log_ret <= stop_log);
+            const int hit_take = use_take && (trade_log_ret >= take_log);
+            if (hit_stop || hit_take) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                }
+                trades += 1;
+                pos = 0;
+                trade_log_ret = 0.0f;
+            }
+        }
+
+        if (log_eq > log_peak) {
+            log_peak = log_eq;
+        }
+        const float dd_log = log_peak - log_eq;
+        if (dd_log > max_log_dd) {
+            max_log_dd = dd_log;
+        }
+
+        const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * expm1f(lr_t);
+        n_obs += 1;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+
+        if (step_r < 0.0f) {
+            sum_neg_sq += step_r * step_r;
+            sum_neg_abs_r += -step_r;
+        } else {
+            sum_pos_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float volatility = sqrtf(fmaxf(variance, 0.0f));
+    const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float denom = (float)max(n_obs, 1);
+    const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+
+    float sortino = 0.0f;
+    if (downside_dev > 0.0f) {
+        sortino = mean / downside_dev;
+    } else if (mean > 0.0f) {
+        sortino = clamp_max;
+    } else if (mean < 0.0f) {
+        sortino = -clamp_max;
+    }
+    sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
+
+    float omega = 0.0f;
+    if (sum_neg_abs_r > eps_denom) {
+        omega = sum_pos_r / sum_neg_abs_r;
+        omega = fminf(clamp_max, fmaxf(0.0f, omega));
+    } else if (sum_pos_r > 0.0f) {
+        omega = clamp_max;
+    }
+
+    float calmar = 0.0f;
+    if (max_dd > eps_denom) {
+        calmar = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        calmar = clamp_max;
+    } else if (pnl < 0.0f) {
+        calmar = -clamp_max;
+    }
+    calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
+
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    if (out_stride >= 10) {
+        out_metrics[base + 0] = pnl;
+        out_metrics[base + 1] = sharpe;
+        out_metrics[base + 2] = sortino;
+        out_metrics[base + 3] = calmar;
+        out_metrics[base + 4] = omega;
+        out_metrics[base + 5] = volatility;
+        out_metrics[base + 6] = max_dd;
+        out_metrics[base + 7] = (float)trades;
+        out_metrics[base + 8] = exposure;
+        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+}
+
+extern "C" __global__
+void strategy_program_double_ma_constrained_tm_f32_m7(
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ fast_ma_T,
+    int fast_tm_stride,
+    const float* __restrict__ slow_ma_T,
+    int slow_tm_stride,
+    const int* __restrict__ combo_fast_row_idx,
+    const int* __restrict__ combo_slow_row_idx,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    unsigned int flags,
+    float commission,
+    float eps_rel,
+    float stop_log,
+    float take_log,
+    float* __restrict__ metrics_out
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row_index = combo_fast_row_idx[idx];
+    const int slow_row_index = combo_slow_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+    const int use_stop = (flags & STRAT_STOP_LOSS) ? 1 : 0;
+    const int use_take = (flags & STRAT_TAKE_PROFIT) ? 1 : 0;
+    const int base = idx * 7;
+
+    if (!lr || !fast_ma_T || !slow_ma_T || !metrics_out) return;
+    if (fast_row_index < 0 || slow_row_index < 0) return;
+    if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
+
+    int pos = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+    float trade_log_ret = 0.0f;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+
+    for (int t = start_t; t < end_t; ++t) {
+        const int sig_t = max(0, t - trade_on_next_bar);
+
+        const float fast_now = ld_tm_fast_warp_dedup(fast_ma_T, fast_tm_stride, sig_t, fast_row_index);
+        const float slow_now = ld_tm(slow_ma_T, slow_tm_stride, sig_t, slow_row_index);
+        const float eps = compute_eps_f32<-1>(slow_now, eps_rel);
+
+        int desired = desired_sign_plain_f32(fast_now, slow_now, eps, flags);
+
+        if (t == start_t && pos == 0 && isfinite(fast_now) && isfinite(slow_now)) {
+            if (fast_now > (slow_now + eps)) {
+                desired = 1;
+            } else if (!long_only && fast_now < (slow_now - eps)) {
+                desired = -1;
+            }
+        }
+
+        if (desired != pos) {
+            if (pos == 0 || desired == 0) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                    if (pos != 0) {
+                        trade_log_ret += log_cost;
+                    }
+                }
+                trades += 1;
+                pos = desired;
+                trade_log_ret = (pos != 0 && log_cost != 0.0f) ? log_cost : 0.0f;
+            } else if (no_flip) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                    trade_log_ret += log_cost;
+                }
+                trades += 1;
+                pos = 0;
+                trade_log_ret = 0.0f;
+            } else {
+                if (log_cost != 0.0f) {
+                    log_eq += 2.0f * log_cost;
+                    trade_log_ret += log_cost;
+                }
+                trades += 2;
+                pos = desired;
+                trade_log_ret = (log_cost != 0.0f) ? log_cost : 0.0f;
+            }
+        }
+
+        const int pos_bar = pos;
+        const float lr_t = lr[t];
+        const float step_log = (float)pos_bar * lr_t;
+        log_eq += step_log;
+
+        if (pos_bar != 0) {
+            trade_log_ret += step_log;
+            const int hit_stop = use_stop && (trade_log_ret <= stop_log);
+            const int hit_take = use_take && (trade_log_ret >= take_log);
+            if (hit_stop || hit_take) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                }
+                trades += 1;
+                pos = 0;
+                trade_log_ret = 0.0f;
+            }
+        }
+
+        if (log_eq > log_peak) {
+            log_peak = log_eq;
+        }
+        const float dd_log = log_peak - log_eq;
+        if (dd_log > max_log_dd) {
+            max_log_dd = dd_log;
+        }
+
+        const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * expm1f(lr_t);
+        n_obs += 1;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float std = sqrtf(fmaxf(variance, 0.0f));
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_expo = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    metrics_out[base + 0] = pnl;
+    metrics_out[base + 1] = (float)trades;
+    metrics_out[base + 2] = max_dd;
+    metrics_out[base + 3] = mean;
+    metrics_out[base + 4] = std;
+    metrics_out[base + 5] = exposure;
+    metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+}
+
+extern "C" __global__
+void strategy_program_double_ma_backtest_tm_f32_m7(
+    const float* __restrict__ lr,
+    int T,
+    const float* __restrict__ fast_ma_T,
+    int fast_tm_stride,
+    const float* __restrict__ slow_ma_T,
+    int slow_tm_stride,
+    const int* __restrict__ combo_fast_row_idx,
+    const int* __restrict__ combo_slow_row_idx,
+    const int* __restrict__ combo_start_t,
+    const int* __restrict__ combo_end_t,
+    int combo_count,
+    const GpuIndicatorSlotAbi* __restrict__ indicator_slots,
+    int indicator_slot_count,
+    const GpuConditionAbi* __restrict__ conditions,
+    int condition_count,
+    const GpuConditionGroupAbi* __restrict__ groups,
+    int group_count,
+    const uint32_t* __restrict__ group_condition_indexes,
+    int group_condition_index_count,
+    const GpuSignalBindingsAbi* __restrict__ signals,
+    unsigned int flags,
+    float commission,
+    float eps_rel,
+    float stop_log,
+    float take_log,
+    float* __restrict__ metrics_out
+) {
+    const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= combo_count) return;
+
+    const int fast_row_index = combo_fast_row_idx[idx];
+    const int slow_row_index = combo_slow_row_idx[idx];
+    const int start_t = combo_start_t[idx];
+    const int end_t = combo_end_t[idx];
+    const int long_only = (flags & STRAT_LONG_ONLY) ? 1 : 0;
+    const int no_flip = (flags & STRAT_NO_FLIP) ? 1 : 0;
+    const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
+    const int use_stop = (flags & STRAT_STOP_LOSS) ? 1 : 0;
+    const int use_take = (flags & STRAT_TAKE_PROFIT) ? 1 : 0;
+    const int base = idx * 7;
+
+    if (!lr || !fast_ma_T || !slow_ma_T || !signals || !metrics_out) return;
+    if (fast_row_index < 0 || slow_row_index < 0) return;
+    if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
+
+    int pos = 0;
+    float log_eq = 0.0f;
+    float log_peak = 0.0f;
+    float max_log_dd = 0.0f;
+    int trades = 0;
+    float trade_log_ret = 0.0f;
+
+    int n_obs = 0;
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    int sum_abs_pos = 0;
+    int sum_pos = 0;
+
+    const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
+    const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
+
+    for (int t = start_t; t < end_t; ++t) {
+        const int sig_t = max(0, t - trade_on_next_bar);
+        const int prev_t = max(0, sig_t - 1);
+
+        const float fast_now = ld_tm(fast_ma_T, fast_tm_stride, sig_t, fast_row_index);
+        const float slow_now = ld_tm(slow_ma_T, slow_tm_stride, sig_t, slow_row_index);
+        const float fast_prev = ld_tm(fast_ma_T, fast_tm_stride, prev_t, fast_row_index);
+        const float slow_prev = ld_tm(slow_ma_T, slow_tm_stride, prev_t, slow_row_index);
+        const float eps = (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(slow_now))) : 0.0f;
+
+        int long_entry = 0;
+        int long_exit = 0;
+        int short_entry = 0;
+        int short_exit = 0;
+
+        if (condition_count >= 2 && group_count >= 4) {
+            const int fast_gt_now = isfinite(fast_now) && isfinite(slow_now) && (fast_now > slow_now);
+            const int fast_lt_now = isfinite(fast_now) && isfinite(slow_now) && (fast_now < slow_now);
+            const int cross_up = isfinite(fast_prev) && isfinite(slow_prev) && fast_prev <= slow_prev && fast_gt_now;
+            const int cross_down = isfinite(fast_prev) && isfinite(slow_prev) && fast_prev >= slow_prev && fast_lt_now;
+
+            long_entry = cross_up;
+            long_exit = cross_down;
+            short_entry = cross_down;
+            short_exit = cross_up;
+        } else {
+            long_entry = strategy_program_eval_group_f32(
+                signals->long_entry_group,
+                indicator_slots,
+                indicator_slot_count,
+                conditions,
+                condition_count,
+                groups,
+                group_count,
+                group_condition_indexes,
+                group_condition_index_count,
+                nullptr,
+                nullptr,
+                sig_t,
+                prev_t
+            );
+            long_exit = strategy_program_eval_group_f32(
+                signals->long_exit_group,
+                indicator_slots,
+                indicator_slot_count,
+                conditions,
+                condition_count,
+                groups,
+                group_count,
+                group_condition_indexes,
+                group_condition_index_count,
+                nullptr,
+                nullptr,
+                sig_t,
+                prev_t
+            );
+            short_entry = strategy_program_eval_group_f32(
+                signals->short_entry_group,
+                indicator_slots,
+                indicator_slot_count,
+                conditions,
+                condition_count,
+                groups,
+                group_count,
+                group_condition_indexes,
+                group_condition_index_count,
+                nullptr,
+                nullptr,
+                sig_t,
+                prev_t
+            );
+            short_exit = strategy_program_eval_group_f32(
+                signals->short_exit_group,
+                indicator_slots,
+                indicator_slot_count,
+                conditions,
+                condition_count,
+                groups,
+                group_count,
+                group_condition_indexes,
+                group_condition_index_count,
+                nullptr,
+                nullptr,
+                sig_t,
+                prev_t
+            );
+        }
+
+        int seeded_entry = 0;
+        int seeded_short = 0;
+        if (t == start_t && pos == 0 && isfinite(fast_now) && isfinite(slow_now)) {
+            seeded_entry = fast_now > (slow_now + eps);
+            seeded_short = fast_now < (slow_now - eps);
+        }
+
+        int desired = pos;
+        if (pos == 0) {
+            if (long_entry || seeded_entry) {
+                desired = 1;
+            } else if (!long_only && (short_entry || seeded_short)) {
+                desired = -1;
+            }
+        } else if (pos > 0) {
+            if (!long_only && short_entry) {
+                desired = no_flip ? 0 : -1;
+            } else if (long_exit) {
+                desired = 0;
+            }
+        } else {
+            if (long_entry) {
+                desired = no_flip ? 0 : 1;
+            } else if (short_exit) {
+                desired = 0;
+            }
+        }
+        if (long_only && desired < 0) {
+            desired = 0;
+        }
+
+        if (desired != pos) {
+            if (pos == 0 || desired == 0) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                    if (pos != 0) {
+                        trade_log_ret += log_cost;
+                    }
+                }
+                trades += 1;
+                pos = desired;
+                trade_log_ret = (pos != 0 && log_cost != 0.0f) ? log_cost : 0.0f;
+            } else if (no_flip) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                    trade_log_ret += log_cost;
+                }
+                trades += 1;
+                pos = 0;
+                trade_log_ret = 0.0f;
+            } else {
+                if (log_cost != 0.0f) {
+                    log_eq += 2.0f * log_cost;
+                    trade_log_ret += log_cost;
+                }
+                trades += 2;
+                pos = desired;
+                trade_log_ret = (log_cost != 0.0f) ? log_cost : 0.0f;
+            }
+        }
+
+        const int pos_bar = pos;
+        const float lr_t = lr[t];
+        const float step_log = (float)pos_bar * lr_t;
+        log_eq += step_log;
+
+        if (pos_bar != 0) {
+            trade_log_ret += step_log;
+            const int hit_stop = use_stop && (trade_log_ret <= stop_log);
+            const int hit_take = use_take && (trade_log_ret >= take_log);
+            if (hit_stop || hit_take) {
+                if (log_cost != 0.0f) {
+                    log_eq += log_cost;
+                }
+                trades += 1;
+                pos = 0;
+                trade_log_ret = 0.0f;
+            }
+        }
+
+        if (log_eq > log_peak) {
+            log_peak = log_eq;
+        }
+        const float dd_log = log_peak - log_eq;
+        if (dd_log > max_log_dd) {
+            max_log_dd = dd_log;
+        }
+
+        const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * expm1f(lr_t);
+        n_obs += 1;
+        const float delta = step_r - mean;
+        mean += delta / (float)n_obs;
+        const float delta2 = step_r - mean;
+        m2 += delta * delta2;
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
+    }
+
+    const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
+    const float std = sqrtf(fmaxf(variance, 0.0f));
+    const float pnl = expf(log_eq) - 1.0f;
+    const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
+    const float net_expo = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+
+    metrics_out[base + 0] = pnl;
+    metrics_out[base + 1] = (float)trades;
+    metrics_out[base + 2] = max_dd;
+    metrics_out[base + 3] = mean;
+    metrics_out[base + 4] = std;
+    metrics_out[base + 5] = exposure;
+    metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+}
 
 
 

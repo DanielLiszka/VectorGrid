@@ -219,6 +219,7 @@ fn make_request(cli: &Cli, data_id: &str) -> DoubleMaRequest {
         heatmap_bins: Some(cli.heatmap_bins),
         constraints: None,
         vdps: None,
+        dynamic_strategy_ir: None,
     }
 }
 

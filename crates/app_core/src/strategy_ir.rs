@@ -5,7 +5,7 @@ use crate::indicator_catalog::{
     normalize_and_validate_indicator_params, IndicatorParamKV,
 };
 use crate::CompositeSignalMode;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 use ta_strategies::double_ma::StrategyConfig;
 
@@ -109,12 +109,32 @@ pub enum ValueRef {
     Indicator { id: String },
     MaSource,
     Close,
-    ConstantBits { bits: u64 },
+    ConstantBits {
+        #[serde(deserialize_with = "deserialize_constant_bits_u64")]
+        bits: u64,
+    },
 }
 
 impl ValueRef {
     pub fn constant(v: f64) -> Self {
         Self::ConstantBits { bits: v.to_bits() }
+    }
+}
+
+fn deserialize_constant_bits_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawConstantBits {
+        Number(u64),
+        String(String),
+    }
+
+    match RawConstantBits::deserialize(deserializer)? {
+        RawConstantBits::Number(bits) => Ok(bits),
+        RawConstantBits::String(bits) => bits.trim().parse::<u64>().map_err(serde::de::Error::custom),
     }
 }
 
@@ -846,6 +866,49 @@ mod tests {
             serde_json::from_value(v).expect("schema v1 payload should deserialize");
         assert_eq!(ir.schema_version, 1);
         validate_strategy_ir(&ir).expect("schema v1 payload should validate");
+    }
+
+    #[test]
+    fn deserialize_constant_bits_from_decimal_string() {
+        let value = 42.25f64;
+        let bits = value.to_bits().to_string();
+        let v = json!({
+            "schema_version": STRATEGY_IR_SCHEMA_VERSION,
+            "profile": "double_ma",
+            "ma_source": "close",
+            "fast_ma": { "ma_type": "alma", "params": {} },
+            "slow_ma": { "ma_type": "sma", "params": {} },
+            "program": {
+                "indicators": [
+                    { "id": "fast_ma", "kind": "fast_ma" },
+                    { "id": "slow_ma", "kind": "slow_ma" }
+                ],
+                "conditions": [
+                    {
+                        "id": "x",
+                        "op": "gt",
+                        "lhs": { "kind": "indicator", "id": "fast_ma" },
+                        "rhs": { "kind": "constant_bits", "bits": bits }
+                    }
+                ],
+                "groups": [{ "id": "g", "mode": "all", "condition_ids": ["x"] }],
+                "signals": {
+                    "long_entry_group": "g",
+                    "long_exit_group": null,
+                    "short_entry_group": null,
+                    "short_exit_group": null
+                }
+            },
+            "execution": { "strategy": StrategyConfig::default() }
+        });
+        let ir: StrategyIr = serde_json::from_value(v).expect("string bits should deserialize");
+        assert_eq!(ir.program.conditions.len(), 1);
+        assert_eq!(
+            ir.program.conditions[0].rhs,
+            ValueRef::ConstantBits {
+                bits: value.to_bits()
+            }
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ import {
   cancelOptimization,
   type GpuStatusSummary,
   presetKernel,
+  previewDynamicStrategyIr,
   refreshGpuStatus,
   runGpuParityCheck,
   runOptimization,
@@ -16,6 +17,7 @@ vi.mock('../services/optimizeService', () => ({
   applyPreset: vi.fn(async () => undefined),
   cancelOptimization: vi.fn(async () => undefined),
   presetKernel: vi.fn(async () => undefined),
+  previewDynamicStrategyIr: vi.fn(async () => undefined),
   refreshGpuStatus: vi.fn(async () => undefined),
   runGpuParityCheck: vi.fn(async () => undefined),
   runOptimization: vi.fn(async () => undefined),
@@ -27,6 +29,7 @@ const runOptimizationMock = vi.mocked(runOptimization)
 const cancelOptimizationMock = vi.mocked(cancelOptimization)
 const runValidationMock = vi.mocked(runValidation)
 const presetKernelMock = vi.mocked(presetKernel)
+const previewDynamicStrategyIrMock = vi.mocked(previewDynamicStrategyIr)
 const refreshGpuStatusMock = vi.mocked(refreshGpuStatus)
 const runGpuParityCheckMock = vi.mocked(runGpuParityCheck)
 const defaultGpuStatusSummary: GpuStatusSummary = {
@@ -75,6 +78,8 @@ describe('optimize store actions', () => {
     runValidationMock.mockResolvedValue(undefined)
     presetKernelMock.mockClear()
     presetKernelMock.mockResolvedValue(undefined)
+    previewDynamicStrategyIrMock.mockClear()
+    previewDynamicStrategyIrMock.mockResolvedValue(undefined)
     refreshGpuStatusMock.mockClear()
     refreshGpuStatusMock.mockResolvedValue(defaultGpuStatusSummary)
     runGpuParityCheckMock.mockClear()
@@ -108,11 +113,13 @@ describe('optimize store actions', () => {
     const store = useOptimizeStore()
     store.applyPreset()
     store.presetKernel()
+    store.previewDynamicStrategyIr()
     store.refreshGpuStatus()
     store.runGpuParityCheck()
 
     expect(applyPresetMock).toHaveBeenCalled()
     expect(presetKernelMock).toHaveBeenCalled()
+    expect(previewDynamicStrategyIrMock).toHaveBeenCalled()
     expect(refreshGpuStatusMock).toHaveBeenCalled()
     expect(runGpuParityCheckMock).toHaveBeenCalled()
   })
@@ -159,6 +166,6 @@ describe('optimize store actions', () => {
   it('includes the staged GPU-native expansion strategies in the selector options', () => {
     const store = useOptimizeStore()
     const values = store.strategyOptions.map((option) => option.value)
-    expect(values).toEqual(expect.arrayContaining(['Kqsr', 'Carm', 'Kvdf', 'Cdmc']))
+    expect(values).toEqual(expect.arrayContaining(['Kqsr', 'Carm', 'Kvdf', 'Cdmc', 'DynamicDoubleMa']))
   })
 })

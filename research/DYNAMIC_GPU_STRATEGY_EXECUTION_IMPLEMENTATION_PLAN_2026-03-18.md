@@ -25,6 +25,76 @@ into a reusable GPU executable consumed by a generic program-driven backtest ker
 
 That should be the v1 implementation target.
 
+## 1.1 Baseline benchmark evidence
+
+Initial repo-local benchmark evidence on the overlapping ALMA 200k / 58,300-pair static route shows that the current dynamic compile/preflight layer is not the main performance problem.
+
+First pass:
+
+- `compile_plan_only`: about `5.18 µs`
+- `compile_plan_plus_gpu_program`: about `5.65 µs`
+- static specialized `GpuKernel` baseline: about `83.42 ms`
+- static route with warm dynamic preflight enabled: about `83.28 ms`
+- static route with cold dynamic preflight per run: about `83.39 ms`
+
+After upgrading preflight from compile-only to `compile + upload + launch-probe`:
+
+- `compile_plan_only`: about `5.05 µs`
+- `compile_plan_plus_gpu_program`: about `5.77 µs`
+- `build_upload_executable_only`: about `163 µs`
+- `lookup_uploaded_executable_warm`: about `62 ns`
+- static specialized `GpuKernel` baseline: about `82.55 ms`
+- static route with warm dynamic preflight enabled: about `82.37 ms`
+- static route with cold dynamic preflight per run: about `82.38 ms`
+
+Interpretation:
+
+- current plan/program compilation cost is negligible relative to the existing specialized GPU kernel runtime
+- even after adding executable upload and a tiny CUDA launch probe, preflight overhead is still negligible relative to the existing specialized GPU kernel runtime
+- the real open question is not preflight overhead
+- the real open question is whether a generic program-driven GPU kernel can stay competitive once execution itself moves off the specialized crossover kernel
+
+This supports continuing with the runtime/executable phases rather than spending more time on preflight micro-optimization.
+
+Current constrained execution result for the overlapping Double-MA shape:
+
+- `dynamic_program_gpu_kernel_execution_warm_uploaded` on `alma_alma / 200k / 58,300 pairs`: about `616-628 ms`
+- matching static specialized `GpuKernel` on the same `alma_alma / 200k / 58,300 pairs`: about `81.33 ms`
+
+Interpretation:
+
+- the first real generic execution kernel is now functionally viable and parity-tested on the overlapping Double-MA shape
+- but it is not yet performance-competitive
+- the current gap is roughly `7.5x`
+- the likely causes are the intentionally simple v1 design choices:
+  - row-major indicator access instead of the tuned TM layout
+  - per-bar generic condition/group evaluation inside each combo thread
+  - no reuse yet of the specialized valid-pair/tile/runtime path
+
+So the project is past “is a generic GPU execution path possible?” and into “how much of the specialized execution model must be recovered to make it fast enough?”
+
+Optimization recovery progress on that same constrained overlap path:
+
+- after switching the uploaded dynamic path from row-major inputs to TM layout and reducing output to the static M7 shape:
+  - `dynamic_program_gpu_kernel_execution_warm_uploaded`: about `314-316 ms`
+- after replacing the generic inner-loop interpreter path with a constrained Double-MA fast kernel:
+  - `dynamic_program_gpu_kernel_execution_warm_uploaded`: about `123.86-124.83 ms`
+- after rebasing the constrained uploaded dynamic path onto the same static M7 TM runtime substrate with a dynamic pair map:
+  - `dynamic_program_gpu_kernel_execution_warm_uploaded`: about `96.90-98.01 ms`
+- fresh same-session static specialized benchmark on the matching ALMA workload:
+  - `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`: about `96.388 ms`
+
+Updated interpretation:
+
+- the constrained Double-MA dynamic GPU path is now performance-competitive with the static specialized GPU route on the overlapping ALMA benchmark
+- the original `~7.5x` gap was mostly execution-model debt, not compile/upload overhead
+- the biggest recovered wins came from:
+  - TM layout
+  - dropping non-v1 metric work
+  - removing generic inner-loop interpretation for the constrained path
+  - reusing the static TM M7 backtest substrate with a dynamic pair map
+- this is now strong enough to justify continuing the MD-scoped backend implementation rather than treating the dynamic path as a dead end
+
 ## 2. Repo-Specific Read
 
 The current codebase already supports:
@@ -100,7 +170,7 @@ Explicitly out of scope for v1 GPU dynamic execution:
 - unsupported MAs and indicators already blocked by current kernel-path checks
 - every strategy family in the repo on day one
 - NVRTC specialization
-- graphical strategy-builder UI as the first milestone
+- a broad arbitrary graphical strategy-builder UI as the first milestone
 
 This scope matches the current blocker logic in `crates/app_core/src/double_ma_backend.rs` and the semantic gatekeeping in `crates/app_core/src/double_ma_strategy.rs`.
 
@@ -556,13 +626,13 @@ Recommended v1 authoring inputs:
 - existing static strategy configs compiled through `compile_dynamic_plan_for_double_ma_config(...)`
 - JSON-backed `StrategyIr` fixtures and tests
 - optional debug/report output showing compiled plan and route assignments
-- optional constrained UI builder for `DynamicDoubleMa` only after headless validation lands
+- constrained `DynamicDoubleMa` builder UI only after headless validation lands
 
 This gives the repo a real dynamic GPU execution path without coupling success to a new UI builder.
 
 ### 11.2 V2 authoring surface
 
-After the runtime path is correct, add a constrained authoring UI.
+After the runtime path is correct, expand the constrained authoring UI.
 
 Recommended v2 surfaces:
 
@@ -626,7 +696,7 @@ Do not begin with arbitrary scripting text boxes.
 
 Phase 1 frontend:
 
-- add a hidden or research-only `DynamicDoubleMa` option
+- add a constrained `DynamicDoubleMa` option
 - support JSON `StrategyIr` import/export
 - show capability preview and backend route preview
 - show guard-rail violations before run
@@ -636,6 +706,7 @@ Phase 2 frontend:
 - add a constrained builder for indicators, conditions, groups, and bindings
 - source all indicator IDs and outputs from the catalog
 - keep advanced/raw JSON import as a power-user path
+- builder now supports numeric constant operands safely; keep only lower-level edge cases on the advanced/raw JSON path
 
 The frontend should never promise arbitrary "GPU custom strategies."
 It should promise constrained custom strategies that compile to supported IR.
@@ -837,89 +908,89 @@ Do not start with:
 
 ## 17.1 Contracts
 
-- [ ] Add `StrategyCapabilityReport`.
-- [ ] Add `StrategyHandle`.
-- [ ] Add `GpuStrategyExecutable`.
-- [ ] Add explicit GPU ABI versioning.
-- [ ] Add serialization or debug-print support where useful for diagnostics.
-- [ ] Document v1 product caps separately from backend hard caps.
+- [x] Add `StrategyCapabilityReport`.
+- [x] Add `StrategyHandle`.
+- [x] Add `GpuStrategyExecutable`.
+- [x] Add explicit GPU ABI versioning.
+- [x] Add serialization or debug-print support where useful for diagnostics.
+- [x] Document v1 product caps separately from backend hard caps.
 
 ## 17.2 Compiler and program layer
 
-- [ ] Keep `CompiledStrategyPlan` as the one true plan contract.
-- [ ] Keep `CompiledGpuPredicateProgram` as the one true GPU predicate contract.
-- [ ] Add ABI mirror structs derived from compiled GPU program data.
-- [ ] Add bounds/layout validation for uploaded program tables.
-- [ ] Reject matrix or non-scalar indicator outputs for v1 user-defined GPU mode.
+- [x] Keep `CompiledStrategyPlan` as the one true plan contract.
+- [x] Keep `CompiledGpuPredicateProgram` as the one true GPU predicate contract.
+- [x] Add ABI mirror structs derived from compiled GPU program data.
+- [x] Add bounds/layout validation for uploaded program tables.
+- [x] Reject matrix or non-scalar indicator outputs for v1 user-defined GPU mode.
 
 ## 17.3 Runtime executable layer
 
-- [ ] Create `crates/app_core/src/strategy_gpu_runtime.rs`.
-- [ ] Implement executable cache keyed by plan fingerprint + device + ABI version.
-- [ ] Implement one-time device upload of indicator slots, conditions, groups, indexes, and signals.
-- [ ] Add executable cache hit/miss diagnostics for tests and profiling.
+- [x] Create `crates/app_core/src/strategy_gpu_runtime.rs`.
+- [x] Implement executable cache keyed by plan fingerprint + device + ABI version.
+- [x] Implement one-time device upload of indicator slots, conditions, groups, indexes, and signals.
+- [x] Add executable cache hit/miss diagnostics for tests and profiling.
 
 ## 17.4 Generic kernel path
 
-- [ ] Add generic program-driven kernel ABI structs to `double_crossover.cu`.
-- [ ] Add generic condition evaluation.
-- [ ] Add generic group reduction.
-- [ ] Add generic signal binding resolution.
-- [ ] Reuse existing trade-state and metric accumulation flow.
-- [ ] Keep specialized kernels intact.
+- [x] Add generic program-driven kernel ABI structs to `double_crossover.cu`.
+- [x] Add generic condition evaluation.
+- [x] Add generic group reduction.
+- [x] Add generic signal binding resolution.
+- [x] Reuse existing trade-state and metric accumulation flow.
+- [x] Keep specialized kernels intact.
 
 ## 17.5 Host CUDA integration
 
-- [ ] Add `run_strategy_program_gpu_kernel(...)` to `gpu_backtest_kernel.rs`.
-- [ ] Bind pair-invariant series once.
-- [ ] Bind pair-variant MA sweep matrices per run.
-- [ ] Reuse resident market-series cache and scratch buffers.
-- [ ] Reuse valid-pair compaction and launch-shape tuning.
+- [x] Add first real host launch path for the constrained Double-MA overlap shape to `gpu_backtest_kernel.rs`.
+- [x] Bind pair-invariant series once for the uploaded constrained Double-MA batch path (`lr`, periods, pair map, uploaded program tables).
+- [x] Bind pair-variant MA sweep matrices for the current uploaded-batch path.
+- [x] Reuse resident market-series cache and scratch buffers.
+- [x] Reuse valid-pair compaction and launch-shape tuning.
 
 ## 17.6 Double-MA-family integration
 
-- [ ] Replace `maybe_compile_dynamic_gpu_plan_preflight(...)` with executable build/use.
-- [ ] Keep CPU dynamic shadow path as the correctness oracle.
-- [ ] Add GPU dynamic route selection driven by `StrategyCapabilityReport`.
-- [ ] Preserve CPU dynamic fallback for unsupported dynamic shapes.
-- [ ] Add a path that accepts user-provided `StrategyIr` with `profile=DoubleMa`.
+- [x] Replace `maybe_compile_dynamic_gpu_plan_preflight(...)` with executable build/use.
+- [x] Keep CPU dynamic shadow path as the correctness oracle.
+- [x] Add GPU dynamic route selection driven by `StrategyCapabilityReport`.
+- [x] Preserve CPU dynamic fallback for unsupported dynamic shapes.
+- [x] Add a path that accepts user-provided `StrategyIr` with `profile=DoubleMa`.
 
 ## 17.7 Strategy semantics and blockers
 
-- [ ] Preserve `trade_on_next_bar=true` enforcement.
-- [ ] Preserve cost and stop/take-profit validation.
-- [ ] Keep Kaufman stop exit blocked for v1 GPU dynamic mode.
-- [ ] Keep cooldown/persistence overlays blocked for v1 GPU dynamic mode.
-- [ ] Keep unsupported objectives and unsupported MAs blocked for v1 GPU dynamic mode.
-- [ ] Enforce stricter product-level caps for user-defined strategies.
-- [ ] Enforce binding rules for long-only vs bidirectional user-defined plans.
+- [x] Preserve `trade_on_next_bar=true` enforcement.
+- [x] Preserve cost and stop/take-profit validation.
+- [x] Keep Kaufman stop exit blocked for v1 GPU dynamic mode.
+- [x] Keep cooldown/persistence overlays blocked for v1 GPU dynamic mode.
+- [x] Keep unsupported objectives and unsupported MAs blocked for v1 GPU dynamic mode.
+- [x] Enforce stricter product-level caps for user-defined strategies.
+- [x] Enforce binding rules for long-only vs bidirectional user-defined plans.
 
 ## 17.8 Testing
 
-- [ ] Add unit tests for ABI translation.
-- [ ] Add executable cache-key tests.
-- [ ] Add CPU dynamic vs GPU dynamic parity tests.
-- [ ] Add tests for supported-feature routing.
-- [ ] Add tests for unsupported-feature CPU fallback.
-- [ ] Add tests proving specialized kernels still route as before.
+- [x] Add unit tests for ABI translation.
+- [x] Add executable cache-key tests.
+- [x] Add CPU dynamic vs GPU dynamic parity tests.
+- [x] Add tests for supported-feature routing.
+- [x] Add tests for unsupported-feature CPU fallback.
+- [x] Add tests proving specialized kernels still route as before.
 
 ## 17.9 Benchmarking
 
-- [ ] Benchmark compile-only overhead.
-- [ ] Benchmark executable upload overhead.
-- [ ] Benchmark first-use end-to-end overhead.
-- [ ] Benchmark warm-cache optimization overhead.
-- [ ] Benchmark generic GPU vs specialized GPU for overlapping shapes.
+- [x] Benchmark compile-only overhead.
+- [x] Benchmark executable upload overhead.
+- [x] Benchmark first-use end-to-end overhead.
+- [x] Benchmark warm-cache optimization overhead.
+- [x] Benchmark generic GPU vs specialized GPU for overlapping shapes.
 
 ## 17.10 Frontend follow-up
 
-- [ ] Do not add a graphical builder in v1.
-- [ ] Add `src-tauri/src/commands_dynamic_strategy.rs`.
-- [ ] Export/register dynamic-strategy Tauri commands.
-- [ ] Add JSON-backed `StrategyIr` import/export first.
-- [ ] If frontend authoring is added, update `optimizeStore.ts`, `optimizeRequestBuilder.ts`, `optimizeService.ts`, `strategyOptimizationCapabilities.ts`, and `taskStore.ts`.
-- [ ] Add a constrained `DynamicDoubleMa` option rather than promising arbitrary custom profiles.
-- [ ] Add capability-preview UI instead of silent fallback behavior.
+- [x] Do not add a broad arbitrary graphical builder in v1.
+- [x] Add `src-tauri/src/commands_dynamic.rs`.
+- [x] Export/register dynamic-strategy Tauri commands.
+- [x] Add JSON-backed `StrategyIr` import/export first.
+- [x] If frontend authoring is added, update `optimizeStore.ts`, `optimizeRequestBuilder.ts`, `optimizeService.ts`, `strategyOptimizationCapabilities.ts`, and `taskStore.ts`.
+- [x] Add a constrained `DynamicDoubleMa` option rather than promising arbitrary custom profiles.
+- [x] Add capability-preview UI instead of silent fallback behavior.
 
 ## 18. Exit Criteria
 

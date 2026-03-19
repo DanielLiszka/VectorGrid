@@ -94,7 +94,10 @@ pub fn run_tauri() {
             list_moving_averages,
             list_dynamic_indicators,
             list_gpu_speedups,
-            get_gpu_status
+            get_gpu_status,
+            preview_dynamic_double_ma_strategy_ir_json,
+            format_dynamic_strategy_ir_json,
+            encode_dynamic_strategy_constant_bits
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

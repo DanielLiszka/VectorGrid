@@ -731,6 +731,7 @@ fn main() -> Result<(), String> {
         heatmap_bins: Some(cli.heatmap_bins),
         constraints: None,
         vdps: None,
+        dynamic_strategy_ir: None,
     };
 
     println!("Running optimization baseline...");

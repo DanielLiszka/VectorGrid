@@ -4,6 +4,8 @@ mod commands_analysis;
 mod commands_artifacts;
 #[path = "commands_data.rs"]
 mod commands_data;
+#[path = "commands_dynamic.rs"]
+mod commands_dynamic;
 #[path = "commands_execution.rs"]
 mod commands_execution;
 #[path = "commands_meta.rs"]
@@ -42,6 +44,11 @@ pub use commands_data::{
     MarketDataDirInfo, PolygonDownloadAndLoadResponse, PolygonLiveCandleStreamStatusResponse,
     PolygonStartLiveCandleStreamRequest, PolygonStartLiveCandleStreamResponse,
     PolygonStopLiveCandleStreamResponse, RepoDataCsvEntry, RepoDataCsvList, SampleCsv,
+};
+pub use commands_dynamic::{
+    encode_dynamic_strategy_constant_bits, format_dynamic_strategy_ir_json,
+    preview_dynamic_double_ma_strategy_ir_json, DynamicDoubleMaStrategyIrJsonPreviewResponse,
+    DynamicStrategyConstantBitsResponse,
 };
 pub use commands_execution::{
     execute_strategy_signal_once, get_live_execution_snapshot, live_execution_runner_status,

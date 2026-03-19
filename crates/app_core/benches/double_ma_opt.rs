@@ -9,10 +9,18 @@ use ta_app_core::strategy_presets::{
     orc_strategy_for_kernel, pit_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     set_strategy_for_kernel, trend_quality_strategy_for_kernel, vfct_strategy_for_kernel,
 };
-use ta_app_core::{Backend, DoubleMaRequest};
+use ta_app_core::{
+    compile_dynamic_plan_for_double_ma_config, compile_gpu_predicate_program,
+    eval_uploaded_double_ma_dynamic_program_gpu_kernel,
+    get_or_build_gpu_strategy_executable, reset_dynamic_gpu_preflight_cache,
+    reset_gpu_strategy_executable_cache, upload_double_ma_dynamic_program_batch, Backend,
+    DoubleMaRequest, StrategyCapabilityReport, StrategyHandle, StrategyPlanBackend,
+};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
+use vector_ta::indicators::moving_averages::ma::MaData;
+use vector_ta::indicators::moving_averages::ma_batch::ma_batch;
 use vector_ta::utilities::data_loader::Candles;
 
 #[derive(Clone, Copy)]
@@ -173,6 +181,37 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
         total = total.saturating_add(s_len.saturating_sub(idx));
     }
     total
+}
+
+fn compute_log_returns_f32(prices: &[f64]) -> Vec<f32> {
+    let mut out = vec![0.0f32; prices.len()];
+    for t in 1..prices.len() {
+        let p = prices[t];
+        let pm = prices[t - 1];
+        out[t] = if p > 0.0 && pm > 0.0 && p.is_finite() && pm.is_finite() {
+            (p.ln() - pm.ln()) as f32
+        } else {
+            0.0
+        };
+    }
+    out
+}
+
+fn build_valid_double_ma_combos(fast_periods: &[u16], slow_periods: &[u16]) -> Vec<ta_strategies::double_ma::DoubleMaParams> {
+    let mut out = Vec::with_capacity(count_pairs_fast_lt_slow(fast_periods, slow_periods));
+    for &fast_len in fast_periods {
+        for &slow_len in slow_periods {
+            if fast_len < slow_len {
+                out.push(ta_strategies::double_ma::DoubleMaParams {
+                    fast_len,
+                    slow_len,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                });
+            }
+        }
+    }
+    out
 }
 
 fn run_with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
@@ -1024,6 +1063,284 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
 fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(_c: &mut Criterion) {}
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_dynamic_contract_overhead(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+
+    let candles = make_synth_candles(200_000);
+    let cancel = AtomicBool::new(false);
+    let strategy = StrategyConfig::default();
+    let fast_range = (5, 200, 1);
+    let slow_range = (10, 400, 1);
+    let pairs = count_pairs_fast_lt_slow(
+        &expand_range_u16(fast_range),
+        &expand_range_u16(slow_range),
+    );
+    let fast_ma_params = Some(alma_params_default());
+    let slow_ma_params = Some(alma_params_default());
+
+    let req = DoubleMaRequest {
+        backend: Backend::GpuKernel { device_id: 0 },
+        data_id: "bench".to_string(),
+        fast_range,
+        slow_range,
+        fast_ma_types: vec!["alma".to_string()],
+        slow_ma_types: vec!["alma".to_string()],
+        ma_source: "close".to_string(),
+        export_all_csv_path: None,
+        fast_ma_params: fast_ma_params.clone(),
+        slow_ma_params: slow_ma_params.clone(),
+        fast_ma_param_sweeps: None,
+        slow_ma_param_sweeps: None,
+        strategy: strategy.clone(),
+        halftrend_filter: None,
+        objective: ObjectiveKind::Sharpe,
+        mode: OptimizationMode::Grid,
+        top_k: Some(50),
+        include_all: Some(false),
+        heatmap_bins: Some(64),
+        constraints: None,
+        vdps: None,
+    };
+
+    let warm_req = req.clone();
+    run_with_dynamic_strategy_opt_env(true, || {
+        reset_dynamic_gpu_preflight_cache();
+        let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+            warm_req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("warm dynamic preflight probe");
+    });
+
+    let mut group = c.benchmark_group(format!(
+        "double_ma/dynamic_contract/alma_alma/200k/large/{pairs}pairs"
+    ));
+    group.measurement_time(Duration::from_secs(6));
+    group.sample_size(10);
+
+    group.bench_function("compile_plan_only", |b| {
+        b.iter(|| {
+            let _ = compile_dynamic_plan_for_double_ma_config(
+                "close",
+                "alma",
+                "alma",
+                fast_ma_params.as_ref(),
+                slow_ma_params.as_ref(),
+                &strategy,
+                None,
+                StrategyPlanBackend::GpuUnified,
+            )
+            .expect("compile dynamic plan");
+        })
+    });
+
+    group.bench_function("compile_plan_plus_gpu_program", |b| {
+        b.iter(|| {
+            let plan = compile_dynamic_plan_for_double_ma_config(
+                "close",
+                "alma",
+                "alma",
+                fast_ma_params.as_ref(),
+                slow_ma_params.as_ref(),
+                &strategy,
+                None,
+                StrategyPlanBackend::GpuUnified,
+            )
+            .expect("compile dynamic plan");
+            let _ = compile_gpu_predicate_program(&plan).expect("compile gpu predicate program");
+        })
+    });
+
+    group.bench_function("build_upload_executable_only", |b| {
+        b.iter(|| {
+            reset_gpu_strategy_executable_cache();
+            let plan = compile_dynamic_plan_for_double_ma_config(
+                "close",
+                "alma",
+                "alma",
+                fast_ma_params.as_ref(),
+                slow_ma_params.as_ref(),
+                &strategy,
+                None,
+                StrategyPlanBackend::GpuUnified,
+            )
+            .expect("compile dynamic plan");
+            let handle =
+                StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+                    .expect("build strategy handle");
+            let _ = get_or_build_gpu_strategy_executable(&handle, 0)
+                .expect("build uploaded executable");
+        })
+    });
+
+    let warm_plan = compile_dynamic_plan_for_double_ma_config(
+        "close",
+        "alma",
+        "alma",
+        fast_ma_params.as_ref(),
+        slow_ma_params.as_ref(),
+        &strategy,
+        None,
+        StrategyPlanBackend::GpuUnified,
+    )
+    .expect("compile warm dynamic plan");
+    let warm_handle =
+        StrategyHandle::from_plan(warm_plan, StrategyCapabilityReport::gpu_dynamic_ready())
+            .expect("build warm strategy handle");
+    reset_gpu_strategy_executable_cache();
+    let _ = get_or_build_gpu_strategy_executable(&warm_handle, 0)
+        .expect("warm executable probe");
+
+    group.bench_function("lookup_uploaded_executable_warm", |b| {
+        b.iter(|| {
+            let _ = get_or_build_gpu_strategy_executable(&warm_handle, 0)
+                .expect("lookup uploaded executable");
+        })
+    });
+
+    group.bench_function("static_gpu_kernel_legacy_off", |b| {
+        b.iter(|| {
+            let req2 = req.clone();
+            run_with_dynamic_strategy_opt_env(false, || {
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2,
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("legacy static gpu kernel run");
+            });
+        })
+    });
+
+    group.bench_function("static_gpu_kernel_dynamic_preflight_warm", |b| {
+        b.iter(|| {
+            let req2 = req.clone();
+            run_with_dynamic_strategy_opt_env(true, || {
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2,
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("warm dynamic preflight gpu kernel run");
+            });
+        })
+    });
+
+    group.bench_function("static_gpu_kernel_dynamic_preflight_cold", |b| {
+        b.iter(|| {
+            let req2 = req.clone();
+            run_with_dynamic_strategy_opt_env(true, || {
+                reset_dynamic_gpu_preflight_cache();
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2,
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("cold dynamic preflight gpu kernel run");
+            });
+        })
+    });
+
+    group.finish();
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_dynamic_contract_overhead(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_dynamic_program_execution(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+
+    let candles = make_synth_candles(200_000);
+    let strategy = StrategyConfig::default();
+    let fast_periods = expand_range_u16((5, 200, 1));
+    let slow_periods = expand_range_u16((10, 400, 1));
+    let combos = build_valid_double_ma_combos(&fast_periods, &slow_periods);
+    let pairs = combos.len();
+    let close = candles.close.as_slice();
+    let lr = compute_log_returns_f32(close);
+    let fast_batch = ma_batch(
+        "alma",
+        MaData::Candles {
+            candles: &candles,
+            source: "close",
+        },
+        (5usize, 200usize, 1usize),
+    )
+    .expect("fast alma batch");
+    let slow_batch = ma_batch(
+        "alma",
+        MaData::Candles {
+            candles: &candles,
+            source: "close",
+        },
+        (10usize, 400usize, 1usize),
+    )
+    .expect("slow alma batch");
+    let fast_values: Vec<f32> = fast_batch.values.iter().map(|&v| v as f32).collect();
+    let slow_values: Vec<f32> = slow_batch.values.iter().map(|&v| v as f32).collect();
+    let plan = compile_dynamic_plan_for_double_ma_config(
+        "close",
+        "alma",
+        "alma",
+        Some(&alma_params_default()),
+        Some(&alma_params_default()),
+        &strategy,
+        None,
+        StrategyPlanBackend::GpuUnified,
+    )
+    .expect("compile dynamic alma plan");
+    let handle = StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+        .expect("build dynamic gpu handle");
+    reset_gpu_strategy_executable_cache();
+    let _ = get_or_build_gpu_strategy_executable(&handle, 0).expect("warm executable");
+    let uploaded = upload_double_ma_dynamic_program_batch(
+        &lr,
+        &fast_values,
+        &slow_values,
+        fast_batch.cols,
+        &fast_periods,
+        &slow_periods,
+        &combos,
+        0,
+        &strategy,
+        0,
+    )
+    .expect("upload dynamic alma batch");
+    let _ = eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, &strategy, &handle)
+        .expect("warm dynamic execution");
+
+    let mut group = c.benchmark_group(format!(
+        "double_ma/dynamic_program_execution/alma_alma/200k/large/{pairs}pairs"
+    ));
+    group.measurement_time(Duration::from_secs(6));
+    group.sample_size(10);
+    group.bench_function("gpu_kernel_warm_uploaded", |b| {
+        b.iter(|| {
+            let _ = eval_uploaded_double_ma_dynamic_program_gpu_kernel(
+                &uploaded,
+                &strategy,
+                &handle,
+            )
+            .expect("dynamic gpu execution");
+        })
+    });
+    group.finish();
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_dynamic_program_execution(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
@@ -1190,6 +1507,8 @@ criterion_group!(
     bench_double_ma_gpu_kernel_extra_ma,
     bench_double_ma_gpu_kernel_strategy_profiles,
     bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles,
+    bench_double_ma_dynamic_contract_overhead,
+    bench_double_ma_dynamic_program_execution,
     bench_double_ma_gpu_kernel_vdps
 );
 criterion_main!(benches);

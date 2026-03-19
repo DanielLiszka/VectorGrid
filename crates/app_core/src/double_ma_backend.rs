@@ -5,6 +5,7 @@ use crate::double_ma::{
     kernel_regime_filters_enabled, Backend, IndicatorRouteDecisionSummary,
     IndicatorRoutePlanSummary,
 };
+use crate::strategy_gpu_runtime::StrategyCapabilityReport;
 
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::cuda_available;
@@ -103,6 +104,34 @@ pub(crate) fn gpu_kernel_blockers_for_request(
     blockers
 }
 
+#[allow(dead_code)]
+pub(crate) fn build_strategy_capability_report_for_request(
+    fast_ma: &str,
+    slow_ma: &str,
+    strategy: &StrategyConfig,
+    regime_filter_present: bool,
+    objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+) -> StrategyCapabilityReport {
+    let reasons = gpu_kernel_blockers_for_request(
+        fast_ma,
+        slow_ma,
+        strategy,
+        regime_filter_present,
+        objective,
+        top_k,
+        include_all,
+    );
+    let gpu_supported = reasons.is_empty();
+    StrategyCapabilityReport {
+        gpu_static_supported: gpu_supported,
+        gpu_dynamic_supported: gpu_supported,
+        cpu_dynamic_supported: true,
+        reasons,
+    }
+}
+
 fn map_hybrid_capability_label(cap: crate::ma_policy::HybridCapabilityTier) -> &'static str {
     match cap {
         crate::ma_policy::HybridCapabilityTier::GpuKernel => "gpu_kernel",
@@ -138,4 +167,92 @@ pub(crate) fn build_indicator_route_plan_summary(
         gpu_preferred_by_speedup: plan.slow.gpu_preferred_by_speedup,
     };
     IndicatorRoutePlanSummary { fast, slow }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ta_strategies::double_ma::ExitMode;
+
+    #[test]
+    fn capability_report_marks_gpu_supported_for_plain_sma_request() {
+        let report = build_strategy_capability_report_for_request(
+            "sma",
+            "sma",
+            &StrategyConfig::default(),
+            false,
+            ObjectiveKind::Sharpe,
+            50,
+            false,
+        );
+        assert!(report.gpu_static_supported);
+        assert!(report.gpu_dynamic_supported);
+        assert!(report.cpu_dynamic_supported);
+        assert!(report.reasons.is_empty());
+    }
+
+    #[test]
+    fn capability_report_keeps_cpu_dynamic_when_gpu_is_blocked() {
+        let report = build_strategy_capability_report_for_request(
+            "alma",
+            "alma",
+            &StrategyConfig::default(),
+            false,
+            ObjectiveKind::Omega,
+            50,
+            false,
+        );
+        assert!(!report.gpu_static_supported);
+        assert!(!report.gpu_dynamic_supported);
+        assert!(report.cpu_dynamic_supported);
+        assert!(!report.reasons.is_empty());
+    }
+
+    #[test]
+    fn capability_report_blocks_kaufman_stop_for_gpu_dynamic_but_keeps_cpu_dynamic() {
+        let mut strategy = StrategyConfig::default();
+        strategy.exit_mode = ExitMode::KaufmanStop;
+
+        let report = build_strategy_capability_report_for_request(
+            "alma",
+            "alma",
+            &strategy,
+            false,
+            ObjectiveKind::Sharpe,
+            50,
+            false,
+        );
+
+        assert!(!report.gpu_static_supported);
+        assert!(!report.gpu_dynamic_supported);
+        assert!(report.cpu_dynamic_supported);
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("kaufman-stop exit")));
+    }
+
+    #[test]
+    fn capability_report_blocks_execution_overlays_for_gpu_dynamic_but_keeps_cpu_dynamic() {
+        let mut strategy = StrategyConfig::default();
+        strategy.cooldown_bars = 2;
+
+        let report = build_strategy_capability_report_for_request(
+            "alma",
+            "alma",
+            &strategy,
+            false,
+            ObjectiveKind::Sharpe,
+            50,
+            false,
+        );
+
+        assert!(!report.gpu_static_supported);
+        assert!(!report.gpu_dynamic_supported);
+        assert!(report.cpu_dynamic_supported);
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("execution overlays")));
+    }
 }

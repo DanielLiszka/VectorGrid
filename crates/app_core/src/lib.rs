@@ -52,6 +52,7 @@ pub mod sharpe_stats;
 pub mod stats_common;
 pub mod strategy_dynamic;
 pub mod strategy_gpu_program;
+pub mod strategy_gpu_runtime;
 pub mod strategy_ir;
 pub mod strategy_plan;
 pub mod strategy_presets;
@@ -82,9 +83,10 @@ pub use timeframe::{parse_timeframe_label, resample_candles, TimeframeSpec};
 pub use double_ma::{
     compute_double_ma_drilldown_blocking_with_candles,
     compute_double_ma_local_stability_blocking_with_candles,
-    run_double_ma_optimization_blocking_with_candles, Backend, BackendOptimizationResult,
-    BackendUsed, DoubleMaDrilldownRequest, DoubleMaLocalStabilityRequest, DoubleMaParamsResolved,
-    DoubleMaRequest, LocalStabilityResult, OptimizationModeResolved,
+    reset_dynamic_gpu_preflight_cache, run_double_ma_optimization_blocking_with_candles, Backend,
+    BackendOptimizationResult, BackendUsed, DoubleMaDrilldownRequest,
+    DoubleMaLocalStabilityRequest, DoubleMaParamsResolved, DoubleMaRequest, LocalStabilityResult,
+    OptimizationModeResolved,
 };
 
 pub use composite_cpu::{
@@ -175,9 +177,18 @@ pub use strategy_ir::{
 };
 
 pub use strategy_gpu_program::{
-    compile_gpu_predicate_program, CompiledGpuPredicateProgram, GpuConditionGroupSlice,
-    GpuConditionPredicate, GpuIndicatorSlot, GpuSignalBindings, GpuValueOperand,
-    GpuValueSourceKind, STRATEGY_GPU_PROGRAM_SCHEMA_VERSION,
+    compile_gpu_predicate_program, compile_gpu_predicate_program_abi,
+    CompiledGpuPredicateProgram, CompiledGpuPredicateProgramAbi, GpuConditionAbi,
+    GpuConditionGroupAbi, GpuConditionGroupSlice, GpuConditionPredicate, GpuIndicatorSlot,
+    GpuIndicatorSlotAbi, GpuSignalBindings, GpuSignalBindingsAbi, GpuValueOperand,
+    GpuValueOperandAbi, GpuValueSourceKind, STRATEGY_GPU_EXECUTABLE_ABI_VERSION,
+    STRATEGY_GPU_PROGRAM_SCHEMA_VERSION,
+};
+
+pub use strategy_gpu_runtime::{
+    get_or_build_gpu_strategy_executable, gpu_strategy_executable_cache_stats,
+    reset_gpu_strategy_executable_cache, GpuStrategyExecutable, GpuStrategyExecutableCacheKey,
+    StrategyCapabilityReport, StrategyExecutableCacheStats, StrategyHandle,
 };
 
 pub use strategy_plan::{
@@ -192,5 +203,13 @@ pub use strategy_dynamic::{
     prepare_dynamic_indicator_slot_series, prepare_dynamic_indicator_slot_series_cpu,
     prepare_dynamic_indicator_slot_series_cpu_with_controls,
     prepare_dynamic_indicator_slot_series_with_controls, DynamicIndicatorStagingProgressFn,
-    PreparedDynamicCpuContext,
+    DynamicDoubleMaStrategyIrPreview, PreparedDynamicCpuContext,
+    preview_dynamic_double_ma_strategy_ir,
+};
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub use gpu_backtest_kernel::{
+    eval_double_ma_dynamic_program_precomputed_gpu_kernel,
+    eval_uploaded_double_ma_dynamic_program_gpu_kernel, upload_double_ma_dynamic_program_batch,
+    UploadedDoubleMaDynamicProgramBatch,
 };

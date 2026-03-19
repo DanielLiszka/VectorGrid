@@ -3,6 +3,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import {
   applyPreset,
   cancelOptimization,
+  encodeDynamicStrategyConstantBits,
+  previewDynamicStrategyIr,
   presetKernel,
   refreshGpuStatus,
   runGpuParityCheck,
@@ -84,6 +86,29 @@ function installDefaultInvokeCommandMock(): void {
         path: 'runs/vectorgrid_run_test.json',
         bytes: 128,
       }
+    }
+    if (command === 'preview_dynamic_double_ma_strategy_ir_json') {
+      return {
+        schema_compatibility: 'Compatible',
+        ir: { profile: 'double_ma' },
+        pretty_json: '{\n  \"profile\": \"double_ma\"\n}',
+        preview: {
+          requested_backend: 'gpu_unified',
+          resolved_backend: 'cpu',
+          plan_fingerprint_hex: 'abc123',
+          indicator_count: 2,
+          condition_count: 2,
+          group_count: 2,
+          capability: {
+            gpu_dynamic_supported: false,
+            cpu_dynamic_supported: true,
+            reasons: ['halftrend unsupported in gpu v1'],
+          },
+        },
+      }
+    }
+    if (command === 'encode_dynamic_strategy_constant_bits') {
+      return { bits: Number(-1.25).toString() }
     }
     return {}
   })
@@ -267,6 +292,203 @@ describe('optimizeService', () => {
     expect(optimize.statusLine).toBe('Parity check OK.')
     expect(optimize.gpuDeviceMeta).toContain('Automatic CUDA device')
     expect(invokeCommandMock).toHaveBeenCalledWith('run_double_ma_optimization', expect.any(Object))
+  })
+
+  it('previews DynamicDoubleMa before running the validated optimization request', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'DynamicDoubleMa',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      dynamicStrategyIrJson: '{"profile":"double_ma"}',
+      statusLine: 'Ready.',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      objective: 'Sharpe',
+      topK: '20',
+      includeAll: 'false',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-dyn',
+      dataFields: ['close'],
+      dataLen: 256,
+    }
+
+    await runOptimization({ switchTab: false })
+
+    const optimize = (pinia.state.value as Record<string, unknown>).optimize as Record<string, unknown>
+    const previewCallIndex = invokeCommandMock.mock.calls.findIndex(([command]) => command === 'preview_dynamic_double_ma_strategy_ir_json')
+    const runCallIndex = invokeCommandMock.mock.calls.findIndex(([command]) => command === 'run_double_ma_optimization')
+    expect(previewCallIndex).toBeGreaterThanOrEqual(0)
+    expect(runCallIndex).toBeGreaterThan(previewCallIndex)
+    expect(String(optimize.statusLine || '')).not.toContain('preview-only')
+    expect(firstOptimizationRunRequest()).toMatchObject({
+      strategy_kind: 'DynamicDoubleMa',
+      dynamic_strategy_ir: { profile: 'double_ma' },
+    })
+  })
+
+  it('previews constrained DynamicDoubleMa JSON through the Tauri command and stores backend resolution', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'DynamicDoubleMa',
+      backend: 'GpuKernel',
+      dynamicStrategyIrJson: '{"profile":"double_ma"}',
+      dynamicStrategyPreviewMeta: 'Dynamic strategy preview: —',
+      dynamicStrategyPreviewReasons: 'Reasons: —',
+      dynamicStrategyPreviewPrettyJson: '',
+      statusLine: 'Ready.',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      objective: 'Sharpe',
+      topK: '20',
+      includeAll: 'false',
+    }
+
+    await previewDynamicStrategyIr()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      'preview_dynamic_double_ma_strategy_ir_json',
+      expect.objectContaining({
+        ir_json: '{"profile":"double_ma"}',
+        requested_backend: 'gpu_unified',
+      }),
+    )
+    const optimize = (pinia.state.value as Record<string, unknown>).optimize as Record<string, unknown>
+    expect(String(optimize.dynamicStrategyPreviewMeta || '')).toContain('resolved=cpu')
+    expect(String(optimize.dynamicStrategyPreviewReasons || '')).toContain('halftrend unsupported')
+    expect(String(optimize.dynamicStrategyIrJson || '')).toContain('"profile"')
+  })
+
+  it('preserves non-grid double-ma modes through the product request path when exact-grid outputs are disabled', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'DoubleMa',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'CoarseToFine',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '0',
+      exportAllCsvPath: '',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      dmConstraintMinTrades: '',
+      dmConstraintMaxDd: '',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-mode-preserve',
+      dataFields: ['timestamp', 'close'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization({ switchTab: false })
+
+    const req = firstOptimizationRunRequest()
+    expect(req.mode).toBe('CoarseToFine')
+  })
+
+  it('pins non-grid double-ma modes back to Grid through the product request path when exact-grid outputs are requested', async () => {
+    ;(pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: 'DoubleMa',
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+    }
+    ;(pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'GpuVdps',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
+    }
+    ;(pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: '10000',
+      costPreset: 'custom',
+      feeBps: '1',
+      spreadBps: '2',
+      slippageBps: '0',
+      epsRel: '0',
+      stopLossPct: '',
+      takeProfitPct: '',
+      cooldownBars: '0',
+      signalPersistenceBars: '1',
+      exitMode: 'cross',
+      kaufmanStopPeriod: '22',
+      kaufmanStopMult: '2.0',
+      kaufmanStopMaType: 'sma',
+      dmConstraintMinTrades: '',
+      dmConstraintMaxDd: '',
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      dataId: 'data-mode-grid',
+      dataFields: ['timestamp', 'close'],
+      dataLen: '10000',
+      dataTimeframe: '1m',
+    }
+
+    await runOptimization({ switchTab: false })
+
+    const req = firstOptimizationRunRequest()
+    expect(req.mode).toBe('Grid')
+  })
+
+  it('encodes dynamic strategy constants through the Tauri helper', async () => {
+    invokeCommandMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'encode_dynamic_strategy_constant_bits') {
+        return { bits: (Number(args?.value) as number).toString() }
+      }
+      return {}
+    })
+
+    const bits = await encodeDynamicStrategyConstantBits(1.5)
+
+    expect(bits).toBe('1.5')
+    expect(invokeCommandMock).toHaveBeenCalledWith('encode_dynamic_strategy_constant_bits', { value: 1.5 })
   })
 
   it('runs optimization command path and validation service dispatch', async () => {

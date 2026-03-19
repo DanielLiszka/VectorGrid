@@ -1,4 +1,7 @@
+use crate::asr::eval_asr_metrics_from_desired;
 use crate::composite_cpu::{compute_macz_hist, compute_ott_line};
+use crate::double_ma_backend::build_strategy_capability_report_for_request;
+use crate::double_ma_strategy::validate_strategy_cfg;
 use crate::double_ma::{
     compute_halftrend_trend, compute_kaufman_stop_series, compute_log_returns_f64,
     eval_metrics_f64_with_exit_mode, strategy_cfg_for_optimization,
@@ -12,8 +15,13 @@ use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_with_inputs, PreparedCudaIndicatorInputs,
 };
 use crate::strategy_ir::{build_static_strategy_ir, StaticStrategyIrInput, StrategyProfileKind};
-use crate::strategy_plan::{compile_strategy_plan, CompiledStrategyPlan, StrategyPlanBackend};
+use crate::strategy_plan::{
+    compile_strategy_plan, CompiledConditionGroup, CompiledConditionOp, CompiledStrategyPlan,
+    CompiledValueRef, StrategyPlanBackend,
+};
+use crate::strategy_gpu_runtime::{StrategyCapabilityReport, StrategyHandle};
 use crate::CompositeSignalMode;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::Write;
@@ -38,6 +46,307 @@ pub struct PreparedDynamicCpuContext {
 
 pub type DynamicIndicatorStagingProgressFn<'a> =
     dyn FnMut(usize, usize, &str, crate::strategy_plan::IndicatorRouteKind, bool) + 'a;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DynamicDoubleMaStrategyIrPreview {
+    pub capability: StrategyCapabilityReport,
+    pub requested_backend: StrategyPlanBackend,
+    pub resolved_backend: StrategyPlanBackend,
+    pub plan_fingerprint_hex: String,
+    pub indicator_count: usize,
+    pub condition_count: usize,
+    pub group_count: usize,
+}
+
+pub struct RunnableDynamicDoubleMaPlan {
+    pub ir: crate::strategy_ir::StrategyIr,
+    pub preview: DynamicDoubleMaStrategyIrPreview,
+    pub cpu_plan: CompiledStrategyPlan,
+    pub cpu_context: PreparedDynamicCpuContext,
+    pub gpu_handle: Option<StrategyHandle>,
+}
+
+const DYNAMIC_V1_MAX_INDICATORS: usize = 12;
+const DYNAMIC_V1_MAX_CONDITIONS: usize = 24;
+const DYNAMIC_V1_MAX_GROUPS: usize = 8;
+const DYNAMIC_V1_MAX_GROUP_CONDITIONS: usize = 8;
+
+fn enforce_dynamic_double_ma_v1_output_refs(
+    ir: &crate::strategy_ir::StrategyIr,
+) -> Result<(), String> {
+    use crate::indicator_catalog::{find_dynamic_indicator_descriptor, IndicatorValueType};
+
+    for indicator in &ir.program.indicators {
+        let Some(source_indicator_id) = indicator.indicator_id.as_deref() else {
+            continue;
+        };
+        let descriptor = find_dynamic_indicator_descriptor(source_indicator_id).ok_or_else(|| {
+            format!(
+                "unsupported_indicator: '{}' is not in dynamic indicator registry",
+                source_indicator_id
+            )
+        })?;
+        let output_id = crate::indicator_catalog::normalize_and_validate_indicator_output_ref(
+            descriptor.id.as_str(),
+            indicator.output_id.as_deref(),
+        )?;
+        let output = descriptor
+            .outputs
+            .iter()
+            .find(|candidate| candidate.id.eq_ignore_ascii_case(output_id.as_str()))
+            .ok_or_else(|| {
+                format!(
+                    "indicator '{}' output '{}' is not in the registry descriptor",
+                    descriptor.id, output_id
+                )
+            })?;
+        if !matches!(output.value_type, IndicatorValueType::F64 | IndicatorValueType::F32) {
+            return Err(format!(
+                "dynamic gpu v1 supports only floating scalar outputs; indicator '{}' output '{}' is {:?}",
+                descriptor.id, output.id, output.value_type
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn enforce_dynamic_double_ma_product_caps(ir: &crate::strategy_ir::StrategyIr) -> Result<(), String> {
+    let indicators = ir.program.indicators.len();
+    if indicators > DYNAMIC_V1_MAX_INDICATORS {
+        return Err(format!(
+            "dynamic gpu v1 supports at most {DYNAMIC_V1_MAX_INDICATORS} indicators, got {indicators}"
+        ));
+    }
+    let conditions = ir.program.conditions.len();
+    if conditions > DYNAMIC_V1_MAX_CONDITIONS {
+        return Err(format!(
+            "dynamic gpu v1 supports at most {DYNAMIC_V1_MAX_CONDITIONS} conditions, got {conditions}"
+        ));
+    }
+    let groups = ir.program.groups.len();
+    if groups > DYNAMIC_V1_MAX_GROUPS {
+        return Err(format!(
+            "dynamic gpu v1 supports at most {DYNAMIC_V1_MAX_GROUPS} groups, got {groups}"
+        ));
+    }
+    for group in &ir.program.groups {
+        let group_conditions = group.condition_ids.len();
+        if group_conditions > DYNAMIC_V1_MAX_GROUP_CONDITIONS {
+            return Err(format!(
+                "dynamic gpu v1 group '{}' exceeds max condition count ({group_conditions} > {DYNAMIC_V1_MAX_GROUP_CONDITIONS})",
+                group.id
+            ));
+        }
+    }
+
+    if !ir.execution.strategy.long_only && ir.program.signals.short_entry_group.is_none() {
+        return Err(
+            "dynamic gpu v1 bidirectional plans must bind short_entry_group explicitly"
+                .to_string(),
+        );
+    }
+
+    enforce_dynamic_double_ma_v1_output_refs(ir)?;
+
+    Ok(())
+}
+
+fn validate_dynamic_indicator_output_for_gpu_v1(
+    indicator_id: &str,
+    output: &DynamicIndicatorComputeOutput,
+) -> Result<(), String> {
+    match &output.series {
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::F64(_) => {}
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::I32(_) => {
+            return Err(format!(
+                "dynamic gpu v1 supports only floating scalar outputs; indicator '{indicator_id}' materialized i32 output '{}'",
+                output.output_id
+            ));
+        }
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::Bool(_) => {
+            return Err(format!(
+                "dynamic gpu v1 supports only floating scalar outputs; indicator '{indicator_id}' materialized bool output '{}'",
+                output.output_id
+            ));
+        }
+    }
+    if output.rows != 1 {
+        return Err(format!(
+            "dynamic gpu v1 supports only single-series scalar outputs; indicator '{indicator_id}' materialized {} row(s) for output '{}'",
+            output.rows, output.output_id
+        ));
+    }
+    if output
+        .pattern_ids
+        .as_ref()
+        .is_some_and(|pattern_ids| !pattern_ids.is_empty())
+    {
+        return Err(format!(
+            "dynamic gpu v1 does not support pattern or matrix-style outputs; indicator '{indicator_id}' output '{}' returned pattern ids",
+            output.output_id
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_dynamic_double_ma_gpu_handle_v1(
+    handle: &StrategyHandle,
+) -> Result<(), String> {
+    if handle.plan.backend != StrategyPlanBackend::GpuUnified {
+        return Err("dynamic gpu kernel requires a GpuUnified strategy plan".to_string());
+    }
+    if handle.plan.profile != crate::strategy_ir::StrategyProfileKind::DoubleMa {
+        return Err("dynamic gpu kernel currently supports only the DoubleMa profile".to_string());
+    }
+    if handle.plan.halftrend_filter.is_some() {
+        return Err(
+            "dynamic gpu kernel v1 does not support halftrend/regime-gated DoubleMa plans"
+                .to_string(),
+        );
+    }
+    if handle.plan.strategy.exit_mode != ta_strategies::double_ma::ExitMode::Cross {
+        return Err(
+            "dynamic gpu kernel v1 supports only plain crossover exit mode for DoubleMa"
+                .to_string(),
+        );
+    }
+    let program = handle
+        .gpu_program
+        .as_ref()
+        .ok_or_else(|| "strategy handle is missing a compiled gpu predicate program".to_string())?;
+    if program.indicator_slots.len() != 2 {
+        return Err(format!(
+            "dynamic gpu kernel v1 expects exactly 2 indicator slots, got {}",
+            program.indicator_slots.len()
+        ));
+    }
+    for slot in &program.indicator_slots {
+        if slot.indicator_index > 1 {
+            return Err(format!(
+                "dynamic gpu kernel v1 only supports fast/slow slots, found indicator slot index {}",
+                slot.indicator_index
+            ));
+        }
+    }
+    if let Some(abi) = handle.gpu_program_abi.as_ref() {
+        for condition in &abi.conditions {
+            let lhs_supported = matches!(condition.lhs.source, 0 | 3);
+            let rhs_supported = matches!(condition.rhs.source, 0 | 3);
+            if !lhs_supported || !rhs_supported {
+                return Err(
+                    "dynamic gpu kernel v1 supports only indicator and constant operands"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn preview_dynamic_double_ma_strategy_ir(
+    ir: &crate::strategy_ir::StrategyIr,
+    requested_backend: StrategyPlanBackend,
+    objective: ta_optimizer::ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+) -> Result<DynamicDoubleMaStrategyIrPreview, String> {
+    if ir.profile != StrategyProfileKind::DoubleMa {
+        return Err("dynamic strategy preview currently supports only profile=DoubleMa".to_string());
+    }
+
+    validate_strategy_cfg(&ir.execution.strategy)?;
+    enforce_dynamic_double_ma_product_caps(ir)?;
+
+    let regime_filter_present =
+        ir.execution.halftrend_filter.is_some() || ir.execution.halftrend.is_some();
+    let mut capability = build_strategy_capability_report_for_request(
+        ir.fast_ma.ma_type.as_str(),
+        ir.slow_ma.ma_type.as_str(),
+        &ir.execution.strategy,
+        regime_filter_present,
+        objective,
+        top_k,
+        include_all,
+    );
+
+    let mut compiled_backend = requested_backend;
+    let mut plan = match compile_strategy_plan(ir, requested_backend, None) {
+        Ok(plan) => plan,
+        Err(err) if requested_backend == StrategyPlanBackend::GpuUnified && capability.cpu_dynamic_supported => {
+            capability.gpu_static_supported = false;
+            capability.gpu_dynamic_supported = false;
+            capability.reasons.push(err);
+            compiled_backend = StrategyPlanBackend::Cpu;
+            compile_strategy_plan(ir, compiled_backend, None)?
+        }
+        Err(err) => return Err(err),
+    };
+
+    if compiled_backend == StrategyPlanBackend::GpuUnified
+        && !capability.gpu_dynamic_supported
+        && capability.cpu_dynamic_supported
+    {
+        compiled_backend = StrategyPlanBackend::Cpu;
+        plan = compile_strategy_plan(ir, compiled_backend, None)?;
+    }
+
+    if compiled_backend == StrategyPlanBackend::GpuUnified && capability.gpu_dynamic_supported {
+        let handle = StrategyHandle::from_plan(plan.clone(), capability.clone())?;
+        if let Err(reason) = validate_dynamic_double_ma_gpu_handle_v1(&handle) {
+            capability.gpu_static_supported = false;
+            capability.gpu_dynamic_supported = false;
+            capability.reasons.push(reason);
+            compiled_backend = StrategyPlanBackend::Cpu;
+            plan = compile_strategy_plan(ir, compiled_backend, None)?;
+        }
+    }
+
+    Ok(DynamicDoubleMaStrategyIrPreview {
+        capability,
+        requested_backend,
+        resolved_backend: compiled_backend,
+        plan_fingerprint_hex: plan.ir_fingerprint_hex.clone(),
+        indicator_count: plan.indicator_plan.len(),
+        condition_count: plan.conditions.len(),
+        group_count: plan.groups.len(),
+    })
+}
+
+pub fn prepare_runnable_dynamic_double_ma_plan(
+    ir: crate::strategy_ir::StrategyIr,
+    requested_backend: StrategyPlanBackend,
+    objective: ta_optimizer::ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    candles: &Candles,
+) -> Result<RunnableDynamicDoubleMaPlan, String> {
+    let preview = preview_dynamic_double_ma_strategy_ir(
+        &ir,
+        requested_backend,
+        objective,
+        top_k,
+        include_all,
+    )?;
+    let cpu_plan = compile_strategy_plan(&ir, StrategyPlanBackend::Cpu, None)?;
+    let cpu_context = prepare_dynamic_cpu_context(&cpu_plan, candles, ir.ma_source.as_str())?;
+    let gpu_handle = if preview.resolved_backend == StrategyPlanBackend::GpuUnified {
+        let gpu_plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None)?;
+        Some(StrategyHandle::from_plan(
+            gpu_plan,
+            preview.capability.clone(),
+        )?)
+    } else {
+        None
+    };
+    Ok(RunnableDynamicDoubleMaPlan {
+        ir,
+        preview,
+        cpu_plan,
+        cpu_context,
+        gpu_handle,
+    })
+}
 
 fn env_flag_enabled(name: &str) -> bool {
     match std::env::var(name) {
@@ -453,6 +762,7 @@ pub fn prepare_dynamic_indicator_slot_series_cpu_with_controls(
             Kernel::Auto,
         )
         .map_err(|e| e.to_string())?;
+        validate_dynamic_indicator_output_for_gpu_v1(slot.indicator_id.as_str(), &computed)?;
         cache.insert(cache_key, computed.clone());
         slot_outputs.insert(slot.indicator_id.clone(), computed);
         completed = completed.saturating_add(1);
@@ -605,6 +915,7 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
                     }
                 }
             };
+            validate_dynamic_indicator_output_for_gpu_v1(slot.indicator_id.as_str(), &computed)?;
 
             cache.insert(cache_key, computed.clone());
             slot_outputs.insert(slot.indicator_id.clone(), computed);
@@ -619,6 +930,337 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
             );
         }
         Ok(slot_outputs)
+    }
+}
+
+fn dynamic_indicator_series_f64<'a>(
+    output: &'a DynamicIndicatorComputeOutput,
+    indicator_id: &str,
+) -> Result<&'a [f64], String> {
+    match &output.series {
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::F64(values) => Ok(values.as_slice()),
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::I32(_) => Err(format!(
+            "dynamic indicator '{}' materialized i32 output at runtime",
+            indicator_id
+        )),
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::Bool(_) => Err(format!(
+            "dynamic indicator '{}' materialized bool output at runtime",
+            indicator_id
+        )),
+    }
+}
+
+fn load_double_ma_plan_indicator_value(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    index: u32,
+    t: usize,
+) -> Result<f64, String> {
+    let slot = plan
+        .indicator_plan
+        .get(index as usize)
+        .ok_or_else(|| format!("compiled indicator index {} out of range", index))?;
+    if t >= fast.len() || t >= slow.len() || t >= context.close.len() || t >= context.ma_source_prices.len()
+    {
+        return Err(format!("bar index {} out of range for dynamic plan load", t));
+    }
+
+    match slot.indicator_kind {
+        Some(crate::strategy_ir::IndicatorKind::FastMa) => Ok(fast[t]),
+        Some(crate::strategy_ir::IndicatorKind::SlowMa) => Ok(slow[t]),
+        Some(crate::strategy_ir::IndicatorKind::HalfTrendTrend) => context
+            .halftrend_filter
+            .as_deref()
+            .or(context.composite_halftrend.as_deref())
+            .and_then(|series| series.get(t).copied())
+            .ok_or_else(|| "halftrend series missing in dynamic cpu context".to_string()),
+        Some(crate::strategy_ir::IndicatorKind::MaczHist) => context
+            .macz_hist
+            .as_deref()
+            .and_then(|series| series.get(t).copied())
+            .ok_or_else(|| "macz series missing in dynamic cpu context".to_string()),
+        Some(crate::strategy_ir::IndicatorKind::OttLine) => context
+            .ott_line
+            .as_deref()
+            .and_then(|series| series.get(t).copied())
+            .ok_or_else(|| "ott series missing in dynamic cpu context".to_string()),
+        Some(crate::strategy_ir::IndicatorKind::TrendQualityRegime)
+        | Some(crate::strategy_ir::IndicatorKind::BreakoutRegime) => Err(format!(
+            "indicator '{}' is not supported in the DoubleMa dynamic cpu evaluator",
+            slot.indicator_id
+        )),
+        None => {
+            let output = context
+                .dynamic_slot_series
+                .get(slot.indicator_id.as_str())
+                .ok_or_else(|| format!("dynamic indicator slot '{}' missing from cpu context", slot.indicator_id))?;
+            let series = dynamic_indicator_series_f64(output, slot.indicator_id.as_str())?;
+            series
+                .get(t)
+                .copied()
+                .ok_or_else(|| format!("dynamic indicator '{}' missing bar {}", slot.indicator_id, t))
+        }
+    }
+}
+
+fn load_double_ma_value_ref(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    value: &CompiledValueRef,
+    t: usize,
+) -> Result<f64, String> {
+    match value {
+        CompiledValueRef::IndicatorIndex { index } => {
+            load_double_ma_plan_indicator_value(plan, context, fast, slow, *index, t)
+        }
+        CompiledValueRef::MaSource => context
+            .ma_source_prices
+            .get(t)
+            .copied()
+            .ok_or_else(|| format!("ma_source missing bar {}", t)),
+        CompiledValueRef::Close => context
+            .close
+            .get(t)
+            .copied()
+            .ok_or_else(|| format!("close missing bar {}", t)),
+        CompiledValueRef::ConstantBits { bits } => Ok(f64::from_bits(*bits)),
+    }
+}
+
+fn eval_double_ma_compiled_condition(
+    condition: &CompiledConditionOp,
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    sig_t: usize,
+    prev_t: usize,
+) -> Result<bool, String> {
+    let lhs_now = load_double_ma_value_ref(plan, context, fast, slow, &condition.lhs, sig_t)?;
+    let rhs_now = load_double_ma_value_ref(plan, context, fast, slow, &condition.rhs, sig_t)?;
+    let lhs_prev = load_double_ma_value_ref(plan, context, fast, slow, &condition.lhs, prev_t)?;
+    let rhs_prev = load_double_ma_value_ref(plan, context, fast, slow, &condition.rhs, prev_t)?;
+
+    let finite_now = lhs_now.is_finite() && rhs_now.is_finite();
+    let finite_prev = lhs_prev.is_finite() && rhs_prev.is_finite();
+
+    Ok(match condition.op {
+        crate::strategy_ir::ConditionOp::Gt => finite_now && lhs_now > rhs_now,
+        crate::strategy_ir::ConditionOp::Ge => finite_now && lhs_now >= rhs_now,
+        crate::strategy_ir::ConditionOp::Lt => finite_now && lhs_now < rhs_now,
+        crate::strategy_ir::ConditionOp::Le => finite_now && lhs_now <= rhs_now,
+        crate::strategy_ir::ConditionOp::CrossUp => {
+            finite_now && finite_prev && lhs_prev <= rhs_prev && lhs_now > rhs_now
+        }
+        crate::strategy_ir::ConditionOp::CrossDown => {
+            finite_now && finite_prev && lhs_prev >= rhs_prev && lhs_now < rhs_now
+        }
+    })
+}
+
+fn eval_double_ma_compiled_group(
+    group_index: Option<u32>,
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    sig_t: usize,
+    prev_t: usize,
+) -> Result<bool, String> {
+    let Some(group_index) = group_index else {
+        return Ok(false);
+    };
+    let group: &CompiledConditionGroup = plan
+        .groups
+        .get(group_index as usize)
+        .ok_or_else(|| format!("compiled group index {} out of range", group_index))?;
+    match group.mode {
+        crate::strategy_ir::ConditionGroupMode::All => {
+            for condition_index in &group.condition_indexes {
+                let condition = plan
+                    .conditions
+                    .get(*condition_index as usize)
+                    .ok_or_else(|| format!("compiled condition index {} out of range", condition_index))?;
+                if !eval_double_ma_compiled_condition(
+                    condition, plan, context, fast, slow, sig_t, prev_t,
+                )? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        crate::strategy_ir::ConditionGroupMode::Any => {
+            for condition_index in &group.condition_indexes {
+                let condition = plan
+                    .conditions
+                    .get(*condition_index as usize)
+                    .ok_or_else(|| format!("compiled condition index {} out of range", condition_index))?;
+                if eval_double_ma_compiled_condition(
+                    condition, plan, context, fast, slow, sig_t, prev_t,
+                )? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn build_dynamic_double_ma_desired_positions(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    start_t: usize,
+) -> Result<Vec<i32>, String> {
+    let n = fast.len();
+    let mut out = vec![0; n];
+    if n == 0 || start_t >= n || slow.len() != n || context.close.len() != n || context.ma_source_prices.len() != n {
+        return Ok(out);
+    }
+
+    let trade_offset = if plan.strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let no_flip = !plan.strategy.allow_flip;
+    let long_only = plan.strategy.long_only;
+    let mut pos: i32 = 0;
+
+    for t in start_t..n {
+        let sig_t = t.saturating_sub(trade_offset);
+        let prev_t = sig_t.saturating_sub(1);
+
+        let long_entry = eval_double_ma_compiled_group(
+            plan.signals.long_entry_group,
+            plan,
+            context,
+            fast,
+            slow,
+            sig_t,
+            prev_t,
+        )?;
+        let long_exit = eval_double_ma_compiled_group(
+            plan.signals.long_exit_group,
+            plan,
+            context,
+            fast,
+            slow,
+            sig_t,
+            prev_t,
+        )?;
+        let short_entry = eval_double_ma_compiled_group(
+            plan.signals.short_entry_group,
+            plan,
+            context,
+            fast,
+            slow,
+            sig_t,
+            prev_t,
+        )?;
+        let short_exit = eval_double_ma_compiled_group(
+            plan.signals.short_exit_group,
+            plan,
+            context,
+            fast,
+            slow,
+            sig_t,
+            prev_t,
+        )?;
+
+        let mut seeded_entry = false;
+        let mut seeded_short = false;
+        if t == start_t && pos == 0 && plan.indicator_plan.len() >= 2 {
+            let fast_now =
+                load_double_ma_plan_indicator_value(plan, context, fast, slow, 0, sig_t)?;
+            let slow_now =
+                load_double_ma_plan_indicator_value(plan, context, fast, slow, 1, sig_t)?;
+            if fast_now.is_finite() && slow_now.is_finite() {
+                let eps = if plan.strategy.eps_rel > 0.0 {
+                    plan.strategy.eps_rel * slow_now.abs().max(1.0)
+                } else {
+                    0.0
+                };
+                seeded_entry = fast_now > (slow_now + eps);
+                seeded_short = fast_now < (slow_now - eps);
+            }
+        }
+
+        let mut desired = pos;
+        if pos == 0 {
+            if long_entry || seeded_entry {
+                desired = 1;
+            } else if !long_only && (short_entry || seeded_short) {
+                desired = -1;
+            }
+        } else if pos > 0 {
+            if !long_only && short_entry {
+                desired = if no_flip { 0 } else { -1 };
+            } else if long_exit {
+                desired = 0;
+            }
+        } else if long_entry {
+            desired = if no_flip { 0 } else { 1 };
+        } else if short_exit {
+            desired = 0;
+        }
+
+        if long_only && desired < 0 {
+            desired = 0;
+        }
+        out[t] = desired;
+
+        if desired != pos {
+            if pos == 0 || desired == 0 {
+                pos = desired;
+            } else if no_flip {
+                pos = 0;
+            } else {
+                pos = desired;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub fn eval_dynamic_plan_metrics_cpu_with_candles(
+    plan: &CompiledStrategyPlan,
+    candles: &Candles,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    start_t: usize,
+    compute_sharpe: bool,
+) -> Result<Metrics, String> {
+    match plan.profile {
+        StrategyProfileKind::DoubleMa => {
+            let desired =
+                build_dynamic_double_ma_desired_positions(plan, context, fast, slow, start_t)?;
+            let metrics = eval_asr_metrics_from_desired(
+                candles,
+                context.lr.as_slice(),
+                desired.as_slice(),
+                start_t,
+                &plan.strategy,
+            );
+            if compute_sharpe {
+                Ok(metrics)
+            } else {
+                let mut fast_metrics = metrics;
+                fast_metrics.sharpe = 0.0;
+                Ok(fast_metrics)
+            }
+        }
+        _ => eval_dynamic_plan_metrics_cpu(
+            plan,
+            context,
+            fast,
+            slow,
+            start_t,
+            compute_sharpe,
+        ),
     }
 }
 
@@ -637,6 +1279,17 @@ pub fn eval_dynamic_plan_metrics_cpu(
         return Ok(Metrics::default());
     }
 
+    if plan.profile == StrategyProfileKind::DoubleMa {
+        return eval_dynamic_double_ma_metrics_cpu_generic(
+            plan,
+            context,
+            fast,
+            slow,
+            start_t,
+            compute_sharpe,
+        );
+    }
+
     eval_dynamic_plan_metrics_cpu_precomputed(
         plan,
         &context.lr,
@@ -652,6 +1305,465 @@ pub fn eval_dynamic_plan_metrics_cpu(
         start_t,
         compute_sharpe,
     )
+}
+
+#[inline]
+fn load_dynamic_indicator_slot_value(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    slot_index: u32,
+    t: usize,
+) -> f64 {
+    let Some(slot) = plan.indicator_plan.get(slot_index as usize) else {
+        return f64::NAN;
+    };
+    if matches!(
+        slot.indicator_kind,
+        Some(crate::strategy_ir::IndicatorKind::FastMa)
+    ) || slot.indicator_id.eq_ignore_ascii_case("fast_ma")
+    {
+        return fast.get(t).copied().unwrap_or(f64::NAN);
+    }
+    if matches!(
+        slot.indicator_kind,
+        Some(crate::strategy_ir::IndicatorKind::SlowMa)
+    ) || slot.indicator_id.eq_ignore_ascii_case("slow_ma")
+    {
+        return slow.get(t).copied().unwrap_or(f64::NAN);
+    }
+    let Some(output) = context.dynamic_slot_series.get(slot.indicator_id.as_str()) else {
+        return f64::NAN;
+    };
+    match &output.series {
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::F64(values) => {
+            values.get(t).copied().unwrap_or(f64::NAN)
+        }
+        _ => f64::NAN,
+    }
+}
+
+#[inline]
+fn load_compiled_value_for_dynamic_double_ma(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    value: &crate::strategy_plan::CompiledValueRef,
+    t: usize,
+) -> f64 {
+    match value {
+        crate::strategy_plan::CompiledValueRef::IndicatorIndex { index } => {
+            load_dynamic_indicator_slot_value(plan, context, fast, slow, *index, t)
+        }
+        crate::strategy_plan::CompiledValueRef::MaSource => {
+            context.ma_source_prices.get(t).copied().unwrap_or(f64::NAN)
+        }
+        crate::strategy_plan::CompiledValueRef::Close => {
+            context.close.get(t).copied().unwrap_or(f64::NAN)
+        }
+        crate::strategy_plan::CompiledValueRef::ConstantBits { bits } => f64::from_bits(*bits),
+    }
+}
+
+#[inline]
+fn eval_dynamic_condition_for_double_ma(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    condition: &crate::strategy_plan::CompiledConditionOp,
+    sig_t: usize,
+    prev_t: usize,
+) -> bool {
+    let lhs_now =
+        load_compiled_value_for_dynamic_double_ma(plan, context, fast, slow, &condition.lhs, sig_t);
+    let rhs_now =
+        load_compiled_value_for_dynamic_double_ma(plan, context, fast, slow, &condition.rhs, sig_t);
+    if !lhs_now.is_finite() || !rhs_now.is_finite() {
+        return false;
+    }
+    match condition.op {
+        crate::strategy_ir::ConditionOp::Gt => lhs_now > rhs_now,
+        crate::strategy_ir::ConditionOp::Ge => lhs_now >= rhs_now,
+        crate::strategy_ir::ConditionOp::Lt => lhs_now < rhs_now,
+        crate::strategy_ir::ConditionOp::Le => lhs_now <= rhs_now,
+        crate::strategy_ir::ConditionOp::CrossUp => {
+            let lhs_prev = load_compiled_value_for_dynamic_double_ma(
+                plan,
+                context,
+                fast,
+                slow,
+                &condition.lhs,
+                prev_t,
+            );
+            let rhs_prev = load_compiled_value_for_dynamic_double_ma(
+                plan,
+                context,
+                fast,
+                slow,
+                &condition.rhs,
+                prev_t,
+            );
+            lhs_prev.is_finite() && rhs_prev.is_finite() && lhs_prev <= rhs_prev && lhs_now > rhs_now
+        }
+        crate::strategy_ir::ConditionOp::CrossDown => {
+            let lhs_prev = load_compiled_value_for_dynamic_double_ma(
+                plan,
+                context,
+                fast,
+                slow,
+                &condition.lhs,
+                prev_t,
+            );
+            let rhs_prev = load_compiled_value_for_dynamic_double_ma(
+                plan,
+                context,
+                fast,
+                slow,
+                &condition.rhs,
+                prev_t,
+            );
+            lhs_prev.is_finite() && rhs_prev.is_finite() && lhs_prev >= rhs_prev && lhs_now < rhs_now
+        }
+    }
+}
+
+#[inline]
+fn eval_dynamic_group_for_double_ma(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    group_index: Option<u32>,
+    sig_t: usize,
+    prev_t: usize,
+) -> bool {
+    let Some(group_index) = group_index else {
+        return false;
+    };
+    let Some(group) = plan.groups.get(group_index as usize) else {
+        return false;
+    };
+    let is_all = matches!(group.mode, crate::strategy_ir::ConditionGroupMode::All);
+    let mut aggregate = is_all;
+    for condition_index in &group.condition_indexes {
+        let Some(condition) = plan.conditions.get(*condition_index as usize) else {
+            return false;
+        };
+        let ok = eval_dynamic_condition_for_double_ma(
+            plan,
+            context,
+            fast,
+            slow,
+            condition,
+            sig_t,
+            prev_t,
+        );
+        if is_all {
+            aggregate &= ok;
+            if !aggregate {
+                break;
+            }
+        } else {
+            aggregate |= ok;
+            if aggregate {
+                break;
+            }
+        }
+    }
+    aggregate
+}
+
+fn eval_dynamic_double_ma_metrics_cpu_generic(
+    plan: &CompiledStrategyPlan,
+    context: &PreparedDynamicCpuContext,
+    fast: &[f64],
+    slow: &[f64],
+    start_t: usize,
+    compute_sharpe: bool,
+) -> Result<Metrics, String> {
+    let n_total = context.lr.len();
+    if n_total < 2
+        || fast.len() != n_total
+        || slow.len() != n_total
+        || context.close.len() != n_total
+        || context.ma_source_prices.len() != n_total
+        || start_t >= n_total
+    {
+        return Ok(Metrics::default());
+    }
+
+    let cfg = &plan.strategy;
+    let commission = cfg.effective_commission();
+    if (!(0.0..1.0).contains(&commission)) && commission != 0.0 {
+        return Ok(Metrics::default());
+    }
+    let log_cost = if commission > 0.0 {
+        (1.0 - commission).ln()
+    } else {
+        0.0
+    };
+    let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
+    let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
+    let trade_offset = if cfg.trade_on_next_bar { 1usize } else { 0usize };
+
+    let mut pos: i32 = 0;
+    let mut log_eq = 0.0_f64;
+    let mut log_peak = 0.0_f64;
+    let mut max_log_dd = 0.0_f64;
+    let mut trades: u32 = 0;
+    let mut trade_log_ret = 0.0_f64;
+
+    let mut n_obs: u64 = 0;
+    let mut mean = 0.0_f64;
+    let mut m2 = 0.0_f64;
+    let mut sum_neg_sq = 0.0_f64;
+    let mut sum_pos_r = 0.0_f64;
+    let mut sum_neg_abs_r = 0.0_f64;
+    let mut sum_abs_pos: i64 = 0;
+    let mut sum_pos: i64 = 0;
+
+    for t in start_t..n_total {
+        let sig_t = t.saturating_sub(trade_offset);
+        let prev_t = sig_t.saturating_sub(1);
+
+        let long_entry = eval_dynamic_group_for_double_ma(
+            plan,
+            context,
+            fast,
+            slow,
+            plan.signals.long_entry_group,
+            sig_t,
+            prev_t,
+        );
+        let long_exit = eval_dynamic_group_for_double_ma(
+            plan,
+            context,
+            fast,
+            slow,
+            plan.signals.long_exit_group,
+            sig_t,
+            prev_t,
+        );
+        let short_entry = eval_dynamic_group_for_double_ma(
+            plan,
+            context,
+            fast,
+            slow,
+            plan.signals.short_entry_group,
+            sig_t,
+            prev_t,
+        );
+        let short_exit = eval_dynamic_group_for_double_ma(
+            plan,
+            context,
+            fast,
+            slow,
+            plan.signals.short_exit_group,
+            sig_t,
+            prev_t,
+        );
+
+        let mut seeded_entry = false;
+        let mut seeded_short = false;
+        if t == start_t && pos == 0 && plan.indicator_plan.len() >= 2 {
+            let fast_now = load_dynamic_indicator_slot_value(plan, context, fast, slow, 0, sig_t);
+            let slow_now = load_dynamic_indicator_slot_value(plan, context, fast, slow, 1, sig_t);
+            if fast_now.is_finite() && slow_now.is_finite() {
+                let eps = if cfg.eps_rel > 0.0 {
+                    cfg.eps_rel * 1.0_f64.max(slow_now.abs())
+                } else {
+                    0.0
+                };
+                seeded_entry = fast_now > (slow_now + eps);
+                seeded_short = fast_now < (slow_now - eps);
+            }
+        }
+
+        let mut desired = pos;
+        if pos == 0 {
+            if long_entry || seeded_entry {
+                desired = 1;
+            } else if !cfg.long_only && (short_entry || seeded_short) {
+                desired = -1;
+            }
+        } else if pos > 0 {
+            if !cfg.long_only && short_entry {
+                desired = if cfg.allow_flip { -1 } else { 0 };
+            } else if long_exit {
+                desired = 0;
+            }
+        } else if long_entry {
+            desired = if cfg.allow_flip { 1 } else { 0 };
+        } else if short_exit {
+            desired = 0;
+        }
+        if cfg.long_only && desired < 0 {
+            desired = 0;
+        }
+
+        if desired != pos {
+            if pos == 0 || desired == 0 {
+                if log_cost != 0.0 {
+                    log_eq += log_cost;
+                }
+                trades = trades.saturating_add(1);
+                pos = desired;
+                trade_log_ret = if pos != 0 && log_cost != 0.0 {
+                    log_cost
+                } else {
+                    0.0
+                };
+            } else if !cfg.allow_flip {
+                if log_cost != 0.0 {
+                    log_eq += log_cost;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                trade_log_ret = 0.0;
+            } else {
+                if log_cost != 0.0 {
+                    log_eq += 2.0 * log_cost;
+                }
+                trades = trades.saturating_add(2);
+                pos = desired;
+                trade_log_ret = if log_cost != 0.0 { log_cost } else { 0.0 };
+            }
+        }
+
+        let pos_bar = pos;
+        let lr_t = context.lr[t];
+        let step_log = (pos_bar as f64) * lr_t;
+        log_eq += step_log;
+
+        if pos_bar != 0 {
+            trade_log_ret += step_log;
+            let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
+            let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
+            if hit_stop || hit_take {
+                if log_cost != 0.0 {
+                    log_eq += log_cost;
+                }
+                trades = trades.saturating_add(1);
+                pos = 0;
+                trade_log_ret = 0.0;
+            }
+        }
+
+        if log_eq > log_peak {
+            log_peak = log_eq;
+        }
+        let dd_log = log_peak - log_eq;
+        if dd_log > max_log_dd {
+            max_log_dd = dd_log;
+        }
+
+        let step_r = if pos_bar == 0 {
+            0.0
+        } else {
+            (pos_bar as f64) * lr_t.exp_m1()
+        };
+
+        if compute_sharpe {
+            n_obs = n_obs.saturating_add(1);
+            let delta = step_r - mean;
+            mean += delta / n_obs as f64;
+            let delta2 = step_r - mean;
+            m2 += delta * delta2;
+            if step_r < 0.0 {
+                sum_neg_sq += step_r * step_r;
+                sum_neg_abs_r += -step_r;
+            } else {
+                sum_pos_r += step_r;
+            }
+        } else {
+            n_obs = n_obs.saturating_add(1);
+        }
+        sum_abs_pos += i64::from(pos_bar.abs());
+        sum_pos += i64::from(pos_bar);
+    }
+
+    let pnl = log_eq.exp() - 1.0;
+    let max_dd = if max_log_dd > 0.0 {
+        -(-max_log_dd).exp_m1()
+    } else {
+        0.0
+    };
+    let denom = n_obs.max(1) as f64;
+    let exposure = sum_abs_pos as f64 / denom;
+    let net_exposure = sum_pos as f64 / denom;
+
+    if !compute_sharpe {
+        let calmar = if max_dd > 1.0e-12 {
+            pnl / max_dd
+        } else if pnl > 0.0 {
+            1.0e6
+        } else if pnl < 0.0 {
+            -1.0e6
+        } else {
+            0.0
+        }
+        .clamp(-1.0e6, 1.0e6);
+        return Ok(Metrics {
+            pnl,
+            sharpe: 0.0,
+            sortino: 0.0,
+            calmar,
+            omega: 0.0,
+            volatility: 0.0,
+            max_dd,
+            trades,
+            exposure,
+            net_exposure,
+        });
+    }
+
+    let variance = if n_obs > 1 { m2 / (n_obs - 1) as f64 } else { 0.0 };
+    let volatility = variance.max(0.0).sqrt();
+    let sharpe = if volatility > 0.0 { mean / volatility } else { 0.0 };
+    let downside_dev = (sum_neg_sq / denom).max(0.0).sqrt();
+    let sortino = if downside_dev > 0.0 {
+        mean / downside_dev
+    } else if mean > 0.0 {
+        1.0e6
+    } else if mean < 0.0 {
+        -1.0e6
+    } else {
+        0.0
+    }
+    .clamp(-1.0e6, 1.0e6);
+    let omega = if sum_neg_abs_r > 1.0e-12 {
+        (sum_pos_r / sum_neg_abs_r).clamp(0.0, 1.0e6)
+    } else if sum_pos_r > 0.0 {
+        1.0e6
+    } else {
+        0.0
+    };
+    let calmar = if max_dd > 1.0e-12 {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        1.0e6
+    } else if pnl < 0.0 {
+        -1.0e6
+    } else {
+        0.0
+    }
+    .clamp(-1.0e6, 1.0e6);
+
+    Ok(Metrics {
+        pnl,
+        sharpe,
+        sortino,
+        calmar,
+        omega,
+        volatility,
+        max_dd,
+        trades,
+        exposure,
+        net_exposure,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -744,10 +1856,12 @@ mod tests {
     };
     use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
     use crate::strategy_ir::{
-        ConditionGroup, ConditionGroupMode, ConditionNode, ConditionOp, ExecutionPolicy,
-        IndicatorNode, SignalBindings, SignalProgramGraph, StrategyIr, ValueRef,
+        build_static_strategy_ir, ConditionGroup, ConditionGroupMode, ConditionNode, ConditionOp,
+        ExecutionPolicy, IndicatorNode, SignalBindings, SignalProgramGraph, StaticStrategyIrInput,
+        StrategyIr, ValueRef,
         STRATEGY_IR_SCHEMA_VERSION,
     };
+    use crate::MovingAverageSpec;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
@@ -877,6 +1991,8 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
+        
+            dynamic_strategy_ir: None,
         };
 
         let plan = compile_dynamic_plan_for_double_ma_config(
@@ -927,6 +2043,105 @@ mod tests {
         assert!(approx_eq(static_metrics.pnl, dynamic_metrics.pnl));
         assert!(approx_eq(static_metrics.max_dd, dynamic_metrics.max_dd));
         assert_eq!(static_metrics.trades, dynamic_metrics.trades);
+    }
+
+    #[test]
+    fn dynamic_double_ma_cpu_metrics_support_constant_and_close_operands() {
+        let candles = make_trending_candles(1024);
+        let strategy = StrategyConfig::default();
+        let ir = StrategyIr {
+            schema_version: crate::strategy_ir::STRATEGY_IR_SCHEMA_VERSION,
+            profile: StrategyProfileKind::DoubleMa,
+            ma_source: "close".to_string(),
+            fast_ma: MovingAverageSpec {
+                ma_type: "sma".to_string(),
+                params: HashMap::new(),
+            },
+            slow_ma: MovingAverageSpec {
+                ma_type: "sma".to_string(),
+                params: HashMap::new(),
+            },
+            program: SignalProgramGraph {
+                indicators: vec![
+                    IndicatorNode {
+                        id: "fast_ma".to_string(),
+                        kind: Some(crate::strategy_ir::IndicatorKind::FastMa),
+                        indicator_id: None,
+                        params: Vec::new(),
+                        output_id: None,
+                    },
+                    IndicatorNode {
+                        id: "slow_ma".to_string(),
+                        kind: Some(crate::strategy_ir::IndicatorKind::SlowMa),
+                        indicator_id: None,
+                        params: Vec::new(),
+                        output_id: None,
+                    },
+                ],
+                conditions: vec![
+                    ConditionNode {
+                        id: "long_entry".to_string(),
+                        op: ConditionOp::Gt,
+                        lhs: ValueRef::Indicator {
+                            id: "fast_ma".to_string(),
+                        },
+                        rhs: ValueRef::constant(0.0),
+                    },
+                    ConditionNode {
+                        id: "long_exit".to_string(),
+                        op: ConditionOp::Lt,
+                        lhs: ValueRef::Close,
+                        rhs: ValueRef::constant(0.0),
+                    },
+                ],
+                groups: vec![
+                    ConditionGroup {
+                        id: "long_entry_group".to_string(),
+                        mode: ConditionGroupMode::All,
+                        condition_ids: vec!["long_entry".to_string()],
+                    },
+                    ConditionGroup {
+                        id: "long_exit_group".to_string(),
+                        mode: ConditionGroupMode::All,
+                        condition_ids: vec!["long_exit".to_string()],
+                    },
+                ],
+                signals: SignalBindings {
+                    long_entry_group: Some("long_entry_group".to_string()),
+                    long_exit_group: Some("long_exit_group".to_string()),
+                    short_entry_group: None,
+                    short_exit_group: None,
+                },
+            },
+            execution: ExecutionPolicy {
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+                halftrend: None,
+                macz: None,
+                ott: None,
+                signal_mode: None,
+            },
+        };
+        let plan = crate::strategy_plan::compile_strategy_plan(&ir, StrategyPlanBackend::Cpu, None)
+            .expect("plan should compile");
+        let context =
+            prepare_dynamic_cpu_context(&plan, &candles, "close").expect("context should prepare");
+        let (fast_mat, cols_fast) =
+            ma_matrix_cpu_f64(&candles, "sma", "close", &[10_u16], None, 0.85, 6.0)
+                .expect("fast matrix");
+        let (slow_mat, cols_slow) =
+            ma_matrix_cpu_f64(&candles, "sma", "close", &[30_u16], None, 0.85, 6.0)
+                .expect("slow matrix");
+        assert_eq!(cols_fast, cols_slow);
+
+        let dynamic_metrics =
+            eval_dynamic_plan_metrics_cpu(&plan, &context, &fast_mat[..cols_fast], &slow_mat[..cols_fast], 64, true)
+                .expect("dynamic eval should succeed");
+
+        assert_eq!(dynamic_metrics.trades, 1);
+        assert!(dynamic_metrics.pnl.is_finite());
+        assert!(dynamic_metrics.pnl > 0.0);
+        assert!(dynamic_metrics.exposure > 0.8);
     }
 
     #[test]
@@ -1105,6 +2320,40 @@ mod tests {
     }
 
     #[test]
+    fn validate_dynamic_indicator_output_for_gpu_v1_rejects_non_float_series() {
+        let output = DynamicIndicatorComputeOutput {
+            output_id: "signal".to_string(),
+            series: crate::dynamic_indicator_adapter::DynamicIndicatorSeries::Bool(vec![
+                true, false,
+            ]),
+            warmup: None,
+            rows: 1,
+            cols: 2,
+            pattern_ids: None,
+        };
+        let err = validate_dynamic_indicator_output_for_gpu_v1("bool_slot", &output)
+            .expect_err("bool output should be rejected");
+        assert!(err.contains("floating scalar outputs"));
+    }
+
+    #[test]
+    fn validate_dynamic_indicator_output_for_gpu_v1_rejects_multi_row_output() {
+        let output = DynamicIndicatorComputeOutput {
+            output_id: "value".to_string(),
+            series: crate::dynamic_indicator_adapter::DynamicIndicatorSeries::F64(vec![
+                1.0, 2.0, 3.0, 4.0,
+            ]),
+            warmup: None,
+            rows: 2,
+            cols: 2,
+            pattern_ids: None,
+        };
+        let err = validate_dynamic_indicator_output_for_gpu_v1("matrix_slot", &output)
+            .expect_err("multi-row output should be rejected");
+        assert!(err.contains("single-series scalar outputs"));
+    }
+
+    #[test]
     fn prepare_dynamic_indicator_slot_series_cpu_cache_key_includes_route() {
         let (mut plan, candles) = make_dynamic_indicator_plan_for_slot_prep();
         plan.indicator_plan[0].route = crate::strategy_plan::IndicatorRouteKind::Cpu;
@@ -1233,6 +2482,8 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
+        
+            dynamic_strategy_ir: None,
         };
         let plan = compile_dynamic_plan_for_double_ma_config(
             &req.ma_source,
@@ -1275,6 +2526,8 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
+        
+            dynamic_strategy_ir: None,
         };
         let plan = compile_dynamic_plan_for_double_ma_config(
             &req.ma_source,
@@ -1354,5 +2607,265 @@ mod tests {
         assert_eq!(cols[10], "100");
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn preview_dynamic_double_ma_strategy_ir_keeps_gpu_backend_for_plain_v1_shape() {
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+
+        let preview = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect("preview should succeed");
+
+        assert!(preview.capability.gpu_dynamic_supported);
+        assert_eq!(preview.resolved_backend, StrategyPlanBackend::GpuUnified);
+        assert!(!preview.plan_fingerprint_hex.is_empty());
+    }
+
+    #[test]
+    fn preview_dynamic_double_ma_strategy_ir_falls_back_to_cpu_for_halftrend_shape() {
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                Some(HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 14,
+                }),
+            ),
+        )
+        .expect("static ir should build");
+
+        let preview = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect("preview should still succeed via cpu fallback");
+
+        assert!(!preview.capability.gpu_dynamic_supported);
+        assert_eq!(preview.resolved_backend, StrategyPlanBackend::Cpu);
+        assert!(preview
+            .capability
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("halftrend")));
+    }
+
+    #[test]
+    fn preview_dynamic_double_ma_strategy_ir_falls_back_to_cpu_for_non_cross_exit_mode() {
+        let mut strategy = StrategyConfig::default();
+        strategy.exit_mode = ta_strategies::double_ma::ExitMode::KaufmanStop;
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                strategy,
+                None,
+            ),
+        )
+        .expect("static ir should build");
+
+        let preview = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect("preview should still succeed via cpu fallback");
+
+        assert!(!preview.capability.gpu_dynamic_supported);
+        assert_eq!(preview.resolved_backend, StrategyPlanBackend::Cpu);
+        assert!(preview
+            .capability
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("kaufman-stop exit")));
+    }
+
+    #[test]
+    fn preview_dynamic_double_ma_strategy_ir_rejects_non_float_dynamic_output() {
+        use crate::indicator_catalog::{list_dynamic_indicator_descriptors_cached, IndicatorValueType};
+        use crate::strategy_ir::{
+            ConditionGroup, ConditionGroupMode, ConditionNode, ExecutionPolicy, MovingAverageSpec,
+            SignalBindings, SignalProgramGraph, StrategyIr, STRATEGY_IR_SCHEMA_VERSION,
+        };
+
+        let Some((indicator_id, output_id)) = list_dynamic_indicator_descriptors_cached()
+            .iter()
+            .find_map(|descriptor| {
+                descriptor.outputs.iter().find_map(|output| {
+                    if matches!(output.value_type, IndicatorValueType::I32 | IndicatorValueType::Bool)
+                    {
+                        Some((descriptor.id.clone(), output.id.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+        else {
+            return;
+        };
+
+        let ir = StrategyIr {
+            schema_version: STRATEGY_IR_SCHEMA_VERSION,
+            profile: StrategyProfileKind::DoubleMa,
+            ma_source: "close".to_string(),
+            fast_ma: MovingAverageSpec {
+                ma_type: "sma".to_string(),
+                params: HashMap::new(),
+            },
+            slow_ma: MovingAverageSpec {
+                ma_type: "alma".to_string(),
+                params: HashMap::new(),
+            },
+            program: SignalProgramGraph {
+                indicators: vec![IndicatorNode {
+                    id: "non_float".to_string(),
+                    kind: None,
+                    indicator_id: Some(indicator_id.clone()),
+                    params: Vec::new(),
+                    output_id: Some(output_id.clone()),
+                }],
+                conditions: vec![ConditionNode {
+                    id: "entry".to_string(),
+                    op: ConditionOp::Gt,
+                    lhs: ValueRef::Indicator {
+                        id: "non_float".to_string(),
+                    },
+                    rhs: ValueRef::constant(0.0),
+                }],
+                groups: vec![ConditionGroup {
+                    id: "entry_group".to_string(),
+                    mode: ConditionGroupMode::All,
+                    condition_ids: vec!["entry".to_string()],
+                }],
+                signals: SignalBindings {
+                    long_entry_group: Some("entry_group".to_string()),
+                    long_exit_group: None,
+                    short_entry_group: None,
+                    short_exit_group: None,
+                },
+            },
+            execution: ExecutionPolicy {
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+                halftrend: None,
+                macz: None,
+                ott: None,
+                signal_mode: None,
+            },
+        };
+
+        let err = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect_err("preview should reject unsupported non-float output refs");
+        assert!(err.contains("floating scalar outputs"));
+    }
+
+    #[test]
+    fn preview_dynamic_double_ma_strategy_ir_rejects_product_cap_overflow() {
+        let mut ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+
+        for idx in 0..13 {
+            ir.program.indicators.push(IndicatorNode {
+                id: format!("extra_{idx}"),
+                kind: None,
+                indicator_id: Some("sma".to_string()),
+                params: vec![crate::indicator_catalog::IndicatorParamKV {
+                    key: "period".to_string(),
+                    value: crate::indicator_catalog::IndicatorParamValue::Int(5 + idx as i64),
+                }],
+                output_id: Some("value".to_string()),
+            });
+        }
+
+        let err = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect_err("product cap overflow should fail preview");
+        assert!(err.contains("at most 12 indicators"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn preview_dynamic_double_ma_strategy_ir_rejects_bidirectional_missing_short_entry() {
+        let mut ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig {
+                    long_only: false,
+                    ..StrategyConfig::default()
+                },
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        ir.program.signals.short_entry_group = None;
+
+        let err = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect_err("bidirectional missing short entry should fail preview");
+        assert!(err.contains("bidirectional plans must bind short_entry_group"), "unexpected error: {err}");
     }
 }

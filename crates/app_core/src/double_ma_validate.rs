@@ -294,6 +294,7 @@ fn gpu_fixed_candidate_metric_map(
                     heatmap_bins: Some(0),
                     constraints: None,
                     vdps: None,
+                    dynamic_strategy_ir: None,
                 },
                 candles,
                 &AtomicBool::new(false),
@@ -5110,6 +5111,7 @@ mod tests {
                 heatmap_bins: Some(0),
                 constraints: None,
                 vdps: None,
+                dynamic_strategy_ir: None,
             },
             &candles,
             &cancel,
@@ -6589,6 +6591,7 @@ mod tests {
                 heatmap_bins: Some(0),
                 constraints: None,
                 vdps: None,
+                dynamic_strategy_ir: None,
             };
 
             let opt =
@@ -7005,6 +7008,7 @@ mod tests {
                 heatmap_bins: Some(0),
                 constraints: None,
                 vdps: None,
+                dynamic_strategy_ir: None,
             };
 
             let opt =

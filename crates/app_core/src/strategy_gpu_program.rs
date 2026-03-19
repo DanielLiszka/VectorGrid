@@ -5,6 +5,7 @@ use crate::strategy_plan::{
 use serde::{Deserialize, Serialize};
 
 pub const STRATEGY_GPU_PROGRAM_SCHEMA_VERSION: u16 = 1;
+pub const STRATEGY_GPU_EXECUTABLE_ABI_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +68,162 @@ pub struct CompiledGpuPredicateProgram {
     pub groups: Vec<GpuConditionGroupSlice>,
     pub group_condition_indexes: Vec<u32>,
     pub signals: GpuSignalBindings,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct GpuValueOperandAbi {
+    pub source: u32,
+    pub index: u32,
+    pub constant_bits: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct GpuConditionAbi {
+    pub op: u32,
+    pub lhs: GpuValueOperandAbi,
+    pub rhs: GpuValueOperandAbi,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct GpuConditionGroupAbi {
+    pub mode: u32,
+    pub condition_offset: u32,
+    pub condition_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct GpuSignalBindingsAbi {
+    pub long_entry_group: i32,
+    pub long_exit_group: i32,
+    pub short_entry_group: i32,
+    pub short_exit_group: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct GpuIndicatorSlotAbi {
+    pub indicator_index: u32,
+    pub route: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CompiledGpuPredicateProgramAbi {
+    pub abi_version: u32,
+    pub plan_fingerprint_hex: String,
+    pub indicator_slots: Vec<GpuIndicatorSlotAbi>,
+    pub conditions: Vec<GpuConditionAbi>,
+    pub groups: Vec<GpuConditionGroupAbi>,
+    pub group_condition_indexes: Vec<u32>,
+    pub signals: GpuSignalBindingsAbi,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+unsafe impl cust::memory::DeviceCopy for GpuValueOperandAbi {}
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+unsafe impl cust::memory::DeviceCopy for GpuConditionAbi {}
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+unsafe impl cust::memory::DeviceCopy for GpuConditionGroupAbi {}
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+unsafe impl cust::memory::DeviceCopy for GpuSignalBindingsAbi {}
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+unsafe impl cust::memory::DeviceCopy for GpuIndicatorSlotAbi {}
+
+fn encode_value_source_kind(kind: GpuValueSourceKind) -> u32 {
+    match kind {
+        GpuValueSourceKind::Indicator => 0,
+        GpuValueSourceKind::MaSource => 1,
+        GpuValueSourceKind::Close => 2,
+        GpuValueSourceKind::Constant => 3,
+    }
+}
+
+fn encode_condition_op(op: ConditionOp) -> u32 {
+    match op {
+        ConditionOp::Gt => 0,
+        ConditionOp::Ge => 1,
+        ConditionOp::Lt => 2,
+        ConditionOp::Le => 3,
+        ConditionOp::CrossUp => 4,
+        ConditionOp::CrossDown => 5,
+    }
+}
+
+fn encode_group_mode(mode: ConditionGroupMode) -> u32 {
+    match mode {
+        ConditionGroupMode::All => 0,
+        ConditionGroupMode::Any => 1,
+    }
+}
+
+fn encode_indicator_route(route: IndicatorRouteKind) -> u32 {
+    match route {
+        IndicatorRouteKind::Cpu => 0,
+        IndicatorRouteKind::GpuKernel => 1,
+        IndicatorRouteKind::GpuSingle => 2,
+    }
+}
+
+fn encode_optional_group_binding(value: Option<u32>) -> i32 {
+    value.map(|v| v as i32).unwrap_or(-1)
+}
+
+pub fn compile_gpu_predicate_program_abi(
+    program: &CompiledGpuPredicateProgram,
+) -> CompiledGpuPredicateProgramAbi {
+    let indicator_slots = program
+        .indicator_slots
+        .iter()
+        .map(|slot| GpuIndicatorSlotAbi {
+            indicator_index: slot.indicator_index,
+            route: encode_indicator_route(slot.route),
+        })
+        .collect();
+    let conditions = program
+        .conditions
+        .iter()
+        .map(|condition| GpuConditionAbi {
+            op: encode_condition_op(condition.op),
+            lhs: GpuValueOperandAbi {
+                source: encode_value_source_kind(condition.lhs.source),
+                index: condition.lhs.index,
+                constant_bits: condition.lhs.constant_bits,
+            },
+            rhs: GpuValueOperandAbi {
+                source: encode_value_source_kind(condition.rhs.source),
+                index: condition.rhs.index,
+                constant_bits: condition.rhs.constant_bits,
+            },
+        })
+        .collect();
+    let groups = program
+        .groups
+        .iter()
+        .map(|group| GpuConditionGroupAbi {
+            mode: encode_group_mode(group.mode),
+            condition_offset: group.condition_offset,
+            condition_count: group.condition_count,
+        })
+        .collect();
+    let signals = GpuSignalBindingsAbi {
+        long_entry_group: encode_optional_group_binding(program.signals.long_entry_group),
+        long_exit_group: encode_optional_group_binding(program.signals.long_exit_group),
+        short_entry_group: encode_optional_group_binding(program.signals.short_entry_group),
+        short_exit_group: encode_optional_group_binding(program.signals.short_exit_group),
+    };
+
+    CompiledGpuPredicateProgramAbi {
+        abi_version: STRATEGY_GPU_EXECUTABLE_ABI_VERSION,
+        plan_fingerprint_hex: program.plan_fingerprint_hex.clone(),
+        indicator_slots,
+        conditions,
+        groups,
+        group_condition_indexes: program.group_condition_indexes.clone(),
+        signals,
+    }
 }
 
 fn compile_operand(
@@ -287,5 +444,24 @@ mod tests {
         let err =
             compile_gpu_predicate_program(&plan).expect_err("invalid indicator index should fail");
         assert!(err.contains("indicator index"));
+    }
+
+    #[test]
+    fn compile_gpu_program_abi_preserves_program_shape() {
+        let plan = make_plan(
+            StrategyProfileKind::DoubleMa,
+            StrategyPlanBackend::GpuUnified,
+        );
+        let program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
+        let abi = compile_gpu_predicate_program_abi(&program);
+        assert_eq!(abi.abi_version, STRATEGY_GPU_EXECUTABLE_ABI_VERSION);
+        assert_eq!(abi.plan_fingerprint_hex, program.plan_fingerprint_hex);
+        assert_eq!(abi.indicator_slots.len(), program.indicator_slots.len());
+        assert_eq!(abi.conditions.len(), program.conditions.len());
+        assert_eq!(abi.groups.len(), program.groups.len());
+        assert_eq!(
+            abi.group_condition_indexes.len(),
+            program.group_condition_indexes.len()
+        );
     }
 }

@@ -36,7 +36,22 @@ describe('recommendedOptimizationDefaults', () => {
 
     expect(changed).toBe(true)
     expect(store.topK).toBe(RECOMMENDED_TOP_K)
-    expect(store.heatmapBins).toBe(RECOMMENDED_HEATMAP_BINS)
+    expect(store.heatmapBins).toBe('0')
+    expect(store.statusLine).toContain(`Top K ${RECOMMENDED_TOP_K}`)
+    expect(store.statusLine).not.toContain('Heatmap bins')
+  })
+
+  it('does not add recommended heatmap bins for Auto mode', () => {
+    const store = useAdvancedStore()
+    store.topK = '0'
+    store.heatmapBins = '0'
+    store.mode = 'Auto'
+
+    const changed = applyRecommendedOptimizationDefaults()
+
+    expect(changed).toBe(true)
+    expect(store.topK).toBe(RECOMMENDED_TOP_K)
+    expect(store.heatmapBins).toBe('0')
   })
 
   it('leaves explicit nonzero values unchanged', () => {

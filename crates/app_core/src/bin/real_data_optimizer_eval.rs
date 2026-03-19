@@ -511,6 +511,7 @@ fn build_request(
         heatmap_bins: Some(0),
         constraints: None,
         vdps,
+        dynamic_strategy_ir: None,
     }
 }
 

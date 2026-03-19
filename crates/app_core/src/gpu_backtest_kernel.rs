@@ -27,6 +27,14 @@ use vector_ta::utilities::data_loader::{source_type, Candles};
 use crate::alloc_policy::alloc_uninit_copy;
 use crate::double_ma::{metrics_pass_constraints, DoubleMaConstraints};
 use crate::progress::ProgressSink;
+use crate::strategy_gpu_program::{
+    CompiledGpuPredicateProgramAbi, GpuConditionAbi, GpuConditionGroupAbi, GpuIndicatorSlotAbi,
+    GpuSignalBindingsAbi,
+};
+use crate::strategy_gpu_runtime::{
+    get_or_build_gpu_strategy_executable, with_uploaded_gpu_strategy_executable,
+    GpuStrategyExecutableCacheKey, StrategyHandle,
+};
 use crate::vram_ma::{supports_vram_kernel_ma, VramMaComputer, VramMaInputs};
 
 const STRAT_LONG_ONLY: u32 = 1u32 << 0;
@@ -98,6 +106,9 @@ pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 pub(crate) fn reset_test_runtime() {
     CUDA_KERNEL_RUNTIME.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+    DYNAMIC_GPU_METRICS_SCRATCH.with(|cell| {
         cell.borrow_mut().clear();
     });
     LAST_KERNEL_EXECUTOR_TIMING.with(|cell| {
@@ -745,23 +756,7 @@ impl CudaKernelRuntime {
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
         let launch_caps = detect_device_launch_caps(device);
         let context = std::sync::Arc::new(Context::new(device).map_err(|e| e.to_string())?);
-
-        let ptx: &str = include_str!(concat!(env!("OUT_DIR"), "/double_crossover.ptx"));
-        let jit_opts = &[
-            ModuleJitOption::DetermineTargetFromContext,
-            ModuleJitOption::OptLevel(OptLevel::O2),
-        ];
-        let module = match Module::from_ptx(ptx, jit_opts) {
-            Ok(m) => m,
-            Err(_) => {
-                if let Ok(m) = Module::from_ptx(ptx, &[ModuleJitOption::DetermineTargetFromContext])
-                {
-                    m
-                } else {
-                    Module::from_ptx(ptx, &[]).map_err(|e| e.to_string())?
-                }
-            }
-        };
+        let module = load_double_crossover_module(device)?;
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
 
         Ok(Self {
@@ -780,8 +775,51 @@ impl CudaKernelRuntime {
     }
 }
 
+fn load_double_crossover_module(device: Device) -> Result<Module, String> {
+    if device_compute_capability(device) == Some((8, 9)) {
+        let cubin: &[u8] = include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/double_crossover.sm_89.cubin"
+        ));
+        if !cubin.is_empty() {
+            if let Ok(module) = Module::from_cubin(cubin, &[]) {
+                return Ok(module);
+            }
+        }
+    }
+
+    let ptx: &str = include_str!(concat!(env!("OUT_DIR"), "/double_crossover.ptx"));
+    let jit_opts = &[
+        ModuleJitOption::DetermineTargetFromContext,
+        ModuleJitOption::OptLevel(OptLevel::O2),
+    ];
+    match Module::from_ptx(ptx, jit_opts) {
+        Ok(m) => Ok(m),
+        Err(_) => {
+            if let Ok(m) = Module::from_ptx(ptx, &[ModuleJitOption::DetermineTargetFromContext]) {
+                Ok(m)
+            } else {
+                Module::from_ptx(ptx, &[]).map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
+fn device_compute_capability(device: Device) -> Option<(u32, u32)> {
+    let major = device
+        .get_attribute(DeviceAttribute::ComputeCapabilityMajor)
+        .ok()
+        .and_then(|v| u32::try_from(v).ok())?;
+    let minor = device
+        .get_attribute(DeviceAttribute::ComputeCapabilityMinor)
+        .ok()
+        .and_then(|v| u32::try_from(v).ok())?;
+    Some((major, minor))
+}
+
 thread_local! {
     static CUDA_KERNEL_RUNTIME: RefCell<HashMap<u32, CudaKernelRuntime>> = RefCell::new(HashMap::new());
+    static DYNAMIC_GPU_METRICS_SCRATCH: RefCell<HashMap<(u32, usize), DeviceBuffer<f32>>> = RefCell::new(HashMap::new());
     static LAST_KERNEL_EXECUTOR_TIMING: RefCell<Option<KernelExecutorTimingMs>> = RefCell::new(None);
 }
 
@@ -954,6 +992,503 @@ pub(crate) fn upload_host_regime_filter(
             device_id,
         })
     })
+}
+
+#[allow(dead_code)]
+pub(crate) struct UploadedGpuStrategyProgram {
+    pub(crate) d_indicator_slots: DeviceBuffer<GpuIndicatorSlotAbi>,
+    pub(crate) d_conditions: DeviceBuffer<GpuConditionAbi>,
+    pub(crate) d_groups: DeviceBuffer<GpuConditionGroupAbi>,
+    pub(crate) d_group_condition_indexes: DeviceBuffer<u32>,
+    pub(crate) d_signals: DeviceBuffer<GpuSignalBindingsAbi>,
+    pub(crate) abi_version: u32,
+    pub(crate) plan_fingerprint_hex: String,
+    pub(crate) device_id: u32,
+}
+
+impl UploadedGpuStrategyProgram {
+    pub(crate) fn indicator_slots_ptr_raw(&self) -> u64 {
+        self.d_indicator_slots.as_device_ptr().as_raw()
+    }
+
+    pub(crate) fn conditions_ptr_raw(&self) -> u64 {
+        self.d_conditions.as_device_ptr().as_raw()
+    }
+
+    pub(crate) fn groups_ptr_raw(&self) -> u64 {
+        self.d_groups.as_device_ptr().as_raw()
+    }
+
+    pub(crate) fn group_condition_indexes_ptr_raw(&self) -> u64 {
+        self.d_group_condition_indexes.as_device_ptr().as_raw()
+    }
+
+    pub(crate) fn signals_ptr_raw(&self) -> u64 {
+        self.d_signals.as_device_ptr().as_raw()
+    }
+}
+
+pub(crate) fn upload_gpu_strategy_program_abi(
+    device_id: u32,
+    abi: &CompiledGpuPredicateProgramAbi,
+) -> Result<UploadedGpuStrategyProgram, String> {
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<UploadedGpuStrategyProgram, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+
+        let d_indicator_slots =
+            DeviceBuffer::from_slice(&abi.indicator_slots).map_err(|e| e.to_string())?;
+        let d_conditions = DeviceBuffer::from_slice(&abi.conditions).map_err(|e| e.to_string())?;
+        let d_groups = DeviceBuffer::from_slice(&abi.groups).map_err(|e| e.to_string())?;
+        let d_group_condition_indexes =
+            DeviceBuffer::from_slice(&abi.group_condition_indexes).map_err(|e| e.to_string())?;
+        let d_signals =
+            DeviceBuffer::from_slice(std::slice::from_ref(&abi.signals)).map_err(|e| e.to_string())?;
+
+        Ok(UploadedGpuStrategyProgram {
+            d_indicator_slots,
+            d_conditions,
+            d_groups,
+            d_group_condition_indexes,
+            d_signals,
+            abi_version: abi.abi_version,
+            plan_fingerprint_hex: abi.plan_fingerprint_hex.clone(),
+            device_id,
+        })
+    })
+}
+
+pub(crate) fn probe_uploaded_gpu_strategy_program(
+    uploaded: &UploadedGpuStrategyProgram,
+) -> Result<[u32; 7], String> {
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<[u32; 7], String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&uploaded.device_id) {
+            map.insert(uploaded.device_id, CudaKernelRuntime::new(uploaded.device_id)?);
+        }
+        let rt = map.get_mut(&uploaded.device_id).expect("just inserted");
+        rt.set_current()?;
+        let func = rt
+            .module
+            .get_function("strategy_program_probe_f32")
+            .map_err(|e| e.to_string())?;
+
+        let mut out = [0u32; 7];
+        let d_out = DeviceBuffer::from_slice(&out).map_err(|e| e.to_string())?;
+        let mut slots_ptr = uploaded.indicator_slots_ptr_raw();
+        let mut slot_count = uploaded.d_indicator_slots.len() as i32;
+        let mut conditions_ptr = uploaded.conditions_ptr_raw();
+        let mut condition_count = uploaded.d_conditions.len() as i32;
+        let mut groups_ptr = uploaded.groups_ptr_raw();
+        let mut group_count = uploaded.d_groups.len() as i32;
+        let mut group_idx_ptr = uploaded.group_condition_indexes_ptr_raw();
+        let mut group_idx_count = uploaded.d_group_condition_indexes.len() as i32;
+        let mut signals_ptr = uploaded.signals_ptr_raw();
+        let mut abi_version = uploaded.abi_version;
+        let mut out_ptr = d_out.as_device_ptr().as_raw();
+        let args: &mut [*mut c_void] = &mut [
+            &mut slots_ptr as *mut _ as *mut c_void,
+            &mut slot_count as *mut _ as *mut c_void,
+            &mut conditions_ptr as *mut _ as *mut c_void,
+            &mut condition_count as *mut _ as *mut c_void,
+            &mut groups_ptr as *mut _ as *mut c_void,
+            &mut group_count as *mut _ as *mut c_void,
+            &mut group_idx_ptr as *mut _ as *mut c_void,
+            &mut group_idx_count as *mut _ as *mut c_void,
+            &mut signals_ptr as *mut _ as *mut c_void,
+            &mut abi_version as *mut _ as *mut c_void,
+            &mut out_ptr as *mut _ as *mut c_void,
+        ];
+        unsafe {
+            rt.stream
+                .launch(&func, (1, 1, 1), (1, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    })
+}
+
+pub struct UploadedDoubleMaDynamicProgramBatch {
+    d_lr: DeviceBuffer<f32>,
+    d_fast_ma_tm: DeviceBuffer<f32>,
+    d_slow_ma_tm: DeviceBuffer<f32>,
+    d_fast_periods: DeviceBuffer<i32>,
+    d_slow_periods: DeviceBuffer<i32>,
+    d_pair_index_map: DeviceBuffer<i32>,
+    combo_dense_pair_idx: Vec<usize>,
+    combo_count: usize,
+    first_valid: usize,
+    fast_tm_stride: usize,
+    slow_tm_stride: usize,
+    device_id: u32,
+}
+
+impl UploadedDoubleMaDynamicProgramBatch {
+    pub fn combo_count(&self) -> usize {
+        self.combo_count
+    }
+}
+
+fn transpose_row_major_to_tm_f32(row_major: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; row_major.len()];
+    for row in 0..rows {
+        let row_off = row * cols;
+        for col in 0..cols {
+            out[col * rows + row] = row_major[row_off + col];
+        }
+    }
+    out
+}
+
+fn validate_double_ma_dynamic_strategy_handle(handle: &StrategyHandle) -> Result<(), String> {
+    if handle.plan.backend != crate::strategy_plan::StrategyPlanBackend::GpuUnified {
+        return Err("dynamic gpu kernel requires a GpuUnified strategy plan".to_string());
+    }
+    if handle.plan.profile != crate::strategy_ir::StrategyProfileKind::DoubleMa {
+        return Err("dynamic gpu kernel currently supports only the DoubleMa profile".to_string());
+    }
+    if handle.plan.halftrend_filter.is_some() {
+        return Err(
+            "dynamic gpu kernel v1 does not support halftrend/regime-gated DoubleMa plans"
+                .to_string(),
+        );
+    }
+    if handle.plan.strategy.exit_mode != ta_strategies::double_ma::ExitMode::Cross {
+        return Err(
+            "dynamic gpu kernel v1 supports only plain crossover exit mode for DoubleMa"
+                .to_string(),
+        );
+    }
+    let program = handle
+        .gpu_program
+        .as_ref()
+        .ok_or_else(|| "strategy handle is missing a compiled gpu predicate program".to_string())?;
+    if program.indicator_slots.len() != 2 {
+        return Err(format!(
+            "dynamic gpu kernel v1 expects exactly 2 indicator slots, got {}",
+            program.indicator_slots.len()
+        ));
+    }
+    for slot in &program.indicator_slots {
+        if slot.indicator_index > 1 {
+            return Err(format!(
+                "dynamic gpu kernel v1 only supports fast/slow slots, found indicator slot index {}",
+                slot.indicator_index
+            ));
+        }
+    }
+    if let Some(abi) = handle.gpu_program_abi.as_ref() {
+        for condition in &abi.conditions {
+            let lhs_supported = matches!(condition.lhs.source, 0 | 3);
+            let rhs_supported = matches!(condition.rhs.source, 0 | 3);
+            if !lhs_supported || !rhs_supported {
+                return Err(
+                    "dynamic gpu kernel v1 supports only indicator and constant operands"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn upload_double_ma_dynamic_program_batch(
+    lr: &[f32],
+    fast_row_major: &[f32],
+    slow_row_major: &[f32],
+    stride: usize,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    combos: &[DoubleMaParams],
+    first_valid: usize,
+    _strategy: &StrategyConfig,
+    device_id: u32,
+) -> Result<UploadedDoubleMaDynamicProgramBatch, String> {
+    if lr.len() < 2 {
+        return Err("dynamic gpu batch upload requires at least 2 lr values".to_string());
+    }
+    if stride == 0 {
+        return Err("dynamic gpu batch upload requires a non-zero stride".to_string());
+    }
+    if combos.is_empty() {
+        return Err("dynamic gpu batch upload requires at least one combo".to_string());
+    }
+    if !fast_row_major.len().is_multiple_of(stride) {
+        return Err("fast row-major matrix length must be a multiple of stride".to_string());
+    }
+    if !slow_row_major.len().is_multiple_of(stride) {
+        return Err("slow row-major matrix length must be a multiple of stride".to_string());
+    }
+    let fast_rows = fast_row_major.len() / stride;
+    let slow_rows = slow_row_major.len() / stride;
+    if fast_rows != fast_periods.len() {
+        return Err(format!(
+            "fast row-major matrix rows ({fast_rows}) do not match fast period count ({})",
+            fast_periods.len()
+        ));
+    }
+    if slow_rows != slow_periods.len() {
+        return Err(format!(
+            "slow row-major matrix rows ({slow_rows}) do not match slow period count ({})",
+            slow_periods.len()
+        ));
+    }
+    if stride > i32::MAX as usize || lr.len() > i32::MAX as usize {
+        return Err("dynamic gpu batch dimensions exceed i32 kernel limits".to_string());
+    }
+    let fast_tm = transpose_row_major_to_tm_f32(fast_row_major, fast_rows, stride);
+    let slow_tm = transpose_row_major_to_tm_f32(slow_row_major, slow_rows, stride);
+
+    let mut fast_idx: HashMap<u16, usize> = HashMap::with_capacity(fast_periods.len());
+    for (i, &period) in fast_periods.iter().enumerate() {
+        fast_idx.insert(period, i);
+    }
+    let mut slow_idx: HashMap<u16, usize> = HashMap::with_capacity(slow_periods.len());
+    for (i, &period) in slow_periods.iter().enumerate() {
+        slow_idx.insert(period, i);
+    }
+
+    let fast_periods_i32: Vec<i32> = fast_periods.iter().map(|&p| p as i32).collect();
+    let slow_periods_i32: Vec<i32> = slow_periods.iter().map(|&p| p as i32).collect();
+    let mut combo_dense_pair_idx = Vec::with_capacity(combos.len());
+    for combo in combos {
+        let fast_row = *fast_idx
+            .get(&combo.fast_len)
+            .ok_or_else(|| format!("fast_len {} not in fast_periods", combo.fast_len))?;
+        let slow_row = *slow_idx
+            .get(&combo.slow_len)
+            .ok_or_else(|| format!("slow_len {} not in slow_periods", combo.slow_len))?;
+        let dense_pair_idx = fast_row
+            .checked_mul(slow_rows)
+            .and_then(|v| v.checked_add(slow_row))
+            .ok_or_else(|| "dynamic gpu dense pair index overflow".to_string())?;
+        combo_dense_pair_idx.push(dense_pair_idx);
+    }
+
+    let pair_index_map_i32: Vec<i32> = combo_dense_pair_idx
+        .iter()
+        .map(|&idx| {
+            i32::try_from(idx).map_err(|_| "dynamic gpu dense pair index exceeds i32".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+
+    CUDA_KERNEL_RUNTIME.with(
+        |cell| -> Result<UploadedDoubleMaDynamicProgramBatch, String> {
+            let mut map = cell.borrow_mut();
+            if !map.contains_key(&device_id) {
+                map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+            }
+            let rt = map.get_mut(&device_id).expect("just inserted");
+            rt.set_current()?;
+
+            Ok(UploadedDoubleMaDynamicProgramBatch {
+                d_lr: DeviceBuffer::from_slice(lr).map_err(|e| e.to_string())?,
+                d_fast_ma_tm: DeviceBuffer::from_slice(&fast_tm)
+                    .map_err(|e| e.to_string())?,
+                d_slow_ma_tm: DeviceBuffer::from_slice(&slow_tm)
+                    .map_err(|e| e.to_string())?,
+                d_fast_periods: DeviceBuffer::from_slice(&fast_periods_i32)
+                    .map_err(|e| e.to_string())?,
+                d_slow_periods: DeviceBuffer::from_slice(&slow_periods_i32)
+                    .map_err(|e| e.to_string())?,
+                d_pair_index_map: DeviceBuffer::from_slice(&pair_index_map_i32)
+                    .map_err(|e| e.to_string())?,
+                combo_dense_pair_idx,
+                combo_count: combos.len(),
+                first_valid,
+                fast_tm_stride: fast_rows,
+                slow_tm_stride: slow_rows,
+                device_id,
+            })
+        },
+    )
+}
+
+pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
+    uploaded_batch: &UploadedDoubleMaDynamicProgramBatch,
+    strategy: &StrategyConfig,
+    handle: &StrategyHandle,
+) -> Result<Vec<Metrics>, String> {
+    validate_double_ma_dynamic_strategy_handle(handle)?;
+    let _ = get_or_build_gpu_strategy_executable(handle, uploaded_batch.device_id)?;
+    let key = GpuStrategyExecutableCacheKey::new(
+        handle.plan.ir_fingerprint_hex.clone(),
+        uploaded_batch.device_id,
+    );
+    let strategy_params = kernel_strategy_params(strategy);
+
+    with_uploaded_gpu_strategy_executable(&key, |_uploaded_program| {
+        CUDA_KERNEL_RUNTIME.with(|cell| -> Result<Vec<Metrics>, String> {
+            let mut map = cell.borrow_mut();
+            if !map.contains_key(&uploaded_batch.device_id) {
+                map.insert(
+                    uploaded_batch.device_id,
+                    CudaKernelRuntime::new(uploaded_batch.device_id)?,
+                );
+            }
+            let rt = map.get_mut(&uploaded_batch.device_id).expect("just inserted");
+            rt.set_current()?;
+
+            let func = rt
+                .module
+                .get_function("double_cross_backtest_tm_flex_f32_m7")
+                .map_err(|e| e.to_string())?;
+            let launch_caps = detect_kernel_launch_caps(&func, rt.launch_caps);
+            let launch =
+                choose_backtest_launch_shape_1d(uploaded_batch.combo_count, rt.launch_caps, launch_caps);
+            let out_stride = 7usize;
+            let out_len = uploaded_batch
+                .fast_tm_stride
+                .checked_mul(uploaded_batch.slow_tm_stride)
+                .and_then(|v| v.checked_mul(out_stride))
+                .ok_or_else(|| "dynamic gpu metrics output length overflow".to_string())?;
+            let scratch_key = (uploaded_batch.device_id, out_len);
+
+            let mut lr_ptr = uploaded_batch.d_lr.as_device_ptr().as_raw();
+            let mut t_i = uploaded_batch.d_lr.len() as i32;
+            let mut fast_ptr = uploaded_batch.d_fast_ma_tm.as_device_ptr().as_raw();
+            let mut fast_stride_i = uploaded_batch.fast_tm_stride as i32;
+            let mut slow_ptr = uploaded_batch.d_slow_ma_tm.as_device_ptr().as_raw();
+            let mut slow_stride_i = uploaded_batch.slow_tm_stride as i32;
+            let mut pf_tile_i = uploaded_batch.fast_tm_stride as i32;
+            let mut ps_tile_i = uploaded_batch.slow_tm_stride as i32;
+            let mut pf_total_i = uploaded_batch.fast_tm_stride as i32;
+            let mut ps_total_i = uploaded_batch.slow_tm_stride as i32;
+            let mut f_off_i = 0i32;
+            let mut s_off_i = 0i32;
+            let mut fast_periods_ptr = uploaded_batch.d_fast_periods.as_device_ptr().as_raw();
+            let mut slow_periods_ptr = uploaded_batch.d_slow_periods.as_device_ptr().as_raw();
+            let mut regime_ptr = std::ptr::null_mut::<f32>();
+            let mut use_regime_i = 0i32;
+            let mut use_regime_hybrid_i = 0i32;
+            let mut regime_entry_f = 0.0f32;
+            let mut regime_exit_f = 0.0f32;
+            let mut first_valid_i = uploaded_batch.first_valid as i32;
+            let mut regime_first_valid_i = uploaded_batch.first_valid as i32;
+            let mut flags_u = strategy_params.flags;
+            let mut commission_f = strategy_params.commission;
+            let mut eps_rel_f = strategy_params.eps_rel;
+            let mut stop_log_f = strategy_params.stop_log;
+            let mut take_log_f = strategy_params.take_log;
+            let mut m_i = out_stride as i32;
+            let mut metrics_stride_i = out_stride as i32;
+            let mut pair_map_ptr = uploaded_batch.d_pair_index_map.as_device_ptr().as_raw();
+            let mut pair_count_i = uploaded_batch.combo_count as i32;
+            let mut host_out = vec![0.0f32; out_len];
+            DYNAMIC_GPU_METRICS_SCRATCH.with(|scratch| -> Result<(), String> {
+                let mut scratch = scratch.borrow_mut();
+                if !scratch.contains_key(&scratch_key) {
+                    scratch.insert(
+                        scratch_key,
+                        DeviceBuffer::from_slice(&vec![0.0f32; out_len]).map_err(|e| e.to_string())?,
+                    );
+                }
+                let d_out = scratch
+                    .get_mut(&scratch_key)
+                    .ok_or_else(|| "dynamic gpu scratch buffer missing after insertion".to_string())?;
+                let mut out_ptr = d_out.as_device_ptr().as_raw();
+                let args: &mut [*mut c_void] = &mut [
+                    &mut fast_ptr as *mut _ as *mut c_void,
+                    &mut slow_ptr as *mut _ as *mut c_void,
+                    &mut lr_ptr as *mut _ as *mut c_void,
+                    &mut t_i as *mut _ as *mut c_void,
+                    &mut pf_tile_i as *mut _ as *mut c_void,
+                    &mut ps_tile_i as *mut _ as *mut c_void,
+                    &mut fast_stride_i as *mut _ as *mut c_void,
+                    &mut slow_stride_i as *mut _ as *mut c_void,
+                    &mut pf_total_i as *mut _ as *mut c_void,
+                    &mut ps_total_i as *mut _ as *mut c_void,
+                    &mut f_off_i as *mut _ as *mut c_void,
+                    &mut s_off_i as *mut _ as *mut c_void,
+                    &mut fast_periods_ptr as *mut _ as *mut c_void,
+                    &mut slow_periods_ptr as *mut _ as *mut c_void,
+                    &mut regime_ptr as *mut _ as *mut c_void,
+                    &mut use_regime_i as *mut _ as *mut c_void,
+                    &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                    &mut regime_entry_f as *mut _ as *mut c_void,
+                    &mut regime_exit_f as *mut _ as *mut c_void,
+                    &mut first_valid_i as *mut _ as *mut c_void,
+                    &mut regime_first_valid_i as *mut _ as *mut c_void,
+                    &mut commission_f as *mut _ as *mut c_void,
+                    &mut eps_rel_f as *mut _ as *mut c_void,
+                    &mut stop_log_f as *mut _ as *mut c_void,
+                    &mut take_log_f as *mut _ as *mut c_void,
+                    &mut flags_u as *mut _ as *mut c_void,
+                    &mut m_i as *mut _ as *mut c_void,
+                    &mut metrics_stride_i as *mut _ as *mut c_void,
+                    &mut pair_map_ptr as *mut _ as *mut c_void,
+                    &mut pair_count_i as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                unsafe {
+                    rt.stream
+                        .launch(&func, (launch.grid_x, 1, 1), (launch.block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+                rt.stream.synchronize().map_err(|e| e.to_string())?;
+                d_out.copy_to(&mut host_out).map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+            let mut out_metrics = Vec::with_capacity(uploaded_batch.combo_count);
+            for &dense_pair_idx in &uploaded_batch.combo_dense_pair_idx {
+                let base = dense_pair_idx * out_stride;
+                let pnl = host_out[base + 0] as f64;
+                let trades = host_out[base + 1].round().max(0.0) as u32;
+                let max_dd = host_out[base + 2] as f64;
+                let mean = host_out[base + 3] as f64;
+                let std = host_out[base + 4] as f64;
+                let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+                out_metrics.push(Metrics {
+                    pnl,
+                    sharpe,
+                    sortino: 0.0,
+                    calmar: calmar_ratio(pnl, max_dd),
+                    omega: 0.0,
+                    volatility: std,
+                    max_dd,
+                    trades,
+                    exposure: host_out[base + 5] as f64,
+                    net_exposure: host_out[base + 6] as f64,
+                });
+            }
+            Ok(out_metrics)
+        })
+    })
+    .ok_or_else(|| "uploaded gpu strategy executable missing from thread-local cache".to_string())?
+}
+
+pub fn eval_double_ma_dynamic_program_precomputed_gpu_kernel(
+    lr: &[f32],
+    fast_row_major: &[f32],
+    slow_row_major: &[f32],
+    stride: usize,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    combos: &[DoubleMaParams],
+    first_valid: usize,
+    strategy: &StrategyConfig,
+    handle: &StrategyHandle,
+    device_id: u32,
+) -> Result<Vec<Metrics>, String> {
+    let uploaded = upload_double_ma_dynamic_program_batch(
+        lr,
+        fast_row_major,
+        slow_row_major,
+        stride,
+        fast_periods,
+        slow_periods,
+        combos,
+        first_valid,
+        strategy,
+        device_id,
+    )?;
+    eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, strategy, handle)
 }
 
 #[derive(Clone, Copy)]
@@ -7279,9 +7814,20 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_h2d_enabled,
-        kernel_should_use_m7_specialize,
+        eval_double_ma_dynamic_program_precomputed_gpu_kernel, kernel_async_alloc_enabled,
+        kernel_effective_pair_bars, kernel_pinned_h2d_enabled, kernel_should_use_m7_specialize,
+        upload_double_ma_dynamic_program_batch,
     };
+    use crate::strategy_dynamic::{
+        build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
+        eval_dynamic_plan_metrics_cpu,
+    };
+    use crate::strategy_gpu_runtime::{
+        reset_gpu_strategy_executable_cache, StrategyCapabilityReport, StrategyHandle,
+    };
+    use crate::strategy_plan::StrategyPlanBackend;
+    use ta_strategies::double_ma::{DoubleMaParams, StrategyConfig};
+    use vector_ta::utilities::data_loader::{source_type, Candles};
 
     struct TestEnvGuard {
         _env: std::sync::MutexGuard<'static, ()>,
@@ -7297,6 +7843,29 @@ mod tests {
             _env: env,
             _gpu: gpu,
         }
+    }
+
+    fn make_trending_candles(len: usize) -> Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64 * 0.05;
+            open.push(base);
+            high.push(base + 0.75);
+            low.push(base - 0.75);
+            close.push(base + ((i % 11) as f64 - 5.0) * 0.01);
+            vol.push(10_000.0 + ((i % 17) as f64) * 10.0);
+        }
+        Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol
     }
 
     #[test]
@@ -7398,6 +7967,212 @@ mod tests {
         match prev_enabled {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", v),
             None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE"),
+        }
+    }
+
+    #[test]
+    fn dynamic_double_ma_program_gpu_kernel_matches_cpu_plain_sma_metrics() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        reset_gpu_strategy_executable_cache();
+
+        let candles = make_trending_candles(4096);
+        let strategy = StrategyConfig::default();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &strategy,
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile dynamic double-ma plan");
+        let handle = StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+            .expect("build dynamic gpu strategy handle");
+
+        let fast_periods = vec![10u16];
+        let slow_periods = vec![30u16];
+        let combos = vec![DoubleMaParams {
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        }];
+
+        let close = source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let (fast_mat, cols) = crate::double_ma::ma_matrix_cpu_f64(
+            &candles,
+            "sma",
+            "close",
+            &fast_periods,
+            None,
+            0.85,
+            6.0,
+        )
+        .expect("fast matrix");
+        let (slow_mat, cols2) = crate::double_ma::ma_matrix_cpu_f64(
+            &candles,
+            "sma",
+            "close",
+            &slow_periods,
+            None,
+            0.85,
+            6.0,
+        )
+        .expect("slow matrix");
+        assert_eq!(cols, cols2);
+        let lr_f32: Vec<f32> = lr.iter().map(|&v| v as f32).collect();
+        let fast_f32: Vec<f32> = fast_mat.iter().map(|&v| v as f32).collect();
+        let slow_f32: Vec<f32> = slow_mat.iter().map(|&v| v as f32).collect();
+
+        let gpu_metrics = eval_double_ma_dynamic_program_precomputed_gpu_kernel(
+            &lr_f32,
+            &fast_f32,
+            &slow_f32,
+            cols,
+            &fast_periods,
+            &slow_periods,
+            &combos,
+            0,
+            &strategy,
+            &handle,
+            0,
+        )
+        .expect("run gpu dynamic backtest");
+        assert_eq!(gpu_metrics.len(), 1);
+
+        let ctx = build_dynamic_cpu_context_from_precomputed(
+            &lr,
+            close,
+            close,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let start_t = strategy
+            .trade_on_next_bar
+            .then_some(1usize)
+            .unwrap_or(0usize)
+            .saturating_add((30usize).saturating_sub(1));
+        let cpu_metrics = eval_dynamic_plan_metrics_cpu(
+            &handle.plan,
+            &ctx,
+            &fast_mat[0..cols],
+            &slow_mat[0..cols],
+            start_t,
+            true,
+        )
+        .expect("run cpu dynamic backtest");
+
+        let gpu = &gpu_metrics[0];
+        assert_eq!(gpu.trades, cpu_metrics.trades);
+        assert!(approx_eq(gpu.pnl, cpu_metrics.pnl, 1e-5), "pnl gpu={} cpu={}", gpu.pnl, cpu_metrics.pnl);
+        assert!(approx_eq(gpu.sharpe, cpu_metrics.sharpe, 1e-5), "sharpe gpu={} cpu={}", gpu.sharpe, cpu_metrics.sharpe);
+        assert_eq!(gpu.sortino, 0.0);
+        assert!(approx_eq(gpu.calmar, cpu_metrics.calmar, 1e-2), "calmar gpu={} cpu={}", gpu.calmar, cpu_metrics.calmar);
+        assert_eq!(gpu.omega, 0.0);
+        assert!(approx_eq(gpu.volatility, cpu_metrics.volatility, 1e-5), "vol gpu={} cpu={}", gpu.volatility, cpu_metrics.volatility);
+        assert!(approx_eq(gpu.max_dd, cpu_metrics.max_dd, 1e-5), "max_dd gpu={} cpu={}", gpu.max_dd, cpu_metrics.max_dd);
+        assert!(approx_eq(gpu.exposure, cpu_metrics.exposure, 1e-5), "exposure gpu={} cpu={}", gpu.exposure, cpu_metrics.exposure);
+        assert!(approx_eq(gpu.net_exposure, cpu_metrics.net_exposure, 1e-5), "net_exposure gpu={} cpu={}", gpu.net_exposure, cpu_metrics.net_exposure);
+    }
+
+    #[test]
+    fn uploaded_dynamic_double_ma_batch_relaunches_consistently() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        reset_gpu_strategy_executable_cache();
+
+        let candles = make_trending_candles(2048);
+        let strategy = StrategyConfig::default();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &strategy,
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile dynamic double-ma plan");
+        let handle = StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+            .expect("build dynamic gpu strategy handle");
+
+        let fast_periods = vec![8u16, 12u16];
+        let slow_periods = vec![21u16, 34u16];
+        let combos = vec![
+            DoubleMaParams {
+                fast_len: 8,
+                slow_len: 21,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            DoubleMaParams {
+                fast_len: 12,
+                slow_len: 34,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+        ];
+
+        let close = source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let (fast_mat, cols) = crate::double_ma::ma_matrix_cpu_f64(
+            &candles,
+            "sma",
+            "close",
+            &fast_periods,
+            None,
+            0.85,
+            6.0,
+        )
+        .expect("fast matrix");
+        let (slow_mat, _) = crate::double_ma::ma_matrix_cpu_f64(
+            &candles,
+            "sma",
+            "close",
+            &slow_periods,
+            None,
+            0.85,
+            6.0,
+        )
+        .expect("slow matrix");
+
+        let uploaded = upload_double_ma_dynamic_program_batch(
+            &lr.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+            &fast_mat.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+            &slow_mat.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+            cols,
+            &fast_periods,
+            &slow_periods,
+            &combos,
+            0,
+            &strategy,
+            0,
+        )
+        .expect("upload dynamic batch");
+
+        let first =
+            super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, &strategy, &handle)
+                .expect("first launch");
+        let second =
+            super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, &strategy, &handle)
+                .expect("second launch");
+        assert_eq!(first.len(), second.len());
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(a.trades, b.trades);
+            assert!(approx_eq(a.pnl, b.pnl, 1e-7));
+            assert!(approx_eq(a.sharpe, b.sharpe, 1e-7));
         }
     }
 }

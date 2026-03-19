@@ -207,6 +207,7 @@ fn run_case(spec: &CaseSpec, candles: &Candles) -> Result<RouteMatrixCase, Strin
         heatmap_bins: Some(64),
         constraints: None,
         vdps: None,
+        dynamic_strategy_ir: None,
     };
 
     let cancel = std::sync::atomic::AtomicBool::new(false);

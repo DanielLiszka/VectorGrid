@@ -11,6 +11,7 @@ export interface OptimizeBuildContext {
 
 export interface DoubleMaOptimizationBuildInputs {
   context: OptimizeBuildContext
+  dynamicStrategyIr?: unknown
   maSupportMap?: unknown
   backend?: unknown
   fastStart?: unknown
@@ -367,6 +368,7 @@ function normalizeText(value: unknown): string {
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'DynamicDoubleMa') return 'DynamicDoubleMa'
   if (kind === 'Pit') return 'Pit'
   if (kind === 'Set') return 'Set'
   if (kind === 'Mts') return 'Mts'
@@ -503,6 +505,7 @@ function normalizeBackend(value: unknown): 'Auto' | 'CpuOnly' | 'GpuKernel' {
 
 function isDoubleMaOverlayKind(kind: string): boolean {
   return kind === 'DoubleMa'
+    || kind === 'DynamicDoubleMa'
     || kind === 'Pit'
     || kind === 'Set'
     || kind === 'Mts'
@@ -532,18 +535,25 @@ function resolveDoubleMaBackendPayload(
   }
 }
 
-function normalizeMode(value: unknown): 'Grid' {
+function normalizeMode(
+  value: unknown,
+  outputs: { includeAll: boolean, heatmapBins: number, exportAllCsvPath: string },
+): 'Grid' | 'CoarseToFine' | 'GpuVdps' | 'Auto' {
   const mode = normalizeText(value)
-  if (
+  const requestedMode =
     mode === 'CoarseToFine'
-    || mode === 'GpuProgressive'
-    || mode === 'GpuProgressiveSearch'
-    || mode === 'GpuVdps'
-    || mode === 'Auto'
-  ) {
-    return 'Grid'
-  }
-  return 'Grid'
+      ? 'CoarseToFine'
+      : mode === 'GpuVdps'
+        ? 'GpuVdps'
+      : mode === 'Auto'
+          ? 'Auto'
+          : 'Grid'
+  const exactGridOutputsRequested =
+    outputs.includeAll
+    || outputs.heatmapBins > 0
+    || outputs.exportAllCsvPath.length > 0
+  if (requestedMode === 'Grid') return 'Grid'
+  return exactGridOutputsRequested ? 'Grid' : requestedMode
 }
 
 function normalizeCompositeSignalMode(value: unknown): 'hard_gate' | 'entry_core_exit_overlay' | 'trend_pullback_reversion' {
@@ -1162,7 +1172,6 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     }
   }
   const objective = normalizeText(inputs.objective || 'Sharpe') || 'Sharpe'
-  const mode = normalizeMode(inputs.mode)
   const backend = normalizeBackend(inputs.backend)
   const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
   const hasMaSupportMap = hasMovingAverageSupportData(maSupportMap)
@@ -1198,6 +1207,11 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   const heatmapBins = Math.max(0, Math.floor(num(inputs.heatmapBins, 0)))
   if (heatmapBins > 512) throw new Error('heatmapBins must be <= 512.')
   const exportAllCsvPath = normalizeText(inputs.exportAllCsvPath)
+  const mode = normalizeMode(inputs.mode, {
+    includeAll,
+    heatmapBins,
+    exportAllCsvPath,
+  })
 
   const feeBps = Math.max(0, num(inputs.feeBps, 0))
   const spreadBps = Math.max(0, num(inputs.spreadBps, 0))
@@ -1272,6 +1286,10 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
 
   const strategy = buildStrategyConfigFromInputs(inputs, kind)
   const backendPayload = resolveDoubleMaBackendPayload(kind, backend, strategy)
+  const dynamicStrategyIr =
+    kind === 'DynamicDoubleMa' && inputs.dynamicStrategyIr && typeof inputs.dynamicStrategyIr === 'object' && !Array.isArray(inputs.dynamicStrategyIr)
+      ? inputs.dynamicStrategyIr as Record<string, unknown>
+      : null
 
   return {
     strategy_kind: kind,
@@ -1296,6 +1314,7 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     include_all: includeAll,
     heatmap_bins: heatmapBins,
     constraints,
+    dynamic_strategy_ir: dynamicStrategyIr,
   }
 }
 

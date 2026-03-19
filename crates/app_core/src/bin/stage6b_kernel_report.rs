@@ -213,6 +213,7 @@ fn make_request(backend: Backend, strategy: StrategyConfig) -> DoubleMaRequest {
         heatmap_bins: Some(0),
         constraints: None,
         vdps: None,
+        dynamic_strategy_ir: None,
     }
 }
 
