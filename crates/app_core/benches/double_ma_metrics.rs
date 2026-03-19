@@ -169,6 +169,8 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
                 heatmap_bins: Some(64),
                 constraints: None,
                 vdps: None,
+            gpu_execution: Default::default(),
+            persist_followup_cache: false,
             };
 
             let name = format!("{case_label}/{pairs}pairs/{m_label}");
@@ -205,3 +207,5 @@ fn bench_gpu_kernel_metrics_toggle(_c: &mut Criterion) {}
 
 criterion_group!(benches, bench_gpu_kernel_metrics_toggle);
 criterion_main!(benches);
+
+

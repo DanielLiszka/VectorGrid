@@ -208,6 +208,8 @@ fn run_case(spec: &CaseSpec, candles: &Candles) -> Result<RouteMatrixCase, Strin
         constraints: None,
         vdps: None,
         dynamic_strategy_ir: None,
+    gpu_execution: Default::default(),
+    persist_followup_cache: false,
     };
 
     let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -271,3 +273,5 @@ fn main() -> Result<(), String> {
     );
     Ok(())
 }
+
+

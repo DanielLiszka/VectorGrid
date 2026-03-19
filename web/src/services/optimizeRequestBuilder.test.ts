@@ -60,6 +60,8 @@ describe('optimizeRequestBuilder', () => {
       data_id: 'data-123',
       objective: 'Sharpe',
       mode: 'Grid',
+      gpu_execution: 'PreferGpuResident',
+      persist_followup_cache: true,
       top_k: 20,
       include_all: false,
       fast_ma_types: ['sma'],
@@ -263,6 +265,9 @@ describe('optimizeRequestBuilder', () => {
     expect(coarseToFineReq?.mode).toBe('CoarseToFine')
     expect(autoReq?.mode).toBe('Auto')
     expect(vdpsReq?.mode).toBe('GpuVdps')
+    expect(coarseToFineReq?.gpu_execution).toBe('PreferGpuResident')
+    expect(autoReq?.gpu_execution).toBe('PreferGpuResident')
+    expect(vdpsReq?.gpu_execution).toBe('PreferGpuResident')
   })
 
   it('pins non-grid double-ma modes back to Grid when exact-grid outputs are requested', () => {

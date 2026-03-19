@@ -750,8 +750,13 @@ export function resolveExecutionTopRowSnapshot(preferredSourceRaw: unknown): Ana
   }
 }
 
-function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw: Record<string, unknown>): DrillInvocation | null {
+function buildDrilldownInvocation(
+  paramsRaw: Record<string, unknown>,
+  runReqRaw: Record<string, unknown>,
+  runResRaw?: Record<string, unknown> | null,
+): DrillInvocation | null {
   const runReq = asRecord(runReqRaw)
+  const runRes = asRecord(runResRaw)
   const params = asRecord(paramsRaw)
   const dataId = text(runReq.data_id ?? runReq.dataId)
   const fastMaType = text(params.fast_ma_type).toLowerCase()
@@ -763,10 +768,11 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
   const kind = normalizeStrategyKindRaw(runReq.strategy_kind ?? runReq.strategyKind)
   const fastParams = asNumberMap(params.fast_ma_params ?? params.fastMaParams) ?? resolveRunMaParams(runReq, 'fast', fastMaType)
   const slowParams = asNumberMap(params.slow_ma_params ?? params.slowMaParams) ?? resolveRunMaParams(runReq, 'slow', slowMaType)
+  const followupCacheKey = text(runRes.followup_cache_key ?? runRes.followupCacheKey) || null
 
   const base: Record<string, unknown> = {
     data_id: dataId,
-    backend: runReq.backend || { backend: 'CpuOnly' },
+    backend_hint: runReq.backend || { backend: 'CpuOnly' },
     params: {
       fast_len: fastLen,
       slow_len: slowLen,
@@ -777,6 +783,7 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
     fast_ma_params: fastParams,
     slow_ma_params: slowParams,
     strategy: runReq.strategy || runReq.base_strategy || {},
+    followup_cache_key: followupCacheKey,
     bins: desiredDrillBins()
   }
 
@@ -787,6 +794,7 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
       command: 'compute_double_ma_drilldown',
       request: {
         ...base,
+        backend_hint: runReq.backend || { backend: 'CpuOnly' },
         halftrend_filter: runReq.halftrend_filter || runReq.halftrendFilter || null
       }
     }
@@ -825,7 +833,7 @@ function buildDrilldownInvocation(paramsRaw: Record<string, unknown>, runReqRaw:
 }
 
 export function buildExecutionStrategyFromRunContext(paramsRaw: Record<string, unknown>, runReqRaw: Record<string, unknown>): AnalysisExecutionStrategySnapshot | null {
-  const invocation = buildDrilldownInvocation(paramsRaw, runReqRaw)
+  const invocation = buildDrilldownInvocation(paramsRaw, runReqRaw, null)
   if (!invocation) return null
   const strategyKind = normalizeStrategyKindRaw(invocation.kind)
   const kind = invocation.command === 'compute_double_ma_drilldown' ? 'double_ma' : 'composite_cpu'
@@ -887,9 +895,10 @@ async function runVueDrillPipeline(index: number, row: TopRowModel): Promise<boo
   const store = readAnalysisStore()
   const run = readWorkflowRun()
   const runReq = asRecord(run?.req)
+  const runRes = asRecord(run?.res)
   const params = asRecord(row.params)
   const metrics = asRecord(row.metrics)
-  const invocation = buildDrilldownInvocation(params, runReq)
+  const invocation = buildDrilldownInvocation(params, runReq, runRes)
   if (!invocation) return false
 
   drillSeq = (drillSeq + 1) >>> 0

@@ -427,6 +427,8 @@ fn main() -> Result<(), String> {
         constraints: None,
         vdps: None,
         dynamic_strategy_ir: None,
+    gpu_execution: Default::default(),
+    persist_followup_cache: false,
     };
 
     let cancel = AtomicBool::new(false);
@@ -693,3 +695,5 @@ mod tests {
         );
     }
 }
+
+

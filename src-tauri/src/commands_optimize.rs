@@ -161,6 +161,8 @@ mod tests {
             constraints: None,
             vdps: None,
             dynamic_strategy_ir: None,
+            gpu_execution: Default::default(),
+            persist_followup_cache: false,
         }
     }
 
@@ -256,3 +258,5 @@ pub async fn run_composite_mo_optimization(
     .await
     .map_err(|e| e.to_string())?
 }
+
+

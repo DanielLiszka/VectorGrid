@@ -246,6 +246,7 @@ fn gpu_fixed_candidate_metric_map(
                         0,
                         &AtomicBool::new(false),
                         None,
+                        crate::double_ma::GpuExecutionPolicy::BestEffort,
                         true,
                         Some(eval_range),
                     )?;
@@ -295,6 +296,8 @@ fn gpu_fixed_candidate_metric_map(
                     constraints: None,
                     vdps: None,
                     dynamic_strategy_ir: None,
+                gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
                 },
                 candles,
                 &AtomicBool::new(false),
@@ -5112,6 +5115,8 @@ mod tests {
                 constraints: None,
                 vdps: None,
                 dynamic_strategy_ir: None,
+                gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             },
             &candles,
             &cancel,
@@ -6592,6 +6597,8 @@ mod tests {
                 constraints: None,
                 vdps: None,
                 dynamic_strategy_ir: None,
+                gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             };
 
             let opt =
@@ -7009,6 +7016,8 @@ mod tests {
                 constraints: None,
                 vdps: None,
                 dynamic_strategy_ir: None,
+                gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             };
 
             let opt =
@@ -7121,3 +7130,5 @@ mod tests {
         assert!(meta.groups[0].meta_score.is_finite());
     }
 }
+
+

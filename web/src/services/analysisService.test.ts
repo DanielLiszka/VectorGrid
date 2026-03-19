@@ -140,10 +140,12 @@ describe('analysis service', () => {
         data_id: 'dataset-1',
         ma_source: 'close',
         objective: 'Sharpe',
+        backend: { backend: 'GpuKernel', device_id: 0 },
         strategy: {},
         halftrend_filter: null,
       },
       res: {
+        followup_cache_key: 'cache-token-1',
         top: [
           [{ fast_ma_type: 'ema', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 }, { pnl: 0.1, sharpe: 0.5, max_dd: 0.2, trades: 10, exposure: 0.4 }],
           [{ fast_ma_type: 'ema', fast_len: 7, slow_ma_type: 'ema', slow_len: 30 }, { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 20, exposure: 0.5 }],
@@ -189,8 +191,18 @@ describe('analysis service', () => {
 
     await selectTopRow(1)
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('compute_double_ma_drilldown', expect.any(Object))
-    expect(invokeCommandMock).toHaveBeenCalledWith('compute_double_ma_local_stability', expect.any(Object))
+    expect(invokeCommandMock).toHaveBeenCalledWith('compute_double_ma_drilldown', expect.objectContaining({
+      req: expect.objectContaining({
+        backend_hint: { backend: 'GpuKernel', device_id: 0 },
+        followup_cache_key: 'cache-token-1',
+      }),
+    }))
+    expect(invokeCommandMock).toHaveBeenCalledWith('compute_double_ma_local_stability', expect.objectContaining({
+      req: expect.objectContaining({
+        backend_hint: { backend: 'GpuKernel', device_id: 0 },
+        followup_cache_key: 'cache-token-1',
+      }),
+    }))
     expect(store.topTableRows[1]?.selected).toBe(true)
   })
 

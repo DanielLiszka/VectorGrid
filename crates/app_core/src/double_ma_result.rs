@@ -4,8 +4,8 @@ use ta_optimizer::OptimizationResult;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 use crate::double_ma::{
-    BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, HybridTimingMs,
-    IndicatorRoutePlanSummary, OptimizationModeResolved, VdpsTelemetry,
+    BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuResidencySummary,
+    HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved, VdpsTelemetry,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 
@@ -26,6 +26,8 @@ pub(crate) struct BackendResultContext<'a> {
     pub backend_route: Option<String>,
     pub backend_fallback_reason: Option<String>,
     pub indicator_route_plan: Option<IndicatorRoutePlanSummary>,
+    pub residency: Option<GpuResidencySummary>,
+    pub followup_cache_key: Option<String>,
 }
 
 fn resolve_params(
@@ -164,5 +166,7 @@ pub(crate) fn build_backend_optimization_result(
         backend_route: ctx.backend_route,
         backend_fallback_reason: ctx.backend_fallback_reason,
         indicator_route_plan: ctx.indicator_route_plan,
+        residency: ctx.residency,
+        followup_cache_key: ctx.followup_cache_key,
     }
 }

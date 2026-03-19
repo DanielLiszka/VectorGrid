@@ -68,6 +68,84 @@ If I were sequencing this into PRs, I would do:
 
 ---
 
+## Implementation tracker
+
+Use this checklist to track only the parts of this guide that are still valid against the current repo state.
+
+### Validity notes
+
+- As of `2026-03-19`, the guide is still directionally correct for product-path mode handling, GPU-residency policy, hybrid residency behavior, PIT device-native staging, follow-up reuse, and `GpuVdps` cleanup.
+- Do **not** treat this guide as claiming that GPU validation does not exist. Fixed-candidate GPU validation already exists in the current repo; remaining work is about fallback transparency, route policy, and throughput.
+- The original first item was incomplete if read literally. Product-path mode unblocking required both:
+  - Tauri command-layer normalization
+  - frontend request shaping / mode preservation
+- Legacy removed aliases such as `GpuProgressive` / `GpuProgressiveSearch` should remain deprecated compatibility inputs, not become first-class modes again.
+
+### Checklist
+
+- [x] PR1.A: Stop forcing `Grid` for Double-MA requests at the Tauri command boundary when exact-grid outputs are not requested.
+- [x] PR1.B: Keep Composite CPU grid-only at the product boundary.
+- [x] PR1.C: Preserve `Auto`, `CoarseToFine`, and `GpuVdps` through frontend Double-MA request shaping when exact-grid outputs are not requested.
+- [x] PR1.D: Preserve official non-grid mode values in Vue store mode state / options instead of silently normalizing them back to `Grid`.
+- [x] PR1.E: Prevent recommended frontend output defaults from silently re-enabling grid heatmap defaults for non-grid modes.
+- [x] PR1.F: Update product-path tests for Tauri normalization and frontend request shaping.
+- [x] PR1.G: Update stale frontend capability text that claimed the Double-MA family was exact-grid-only.
+
+- [x] PR2.A: Replace the current loose `double_ma_mode.rs` mode-selection inputs with a route-aware context struct.
+- [x] PR2.B: Make `Auto` route-aware instead of only choosing `Grid` vs `CoarseToFine` from output shape and combo count.
+- [x] PR2.C: Add explicit GPU execution policy types to the request/result path (`BestEffort`, `PreferGpuResident`, `StrictGpuResident`).
+- [x] PR2.D: Add request/result telemetry fields that make residency / downgrade outcomes explicit.
+
+- [x] PR3.A: Refactor `double_ma.rs` around a run-scoped static evaluation context.
+- [x] PR3.B: Hoist invariant work out of each MA-param run (`log_returns`, `first_valid`, `KaufmanStopSeries`, shared regime inputs).
+- [x] PR3.C: Add run-scoped regime caches for host and device-prepared regime data.
+- [x] PR3.D: Enforce GPU execution policy during backend resolution instead of allowing silent downgrade success paths.
+- [x] PR3.E: Treat `GpuOnly` as a downgrade / fallback outcome rather than a success case for GPU-resident execution goals.
+
+- [x] PR4.A: Make hybrid phase-1 routing residency-aware.
+- [x] PR4.B: Distinguish "CPU-preferred by heuristic" from "kernel unsupported" in hybrid routing.
+- [x] PR4.C: Keep kernel-capable indicators on device when `PreferGpuResident` / `StrictGpuResident` is requested.
+- [x] PR4.D: Surface hybrid fallback reasons clearly in route metadata.
+
+- [x] PR5.A: Move PIT device builders toward device-native construction where parity allows.
+- [x] PR5.B: Keep EFI/BOP/VOSC/CFO on `DeviceF32` instead of staging to host and re-uploading.
+- [x] PR5.C: Gate ACOSC separately until parity / stability is acceptable.
+- [x] PR5.D: Add or update PIT parity coverage for any device-native migration.
+
+- [x] PR6.A: Add follow-up cache tokens / handles to optimization results.
+- [x] PR6.B: Reuse prepared state in drilldown instead of recomputing everything from scratch on CPU.
+- [x] PR6.C: Reuse prepared state in local-stability evaluation where valid.
+- [x] PR6.D: Make follow-up execution backend-aware, including non-grid and GPU-backed runs.
+
+- [x] PR7.A: Introduce a cleaner `GpuVdps` controller abstraction in `double_ma.rs`.
+- [x] PR7.B: Separate frontier/controller logic from the underlying evaluation backend.
+- [x] PR7.C: Land host-side controller cleanup first.
+- [x] PR7.D: Land device-side controller / frontier management only after host abstraction and parity coverage are stable.
+
+- [x] Verification.A: Expand unit/integration coverage for route policy, downgrade transparency, and result metadata.
+- [x] Verification.B: Add or update benchmarks that measure warm product-path behavior rather than only isolated microbenchmarks.
+- [x] Verification.C: Run CPU perf gate before handoff for performance-sensitive executor changes.
+- [x] Verification.D: Run GPU perf gate before handoff for CUDA / backtest-kernel executor changes when GPU is available.
+
+Performance gate note: `2026-03-19` local candidate runs completed. The final CPU and GPU perf gates both pass after refreshing stale CPU workflow baselines and fixing two CPU-bench compile issues uncovered during gate execution (`double_ma_opt.rs` non-CUDA import gating and `dynamic_strategy_cpu.rs` stale request literals).
+
+- Warm follow-up benchmark coverage now exists in `crates/app_core/benches/double_ma_followup_workflow.rs` for cached vs cold `optimize -> drilldown -> local stability` product-path behavior on CPU and GPU-enabled builds.
+- CPU workflow regression gate: passed at `runtime_ms=1721` vs refreshed workflow baseline `1744`
+- CPU aggregate perf gate workflow budget: passed at `workflow_runtime_ms=1721` vs CPU perf baseline `1721`
+- CPU criterion gate: passed at `criterion_mean_ms=124.35` vs baseline `125.31`
+- CPU dynamic strategy ratio gate: passed at `1.074238` vs baseline `1.070352`
+- GPU kernel perf gate: passed at `criterion_mean_ms=76.63` vs baseline `155.29`, with dynamic strategy ratio `1.03`
+
+### Suggested status labels
+
+When updating this checklist during implementation, prefer one of:
+
+- `done`: implemented and verified locally
+- `partial`: code landed, but follow-up verification or adjacent-file work remains
+- `blocked`: waiting on adjacent runtime/kernel support, parity work, or perf evidence
+
+---
+
 ## Current-state summary by file
 
 | File | Current issue | Why it matters |

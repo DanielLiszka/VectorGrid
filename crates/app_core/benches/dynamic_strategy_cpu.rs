@@ -207,6 +207,9 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         heatmap_bins: Some(0),
         constraints: None,
         vdps: None,
+        dynamic_strategy_ir: None,
+        gpu_execution: Default::default(),
+        persist_followup_cache: false,
     };
     let plan_double = compile_dynamic_plan_for_double_ma_config(
         &req_double.ma_source,
@@ -228,7 +231,12 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         vcc: None,
         vemr: None,
         rocb: None,
+        vcet: None,
         mkcs: None,
+        kqsr: None,
+        carm: None,
+        kvdf: None,
+        cdmc: None,
         data_id: "bench".to_string(),
         fast_range: (10, 10, 1),
         slow_range: (30, 30, 1),

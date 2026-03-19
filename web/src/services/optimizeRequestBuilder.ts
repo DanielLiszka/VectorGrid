@@ -535,6 +535,17 @@ function resolveDoubleMaBackendPayload(
   }
 }
 
+function resolveDoubleMaGpuExecutionPolicy(
+  backendPayload: Record<string, unknown>,
+  mode: 'Grid' | 'CoarseToFine' | 'GpuVdps' | 'Auto',
+): 'BestEffort' | 'PreferGpuResident' | 'StrictGpuResident' {
+  const backend = normalizeText(backendPayload.backend)
+  if (mode === 'GpuVdps' || backend === 'GpuKernel' || backend === 'GpuHybridKernel') {
+    return 'PreferGpuResident'
+  }
+  return 'BestEffort'
+}
+
 function normalizeMode(
   value: unknown,
   outputs: { includeAll: boolean, heatmapBins: number, exportAllCsvPath: string },
@@ -1286,6 +1297,7 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
 
   const strategy = buildStrategyConfigFromInputs(inputs, kind)
   const backendPayload = resolveDoubleMaBackendPayload(kind, backend, strategy)
+  const gpuExecution = resolveDoubleMaGpuExecutionPolicy(backendPayload, mode)
   const dynamicStrategyIr =
     kind === 'DynamicDoubleMa' && inputs.dynamicStrategyIr && typeof inputs.dynamicStrategyIr === 'object' && !Array.isArray(inputs.dynamicStrategyIr)
       ? inputs.dynamicStrategyIr as Record<string, unknown>
@@ -1315,6 +1327,8 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     heatmap_bins: heatmapBins,
     constraints,
     dynamic_strategy_ir: dynamicStrategyIr,
+    gpu_execution: gpuExecution,
+    persist_followup_cache: true,
   }
 }
 

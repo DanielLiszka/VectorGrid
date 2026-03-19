@@ -79,6 +79,10 @@ name = "double_ma_validation_workflow"
 harness = false
 
 [[bench]]
+name = "double_ma_followup_workflow"
+harness = false
+
+[[bench]]
 name = "meta_select_workflow"
 harness = false
 

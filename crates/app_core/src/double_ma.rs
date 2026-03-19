@@ -18,10 +18,12 @@ use ta_strategies::double_ma::{
 use crate::alloc_policy::alloc_f64_with_prefix_uninit_tail;
 use crate::double_ma_backend::{
     backend_kind_label, build_indicator_route_plan_summary, gpu_kernel_blockers_for_request,
-    hybrid_backend_enabled,
+    hybrid_backend_enabled, should_cpu_stage_indicator,
 };
 pub(crate) use crate::double_ma_ma_kind::{lookup_ma_info, validate_ma_kind};
-use crate::double_ma_mode::{resolve_optimization_mode, validate_optimization_mode};
+use crate::double_ma_mode::{
+    resolve_optimization_mode, validate_optimization_mode, ModeSelectionContext,
+};
 use crate::double_ma_result::{build_backend_optimization_result, BackendResultContext};
 pub(crate) use crate::double_ma_strategy::{
     strategy_cfg_for_optimization, validate_strategy_cfg, validate_strategy_cfg_for_optimization,
@@ -38,6 +40,7 @@ use crate::request_normalization::{
 };
 
 static DYNAMIC_GPU_PREFLIGHT_CACHE: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+static FOLLOWUP_CACHE: OnceLock<Mutex<HashMap<String, FollowupCacheEntry>>> = OnceLock::new();
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 thread_local! {
     static DYNAMIC_GPU_BATCH_CACHE: RefCell<HashMap<String, Rc<crate::gpu_backtest_kernel::UploadedDoubleMaDynamicProgramBatch>>> =
@@ -56,6 +59,19 @@ pub fn reset_dynamic_gpu_preflight_cache() {
     });
 }
 
+#[derive(Clone, Debug)]
+struct FollowupCacheEntry {
+    backend_hint: Option<Backend>,
+    log_returns: Option<Vec<f64>>,
+    regime_filter: Option<Vec<f64>>,
+    kaufman_stops: Option<KaufmanStopSeries>,
+    base_first_valid: Option<usize>,
+}
+
+fn followup_cache() -> &'static Mutex<HashMap<String, FollowupCacheEntry>> {
+    FOLLOWUP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[cfg(test)]
 #[path = "double_ma_test_support.rs"]
 mod double_ma_test_support;
@@ -69,7 +85,7 @@ use vector_ta::cuda::{
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use vector_ta::indicators::dispatch::{
     compute_cuda_device, CudaOutputTarget, IndicatorCudaDeviceDataRef, IndicatorCudaDeviceRequest,
-    IndicatorCudaSeries,
+    IndicatorCudaOutput, IndicatorCudaSeries,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use vector_ta::utilities::enums::Kernel;
@@ -219,6 +235,10 @@ pub struct DoubleMaRequest {
     pub vdps: Option<VdpsConfig>,
     #[serde(default)]
     pub dynamic_strategy_ir: Option<crate::strategy_ir::StrategyIr>,
+    #[serde(default)]
+    pub gpu_execution: GpuExecutionPolicy,
+    #[serde(default)]
+    pub persist_followup_cache: bool,
 }
 
 fn default_ma_source() -> String {
@@ -240,6 +260,26 @@ pub enum BackendUsed {
     Gpu,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum GpuExecutionPolicy {
+    #[default]
+    BestEffort,
+    PreferGpuResident,
+    StrictGpuResident,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GpuResidencySummary {
+    pub requested_policy: GpuExecutionPolicy,
+    pub requested_backend: String,
+    pub resolved_backend: String,
+    pub fully_gpu_resident: bool,
+    pub cpu_staged_indicators: bool,
+    pub cpu_fallback_used: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub notes: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DoubleMaParamsResolved {
     pub fast_len: u16,
@@ -255,6 +295,10 @@ pub struct DoubleMaParamsResolved {
 #[derive(Clone, Debug, Deserialize)]
 pub struct DoubleMaDrilldownRequest {
     pub data_id: String,
+    #[serde(default, alias = "backend")]
+    pub backend_hint: Option<Backend>,
+    #[serde(default)]
+    pub followup_cache_key: Option<String>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
@@ -269,6 +313,10 @@ pub struct DoubleMaDrilldownRequest {
 #[derive(Clone, Debug, Deserialize)]
 pub struct DoubleMaLocalStabilityRequest {
     pub data_id: String,
+    #[serde(default, alias = "backend")]
+    pub backend_hint: Option<Backend>,
+    #[serde(default)]
+    pub followup_cache_key: Option<String>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
@@ -339,6 +387,10 @@ pub struct BackendOptimizationResult {
     pub backend_fallback_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicator_route_plan: Option<IndicatorRoutePlanSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residency: Option<GpuResidencySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followup_cache_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -356,6 +408,9 @@ pub struct IndicatorRouteDecisionSummary {
     pub capability: String,
     pub route: String,
     pub gpu_preferred_by_speedup: bool,
+    pub residency_tier: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staging_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2307,10 +2362,10 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let fast_ma = req.params.fast_ma_type.trim();
-    let slow_ma = req.params.slow_ma_type.trim();
-    validate_ma_kind(fast_ma)?;
-    validate_ma_kind(slow_ma)?;
+    let fast_ma = req.params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = req.params.slow_ma_type.trim().to_ascii_lowercase();
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
 
     let fast_len = req.params.fast_len as usize;
     let slow_len = req.params.slow_len as usize;
@@ -2330,34 +2385,68 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
     if close.len() != ma_prices.len() {
         return Err("ma source length mismatch".to_string());
     }
-    let fv_close =
-        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let fv_ma =
-        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
-    let mut first_valid = fv_close.max(fv_ma);
-
-    let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
-        candles,
+    let cached_followup = resolve_followup_cache_entry(
+        req.followup_cache_key.as_deref(),
+        &req.data_id,
+        n,
         &req.ma_source,
+        &fast_ma,
+        &slow_ma,
         &req.strategy,
         req.halftrend_filter.as_ref(),
+        candles,
     )?;
-    let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
-    if let Some(ks) = kaufman_stops.as_ref() {
-        let fv_k_long = first_finite_idx(&ks.long)
-            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
-        let fv_k_short = first_finite_idx(&ks.short)
-            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
-        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
-    }
-    if let Some(trend) = halftrend_trend.as_ref() {
-        if trend.len() != n {
-            return Err("regime trend series length mismatch".to_string());
+    let cached_backend_hint = cached_followup
+        .as_ref()
+        .and_then(|entry| entry.backend_hint.clone());
+    let followup_backend = req.backend_hint.clone().or(cached_backend_hint);
+
+    let (halftrend_trend, kaufman_stops, first_valid, lr) = if let Some(entry) = cached_followup {
+        (
+            entry.regime_filter,
+            entry.kaufman_stops,
+            entry.base_first_valid
+                .ok_or_else(|| "follow-up cache entry missing base_first_valid".to_string())?,
+            entry.log_returns
+                .ok_or_else(|| "follow-up cache entry missing log_returns".to_string())?,
+        )
+    } else {
+        let fv_close =
+            first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+        let fv_ma = first_finite_idx(ma_prices)
+            .ok_or_else(|| "ma source series all non-finite".to_string())?;
+        let mut first_valid = fv_close.max(fv_ma);
+
+        let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
+            candles,
+            &req.ma_source,
+            &req.strategy,
+            req.halftrend_filter.as_ref(),
+        )?;
+        let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
+        if let Some(ks) = kaufman_stops.as_ref() {
+            let fv_k_long = first_finite_idx(&ks.long)
+                .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+            let fv_k_short = first_finite_idx(&ks.short)
+                .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+            first_valid = first_valid.max(fv_k_long.max(fv_k_short));
         }
-        let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
-        first_valid = first_valid.max(fv_ht);
-    }
+        if let Some(trend) = halftrend_trend.as_ref() {
+            if trend.len() != n {
+                return Err("regime trend series length mismatch".to_string());
+            }
+            let fv_ht = first_finite_idx(trend)
+                .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+            first_valid = first_valid.max(fv_ht);
+        }
+
+        (
+            halftrend_trend,
+            kaufman_stops,
+            first_valid,
+            compute_log_returns_f64(close),
+        )
+    };
 
     let trade_offset = if req.strategy.trade_on_next_bar {
         1usize
@@ -2372,39 +2461,46 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
     }
 
     let (fast_alma_offset, fast_alma_sigma) =
-        resolve_alma_params_for_side("fast", fast_ma, req.fast_ma_params.as_ref())?;
+        resolve_alma_params_for_side("fast", &fast_ma, req.fast_ma_params.as_ref())?;
     let (slow_alma_offset, slow_alma_sigma) =
-        resolve_alma_params_for_side("slow", slow_ma, req.slow_ma_params.as_ref())?;
+        resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
 
+    let followup_prices_f32 = match followup_backend.as_ref() {
+        Some(Backend::CpuOnly) | None => None,
+        Some(_) => Some(ma_prices.iter().map(|&value| value as f32).collect::<Vec<f32>>()),
+    };
     let fast_periods = [req.params.fast_len];
-    let (fast_mat, cols) = ma_matrix_cpu_f64(
+    let (fast_mat, cols) = ma_matrix_with_backend_f64(
         candles,
-        fast_ma,
+        &fast_ma,
         &req.ma_source,
         &fast_periods,
         req.fast_ma_params.as_ref(),
         fast_alma_offset,
         fast_alma_sigma,
+        followup_backend.as_ref(),
+        followup_prices_f32.as_deref(),
     )?;
     if cols != n || fast_mat.len() != n {
         return Err("fast MA series length mismatch".to_string());
     }
 
     let slow_periods = [req.params.slow_len];
-    let (slow_mat, cols2) = ma_matrix_cpu_f64(
+    let (slow_mat, cols2) = ma_matrix_with_backend_f64(
         candles,
-        slow_ma,
+        &slow_ma,
         &req.ma_source,
         &slow_periods,
         req.slow_ma_params.as_ref(),
         slow_alma_offset,
         slow_alma_sigma,
+        followup_backend.as_ref(),
+        followup_prices_f32.as_deref(),
     )?;
     if cols2 != n || slow_mat.len() != n {
         return Err("slow MA series length mismatch".to_string());
     }
 
-    let lr = compute_log_returns_f64(close);
     let bins = req.bins.unwrap_or(1024);
     let mut curves = eval_curves_f64_with_exit_mode(
         &lr,
@@ -2431,10 +2527,10 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let fast_ma = req.params.fast_ma_type.trim();
-    let slow_ma = req.params.slow_ma_type.trim();
-    validate_ma_kind(fast_ma)?;
-    validate_ma_kind(slow_ma)?;
+    let fast_ma = req.params.fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = req.params.slow_ma_type.trim().to_ascii_lowercase();
+    validate_ma_kind(&fast_ma)?;
+    validate_ma_kind(&slow_ma)?;
 
     let base_fast = req.params.fast_len;
     let base_slow = req.params.slow_len;
@@ -2457,34 +2553,68 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
     if close.len() != ma_prices.len() {
         return Err("ma source length mismatch".to_string());
     }
-    let fv_close =
-        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let fv_ma =
-        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
-    let mut first_valid = fv_close.max(fv_ma);
-
-    let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
-        candles,
+    let cached_followup = resolve_followup_cache_entry(
+        req.followup_cache_key.as_deref(),
+        &req.data_id,
+        n,
         &req.ma_source,
+        &fast_ma,
+        &slow_ma,
         &req.strategy,
         req.halftrend_filter.as_ref(),
+        candles,
     )?;
-    if let Some(trend) = halftrend_trend.as_ref() {
-        if trend.len() != n {
-            return Err("regime trend series length mismatch".to_string());
+    let cached_backend_hint = cached_followup
+        .as_ref()
+        .and_then(|entry| entry.backend_hint.clone());
+    let followup_backend = req.backend_hint.clone().or(cached_backend_hint);
+
+    let (halftrend_trend, kaufman_stops, first_valid, lr) = if let Some(entry) = cached_followup {
+        (
+            entry.regime_filter,
+            entry.kaufman_stops,
+            entry.base_first_valid
+                .ok_or_else(|| "follow-up cache entry missing base_first_valid".to_string())?,
+            entry.log_returns
+                .ok_or_else(|| "follow-up cache entry missing log_returns".to_string())?,
+        )
+    } else {
+        let fv_close =
+            first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+        let fv_ma = first_finite_idx(ma_prices)
+            .ok_or_else(|| "ma source series all non-finite".to_string())?;
+        let mut first_valid = fv_close.max(fv_ma);
+
+        let halftrend_trend: Option<Vec<f64>> = compute_combined_regime_filter(
+            candles,
+            &req.ma_source,
+            &req.strategy,
+            req.halftrend_filter.as_ref(),
+        )?;
+        if let Some(trend) = halftrend_trend.as_ref() {
+            if trend.len() != n {
+                return Err("regime trend series length mismatch".to_string());
+            }
+            let fv_ht = first_finite_idx(trend)
+                .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+            first_valid = first_valid.max(fv_ht);
         }
-        let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
-        first_valid = first_valid.max(fv_ht);
-    }
-    let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
-    if let Some(ks) = kaufman_stops.as_ref() {
-        let fv_k_long = first_finite_idx(&ks.long)
-            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
-        let fv_k_short = first_finite_idx(&ks.short)
-            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
-        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
-    }
+        let kaufman_stops = compute_kaufman_stop_series(candles, &req.strategy)?;
+        if let Some(ks) = kaufman_stops.as_ref() {
+            let fv_k_long = first_finite_idx(&ks.long)
+                .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+            let fv_k_short = first_finite_idx(&ks.short)
+                .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+            first_valid = first_valid.max(fv_k_long.max(fv_k_short));
+        }
+
+        (
+            halftrend_trend,
+            kaufman_stops,
+            first_valid,
+            compute_log_returns_f64(close),
+        )
+    };
 
     let radius = req.radius.unwrap_or(1).min(32);
     let step = req.step.unwrap_or(1).max(1);
@@ -2530,36 +2660,43 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
     }
 
     let (fast_alma_offset, fast_alma_sigma) =
-        resolve_alma_params_for_side("fast", fast_ma, req.fast_ma_params.as_ref())?;
+        resolve_alma_params_for_side("fast", &fast_ma, req.fast_ma_params.as_ref())?;
     let (slow_alma_offset, slow_alma_sigma) =
-        resolve_alma_params_for_side("slow", slow_ma, req.slow_ma_params.as_ref())?;
+        resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
 
-    let (fast_mat, cols) = ma_matrix_cpu_f64(
+    let followup_prices_f32 = match followup_backend.as_ref() {
+        Some(Backend::CpuOnly) | None => None,
+        Some(_) => Some(ma_prices.iter().map(|&value| value as f32).collect::<Vec<f32>>()),
+    };
+    let (fast_mat, cols) = ma_matrix_with_backend_f64(
         candles,
-        fast_ma,
+        &fast_ma,
         &req.ma_source,
         &fast_periods,
         req.fast_ma_params.as_ref(),
         fast_alma_offset,
         fast_alma_sigma,
+        followup_backend.as_ref(),
+        followup_prices_f32.as_deref(),
     )?;
     if cols != n {
         return Err("fast MA series length mismatch".to_string());
     }
-    let (slow_mat, cols2) = ma_matrix_cpu_f64(
+    let (slow_mat, cols2) = ma_matrix_with_backend_f64(
         candles,
-        slow_ma,
+        &slow_ma,
         &req.ma_source,
         &slow_periods,
         req.slow_ma_params.as_ref(),
         slow_alma_offset,
         slow_alma_sigma,
+        followup_backend.as_ref(),
+        followup_prices_f32.as_deref(),
     )?;
     if cols2 != n {
         return Err("slow MA series length mismatch".to_string());
     }
 
-    let lr = compute_log_returns_f64(close);
     let objective = req.objective;
 
     let mut points: Vec<LocalStabilityPoint> = Vec::new();
@@ -2781,13 +2918,45 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             total_combos
         ));
     }
-    let mode_used = resolve_optimization_mode(
-        req.mode,
+    let kernel_blockers_for_request = gpu_kernel_blockers_for_request(
+        fast_ma.as_str(),
+        slow_ma.as_str(),
+        &strategy,
+        regime_filter_expected,
+        objective,
+        top_k,
+        include_all,
+    );
+    let kernel_supported_for_mode = kernel_blockers_for_request.is_empty();
+    #[cfg(feature = "cuda")]
+    let cuda_runtime_available = cuda_available();
+    #[cfg(not(feature = "cuda"))]
+    let cuda_runtime_available = false;
+    let hybrid_viable_for_mode = {
+        let route_plan = crate::ma_policy::plan_double_ma_hybrid_route(&fast_ma, &slow_ma);
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+        {
+            route_plan.is_fully_supported()
+                && hybrid_backend_enabled()
+                && cuda_runtime_available
+                && kernel_supported_for_mode
+        }
+        #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+        {
+            let _ = route_plan;
+            false
+        }
+    };
+    let mode_used = resolve_optimization_mode(&ModeSelectionContext {
+        requested_mode: req.mode,
         include_all,
         heatmap_bins,
-        export_all_csv_path.as_deref(),
+        export_all_csv_path: export_all_csv_path.as_deref(),
         total_combos,
-    );
+        gpu_execution: req.gpu_execution,
+        gpu_kernel_viable: kernel_supported_for_mode,
+        gpu_hybrid_viable: hybrid_viable_for_mode,
+    });
     validate_optimization_mode(
         &mode_used,
         include_all,
@@ -2801,7 +2970,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     };
 
     let mut backend_fallback_reason: Option<String> = None;
-    let indicator_route_plan_summary = build_indicator_route_plan_summary(&fast_ma, &slow_ma);
+    let indicator_route_plan_summary =
+        build_indicator_route_plan_summary(&fast_ma, &slow_ma, req.gpu_execution);
 
     let mut backend = match normalized_backend {
         Backend::Auto { device_id } => {
@@ -2813,25 +2983,12 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 lookup_ma_info(&slow_ma).ok_or_else(|| "unknown slow MA".to_string())?;
             let cpu_ok = fast_info.supports_cpu_single && slow_info.supports_cpu_single;
 
-            #[cfg(feature = "cuda")]
-            let cuda_ok = cuda_available()
+            let cuda_ok = cuda_runtime_available
                 && fast_info.supports_cuda_single
                 && slow_info.supports_cuda_single;
-            #[cfg(not(feature = "cuda"))]
-            let cuda_ok = false;
-
-            let kernel_blockers = gpu_kernel_blockers_for_request(
-                fast_ma.as_str(),
-                slow_ma.as_str(),
-                &strategy,
-                regime_filter_expected,
-                objective,
-                top_k,
-                include_all,
-            );
-            let kernel_supported = kernel_blockers.is_empty();
+            let kernel_supported = kernel_supported_for_mode;
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-            let hybrid_supported = cuda_available() && hybrid_backend_enabled();
+            let hybrid_supported = cuda_runtime_available && hybrid_backend_enabled();
             #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
             let hybrid_supported = false;
 
@@ -2871,6 +3028,21 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
     }
 
+    let prefer_gpu_resident = matches!(
+        req.gpu_execution,
+        GpuExecutionPolicy::PreferGpuResident | GpuExecutionPolicy::StrictGpuResident
+    );
+    let strict_gpu_resident = matches!(req.gpu_execution, GpuExecutionPolicy::StrictGpuResident);
+    let cpu_staged_indicator_requested = indicator_route_plan_summary.fast.residency_tier
+        == "cpu_staged"
+        || indicator_route_plan_summary.slow.residency_tier == "cpu_staged";
+    if strict_gpu_resident && cpu_staged_indicator_requested {
+        return Err(
+            "StrictGpuResident requires device-resident indicator routing, but the selected MA route requires CPU staging."
+                .to_string(),
+        );
+    }
+
     // If the user explicitly asks for the kernel backend but it's not available for this MA/build,
     // fall back to the best available backend (unless export is requested).
     let kernel_device_id = match &backend {
@@ -2879,16 +3051,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     };
     if let Some(device_id) = kernel_device_id {
         let export_requested = export_all_csv_path.is_some();
-        let kernel_blockers = gpu_kernel_blockers_for_request(
-            fast_ma.as_str(),
-            slow_ma.as_str(),
-            &strategy,
-            regime_filter_expected,
-            objective,
-            top_k,
-            include_all,
-        );
-        let kernel_supported = kernel_blockers.is_empty();
+        let kernel_blockers = &kernel_blockers_for_request;
+        let kernel_supported = kernel_supported_for_mode;
 
         if export_requested && !kernel_supported {
             return Err(
@@ -2903,12 +3067,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 lookup_ma_info(&slow_ma).ok_or_else(|| "unknown slow MA".to_string())?;
             let cpu_ok = fast_info.supports_cpu_single && slow_info.supports_cpu_single;
 
-            #[cfg(feature = "cuda")]
-            let cuda_ok = cuda_available()
+            let cuda_ok = cuda_runtime_available
                 && fast_info.supports_cuda_single
                 && slow_info.supports_cuda_single;
-            #[cfg(not(feature = "cuda"))]
-            let cuda_ok = false;
 
             backend = if cuda_ok {
                 Backend::GpuOnly { device_id }
@@ -2927,6 +3088,42 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     kernel_blockers.join("; ")
                 )),
             );
+        }
+    }
+
+    if strict_gpu_resident {
+        match backend {
+            Backend::GpuKernel { .. } | Backend::GpuHybridKernel { .. } => {}
+            Backend::Auto { .. } | Backend::CpuOnly => {
+                return Err(
+                    "StrictGpuResident requires a GPU-resident backend, but the request resolved to CpuOnly."
+                        .to_string(),
+                );
+            }
+            Backend::GpuOnly { .. } => {
+                return Err(
+                    "StrictGpuResident does not allow the host-evaluated GpuOnly path. Use GpuKernel/GpuHybridKernel or relax the execution policy."
+                        .to_string(),
+                );
+            }
+        }
+    } else if prefer_gpu_resident {
+        match backend {
+            Backend::CpuOnly => merge_optional_note(
+                &mut backend_fallback_reason,
+                Some(
+                    "PreferGpuResident requested GPU-resident execution, but the request resolved to CpuOnly."
+                        .to_string(),
+                ),
+            ),
+            Backend::GpuOnly { .. } => merge_optional_note(
+                &mut backend_fallback_reason,
+                Some(
+                    "PreferGpuResident requested GPU-resident execution, but the request downgraded to GpuOnly (GPU MA generation with host metric evaluation)."
+                        .to_string(),
+                ),
+            ),
+            Backend::Auto { .. } | Backend::GpuKernel { .. } | Backend::GpuHybridKernel { .. } => {}
         }
     }
 
@@ -3004,6 +3201,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
         dynamic_runtime_plan = Some(runnable);
     }
+    enforce_gpu_execution_policy_before_run(req.gpu_execution, &backend, &indicator_route_plan_summary)?;
 
     let requested_backend_label = backend_kind_label(&requested_backend);
     let resolved_backend_label = backend_kind_label(&backend);
@@ -3440,6 +3638,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         heatmap_bins,
                         cancel,
                         progress,
+                        req.gpu_execution,
                         !matches!(mode_used, OptimizationModeResolved::GpuVdps),
                         None,
                     )?;
@@ -4680,6 +4879,32 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| slow_ma.clone());
+    let residency = Some(build_gpu_residency_summary(
+        req.gpu_execution,
+        &requested_backend,
+        &backend,
+        &indicator_route_plan_summary,
+        merged_backend_fallback_reason.as_deref(),
+    ));
+    if let Some(summary) = residency.as_ref() {
+        enforce_gpu_execution_policy_after_run(summary)?;
+    }
+    let followup_cache_key = if req.persist_followup_cache {
+        let key = build_followup_cache_key(
+            &req.data_id,
+            n,
+            &ma_source,
+            &fast_ma,
+            &slow_ma,
+            &strategy,
+            halftrend_filter.as_ref(),
+        )?;
+        let entry = build_lazy_followup_cache_entry(Some(&backend));
+        store_followup_cache_entry(key.clone(), entry);
+        Some(key)
+    } else {
+        None
+    };
 
     if matches!(backend_used, BackendUsed::Gpu)
         && crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled()
@@ -4739,6 +4964,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             backend_route: merged_backend_route,
             backend_fallback_reason: merged_backend_fallback_reason,
             indicator_route_plan: Some(indicator_route_plan_summary),
+            residency,
+            followup_cache_key,
         },
     ))
 }
@@ -5770,6 +5997,23 @@ fn regime_device_matrix_from_output(
     }
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn dynamic_cuda_output_from_indicator_output(
+    output: IndicatorCudaOutput,
+) -> crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput {
+    crate::dynamic_indicator_adapter::DynamicIndicatorCudaComputeOutput {
+        output_id: output.output_id,
+        series: match output.series {
+            IndicatorCudaSeries::DeviceF32(matrix) => DynamicIndicatorCudaSeries::DeviceF32(matrix),
+            IndicatorCudaSeries::HostF32(values) => DynamicIndicatorCudaSeries::HostF32(values),
+        },
+        warmup: output.warmup,
+        rows: output.rows,
+        cols: output.cols,
+        pattern_ids: output.pattern_ids,
+    }
+}
+
 pub(crate) fn compute_pressure_impulse_trend_regime(
     candles: &vector_ta::utilities::data_loader::Candles,
     ma_source: &str,
@@ -6146,26 +6390,18 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
             value: IndicatorParamValue::Int(strategy.pit_efi_period() as i64),
         }],
         Kernel::Auto,
-        CudaOutputTarget::HostF32,
+        CudaOutputTarget::DeviceF32,
     )
     .map_err(|e| format!("pit efi failed: {e}"))?;
     let efi_warmup_raw = efi_output.warmup.unwrap_or(0);
-    let efi_values = match efi_output.series {
-        DynamicIndicatorCudaSeries::HostF32(values) => values,
-        DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            return Err(
-                "pit efi unexpectedly returned device output instead of host output".to_string(),
-            )
-        }
-    };
+    let (efi_matrix, _) = regime_device_matrix_from_output("pit efi", efi_output)?;
     let efi_warmup = efi_warmup_raw.max(
         prepared_inputs
             .close_volume_first_valid()
             .saturating_add(strategy.pit_efi_period().saturating_sub(1)),
     );
-    let (efi_row, efi_buffer) =
-        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, efi_values.as_slice())
-            .map_err(|e| format!("pit efi upload failed: {e}"))?;
+    let efi_row = device_slice_ref_from_matrix_row(&efi_matrix, 0)
+        .map_err(|e| format!("pit efi device row build failed: {e}"))?;
 
     let bop_output = compute_dynamic_indicator_cuda_with_inputs(
         &prepared_inputs,
@@ -6173,21 +6409,13 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
         Some("value"),
         &[],
         Kernel::Auto,
-        CudaOutputTarget::HostF32,
+        CudaOutputTarget::DeviceF32,
     )
     .map_err(|e| format!("pit bop failed: {e}"))?;
     let bop_warmup = bop_output.warmup.unwrap_or(0);
-    let bop_values = match bop_output.series {
-        DynamicIndicatorCudaSeries::HostF32(values) => values,
-        DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            return Err(
-                "pit bop unexpectedly returned device output instead of host output".to_string(),
-            )
-        }
-    };
-    let (bop_row, bop_buffer) =
-        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, bop_values.as_slice())
-            .map_err(|e| format!("pit bop upload failed: {e}"))?;
+    let (bop_matrix, _) = regime_device_matrix_from_output("pit bop", bop_output)?;
+    let bop_row = device_slice_ref_from_matrix_row(&bop_matrix, 0)
+        .map_err(|e| format!("pit bop device row build failed: {e}"))?;
 
     let vosc_output = compute_cuda_device(IndicatorCudaDeviceRequest {
         indicator_id: "vosc",
@@ -6210,21 +6438,14 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
             },
         ],
         kernel: Kernel::Auto,
-        target: CudaOutputTarget::HostF32,
+        target: CudaOutputTarget::DeviceF32,
     })
     .map_err(|e| format!("pit vosc failed: {e}"))?;
     let vosc_warmup = vosc_output.warmup.unwrap_or(0);
-    let vosc_values = match vosc_output.series {
-        IndicatorCudaSeries::HostF32(values) => values,
-        IndicatorCudaSeries::DeviceF32(_) => {
-            return Err(
-                "pit vosc unexpectedly returned device output instead of host output".to_string(),
-            )
-        }
-    };
-    let (vosc_row, vosc_buffer) =
-        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, vosc_values.as_slice())
-            .map_err(|e| format!("pit vosc upload failed: {e}"))?;
+    let vosc_output = dynamic_cuda_output_from_indicator_output(vosc_output);
+    let (vosc_matrix, _) = regime_device_matrix_from_output("pit vosc", vosc_output)?;
+    let vosc_row = device_slice_ref_from_matrix_row(&vosc_matrix, 0)
+        .map_err(|e| format!("pit vosc device row build failed: {e}"))?;
 
     // Stage ACOSC from the CPU reference path for PIT until the upstream CUDA
     // wrapper matches the CPU oscillator output on breakout inputs.
@@ -6260,26 +6481,18 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
             },
         ],
         Kernel::Auto,
-        CudaOutputTarget::HostF32,
+        CudaOutputTarget::DeviceF32,
     )
     .map_err(|e| format!("pit cfo failed: {e}"))?;
     let cfo_warmup_raw = cfo_output.warmup.unwrap_or(0);
-    let cfo_values = match cfo_output.series {
-        DynamicIndicatorCudaSeries::HostF32(values) => values,
-        DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            return Err(
-                "pit cfo unexpectedly returned device output instead of host output".to_string(),
-            )
-        }
-    };
+    let (cfo_matrix, _) = regime_device_matrix_from_output("pit cfo", cfo_output)?;
     let cfo_warmup = cfo_warmup_raw.max(
         prepared_inputs
             .source_first_valid()
             .saturating_add(strategy.pit_cfo_period().saturating_sub(1)),
     );
-    let (cfo_row, cfo_buffer) =
-        crate::gpu_backtest_kernel::upload_device_series_f32(device_id, cfo_values.as_slice())
-            .map_err(|e| format!("pit cfo upload failed: {e}"))?;
+    let cfo_row = device_slice_ref_from_matrix_row(&cfo_matrix, 0)
+        .map_err(|e| format!("pit cfo device row build failed: {e}"))?;
     let first_valid = prepared_inputs
         .ohlcv_first_valid()
         .max(prepared_inputs.source_first_valid())
@@ -6300,13 +6513,9 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
         strategy.pit_confirm_bars(),
     )
     .map(|filter| {
-        filter.with_scratch_buffers(vec![
-            efi_buffer,
-            bop_buffer,
-            vosc_buffer,
-            acosc_buffer,
-            cfo_buffer,
-        ])
+        filter
+            .with_scratch_buffers(vec![acosc_buffer])
+            .with_dispatch_matrices(vec![efi_matrix, bop_matrix, vosc_matrix, cfo_matrix])
     })
 }
 
@@ -6742,6 +6951,263 @@ fn ensure_combined_regime_filter_cached<'a>(
         *cache = Some(regime);
     }
     Ok(cache.as_ref().and_then(|regime| regime.as_deref()))
+}
+
+#[derive(Serialize)]
+struct FollowupCacheSignature<'a> {
+    data_id: &'a str,
+    num_candles: usize,
+    ma_source: &'a str,
+    fast_ma: &'a str,
+    slow_ma: &'a str,
+    strategy: &'a StrategyConfig,
+    halftrend_filter: Option<&'a HalfTrendRegimeFilter>,
+}
+
+fn build_followup_cache_key(
+    data_id: &str,
+    num_candles: usize,
+    ma_source: &str,
+    fast_ma: &str,
+    slow_ma: &str,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+) -> Result<String, String> {
+    serde_json::to_string(&FollowupCacheSignature {
+        data_id,
+        num_candles,
+        ma_source,
+        fast_ma,
+        slow_ma,
+        strategy,
+        halftrend_filter,
+    })
+    .map_err(|e| format!("follow-up cache key serialization failed: {e}"))
+}
+
+fn resolve_followup_cache_entry(
+    key: Option<&str>,
+    data_id: &str,
+    num_candles: usize,
+    ma_source: &str,
+    fast_ma: &str,
+    slow_ma: &str,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<Option<FollowupCacheEntry>, String> {
+    let Some(token) = key.map(str::trim).filter(|token| !token.is_empty()) else {
+        return Ok(None);
+    };
+    let expected = build_followup_cache_key(
+        data_id,
+        num_candles,
+        ma_source,
+        fast_ma,
+        slow_ma,
+        strategy,
+        halftrend_filter,
+    )?;
+    if token != expected {
+        return Ok(None);
+    }
+    let Some(entry) = maybe_load_followup_cache_entry(Some(token)) else {
+        return Ok(None);
+    };
+    if entry.log_returns.is_some() && entry.base_first_valid.is_some() {
+        return Ok(Some(entry));
+    }
+    let prepared = build_followup_cache_entry(
+        candles,
+        ma_source,
+        strategy,
+        halftrend_filter,
+        entry.backend_hint.as_ref(),
+    )?;
+    store_followup_cache_entry(token.to_string(), prepared.clone());
+    Ok(Some(prepared))
+}
+
+fn build_followup_cache_entry(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+    backend_hint: Option<&Backend>,
+) -> Result<FollowupCacheEntry, String> {
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let mut base_first_valid = fv_close.max(fv_ma);
+
+    let regime_filter = compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
+    if let Some(trend) = regime_filter.as_ref() {
+        if trend.len() != close.len() {
+            return Err("regime trend series length mismatch".to_string());
+        }
+        let fv_ht = first_finite_idx(trend)
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        base_first_valid = base_first_valid.max(fv_ht);
+    }
+
+    let kaufman_stops = compute_kaufman_stop_series(candles, strategy)?;
+    if let Some(ks) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&ks.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&ks.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        base_first_valid = base_first_valid.max(fv_k_long.max(fv_k_short));
+    }
+
+    Ok(FollowupCacheEntry {
+        backend_hint: backend_hint.cloned(),
+        log_returns: Some(compute_log_returns_f64(close)),
+        regime_filter,
+        kaufman_stops,
+        base_first_valid: Some(base_first_valid),
+    })
+}
+
+fn build_lazy_followup_cache_entry(backend_hint: Option<&Backend>) -> FollowupCacheEntry {
+    FollowupCacheEntry {
+        backend_hint: backend_hint.cloned(),
+        log_returns: None,
+        regime_filter: None,
+        kaufman_stops: None,
+        base_first_valid: None,
+    }
+}
+
+fn maybe_load_followup_cache_entry(
+    key: Option<&str>,
+) -> Option<FollowupCacheEntry> {
+    let token = key?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    followup_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(token).cloned())
+}
+
+fn store_followup_cache_entry(key: String, entry: FollowupCacheEntry) {
+    if let Ok(mut guard) = followup_cache().lock() {
+        if guard.len() >= 16 {
+            if let Some(oldest_key) = guard.keys().next().cloned() {
+                guard.remove(&oldest_key);
+            }
+        }
+        guard.insert(key, entry);
+    }
+}
+
+fn build_gpu_residency_summary(
+    requested_policy: GpuExecutionPolicy,
+    requested_backend: &Backend,
+    resolved_backend: &Backend,
+    indicator_route_plan: &IndicatorRoutePlanSummary,
+    backend_fallback_reason: Option<&str>,
+) -> GpuResidencySummary {
+    let cpu_staged_indicators = indicator_route_plan.fast.residency_tier == "cpu_staged"
+        || indicator_route_plan.slow.residency_tier == "cpu_staged";
+    let cpu_fallback_used = matches!(resolved_backend, Backend::CpuOnly | Backend::GpuOnly { .. });
+    let fully_gpu_resident = match resolved_backend {
+        Backend::GpuKernel { .. } => true,
+        Backend::GpuHybridKernel { .. } => !cpu_staged_indicators,
+        Backend::Auto { .. } | Backend::CpuOnly | Backend::GpuOnly { .. } => false,
+    };
+    let mut notes = Vec::new();
+    if let Some(reason) = backend_fallback_reason {
+        let trimmed = reason.trim();
+        if !trimmed.is_empty() {
+            notes.push(trimmed.to_string());
+        }
+    }
+    if matches!(resolved_backend, Backend::GpuOnly { .. }) {
+        notes.push(
+            "GpuOnly uses CUDA MA generation but host-resident metric evaluation; it is not an end-to-end GPU path."
+                .to_string(),
+        );
+    }
+
+    GpuResidencySummary {
+        requested_policy,
+        requested_backend: backend_kind_label(requested_backend).to_string(),
+        resolved_backend: backend_kind_label(resolved_backend).to_string(),
+        fully_gpu_resident,
+        cpu_staged_indicators,
+        cpu_fallback_used,
+        notes,
+    }
+}
+
+fn strict_gpu_resident_backend_violation(
+    resolved_backend: &Backend,
+    indicator_route_plan: &IndicatorRoutePlanSummary,
+) -> Option<String> {
+    match resolved_backend {
+        Backend::GpuKernel { .. } => None,
+        Backend::GpuHybridKernel { .. } => {
+            let mut staged = Vec::new();
+            if indicator_route_plan.fast.residency_tier == "cpu_staged" {
+                staged.push(indicator_route_plan.fast.indicator_id.as_str());
+            }
+            if indicator_route_plan.slow.residency_tier == "cpu_staged" {
+                staged.push(indicator_route_plan.slow.indicator_id.as_str());
+            }
+            if staged.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "hybrid routing still requires CPU-staged indicators ({})",
+                    staged.join(", ")
+                ))
+            }
+        }
+        Backend::GpuOnly { .. } => Some(
+            "GpuOnly is a host-resident CUDA sweep and does not satisfy GPU-resident execution"
+                .to_string(),
+        ),
+        Backend::CpuOnly => Some("resolved backend is CpuOnly".to_string()),
+        Backend::Auto { .. } => Some("resolved backend remained Auto".to_string()),
+    }
+}
+
+fn enforce_gpu_execution_policy_before_run(
+    policy: GpuExecutionPolicy,
+    resolved_backend: &Backend,
+    indicator_route_plan: &IndicatorRoutePlanSummary,
+) -> Result<(), String> {
+    if !matches!(policy, GpuExecutionPolicy::StrictGpuResident) {
+        return Ok(());
+    }
+    if let Some(reason) =
+        strict_gpu_resident_backend_violation(resolved_backend, indicator_route_plan)
+    {
+        return Err(format!(
+            "gpu_execution=StrictGpuResident requires an end-to-end GPU-resident route, but {reason}."
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_gpu_execution_policy_after_run(summary: &GpuResidencySummary) -> Result<(), String> {
+    if matches!(summary.requested_policy, GpuExecutionPolicy::StrictGpuResident)
+        && !summary.fully_gpu_resident
+    {
+        return Err(format!(
+            "gpu_execution=StrictGpuResident was requested, but the run resolved to {} and was not fully GPU resident.",
+            summary.resolved_backend
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_alma_params_for_side(
@@ -8898,6 +9364,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     heatmap_bins: usize,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
+    gpu_execution: GpuExecutionPolicy,
     allow_cpu_fallback: bool,
     eval_range: Option<(usize, usize)>,
 ) -> Result<
@@ -8931,18 +9398,16 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
         lookup_ma_info(slow_ma_type).ok_or_else(|| format!("unknown slow MA: '{slow_ma_type}'"))?;
 
     let mut kernel_blockers: Vec<String> = Vec::new();
-    let fast_requires_cpu_precompute =
-        route_plan.fast.route == crate::ma_policy::HybridRouteTier::CpuStaged;
-    let slow_requires_cpu_precompute =
-        route_plan.slow.route == crate::ma_policy::HybridRouteTier::CpuStaged;
+    let fast_requires_cpu_precompute = should_cpu_stage_indicator(&route_plan.fast, gpu_execution);
+    let slow_requires_cpu_precompute = should_cpu_stage_indicator(&route_plan.slow, gpu_execution);
     if fast_requires_cpu_precompute && !fast_info.supports_cpu_single {
         kernel_blockers.push(format!(
-            "fast MA '{fast_ma_type}' requires CPU staging (kernel unsupported or CPU-preferred by gpu_speedups.csv) but has no CPU-single implementation"
+            "fast MA '{fast_ma_type}' requires CPU staging under the current hybrid route policy but has no CPU-single implementation"
         ));
     }
     if slow_requires_cpu_precompute && !slow_info.supports_cpu_single {
         kernel_blockers.push(format!(
-            "slow MA '{slow_ma_type}' requires CPU staging (kernel unsupported or CPU-preferred by gpu_speedups.csv) but has no CPU-single implementation"
+            "slow MA '{slow_ma_type}' requires CPU staging under the current hybrid route policy but has no CPU-single implementation"
         ));
     }
     if strategy_uses_kaufman_stop_exit(strategy) {
@@ -9017,6 +9482,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     } else {
         0
     };
+    #[allow(unused_mut)]
     let mut gpu_indicator_prep_ms = 0u64;
 
     if cancel.load(Ordering::Relaxed) {
@@ -9025,6 +9491,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
 
     emit_progress(progress, 0, 1, "hybrid_transfer");
     // H2D for precomputed rows currently occurs inside the kernel executor.
+    #[allow(unused_mut)]
     let mut h2d_upload_ms = 0u64;
 
     if cancel.load(Ordering::Relaxed) {
@@ -10412,6 +10879,8 @@ mod tests {
             constraints: None,
             vdps: None,
             dynamic_strategy_ir,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         }
     }
 
@@ -10544,6 +11013,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -10583,6 +11054,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -10636,6 +11109,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -10701,6 +11176,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -10750,6 +11227,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy_err = with_dynamic_strategy_opt_env(false, || {
@@ -10818,6 +11297,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy_sink = RecordingProgressSink::default();
@@ -10883,6 +11364,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -11178,6 +11661,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11226,6 +11711,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11287,6 +11774,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11358,6 +11847,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11410,6 +11901,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11472,6 +11965,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let t0 = std::time::Instant::now();
@@ -11596,6 +12091,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11670,6 +12167,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11731,6 +12230,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11792,6 +12293,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -11875,6 +12378,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -11951,6 +12456,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let r1 =
@@ -12026,6 +12533,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
         let cpu_res = run_double_ma_optimization_blocking_with_candles(
             base_req.clone(),
@@ -12116,6 +12625,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect_err("GpuVdps hybrid should reject CPU fallback");
@@ -12173,10 +12684,14 @@ mod tests {
                 vdps: None,
             
                 dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
             };
             let hybrid_req = DoubleMaRequest {
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
                 ..cpu_req.clone()
             };
 
@@ -12277,6 +12792,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -12334,6 +12851,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -12398,6 +12917,8 @@ mod tests {
             }),
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -12467,6 +12988,8 @@ mod tests {
             }),
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let a =
@@ -12559,6 +13082,8 @@ mod tests {
                 }),
             
                 dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
             };
 
             let a = run_double_ma_optimization_blocking_with_candles(
@@ -12646,10 +13171,14 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
         let req_gpu = DoubleMaRequest {
             backend: Backend::GpuKernel { device_id: 0 },
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
             ..req_cpu.clone()
         };
 
@@ -12725,6 +13254,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -12793,6 +13324,8 @@ mod tests {
                 vdps: None,
             
                 dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
             };
 
             let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -12880,6 +13413,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let dynamic = with_dynamic_strategy_opt_env(true, || {
@@ -12949,6 +13484,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13010,6 +13547,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect_err("expected kaufman-stop kernel export to fail");
@@ -13068,6 +13607,8 @@ mod tests {
             }),
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13258,6 +13799,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13302,6 +13845,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13340,6 +13885,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13378,6 +13925,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13416,6 +13965,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13454,6 +14005,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13492,6 +14045,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13530,6 +14085,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13574,6 +14131,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13618,6 +14177,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13662,6 +14223,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13706,6 +14269,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13750,6 +14315,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13794,6 +14361,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -13838,6 +14407,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let base = run_double_ma_optimization_blocking_with_candles(
@@ -14415,6 +14986,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -14472,6 +15045,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -14627,6 +15202,8 @@ mod tests {
 
         let req = DoubleMaDrilldownRequest {
             data_id: "test".to_string(),
+            backend_hint: None,
+            followup_cache_key: None,
             params: DoubleMaParamsResolved {
                 fast_len: 10,
                 slow_len: 30,
@@ -14671,6 +15248,8 @@ mod tests {
 
         let req = DoubleMaLocalStabilityRequest {
             data_id: "test".to_string(),
+            backend_hint: None,
+            followup_cache_key: None,
             params: DoubleMaParamsResolved {
                 fast_len: 9,
                 slow_len: 21,
@@ -14754,6 +15333,8 @@ mod tests {
                 vdps: None,
             
                 dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
             };
 
             let out =
@@ -14806,6 +15387,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let req_top = DoubleMaRequest {
@@ -14832,6 +15415,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let a = run_double_ma_optimization_blocking_with_candles(req_all, &candles, &cancel, None)
@@ -14889,6 +15474,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
@@ -14962,6 +15549,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", "1");
@@ -15043,6 +15632,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -15112,6 +15703,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15174,6 +15767,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15232,6 +15827,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15290,6 +15887,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15352,6 +15951,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15413,6 +16014,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15471,6 +16074,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15529,6 +16134,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15587,6 +16194,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15645,6 +16254,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15702,6 +16313,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15763,6 +16376,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15821,6 +16436,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15879,6 +16496,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15937,6 +16556,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -15995,6 +16616,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -16053,6 +16676,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -16111,6 +16736,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -16169,6 +16796,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let single = run_with_kernel_vram_budget(base_req.clone(), &candles, &cancel, 8192)
@@ -16191,3 +16820,6 @@ mod tests {
         assert_eq!(h1.values, h2.values);
     }
 }
+
+
+

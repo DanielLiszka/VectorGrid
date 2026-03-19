@@ -943,6 +943,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         constraints: None,
                         vdps: None,
                         dynamic_strategy_ir: None,
+                        gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+                        persist_followup_cache: false,
                     };
 
                     let dm_res = run_double_ma_optimization_blocking_with_candles(
@@ -2955,3 +2957,5 @@ mod tests {
         assert!(!res.pareto.is_empty());
     }
 }
+
+

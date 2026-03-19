@@ -897,6 +897,7 @@ pub struct PrecomputedHostMaMatrix<'a> {
 pub(crate) struct DeviceRegimeFilter {
     buffer: DeviceBuffer<f32>,
     scratch_f32: Vec<DeviceBuffer<f32>>,
+    scratch_dispatch_f32: Vec<vector_ta::indicators::dispatch::DeviceMatrixF32>,
     len: usize,
     first_valid: usize,
     device_id: u32,
@@ -906,6 +907,15 @@ impl DeviceRegimeFilter {
     #[inline]
     pub(crate) fn with_scratch_buffers(mut self, scratch_f32: Vec<DeviceBuffer<f32>>) -> Self {
         self.scratch_f32 = scratch_f32;
+        self
+    }
+
+    #[inline]
+    pub(crate) fn with_dispatch_matrices(
+        mut self,
+        scratch_dispatch_f32: Vec<vector_ta::indicators::dispatch::DeviceMatrixF32>,
+    ) -> Self {
+        self.scratch_dispatch_f32 = scratch_dispatch_f32;
         self
     }
 
@@ -987,6 +997,7 @@ pub(crate) fn upload_host_regime_filter(
         Ok(DeviceRegimeFilter {
             buffer,
             scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1599,6 +1610,7 @@ pub(crate) fn build_vfct_regime_filter(
         Ok(DeviceRegimeFilter {
             buffer: out,
             scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1698,6 +1710,7 @@ pub(crate) fn build_pit_regime_filter(
         Ok(DeviceRegimeFilter {
             buffer: out,
             scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1792,6 +1805,7 @@ pub(crate) fn build_set_regime_filter(
         Ok(DeviceRegimeFilter {
             buffer: out,
             scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1875,6 +1889,7 @@ pub(crate) fn build_mts_regime_filter(
         Ok(DeviceRegimeFilter {
             buffer: out,
             scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
             len,
             first_valid,
             device_id,
@@ -1960,6 +1975,7 @@ pub(crate) fn build_orc_regime_filter(
         Ok(DeviceRegimeFilter {
             buffer: out,
             scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
             len,
             first_valid,
             device_id,

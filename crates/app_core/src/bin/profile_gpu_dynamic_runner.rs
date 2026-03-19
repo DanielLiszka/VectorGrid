@@ -320,6 +320,8 @@ fn main() {
         constraints: None,
         vdps: None,
         dynamic_strategy_ir: None,
+    gpu_execution: Default::default(),
+    persist_followup_cache: false,
     };
 
     for i in 0..iterations {
@@ -361,3 +363,5 @@ fn main() {
         }
     }
 }
+
+

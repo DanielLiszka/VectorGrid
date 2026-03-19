@@ -1993,6 +1993,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let plan = compile_dynamic_plan_for_double_ma_config(
@@ -2484,6 +2486,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
         let plan = compile_dynamic_plan_for_double_ma_config(
             &req.ma_source,
@@ -2528,6 +2532,8 @@ mod tests {
             vdps: None,
         
             dynamic_strategy_ir: None,
+            gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
         let plan = compile_dynamic_plan_for_double_ma_config(
             &req.ma_source,
@@ -2869,3 +2875,5 @@ mod tests {
         assert!(err.contains("bidirectional plans must bind short_entry_group"), "unexpected error: {err}");
     }
 }
+
+

@@ -2,7 +2,7 @@ use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::StrategyConfig;
 
 use crate::double_ma::{
-    kernel_regime_filters_enabled, Backend, IndicatorRouteDecisionSummary,
+    kernel_regime_filters_enabled, Backend, GpuExecutionPolicy, IndicatorRouteDecisionSummary,
     IndicatorRoutePlanSummary,
 };
 use crate::strategy_gpu_runtime::StrategyCapabilityReport;
@@ -149,22 +149,86 @@ fn map_hybrid_route_label(route: crate::ma_policy::HybridRouteTier) -> &'static 
     }
 }
 
+fn indicator_staging_reason(
+    decision: &crate::ma_policy::HybridIndicatorRouteDecision,
+) -> Option<&'static str> {
+    match decision.route {
+        crate::ma_policy::HybridRouteTier::GpuKernel => None,
+        crate::ma_policy::HybridRouteTier::CpuStaged => match decision.capability {
+            crate::ma_policy::HybridCapabilityTier::GpuKernel => {
+                if decision.gpu_preferred_by_speedup {
+                    None
+                } else {
+                    Some("cpu_preferred_by_speedup")
+                }
+            }
+            crate::ma_policy::HybridCapabilityTier::CudaOnly => Some("kernel_unsupported_cuda_only"),
+            crate::ma_policy::HybridCapabilityTier::CpuOnly => Some("kernel_unsupported_cpu_only"),
+            crate::ma_policy::HybridCapabilityTier::Unsupported => Some("unsupported"),
+        },
+        crate::ma_policy::HybridRouteTier::Unsupported => Some("unsupported"),
+    }
+}
+
+pub(crate) fn should_cpu_stage_indicator(
+    decision: &crate::ma_policy::HybridIndicatorRouteDecision,
+    gpu_execution: GpuExecutionPolicy,
+) -> bool {
+    match decision.route {
+        crate::ma_policy::HybridRouteTier::GpuKernel => false,
+        crate::ma_policy::HybridRouteTier::CpuStaged => match decision.capability {
+            crate::ma_policy::HybridCapabilityTier::GpuKernel => {
+                !matches!(
+                    gpu_execution,
+                    GpuExecutionPolicy::PreferGpuResident
+                        | GpuExecutionPolicy::StrictGpuResident
+                )
+            }
+            crate::ma_policy::HybridCapabilityTier::CudaOnly
+            | crate::ma_policy::HybridCapabilityTier::CpuOnly
+            | crate::ma_policy::HybridCapabilityTier::Unsupported => true,
+        },
+        crate::ma_policy::HybridRouteTier::Unsupported => true,
+    }
+}
+
 pub(crate) fn build_indicator_route_plan_summary(
     fast_ma: &str,
     slow_ma: &str,
+    gpu_execution: GpuExecutionPolicy,
 ) -> IndicatorRoutePlanSummary {
     let plan = crate::ma_policy::plan_double_ma_hybrid_route(fast_ma, slow_ma);
+    let fast_cpu_staged = should_cpu_stage_indicator(&plan.fast, gpu_execution);
+    let slow_cpu_staged = should_cpu_stage_indicator(&plan.slow, gpu_execution);
     let fast = IndicatorRouteDecisionSummary {
-        indicator_id: plan.fast.indicator_id,
+        indicator_id: plan.fast.indicator_id.clone(),
         capability: map_hybrid_capability_label(plan.fast.capability).to_string(),
         route: map_hybrid_route_label(plan.fast.route).to_string(),
         gpu_preferred_by_speedup: plan.fast.gpu_preferred_by_speedup,
+        residency_tier: if fast_cpu_staged {
+            "cpu_staged".to_string()
+        } else {
+            "gpu_kernel".to_string()
+        },
+        staging_reason: fast_cpu_staged
+            .then(|| indicator_staging_reason(&plan.fast))
+            .flatten()
+            .map(str::to_string),
     };
     let slow = IndicatorRouteDecisionSummary {
-        indicator_id: plan.slow.indicator_id,
+        indicator_id: plan.slow.indicator_id.clone(),
         capability: map_hybrid_capability_label(plan.slow.capability).to_string(),
         route: map_hybrid_route_label(plan.slow.route).to_string(),
         gpu_preferred_by_speedup: plan.slow.gpu_preferred_by_speedup,
+        residency_tier: if slow_cpu_staged {
+            "cpu_staged".to_string()
+        } else {
+            "gpu_kernel".to_string()
+        },
+        staging_reason: slow_cpu_staged
+            .then(|| indicator_staging_reason(&plan.slow))
+            .flatten()
+            .map(str::to_string),
     };
     IndicatorRoutePlanSummary { fast, slow }
 }

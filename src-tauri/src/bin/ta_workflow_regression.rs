@@ -1,6 +1,7 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -48,6 +49,20 @@ struct WorkflowSummary {
     holdout_max_dd_p90: f64,
     holdout_pass_rate: f64,
     runtime_ms: u64,
+}
+
+fn workflow_diag_enabled() -> bool {
+    matches!(
+        env::var("TA_WORKFLOW_DIAG").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
+fn verdict_summary(verdict: &ta_app_core::validation_pipeline::ValidationRunVerdict) -> String {
+    format!(
+        "approved={:?} approved_candidate_count={} final_recommendation={:?}",
+        verdict.approved, verdict.approved_candidate_count, verdict.final_recommendation
+    )
 }
 
 fn quantile(sorted: &[f64], q: f64) -> f64 {
@@ -306,10 +321,12 @@ fn run_workflow_once(
     let holdout = &universe[train.len()..(train.len() + holdout_assets).min(universe.len())];
 
     let mut artifacts: Vec<Value> = Vec::with_capacity(train.len());
+    let diag = workflow_diag_enabled();
     for (i, (label, candles)) in train.iter().enumerate() {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
+        let opt_start = Instant::now();
         let opt_req = CompositeCpuRequest {
             backend: Backend::CpuOnly,
             asr: None,
@@ -344,6 +361,7 @@ fn run_workflow_once(
         };
         let opt_res =
             run_composite_cpu_optimization_blocking_with_candles(opt_req, candles, cancel, None)?;
+        let opt_elapsed_ms = opt_start.elapsed().as_millis() as u64;
 
         let mut candidates: Vec<CompositeParams> = Vec::new();
         for (p, _) in opt_res.top.iter().take(64) {
@@ -370,9 +388,17 @@ fn run_workflow_once(
             });
         }
         if candidates.is_empty() {
+            if diag {
+                println!(
+                    "[workflow-diag] train[{i}] {label}: opt_ms={opt_elapsed_ms} top=0 backend_used={:?} runtime_ms={} skipped=no_candidates",
+                    opt_res.backend_used,
+                    opt_res.runtime_ms
+                );
+            }
             continue;
         }
 
+        let val_start = Instant::now();
         let val_req = CompositeValidationRequest {
             data_id: label.to_string(),
             backend: Backend::CpuOnly,
@@ -400,6 +426,17 @@ fn run_workflow_once(
         };
         let val_res =
             run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
+        let val_elapsed_ms = val_start.elapsed().as_millis() as u64;
+        let val_candidates = val_res.candidates.len();
+        if diag {
+            println!(
+                "[workflow-diag] train[{i}] {label}: opt_ms={opt_elapsed_ms} top={} backend_used={:?} opt_runtime_ms={} val_ms={val_elapsed_ms} val_candidates={val_candidates} verdict={}",
+                opt_res.top.len(),
+                opt_res.backend_used,
+                opt_res.runtime_ms,
+                verdict_summary(&val_res.run_verdict)
+            );
+        }
 
         artifacts.push(json!({
             "kind": "vectorgrid_run_artifact",
@@ -432,13 +469,28 @@ fn run_workflow_once(
         cluster_config: MetaClusterConfig::default(),
         cluster_representatives: 1,
     };
+    let meta_start = Instant::now();
     let mut meta_res = meta_select_from_artifacts(&meta_req, &artifacts, None);
+    let meta_elapsed_ms = meta_start.elapsed().as_millis() as u64;
 
     let holdout_pairs: Vec<(&str, &Candles)> =
         holdout.iter().map(|(l, c)| (l.as_str(), c)).collect();
+    let holdout_start = Instant::now();
     let holdout_summary =
         evaluate_holdout_light(&meta_req, &mut meta_res.groups, &holdout_pairs, cancel)?;
+    let holdout_elapsed_ms = holdout_start.elapsed().as_millis() as u64;
     meta_res.holdout = Some(holdout_summary);
+
+    if diag {
+        println!(
+            "[workflow-diag] meta: artifacts={} artifacts_used={} groups={} meta_ms={} holdout_ms={}",
+            artifacts.len(),
+            meta_res.artifacts_used,
+            meta_res.groups.len(),
+            meta_elapsed_ms,
+            holdout_elapsed_ms
+        );
+    }
 
     let top = meta_res.groups.first();
     let hold = top.and_then(|g| g.holdout.as_ref());

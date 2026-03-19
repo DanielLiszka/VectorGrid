@@ -1315,6 +1315,8 @@ fn run_asr_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -1581,6 +1583,8 @@ fn run_asr_optimization_cpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -2018,6 +2022,8 @@ fn run_vcc_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -2258,6 +2264,8 @@ fn run_vcc_optimization_cpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -2768,6 +2776,8 @@ fn run_vemr_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -3032,6 +3042,8 @@ fn run_vemr_optimization_impl(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -4512,6 +4524,8 @@ fn run_rocb_optimization_gpu(
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -4773,6 +4787,8 @@ fn run_rocb_optimization_impl(
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -5158,6 +5174,8 @@ fn run_vcet_optimization_gpu(
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -5422,6 +5440,8 @@ fn run_vcet_optimization_impl(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -5820,6 +5840,8 @@ fn run_mkcs_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -6230,6 +6252,8 @@ fn run_kqsr_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -6415,6 +6439,8 @@ fn run_kqsr_optimization_cpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -6816,6 +6842,8 @@ fn run_carm_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -7002,6 +7030,8 @@ fn run_carm_optimization_cpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -7446,6 +7476,8 @@ fn run_kvdf_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -7632,6 +7664,8 @@ fn run_kvdf_optimization_cpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -8088,6 +8122,8 @@ fn run_cdmc_optimization_gpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -8294,6 +8330,8 @@ fn run_cdmc_optimization_cpu(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -8572,6 +8610,8 @@ fn run_mkcs_optimization_impl(
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -8794,6 +8834,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             constraints: None,
             vdps: None,
             dynamic_strategy_ir: None,
+            gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
         };
 
         let dm_res = run_double_ma_optimization_blocking_with_candles(
@@ -9142,6 +9184,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         backend_route,
         backend_fallback_reason,
         indicator_route_plan: None,
+        residency: None,
+        followup_cache_key: None,
     })
 }
 
@@ -13921,3 +13965,6 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
+
+
+
