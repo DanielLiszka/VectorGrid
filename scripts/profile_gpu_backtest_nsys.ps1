@@ -71,15 +71,11 @@ if ($outDir) {
 
 $prevFastPath = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", "Process")
 $prevGraphs = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "Process")
-$prevMetrics = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_METRICS_COUNT", "Process")
-$prevSkip = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_SKIP_RECOMPUTE", "Process")
 $prevDynamic = [System.Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
 $prevBenchOnly = [System.Environment]::GetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", "Process")
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", "1", "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "0", "Process")
-[System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_METRICS_COUNT", "7", "Process")
-[System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_SKIP_RECOMPUTE", $null, "Process")
 if ($DynamicStrategyMode -eq "on") {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "1", "Process")
 } else {
@@ -127,8 +123,6 @@ $exitCode = $LASTEXITCODE
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", $prevFastPath, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", $prevGraphs, "Process")
-[System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_METRICS_COUNT", $prevMetrics, "Process")
-[System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_SKIP_RECOMPUTE", $prevSkip, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", $prevDynamic, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $prevBenchOnly, "Process")
 

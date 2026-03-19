@@ -1130,7 +1130,10 @@ function buildBestStats(metrics: Record<string, unknown>): Array<{ label: string
     { label: 'PnL', value: fmt(metrics.pnl, 6), tone: 'positive' },
     { label: 'Return', value: fmtPct(metrics.pnl, 2), tone: 'neutral' },
     { label: 'Sharpe', value: fmt(metrics.sharpe, 6), tone: 'positive' },
+    { label: 'Downside Dev', value: fmt(metrics.downside_deviation, 6), tone: 'neutral' },
     { label: 'Max DD', value: fmt(metrics.max_dd, 6), tone: 'danger' },
+    { label: 'Ulcer', value: fmt(metrics.ulcer_index, 6), tone: 'danger' },
+    { label: 'Martin', value: fmt(metrics.martin_ratio, 6), tone: 'positive' },
     { label: 'Trades', value: String(num(metrics.trades, 0)), tone: 'neutral' },
     { label: 'Exposure', value: fmt(metrics.exposure, 4), tone: 'neutral' }
   ].filter((entry) => entry.value && entry.value !== '-')
@@ -1162,7 +1165,10 @@ function refreshOverviewFromWorkflowRunStore(store: AnalysisStoreState, req: Rec
     `pnl=${fmt(metrics.pnl, 6)}`,
     `return=${fmtPct(metrics.pnl, 2)}`,
     `sharpe=${fmt(metrics.sharpe, 6)}`,
+    `downside_dev=${fmt(metrics.downside_deviation, 6)}`,
     `max_dd=${fmt(metrics.max_dd, 6)}`,
+    `ulcer_index=${fmt(metrics.ulcer_index, 6)}`,
+    `martin_ratio=${fmt(metrics.martin_ratio, 6)}`,
     `trades=${num(metrics.trades, 0)}`,
     `exposure=${fmt(metrics.exposure, 4)}`,
     comboCount > 0 ? `combos=${comboCount}` : '',

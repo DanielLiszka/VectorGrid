@@ -2189,6 +2189,7 @@ fn simulate_from_desired(
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades_count: u32 = 0;
 
     let mut count: u64 = 0;
@@ -2381,6 +2382,12 @@ fn simulate_from_desired(
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         if with_curves {
             let eq = log_eq.exp();
@@ -2469,6 +2476,7 @@ fn simulate_from_desired(
 
     let pnl = log_eq.exp() - 1.0;
     let max_dd = 1.0 - (-max_log_dd).exp();
+    let ulcer_index = (ulcer_sum_sq / ((n_total - start_t) as f64).max(1.0)).sqrt();
     let calmar_raw = if max_dd > EPS_DENOM {
         pnl / max_dd
     } else if pnl > 0.0 {
@@ -2479,6 +2487,16 @@ fn simulate_from_desired(
         0.0
     };
     let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+    let martin_raw = if ulcer_index > EPS_DENOM {
+        pnl / ulcer_index
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let martin_ratio = martin_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     let obs = (n_total - start_t) as f64;
     let exposure = if obs > 0.0 {
@@ -2492,9 +2510,12 @@ fn simulate_from_desired(
         pnl,
         sharpe,
         sortino,
+        downside_deviation: downside_dev,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades: trades_count,
         exposure,

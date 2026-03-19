@@ -672,6 +672,25 @@ struct KernelScratch {
     d_valid_pair_index: Option<DeviceBuffer<i32>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PeriodSliceSignature {
+    len: usize,
+    first: u16,
+    second: u16,
+    last: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ValidPairMapSignature {
+    fast: PeriodSliceSignature,
+    slow: PeriodSliceSignature,
+}
+
+struct CachedValidPairMap {
+    buffer: DeviceBuffer<i32>,
+    len: usize,
+}
+
 impl KernelScratch {
     fn drop_opt_async<T: cust::memory::DeviceCopy>(
         buf: &mut Option<DeviceBuffer<T>>,
@@ -748,6 +767,7 @@ struct CudaKernelRuntime {
     scratch: KernelScratch,
     launch_caps: DeviceLaunchCaps,
     resident_market: Option<ResidentMarketSeriesCache>,
+    valid_pair_maps: HashMap<ValidPairMapSignature, CachedValidPairMap>,
 }
 
 impl CudaKernelRuntime {
@@ -767,6 +787,7 @@ impl CudaKernelRuntime {
             scratch: KernelScratch::default(),
             launch_caps,
             resident_market: None,
+            valid_pair_maps: HashMap::new(),
         })
     }
 
@@ -777,10 +798,8 @@ impl CudaKernelRuntime {
 
 fn load_double_crossover_module(device: Device) -> Result<Module, String> {
     if device_compute_capability(device) == Some((8, 9)) {
-        let cubin: &[u8] = include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/double_crossover.sm_89.cubin"
-        ));
+        let cubin: &[u8] =
+            include_bytes!(concat!(env!("OUT_DIR"), "/double_crossover.sm_89.cubin"));
         if !cubin.is_empty() {
             if let Ok(module) = Module::from_cubin(cubin, &[]) {
                 return Ok(module);
@@ -803,6 +822,48 @@ fn load_double_crossover_module(device: Device) -> Result<Module, String> {
             }
         }
     }
+}
+
+#[inline]
+fn period_slice_signature(periods: &[u16]) -> Option<PeriodSliceSignature> {
+    let first = *periods.first()?;
+    let second = periods.get(1).copied().unwrap_or(first);
+    let last = *periods.last().unwrap_or(&first);
+    Some(PeriodSliceSignature {
+        len: periods.len(),
+        first,
+        second,
+        last,
+    })
+}
+
+fn ensure_cached_valid_pair_map(
+    valid_pair_maps: &mut HashMap<ValidPairMapSignature, CachedValidPairMap>,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+) -> Result<Option<(u64, usize)>, String> {
+    let Some(fast_sig) = period_slice_signature(fast_periods) else {
+        return Ok(None);
+    };
+    let Some(slow_sig) = period_slice_signature(slow_periods) else {
+        return Ok(None);
+    };
+    let key = ValidPairMapSignature {
+        fast: fast_sig,
+        slow: slow_sig,
+    };
+
+    if !valid_pair_maps.contains_key(&key) {
+        let valid_map = build_valid_pair_index_map_i32(fast_periods, slow_periods)?;
+        let len = valid_map.len();
+        let buffer = DeviceBuffer::from_slice(&valid_map).map_err(|e| e.to_string())?;
+        valid_pair_maps.insert(key, CachedValidPairMap { buffer, len });
+    }
+
+    let entry = valid_pair_maps
+        .get(&key)
+        .ok_or_else(|| "cached valid pair map missing after insertion".to_string())?;
+    Ok(Some((entry.buffer.as_device_ptr().as_raw(), entry.len)))
 }
 
 fn device_compute_capability(device: Device) -> Option<(u32, u32)> {
@@ -880,6 +941,7 @@ fn fill_device_buffer_f32(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct KernelConfig {
     pub device_id: u32,
     pub fast_alma_offset: f64,
@@ -1057,8 +1119,8 @@ pub(crate) fn upload_gpu_strategy_program_abi(
         let d_groups = DeviceBuffer::from_slice(&abi.groups).map_err(|e| e.to_string())?;
         let d_group_condition_indexes =
             DeviceBuffer::from_slice(&abi.group_condition_indexes).map_err(|e| e.to_string())?;
-        let d_signals =
-            DeviceBuffer::from_slice(std::slice::from_ref(&abi.signals)).map_err(|e| e.to_string())?;
+        let d_signals = DeviceBuffer::from_slice(std::slice::from_ref(&abi.signals))
+            .map_err(|e| e.to_string())?;
 
         Ok(UploadedGpuStrategyProgram {
             d_indicator_slots,
@@ -1079,7 +1141,10 @@ pub(crate) fn probe_uploaded_gpu_strategy_program(
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<[u32; 7], String> {
         let mut map = cell.borrow_mut();
         if !map.contains_key(&uploaded.device_id) {
-            map.insert(uploaded.device_id, CudaKernelRuntime::new(uploaded.device_id)?);
+            map.insert(
+                uploaded.device_id,
+                CudaKernelRuntime::new(uploaded.device_id)?,
+            );
         }
         let rt = map.get_mut(&uploaded.device_id).expect("just inserted");
         rt.set_current()?;
@@ -1300,10 +1365,8 @@ pub fn upload_double_ma_dynamic_program_batch(
 
             Ok(UploadedDoubleMaDynamicProgramBatch {
                 d_lr: DeviceBuffer::from_slice(lr).map_err(|e| e.to_string())?,
-                d_fast_ma_tm: DeviceBuffer::from_slice(&fast_tm)
-                    .map_err(|e| e.to_string())?,
-                d_slow_ma_tm: DeviceBuffer::from_slice(&slow_tm)
-                    .map_err(|e| e.to_string())?,
+                d_fast_ma_tm: DeviceBuffer::from_slice(&fast_tm).map_err(|e| e.to_string())?,
+                d_slow_ma_tm: DeviceBuffer::from_slice(&slow_tm).map_err(|e| e.to_string())?,
                 d_fast_periods: DeviceBuffer::from_slice(&fast_periods_i32)
                     .map_err(|e| e.to_string())?,
                 d_slow_periods: DeviceBuffer::from_slice(&slow_periods_i32)
@@ -1343,7 +1406,9 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                     CudaKernelRuntime::new(uploaded_batch.device_id)?,
                 );
             }
-            let rt = map.get_mut(&uploaded_batch.device_id).expect("just inserted");
+            let rt = map
+                .get_mut(&uploaded_batch.device_id)
+                .expect("just inserted");
             rt.set_current()?;
 
             let func = rt
@@ -1351,8 +1416,11 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 .get_function("double_cross_backtest_tm_flex_f32_m7")
                 .map_err(|e| e.to_string())?;
             let launch_caps = detect_kernel_launch_caps(&func, rt.launch_caps);
-            let launch =
-                choose_backtest_launch_shape_1d(uploaded_batch.combo_count, rt.launch_caps, launch_caps);
+            let launch = choose_backtest_launch_shape_1d(
+                uploaded_batch.combo_count,
+                rt.launch_caps,
+                launch_caps,
+            );
             let out_stride = 7usize;
             let out_len = uploaded_batch
                 .fast_tm_stride
@@ -1397,12 +1465,13 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 if !scratch.contains_key(&scratch_key) {
                     scratch.insert(
                         scratch_key,
-                        DeviceBuffer::from_slice(&vec![0.0f32; out_len]).map_err(|e| e.to_string())?,
+                        DeviceBuffer::from_slice(&vec![0.0f32; out_len])
+                            .map_err(|e| e.to_string())?,
                     );
                 }
-                let d_out = scratch
-                    .get_mut(&scratch_key)
-                    .ok_or_else(|| "dynamic gpu scratch buffer missing after insertion".to_string())?;
+                let d_out = scratch.get_mut(&scratch_key).ok_or_else(|| {
+                    "dynamic gpu scratch buffer missing after insertion".to_string()
+                })?;
                 let mut out_ptr = d_out.as_device_ptr().as_raw();
                 let args: &mut [*mut c_void] = &mut [
                     &mut fast_ptr as *mut _ as *mut c_void,
@@ -1439,7 +1508,13 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 ];
                 unsafe {
                     rt.stream
-                        .launch(&func, (launch.grid_x, 1, 1), (launch.block_x, 1, 1), 0, args)
+                        .launch(
+                            &func,
+                            (launch.grid_x, 1, 1),
+                            (launch.block_x, 1, 1),
+                            0,
+                            args,
+                        )
                         .map_err(|e| e.to_string())?;
                 }
                 rt.stream.synchronize().map_err(|e| e.to_string())?;
@@ -2085,6 +2160,7 @@ fn pack_precomputed_rows_with_padding(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn remap_precomputed_rows_for_periods(
     src: &PrecomputedHostMaMatrix<'_>,
     selected_periods: &[u16],
@@ -2763,6 +2839,36 @@ fn kernel_lockstep_time_min_pairs() -> usize {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&v| v > 0)
         .unwrap_or(150_000)
+}
+
+#[inline]
+fn kernel_lockstep_time_min_pair_bars() -> Option<u64> {
+    match std::env::var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIR_BARS") {
+        Ok(v) => v.trim().parse::<u64>().ok().filter(|&v| v > 0),
+        Err(_) => Some(5_000_000_000),
+    }
+}
+
+#[inline]
+fn kernel_should_use_lockstep_time(
+    pair_count: usize,
+    series_len: usize,
+    first_valid: usize,
+    kernel_available: bool,
+) -> bool {
+    if !kernel_lockstep_time_enabled() || !kernel_available {
+        return false;
+    }
+
+    if pair_count >= kernel_lockstep_time_min_pairs() {
+        return true;
+    }
+
+    kernel_lockstep_time_min_pair_bars()
+        .map(|min_pair_bars| {
+            kernel_effective_pair_bars(pair_count, series_len, first_valid) >= min_pair_bars
+        })
+        .unwrap_or(false)
 }
 
 #[inline]
@@ -3621,6 +3727,8 @@ pub fn eval_double_ma_batch_gpu_kernel(
     cfg: KernelConfig,
     strategy: &StrategyConfig,
 ) -> Result<Vec<Metrics>, String> {
+    let fast_periods = expand_u16_range(fast_range)?;
+    let slow_periods = expand_u16_range(slow_range)?;
     let device_id = cfg.device_id;
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<Vec<Metrics>, String> {
         let mut map = cell.borrow_mut();
@@ -3638,8 +3746,8 @@ pub fn eval_double_ma_batch_gpu_kernel(
                 rt,
                 candles,
                 combos,
-                fast_range,
-                slow_range,
+                fast_periods.as_slice(),
+                slow_periods.as_slice(),
                 fast_ma_type,
                 slow_ma_type,
                 ma_source,
@@ -3654,8 +3762,8 @@ pub fn eval_double_ma_batch_gpu_kernel(
                 rt,
                 candles,
                 combos,
-                fast_range,
-                slow_range,
+                fast_periods.as_slice(),
+                slow_periods.as_slice(),
                 fast_ma_type,
                 slow_ma_type,
                 ma_source,
@@ -3673,8 +3781,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     rt: &mut CudaKernelRuntime,
     candles: &Candles,
     combos: &[DoubleMaParams],
-    fast_range: (u32, u32, u32),
-    slow_range: (u32, u32, u32),
+    fast_periods: &[u16],
+    slow_periods: &[u16],
     fast_ma_type: &str,
     slow_ma_type: &str,
     ma_source: &str,
@@ -3824,8 +3932,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         ));
     }
 
-    let fast_periods = expand_u16_range(fast_range)?;
-    let slow_periods = expand_u16_range(slow_range)?;
     let f_total = fast_periods.len();
     let s_total = slow_periods.len();
     let max_pf = *fast_periods.iter().max().unwrap_or(&1) as usize;
@@ -3913,7 +4019,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let ma_source_key = normalize_market_source_key(ma_source);
     let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let (resident_market, ma, scratch) = (&mut rt.resident_market, &mut rt.ma, &mut rt.scratch);
+    let (resident_market, ma, scratch, valid_pair_maps) = (
+        &mut rt.resident_market,
+        &mut rt.ma,
+        &mut rt.scratch,
+        &mut rt.valid_pair_maps,
+    );
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -3931,6 +4042,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let resident = resident_market
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    let device_launch_caps = rt.launch_caps;
+    let compute_lr = rt
+        .module
+        .get_function("compute_log_returns_f32")
+        .map_err(|e| e.to_string())?;
+    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
     let d_close = &resident.close;
     let d_high = if needs_high_low {
         resident.high.as_ref()
@@ -4011,9 +4128,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let use_valid_pair_map = kernel_valid_pair_map_enabled();
     let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
 
-    let compute_lr = bt_module
-        .get_function("compute_log_returns_f32")
-        .map_err(|e| e.to_string())?;
     let transpose = bt_module
         .get_function("transpose_row_to_tm")
         .map_err(|e| e.to_string())?;
@@ -4064,10 +4178,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let fill_f32 = bt_module
         .get_function("fill_f32")
         .map_err(|e| e.to_string())?;
-    let lockstep_time_enabled = kernel_lockstep_time_enabled();
-    let lockstep_time_min_pairs = kernel_lockstep_time_min_pairs();
-    let m7_specialize_enabled = kernel_m7_specialize_enabled();
-    let m7_specialize_min_pairs = kernel_m7_specialize_min_pairs();
     let lockstep_m7_regime_mode_specialize_enabled =
         kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
             fast_ma.as_str(),
@@ -4079,8 +4189,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
     let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
     let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
-    let device_launch_caps = rt.launch_caps;
-    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
     let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
     let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
     let backtest_m7_launch_caps = backtest_m7
@@ -4500,29 +4608,15 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             let mut launch_pairs = pairs;
             let mut pair_index_map_ptr: u64 = 0;
             if use_valid_pair_map && pairs <= valid_pair_map_max_pairs {
-                let valid_map = build_valid_pair_index_map_i32(
+                let cached_valid_map = ensure_cached_valid_pair_map(
+                    valid_pair_maps,
                     &fast_periods[f_start..f_start + pf],
                     &slow_periods[s_start..s_start + ps],
                 )?;
-                launch_pairs = valid_map.len();
+                launch_pairs = cached_valid_map.map(|(_, len)| len).unwrap_or(0);
                 if launch_pairs > 0 {
-                    KernelScratch::ensure_len_i32(
-                        &mut scratch.d_valid_pair_index,
-                        launch_pairs,
-                        bt_stream,
-                    )?;
-                    scratch
-                        .d_valid_pair_index
-                        .as_mut()
-                        .unwrap()
-                        .copy_from(&valid_map)
-                        .map_err(|e| e.to_string())?;
-                    pair_index_map_ptr = scratch
-                        .d_valid_pair_index
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
+                    pair_index_map_ptr =
+                        cached_valid_map.map(|(ptr, _)| ptr).unwrap_or_default();
                 }
 
                 unsafe {
@@ -4595,9 +4689,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let use_windowed_eval = false;
 
                     let use_lockstep_time = !use_windowed_eval
-                        && lockstep_time_enabled
-                        && launch_pairs >= lockstep_time_min_pairs
-                        && backtest_lockstep.is_some();
+                        && kernel_should_use_lockstep_time(
+                            launch_pairs,
+                            n,
+                            max_start_t,
+                            backtest_lockstep.is_some(),
+                        );
                     let use_m7 = !use_windowed_eval
                         && kernel_should_use_m7_specialize(
                             launch_pairs,
@@ -4608,11 +4705,15 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             backtest_m7.is_some(),
                         );
                     let use_lockstep_m7 = use_lockstep_time
-                        && m7_specialize_enabled
-                        && launch_pairs >= m7_specialize_min_pairs
                         && !is_multi_tile_workload
-                        && (METRICS_COUNT == 7)
-                        && backtest_lockstep_m7.is_some();
+                        && kernel_should_use_m7_specialize(
+                            launch_pairs,
+                            n,
+                            max_start_t,
+                            false,
+                            METRICS_COUNT,
+                            backtest_lockstep_m7.is_some(),
+                        );
                     let use_fast_warp_dedup = !use_windowed_eval
                         && !use_lockstep_time
                         && fast_warp_dedup_enabled
@@ -5369,47 +5470,13 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut processed = 0usize;
     emit_progress(progress, processed, total_pairs, "gpu-kernel");
 
-    let fast_pass = matches!(
-        objective,
-        ObjectiveKind::Pnl | ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar
-    ) && !include_all
-        && !export_enabled;
-    let fast_pass = fast_pass && !fast_precomputed_enabled && !slow_precomputed_enabled;
-    let mut metrics_count: usize = if fast_pass { 3 } else { METRICS_COUNT };
-    if !include_all && !export_enabled {
-        if let Ok(v) = std::env::var("VECTORBT_KERNEL_METRICS_COUNT") {
-            let v = v.trim();
-            if !v.is_empty() {
-                let parsed: usize = v.parse().map_err(|_| {
-                    format!("VECTORBT_KERNEL_METRICS_COUNT must be an integer (got '{v}')")
-                })?;
-                if parsed == 0 || parsed > METRICS_COUNT {
-                    return Err(format!(
-                        "VECTORBT_KERNEL_METRICS_COUNT must be in [1, {METRICS_COUNT}] (got {parsed})"
-                    ));
-                }
-                metrics_count = parsed;
-            }
-        }
-    }
+    let metrics_count: usize = METRICS_COUNT;
     match objective {
-        ObjectiveKind::Pnl => {}
-        ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => {
-            if metrics_count < 3 {
-                return Err(format!(
-                    "VECTORBT_KERNEL_METRICS_COUNT={} too small for objective {objective:?} (need >= 3)",
-                    metrics_count
-                ));
-            }
-        }
-        ObjectiveKind::Sharpe | ObjectiveKind::Volatility => {
-            if metrics_count < 5 {
-                return Err(format!(
-                    "VECTORBT_KERNEL_METRICS_COUNT={} too small for objective {objective:?} (need >= 5)",
-                    metrics_count
-                ));
-            }
-        }
+        ObjectiveKind::Pnl
+        | ObjectiveKind::Sharpe
+        | ObjectiveKind::MaxDrawdown
+        | ObjectiveKind::Calmar
+        | ObjectiveKind::Volatility => {}
         ObjectiveKind::Sortino | ObjectiveKind::Omega => {
             return Err(format!(
                 "GPU kernel backend does not support objective {objective:?}"
@@ -5434,19 +5501,16 @@ fn optimize_double_ma_gpu_kernel_impl(
             ));
         }
     };
-    let cfg_recompute = KernelConfig {
-        device_id: cfg.device_id,
-        fast_alma_offset: cfg.fast_alma_offset,
-        fast_alma_sigma: cfg.fast_alma_sigma,
-        slow_alma_offset: cfg.slow_alma_offset,
-        slow_alma_sigma: cfg.slow_alma_sigma,
-    };
-
     let bt_stream = &rt.stream;
     let ma_source_key = normalize_market_source_key(ma_source);
     let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let (resident_market, ma, scratch) = (&mut rt.resident_market, &mut rt.ma, &mut rt.scratch);
+    let (resident_market, ma, scratch, valid_pair_maps) = (
+        &mut rt.resident_market,
+        &mut rt.ma,
+        &mut rt.scratch,
+        &mut rt.valid_pair_maps,
+    );
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -5464,6 +5528,12 @@ fn optimize_double_ma_gpu_kernel_impl(
     let resident = resident_market
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    let device_launch_caps = rt.launch_caps;
+    let compute_lr = rt
+        .module
+        .get_function("compute_log_returns_f32")
+        .map_err(|e| e.to_string())?;
+    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
     let d_close = &resident.close;
     let d_high = if needs_high_low {
         resident.high.as_ref()
@@ -5548,9 +5618,6 @@ fn optimize_double_ma_gpu_kernel_impl(
     let use_valid_pair_map = kernel_valid_pair_map_enabled();
     let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
 
-    let compute_lr = bt_module
-        .get_function("compute_log_returns_f32")
-        .map_err(|e| e.to_string())?;
     let transpose = bt_module
         .get_function("transpose_row_to_tm")
         .map_err(|e| e.to_string())?;
@@ -5633,12 +5700,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         .get_function("select_topk_metric_rows_from_candidates_f32_v2")
         .ok();
     let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
-    let device_launch_caps = rt.launch_caps;
     let fill_launch_caps = detect_kernel_launch_caps(&fill_f32, device_launch_caps);
-    let lockstep_time_enabled = kernel_lockstep_time_enabled();
-    let lockstep_time_min_pairs = kernel_lockstep_time_min_pairs();
-    let m7_specialize_enabled = kernel_m7_specialize_enabled();
-    let m7_specialize_min_pairs = kernel_m7_specialize_min_pairs();
     let lockstep_m7_regime_mode_specialize_enabled =
         kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
             fast_ma.as_str(),
@@ -5650,7 +5712,6 @@ fn optimize_double_ma_gpu_kernel_impl(
         kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
     let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
     let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
-    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
     let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
     let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
     let backtest_m7_launch_caps = backtest_m7
@@ -6210,31 +6271,15 @@ fn optimize_double_ma_gpu_kernel_impl(
             let mut launch_pairs = pairs;
             let mut pair_index_map_ptr: u64 = 0;
             if use_valid_pair_map && pairs <= valid_pair_map_max_pairs {
-                let valid_map = build_valid_pair_index_map_i32(
+                let cached_valid_map = ensure_cached_valid_pair_map(
+                    valid_pair_maps,
                     &fast_periods[f_start..f_start + pf],
                     &slow_periods[s_start..s_start + ps],
                 )?;
-                launch_pairs = valid_map.len();
+                launch_pairs = cached_valid_map.map(|(_, len)| len).unwrap_or(0);
                 if launch_pairs > 0 {
-                    KernelScratch::ensure_len_i32(
-                        &mut scratch.d_valid_pair_index,
-                        launch_pairs,
-                        bt_stream,
-                    )?;
-                    let h2d_t0 = Instant::now();
-                    scratch
-                        .d_valid_pair_index
-                        .as_mut()
-                        .unwrap()
-                        .copy_from(&valid_map)
-                        .map_err(|e| e.to_string())?;
-                    h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
-                    pair_index_map_ptr = scratch
-                        .d_valid_pair_index
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
+                    pair_index_map_ptr =
+                        cached_valid_map.map(|(ptr, _)| ptr).unwrap_or_default();
                 }
 
                 // Keep output dense (Pf*Ps*M) for downstream kernels by zero-filling
@@ -6318,9 +6363,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let eps_zero_mode = eps_rel <= 0.0f32;
 
                         let use_lockstep_time = !use_windowed_eval
-                            && lockstep_time_enabled
-                            && launch_pairs >= lockstep_time_min_pairs
-                            && backtest_lockstep.is_some();
+                            && kernel_should_use_lockstep_time(
+                                launch_pairs,
+                                n,
+                                max_start_t,
+                                backtest_lockstep.is_some(),
+                            );
                         let use_m7 = !use_windowed_eval
                             && kernel_should_use_m7_specialize(
                                 launch_pairs,
@@ -6331,11 +6379,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 backtest_m7.is_some(),
                             );
                         let use_lockstep_m7 = use_lockstep_time
-                            && m7_specialize_enabled
-                            && launch_pairs >= m7_specialize_min_pairs
                             && !is_multi_tile_workload
-                            && (metrics_count == 7)
-                            && backtest_lockstep_m7.is_some();
+                            && kernel_should_use_m7_specialize(
+                                launch_pairs,
+                                n,
+                                max_start_t,
+                                false,
+                                metrics_count,
+                                backtest_lockstep_m7.is_some(),
+                            );
                         let use_fast_warp_dedup = !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
@@ -7695,109 +7747,6 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
     }
 
-    let skip_recompute = matches!(std::env::var("VECTORBT_KERNEL_SKIP_RECOMPUTE"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
-    if fast_pass && metrics_count < METRICS_COUNT && !skip_recompute {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-
-        let mut fast_needed: Vec<u16> = Vec::with_capacity(result.top.len() + 1);
-        let mut slow_needed: Vec<u16> = Vec::with_capacity(result.top.len() + 1);
-        fast_needed.push(result.best_params.fast_len);
-        slow_needed.push(result.best_params.slow_len);
-        for (p, _) in result.top.iter() {
-            fast_needed.push(p.fast_len);
-            slow_needed.push(p.slow_len);
-        }
-        fast_needed.sort_unstable();
-        fast_needed.dedup();
-        slow_needed.sort_unstable();
-        slow_needed.dedup();
-
-        let total_pairs_subset = fast_needed.len().saturating_mul(slow_needed.len());
-        let mut fast_recompute_buf: Option<Vec<f32>> = None;
-        let mut slow_recompute_buf: Option<Vec<f32>> = None;
-        if let Some(src) = fast_precomputed {
-            fast_recompute_buf = Some(remap_precomputed_rows_for_periods(
-                src,
-                &fast_needed,
-                "fast",
-            )?);
-        }
-        if let Some(src) = slow_precomputed {
-            slow_recompute_buf = Some(remap_precomputed_rows_for_periods(
-                src,
-                &slow_needed,
-                "slow",
-            )?);
-        }
-        let fast_recompute_matrix =
-            fast_recompute_buf
-                .as_ref()
-                .map(|values| PrecomputedHostMaMatrix {
-                    periods: fast_needed.as_slice(),
-                    cols: n,
-                    values_row_major: values.as_slice(),
-                });
-        let slow_recompute_matrix =
-            slow_recompute_buf
-                .as_ref()
-                .map(|values| PrecomputedHostMaMatrix {
-                    periods: slow_needed.as_slice(),
-                    cols: n,
-                    values_row_major: values.as_slice(),
-                });
-        let (full, _) = optimize_double_ma_gpu_kernel_impl(
-            rt,
-            candles,
-            &fast_needed,
-            &slow_needed,
-            fast_ma_type,
-            slow_ma_type,
-            ma_source,
-            fast_ma_params,
-            slow_ma_params,
-            regime_filter,
-            strategy,
-            objective,
-            0,
-            true,
-            cfg_recompute,
-            fast_recompute_matrix.as_ref(),
-            slow_recompute_matrix.as_ref(),
-            constraints,
-            None,
-            total_pairs_subset,
-            0,
-            None,
-            None,
-            cancel,
-            None,
-        )?;
-        let all = full
-            .all
-            .ok_or_else(|| "internal error: expected include_all=true".to_string())?;
-
-        let mut map: HashMap<(u16, u16), Metrics> = HashMap::with_capacity(all.len());
-        for (p, m) in all {
-            map.insert((p.fast_len, p.slow_len), m);
-        }
-
-        result.best_metrics = map
-            .get(&(result.best_params.fast_len, result.best_params.slow_len))
-            .cloned()
-            .ok_or_else(|| "best metrics missing from recompute pass".to_string())?;
-
-        for (p, m) in result.top.iter_mut() {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("cancelled".to_string());
-            }
-            if let Some(full_m) = map.get(&(p.fast_len, p.slow_len)) {
-                *m = full_m.clone();
-            }
-        }
-    }
-
     if let Some(w) = export_writer.as_mut() {
         w.flush().map_err(|e| e.to_string())?;
     }
@@ -7831,8 +7780,8 @@ fn optimize_double_ma_gpu_kernel_impl(
 mod tests {
     use super::{
         eval_double_ma_dynamic_program_precomputed_gpu_kernel, kernel_async_alloc_enabled,
-        kernel_effective_pair_bars, kernel_pinned_h2d_enabled, kernel_should_use_m7_specialize,
-        upload_double_ma_dynamic_program_batch,
+        kernel_effective_pair_bars, kernel_pinned_h2d_enabled, kernel_should_use_lockstep_time,
+        kernel_should_use_m7_specialize, upload_double_ma_dynamic_program_batch,
     };
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
@@ -7987,6 +7936,40 @@ mod tests {
     }
 
     #[test]
+    fn kernel_lockstep_gate_uses_pair_bars_for_large_long_workloads() {
+        let _guard = lock_env();
+        let prev_pairs = std::env::var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIRS").ok();
+        let prev_pair_bars = std::env::var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIR_BARS").ok();
+        let prev_enabled = std::env::var("VECTORBT_KERNEL_LOCKSTEP_TIME").ok();
+
+        std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME", "1");
+        std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIRS", "150000");
+        std::env::remove_var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIR_BARS");
+
+        assert!(kernel_should_use_lockstep_time(58_300, 200_000, 400, true));
+        assert!(!kernel_should_use_lockstep_time(14_150, 200_000, 400, true));
+        assert!(!kernel_should_use_lockstep_time(
+            58_300, 200_000, 400, false
+        ));
+
+        std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME", "0");
+        assert!(!kernel_should_use_lockstep_time(58_300, 200_000, 400, true));
+
+        match prev_pairs {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIRS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIRS"),
+        }
+        match prev_pair_bars {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIR_BARS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_LOCKSTEP_TIME_MIN_PAIR_BARS"),
+        }
+        match prev_enabled {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_LOCKSTEP_TIME"),
+        }
+    }
+
+    #[test]
     fn dynamic_double_ma_program_gpu_kernel_matches_cpu_plain_sma_metrics() {
         let _guard = lock_env();
         if !vector_ta::cuda::cuda_available() {
@@ -8063,14 +8046,7 @@ mod tests {
         assert_eq!(gpu_metrics.len(), 1);
 
         let ctx = build_dynamic_cpu_context_from_precomputed(
-            &lr,
-            close,
-            close,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &lr, close, close, None, None, None, None, None,
         );
         let start_t = strategy
             .trade_on_next_bar
@@ -8089,15 +8065,50 @@ mod tests {
 
         let gpu = &gpu_metrics[0];
         assert_eq!(gpu.trades, cpu_metrics.trades);
-        assert!(approx_eq(gpu.pnl, cpu_metrics.pnl, 1e-5), "pnl gpu={} cpu={}", gpu.pnl, cpu_metrics.pnl);
-        assert!(approx_eq(gpu.sharpe, cpu_metrics.sharpe, 1e-5), "sharpe gpu={} cpu={}", gpu.sharpe, cpu_metrics.sharpe);
+        assert!(
+            approx_eq(gpu.pnl, cpu_metrics.pnl, 1e-5),
+            "pnl gpu={} cpu={}",
+            gpu.pnl,
+            cpu_metrics.pnl
+        );
+        assert!(
+            approx_eq(gpu.sharpe, cpu_metrics.sharpe, 1e-5),
+            "sharpe gpu={} cpu={}",
+            gpu.sharpe,
+            cpu_metrics.sharpe
+        );
         assert_eq!(gpu.sortino, 0.0);
-        assert!(approx_eq(gpu.calmar, cpu_metrics.calmar, 1e-2), "calmar gpu={} cpu={}", gpu.calmar, cpu_metrics.calmar);
+        assert!(
+            approx_eq(gpu.calmar, cpu_metrics.calmar, 1e-2),
+            "calmar gpu={} cpu={}",
+            gpu.calmar,
+            cpu_metrics.calmar
+        );
         assert_eq!(gpu.omega, 0.0);
-        assert!(approx_eq(gpu.volatility, cpu_metrics.volatility, 1e-5), "vol gpu={} cpu={}", gpu.volatility, cpu_metrics.volatility);
-        assert!(approx_eq(gpu.max_dd, cpu_metrics.max_dd, 1e-5), "max_dd gpu={} cpu={}", gpu.max_dd, cpu_metrics.max_dd);
-        assert!(approx_eq(gpu.exposure, cpu_metrics.exposure, 1e-5), "exposure gpu={} cpu={}", gpu.exposure, cpu_metrics.exposure);
-        assert!(approx_eq(gpu.net_exposure, cpu_metrics.net_exposure, 1e-5), "net_exposure gpu={} cpu={}", gpu.net_exposure, cpu_metrics.net_exposure);
+        assert!(
+            approx_eq(gpu.volatility, cpu_metrics.volatility, 1e-5),
+            "vol gpu={} cpu={}",
+            gpu.volatility,
+            cpu_metrics.volatility
+        );
+        assert!(
+            approx_eq(gpu.max_dd, cpu_metrics.max_dd, 1e-5),
+            "max_dd gpu={} cpu={}",
+            gpu.max_dd,
+            cpu_metrics.max_dd
+        );
+        assert!(
+            approx_eq(gpu.exposure, cpu_metrics.exposure, 1e-5),
+            "exposure gpu={} cpu={}",
+            gpu.exposure,
+            cpu_metrics.exposure
+        );
+        assert!(
+            approx_eq(gpu.net_exposure, cpu_metrics.net_exposure, 1e-5),
+            "net_exposure gpu={} cpu={}",
+            gpu.net_exposure,
+            cpu_metrics.net_exposure
+        );
     }
 
     #[test]
@@ -8178,12 +8189,14 @@ mod tests {
         )
         .expect("upload dynamic batch");
 
-        let first =
-            super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, &strategy, &handle)
-                .expect("first launch");
-        let second =
-            super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, &strategy, &handle)
-                .expect("second launch");
+        let first = super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
+            &uploaded, &strategy, &handle,
+        )
+        .expect("first launch");
+        let second = super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
+            &uploaded, &strategy, &handle,
+        )
+        .expect("second launch");
         assert_eq!(first.len(), second.len());
         for (a, b) in first.iter().zip(second.iter()) {
             assert_eq!(a.trades, b.trades);

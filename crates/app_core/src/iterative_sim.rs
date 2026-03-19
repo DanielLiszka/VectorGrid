@@ -281,6 +281,7 @@ pub fn simulate_iterative_from_signals(
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -393,6 +394,12 @@ pub fn simulate_iterative_from_signals(
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         count = count.saturating_add(1);
         let delta = step_r - mean;
@@ -445,6 +452,7 @@ pub fn simulate_iterative_from_signals(
 
     let pnl = log_eq.exp() - 1.0;
     let max_dd = 1.0 - (-max_log_dd).exp();
+    let ulcer_index = (ulcer_sum_sq / (count as f64).max(1.0)).sqrt();
     let calmar_raw = if max_dd > EPS_DENOM {
         pnl / max_dd
     } else if pnl > 0.0 {
@@ -455,6 +463,15 @@ pub fn simulate_iterative_from_signals(
         0.0
     };
     let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+    let martin_ratio = if ulcer_index > EPS_DENOM {
+        (pnl / ulcer_index).clamp(-CLAMP_MAX, CLAMP_MAX)
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
 
     let obs = (n_total - start_t) as f64;
     let exposure = if obs > 0.0 {
@@ -472,9 +489,12 @@ pub fn simulate_iterative_from_signals(
         pnl,
         sharpe,
         sortino,
+        downside_deviation: downside_dev,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,

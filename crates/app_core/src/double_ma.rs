@@ -481,6 +481,92 @@ pub(crate) fn objective_score(
     }
 }
 
+#[allow(clippy::type_complexity)]
+fn finalize_risk_metrics(
+    compute_return_stats: bool,
+    count: u64,
+    obs: u64,
+    mean: f64,
+    m2: f64,
+    sum_neg_sq: f64,
+    sum_pos_r: f64,
+    sum_neg_abs_r: f64,
+    ulcer_sum_sq: f64,
+    max_log_dd: f64,
+    log_eq: f64,
+) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let (sharpe, volatility, sortino, downside_deviation, omega) = if compute_return_stats {
+        let variance = if count > 1 {
+            m2 / (count as f64 - 1.0)
+        } else {
+            0.0
+        };
+        let std = variance.sqrt();
+        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+        let denom = (count as f64).max(1.0);
+        let downside_deviation = (sum_neg_sq / denom).sqrt();
+        let sortino_raw = if downside_deviation > 0.0 {
+            mean / downside_deviation
+        } else if mean > 0.0 {
+            CLAMP_MAX
+        } else if mean < 0.0 {
+            -CLAMP_MAX
+        } else {
+            0.0
+        };
+        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
+        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
+        (sharpe, std, sortino, downside_deviation, omega)
+    } else {
+        (0.0, 0.0, 0.0, 0.0, 0.0)
+    };
+
+    let max_dd = if max_log_dd > 0.0 {
+        -(-max_log_dd).exp_m1()
+    } else {
+        0.0
+    };
+    let pnl = log_eq.exp() - 1.0;
+    let denom = (obs as f64).max(1.0);
+    let ulcer_index = (ulcer_sum_sq / denom).sqrt();
+    let martin_raw = if ulcer_index > EPS_DENOM {
+        pnl / ulcer_index
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let martin_ratio = martin_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+    let calmar_raw = if max_dd > EPS_DENOM {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+
+    (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    )
+}
+
 fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
     matches!(
         objective,
@@ -1118,6 +1204,7 @@ where
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -1198,6 +1285,12 @@ where
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -1223,36 +1316,29 @@ where
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-        let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-        (sharpe, volatility, sortino, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        count,
+        obs,
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_pos_r,
+        sum_neg_abs_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -1264,31 +1350,18 @@ where
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,
@@ -1636,6 +1709,7 @@ where
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -1717,6 +1791,12 @@ where
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -1742,36 +1822,29 @@ where
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-        let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-        (sharpe, volatility, sortino, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        count,
+        obs,
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_pos_r,
+        sum_neg_abs_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -1783,31 +1856,18 @@ where
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,
@@ -2199,11 +2259,11 @@ pub(crate) fn eval_metrics_f64_with_exit_mode(
         }
     } else if compute_sharpe {
         if let Some(trend) = halftrend {
-            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_rich(
                 lr, fast, slow, trend, start_t, strategy,
             )
         } else {
-            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64(
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f64_rich(
                 lr, fast, slow, start_t, strategy,
             )
         }
@@ -2283,11 +2343,11 @@ fn eval_metrics_f32_with_exit_mode(
         }
     } else if compute_sharpe {
         if let Some(trend) = halftrend {
-            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_rich(
                 lr, fast, slow, trend, start_t, strategy,
             )
         } else {
-            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32(
+            ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_rich(
                 lr, fast, slow, start_t, strategy,
             )
         }
@@ -5413,7 +5473,7 @@ fn eval_double_ma_metrics(
     };
     let start_t = t_sig0.saturating_add(trade_offset).max(first_valid);
 
-    ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32(
+    ta_strategies::double_ma::eval_double_ma_from_log_returns_and_mas_f32_rich(
         &lr, fast, slow, start_t, &cfg,
     )
 }

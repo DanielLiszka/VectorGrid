@@ -4007,7 +4007,6 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0(
     );
 }
 
-
 extern "C" __global__
 void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on(
     const float* __restrict__ fast_ma_T,

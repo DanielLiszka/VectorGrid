@@ -400,9 +400,12 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -415,9 +418,12 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -431,9 +437,12 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -463,6 +472,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -553,6 +563,12 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -581,7 +597,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     const EPS_DENOM: f64 = 1e-12;
     const CLAMP_MAX: f64 = 1e6;
 
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
+    let (sharpe, volatility, sortino, downside_deviation, omega) = if COMPUTE_SHARPE {
         let variance = if count > 1 {
             m2 / (count as f64 - 1.0)
         } else {
@@ -591,11 +607,10 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         let sharpe = if std > 0.0 { mean / std } else { 0.0 };
         let volatility = std;
 
-        // Sortino: downside deviation uses 0 as the threshold and averages over all observations.
         let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
+        let downside_deviation = (sum_neg_sq / denom).sqrt();
+        let sortino_raw = if downside_deviation > 0.0 {
+            mean / downside_deviation
         } else if mean > 0.0 {
             CLAMP_MAX
         } else if mean < 0.0 {
@@ -605,13 +620,12 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         };
         let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
-        // Omega: ratio of positive-return mass to negative-return mass at 0-threshold.
         let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
         let omega = omega_raw.clamp(0.0, CLAMP_MAX);
 
-        (sharpe, volatility, sortino, omega)
+        (sharpe, volatility, sortino, downside_deviation, omega)
     } else {
-        (0.0, 0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, 0.0, 0.0)
     };
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
@@ -629,6 +643,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     } else {
         0.0
     };
+    let ulcer_index = (ulcer_sum_sq / (obs as f64).max(1.0)).sqrt();
 
     let pnl = log_eq.exp() - 1.0;
     let calmar_raw = if max_dd > EPS_DENOM {
@@ -641,14 +656,27 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         0.0
     };
     let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+    let martin_raw = if ulcer_index > EPS_DENOM {
+        pnl / ulcer_index
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let martin_ratio = martin_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,

@@ -1513,6 +1513,7 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
     let mut trade_log_ret = 0.0_f64;
 
@@ -1659,6 +1660,12 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         let step_r = if pos_bar == 0 {
             0.0
@@ -1691,6 +1698,7 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
     } else {
         0.0
     };
+    let ulcer_index = (ulcer_sum_sq / n_obs.max(1) as f64).sqrt();
     let denom = n_obs.max(1) as f64;
     let exposure = sum_abs_pos as f64 / denom;
     let net_exposure = sum_pos as f64 / denom;
@@ -1706,13 +1714,25 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
             0.0
         }
         .clamp(-1.0e6, 1.0e6);
+        let martin_ratio = if ulcer_index > 1.0e-12 {
+            (pnl / ulcer_index).clamp(-1.0e6, 1.0e6)
+        } else if pnl > 0.0 {
+            1.0e6
+        } else if pnl < 0.0 {
+            -1.0e6
+        } else {
+            0.0
+        };
         return Ok(Metrics {
             pnl,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index,
+            martin_ratio,
             max_dd,
             trades,
             exposure,
@@ -1751,14 +1771,26 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         0.0
     }
     .clamp(-1.0e6, 1.0e6);
+    let martin_ratio = if ulcer_index > 1.0e-12 {
+        (pnl / ulcer_index).clamp(-1.0e6, 1.0e6)
+    } else if pnl > 0.0 {
+        1.0e6
+    } else if pnl < 0.0 {
+        -1.0e6
+    } else {
+        0.0
+    };
 
     Ok(Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation: downside_dev,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,

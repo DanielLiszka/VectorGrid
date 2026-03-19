@@ -42,6 +42,9 @@ pub struct Metrics {
     /// Sortino ratio (0-threshold), computed on per-bar strategy returns.
     #[serde(default)]
     pub sortino: f64,
+    /// Downside deviation (0-threshold), computed on per-bar strategy returns.
+    #[serde(default)]
+    pub downside_deviation: f64,
     /// Calmar ratio, computed as pnl / max_dd (epsilon-guarded).
     #[serde(default)]
     pub calmar: f64,
@@ -51,6 +54,12 @@ pub struct Metrics {
     /// Volatility (std dev) of per-bar strategy returns.
     #[serde(default)]
     pub volatility: f64,
+    /// Ulcer index computed from percentage drawdown depth along the equity path.
+    #[serde(default)]
+    pub ulcer_index: f64,
+    /// Martin ratio computed as pnl / ulcer_index (epsilon-guarded).
+    #[serde(default)]
+    pub martin_ratio: f64,
     pub max_dd: f64,
     pub trades: u32,
     pub exposure: f64,
@@ -63,15 +72,109 @@ impl Default for Metrics {
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
         }
     }
+}
+
+#[allow(clippy::type_complexity)]
+fn finalize_risk_metrics(
+    compute_return_stats: bool,
+    compute_drawdown_risk: bool,
+    count: u64,
+    obs: u64,
+    mean: f64,
+    m2: f64,
+    sum_neg_sq: f64,
+    sum_pos_r: f64,
+    sum_neg_abs_r: f64,
+    ulcer_sum_sq: f64,
+    max_log_dd: f64,
+    log_eq: f64,
+) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let (sharpe, volatility, sortino, downside_deviation, omega) = if compute_return_stats {
+        let variance = if count > 1 {
+            m2 / (count as f64 - 1.0)
+        } else {
+            0.0
+        };
+        let std = variance.sqrt();
+        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+        let denom = (count as f64).max(1.0);
+        let downside_deviation = (sum_neg_sq / denom).sqrt();
+        let sortino_raw = if downside_deviation > 0.0 {
+            mean / downside_deviation
+        } else if mean > 0.0 {
+            CLAMP_MAX
+        } else if mean < 0.0 {
+            -CLAMP_MAX
+        } else {
+            0.0
+        };
+        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
+        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
+        (sharpe, std, sortino, downside_deviation, omega)
+    } else {
+        (0.0, 0.0, 0.0, 0.0, 0.0)
+    };
+
+    let max_dd = if max_log_dd > 0.0 {
+        -(-max_log_dd).exp_m1()
+    } else {
+        0.0
+    };
+    let pnl = log_eq.exp() - 1.0;
+    let (ulcer_index, martin_ratio) = if compute_drawdown_risk {
+        let denom = (obs as f64).max(1.0);
+        let ulcer_index = (ulcer_sum_sq / denom).sqrt();
+        let martin_raw = if ulcer_index > EPS_DENOM {
+            pnl / ulcer_index
+        } else if pnl > 0.0 {
+            CLAMP_MAX
+        } else if pnl < 0.0 {
+            -CLAMP_MAX
+        } else {
+            0.0
+        };
+        (ulcer_index, martin_raw.clamp(-CLAMP_MAX, CLAMP_MAX))
+    } else {
+        (0.0, 0.0)
+    };
+    let calmar_raw = if max_dd > EPS_DENOM {
+        pnl / max_dd
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+
+    (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1987,9 +2090,12 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2034,9 +2140,12 @@ pub fn eval_double_ma_one_with_types(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2055,9 +2164,12 @@ pub fn eval_double_ma_one_with_types(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2100,9 +2212,12 @@ pub fn double_ma_batch_cpu(
                 pnl: 0.0,
                 sharpe: 0.0,
                 sortino: 0.0,
+                downside_deviation: 0.0,
                 calmar: 0.0,
                 omega: 0.0,
                 volatility: 0.0,
+                ulcer_index: 0.0,
+                martin_ratio: 0.0,
                 max_dd: 0.0,
                 trades: 0,
                 exposure: 0.0,
@@ -2135,9 +2250,12 @@ pub fn double_ma_batch_cpu(
                     pnl: 0.0,
                     sharpe: 0.0,
                     sortino: 0.0,
+                    downside_deviation: 0.0,
                     calmar: 0.0,
                     omega: 0.0,
                     volatility: 0.0,
+                    ulcer_index: 0.0,
+                    martin_ratio: 0.0,
                     max_dd: 0.0,
                     trades: 0,
                     exposure: 0.0,
@@ -2199,9 +2317,12 @@ pub fn eval_double_ma_from_series_cfg(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2227,7 +2348,17 @@ pub fn eval_double_ma_from_log_returns_and_mas_f64(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f64_impl::<true>(lr, fast, slow, start_t, cfg)
+    eval_double_ma_from_log_returns_and_mas_f64_impl::<true, false>(lr, fast, slow, start_t, cfg)
+}
+
+pub fn eval_double_ma_from_log_returns_and_mas_f64_rich(
+    lr: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+) -> Metrics {
+    eval_double_ma_from_log_returns_and_mas_f64_impl::<true, true>(lr, fast, slow, start_t, cfg)
 }
 
 pub fn eval_double_ma_from_log_returns_and_mas_f64_fast(
@@ -2237,7 +2368,7 @@ pub fn eval_double_ma_from_log_returns_and_mas_f64_fast(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f64_impl::<false>(lr, fast, slow, start_t, cfg)
+    eval_double_ma_from_log_returns_and_mas_f64_impl::<false, false>(lr, fast, slow, start_t, cfg)
 }
 
 pub fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
@@ -2248,7 +2379,25 @@ pub fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl::<true>(
+    eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl::<true, false>(
+        lr,
+        fast,
+        slow,
+        halftrend_trend,
+        start_t,
+        cfg,
+    )
+}
+
+pub fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_rich(
+    lr: &[f64],
+    fast: &[f64],
+    slow: &[f64],
+    halftrend_trend: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+) -> Metrics {
+    eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl::<true, true>(
         lr,
         fast,
         slow,
@@ -2266,7 +2415,7 @@ pub fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_fast(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl::<false>(
+    eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl::<false, false>(
         lr,
         fast,
         slow,
@@ -2276,7 +2425,10 @@ pub fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_fast(
     )
 }
 
-fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
+fn eval_double_ma_from_log_returns_and_mas_f64_impl<
+    const COMPUTE_SHARPE: bool,
+    const COMPUTE_DRAWDOWN_RISK: bool,
+>(
     lr: &[f64],
     fast: &[f64],
     slow: &[f64],
@@ -2289,9 +2441,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2304,9 +2459,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2320,9 +2478,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2351,6 +2512,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -2449,6 +2611,14 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if COMPUTE_DRAWDOWN_RISK {
+            let dd = if dd_log > 0.0 {
+                -(-dd_log).exp_m1()
+            } else {
+                0.0
+            };
+            ulcer_sum_sq += dd * dd;
+        }
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -2474,41 +2644,30 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-
-        // Sortino: downside deviation uses 0 as the threshold and averages over all observations.
-        let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-
-        // Omega: ratio of positive-return mass to negative-return mass at 0-threshold.
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-
-        (sharpe, volatility, sortino, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        COMPUTE_DRAWDOWN_RISK,
+        count,
+        obs,
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_pos_r,
+        sum_neg_abs_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -2520,31 +2679,18 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,
@@ -2554,6 +2700,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE: bool>(
 
 fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
     const COMPUTE_SHARPE: bool,
+    const COMPUTE_DRAWDOWN_RISK: bool,
 >(
     lr: &[f64],
     fast: &[f64],
@@ -2572,9 +2719,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2587,9 +2737,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2603,9 +2756,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2634,6 +2790,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -2741,6 +2898,12 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        let dd = if dd_log > 0.0 {
+            -(-dd_log).exp_m1()
+        } else {
+            0.0
+        };
+        ulcer_sum_sq += dd * dd;
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -2766,39 +2929,30 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-
-        let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-
-        (sharpe, volatility, sortino, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        COMPUTE_DRAWDOWN_RISK,
+        count,
+        obs,
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_pos_r,
+        sum_neg_abs_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -2810,31 +2964,18 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,
@@ -2849,7 +2990,17 @@ pub fn eval_double_ma_from_log_returns_and_mas_f32(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f32_impl::<true>(lr, fast, slow, start_t, cfg)
+    eval_double_ma_from_log_returns_and_mas_f32_impl::<true, false>(lr, fast, slow, start_t, cfg)
+}
+
+pub fn eval_double_ma_from_log_returns_and_mas_f32_rich(
+    lr: &[f64],
+    fast: &[f32],
+    slow: &[f32],
+    start_t: usize,
+    cfg: &StrategyConfig,
+) -> Metrics {
+    eval_double_ma_from_log_returns_and_mas_f32_impl::<true, true>(lr, fast, slow, start_t, cfg)
 }
 
 pub fn eval_double_ma_from_log_returns_and_mas_f32_fast(
@@ -2859,7 +3010,7 @@ pub fn eval_double_ma_from_log_returns_and_mas_f32_fast(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f32_impl::<false>(lr, fast, slow, start_t, cfg)
+    eval_double_ma_from_log_returns_and_mas_f32_impl::<false, false>(lr, fast, slow, start_t, cfg)
 }
 
 pub fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
@@ -2870,7 +3021,25 @@ pub fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl::<true>(
+    eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl::<true, false>(
+        lr,
+        fast,
+        slow,
+        halftrend_trend,
+        start_t,
+        cfg,
+    )
+}
+
+pub fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_rich(
+    lr: &[f64],
+    fast: &[f32],
+    slow: &[f32],
+    halftrend_trend: &[f64],
+    start_t: usize,
+    cfg: &StrategyConfig,
+) -> Metrics {
+    eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl::<true, true>(
         lr,
         fast,
         slow,
@@ -2888,7 +3057,7 @@ pub fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_fast(
     start_t: usize,
     cfg: &StrategyConfig,
 ) -> Metrics {
-    eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl::<false>(
+    eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl::<false, false>(
         lr,
         fast,
         slow,
@@ -2898,7 +3067,10 @@ pub fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_fast(
     )
 }
 
-fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
+fn eval_double_ma_from_log_returns_and_mas_f32_impl<
+    const COMPUTE_SHARPE: bool,
+    const COMPUTE_DRAWDOWN_RISK: bool,
+>(
     lr: &[f64],
     fast: &[f32],
     slow: &[f32],
@@ -2911,9 +3083,12 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2926,9 +3101,12 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2942,9 +3120,12 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -2973,6 +3154,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -3071,6 +3253,14 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if COMPUTE_DRAWDOWN_RISK {
+            let dd = if dd_log > 0.0 {
+                -(-dd_log).exp_m1()
+            } else {
+                0.0
+            };
+            ulcer_sum_sq += dd * dd;
+        }
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -3096,41 +3286,30 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-
-        // Sortino: downside deviation uses 0 as the threshold and averages over all observations.
-        let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-
-        // Omega: ratio of positive-return mass to negative-return mass at 0-threshold.
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-
-        (sharpe, volatility, sortino, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        COMPUTE_DRAWDOWN_RISK,
+        count,
+        obs,
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_pos_r,
+        sum_neg_abs_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -3142,31 +3321,18 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,
@@ -3176,6 +3342,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<const COMPUTE_SHARPE: bool>(
 
 fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
     const COMPUTE_SHARPE: bool,
+    const COMPUTE_DRAWDOWN_RISK: bool,
 >(
     lr: &[f64],
     fast: &[f32],
@@ -3194,9 +3361,12 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -3209,9 +3379,12 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -3225,9 +3398,12 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             pnl: 0.0,
             sharpe: 0.0,
             sortino: 0.0,
+            downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
             volatility: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
             exposure: 0.0,
@@ -3256,6 +3432,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
     let mut log_eq = 0.0_f64;
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
@@ -3363,6 +3540,14 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if COMPUTE_DRAWDOWN_RISK {
+            let dd = if dd_log > 0.0 {
+                -(-dd_log).exp_m1()
+            } else {
+                0.0
+            };
+            ulcer_sum_sq += dd * dd;
+        }
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -3388,41 +3573,30 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-
-        // Sortino: downside deviation uses 0 as the threshold and averages over all observations.
-        let denom = (count as f64).max(1.0);
-        let downside_dev = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_dev > 0.0 {
-            mean / downside_dev
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-
-        // Omega: ratio of positive-return mass to negative-return mass at 0-threshold.
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-
-        (sharpe, volatility, sortino, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        omega,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        COMPUTE_DRAWDOWN_RISK,
+        count,
+        obs,
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_pos_r,
+        sum_neg_abs_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -3434,31 +3608,18 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
+        downside_deviation,
         calmar,
         omega,
         volatility,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
         exposure,
@@ -3711,6 +3872,24 @@ mod tests {
 
         assert!(m1.pnl <= m0.pnl + 1e-12);
         assert!(m2.pnl <= m1.pnl + 1e-12);
+    }
+
+    #[test]
+    fn derived_risk_metrics_are_populated_for_basic_run() {
+        let candles = make_trending_candles(200);
+        let params = DoubleMaParams {
+            fast_len: 5,
+            slow_len: 20,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        };
+        let metrics = eval_double_ma_one(&candles, &params);
+
+        assert!(metrics.downside_deviation.is_finite());
+        assert!(metrics.downside_deviation >= 0.0);
+        assert!(metrics.ulcer_index.is_finite());
+        assert!(metrics.ulcer_index >= 0.0);
+        assert!(metrics.martin_ratio.is_finite());
     }
 
     #[test]

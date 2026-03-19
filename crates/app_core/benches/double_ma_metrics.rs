@@ -106,7 +106,7 @@ fn bench_ma_profile() -> (
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
+fn bench_gpu_kernel_pnl_full_metrics(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
     }
@@ -115,9 +115,6 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
     let cancel = AtomicBool::new(false);
 
     let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
-    let prev_metrics = std::env::var("VECTORBT_KERNEL_METRICS_COUNT").ok();
-    let prev_skip = std::env::var("VECTORBT_KERNEL_SKIP_RECOMPUTE").ok();
-    std::env::set_var("VECTORBT_KERNEL_SKIP_RECOMPUTE", "1");
 
     let (ma_label, fast_ma, slow_ma, ma_params) = bench_ma_profile();
 
@@ -128,9 +125,8 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
         ("large_batched_1gb", (5, 200, 1), (10, 400, 1), Some("1024")),
     ];
 
-    let metrics_variants: &[(usize, &str)] = &[(1, "m1"), (3, "m3"), (5, "m5"), (7, "m7")];
-
-    let mut group = c.benchmark_group(format!("double_ma/gpu_kernel_metrics/{ma_label}/200k"));
+    let mut group =
+        c.benchmark_group(format!("double_ma/gpu_kernel_pnl_full_metrics/{ma_label}/200k"));
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 
@@ -143,69 +139,57 @@ fn bench_gpu_kernel_metrics_toggle(c: &mut Criterion) {
         let fast_periods = expand_range_u16(fast_range);
         let slow_periods = expand_range_u16(slow_range);
         let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
-
-        for (m, m_label) in metrics_variants.iter().copied() {
-            std::env::set_var("VECTORBT_KERNEL_METRICS_COUNT", m.to_string());
-
-            let req = DoubleMaRequest {
-                backend: Backend::GpuKernel { device_id: 0 },
-                data_id: "bench".to_string(),
-                fast_range,
-                slow_range,
-                fast_ma_types: vec![fast_ma.to_string()],
-                slow_ma_types: vec![slow_ma.to_string()],
-                ma_source: "close".to_string(),
-                export_all_csv_path: None,
-                fast_ma_params: ma_params.clone(),
-                slow_ma_params: ma_params.clone(),
-                fast_ma_param_sweeps: None,
-                slow_ma_param_sweeps: None,
-                strategy: StrategyConfig::default(),
-                halftrend_filter: None,
-                objective: ObjectiveKind::Pnl,
-                mode: OptimizationMode::Grid,
-                top_k: Some(50),
-                include_all: Some(false),
-                heatmap_bins: Some(64),
-                constraints: None,
-                vdps: None,
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "bench".to_string(),
+            fast_range,
+            slow_range,
+            fast_ma_types: vec![fast_ma.to_string()],
+            slow_ma_types: vec![slow_ma.to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: ma_params.clone(),
+            slow_ma_params: ma_params.clone(),
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Pnl,
+            mode: OptimizationMode::Grid,
+            top_k: Some(50),
+            include_all: Some(false),
+            heatmap_bins: Some(64),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
             gpu_execution: Default::default(),
             persist_followup_cache: false,
-            };
+        };
 
-            let name = format!("{case_label}/{pairs}pairs/{m_label}");
-            group.bench_function(&name, |b| {
-                b.iter(|| {
-                    let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                        req.clone(),
-                        &candles,
-                        &cancel,
-                        None,
-                    )
-                    .expect("gpu kernel run");
-                })
-            });
-        }
+        let name = format!("{case_label}/{pairs}pairs");
+        group.bench_function(&name, |b| {
+            b.iter(|| {
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req.clone(),
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("gpu kernel run");
+            })
+        });
     }
 
     match prev_budget {
         Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
         None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
     }
-    match prev_metrics {
-        Some(v) => std::env::set_var("VECTORBT_KERNEL_METRICS_COUNT", v),
-        None => std::env::remove_var("VECTORBT_KERNEL_METRICS_COUNT"),
-    }
-    match prev_skip {
-        Some(v) => std::env::set_var("VECTORBT_KERNEL_SKIP_RECOMPUTE", v),
-        None => std::env::remove_var("VECTORBT_KERNEL_SKIP_RECOMPUTE"),
-    }
 }
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-fn bench_gpu_kernel_metrics_toggle(_c: &mut Criterion) {}
+fn bench_gpu_kernel_pnl_full_metrics(_c: &mut Criterion) {}
 
-criterion_group!(benches, bench_gpu_kernel_metrics_toggle);
+criterion_group!(benches, bench_gpu_kernel_pnl_full_metrics);
 criterion_main!(benches);
 
 
