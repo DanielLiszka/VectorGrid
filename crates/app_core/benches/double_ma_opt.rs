@@ -239,6 +239,22 @@ fn run_with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) ->
     out
 }
 
+fn run_with_finalist_recompute_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    let key = "VECTORBT_KERNEL_FINALIST_RECOMPUTE";
+    let prev = std::env::var(key).ok();
+    if enabled {
+        std::env::set_var(key, "1");
+    } else {
+        std::env::set_var(key, "0");
+    }
+    let out = f();
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    out
+}
+
 fn bench_double_ma_cpu(c: &mut Criterion) {
     let candles = make_synth_candles(200_000);
     let cancel = AtomicBool::new(false);
@@ -552,6 +568,93 @@ fn bench_double_ma_gpu_kernel(c: &mut Criterion) {
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 fn bench_double_ma_gpu_kernel(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+    let candles = make_synth_candles(200_000);
+    let cancel = AtomicBool::new(false);
+    let fast_range = (5, 200, 1);
+    let slow_range = (10, 400, 1);
+    let fast_periods = expand_range_u16(fast_range);
+    let slow_periods = expand_range_u16(slow_range);
+    let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
+    std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB");
+
+    let base_req = DoubleMaRequest {
+        backend: Backend::GpuKernel { device_id: 0 },
+        data_id: "bench".to_string(),
+        fast_range,
+        slow_range,
+        fast_ma_types: vec!["alma".to_string()],
+        slow_ma_types: vec!["alma".to_string()],
+        ma_source: "close".to_string(),
+        export_all_csv_path: None,
+        fast_ma_params: Some(alma_params_default()),
+        slow_ma_params: Some(alma_params_default()),
+        fast_ma_param_sweeps: None,
+        slow_ma_param_sweeps: None,
+        strategy: StrategyConfig::default(),
+        halftrend_filter: None,
+        objective: ObjectiveKind::Sharpe,
+        mode: OptimizationMode::Grid,
+        top_k: Some(50),
+        include_all: Some(false),
+        heatmap_bins: Some(64),
+        constraints: None,
+        vdps: None,
+        dynamic_strategy_ir: None,
+        gpu_execution: Default::default(),
+        persist_followup_cache: false,
+    };
+    let mut search_req = base_req.clone();
+    search_req.heatmap_bins = Some(0);
+    let product_req = base_req;
+
+    let mut group =
+        c.benchmark_group("double_ma/gpu_kernel_contract_split/alma_alma/200k");
+    group.measurement_time(Duration::from_secs(8));
+    group.sample_size(10);
+
+    let search_name = format!("large/{pairs}pairs/search_only");
+    group.bench_function(&search_name, |b| {
+        b.iter(|| {
+            let req2 = search_req.clone();
+            run_with_finalist_recompute_env(false, || {
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2, &candles, &cancel, None,
+                )
+                .expect("gpu kernel search-only run");
+            });
+        })
+    });
+
+    let product_name = format!("large/{pairs}pairs/end_to_end_product");
+    group.bench_function(&product_name, |b| {
+        b.iter(|| {
+            let req2 = product_req.clone();
+            run_with_finalist_recompute_env(true, || {
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2, &candles, &cancel, None,
+                )
+                .expect("gpu kernel end-to-end product run");
+            });
+        })
+    });
+
+    group.finish();
+
+    match prev_budget {
+        Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+        None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+    }
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_gpu_kernel_contract_split(_c: &mut Criterion) {}
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
@@ -1524,6 +1627,7 @@ criterion_group!(
     bench_double_ma_cpu,
     bench_double_ma_gpu_sweep,
     bench_double_ma_gpu_kernel,
+    bench_double_ma_gpu_kernel_contract_split,
     bench_double_ma_gpu_hybrid_kernel,
     bench_double_ma_gpu_kernel_extra_ma,
     bench_double_ma_gpu_kernel_strategy_profiles,

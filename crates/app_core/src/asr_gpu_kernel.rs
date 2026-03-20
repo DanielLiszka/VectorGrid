@@ -1,6 +1,9 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
 use crate::asr::AsrStrategyParams;
+use crate::composite_gpu_metric_decode::{
+    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+};
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
 use cust::memory::CopyDestination;
@@ -262,7 +265,7 @@ pub fn eval_asr_metrics_gpu_kernel(
     let close_f32: Vec<f32> = signals.close_f64.iter().map(|v| *v as f32).collect();
     let lr_f32 = compute_log_returns_f32(signals.close_f64);
 
-    let out_stride = 10usize;
+    let out_stride = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
     let out_len = combo_count
         .checked_mul(out_stride)
         .ok_or_else(|| "ASR GPU output length overflow".to_string())?;
@@ -408,48 +411,9 @@ pub fn eval_asr_metrics_gpu_kernel(
         let mut metrics = Vec::with_capacity(combo_count);
         for i in 0..combo_count {
             let base = i * out_stride;
-            let pnl = host_out[base + 0] as f64;
-            let sharpe = host_out[base + 1] as f64;
-            let sortino = host_out[base + 2] as f64;
-            let calmar = host_out[base + 3] as f64;
-            let omega = host_out[base + 4] as f64;
-            let volatility = host_out[base + 5] as f64;
-            let max_dd = host_out[base + 6] as f64;
-            let trades_f = host_out[base + 7];
-            let exposure = host_out[base + 8] as f64;
-            let net_exposure = host_out[base + 9] as f64;
-
-            metrics.push(Metrics {
-                pnl: if pnl.is_finite() { pnl } else { 0.0 },
-                sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
-                sortino: if sortino.is_finite() { sortino } else { 0.0 },
-                downside_deviation: 0.0,
-                calmar: if calmar.is_finite() { calmar } else { 0.0 },
-                omega: if omega.is_finite() { omega } else { 0.0 },
-                volatility: if volatility.is_finite() {
-                    volatility.max(0.0)
-                } else {
-                    0.0
-                },
-                ulcer_index: 0.0,
-                martin_ratio: 0.0,
-                max_dd: if max_dd.is_finite() {
-                    max_dd.max(0.0)
-                } else {
-                    0.0
-                },
-                trades: if trades_f.is_finite() && trades_f >= 0.0 {
-                    trades_f as u32
-                } else {
-                    0
-                },
-                exposure: if exposure.is_finite() { exposure } else { 0.0 },
-                net_exposure: if net_exposure.is_finite() {
-                    net_exposure
-                } else {
-                    0.0
-                },
-            });
+            metrics.push(decode_non_double_ma_gpu_metrics_row(
+                &host_out[base..base + out_stride],
+            ));
         }
         Ok(metrics)
     })
@@ -481,7 +445,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
     let close_f32: Vec<f32> = signals.close_f64.iter().map(|v| *v as f32).collect();
     let lr_f32 = compute_log_returns_f32(signals.close_f64);
 
-    let out_stride = 10usize;
+    let out_stride = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
     let out_len = combo_count
         .checked_mul(out_stride)
         .ok_or_else(|| "ASR GPU output length overflow".to_string())?;
@@ -681,48 +645,9 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
         let mut metrics = Vec::with_capacity(combo_count);
         for i in 0..combo_count {
             let base = i * out_stride;
-            let pnl = host_out[base + 0] as f64;
-            let sharpe = host_out[base + 1] as f64;
-            let sortino = host_out[base + 2] as f64;
-            let calmar = host_out[base + 3] as f64;
-            let omega = host_out[base + 4] as f64;
-            let volatility = host_out[base + 5] as f64;
-            let max_dd = host_out[base + 6] as f64;
-            let trades_f = host_out[base + 7];
-            let exposure = host_out[base + 8] as f64;
-            let net_exposure = host_out[base + 9] as f64;
-
-            metrics.push(Metrics {
-                pnl: if pnl.is_finite() { pnl } else { 0.0 },
-                sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
-                sortino: if sortino.is_finite() { sortino } else { 0.0 },
-                downside_deviation: 0.0,
-                calmar: if calmar.is_finite() { calmar } else { 0.0 },
-                omega: if omega.is_finite() { omega } else { 0.0 },
-                volatility: if volatility.is_finite() {
-                    volatility.max(0.0)
-                } else {
-                    0.0
-                },
-                ulcer_index: 0.0,
-                martin_ratio: 0.0,
-                max_dd: if max_dd.is_finite() {
-                    max_dd.max(0.0)
-                } else {
-                    0.0
-                },
-                trades: if trades_f.is_finite() && trades_f >= 0.0 {
-                    trades_f as u32
-                } else {
-                    0
-                },
-                exposure: if exposure.is_finite() { exposure } else { 0.0 },
-                net_exposure: if net_exposure.is_finite() {
-                    net_exposure
-                } else {
-                    0.0
-                },
-            });
+            metrics.push(decode_non_double_ma_gpu_metrics_row(
+                &host_out[base..base + out_stride],
+            ));
         }
         Ok(metrics)
     })

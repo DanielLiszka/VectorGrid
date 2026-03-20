@@ -3428,11 +3428,11 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         float log_peak    = 0.0f;
         float max_log_dd  = 0.0f;
         int   trades      = 0;
-        long long sum_abs_pos = 0;
-        long long sum_pos     = 0;
+        int sum_abs_pos = 0;
+        int sum_pos     = 0;
         float mean = 0.0f, m2 = 0.0f;
-        long long n = 0;
-        long long obs = 0;
+        int n = 0;
+        int obs = 0;
         float sum_neg_sq = 0.0f;
         float ulcer_sum_sq = 0.0f;
 
@@ -3513,8 +3513,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
 
                     if (need_expo) {
-                        sum_abs_pos += llabs((long long)pos);
-                        sum_pos     += (long long)pos;
+                        sum_abs_pos += abs(pos);
+                        sum_pos     += pos;
                     }
                 }
             }
@@ -3623,8 +3623,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
 
                     if (need_expo) {
-                        sum_abs_pos += llabs((long long)pos_bar);
-                        sum_pos += (long long)pos_bar;
+                        sum_abs_pos += abs(pos_bar);
+                        sum_pos += pos_bar;
                     }
                 }
             }
@@ -3632,8 +3632,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
         const float variance = (need_std && n > 1) ? (m2 / (float)(n - 1)) : 0.0f;
         const float max_dd = (need_max_dd && max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
-        const float exposure = (need_expo && n > 0) ? (float)((double)sum_abs_pos / (double)n) : 0.0f;
-        const float net_expo = (need_expo && n > 0) ? (float)((double)sum_pos / (double)n)     : 0.0f;
+        const float exposure = (need_expo && n > 0) ? ((float)sum_abs_pos / (float)n) : 0.0f;
+        const float net_expo = (need_expo && n > 0) ? ((float)sum_pos / (float)n)     : 0.0f;
         const float pnl = expf(log_eq) - 1.0f;
         const float std = sqrtf(variance);
         const float downside_dev =
@@ -4432,10 +4432,10 @@ static __device__ __forceinline__ int bin_period_i32(int v, int v_min, int v_max
     const int denom = v_max - v_min;
     if (denom <= 0) return 0;
     const int num = v - v_min;
-    long long b = ((long long)num * (long long)(bins - 1)) / (long long)denom;
+    int b = (num * (bins - 1)) / denom;
     if (b < 0) b = 0;
     if (b >= bins) b = bins - 1;
-    return (int)b;
+    return b;
 }
 
 static __device__ __forceinline__ int resolve_dense_pair_idx(
@@ -4472,6 +4472,8 @@ void heatmap_update_scores_tm_f32(
     int slow_min,
     int slow_max,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_rows,
+    const int* __restrict__ compact_slow_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ heatmap_out
@@ -4482,17 +4484,26 @@ void heatmap_update_scores_tm_f32(
     for (int compact_pair = blockIdx.x * blockDim.x + threadIdx.x;
          compact_pair < total_pairs;
          compact_pair += stride) {
-        const int pair = resolve_dense_pair_idx(compact_pair, dense_pairs, pair_index_map);
-        if (pair < 0) continue;
-        const int pf_local = pair / Ps_tile;
-        const int ps_local = pair - pf_local * Ps_tile;
-        if (pf_local < 0 || pf_local >= Pf_tile || ps_local < 0 || ps_local >= Ps_tile) continue;
-
-        const int f = fast_periods[pf_local];
-        const int s = slow_periods[ps_local];
+        int f = 0;
+        int s = 0;
+        size_t row_idx = 0;
+        if (compact_output && compact_fast_rows != nullptr && compact_slow_rows != nullptr && compact_pair < pair_count) {
+            f = compact_fast_rows[compact_pair];
+            s = compact_slow_rows[compact_pair];
+            row_idx = (size_t)compact_pair;
+        } else {
+            const int pair = resolve_dense_pair_idx(compact_pair, dense_pairs, pair_index_map);
+            if (pair < 0) continue;
+            const int pf_local = pair / Ps_tile;
+            const int ps_local = pair - pf_local * Ps_tile;
+            if (pf_local < 0 || pf_local >= Pf_tile || ps_local < 0 || ps_local >= Ps_tile) continue;
+            f = fast_periods[pf_local];
+            s = slow_periods[ps_local];
+            if (f >= s) continue;
+            row_idx = compact_output ? (size_t)compact_pair : (size_t)pair;
+        }
         if (f >= s) continue;
 
-        const size_t row_idx = compact_output ? (size_t)compact_pair : (size_t)pair;
         const size_t base = row_idx * (size_t)metrics_stride;
         const float score = objective_score_f32(metrics, base, M, objective);
         if (!isfinite(score)) continue;
@@ -4537,20 +4548,27 @@ void select_topk_from_pairs_tm_f32(
         float score = NEG_INF_F;
         int val = -1;
         if (compact_idx < total_pairs) {
-            const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
-            if (pair >= 0) {
-                const int pf_local = pair / Ps_tile;
-                const int ps_local = pair - pf_local * Ps_tile;
-                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
-                    const int f = fast_periods[pf_local];
-                    const int s = slow_periods[ps_local];
-                    if (f < s) {
-                        const size_t row_idx =
-                            compact_output ? (size_t)compact_idx : (size_t)pair;
-                        const size_t base = row_idx * (size_t)metrics_stride;
-                        score = objective_score_f32(metrics, base, M, objective);
-                        if (!isfinite(score)) score = NEG_INF_F;
-                        val = compact_output ? compact_idx : pair;
+            if (compact_output && pair_index_map != nullptr && pair_count > 0) {
+                const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
+                score = objective_score_f32(metrics, base, M, objective);
+                if (!isfinite(score)) score = NEG_INF_F;
+                val = compact_idx;
+            } else {
+                const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
+                if (pair >= 0) {
+                    const int pf_local = pair / Ps_tile;
+                    const int ps_local = pair - pf_local * Ps_tile;
+                    if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                        const int f = fast_periods[pf_local];
+                        const int s = slow_periods[ps_local];
+                        if (f < s) {
+                            const size_t row_idx =
+                                compact_output ? (size_t)compact_idx : (size_t)pair;
+                            const size_t base = row_idx * (size_t)metrics_stride;
+                            score = objective_score_f32(metrics, base, M, objective);
+                            if (!isfinite(score)) score = NEG_INF_F;
+                            val = compact_output ? compact_idx : pair;
+                        }
                     }
                 }
             }
@@ -4605,22 +4623,30 @@ void select_topk_from_candidates_tm_f32(
         float score = NEG_INF_F;
         if (in_pos < in_len) {
             row = in_pair_idx[in_pos];
-            if (row >= 0 && row < total_rows) {
-                pair = compact_output
-                    ? resolve_dense_pair_idx(row, dense_pairs, pair_index_map)
-                    : row;
-            }
-            if (pair >= 0 && pair < pairs) {
-                const int pf_local = pair / Ps_tile;
-                const int ps_local = pair - pf_local * Ps_tile;
-                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
-                    const int f = fast_periods[pf_local];
-                    const int s = slow_periods[ps_local];
-                    if (f < s) {
-                        const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
-                        const size_t base = row_idx * (size_t)metrics_stride;
-                        score = objective_score_f32(metrics, base, M, objective);
-                        if (!isfinite(score)) score = NEG_INF_F;
+            if (compact_output && pair_index_map != nullptr && pair_count > 0) {
+                if (row >= 0 && row < total_rows) {
+                    const size_t base = (size_t)row * (size_t)metrics_stride;
+                    score = objective_score_f32(metrics, base, M, objective);
+                    if (!isfinite(score)) score = NEG_INF_F;
+                }
+            } else {
+                if (row >= 0 && row < total_rows) {
+                    pair = compact_output
+                        ? resolve_dense_pair_idx(row, dense_pairs, pair_index_map)
+                        : row;
+                }
+                if (pair >= 0 && pair < pairs) {
+                    const int pf_local = pair / Ps_tile;
+                    const int ps_local = pair - pf_local * Ps_tile;
+                    if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                        const int f = fast_periods[pf_local];
+                        const int s = slow_periods[ps_local];
+                        if (f < s) {
+                            const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
+                            const size_t base = row_idx * (size_t)metrics_stride;
+                            score = objective_score_f32(metrics, base, M, objective);
+                            if (!isfinite(score)) score = NEG_INF_F;
+                        }
                     }
                 }
             }
@@ -4675,21 +4701,30 @@ void select_topk_from_pairs_tm_f32_v2(
         float score = NEG_INF_F;
         int val = -1;
         if (compact_idx < total_pairs) {
-            const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
-            if (pair >= 0) {
-                const int pf_local = pair / Ps_tile;
-                const int ps_local = pair - pf_local * Ps_tile;
-                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
-                    const int f = fast_periods[pf_local];
-                    const int s = slow_periods[ps_local];
-                    if (f < s) {
-                        const size_t row_idx =
-                            compact_output ? (size_t)compact_idx : (size_t)pair;
-                        const size_t base = row_idx * (size_t)metrics_stride;
-                        if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                            score = objective_score_f32(metrics, base, M, objective);
-                            if (!isfinite(score)) score = NEG_INF_F;
-                            val = compact_output ? compact_idx : pair;
+            if (compact_output && pair_index_map != nullptr && pair_count > 0) {
+                const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
+                if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                    score = objective_score_f32(metrics, base, M, objective);
+                    if (!isfinite(score)) score = NEG_INF_F;
+                    val = compact_idx;
+                }
+            } else {
+                const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
+                if (pair >= 0) {
+                    const int pf_local = pair / Ps_tile;
+                    const int ps_local = pair - pf_local * Ps_tile;
+                    if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                        const int f = fast_periods[pf_local];
+                        const int s = slow_periods[ps_local];
+                        if (f < s) {
+                            const size_t row_idx =
+                                compact_output ? (size_t)compact_idx : (size_t)pair;
+                            const size_t base = row_idx * (size_t)metrics_stride;
+                            if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                                score = objective_score_f32(metrics, base, M, objective);
+                                if (!isfinite(score)) score = NEG_INF_F;
+                                val = compact_output ? compact_idx : pair;
+                            }
                         }
                     }
                 }
@@ -4749,23 +4784,33 @@ void select_topk_from_candidates_tm_f32_v2(
         float score = NEG_INF_F;
         if (in_pos < in_len) {
             row = in_pair_idx[in_pos];
-            if (row >= 0 && row < total_rows) {
-                pair = compact_output
-                    ? resolve_dense_pair_idx(row, dense_pairs, pair_index_map)
-                    : row;
-            }
-            if (pair >= 0 && pair < pairs) {
-                const int pf_local = pair / Ps_tile;
-                const int ps_local = pair - pf_local * Ps_tile;
-                if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
-                    const int f = fast_periods[pf_local];
-                    const int s = slow_periods[ps_local];
-                    if (f < s) {
-                        const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
-                        const size_t base = row_idx * (size_t)metrics_stride;
-                        if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                            score = objective_score_f32(metrics, base, M, objective);
-                            if (!isfinite(score)) score = NEG_INF_F;
+            if (compact_output && pair_index_map != nullptr && pair_count > 0) {
+                if (row >= 0 && row < total_rows) {
+                    const size_t base = (size_t)row * (size_t)metrics_stride;
+                    if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                        score = objective_score_f32(metrics, base, M, objective);
+                        if (!isfinite(score)) score = NEG_INF_F;
+                    }
+                }
+            } else {
+                if (row >= 0 && row < total_rows) {
+                    pair = compact_output
+                        ? resolve_dense_pair_idx(row, dense_pairs, pair_index_map)
+                        : row;
+                }
+                if (pair >= 0 && pair < pairs) {
+                    const int pf_local = pair / Ps_tile;
+                    const int ps_local = pair - pf_local * Ps_tile;
+                    if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                        const int f = fast_periods[pf_local];
+                        const int s = slow_periods[ps_local];
+                        if (f < s) {
+                            const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
+                            const size_t base = row_idx * (size_t)metrics_stride;
+                            if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
+                                score = objective_score_f32(metrics, base, M, objective);
+                                if (!isfinite(score)) score = NEG_INF_F;
+                            }
                         }
                     }
                 }
@@ -4801,6 +4846,8 @@ void gather_topk_pairs_tm_f32(
     const int* __restrict__ top_pair_idx,
     int topk,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_rows,
+    const int* __restrict__ compact_slow_rows,
     int pair_count,
     int compact_output,
     int* __restrict__ out_fast_len,
@@ -4810,6 +4857,20 @@ void gather_topk_pairs_tm_f32(
     const int total_rows = (compact_output && pair_count > 0) ? pair_count : pairs;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < topk; i += blockDim.x * gridDim.x) {
         const int row = top_pair_idx[i];
+        if (compact_output && compact_fast_rows != nullptr && compact_slow_rows != nullptr) {
+            if (row < 0 || row >= total_rows) {
+                out_fast_len[i] = 0;
+                out_slow_len[i] = 0;
+                for (int m = 0; m < M; ++m) out_metrics[(size_t)i * (size_t)M + (size_t)m] = NAN;
+                continue;
+            }
+            out_fast_len[i] = compact_fast_rows[row];
+            out_slow_len[i] = compact_slow_rows[row];
+            const size_t base_in = (size_t)row * (size_t)metrics_stride;
+            const size_t base_out = (size_t)i * (size_t)M;
+            for (int m = 0; m < M; ++m) out_metrics[base_out + (size_t)m] = metrics[base_in + (size_t)m];
+            continue;
+        }
         const int pair = compact_output
             ? ((row >= 0 && row < total_rows)
                 ? resolve_dense_pair_idx(row, pairs, pair_index_map)
@@ -5134,6 +5195,29 @@ void gather_topk_metric_rows_f32(
         const size_t base_in = (size_t)row * (size_t)M;
         const size_t base_out = (size_t)i * (size_t)M;
         for (int m = 0; m < M; ++m) out_metrics[base_out + (size_t)m] = metrics_rows[base_in + (size_t)m];
+    }
+}
+
+extern "C" __global__
+void pack_metric_rows_f32(
+    const int* __restrict__ fast_rows,
+    const int* __restrict__ slow_rows,
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    float* __restrict__ out_rows
+) {
+    const int packed_stride = M + 2;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < rows; i += blockDim.x * gridDim.x) {
+        const size_t base_out = (size_t)i * (size_t)packed_stride;
+        const int fast_len = fast_rows[i];
+        const int slow_len = slow_rows[i];
+        out_rows[base_out + 0] = (float)fast_len;
+        out_rows[base_out + 1] = (float)slow_len;
+        const size_t base_in = (size_t)i * (size_t)M;
+        for (int m = 0; m < M; ++m) {
+            out_rows[base_out + 2 + (size_t)m] = metrics_rows[base_in + (size_t)m];
+        }
     }
 }
 

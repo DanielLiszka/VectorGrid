@@ -3,6 +3,9 @@
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
 };
+use crate::composite_gpu_metric_decode::{
+    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+};
 use crate::vemr::VemrStrategyParams;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
@@ -17,7 +20,7 @@ use std::sync::Arc;
 use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 
-const VEMR_METRICS_STRIDE: usize = 10;
+const VEMR_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
 const TOPK_BLOCK_ITEMS: usize = 512;
 const VEMR_DEVICE_TOPK_LIMIT: usize = 256;
 
@@ -210,48 +213,7 @@ fn objective_score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
 }
 
 fn decode_vemr_metrics_row(row: &[f32]) -> Metrics {
-    let pnl = row[0] as f64;
-    let sharpe = row[1] as f64;
-    let sortino = row[2] as f64;
-    let calmar = row[3] as f64;
-    let omega = row[4] as f64;
-    let volatility = row[5] as f64;
-    let max_dd = row[6] as f64;
-    let trades_f = row[7];
-    let exposure = row[8] as f64;
-    let net_exposure = row[9] as f64;
-
-    Metrics {
-        pnl: if pnl.is_finite() { pnl } else { 0.0 },
-        sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
-        sortino: if sortino.is_finite() { sortino } else { 0.0 },
-        downside_deviation: 0.0,
-        calmar: if calmar.is_finite() { calmar } else { 0.0 },
-        omega: if omega.is_finite() { omega } else { 0.0 },
-        volatility: if volatility.is_finite() {
-            volatility.max(0.0)
-        } else {
-            0.0
-        },
-        ulcer_index: 0.0,
-        martin_ratio: 0.0,
-        max_dd: if max_dd.is_finite() {
-            max_dd.max(0.0)
-        } else {
-            0.0
-        },
-        trades: if trades_f.is_finite() && trades_f >= 0.0 {
-            trades_f as u32
-        } else {
-            0
-        },
-        exposure: if exposure.is_finite() { exposure } else { 0.0 },
-        net_exposure: if net_exposure.is_finite() {
-            net_exposure
-        } else {
-            0.0
-        },
-    }
+    decode_non_double_ma_gpu_metrics_row(row)
 }
 
 fn reduce_vemr_topk_on_device(

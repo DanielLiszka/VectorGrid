@@ -26,6 +26,8 @@ pub(crate) mod double_ma_vdps;
 pub mod dynamic_indicator_adapter;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod gpu_backtest_kernel;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) mod composite_gpu_metric_decode;
 pub mod indicator_catalog;
 pub mod indicator_factory;
 pub mod iterative_sim;

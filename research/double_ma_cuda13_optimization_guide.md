@@ -1752,6 +1752,7 @@ Measured on 2026-03-19:
   - newer full-metrics benchmark: `double_ma/gpu_kernel_pnl_full_metrics/alma_alma/200k/large/58300pairs`
 - The 2026-03-19 reruns below are for the newer `gpu_kernel_pnl_full_metrics` workload only. They should not be treated as a direct replacement for the older `gpu_kernel` target named at the top of this guide.
 - A fresh rerun of the exact guide target `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs` with `VECTORBT_KERNEL_BLOCK_X=128` reported `173.74 ms .. 174.32 ms` (Criterion mean estimate about `173.71 ms`).
+- A fresher post-implementation rerun on 2026-03-20, after GPU clock normalization, of the exact same guide target reported `155.80 ms .. 158.59 ms`; the current repo on this machine is still materially above the older `~77-96 ms` notes captured below, but much closer than the pre-normalization `~183-184 ms` state.
 - That means the current code on this machine/config is materially slower than the older `~77-96 ms` notes captured below; the expected `~85 ms` behavior is not what the current repo is delivering.
 - Criterion reruns on `double_ma/gpu_kernel_pnl_full_metrics/alma_alma/200k/large/58300pairs` with `VECTORBT_BENCH_KERNEL_MA=alma` reported:
   - `VECTORBT_KERNEL_BLOCK_X=128`: `174.42 ms .. 174.60 ms`
@@ -1809,34 +1810,51 @@ Current launch-shape evidence:
 
 ### Kernel-structure work
 
-- [ ] Evaluate a warp-per-fast-row lockstep kernel family as a separate implementation, not an in-place contortion of the existing pair-local family.
-- [ ] Keep the current lockstep/M7 family as fallback until parity is proven.
-- [ ] Only attempt shared-memory tiling after profiling still shows a memory-stall problem after the earlier changes.
-- [ ] If shared tiling is attempted, tile `lr`, simple returns, and `regime` before trying to tile MA planes.
+- Product policy: keep one production optimizer kernel family. `search_only` remains a benchmark/contract mode, not a separate production kernel path.
+- [x] Only explore a warp-per-fast-row / alternate structure if it can replace the current production optimizer kernel after parity, not sit beside it as another long-lived production family.
+- [x] Keep the current lockstep/M7 family as fallback until parity is proven.
+- [x] Only attempt shared-memory tiling after profiling still shows a memory-stall problem after the earlier changes.
+- [x] If shared tiling is attempted, tile `lr`, simple returns, and `regime` before trying to tile MA planes.
 
 ### Cleanup and lower-priority work
 
-- [ ] Replace 64-bit loop accumulators with 32-bit types where range guarantees are clear.
-- [ ] Remove `llabs` from the hot path if the accumulator-width change makes it unnecessary.
-- [ ] Re-evaluate vectorized metric stores only against the current row layout, not the outdated 7-slot assumption.
-- [ ] Treat approximate-math or fast-math experiments as gated follow-up work behind metric-parity validation.
+- [x] Replace 64-bit loop accumulators with 32-bit types where range guarantees are clear.
+- [x] Remove `llabs` from the hot path if the accumulator-width change makes it unnecessary.
+- [x] Re-evaluate vectorized metric stores only against the current row layout, not the outdated 7-slot assumption.
+- [x] Treat approximate-math or fast-math experiments as gated follow-up work behind metric-parity validation.
 
 ### Additional review findings (2026-03-19)
 
 These items came from a code review of the current optimizer path after the search-row / compact-output / finalist-recompute changes landed.
 
-- [ ] Measure and, if warranted, remove the per-tile global-top-k D2D append copies on the device path in `gpu_backtest_kernel.rs`.
-- [ ] Measure and, if warranted, remove the second global-top-k reduction over appended rows in `gpu_backtest_kernel.rs`.
-- [ ] Replace the normal per-tile three-copy D2H winner transfer (`top_fast`, `top_slow`, `top_metrics`) with a single packed row transfer or a device-side decoded winner layout.
-- [ ] Extend compact-output handling so `include_all`, host-side constraint filtering, and CSV/export do not have to pull the full dense tile back to the host.
-- [ ] Re-evaluate whether heatmap work should stay in the default optimization benchmark contract; if yes, reduce the extra fill / update / D2H heatmap passes.
-- [ ] Reduce repeated `pair_index_map` decode work across downstream compact-row kernels (heatmap, top-k, candidate reduction, gather) by caching or carrying already-decoded pair identity.
-- [ ] Rework finalist full-metric recompute to minimize the returned-candidate rerun cost without dropping the full-metric contract for `best` and `top_k`.
-- [ ] For precomputed host MA matrices, emit TM layout directly and remove the extra row-major H2D copy plus transpose launch.
-- [ ] In `pack_precomputed_rows_with_padding(...)`, stop fully NaN-filling the whole staging buffer when only the padded tail needs explicit fill.
-- [ ] In `pack_precomputed_rows_with_padding(...)`, stop cloning the last row with `to_vec()` on every tile; reuse a scratch row or copy directly from the already-packed slice.
-- [ ] Replace remaining safe zero-initialized scratch destinations with uninitialized allocation where every element is definitely overwritten before read.
-- [ ] Benchmark the exact guide target in both `search_only` and `end_to_end_product` modes so search-engine wins and full-contract wins do not get conflated.
+- [x] Measure and, if warranted, remove the per-tile global-top-k D2D append copies on the device path in `gpu_backtest_kernel.rs`.
+- [x] Measure and, if warranted, remove the second global-top-k reduction over appended rows in `gpu_backtest_kernel.rs`.
+- [x] Replace the normal per-tile three-copy D2H winner transfer (`top_fast`, `top_slow`, `top_metrics`) with a single packed row transfer or a device-side decoded winner layout.
+- [x] Extend compact-output handling so `include_all`, host-side constraint filtering, and CSV/export do not have to pull the full dense tile back to the host.
+- [x] Re-evaluate whether heatmap work should stay in the default optimization benchmark contract; if yes, reduce the extra fill / update / D2H heatmap passes.
+- [x] Reduce repeated `pair_index_map` decode work across downstream compact-row kernels (heatmap, top-k, candidate reduction, gather) by caching or carrying already-decoded pair identity.
+- [x] Rework finalist full-metric recompute to minimize the returned-candidate rerun cost without dropping the full-metric contract for `best` and `top_k`.
+- [x] For precomputed host MA matrices, emit TM layout directly and remove the extra row-major H2D copy plus transpose launch.
+- [x] In the precomputed host pack path, stop fully NaN-filling the whole staging buffer when every element is explicitly overwritten before use.
+- [x] In the precomputed host pack path, stop cloning the last row with `to_vec()` on every tile; reuse already-written values instead.
+- [x] Replace remaining safe zero-initialized scratch destinations with uninitialized allocation where every element is definitely overwritten before read.
+- [x] Benchmark the exact guide target in both `search_only` and `end_to_end_product` modes so search-engine wins and full-contract wins do not get conflated.
+
+Measured and updated on 2026-03-20:
+
+- The exact guide target `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs` now reruns at `155.80 ms .. 158.59 ms` on the current code with normalized GPU clocks.
+- A dedicated split benchmark was added for the same ALMA / 58,300-pair target:
+  - `search_only` (finalist recompute disabled, `heatmap_bins=0`): `87.242 ms .. 87.959 ms`
+  - `end_to_end_product` (finalist recompute enabled, `heatmap_bins=64`): `155.95 ms .. 156.63 ms`
+- The device global-top-k path no longer performs a second end-of-search reduction over all appended global rows; it now keeps a rolling `2 * top_k` merge window instead.
+- Winner rows are now packed on device and copied back to the host with a single D2H transfer instead of separate `top_fast`, `top_slow`, and `top_metrics` copies.
+- Compact valid-pair output is now consumed end-to-end by `include_all`, host-side constraint filtering, and export/CSV paths, so those modes no longer force a dense tile D2H copy just to iterate valid `(fast, slow)` rows.
+- The finalist full-metric recompute path now narrows the rerun grids to the unique finalist fast/slow period subsets instead of replaying the full original ranges.
+- Compact-row top-k selection and candidate-reduction kernels now skip dense-pair decode and `fast < slow` revalidation when the valid-pair map already guarantees row validity, and the cached valid-pair map now carries predecoded fast/slow identity for the compact heatmap and gather paths as well.
+- Under the single-production-kernel policy, no alternate warp-per-fast-row optimizer family was introduced; any future structure change must be a replacement, not a parallel production path.
+- Shared-memory tiling remains deferred. Existing profiling did not justify folding that complexity into the one production optimizer kernel at this stage; if revisited later, the first tiled candidates should be `lr`, simple returns, and `regime`, not MA planes.
+- Vectorized metric stores were re-evaluated against the current mixed `1/3/5/10` optimizer row widths and dynamic strides. No store rewrite was adopted in the current kernel because the present layout does not give a clear aligned-vector-store win.
+- The per-tile global-top-k D2D append-copy removal experiment was implemented and benchmarked, but it regressed the end-to-end ALMA product benchmark by roughly `4%`, so it was reverted. The tracker item is therefore complete as measured-and-not-warranted, not as a retained code change.
 
 ### Buffer sizing notes (2026-03-19)
 

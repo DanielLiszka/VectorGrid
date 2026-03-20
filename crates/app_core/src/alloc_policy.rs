@@ -1,8 +1,10 @@
 use std::mem::{self, MaybeUninit};
 
+#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
 const DEBUG_F64_POISON_BITS: u64 = 0x1111_1111_1111_1111;
 #[cfg_attr(not(test), allow(dead_code))]
 const DEBUG_F64_MATRIX_POISON_BITS: u64 = 0x3333_3333_3333_3333;
+#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
 const DEBUG_F32_POISON_BITS: u32 = 0x1111_1111;
 #[cfg_attr(not(test), allow(dead_code))]
 const DEBUG_F32_MATRIX_POISON_BITS: u32 = 0x3333_3333;
@@ -111,6 +113,29 @@ pub(crate) fn alloc_uninit_f32(len: usize) -> Vec<f32> {
     #[cfg(debug_assertions)]
     {
         vec![f32::from_bits(DEBUG_F32_POISON_BITS); len]
+    }
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[inline(always)]
+pub(crate) fn resize_uninit_f32(buf: &mut Vec<f32>, len: usize) {
+    #[cfg(not(debug_assertions))]
+    {
+        if buf.capacity() < len {
+            buf.reserve_exact(len - buf.capacity());
+        }
+        unsafe {
+            // SAFETY: callers must fully initialize each element before any read.
+            buf.set_len(len);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        buf.resize(len, f32::from_bits(DEBUG_F32_POISON_BITS));
     }
 }
 
@@ -245,7 +270,7 @@ mod tests {
     use super::{
         alloc_f32_with_prefix_uninit_tail, alloc_f64_with_prefix_uninit_tail, alloc_uninit_f32,
         alloc_uninit_f64, init_matrix_prefixes_f32, init_matrix_prefixes_f64,
-        make_uninit_matrix_f32, make_uninit_matrix_f64,
+        make_uninit_matrix_f32, make_uninit_matrix_f64, resize_uninit_f32,
     };
 
     #[test]
@@ -278,6 +303,14 @@ mod tests {
         let mut values_f32 = alloc_uninit_f32(3);
         values_f32.copy_from_slice(&[1.0, 2.0, 3.0]);
         assert_eq!(values_f32, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn resize_uninit_buffers_can_be_reused_after_overwrite() {
+        let mut values_f32 = vec![1.0, 2.0];
+        resize_uninit_f32(&mut values_f32, 4);
+        values_f32.copy_from_slice(&[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(values_f32, vec![3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
