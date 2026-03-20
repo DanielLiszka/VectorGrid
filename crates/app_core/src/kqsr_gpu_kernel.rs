@@ -1,16 +1,16 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
-use crate::gpu_backtest_kernel::{
-    choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
-};
 use crate::composite_gpu_metric_decode::{
     decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+};
+use crate::gpu_backtest_kernel::{
+    choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
+    load_double_crossover_module,
 };
 use crate::kqsr::KqsrStrategyParams;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
 use cust::memory::CopyDestination;
-use cust::module::ModuleJitOption;
 use cust::stream::{Stream, StreamFlags};
 use cust::{memory::DeviceBuffer, module::Module, CudaFlags};
 use std::cell::RefCell;
@@ -57,17 +57,7 @@ impl KqsrCudaRuntime {
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
         let context = Arc::new(Context::new(device).map_err(|e| e.to_string())?);
 
-        let ptx: &str = include_str!(concat!(env!("OUT_DIR"), "/double_crossover.ptx"));
-        let jit_opts = &[
-            ModuleJitOption::DetermineTargetFromContext,
-            ModuleJitOption::OptLevel(cust::module::OptLevel::O2),
-        ];
-        let module = match Module::from_ptx(ptx, jit_opts) {
-            Ok(m) => m,
-            Err(_) => Module::from_ptx(ptx, &[ModuleJitOption::DetermineTargetFromContext])
-                .or_else(|_| Module::from_ptx(ptx, &[]))
-                .map_err(|e| e.to_string())?,
-        };
+        let module = load_double_crossover_module(device)?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
 
@@ -141,7 +131,7 @@ fn launch_compute_log_returns_f32(
     let kernel = rt
         .module
         .get_function("compute_log_returns_f32")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("KQSR get compute_log_returns_f32: {e}"))?;
     let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
     let device_caps = detect_device_launch_caps(device);
     let launch = choose_launch_shape_1d_from_candidates(
@@ -233,7 +223,7 @@ pub fn eval_kqsr_metrics_gpu_kernel_device_rows(
         let kernel = rt
             .module
             .get_function("kqsr_backtest_metrics_f32")
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("KQSR get kqsr_backtest_metrics_f32: {e}"))?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
         let device_caps = detect_device_launch_caps(device);
         let launch = choose_launch_shape_1d_from_candidates(

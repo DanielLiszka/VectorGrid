@@ -1048,7 +1048,7 @@ describe('validationRequestBuilder', () => {
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
     expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
-    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
+    expect(summary.categorySummary).toContain('GPU main + CPU tail: base reruns + hard gates')
     expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
   })
 
@@ -1083,7 +1083,7 @@ describe('validationRequestBuilder', () => {
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
     expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
-    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
+    expect(summary.categorySummary).toContain('GPU main + CPU tail: base reruns + hard gates')
     expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
   })
 

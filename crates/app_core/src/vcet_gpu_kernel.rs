@@ -1,10 +1,10 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
-use crate::gpu_backtest_kernel::{
-    choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
-};
 use crate::composite_gpu_metric_decode::{
     decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+};
+use crate::gpu_backtest_kernel::{
+    choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
 };
 use crate::vcet::VcetStrategyParams;
 use cust::context::{Context, CurrentContext};

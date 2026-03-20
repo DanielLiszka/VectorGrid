@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ta-desktop-demo-ml-signal"
+version = "0.1.0"
+description = "Offline research harness for the MlSignal strategy path"
+requires-python = ">=3.11"
+dependencies = [
+  "catboost>=1.2.8",
+  "numpy>=2.2.0",
+  "pandas>=2.3.0",
+  "pyarrow>=20.0.0",
+  "scikit-learn>=1.7.0",
+]
+
+[tool.setuptools]
+py-modules = ["common"]

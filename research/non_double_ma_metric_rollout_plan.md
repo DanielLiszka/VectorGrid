@@ -21,42 +21,36 @@ This document is scoped to the non-Double-MA strategy families and is intended t
   - `martin_ratio`
 - Shared validation structures already expose and summarize the new fields in `crates/app_core/src/composite_validate.rs` and `crates/app_core/src/validation_pipeline.rs`.
 - Double-MA already has end-to-end support on its active CPU, GpuKernel, export, and validation routes.
+- All ten non-Double-MA GPU strategy families now emit real `downside_deviation`, `ulcer_index`, and `martin_ratio` values on the optimization/result path.
 
 ### Main remaining gap
 
-For the non-Double-MA GPU strategy adapters, the new metrics are still placeholder zeroes on the device-eval path. The current dedicated GPU modules populate `sortino` and `omega`, but hardcode these three fields to `0.0`:
+The remaining gap is validation coverage parity, not metric computation.
 
-- `crates/app_core/src/asr_gpu_kernel.rs`
-- `crates/app_core/src/vemr_gpu_kernel.rs`
-- `crates/app_core/src/vcc_gpu_kernel.rs`
-- `crates/app_core/src/vcet_gpu_kernel.rs`
-- `crates/app_core/src/rocb_gpu_kernel.rs`
-- `crates/app_core/src/mkcs_gpu_kernel.rs`
-- `crates/app_core/src/kqsr_gpu_kernel.rs`
-- `crates/app_core/src/carm_gpu_kernel.rs`
-- `crates/app_core/src/kvdf_gpu_kernel.rs`
-- `crates/app_core/src/cdmc_gpu_kernel.rs`
+Current state on 2026-03-20:
 
-That means:
-
-- CPU optimization/validation can already compute the metrics where they flow through the shared composite CPU path.
-- GPU optimization/validation for these families does not yet produce real values for the three metrics.
-- Validation summaries can carry the fields, but GPU-originated values remain incomplete until the adapters are updated.
+- GPU optimization/result payloads now surface real values for all ten non-Double-MA families.
+- Strict in-sample parity passes for `ASR`, `ROCB`, `VEMR`, `KQSR`, `KVDF`, `MKCS`, and `VCC` on the current mixed route.
+- Strict walk-forward and reopt-walk-forward parity now passes for `ASR`, `ROCB`, `VEMR`, `KQSR`, `KVDF`, `MKCS`, and `VCC` under the same behavior-preserving roundtrip check.
+- Strict CSCV / SPA / trade-bootstrap parity now also passes for `KQSR` and `KVDF`, closing the earlier “advanced smoke only” gap.
+- `VCET` now has strict parity coverage across in-sample, walk-forward, reopt-walk-forward, CSCV, SPA, perturb, and trade-bootstrap on its current mixed validation route.
+- `CARM` and `CDMC` now use exact CPU-series validation metrics on their current mixed route, so strict validation parity now holds across in-sample, walk-forward, reopt-walk-forward, perturb, trade-bootstrap, CSCV, and SPA.
+- `VCC` now uses exact CPU-series validation metrics on its current mixed route, so strict validation parity also holds there without the old momentum `f32` roundtrip safeguard.
 
 ## Strategy Matrix
 
-| Strategy family | CPU metric support | Dedicated GPU path | Current GPU status for new metrics | Priority |
+| Strategy family | CPU metric support | Dedicated GPU path | Current GPU status for new metrics | Validation parity status |
 | --- | --- | --- | --- | --- |
-| `ASR` | Yes | Yes | Zero-filled | High |
-| `VEMR` | Yes | Yes | Zero-filled | High |
-| `VCC` | Yes | Yes | Zero-filled | High |
-| `VCET` | Yes | Yes | Zero-filled | High |
-| `ROCB` | Yes | Yes | Zero-filled | High |
-| `MKCS` | Yes | Yes | Zero-filled | High |
-| `KQSR` | Yes | Yes | Zero-filled | High |
-| `CARM` | Yes | Yes | Zero-filled | High |
-| `KVDF` | Yes | Yes | Zero-filled | High |
-| `CDMC` | Yes | Yes | Zero-filled | High |
+| `ASR` | Yes | Yes | Real values | Strict parity |
+| `VEMR` | Yes | Yes | Real values | Strict parity |
+| `VCC` | Yes | Yes | Real values | Strict parity on mixed route |
+| `VCET` | Yes | Yes | Real values | Strict parity on mixed route |
+| `ROCB` | Yes | Yes | Real values | Strict parity |
+| `MKCS` | Yes | Yes | Real values | Strict parity |
+| `KQSR` | Yes | Yes | Real values | Strict parity |
+| `CARM` | Yes | Yes | Real values | Strict parity on mixed route |
+| `KVDF` | Yes | Yes | Real values | Strict parity |
+| `CDMC` | Yes | Yes | Real values | Strict parity on mixed route |
 
 Notes:
 
@@ -81,6 +75,8 @@ The preferred rollout shape is:
 ## Implementation Workstreams
 
 ### 1. GPU adapter rollout
+
+Status: complete.
 
 For each of the following files:
 
@@ -109,6 +105,8 @@ Preferred implementation order inside each adapter:
 
 ### 2. Kernel and row-contract updates
 
+Status: complete for the current three-metric rollout.
+
 Some adapters may only need host-side decode changes. Others may require widening the CUDA output contract.
 
 For each strategy, explicitly answer:
@@ -124,6 +122,8 @@ Rule:
 
 ### 3. Validation parity
 
+Status: partially complete.
+
 Shared validation structures already support the new metrics. Once the GPU adapters are fixed, verify that the following composite validation flows propagate real values instead of zeros:
 
 - in-sample candidate metrics
@@ -132,6 +132,12 @@ Shared validation structures already support the new metrics. Once the GPU adapt
 - friction-stress summaries
 - regime-slice summaries
 - advanced GPU validation route smoke tests
+
+Current focus:
+
+- keep `KQSR` / `KVDF` on the strict parity path across advanced modules
+- retain `VCET` smoke coverage until a fuller GPU validation parity matrix is implemented
+- keep `CARM` / `CDMC` documented honestly as mixed validation routes that now return exact CPU-series metrics across the current module set
 
 Primary file:
 
@@ -262,14 +268,16 @@ Mitigation:
 
 ## Deliverables Checklist
 
-- [ ] Replace zero-filled `downside_deviation` in all ten non-Double-MA GPU strategy adapters.
-- [ ] Replace zero-filled `ulcer_index` in all ten non-Double-MA GPU strategy adapters.
-- [ ] Replace zero-filled `martin_ratio` in all ten non-Double-MA GPU strategy adapters.
-- [ ] Verify CPU/GPU in-sample metric parity for all ten families.
-- [ ] Verify walk-forward or advanced validation GPU coverage for all ten families.
-- [ ] Verify export/result payloads surface real values for the three metrics.
-- [ ] Run targeted GPU tests for each phase.
-- [ ] Run `scripts/run_gpu_perf_gate.ps1 -Mode candidate` after the final rollout batch.
+- [x] Replace zero-filled `downside_deviation` in all ten non-Double-MA GPU strategy adapters.
+- [x] Replace zero-filled `ulcer_index` in all ten non-Double-MA GPU strategy adapters.
+- [x] Replace zero-filled `martin_ratio` in all ten non-Double-MA GPU strategy adapters.
+- [x] Verify CPU/GPU in-sample metric parity for all ten families.
+  Current state on 2026-03-20: exact in-sample parity now passes for all ten non-Double-MA families, including `VCC` on its current mixed route.
+- [x] Verify walk-forward or advanced validation GPU coverage for all ten families.
+  Current state on 2026-03-20: strict walk-forward/reopt parity now passes for all ten non-Double-MA families, and strict CSCV / SPA / perturb / trade-bootstrap parity also passes across the full set.
+- [x] Verify export/result payloads surface real values for the three metrics.
+- [x] Run targeted GPU tests for each phase.
+- [x] Run `scripts/run_gpu_perf_gate.ps1 -Mode candidate` after the final rollout batch.
 
 ## Implementation Notes
 

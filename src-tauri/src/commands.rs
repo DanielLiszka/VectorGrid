@@ -10,6 +10,8 @@ mod commands_dynamic;
 mod commands_execution;
 #[path = "commands_meta.rs"]
 mod commands_meta;
+#[path = "commands_ml_signal.rs"]
+mod commands_ml_signal;
 #[path = "commands_optimize.rs"]
 mod commands_optimize;
 #[path = "commands_reports.rs"]
@@ -69,6 +71,11 @@ pub use commands_meta::{
     RunMetaSelectionResponse, RunMetaStage4Response, RunMetaStage5Response,
     RunMlConfidencePolicyEvaluationResponse, TrainMlConfidenceResponse,
 };
+pub use commands_ml_signal::{
+    export_ml_signal_dataset, generate_ml_signal_score_cache, list_ml_signal_model_bundles,
+    ml_signal_model_status, run_ml_signal_policy_sweep, run_ml_signal_validation,
+    MlSignalModelStatusResponse,
+};
 pub use commands_optimize::{
     cancel_background_task, cancel_current_run, cancel_double_ma_optimization,
     run_composite_cpu_optimization, run_composite_mo_optimization, run_double_ma_optimization,
@@ -102,5 +109,9 @@ pub use ta_app_core::{
     DoubleMaParamsResolved, DoubleMaRequest, DoubleMaValidationRequest, DoubleMaValidationResult,
     LocalStabilityResult, MetaSelectionRequest, MetaSelectionResult, MlConfidenceLabelConfig,
     MlConfidenceModel, MlConfidenceScope, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
+    MlSignalDatasetExportRequest, MlSignalDatasetExportResult, MlSignalModelBundleManifest,
+    MlSignalModelBundleStatus, MlSignalModelBundleSummary, MlSignalPolicyParams,
+    MlSignalPolicySweepRequest, MlSignalPolicySweepResult, MlSignalScoreCacheBuildRequest,
+    MlSignalScoreCacheBuildResult, MlSignalValidationRequest, MlSignalValidationResult,
     OptimizationModeResolved,
 };

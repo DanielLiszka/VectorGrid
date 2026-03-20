@@ -1,9 +1,9 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
-use crate::vcc::VccStrategyParams;
 use crate::composite_gpu_metric_decode::{
     decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
 };
+use crate::vcc::VccStrategyParams;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
 use cust::memory::CopyDestination;

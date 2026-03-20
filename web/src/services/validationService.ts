@@ -922,7 +922,32 @@ function buildActualValidationCategorySummary(
     return formatExecutionCategorySummary([['CPU-only', modules]])
   }
   if (!isDoubleLikeKind(strategyKind)) {
-    return formatExecutionCategorySummary([['GPU-native', modules]])
+    const gpuNative: string[] = []
+    const gpuMainCpuTail: string[] = []
+    const isCpuReferenceHybrid = strategyKind === 'Carm' || strategyKind === 'Cdmc'
+    const isVcetMixed = strategyKind === 'Vcet'
+    const baseCategory = isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative
+    baseCategory.push('base reruns', 'hard gates')
+    if (validationReq?.walk_forward && typeof validationReq.walk_forward === 'object') {
+      ;(isCpuReferenceHybrid || isVcetMixed ? gpuMainCpuTail : gpuNative).push('walk_forward')
+    }
+    if (validationReq?.reopt_walk_forward && typeof validationReq.reopt_walk_forward === 'object') {
+      ;(isCpuReferenceHybrid || isVcetMixed ? gpuMainCpuTail : gpuNative).push('reopt_walk_forward')
+    }
+    if (validationReq?.cscv_pbo && typeof validationReq.cscv_pbo === 'object') {
+      ;(isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative).push('cscv_pbo')
+    }
+    if (validationReq?.spa && typeof validationReq.spa === 'object') {
+      ;(isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative).push('spa')
+    }
+    if (validationReq?.perturb && typeof validationReq.perturb === 'object') gpuMainCpuTail.push('perturb')
+    if (validationReq?.trade_bootstrap && typeof validationReq.trade_bootstrap === 'object') {
+      gpuMainCpuTail.push('trade_bootstrap')
+    }
+    return formatExecutionCategorySummary([
+      ['GPU-native', gpuNative],
+      ['GPU main + CPU tail', gpuMainCpuTail],
+    ])
   }
   const gpuNative: string[] = ['base reruns', 'hard gates']
   if (validationReq?.walk_forward && typeof validationReq.walk_forward === 'object') gpuNative.push('walk_forward')
@@ -945,13 +970,13 @@ function compositeValidationRouteDetailNote(strategyKind: string): string {
     case 'Asr':
       return 'ASR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Vcc':
-      return 'VCC GPU validation currently falls back on the measured 50k/8 advanced-stack workload because the requested momentum rows are not fp32-stable.'
+      return 'VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. This removes the old fp32 momentum roundtrip fallback while keeping strict validation parity.'
     case 'Vemr':
       return 'VEMR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Rocb':
       return 'ROCB GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Vcet':
-      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward currently uses the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
+      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward and reopt walk-forward currently use the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
     case 'Mkcs':
       return 'MKCS GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Kqsr':
@@ -959,9 +984,9 @@ function compositeValidationRouteDetailNote(strategyKind: string): string {
     case 'Kvdf':
       return 'KVDF GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Carm':
-      return 'CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+      return 'CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
     case 'Cdmc':
-      return 'CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads, and the remaining small walk-forward / CSCV / SPA metric drift is currently accepted because candidate ordering and verdict semantics still match on the fixture.'
+      return 'CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads.'
     default:
       return ''
   }
@@ -972,7 +997,7 @@ function compositeValidationAutoCpuPreferenceNote(strategyKind: string): string 
     case 'Asr':
       return 'Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Vcc':
-      return 'Auto composite validation currently prefers CPU for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check.'
+      return ''
     case 'Vemr':
       return 'Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'Rocb':

@@ -1,19 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { storeToRefs } from 'pinia'
-import { useStorage } from '@vueuse/core'
-import { useAnalysisStore } from '../stores/analysisStore'
-import { useOptimizeStore } from '../stores/optimizeStore'
-import { useCommandActionStore } from '../stores/commandActionStore'
-import { useTaskStore } from '../stores/taskStore'
-import { useWorkflowStore } from '../stores/workflowStore'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { storeToRefs } from "pinia";
+import { useStorage } from "@vueuse/core";
+import { useAnalysisStore } from "../stores/analysisStore";
+import { useOptimizeStore } from "../stores/optimizeStore";
+import { useCommandActionStore } from "../stores/commandActionStore";
+import { useTaskStore } from "../stores/taskStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 
-const analysisStore = useAnalysisStore()
-const commandActionStore = useCommandActionStore()
-const optimizeStore = useOptimizeStore()
-const taskStore = useTaskStore()
-const workflowStore = useWorkflowStore()
+const analysisStore = useAnalysisStore();
+const commandActionStore = useCommandActionStore();
+const optimizeStore = useOptimizeStore();
+const taskStore = useTaskStore();
+const workflowStore = useWorkflowStore();
 const {
+  strategyKind,
   runDisabled,
   canCancel,
   progressMeta,
@@ -22,110 +23,137 @@ const {
   runReadinessBadges,
   statusLine,
   updatedAtUnixMs,
-} = storeToRefs(optimizeStore)
-const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } = storeToRefs(analysisStore)
-const { activeById, activeOrder, centerStatus, history, overallProgress, toasts } = storeToRefs(taskStore)
-const { resultsTab } = storeToRefs(workflowStore)
+} = storeToRefs(optimizeStore);
+const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } =
+  storeToRefs(analysisStore);
+const {
+  activeById,
+  activeOrder,
+  centerStatus,
+  history,
+  overallProgress,
+  toasts,
+} = storeToRefs(taskStore);
+const { resultsTab } = storeToRefs(workflowStore);
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
-const footerExpanded = useStorage<boolean>('VTA_RUN_FOOTER_EXPANDED_V1', false)
+const mountReady = ref(false);
+const panelRoot = ref<HTMLElement | null>(null);
+const footerExpanded = useStorage<boolean>("VTA_RUN_FOOTER_EXPANDED_V1", false);
 
 const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+  const ms = Number(updatedAtUnixMs.value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  return new Date(ms).toLocaleTimeString([], { hour12: false });
+});
 const hasRunActivity = computed(() => {
-  if (canCancel.value) return true
-  return String(progressMeta.value || '').trim().length > 0
-})
-const showDetails = computed(() => hasRunActivity.value || footerExpanded.value)
-const idleCompact = computed(() => !showDetails.value && !hasRunActivity.value)
+  if (canCancel.value) return true;
+  return String(progressMeta.value || "").trim().length > 0;
+});
+const showDetails = computed(
+  () => hasRunActivity.value || footerExpanded.value,
+);
+const idleCompact = computed(() => !showDetails.value && !hasRunActivity.value);
 const footerSummary = computed(() => {
-  const badges = runReadinessBadges.value.filter((badge) => String(badge || '').trim().length > 0)
-  if (hasRunActivity.value && String(progressMeta.value || '').trim()) return String(progressMeta.value || '').trim()
-  if (badges.length > 0) return badges.slice(0, 2).join(' · ')
-  return String(runReadinessHint.value || '').trim() || 'Ready to run once data and strategy inputs are configured.'
-})
+  const badges = runReadinessBadges.value.filter(
+    (badge) => String(badge || "").trim().length > 0,
+  );
+  if (hasRunActivity.value && String(progressMeta.value || "").trim())
+    return String(progressMeta.value || "").trim();
+  if (badges.length > 0) return badges.slice(0, 2).join(" · ");
+  return (
+    String(runReadinessHint.value || "").trim() ||
+    "Ready to run once data and strategy inputs are configured."
+  );
+});
 const activeTasks = computed(() =>
   activeOrder.value
     .map((id) => activeById.value[id])
     .filter((task): task is NonNullable<typeof task> => !!task)
     .slice(0, 2),
-)
-const runningCount = computed(() => activeTasks.value.length)
+);
+const runningCount = computed(() => activeTasks.value.length);
 const analysisSummary = computed(() => {
-  const title = String(bestTitle.value || '').trim()
-  const meta = String(bestMeta.value || '').trim()
-  if (title && title !== '—' && title !== '-') return `${title}${meta && meta !== '—' && meta !== '-' ? ` · ${meta}` : ''}`
-  return 'No scored run yet.'
-})
+  const title = String(bestTitle.value || "").trim();
+  const meta = String(bestMeta.value || "").trim();
+  if (title && title !== "—" && title !== "-")
+    return `${title}${meta && meta !== "—" && meta !== "-" ? ` · ${meta}` : ""}`;
+  return "No scored run yet.";
+});
 const taskSummary = computed(() => {
   if (activeTasks.value.length > 0) {
-    const task = activeTasks.value[0]
-    if (!task) return 'Task running.'
-    return task.message || task.phase || task.label || 'Task running.'
+    const task = activeTasks.value[0];
+    if (!task) return "Task running.";
+    return task.message || task.phase || task.label || "Task running.";
   }
-  const toast = toasts.value[0]
-  if (toast) return String(toast.message || '').trim() || 'Recent task update.'
-  const latest = history.value[0]
-  if (latest) return `${latest.label} · ${latest.status}`
-  return 'No active commands.'
-})
+  const toast = toasts.value[0];
+  if (toast) return String(toast.message || "").trim() || "Recent task update.";
+  const latest = history.value[0];
+  if (latest) return `${latest.label} · ${latest.status}`;
+  return "No active commands.";
+});
 const overallProgressLabel = computed(() => {
-  const overall = overallProgress.value
-  if (!overall) return '—'
-  return `${overall.pct.toFixed(0)}% · ${overall.label}`
-})
+  const overall = overallProgress.value;
+  if (!overall) return "—";
+  return `${overall.pct.toFixed(0)}% · ${overall.label}`;
+});
 const taskStatusLabel = computed(() => {
-  const status = String(centerStatus.value || 'idle').trim()
-  if (status === 'running') return 'Running'
-  if (status === 'queued') return 'Queued'
-  if (status === 'cancelling') return 'Cancelling'
-  if (status === 'success') return 'Done'
-  if (status === 'failed') return 'Failed'
-  if (status === 'cancelled') return 'Cancelled'
-  return 'Idle'
-})
+  const status = String(centerStatus.value || "idle").trim();
+  if (status === "running") return "Running";
+  if (status === "queued") return "Queued";
+  if (status === "cancelling") return "Cancelling";
+  if (status === "success") return "Done";
+  if (status === "failed") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  return "Idle";
+});
+const primaryActionLabel = computed(() =>
+  String(strategyKind.value || "").trim() === "MlSignal"
+    ? "Build score cache"
+    : "Run optimization",
+);
 
 function runOptimizationAction(): void {
-  commandActionStore.runOptimization()
+  commandActionStore.runOptimization();
 }
 
 function cancelRunAction(): void {
-  commandActionStore.cancelOptimization()
+  commandActionStore.cancelOptimization();
 }
 
 function toggleFooterDetails(): void {
-  footerExpanded.value = !footerExpanded.value
+  footerExpanded.value = !footerExpanded.value;
 }
 
 function resolveMount(): void {
-  const panel = document.querySelector('#runFooterShell') as HTMLElement | null
-  const mount = document.querySelector('#runFooterVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueRunFooter = '1'
-  mountReady.value = true
+  const panel = document.querySelector("#runFooterShell") as HTMLElement | null;
+  const mount = document.querySelector(
+    "#runFooterVueShellMount",
+  ) as HTMLElement | null;
+  if (!panel || !mount) return;
+  panelRoot.value = panel;
+  panel.dataset.vueRunFooter = "1";
+  mountReady.value = true;
 }
 
 onMounted(async () => {
-  await nextTick()
-  resolveMount()
-})
+  await nextTick();
+  resolveMount();
+});
 
 onBeforeUnmount(() => {
   if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueRunFooter
-    panelRoot.value = null
+    delete panelRoot.value.dataset.vueRunFooter;
+    panelRoot.value = null;
   }
-})
+});
 </script>
 
 <template>
   <Teleport v-if="mountReady" to="#runFooterVueShellMount">
-    <section class="runFooterVueRoot" :class="{ compact: !showDetails, idleCompact }">
+    <section
+      class="runFooterVueRoot"
+      :class="{ compact: !showDetails, idleCompact }"
+    >
       <div class="primaryRow">
         <header class="head">
           <div class="eyebrow">Run Control</div>
@@ -136,17 +164,33 @@ onBeforeUnmount(() => {
 
         <div class="actions">
           <button type="button" class="subtle" @click="toggleFooterDetails">
-            {{ showDetails ? 'Hide details' : 'Show details' }}
+            {{ showDetails ? "Hide details" : "Show details" }}
           </button>
-          <button type="button" class="primary" :disabled="runDisabled" @click="runOptimizationAction">Run optimization</button>
-          <button type="button" class="danger-btn" :disabled="!canCancel" @click="cancelRunAction">Cancel</button>
+          <button
+            type="button"
+            class="primary"
+            :disabled="runDisabled"
+            @click="runOptimizationAction"
+          >
+            {{ primaryActionLabel }}
+          </button>
+          <button
+            type="button"
+            class="danger-btn"
+            :disabled="!canCancel"
+            @click="cancelRunAction"
+          >
+            Cancel
+          </button>
         </div>
       </div>
 
       <div v-if="showDetails" class="summaryGrid">
         <section class="summaryCard summaryCardPrimary">
           <div class="summaryLabel">Plan</div>
-          <div v-if="progressMeta" class="metaLine mono">{{ progressMeta }}</div>
+          <div v-if="progressMeta" class="metaLine mono">
+            {{ progressMeta }}
+          </div>
           <div class="metaLine mono">{{ runPlanMeta }}</div>
           <div class="status mono">{{ statusLine }}</div>
         </section>
@@ -154,7 +198,12 @@ onBeforeUnmount(() => {
         <section class="summaryCard">
           <div class="summaryLabel">Readiness</div>
           <div class="badges" aria-live="polite" aria-label="Run readiness">
-            <span v-for="badge in runReadinessBadges" :key="`run_badge_${badge}`" class="badge">{{ badge }}</span>
+            <span
+              v-for="badge in runReadinessBadges"
+              :key="`run_badge_${badge}`"
+              class="badge"
+              >{{ badge }}</span
+            >
           </div>
           <div class="metaLine mono">{{ runReadinessHint }}</div>
         </section>
@@ -162,13 +211,18 @@ onBeforeUnmount(() => {
         <section class="summaryCard">
           <div class="summaryLabel">Insights</div>
           <div class="metaLine mono">{{ analysisSummary }}</div>
-          <div class="status mono">Tab {{ resultsTab || 'overview' }} · Top {{ topRows }} · Drill {{ drillStatus }}</div>
+          <div class="status mono">
+            Tab {{ resultsTab || "overview" }} · Top {{ topRows }} · Drill
+            {{ drillStatus }}
+          </div>
           <div class="status mono">Heatmap {{ heatmapMeta }}</div>
         </section>
 
         <section class="summaryCard">
           <div class="summaryLabel">Tasks</div>
-          <div class="metaLine mono">{{ taskStatusLabel }} · {{ runningCount }} active</div>
+          <div class="metaLine mono">
+            {{ taskStatusLabel }} · {{ runningCount }} active
+          </div>
           <div class="status mono">{{ overallProgressLabel }}</div>
           <div class="status mono">{{ taskSummary }}</div>
         </section>
@@ -365,9 +419,7 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-#runFooterShell[data-vue-run-footer='1'] > :not(#runFooterVueShellMount) {
+#runFooterShell[data-vue-run-footer="1"] > :not(#runFooterVueShellMount) {
   display: none !important;
 }
 </style>
-
-

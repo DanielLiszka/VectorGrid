@@ -614,8 +614,7 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
     search_req.heatmap_bins = Some(0);
     let product_req = base_req;
 
-    let mut group =
-        c.benchmark_group("double_ma/gpu_kernel_contract_split/alma_alma/200k");
+    let mut group = c.benchmark_group("double_ma/gpu_kernel_contract_split/alma_alma/200k");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 

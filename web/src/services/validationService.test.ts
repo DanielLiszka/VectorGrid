@@ -803,7 +803,8 @@ describe('validationService', () => {
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
     expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
-    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
+    expect(String(validationState.validationCategorySummary || '')).toContain('GPU main + CPU tail: base reruns + hard gates')
     expect(String(validationState.validationWarningSummary || '')).toContain('none')
   })
 
@@ -962,7 +963,7 @@ describe('validationService', () => {
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
     expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • Auto->GpuKernel')
-    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
     expect(String(validationState.validationWarningSummary || '')).toContain('none')
   })
 
@@ -1117,8 +1118,8 @@ describe('validationService', () => {
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
     expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
-    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
-    expect(String(validationState.validationCategorySummary || '')).toContain('GPU-native: base reruns + hard gates')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
+    expect(String(validationState.validationCategorySummary || '')).toContain('GPU main + CPU tail: base reruns + hard gates')
     expect(String(validationState.validationWarningSummary || '')).toContain('none')
   })
 
@@ -1271,6 +1272,75 @@ describe('validationService', () => {
     const summary = previewValidationExecutionSummaryFromStores()
     expect(summary.moduleSummary).toContain('trade bootstrap iid-only')
     expect(summary.categorySummary).toContain('GPU main + CPU tail: perturb + trade_bootstrap')
+  })
+
+  it('classifies VCET validation as mixed GPU/CPU in preview summaries', () => {
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '1h',
+      baseDataMeta: { timeframe: '1h' },
+    }
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '8',
+      seed: '1',
+      wfEnable: true,
+      wfWindow: '12000',
+      wfStep: '3000',
+      reoptWfEnable: true,
+      reoptWfWindow: '12000',
+      reoptWfStep: '3000',
+      reoptWfTopN: '4',
+      spaEnable: true,
+      spaSlices: '12',
+      spaBootstrapSamples: '300',
+      spaBlockLength: '4',
+      perturbEnable: true,
+      perturbIters: '8',
+      perturbMin: '0.01',
+      perturbMax: '0.05',
+      mcEnable: true,
+      mcSims: '400',
+      mcBlockLen: '',
+      mcMode: 'compare',
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-20T12:00:00Z',
+        csvPath: 'C:/data/AAPL.csv',
+        datasetMeta: { csv_path: 'C:/data/AAPL.csv', timeframe: '1h', symbol: 'AAPL' },
+        req: {
+          strategy_kind: 'Vcet',
+          data_id: 'aapl_1h_vcet',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          signal_mode: 'hard_gate',
+          vcet: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'alma',
+                slow_ma_type: 'alma',
+                fast_len: 9,
+                slow_len: 30,
+                signal_mode: 'hard_gate',
+                vcet: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const summary = previewValidationExecutionSummaryFromStores()
+    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates + cscv_pbo + spa')
+    expect(summary.categorySummary).toContain('GPU main + CPU tail: walk_forward + reopt_walk_forward + perturb + trade_bootstrap')
   })
 
   it('auto-exports XLSX after successful validation when enabled and persists the report path', async () => {

@@ -285,6 +285,26 @@ describe('analysis service', () => {
     expect(String(store.heatmapStatusLine || '')).toContain('Heatmap bins')
   })
 
+  it('keeps MlSignal artifacts out of optimizer analysis views', () => {
+    seedWorkflowRun({
+      req: { strategy_kind: 'MlSignal' },
+      res: {
+        matched_rows: 50,
+        output_path: 'C:/data/ml_score_cache.json',
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(String(store.bestTitle || '')).toContain('Score cache')
+    expect(store.topRows).toBe(0)
+    expect(Array.isArray(store.topTableRows)).toBe(true)
+    expect(store.topTableRows.length).toBe(0)
+    expect(String(store.topFilterMeta || '')).toContain('MlSignal')
+  })
+
   it('renders pareto scatter into the Vue canvas host when mounted', () => {
     document.body.innerHTML = `
       <div id="paretoWrapVue" style="display:none"></div>

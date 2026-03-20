@@ -4276,6 +4276,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "criterion",
+ "csv",
  "cust",
  "rand 0.8.5",
  "rayon",

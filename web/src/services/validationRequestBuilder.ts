@@ -336,7 +336,7 @@ function compositeProfileGpuRouteNote(profile: CompositeProfileKey): string {
     case 'rocb':
       return 'ROCB GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'vcet':
-      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward currently uses the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
+      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward and reopt walk-forward currently use the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
     case 'mkcs':
       return 'MKCS GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'kqsr':
@@ -432,6 +432,7 @@ function buildValidationCategorySummaryForMode(
   mode: 'double_gpu' | 'composite_gpu' | 'cpu',
 ): string {
   const cpuOnly = enabledExecutionCategoryModules(req)
+  const strategyKind = normalizeStrategyKindRaw(req?.validation_context?.strategy_kind)
   if (mode === 'cpu') return formatExecutionCategorySummary([['CPU-only', cpuOnly]])
 
   if (mode === 'double_gpu') {
@@ -449,7 +450,22 @@ function buildValidationCategorySummaryForMode(
     ])
   }
 
-  return formatExecutionCategorySummary([['GPU-native', cpuOnly]])
+  const gpuNative: string[] = []
+  const gpuMainCpuTail: string[] = []
+  const isCpuReferenceHybrid = strategyKind === 'Carm' || strategyKind === 'Cdmc'
+  const isVcetMixed = strategyKind === 'Vcet'
+  const baseCategory = isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative
+  baseCategory.push('base reruns', 'hard gates')
+  if (req.walk_forward) (isCpuReferenceHybrid || isVcetMixed ? gpuMainCpuTail : gpuNative).push('walk_forward')
+  if (req.reopt_walk_forward) (isCpuReferenceHybrid || isVcetMixed ? gpuMainCpuTail : gpuNative).push('reopt_walk_forward')
+  if (req.cscv_pbo) (isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative).push('cscv_pbo')
+  if (req.spa) (isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative).push('spa')
+  if (req.perturb) gpuMainCpuTail.push('perturb')
+  if (req.trade_bootstrap) gpuMainCpuTail.push('trade_bootstrap')
+  return formatExecutionCategorySummary([
+    ['GPU-native', gpuNative],
+    ['GPU main + CPU tail', gpuMainCpuTail],
+  ])
 }
 
 export function buildValidationCapabilitySummary(req: ValidationRequestPayload): ValidationCapabilitySummary {

@@ -1366,6 +1366,10 @@ void vcet_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
         return;
     }
 
@@ -1385,6 +1389,10 @@ void vcet_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
         return;
     }
 
@@ -1394,6 +1402,7 @@ void vcet_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -1498,6 +1507,8 @@ void vcet_backtest_metrics_f32(
         log_eq += step_r;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         ++n_obs;
         const float delta = step_r - mean;
@@ -1522,6 +1533,7 @@ void vcet_backtest_metrics_f32(
     const float max_dd = 1.0f - expf(-max_log_dd);
     const float eps_denom = 1.0e-12f;
     const float clamp_max = 1.0e6f;
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / fmaxf((float)n_obs, 1.0f), 0.0f));
 
     float sharpe = 0.0f;
     if (volatility > eps_denom) {
@@ -1576,6 +1588,10 @@ void vcet_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 
@@ -1870,6 +1886,10 @@ void cdmc_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
         return;
     }
 
@@ -1883,6 +1903,7 @@ void cdmc_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -1988,6 +2009,8 @@ void cdmc_backtest_metrics_f32(
         log_eq += step_r;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         ++n_obs;
         const float delta = step_r - mean;
@@ -2016,6 +2039,7 @@ void cdmc_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -2058,6 +2082,10 @@ void cdmc_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 
@@ -2136,6 +2164,7 @@ void kqsr_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -2251,6 +2280,8 @@ void kqsr_backtest_metrics_f32(
         log_eq += step_r;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         ++n_obs;
         const float delta = step_r - mean;
@@ -2279,6 +2310,7 @@ void kqsr_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -2321,6 +2353,10 @@ void kqsr_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 
@@ -2382,6 +2418,10 @@ void carm_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
         return;
     }
 
@@ -2400,6 +2440,7 @@ void carm_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -2513,6 +2554,8 @@ void carm_backtest_metrics_f32(
         log_eq += step_r;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         ++n_obs;
         const float delta = step_r - mean;
@@ -2541,6 +2584,7 @@ void carm_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -2583,6 +2627,10 @@ void carm_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 
@@ -2648,6 +2696,10 @@ void kvdf_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
         return;
     }
 
@@ -2673,6 +2725,7 @@ void kvdf_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -2783,6 +2836,8 @@ void kvdf_backtest_metrics_f32(
         log_eq += step_r;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         ++n_obs;
         const float delta = step_r - mean;
@@ -2811,6 +2866,7 @@ void kvdf_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -2853,6 +2909,10 @@ void kvdf_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 
@@ -3072,6 +3132,26 @@ void transpose_row_to_tm(const float* __restrict__ in,
 
 
 
+
+extern "C" __global__
+void compute_log_returns_f32(const float* __restrict__ prices,
+                             int T,
+                             float* __restrict__ lr_out)
+{
+    for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += blockDim.x * gridDim.x) {
+        if (t == 0) {
+            lr_out[0] = 0.0f;
+            continue;
+        }
+        const float p = prices[t];
+        const float pm = prices[t - 1];
+        if (p > 0.0f && pm > 0.0f && isfinite(p) && isfinite(pm)) {
+            lr_out[t] = logf(p / pm);
+        } else {
+            lr_out[t] = 0.0f;
+        }
+    }
+}
 
 extern "C" __global__
 void compute_log_and_simple_returns_f32(const float* __restrict__ prices,
@@ -5439,20 +5519,8 @@ void asr_backtest_metrics_f32(
         out_metrics[base + 9] = 0.0f; // net_exposure
     }
     if (out_stride >= 12) {
-        out_metrics[base + 10] = 0.0f; // slice_step_return_sum
-        out_metrics[base + 11] = 0.0f; // slice_step_return_sumsq
-    }
-    if (out_stride >= 12) {
-        out_metrics[base + 10] = 0.0f; // step_return_sum
-        out_metrics[base + 11] = 0.0f; // step_return_sumsq
-    }
-    if (out_stride >= 12) {
-        out_metrics[base + 10] = 0.0f; // step_return_sum
-        out_metrics[base + 11] = 0.0f; // step_return_sumsq
-    }
-    if (out_stride >= 12) {
-        out_metrics[base + 10] = 0.0f; // step_return_sum
-        out_metrics[base + 11] = 0.0f; // step_return_sumsq
+        out_metrics[base + 10] = 0.0f; // downside_deviation
+        out_metrics[base + 11] = 0.0f; // ulcer_index
     }
     if (fast_row < 0 || fast_row >= fast_rows || slow_row < 0 || slow_row >= slow_rows) return;
     if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
@@ -5473,13 +5541,12 @@ void asr_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
     float mean = 0.0f;
     float m2 = 0.0f;
-    float sum_step_r = 0.0f;
-    float sumsq_step_r = 0.0f;
     float sum_neg_sq = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
@@ -5622,9 +5689,6 @@ void asr_backtest_metrics_f32(
         if (long_only && desired < 0) {
             desired = 0;
         }
-        const float slice_step_r = (desired == 0) ? 0.0f : ((float)desired) * expm1f(lr[t]);
-        sum_step_r += slice_step_r;
-        sumsq_step_r += slice_step_r * slice_step_r;
 
         if (desired != pos_exec) {
             if (pos_exec == 0 || desired == 0) {
@@ -5652,6 +5716,8 @@ void asr_backtest_metrics_f32(
         if (dd_log > max_log_dd) {
             max_log_dd = dd_log;
         }
+        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         const float step_r = expf(step_log) - 1.0f;
         n_obs += 1;
@@ -5676,14 +5742,12 @@ void asr_backtest_metrics_f32(
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
     const float pnl = expf(log_eq) - 1.0f;
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
-    const float obs_f = (float)n_obs;
-    const float step_return_sum = (n_obs > 0) ? (mean * obs_f) : 0.0f;
-    const float step_return_sumsq = (n_obs > 0) ? (m2 + mean * mean * obs_f) : 0.0f;
 
     const float clamp_max = 1.0e6f;
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -5728,8 +5792,8 @@ void asr_backtest_metrics_f32(
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
     }
     if (out_stride >= 12) {
-        out_metrics[base + 10] = step_return_sum;
-        out_metrics[base + 11] = step_return_sumsq;
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 
@@ -5788,6 +5852,10 @@ void vcc_backtest_metrics_f32(
         out_metrics[base + 8] = 0.0f; // exposure
         out_metrics[base + 9] = 0.0f; // net_exposure
     }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = 0.0f; // downside_deviation
+        out_metrics[base + 11] = 0.0f; // ulcer_index
+    }
     if (out_slice_stats != nullptr) {
         out_slice_stats[slice_base + 0] = 0.0;
         out_slice_stats[slice_base + 1] = 0.0;
@@ -5808,6 +5876,7 @@ void vcc_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -6017,6 +6086,8 @@ void vcc_backtest_metrics_f32(
         if (dd_log > max_log_dd) {
             max_log_dd = dd_log;
         }
+        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         const float step_r = expf(step_log) - 1.0f;
         n_obs += 1;
@@ -6046,6 +6117,7 @@ void vcc_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -6088,6 +6160,10 @@ void vcc_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
     if (out_slice_stats != nullptr) {
         out_slice_stats[slice_base + 0] = sum_step_r;
@@ -6155,6 +6231,10 @@ void vemr_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
         return;
     }
 
@@ -6174,6 +6254,7 @@ void vemr_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -6375,6 +6456,8 @@ void vemr_backtest_metrics_f32(
         if (dd_log > max_log_dd) {
             max_log_dd = dd_log;
         }
+        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
         const float step_r = expf(step_log) - 1.0f;
         n_obs += 1;
@@ -6404,6 +6487,7 @@ void vemr_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -6446,6 +6530,10 @@ void vemr_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
     }
 }
 

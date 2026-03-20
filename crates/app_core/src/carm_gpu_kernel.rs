@@ -6,11 +6,11 @@ use crate::composite_gpu_metric_decode::{
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
+    load_double_crossover_module,
 };
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
 use cust::memory::CopyDestination;
-use cust::module::ModuleJitOption;
 use cust::stream::{Stream, StreamFlags};
 use cust::{memory::DeviceBuffer, module::Module, CudaFlags};
 use std::cell::RefCell;
@@ -57,17 +57,7 @@ impl CarmCudaRuntime {
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
         let context = Arc::new(Context::new(device).map_err(|e| e.to_string())?);
 
-        let ptx: &str = include_str!(concat!(env!("OUT_DIR"), "/double_crossover.ptx"));
-        let jit_opts = &[
-            ModuleJitOption::DetermineTargetFromContext,
-            ModuleJitOption::OptLevel(cust::module::OptLevel::O2),
-        ];
-        let module = match Module::from_ptx(ptx, jit_opts) {
-            Ok(m) => m,
-            Err(_) => Module::from_ptx(ptx, &[ModuleJitOption::DetermineTargetFromContext])
-                .or_else(|_| Module::from_ptx(ptx, &[]))
-                .map_err(|e| e.to_string())?,
-        };
+        let module = load_double_crossover_module(device)?;
 
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
 

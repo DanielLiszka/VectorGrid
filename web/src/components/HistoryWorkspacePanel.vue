@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
-import { useDebounceFn } from '@vueuse/core'
-import { useUiReadiness } from '../composables/useUiReadiness'
-import { useHistoryStore } from '../stores/historyStore'
-import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
+import { storeToRefs } from "pinia";
+import { useDebounceFn } from "@vueuse/core";
+import { useUiReadiness } from "../composables/useUiReadiness";
+import { useHistoryStore } from "../stores/historyStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 
-const historyStore = useHistoryStore()
-const workflowStore = useWorkflowStore()
-const { historyStage } = useUiReadiness()
+const historyStore = useHistoryStore();
+const workflowStore = useWorkflowStore();
+const { historyStage } = useUiReadiness();
 const {
   sessionOptions,
   sessionSelectedValue,
@@ -27,6 +34,13 @@ const {
   savedRunDetailReport,
   savedRunDetailSize,
   savedRunDetailTags,
+  savedRunDetailMlBundle,
+  savedRunDetailMlScoreCache,
+  savedRunDetailMlFeatureSchema,
+  savedRunDetailMlPolicy,
+  savedRunDetailMlSweep,
+  savedRunDetailMlVerdict,
+  savedRunDetailMlCandidates,
   savedRunDetailParams,
   canApplyHistory,
   canExportPreset,
@@ -43,144 +57,171 @@ const {
   canOpenRunsDir,
   statusLine,
   updatedAtUnixMs,
-} = storeToRefs(historyStore)
-const { workspace, workflow } = storeToRefs(workflowStore)
+} = storeToRefs(historyStore);
+const { workspace, workflow } = storeToRefs(workflowStore);
 
-const mountReady = ref(false)
-const sessionValue = ref('')
-const savedValue = ref('')
-const searchDraft = ref('')
-const tagsDraft = ref('')
-const panelRoot = ref<HTMLElement | null>(null)
-const queuedSearchValue = ref<string | null>(null)
-const queuedTagsValue = ref<string | null>(null)
+const mountReady = ref(false);
+const sessionValue = ref("");
+const savedValue = ref("");
+const searchDraft = ref("");
+const tagsDraft = ref("");
+const panelRoot = ref<HTMLElement | null>(null);
+const queuedSearchValue = ref<string | null>(null);
+const queuedTagsValue = ref<string | null>(null);
 
-const commitSavedRunsSearch = useDebounceFn((value: string) => {
-  queuedSearchValue.value = null
-  historyStore.setSavedRunsSearch(value)
-}, 110, { maxWait: 420 })
+const commitSavedRunsSearch = useDebounceFn(
+  (value: string) => {
+    queuedSearchValue.value = null;
+    historyStore.setSavedRunsSearch(value);
+  },
+  110,
+  { maxWait: 420 },
+);
 
-const commitSavedRunsTags = useDebounceFn((value: string) => {
-  queuedTagsValue.value = null
-  historyStore.setSavedRunsTagsDraft(value)
-}, 110, { maxWait: 420 })
+const commitSavedRunsTags = useDebounceFn(
+  (value: string) => {
+    queuedTagsValue.value = null;
+    historyStore.setSavedRunsTagsDraft(value);
+  },
+  110,
+  { maxWait: 420 },
+);
 
 const visible = computed(() => {
-  const ws = String(workspace.value || '').trim()
-  const wf = String(workflow.value || '').trim()
-  return ws === 'library' || wf === 'history'
-})
+  const ws = String(workspace.value || "").trim();
+  const wf = String(workflow.value || "").trim();
+  return ws === "library" || wf === "history";
+});
 
 const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+  const ms = Number(updatedAtUnixMs.value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  return new Date(ms).toLocaleTimeString([], { hour12: false });
+});
 
 watch(
-  () => [
-    String(sessionSelectedValue.value || '').trim(),
-    String(savedSelectedValue.value || '').trim(),
-    String(savedRunsSearch.value || ''),
-    String(savedRunsTagsDraft.value || ''),
-  ] as const,
-  ([nextSessionValue, nextSavedValue, nextSavedRunsSearch, nextSavedRunsTagsDraft]) => {
-    if (sessionValue.value !== nextSessionValue) sessionValue.value = nextSessionValue
-    if (savedValue.value !== nextSavedValue) savedValue.value = nextSavedValue
-    if (searchDraft.value !== nextSavedRunsSearch) searchDraft.value = nextSavedRunsSearch
-    if (tagsDraft.value !== nextSavedRunsTagsDraft) tagsDraft.value = nextSavedRunsTagsDraft
+  () =>
+    [
+      String(sessionSelectedValue.value || "").trim(),
+      String(savedSelectedValue.value || "").trim(),
+      String(savedRunsSearch.value || ""),
+      String(savedRunsTagsDraft.value || ""),
+    ] as const,
+  ([
+    nextSessionValue,
+    nextSavedValue,
+    nextSavedRunsSearch,
+    nextSavedRunsTagsDraft,
+  ]) => {
+    if (sessionValue.value !== nextSessionValue)
+      sessionValue.value = nextSessionValue;
+    if (savedValue.value !== nextSavedValue) savedValue.value = nextSavedValue;
+    if (searchDraft.value !== nextSavedRunsSearch)
+      searchDraft.value = nextSavedRunsSearch;
+    if (tagsDraft.value !== nextSavedRunsTagsDraft)
+      tagsDraft.value = nextSavedRunsTagsDraft;
   },
   { immediate: true },
-)
+);
 
 function setSelectValue(id: string, nextValue: string): void {
-  historyStore.setSelectField(id, nextValue)
+  historyStore.setSelectField(id, nextValue);
 }
 
 function saveSavedRunTags(): void {
-  historyStore.saveSavedRunTags(String(savedValue.value || '').trim(), String(tagsDraft.value || ''))
+  historyStore.saveSavedRunTags(
+    String(savedValue.value || "").trim(),
+    String(tagsDraft.value || ""),
+  );
 }
 
 function loadSavedRun(): void {
-  historyStore.loadSavedRun(String(savedValue.value || '').trim())
+  historyStore.loadSavedRun(String(savedValue.value || "").trim());
 }
 
 function applySavedRun(): void {
-  historyStore.applySavedRun(String(savedValue.value || '').trim())
+  historyStore.applySavedRun(String(savedValue.value || "").trim());
 }
 
 function rerunSavedRun(): void {
-  historyStore.rerunSavedRun(String(savedValue.value || '').trim())
+  historyStore.rerunSavedRun(String(savedValue.value || "").trim());
 }
 
 function openSavedRunReport(): void {
-  historyStore.openSavedRunReport(String(savedValue.value || '').trim())
+  historyStore.openSavedRunReport(String(savedValue.value || "").trim());
 }
 
 function revealSavedRun(): void {
-  historyStore.revealSavedRun(String(savedValue.value || '').trim())
+  historyStore.revealSavedRun(String(savedValue.value || "").trim());
 }
 
 function deleteSavedRun(): void {
-  historyStore.deleteSavedRun(String(savedValue.value || '').trim())
+  historyStore.deleteSavedRun(String(savedValue.value || "").trim());
 }
 
 function onSessionSelect(value: string): void {
-  sessionValue.value = value
-  setSelectValue('historySelect', value)
+  sessionValue.value = value;
+  setSelectValue("historySelect", value);
 }
 
 function onSavedSelect(value: string): void {
-  savedValue.value = value
-  historyStore.selectSavedRun(value)
+  savedValue.value = value;
+  historyStore.selectSavedRun(value);
 }
 
 function onSavedSearch(value: string): void {
-  searchDraft.value = value
-  queuedSearchValue.value = value
-  commitSavedRunsSearch(value)
+  searchDraft.value = value;
+  queuedSearchValue.value = value;
+  commitSavedRunsSearch(value);
 }
 
 function onSavedTags(value: string): void {
-  tagsDraft.value = value
-  queuedTagsValue.value = value
-  commitSavedRunsTags(value)
+  tagsDraft.value = value;
+  queuedTagsValue.value = value;
+  commitSavedRunsTags(value);
 }
 
 function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="history"]') as HTMLElement | null
-  const mount = document.querySelector('#historyVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueHistory = '1'
-  mountReady.value = true
+  const panel = document.querySelector(
+    '[data-vue-panel="history"]',
+  ) as HTMLElement | null;
+  const mount = document.querySelector(
+    "#historyVueShellMount",
+  ) as HTMLElement | null;
+  if (!panel || !mount) return;
+  panelRoot.value = panel;
+  panel.dataset.vueHistory = "1";
+  mountReady.value = true;
 }
 
 onMounted(async () => {
-  await nextTick()
-  resolveMount()
-  historyStore.refreshSessionHistory()
-})
+  await nextTick();
+  resolveMount();
+  historyStore.refreshSessionHistory();
+});
 
 onBeforeUnmount(() => {
   if (queuedSearchValue.value != null) {
-    historyStore.setSavedRunsSearch(queuedSearchValue.value)
-    queuedSearchValue.value = null
+    historyStore.setSavedRunsSearch(queuedSearchValue.value);
+    queuedSearchValue.value = null;
   }
   if (queuedTagsValue.value != null) {
-    historyStore.setSavedRunsTagsDraft(queuedTagsValue.value)
-    queuedTagsValue.value = null
+    historyStore.setSavedRunsTagsDraft(queuedTagsValue.value);
+    queuedTagsValue.value = null;
   }
   if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueHistory
-    panelRoot.value = null
+    delete panelRoot.value.dataset.vueHistory;
+    panelRoot.value = null;
   }
-})
+});
 </script>
 
 <template>
   <Teleport v-if="mountReady" to="#historyVueShellMount">
-    <section class="historyPanelVueRoot historyVueShellMountHost" v-show="visible">
+    <section
+      class="historyPanelVueRoot historyVueShellMountHost"
+      v-show="visible"
+    >
       <header class="head">
         <div class="title">Run History</div>
         <div class="meta mono">{{ savedRunCount }} saved · {{ stamp }}</div>
@@ -188,13 +229,22 @@ onBeforeUnmount(() => {
 
       <section v-if="historyStage === 'no_data'" class="emptyState">
         <div class="emptyTitle">Run Library is empty.</div>
-        <div class="emptyBody">Save or rerun an optimization to build a library of artifacts you can inspect here.</div>
+        <div class="emptyBody">
+          Save or rerun an optimization to build a library of artifacts you can
+          inspect here.
+        </div>
         <div class="muted mono">{{ statusLine }}</div>
       </section>
 
-      <section v-else-if="historyStage === 'results_available_no_selection'" class="emptyState">
+      <section
+        v-else-if="historyStage === 'results_available_no_selection'"
+        class="emptyState"
+      >
         <div class="emptyTitle">Select a saved run to inspect.</div>
-        <div class="emptyBody">Your run library has artifacts available. Pick one from Saved Runs to inspect metadata, compare outputs, or rerun it.</div>
+        <div class="emptyBody">
+          Your run library has artifacts available. Pick one from Saved Runs to
+          inspect metadata, compare outputs, or rerun it.
+        </div>
         <div class="muted mono">{{ savedRunsMeta }}</div>
       </section>
 
@@ -202,7 +252,15 @@ onBeforeUnmount(() => {
         <section class="pane">
           <h3>Session History</h3>
           <label for="vueHistorySelect">Run history</label>
-          <select id="vueHistorySelect" :value="sessionValue" @change="onSessionSelect(String(($event.target as HTMLSelectElement).value || ''))">
+          <select
+            id="vueHistorySelect"
+            :value="sessionValue"
+            @change="
+              onSessionSelect(
+                String(($event.target as HTMLSelectElement).value || ''),
+              )
+            "
+          >
             <option
               v-for="option in sessionOptions"
               :key="`session_${option.value}_${option.label}`"
@@ -214,10 +272,34 @@ onBeforeUnmount(() => {
           </select>
 
           <div class="actions">
-            <button type="button" :disabled="!canApplyHistory" @click="historyStore.applySession()">Apply</button>
-            <button type="button" :disabled="!canExportPreset" @click="historyStore.exportPreset()">Export preset</button>
-            <button type="button" :disabled="!canImportPreset" @click="historyStore.importPreset()">Import preset</button>
-            <button type="button" :disabled="!canClearHistory" @click="historyStore.clearSession()">Clear</button>
+            <button
+              type="button"
+              :disabled="!canApplyHistory"
+              @click="historyStore.applySession()"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              :disabled="!canExportPreset"
+              @click="historyStore.exportPreset()"
+            >
+              Export preset
+            </button>
+            <button
+              type="button"
+              :disabled="!canImportPreset"
+              @click="historyStore.importPreset()"
+            >
+              Import preset
+            </button>
+            <button
+              type="button"
+              :disabled="!canClearHistory"
+              @click="historyStore.clearSession()"
+            >
+              Clear
+            </button>
           </div>
         </section>
 
@@ -231,7 +313,11 @@ onBeforeUnmount(() => {
                 type="text"
                 :value="searchDraft"
                 placeholder="ts, strategy, tag, csv..."
-                @input="onSavedSearch(String(($event.target as HTMLInputElement).value || ''))"
+                @input="
+                  onSavedSearch(
+                    String(($event.target as HTMLInputElement).value || ''),
+                  )
+                "
               />
             </div>
             <div>
@@ -242,15 +328,33 @@ onBeforeUnmount(() => {
                   type="text"
                   :value="tagsDraft"
                   placeholder="aapl,1m,robust"
-                  @input="onSavedTags(String(($event.target as HTMLInputElement).value || ''))"
+                  @input="
+                    onSavedTags(
+                      String(($event.target as HTMLInputElement).value || ''),
+                    )
+                  "
                 />
-                <button type="button" :disabled="!canSaveSavedRunTags" @click="saveSavedRunTags">Save</button>
+                <button
+                  type="button"
+                  :disabled="!canSaveSavedRunTags"
+                  @click="saveSavedRunTags"
+                >
+                  Save
+                </button>
               </div>
             </div>
           </div>
 
           <label for="vueSavedRunsSelect">Saved runs</label>
-          <select id="vueSavedRunsSelect" :value="savedValue" @change="onSavedSelect(String(($event.target as HTMLSelectElement).value || ''))">
+          <select
+            id="vueSavedRunsSelect"
+            :value="savedValue"
+            @change="
+              onSavedSelect(
+                String(($event.target as HTMLSelectElement).value || ''),
+              )
+            "
+          >
             <option
               v-for="option in savedOptions"
               :key="`saved_${option.value}_${option.label}`"
@@ -262,14 +366,62 @@ onBeforeUnmount(() => {
           </select>
 
           <div class="actions">
-            <button type="button" :disabled="!canRefreshSavedRuns" @click="historyStore.refreshSavedRuns()">Refresh</button>
-            <button type="button" :disabled="!canLoadSavedRun" @click="loadSavedRun">Load</button>
-            <button type="button" :disabled="!canApplySavedRun" @click="applySavedRun">Apply</button>
-            <button type="button" :disabled="!canRerunSavedRun" @click="rerunSavedRun">Rerun</button>
-            <button type="button" :disabled="!canOpenSavedRunReport" @click="openSavedRunReport">Open report</button>
-            <button type="button" :disabled="!canRevealSavedRun" @click="revealSavedRun">Reveal</button>
-            <button type="button" :disabled="!canDeleteSavedRun" @click="deleteSavedRun">Delete</button>
-            <button type="button" :disabled="!canOpenRunsDir" @click="historyStore.openRunsDir()">Runs folder</button>
+            <button
+              type="button"
+              :disabled="!canRefreshSavedRuns"
+              @click="historyStore.refreshSavedRuns()"
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              :disabled="!canLoadSavedRun"
+              @click="loadSavedRun"
+            >
+              Load
+            </button>
+            <button
+              type="button"
+              :disabled="!canApplySavedRun"
+              @click="applySavedRun"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              :disabled="!canRerunSavedRun"
+              @click="rerunSavedRun"
+            >
+              Rerun
+            </button>
+            <button
+              type="button"
+              :disabled="!canOpenSavedRunReport"
+              @click="openSavedRunReport"
+            >
+              Open report
+            </button>
+            <button
+              type="button"
+              :disabled="!canRevealSavedRun"
+              @click="revealSavedRun"
+            >
+              Reveal
+            </button>
+            <button
+              type="button"
+              :disabled="!canDeleteSavedRun"
+              @click="deleteSavedRun"
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              :disabled="!canOpenRunsDir"
+              @click="historyStore.openRunsDir()"
+            >
+              Runs folder
+            </button>
           </div>
 
           <div class="muted metaLine mono">{{ savedRunsMeta }}</div>
@@ -280,13 +432,66 @@ onBeforeUnmount(() => {
         <div class="detailTitle">{{ savedRunDetailTitle }}</div>
         <div class="detailMeta muted">{{ savedRunDetailMeta }}</div>
         <div class="detailGrid">
-          <div><span class="k">Strategy</span><span class="v mono">{{ savedRunDetailStrategy }}</span></div>
-          <div><span class="k">Dataset</span><span class="v mono">{{ savedRunDetailDataset }}</span></div>
-          <div><span class="k">Timeframe</span><span class="v mono">{{ savedRunDetailTimeframe }}</span></div>
-          <div><span class="k">Validation</span><span class="v mono">{{ savedRunDetailValidation }}</span></div>
-          <div><span class="k">Report</span><span class="v mono">{{ savedRunDetailReport }}</span></div>
-          <div><span class="k">Size</span><span class="v mono">{{ savedRunDetailSize }}</span></div>
-          <div class="full"><span class="k">Tags</span><span class="v mono">{{ savedRunDetailTags }}</span></div>
+          <div>
+            <span class="k">Strategy</span
+            ><span class="v mono">{{ savedRunDetailStrategy }}</span>
+          </div>
+          <div>
+            <span class="k">Dataset</span
+            ><span class="v mono">{{ savedRunDetailDataset }}</span>
+          </div>
+          <div>
+            <span class="k">Timeframe</span
+            ><span class="v mono">{{ savedRunDetailTimeframe }}</span>
+          </div>
+          <div>
+            <span class="k">Validation</span
+            ><span class="v mono">{{ savedRunDetailValidation }}</span>
+          </div>
+          <div>
+            <span class="k">Report</span
+            ><span class="v mono">{{ savedRunDetailReport }}</span>
+          </div>
+          <div>
+            <span class="k">Size</span
+            ><span class="v mono">{{ savedRunDetailSize }}</span>
+          </div>
+          <template v-if="savedRunDetailStrategy === 'MlSignal'">
+            <div>
+              <span class="k">Bundle</span
+              ><span class="v mono">{{ savedRunDetailMlBundle }}</span>
+            </div>
+            <div>
+              <span class="k">Score Cache</span
+              ><span class="v mono">{{ savedRunDetailMlScoreCache }}</span>
+            </div>
+            <div>
+              <span class="k">Feature Schema</span
+              ><span class="v mono">{{ savedRunDetailMlFeatureSchema }}</span>
+            </div>
+            <div>
+              <span class="k">Policy</span
+              ><span class="v mono">{{ savedRunDetailMlPolicy }}</span>
+            </div>
+            <div>
+              <span class="k">Sweep</span
+              ><span class="v mono">{{ savedRunDetailMlSweep }}</span>
+            </div>
+            <div>
+              <span class="k">Verdict</span
+              ><span class="v mono">{{ savedRunDetailMlVerdict }}</span>
+            </div>
+            <div class="full">
+              <span class="k">Top Candidates</span>
+              <pre class="v mono inlineBlock">{{
+                savedRunDetailMlCandidates
+              }}</pre>
+            </div>
+          </template>
+          <div class="full">
+            <span class="k">Tags</span
+            ><span class="v mono">{{ savedRunDetailTags }}</span>
+          </div>
         </div>
         <div class="k">Request snapshot</div>
         <pre class="mono">{{ savedRunDetailParams }}</pre>
@@ -440,10 +645,7 @@ pre {
 </style>
 
 <style>
-[data-vue-panel='history'][data-vue-history='1'] > :not(#historyVueShellMount) {
+[data-vue-panel="history"][data-vue-history="1"] > :not(#historyVueShellMount) {
   display: none !important;
 }
 </style>
-
-
-

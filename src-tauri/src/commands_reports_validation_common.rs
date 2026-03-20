@@ -1659,7 +1659,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Vcc" => Some(
-            "VCC GPU validation currently falls back on the measured 50k/8 advanced-stack workload because the requested momentum rows are not fp32-stable."
+            "VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. This removes the old fp32 momentum roundtrip fallback while keeping strict validation parity."
                 .to_string(),
         ),
         "Vemr" => Some(
@@ -1691,11 +1691,11 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Carm" => Some(
-            "CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
+            "CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
                 .to_string(),
         ),
         "Cdmc" => Some(
-            "CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads, and the remaining small walk-forward / CSCV / SPA metric drift is currently accepted because candidate ordering and verdict semantics still match on the fixture."
+            "CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads."
                 .to_string(),
         ),
         _ => None,
@@ -1711,10 +1711,7 @@ fn describe_composite_auto_cpu_preference(strategy_kind: &str, backend: &str) ->
             "Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
                 .to_string(),
         ),
-        "Vcc" => Some(
-            "Auto composite validation currently prefers CPU for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check."
-                .to_string(),
-        ),
+        "Vcc" => None,
         "Vemr" => Some(
             "Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload."
                 .to_string(),

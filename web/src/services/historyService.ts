@@ -1,172 +1,206 @@
-import { invokeCommand } from '../tauri/invoke'
-import { HISTORY_KEY, SETTINGS_KEY } from '../utils/core/storageKeys'
-import { readStorageJson, writeStorageJson } from '../utils/storage'
-import { applyWorkflowArtifactsPayload } from '../stores/workflowArtifactsStore'
-import { getActivePinia } from 'pinia'
-import { useAdvancedStore } from '../stores/advancedStore'
-import { useAnalysisStore } from '../stores/analysisStore'
-import { useDataStore } from '../stores/dataStore'
-import { useExecutionStore } from '../stores/executionStore'
-import { useOptimizeStore } from '../stores/optimizeStore'
-import { useSettingsStore } from '../stores/settingsStore'
-import { useStrategyStore } from '../stores/strategyStore'
-import { useValidationStore } from '../stores/validationStore'
-import { applyTimeframe as applyDataTimeframe, loadCsv as loadDataCsv } from './dataService'
-import { runOptimization } from './optimizeService'
-import { refreshAnalysisFromWorkflowRun } from './analysisService'
+import { invokeCommand } from "../tauri/invoke";
+import { HISTORY_KEY, SETTINGS_KEY } from "../utils/core/storageKeys";
+import { readStorageJson, writeStorageJson } from "../utils/storage";
+import { applyWorkflowArtifactsPayload } from "../stores/workflowArtifactsStore";
+import { getActivePinia } from "pinia";
+import { useAdvancedStore } from "../stores/advancedStore";
+import { useAnalysisStore } from "../stores/analysisStore";
+import { useDataStore } from "../stores/dataStore";
+import { useExecutionStore } from "../stores/executionStore";
+import { useOptimizeStore } from "../stores/optimizeStore";
+import { useSettingsStore } from "../stores/settingsStore";
+import { useStrategyStore } from "../stores/strategyStore";
+import { useValidationStore } from "../stores/validationStore";
+import {
+  applyTimeframe as applyDataTimeframe,
+  loadCsv as loadDataCsv,
+} from "./dataService";
+import { runOptimization } from "./optimizeService";
+import { refreshAnalysisFromWorkflowRun } from "./analysisService";
 
 function normalizePath(path: string): string {
-  return String(path || '').trim()
+  return String(path || "").trim();
 }
 
 function normalizeText(value: unknown): string {
-  return String(value || '').trim()
+  return String(value || "").trim();
 }
 
 function normalizeStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  const out: string[] = []
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
   for (const item of value) {
-    const next = normalizeText(item)
-    if (!next) continue
-    out.push(next)
+    const next = normalizeText(item);
+    if (!next) continue;
+    out.push(next);
   }
-  return out
+  return out;
 }
 
 function parseTagsInput(value: string): string[] {
   return normalizeText(value)
-    .split(',')
+    .split(",")
     .map((token) => normalizeText(token))
-    .filter((token) => token.length > 0)
+    .filter((token) => token.length > 0);
 }
 
 function parseBooleanLike(value: unknown): boolean | null {
-  if (typeof value === 'boolean') return value
-  const raw = normalizeText(value).toLowerCase()
-  if (!raw) return null
-  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true
-  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false
-  return null
+  if (typeof value === "boolean") return value;
+  const raw = normalizeText(value).toLowerCase();
+  if (!raw) return null;
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on")
+    return true;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off")
+    return false;
+  return null;
+}
+
+function isMlSignalStrategyKind(value: unknown): boolean {
+  return normalizeText(value) === "MlSignal";
+}
+
+function updateAnalysisStatus(message: string): void {
+  const pinia = getActivePinia();
+  if (!pinia) return;
+  const analysisStore = useAnalysisStore(pinia);
+  analysisStore.statusLine = normalizeText(message) || "Ready.";
+  analysisStore.source = "vue";
+  analysisStore.updatedAtUnixMs = Date.now();
 }
 
 function downloadText(filename: string, body: string, mime: string): boolean {
-  if (typeof document === 'undefined') return false
-  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false
-  const blob = new Blob([body], { type: mime })
-  const href = URL.createObjectURL(blob)
+  if (typeof document === "undefined") return false;
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function")
+    return false;
+  const blob = new Blob([body], { type: mime });
+  const href = URL.createObjectURL(blob);
   try {
-    const anchor = document.createElement('a')
-    anchor.href = href
-    anchor.download = filename
-    anchor.style.display = 'none'
-    document.body?.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-    return true
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body?.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return true;
   } finally {
-    URL.revokeObjectURL(href)
+    URL.revokeObjectURL(href);
   }
 }
 
 function parsePresetPayloadText(text: string): Record<string, unknown> {
-  const parsed = JSON.parse(String(text || ''))
-  const payload = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : null
-  const preset = payload && payload.preset && typeof payload.preset === 'object' && !Array.isArray(payload.preset)
-    ? payload.preset as Record<string, unknown>
-    : payload
-  if (!preset || typeof preset !== 'object' || Array.isArray(preset)) {
-    throw new Error('Preset payload is not an object.')
+  const parsed = JSON.parse(String(text || ""));
+  const payload =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  const preset =
+    payload &&
+    payload.preset &&
+    typeof payload.preset === "object" &&
+    !Array.isArray(payload.preset)
+      ? (payload.preset as Record<string, unknown>)
+      : payload;
+  if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
+    throw new Error("Preset payload is not an object.");
   }
-  return preset
+  return preset;
 }
 
 function readPresetTextWithInputFallback(): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (typeof document === 'undefined') {
-      reject(new Error('Preset import is unavailable in this environment.'))
-      return
+    if (typeof document === "undefined") {
+      reject(new Error("Preset import is unavailable in this environment."));
+      return;
     }
-    for (const node of document.querySelectorAll("input[data-vta-preset-import='1']")) {
+    for (const node of document.querySelectorAll(
+      "input[data-vta-preset-import='1']",
+    )) {
       try {
-        node.remove()
+        node.remove();
       } catch {}
     }
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.json,application/json'
-    input.style.display = 'none'
-    input.dataset.vtaPresetImport = '1'
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json";
+    input.style.display = "none";
+    input.dataset.vtaPresetImport = "1";
     const cleanup = () => {
       try {
-        input.remove()
+        input.remove();
       } catch {}
-    }
+    };
     input.addEventListener(
-      'change',
+      "change",
       async () => {
         try {
-          const file = input.files?.[0]
-          if (!file || typeof file.text !== 'function') {
-            reject(new Error('Preset import canceled.'))
-            return
+          const file = input.files?.[0];
+          if (!file || typeof file.text !== "function") {
+            reject(new Error("Preset import canceled."));
+            return;
           }
-          resolve(await file.text())
+          resolve(await file.text());
         } catch (error) {
-          reject(error)
+          reject(error);
         } finally {
-          cleanup()
+          cleanup();
         }
       },
       { once: true },
-    )
-    document.body?.appendChild(input)
-    input.click()
-  })
+    );
+    document.body?.appendChild(input);
+    input.click();
+  });
 }
 
 async function pickPresetText(): Promise<string> {
-  const showOpenFilePicker = (globalThis as {
-    showOpenFilePicker?: (options?: unknown) => Promise<Array<{ getFile?: () => Promise<{ text?: () => Promise<string> }> }>>
-  }).showOpenFilePicker
-  if (typeof showOpenFilePicker === 'function') {
+  const showOpenFilePicker = (
+    globalThis as {
+      showOpenFilePicker?: (
+        options?: unknown,
+      ) => Promise<
+        Array<{ getFile?: () => Promise<{ text?: () => Promise<string> }> }>
+      >;
+    }
+  ).showOpenFilePicker;
+  if (typeof showOpenFilePicker === "function") {
     try {
       const handles = await showOpenFilePicker({
         multiple: false,
         excludeAcceptAllOption: false,
-        types: [{
-          description: 'Preset JSON',
-          accept: { 'application/json': ['.json'] },
-        }],
-      })
-      const handle = Array.isArray(handles) ? handles[0] : null
-      if (!handle || typeof handle.getFile !== 'function') {
-        throw new Error('Preset import canceled.')
+        types: [
+          {
+            description: "Preset JSON",
+            accept: { "application/json": [".json"] },
+          },
+        ],
+      });
+      const handle = Array.isArray(handles) ? handles[0] : null;
+      if (!handle || typeof handle.getFile !== "function") {
+        throw new Error("Preset import canceled.");
       }
-      const file = await handle.getFile()
-      if (!file || typeof file.text !== 'function') {
-        throw new Error('Unable to read selected preset file.')
+      const file = await handle.getFile();
+      if (!file || typeof file.text !== "function") {
+        throw new Error("Unable to read selected preset file.");
       }
-      return await file.text()
+      return await file.text();
     } catch (error) {
-      const name = normalizeText((error as { name?: unknown } | null)?.name)
-      if (name === 'AbortError') throw new Error('Preset import canceled.')
+      const name = normalizeText((error as { name?: unknown } | null)?.name);
+      if (name === "AbortError") throw new Error("Preset import canceled.");
     }
   }
-  return readPresetTextWithInputFallback()
+  return readPresetTextWithInputFallback();
 }
 
 interface PresetStoreAdapter {
-  setInputField?: (field: string, value: string) => void
-  setSelectField?: (field: string, value: string) => void
-  setCheckboxField?: (field: string, checked: boolean) => void
+  setInputField?: (field: string, value: string) => void;
+  setSelectField?: (field: string, value: string) => void;
+  setCheckboxField?: (field: string, checked: boolean) => void;
 }
 
 function applyPresetToVueStores(preset: Record<string, unknown>): void {
-  const pinia = getActivePinia()
-  if (!pinia) return
+  const pinia = getActivePinia();
+  if (!pinia) return;
   const stores: PresetStoreAdapter[] = [
     useDataStore(pinia),
     useOptimizeStore(pinia),
@@ -176,129 +210,239 @@ function applyPresetToVueStores(preset: Record<string, unknown>): void {
     useAnalysisStore(pinia),
     useSettingsStore(pinia),
     useExecutionStore(pinia),
-  ]
+  ];
 
   for (const [field, value] of Object.entries(preset)) {
-    const key = normalizeText(field)
-    if (!key) continue
-    const next = value == null ? '' : String(value)
-    const bool = parseBooleanLike(value)
+    const key = normalizeText(field);
+    if (!key) continue;
+    const next = value == null ? "" : String(value);
+    const bool = parseBooleanLike(value);
     for (const store of stores) {
-      if (typeof store.setInputField === 'function') store.setInputField(key, next)
-      if (typeof store.setSelectField === 'function') store.setSelectField(key, next)
-      if (bool != null && typeof store.setCheckboxField === 'function') store.setCheckboxField(key, bool)
+      if (typeof store.setInputField === "function")
+        store.setInputField(key, next);
+      if (typeof store.setSelectField === "function")
+        store.setSelectField(key, next);
+      if (bool != null && typeof store.setCheckboxField === "function")
+        store.setCheckboxField(key, bool);
     }
   }
 }
 
 interface RunArtifactSummaryResponse {
-  ts?: unknown
-  path?: unknown
-  bytes?: unknown
-  strategy_kind?: unknown
-  has_validation?: unknown
-  report_xlsx_path?: unknown
-  csv_path?: unknown
-  tags?: unknown
+  ts?: unknown;
+  path?: unknown;
+  bytes?: unknown;
+  strategy_kind?: unknown;
+  has_validation?: unknown;
+  report_xlsx_path?: unknown;
+  csv_path?: unknown;
+  tags?: unknown;
 }
 
 export interface HistorySavedRunSummary {
-  ts: string
-  path: string
-  bytes: number
-  strategyKind: string
-  hasValidation: boolean
-  reportXlsxPath: string
-  csvPath: string
-  tags: string[]
+  ts: string;
+  path: string;
+  bytes: number;
+  strategyKind: string;
+  hasValidation: boolean;
+  reportXlsxPath: string;
+  csvPath: string;
+  tags: string[];
 }
 
 export interface HistorySavedRunsRefreshSummary {
-  runs: HistorySavedRunSummary[]
+  runs: HistorySavedRunSummary[];
 }
 
 export interface HistorySavedRunDetail {
-  strategyKind: string
-  timeframe: string
-  csvPath: string
-  reportPath: string
-  hasValidation: boolean
-  tags: string[]
-  paramsText: string
+  strategyKind: string;
+  timeframe: string;
+  csvPath: string;
+  reportPath: string;
+  hasValidation: boolean;
+  tags: string[];
+  mlBundleId?: string;
+  mlScoreCachePath?: string;
+  mlScoreManifestPath?: string;
+  mlFeatureSchemaPath?: string;
+  mlFeatureSchemaVersion?: string;
+  mlPolicySummary?: string;
+  mlPolicySweepSummary?: string;
+  mlRunVerdictSummary?: string;
+  mlTopCandidatesSummary?: string;
+  paramsText: string;
 }
 
 interface RunArtifactResponse {
-  ts?: unknown
-  strategy_kind?: unknown
-  artifact_path?: unknown
-  artifactPath?: unknown
-  report_xlsx_path?: unknown
-  reportXlsxPath?: unknown
-  csv_path?: unknown
-  csvPath?: unknown
-  tags?: unknown
-  dataset_meta?: unknown
-  data?: unknown
-  run?: unknown
-  validation?: unknown
+  ts?: unknown;
+  strategy_kind?: unknown;
+  artifact_path?: unknown;
+  artifactPath?: unknown;
+  report_xlsx_path?: unknown;
+  reportXlsxPath?: unknown;
+  csv_path?: unknown;
+  csvPath?: unknown;
+  tags?: unknown;
+  dataset_meta?: unknown;
+  data?: unknown;
+  ml_signal?: unknown;
+  run?: unknown;
+  validation?: unknown;
 }
 
 interface SessionHistoryEntry {
-  ts?: unknown
-  backend?: unknown
-  pairs?: unknown
-  req?: unknown
-  res?: unknown
+  ts?: unknown;
+  backend?: unknown;
+  pairs?: unknown;
+  req?: unknown;
+  res?: unknown;
 }
 
 interface NormalizedSessionHistoryEntry {
-  ts: string
-  backend: string
-  pairs: number
-  req: unknown
-  res: unknown
+  ts: string;
+  backend: string;
+  pairs: number;
+  req: unknown;
+  res: unknown;
 }
 
 export interface HistorySessionSummary {
-  ts: string
-  backend: string
-  pairs: number
+  ts: string;
+  backend: string;
+  pairs: number;
 }
 
 function formatRangeLabel(value: unknown): string {
-  const range = value && typeof value === 'object' ? value as Record<string, unknown> : null
-  if (!range) return '-'
-  const start = Number(range.start)
-  const end = Number(range.end)
-  const step = Number(range.step)
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return '-'
-  const a = Math.floor(start)
-  const b = Math.floor(end)
-  if (Number.isFinite(step) && step > 0) return `${a}-${b} x${Math.floor(step)}`
-  return `${a}-${b}`
+  const range =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  if (!range) return "-";
+  const start = Number(range.start);
+  const end = Number(range.end);
+  const step = Number(range.step);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "-";
+  const a = Math.floor(start);
+  const b = Math.floor(end);
+  if (Number.isFinite(step) && step > 0)
+    return `${a}-${b} x${Math.floor(step)}`;
+  return `${a}-${b}`;
 }
 
-function normalizeSessionHistoryEntries(raw: unknown): NormalizedSessionHistoryEntry[] {
-  if (!Array.isArray(raw)) return []
-  const out: NormalizedSessionHistoryEntry[] = []
+function formatMlPolicySummary(value: unknown): string {
+  const row =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  if (!row) return "";
+  const parts: string[] = [];
+  if (row.t_long != null) parts.push(`t_long=${normalizeText(row.t_long)}`);
+  if (row.t_short != null) parts.push(`t_short=${normalizeText(row.t_short)}`);
+  if (row.delta != null) parts.push(`delta=${normalizeText(row.delta)}`);
+  if (row.max_hold_bars != null)
+    parts.push(`hold=${normalizeText(row.max_hold_bars)}`);
+  return parts.join(" | ");
+}
+
+function formatMlPolicySweepSummary(value: unknown): string {
+  const row =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  if (!row) return "";
+  const parts: string[] = [];
+  if (row.sweep_size != null)
+    parts.push(`size=${normalizeText(row.sweep_size)}`);
+  if (row.top_k != null) parts.push(`top_k=${normalizeText(row.top_k)}`);
+  if (row.best_label != null)
+    parts.push(`best=${normalizeText(row.best_label)}`);
+  if (row.best_robust_score != null)
+    parts.push(`score=${normalizeText(row.best_robust_score)}`);
+  return parts.join(" | ");
+}
+
+function readMlValidationResult(
+  value: unknown,
+): Record<string, unknown> | null {
+  const row = asRecord(value);
+  if (!row) return null;
+  return asRecord(row.validation) ?? row;
+}
+
+function readMlCandidateRows(value: unknown): Record<string, unknown>[] {
+  const result = readMlValidationResult(value);
+  if (!result || !Array.isArray(result.candidates)) return [];
+  return result.candidates.filter(
+    (entry): entry is Record<string, unknown> =>
+      !!entry && typeof entry === "object",
+  );
+}
+
+function formatMlRunVerdictSummary(value: unknown): string {
+  const result = readMlValidationResult(value);
+  const verdict = asRecord(result?.run_verdict);
+  if (!verdict) return "";
+  const parts: string[] = [];
+  if (verdict.approved_candidate_count != null) {
+    parts.push(`approved=${normalizeText(verdict.approved_candidate_count)}`);
+  }
+  if (verdict.candidates_survived_hard_gates != null) {
+    parts.push(
+      `survived=${normalizeText(verdict.candidates_survived_hard_gates)}`,
+    );
+  }
+  if (verdict.candidates_considered != null) {
+    parts.push(`considered=${normalizeText(verdict.candidates_considered)}`);
+  }
+  return parts.join(" | ");
+}
+
+function formatMlTopCandidatesSummary(value: unknown): string {
+  const candidates = readMlCandidateRows(value).slice(0, 3);
+  if (!candidates.length) return "";
+  return candidates
+    .map((candidate, index) => {
+      const params = asRecord(candidate.params);
+      const label = normalizeText(params?.label) || `candidate_${index + 1}`;
+      const robust =
+        candidate.robust_score != null
+          ? `robust=${normalizeText(candidate.robust_score)}`
+          : "";
+      const psr =
+        candidate.psr != null ? `psr=${normalizeText(candidate.psr)}` : "";
+      const dsr =
+        candidate.dsr != null ? `dsr=${normalizeText(candidate.dsr)}` : "";
+      const pieces = [label, robust, psr, dsr].filter((part) => part);
+      return pieces.join(" | ");
+    })
+    .join("\n");
+}
+
+function normalizeSessionHistoryEntries(
+  raw: unknown,
+): NormalizedSessionHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: NormalizedSessionHistoryEntry[] = [];
   for (const entry of raw) {
-    const row = (entry && typeof entry === 'object' ? entry : {}) as SessionHistoryEntry
-    const ts = normalizeText(row.ts)
-    if (!ts) continue
-    const pairs = Number(row.pairs)
+    const row = (
+      entry && typeof entry === "object" ? entry : {}
+    ) as SessionHistoryEntry;
+    const ts = normalizeText(row.ts);
+    if (!ts) continue;
+    const pairs = Number(row.pairs);
     out.push({
       ts,
       backend: normalizeText(row.backend),
       pairs: Number.isFinite(pairs) && pairs > 0 ? Math.floor(pairs) : 0,
       req: row.req ?? null,
       res: row.res ?? null,
-    })
+    });
   }
-  return out
+  return out;
 }
 
 function readSessionHistoryEntries(): NormalizedSessionHistoryEntry[] {
-  return normalizeSessionHistoryEntries(readStorageJson<unknown>(HISTORY_KEY))
+  return normalizeSessionHistoryEntries(readStorageJson<unknown>(HISTORY_KEY));
 }
 
 export function readSessionHistory(): HistorySessionSummary[] {
@@ -306,200 +450,376 @@ export function readSessionHistory(): HistorySessionSummary[] {
     ts: entry.ts,
     backend: entry.backend,
     pairs: entry.pairs,
-  }))
+  }));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function asNumber(value: unknown): number {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return Number.NaN
-  return parsed
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return Number.NaN;
+  return parsed;
 }
 
-function updateStoresFromRunRequest(req: Record<string, unknown>, csvPath: string, timeframe: string): void {
-  const pinia = getActivePinia()
-  if (!pinia) return
+function updateStoresFromRunRequest(
+  req: Record<string, unknown>,
+  csvPath: string,
+  timeframe: string,
+): void {
+  const pinia = getActivePinia();
+  if (!pinia) return;
 
-  const optimizeStore = useOptimizeStore(pinia)
-  const advancedStore = useAdvancedStore(pinia)
-  const dataStore = useDataStore(pinia)
+  const optimizeStore = useOptimizeStore(pinia);
+  const advancedStore = useAdvancedStore(pinia);
+  const dataStore = useDataStore(pinia);
 
-  const strategyKind = normalizeText(req.strategy_kind ?? req.strategyKind)
-  const objective = normalizeText(req.objective)
-  const mode = normalizeText(req.mode)
-  const maSource = normalizeText(req.ma_source ?? req.maSource)
-  const backendRaw = asRecord(req.backend)
-  const backend = normalizeText(backendRaw?.backend ?? req.backend)
-  const fastRange = asRecord(req.fast_range)
-  const slowRange = asRecord(req.slow_range)
-  const fastTypes = normalizeStringList(req.fast_ma_types)
-  const slowTypes = normalizeStringList(req.slow_ma_types)
+  const strategyKind = normalizeText(req.strategy_kind ?? req.strategyKind);
+  const objective = normalizeText(req.objective);
+  const mode = normalizeText(req.mode);
+  const maSource = normalizeText(req.ma_source ?? req.maSource);
+  const backendRaw = asRecord(req.backend);
+  const backend = normalizeText(backendRaw?.backend ?? req.backend);
+  const fastRange = asRecord(req.fast_range);
+  const slowRange = asRecord(req.slow_range);
+  const fastTypes = normalizeStringList(req.fast_ma_types);
+  const slowTypes = normalizeStringList(req.slow_ma_types);
 
-  if (strategyKind) optimizeStore.strategyKind = strategyKind
+  if (strategyKind) optimizeStore.strategyKind = strategyKind;
+  if (strategyKind === "MlSignal") {
+    const outputPath = normalizeText(req.output_path ?? req.outputPath);
+    const inputPath = normalizeText(req.input_path ?? req.inputPath);
+    const scoreCachePath = normalizeText(
+      req.score_cache_path ?? req.scoreCachePath,
+    );
+    const modelBundleId = normalizeText(
+      req.model_bundle_id ?? req.modelBundleId,
+    );
+    const splitPlan = asRecord(req.split_plan ?? req.splitPlan);
+    const tickerHoldout = asRecord(req.ticker_holdout ?? req.tickerHoldout);
+    const hasDatasetExportShape =
+      normalizeText(req.ma_source ?? req.maSource).length > 0 ||
+      Number.isFinite(Number(req.horizon_bars ?? req.horizonBars));
+    const maSourceValue = normalizeText(req.ma_source ?? req.maSource);
+    const horizonBars = asNumber(req.horizon_bars ?? req.horizonBars);
+    if (inputPath) optimizeStore.mlSignalScoreInputPath = inputPath;
+    if (hasDatasetExportShape) {
+      if (outputPath) optimizeStore.mlSignalDatasetExportPath = outputPath;
+    } else if (outputPath) {
+      optimizeStore.mlSignalScoreCachePath = outputPath;
+    }
+    if (scoreCachePath) optimizeStore.mlSignalScoreCachePath = scoreCachePath;
+    if (modelBundleId) optimizeStore.mlSignalModelBundleId = modelBundleId;
+    if (maSourceValue) optimizeStore.mlSignalMaSource = maSourceValue;
+    if (Number.isFinite(horizonBars) && horizonBars > 0) {
+      optimizeStore.mlSignalHorizonBars = String(Math.floor(horizonBars));
+    }
+    if (splitPlan) {
+      const trainBars = asNumber(splitPlan.train_bars);
+      const calibrationBars = asNumber(splitPlan.calibration_bars);
+      const testBars = asNumber(splitPlan.test_bars);
+      const gapBars = asNumber(splitPlan.gap_bars);
+      const stepBars = asNumber(splitPlan.step_bars);
+      optimizeStore.mlSignalSplitTrainBars = Number.isFinite(trainBars)
+        ? String(Math.floor(trainBars))
+        : "";
+      optimizeStore.mlSignalSplitCalibrationBars = Number.isFinite(
+        calibrationBars,
+      )
+        ? String(Math.floor(calibrationBars))
+        : "";
+      optimizeStore.mlSignalSplitTestBars = Number.isFinite(testBars)
+        ? String(Math.floor(testBars))
+        : "";
+      if (Number.isFinite(gapBars))
+        optimizeStore.mlSignalSplitGapBars = String(Math.floor(gapBars));
+      if (Number.isFinite(stepBars) && stepBars > 0)
+        optimizeStore.mlSignalSplitStepBars = String(Math.floor(stepBars));
+    }
+    if (tickerHoldout) {
+      const modulus = asNumber(tickerHoldout.modulus);
+      const residue = asNumber(tickerHoldout.residue);
+      optimizeStore.mlSignalHoldoutModulus = Number.isFinite(modulus)
+        ? String(Math.floor(modulus))
+        : "";
+      if (Number.isFinite(residue))
+        optimizeStore.mlSignalHoldoutResidue = String(Math.floor(residue));
+    }
+    if (csvPath) dataStore.csvPath = csvPath;
+    dataStore.dataTimeframe = timeframe;
+    optimizeStore.statusLine = "Applied saved ML signal run settings to form.";
+    advancedStore.statusLine = "Applied saved ML signal settings.";
+    dataStore.statusLine = "Saved ML signal run context loaded.";
+    optimizeStore.source = "vue";
+    optimizeStore.updatedAtUnixMs = Date.now();
+    advancedStore.source = "vue";
+    advancedStore.updatedAtUnixMs = Date.now();
+    dataStore.source = "vue";
+    dataStore.updatedAtUnixMs = Date.now();
+    return;
+  }
   if (objective) {
-    optimizeStore.objective = objective
-    advancedStore.objective = objective
+    optimizeStore.objective = objective;
+    advancedStore.objective = objective;
   }
   if (mode) {
-    optimizeStore.mode = mode
-    advancedStore.mode = mode
+    optimizeStore.mode = mode;
+    advancedStore.mode = mode;
   }
-  if (backend) optimizeStore.backend = backend
-  if (maSource) advancedStore.maSource = maSource
+  if (backend) optimizeStore.backend = backend;
+  if (maSource) advancedStore.maSource = maSource;
 
-  const fastStart = asNumber(fastRange?.start)
-  const fastEnd = asNumber(fastRange?.end)
-  const fastStep = asNumber(fastRange?.step)
-  const slowStart = asNumber(slowRange?.start)
-  const slowEnd = asNumber(slowRange?.end)
-  const slowStep = asNumber(slowRange?.step)
+  const fastStart = asNumber(fastRange?.start);
+  const fastEnd = asNumber(fastRange?.end);
+  const fastStep = asNumber(fastRange?.step);
+  const slowStart = asNumber(slowRange?.start);
+  const slowEnd = asNumber(slowRange?.end);
+  const slowStep = asNumber(slowRange?.step);
 
-  if (Number.isFinite(fastStart)) optimizeStore.fastStart = String(Math.floor(fastStart))
-  if (Number.isFinite(fastEnd)) optimizeStore.fastEnd = String(Math.floor(fastEnd))
-  if (Number.isFinite(fastStep) && fastStep > 0) optimizeStore.fastStep = String(Math.floor(fastStep))
-  if (Number.isFinite(slowStart)) optimizeStore.slowStart = String(Math.floor(slowStart))
-  if (Number.isFinite(slowEnd)) optimizeStore.slowEnd = String(Math.floor(slowEnd))
-  if (Number.isFinite(slowStep) && slowStep > 0) optimizeStore.slowStep = String(Math.floor(slowStep))
-  const fastMaType = fastTypes[0]
-  const slowMaType = slowTypes[0]
-  if (fastMaType) optimizeStore.fastMaType = fastMaType
-  if (slowMaType) optimizeStore.slowMaType = slowMaType
+  if (Number.isFinite(fastStart))
+    optimizeStore.fastStart = String(Math.floor(fastStart));
+  if (Number.isFinite(fastEnd))
+    optimizeStore.fastEnd = String(Math.floor(fastEnd));
+  if (Number.isFinite(fastStep) && fastStep > 0)
+    optimizeStore.fastStep = String(Math.floor(fastStep));
+  if (Number.isFinite(slowStart))
+    optimizeStore.slowStart = String(Math.floor(slowStart));
+  if (Number.isFinite(slowEnd))
+    optimizeStore.slowEnd = String(Math.floor(slowEnd));
+  if (Number.isFinite(slowStep) && slowStep > 0)
+    optimizeStore.slowStep = String(Math.floor(slowStep));
+  const fastMaType = fastTypes[0];
+  const slowMaType = slowTypes[0];
+  if (fastMaType) optimizeStore.fastMaType = fastMaType;
+  if (slowMaType) optimizeStore.slowMaType = slowMaType;
 
-  if (csvPath) dataStore.csvPath = csvPath
-  dataStore.dataTimeframe = timeframe
+  if (csvPath) dataStore.csvPath = csvPath;
+  dataStore.dataTimeframe = timeframe;
 
-  optimizeStore.statusLine = 'Applied saved run settings to form.'
-  advancedStore.statusLine = 'Applied saved run settings.'
-  dataStore.statusLine = 'Saved run context loaded.'
+  optimizeStore.statusLine = "Applied saved run settings to form.";
+  advancedStore.statusLine = "Applied saved run settings.";
+  dataStore.statusLine = "Saved run context loaded.";
 
-  optimizeStore.source = 'vue'
-  optimizeStore.updatedAtUnixMs = Date.now()
-  advancedStore.source = 'vue'
-  advancedStore.updatedAtUnixMs = Date.now()
-  dataStore.source = 'vue'
-  dataStore.updatedAtUnixMs = Date.now()
+  optimizeStore.source = "vue";
+  optimizeStore.updatedAtUnixMs = Date.now();
+  advancedStore.source = "vue";
+  advancedStore.updatedAtUnixMs = Date.now();
+  dataStore.source = "vue";
+  dataStore.updatedAtUnixMs = Date.now();
 }
 
-async function loadRunArtifact(path: string): Promise<{ path: string; record: RunArtifactResponse }> {
-  const nextPath = normalizePath(path)
-  if (!nextPath) throw new Error('Select a saved run first.')
-  const raw = (await invokeCommand('load_run_artifact', { path: nextPath })) as RunArtifactResponse
+async function loadRunArtifact(
+  path: string,
+): Promise<{ path: string; record: RunArtifactResponse }> {
+  const nextPath = normalizePath(path);
+  if (!nextPath) throw new Error("Select a saved run first.");
+  const raw = (await invokeCommand("load_run_artifact", {
+    path: nextPath,
+  })) as RunArtifactResponse;
   return {
     path: nextPath,
-    record: raw && typeof raw === 'object' ? raw : ({} as RunArtifactResponse),
-  }
+    record: raw && typeof raw === "object" ? raw : ({} as RunArtifactResponse),
+  };
 }
 
-function buildReqSnapshot(req: Record<string, unknown> | null): string {
-  if (!req) return 'Request unavailable.'
-  const backend = normalizeText((req.backend as { backend?: unknown } | undefined)?.backend) || 'CpuOnly'
-  const objectives = req.objectives && typeof req.objectives === 'object' ? req.objectives as Record<string, unknown> : null
-  const objective = normalizeText(req.objective ?? objectives?.maximize) || '-'
-  const maSource = normalizeText(req.ma_source) || 'close'
-  const fastTypes = normalizeStringList(req.fast_ma_types).join(', ') || '-'
-  const slowTypes = normalizeStringList(req.slow_ma_types).join(', ') || '-'
-  const startingEquity = Number(req.starting_equity)
+function buildReqSnapshot(
+  req: Record<string, unknown> | null,
+  validationReq: Record<string, unknown> | null = null,
+): string {
+  if (!req) return "Request unavailable.";
+  if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
+    const lines: string[] = [];
+    lines.push("strategy: MlSignal");
+    const dataId = normalizeText(req.data_id ?? req.dataId);
+    const inputPath = normalizeText(req.input_path ?? req.inputPath);
+    const outputPath = normalizeText(req.output_path ?? req.outputPath);
+    const scoreCachePath = normalizeText(
+      req.score_cache_path ?? req.scoreCachePath,
+    );
+    const modelBundleId = normalizeText(
+      req.model_bundle_id ?? req.modelBundleId,
+    );
+    if (dataId) lines.push(`data id: ${dataId}`);
+    if (inputPath) lines.push(`score input: ${inputPath}`);
+    if (outputPath) lines.push(`dataset/score output: ${outputPath}`);
+    if (scoreCachePath) lines.push(`score cache: ${scoreCachePath}`);
+    if (modelBundleId) lines.push(`model bundle: ${modelBundleId}`);
+    const sweepAxis = (value: unknown): string => {
+      const row =
+        value && typeof value === "object"
+          ? (value as Record<string, unknown>)
+          : null;
+      if (!row) return "";
+      const start = normalizeText(row.start);
+      const end = normalizeText(row.end);
+      const step = normalizeText(row.step);
+      if (!start && !end && !step) return "";
+      return [start, end, step].filter((part) => part).join("/");
+    };
+    const candidates = Array.isArray(validationReq?.candidates)
+      ? (validationReq?.candidates as Array<Record<string, unknown>>)
+      : [];
+    const firstCandidate = candidates[0];
+    if (firstCandidate) {
+      lines.push(
+        `policy t_long: ${normalizeText(firstCandidate.t_long) || "-"}`,
+      );
+      lines.push(
+        `policy t_short: ${normalizeText(firstCandidate.t_short) || "-"}`,
+      );
+      lines.push(`policy delta: ${normalizeText(firstCandidate.delta) || "-"}`);
+      lines.push(
+        `policy max_hold_bars: ${normalizeText(firstCandidate.max_hold_bars) || "-"}`,
+      );
+    } else if (validationReq) {
+      const tLongAxis = sweepAxis(validationReq.t_long);
+      const tShortAxis = sweepAxis(validationReq.t_short);
+      const deltaAxis = sweepAxis(validationReq.delta);
+      const holdAxis = sweepAxis(validationReq.max_hold_bars);
+      const topK = normalizeText(validationReq.top_k);
+      if (tLongAxis) lines.push(`sweep t_long: ${tLongAxis}`);
+      if (tShortAxis) lines.push(`sweep t_short: ${tShortAxis}`);
+      if (deltaAxis) lines.push(`sweep delta: ${deltaAxis}`);
+      if (holdAxis) lines.push(`sweep hold: ${holdAxis}`);
+      if (topK) lines.push(`sweep top_k: ${topK}`);
+    }
+    return lines.join("\n");
+  }
+  const backend =
+    normalizeText(
+      (req.backend as { backend?: unknown } | undefined)?.backend,
+    ) || "CpuOnly";
+  const objectives =
+    req.objectives && typeof req.objectives === "object"
+      ? (req.objectives as Record<string, unknown>)
+      : null;
+  const objective = normalizeText(req.objective ?? objectives?.maximize) || "-";
+  const maSource = normalizeText(req.ma_source) || "close";
+  const fastTypes = normalizeStringList(req.fast_ma_types).join(", ") || "-";
+  const slowTypes = normalizeStringList(req.slow_ma_types).join(", ") || "-";
+  const startingEquity = Number(req.starting_equity);
 
-  const lines: string[] = []
-  lines.push(`strategy: ${normalizeText(req.strategy_kind) || '-'}`)
-  lines.push(`backend: ${backend}`)
-  lines.push(`objective: ${objective}`)
-  lines.push(`ma source: ${maSource}`)
-  lines.push(`fast range: ${formatRangeLabel(req.fast_range)}`)
-  lines.push(`slow range: ${formatRangeLabel(req.slow_range)}`)
-  lines.push(`fast ma: ${fastTypes}`)
-  lines.push(`slow ma: ${slowTypes}`)
+  const lines: string[] = [];
+  lines.push(`strategy: ${normalizeText(req.strategy_kind) || "-"}`);
+  lines.push(`backend: ${backend}`);
+  lines.push(`objective: ${objective}`);
+  lines.push(`ma source: ${maSource}`);
+  lines.push(`fast range: ${formatRangeLabel(req.fast_range)}`);
+  lines.push(`slow range: ${formatRangeLabel(req.slow_range)}`);
+  lines.push(`fast ma: ${fastTypes}`);
+  lines.push(`slow ma: ${slowTypes}`);
   if (Number.isFinite(startingEquity) && startingEquity > 0) {
-    lines.push(`starting equity: ${startingEquity}`)
+    lines.push(`starting equity: ${startingEquity}`);
   }
 
-  return lines.join('\n')
+  return lines.join("\n");
 }
 
 export async function applySession(ts: string): Promise<void> {
-  const selectedTs = normalizeText(ts)
-  if (!selectedTs) throw new Error('Select a run from history first.')
+  const selectedTs = normalizeText(ts);
+  if (!selectedTs) throw new Error("Select a run from history first.");
 
-  const entry = readSessionHistoryEntries().find((row) => row.ts === selectedTs) || null
-  if (!entry?.req || !entry?.res) throw new Error('Selected history run is missing req/res.')
+  const entry =
+    readSessionHistoryEntries().find((row) => row.ts === selectedTs) || null;
+  if (!entry?.req || !entry?.res)
+    throw new Error("Selected history run is missing req/res.");
 
   applyWorkflowArtifactsPayload(
     {
       currentRun: {
         ts: entry.ts,
-        artifact_path: '',
-        report_xlsx_path: '',
-        csv_path: '',
+        artifact_path: "",
+        report_xlsx_path: "",
+        csv_path: "",
         tags: [],
         req: entry.req,
         res: entry.res,
       },
       currentValidation: null,
     },
-    'vue',
-  )
-  refreshAnalysisFromWorkflowRun()
+    "vue",
+  );
+  if (
+    isMlSignalStrategyKind(
+      (entry.req as Record<string, unknown> | null)?.strategy_kind,
+    )
+  ) {
+    updateAnalysisStatus(
+      "ML signal run loaded. Analysis views remain focused on optimizer artifacts.",
+    );
+    return;
+  }
+  refreshAnalysisFromWorkflowRun();
 }
 
 export async function exportPreset(): Promise<void> {
-  const ts = new Date().toISOString().replace(/:/g, '-')
-  const rawPreset = readStorageJson<Record<string, unknown>>(SETTINGS_KEY)
-  const preset = rawPreset && typeof rawPreset === 'object' && !Array.isArray(rawPreset) ? rawPreset : {}
+  const ts = new Date().toISOString().replace(/:/g, "-");
+  const rawPreset = readStorageJson<Record<string, unknown>>(SETTINGS_KEY);
+  const preset =
+    rawPreset && typeof rawPreset === "object" && !Array.isArray(rawPreset)
+      ? rawPreset
+      : {};
   const payload = {
     version: 1,
-    kind: 'vectorgrid_preset',
+    kind: "vectorgrid_preset",
     ts,
     preset,
-  }
+  };
   const downloaded = downloadText(
     `vectorgrid_preset_${ts}.json`,
     JSON.stringify(payload, null, 2),
-    'application/json;charset=utf-8',
-  )
-  if (!downloaded) throw new Error('Preset export is unavailable in this environment.')
+    "application/json;charset=utf-8",
+  );
+  if (!downloaded)
+    throw new Error("Preset export is unavailable in this environment.");
 }
 
 export async function importPreset(): Promise<void> {
-  const text = await pickPresetText()
-  const preset = parsePresetPayloadText(text)
-  writeStorageJson(SETTINGS_KEY, preset)
-  applyPresetToVueStores(preset)
+  const text = await pickPresetText();
+  const preset = parsePresetPayloadText(text);
+  writeStorageJson(SETTINGS_KEY, preset);
+  applyPresetToVueStores(preset);
 }
 
 export async function clearSession(): Promise<void> {
-  writeStorageJson(HISTORY_KEY, [])
+  writeStorageJson(HISTORY_KEY, []);
   applyWorkflowArtifactsPayload(
     {
       currentRun: null,
       currentValidation: null,
     },
-    'vue',
-  )
+    "vue",
+  );
 }
 
-export async function saveSavedRunTags(path: string, tags: string): Promise<void> {
-  const nextPath = normalizePath(path)
-  if (!nextPath) return
-  await invokeCommand('update_artifact_tags', {
+export async function saveSavedRunTags(
+  path: string,
+  tags: string,
+): Promise<void> {
+  const nextPath = normalizePath(path);
+  if (!nextPath) return;
+  await invokeCommand("update_artifact_tags", {
     path: nextPath,
     tags: parseTagsInput(tags),
-  })
+  });
 }
 
 export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary> {
-  const rows = (await invokeCommand('list_run_artifacts')) as unknown
-  const list = Array.isArray(rows) ? rows : []
-  const runs: HistorySavedRunSummary[] = []
+  const rows = (await invokeCommand("list_run_artifacts")) as unknown;
+  const list = Array.isArray(rows) ? rows : [];
+  const runs: HistorySavedRunSummary[] = [];
 
   for (const entry of list) {
-    const row = (entry && typeof entry === 'object' ? entry : {}) as RunArtifactSummaryResponse
-    const path = normalizeText(row.path)
-    if (!path) continue
+    const row = (
+      entry && typeof entry === "object" ? entry : {}
+    ) as RunArtifactSummaryResponse;
+    const path = normalizeText(row.path);
+    if (!path) continue;
 
-    const bytes = Number(row.bytes)
+    const bytes = Number(row.bytes);
     runs.push({
       ts: normalizeText(row.ts),
       path,
@@ -509,37 +829,43 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
       reportXlsxPath: normalizeText(row.report_xlsx_path),
       csvPath: normalizeText(row.csv_path),
       tags: normalizeStringList(row.tags),
-    })
+    });
   }
 
-  return { runs }
+  return { runs };
 }
 
 export async function openRunsDir(): Promise<void> {
-  await invokeCommand('open_runs_dir')
+  await invokeCommand("open_runs_dir");
 }
 
 export async function loadSavedRun(path: string): Promise<void> {
-  const loaded = await loadRunArtifact(path)
-  const nextPath = loaded.path
-  const record = loaded.record
-  const runRecord = record.run && typeof record.run === 'object'
-    ? record.run as Record<string, unknown>
-    : null
-  const validationRecord = record.validation && typeof record.validation === 'object'
-    ? record.validation as Record<string, unknown>
-    : null
-  const runReq = runRecord?.req ?? null
-  const runRes = runRecord?.res ?? null
-  if (!runReq || !runRes) throw new Error('Saved run artifact is missing run.req/run.res.')
+  const loaded = await loadRunArtifact(path);
+  const nextPath = loaded.path;
+  const record = loaded.record;
+  const runRecord =
+    record.run && typeof record.run === "object"
+      ? (record.run as Record<string, unknown>)
+      : null;
+  const validationRecord =
+    record.validation && typeof record.validation === "object"
+      ? (record.validation as Record<string, unknown>)
+      : null;
+  const runReq = runRecord?.req ?? null;
+  const runRes = runRecord?.res ?? null;
+  if (!runReq || !runRes)
+    throw new Error("Saved run artifact is missing run.req/run.res.");
 
-  const ts = normalizeText(record.ts) || new Date().toISOString()
-  const csvPath = normalizeText(record.csv_path ?? record.csvPath)
-    || normalizeText((record.data as { csv_path?: unknown } | null)?.csv_path)
-  const reportXlsxPath = normalizeText(record.report_xlsx_path ?? record.reportXlsxPath)
-  const tags = normalizeStringList(record.tags)
-  const validationReq = validationRecord?.req ?? null
-  const validationRes = validationRecord?.res ?? null
+  const ts = normalizeText(record.ts) || new Date().toISOString();
+  const csvPath =
+    normalizeText(record.csv_path ?? record.csvPath) ||
+    normalizeText((record.data as { csv_path?: unknown } | null)?.csv_path);
+  const reportXlsxPath = normalizeText(
+    record.report_xlsx_path ?? record.reportXlsxPath,
+  );
+  const tags = normalizeStringList(record.tags);
+  const validationReq = validationRecord?.req ?? null;
+  const validationRes = validationRecord?.res ?? null;
 
   applyWorkflowArtifactsPayload(
     {
@@ -560,101 +886,161 @@ export async function loadSavedRun(path: string): Promise<void> {
           }
         : null,
     },
-    'vue',
-  )
-  refreshAnalysisFromWorkflowRun()
+    "vue",
+  );
+  if (
+    isMlSignalStrategyKind(
+      (runReq as Record<string, unknown> | null)?.strategy_kind,
+    )
+  ) {
+    updateAnalysisStatus(
+      "ML signal artifact loaded. Use workflow/history details or rerun validation to inspect results.",
+    );
+    return;
+  }
+  refreshAnalysisFromWorkflowRun();
 }
 
 export async function applySavedRun(path: string): Promise<void> {
-  const loaded = await loadRunArtifact(path)
-  const record = loaded.record
-  const runRecord = asRecord(record.run)
-  const req = asRecord(runRecord?.req)
-  if (!req) throw new Error('Saved run artifact is missing run.req.')
+  const loaded = await loadRunArtifact(path);
+  const record = loaded.record;
+  const runRecord = asRecord(record.run);
+  const req = asRecord(runRecord?.req);
+  if (!req) throw new Error("Saved run artifact is missing run.req.");
 
-  const csvPath = normalizeText(record.csv_path ?? record.csvPath)
-    || normalizeText(asRecord(record.data)?.csv_path)
-  const timeframe = normalizeText(asRecord(record.dataset_meta)?.timeframe)
-  updateStoresFromRunRequest(req, csvPath, timeframe)
+  const csvPath =
+    normalizeText(record.csv_path ?? record.csvPath) ||
+    normalizeText(asRecord(record.data)?.csv_path);
+  const timeframe = normalizeText(asRecord(record.dataset_meta)?.timeframe);
+  updateStoresFromRunRequest(req, csvPath, timeframe);
 }
 
 export async function rerunSavedRun(path: string): Promise<void> {
-  const loaded = await loadRunArtifact(path)
-  const record = loaded.record
-  const runRecord = asRecord(record.run)
-  const req = asRecord(runRecord?.req)
-  if (!req) throw new Error('Saved run artifact is missing run.req.')
+  const loaded = await loadRunArtifact(path);
+  const record = loaded.record;
+  const runRecord = asRecord(record.run);
+  const req = asRecord(runRecord?.req);
+  if (!req) throw new Error("Saved run artifact is missing run.req.");
 
-  const csvPath = normalizeText(record.csv_path ?? record.csvPath)
-    || normalizeText(asRecord(record.data)?.csv_path)
-  if (!csvPath) throw new Error('Saved run is missing data.csv_path. Load a dataset first, then rerun.')
+  const csvPath =
+    normalizeText(record.csv_path ?? record.csvPath) ||
+    normalizeText(asRecord(record.data)?.csv_path);
+  if (!csvPath)
+    throw new Error(
+      "Saved run is missing data.csv_path. Load a dataset first, then rerun.",
+    );
 
-  const base = await loadDataCsv(csvPath)
-  let currentDataId = normalizeText(base.dataId)
-  const timeframe = normalizeText(asRecord(record.dataset_meta)?.timeframe)
+  const base = await loadDataCsv(csvPath);
+  let currentDataId = normalizeText(base.dataId);
+  const timeframe = normalizeText(asRecord(record.dataset_meta)?.timeframe);
   if (timeframe) {
-    const baseTf = normalizeText(base.meta.timeframe)
+    const baseTf = normalizeText(base.meta.timeframe);
     if (!baseTf || baseTf !== timeframe) {
-      const resampled = await applyDataTimeframe(timeframe, currentDataId)
-      currentDataId = normalizeText(resampled.dataId) || currentDataId
+      const resampled = await applyDataTimeframe(timeframe, currentDataId);
+      currentDataId = normalizeText(resampled.dataId) || currentDataId;
     }
   }
 
-  updateStoresFromRunRequest(req, csvPath, timeframe)
+  updateStoresFromRunRequest(req, csvPath, timeframe);
 
-  const request: Record<string, unknown> = { ...req }
+  const request: Record<string, unknown> = { ...req };
   if (currentDataId) {
-    request.data_id = currentDataId
-    request.dataId = currentDataId
+    request.data_id = currentDataId;
+    request.dataId = currentDataId;
   }
-  await runOptimization({ request, switchTab: true })
+  if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
+    const { generateMlSignalScoreCache } = await import("./mlSignalService");
+    const pinia = getActivePinia();
+    if (pinia) {
+      const optimizeStore = useOptimizeStore(pinia);
+      if (normalizeText(request.input_path ?? request.inputPath)) {
+        optimizeStore.mlSignalScoreInputPath = normalizeText(
+          request.input_path ?? request.inputPath,
+        );
+      }
+      if (normalizeText(request.output_path ?? request.outputPath)) {
+        optimizeStore.mlSignalScoreCachePath = normalizeText(
+          request.output_path ?? request.outputPath,
+        );
+      }
+      if (normalizeText(request.model_bundle_id ?? request.modelBundleId)) {
+        optimizeStore.mlSignalModelBundleId = normalizeText(
+          request.model_bundle_id ?? request.modelBundleId,
+        );
+      }
+    }
+    await generateMlSignalScoreCache();
+    return;
+  }
+  await runOptimization({ request, switchTab: true });
 }
 
 export async function openSavedRunReport(path: string): Promise<void> {
-  const detail = await loadSavedRunDetail(path)
-  const reportPath = normalizePath(detail.reportPath)
-  if (!reportPath) throw new Error('No report path for this saved run yet (run validation + export XLSX).')
+  const detail = await loadSavedRunDetail(path);
+  const reportPath = normalizePath(detail.reportPath);
+  if (!reportPath)
+    throw new Error(
+      "No report path for this saved run yet (run validation + export XLSX).",
+    );
   try {
-    await invokeCommand('open_path', { path: reportPath })
+    await invokeCommand("open_path", { path: reportPath });
   } catch {
-    await invokeCommand('reveal_path', { path: reportPath })
+    await invokeCommand("reveal_path", { path: reportPath });
   }
 }
 
 export async function revealSavedRun(path: string): Promise<void> {
-  const nextPath = normalizePath(path)
-  if (!nextPath) return
-  await invokeCommand('reveal_path', { path: nextPath })
+  const nextPath = normalizePath(path);
+  if (!nextPath) return;
+  await invokeCommand("reveal_path", { path: nextPath });
 }
 
 export async function deleteSavedRun(path: string): Promise<void> {
-  const nextPath = normalizePath(path)
-  if (!nextPath) return
-  await invokeCommand('delete_run_artifact', { path: nextPath })
+  const nextPath = normalizePath(path);
+  if (!nextPath) return;
+  await invokeCommand("delete_run_artifact", { path: nextPath });
 }
 
-export async function loadSavedRunDetail(path: string): Promise<HistorySavedRunDetail> {
-  const nextPath = normalizePath(path)
-  if (!nextPath) throw new Error('Missing run artifact path.')
+export async function loadSavedRunDetail(
+  path: string,
+): Promise<HistorySavedRunDetail> {
+  const nextPath = normalizePath(path);
+  if (!nextPath) throw new Error("Missing run artifact path.");
 
-  const raw = (await invokeCommand('load_run_artifact', { path: nextPath })) as RunArtifactResponse
-  const record = raw && typeof raw === 'object' ? raw : ({} as RunArtifactResponse)
+  const raw = (await invokeCommand("load_run_artifact", {
+    path: nextPath,
+  })) as RunArtifactResponse;
+  const record =
+    raw && typeof raw === "object" ? raw : ({} as RunArtifactResponse);
 
-  const runRecord = record.run && typeof record.run === 'object'
-    ? record.run as Record<string, unknown>
-    : null
-  const req = runRecord?.req && typeof runRecord.req === 'object'
-    ? runRecord.req as Record<string, unknown>
-    : null
-  const datasetMeta = record.dataset_meta && typeof record.dataset_meta === 'object'
-    ? record.dataset_meta as Record<string, unknown>
-    : null
-  const data = record.data && typeof record.data === 'object'
-    ? record.data as Record<string, unknown>
-    : null
-  const validation = record.validation && typeof record.validation === 'object'
-    ? record.validation as Record<string, unknown>
-    : null
+  const runRecord =
+    record.run && typeof record.run === "object"
+      ? (record.run as Record<string, unknown>)
+      : null;
+  const req =
+    runRecord?.req && typeof runRecord.req === "object"
+      ? (runRecord.req as Record<string, unknown>)
+      : null;
+  const datasetMeta =
+    record.dataset_meta && typeof record.dataset_meta === "object"
+      ? (record.dataset_meta as Record<string, unknown>)
+      : null;
+  const data =
+    record.data && typeof record.data === "object"
+      ? (record.data as Record<string, unknown>)
+      : null;
+  const validation =
+    record.validation && typeof record.validation === "object"
+      ? (record.validation as Record<string, unknown>)
+      : null;
+  const mlSignal =
+    record.ml_signal && typeof record.ml_signal === "object"
+      ? (record.ml_signal as Record<string, unknown>)
+      : null;
+  const validationReq =
+    validation?.req && typeof validation.req === "object"
+      ? (validation.req as Record<string, unknown>)
+      : null;
 
   return {
     strategyKind: normalizeText(req?.strategy_kind ?? record.strategy_kind),
@@ -663,6 +1049,15 @@ export async function loadSavedRunDetail(path: string): Promise<HistorySavedRunD
     reportPath: normalizeText(record.report_xlsx_path),
     hasValidation: !!(validation && validation.res),
     tags: normalizeStringList(record.tags),
-    paramsText: buildReqSnapshot(req),
-  }
+    mlBundleId: normalizeText(mlSignal?.bundle_id),
+    mlScoreCachePath: normalizeText(mlSignal?.score_cache_path),
+    mlScoreManifestPath: normalizeText(mlSignal?.score_manifest_path),
+    mlFeatureSchemaPath: normalizeText(mlSignal?.feature_schema_path),
+    mlFeatureSchemaVersion: normalizeText(mlSignal?.feature_schema_version),
+    mlPolicySummary: formatMlPolicySummary(mlSignal?.policy),
+    mlPolicySweepSummary: formatMlPolicySweepSummary(mlSignal?.policy_sweep),
+    mlRunVerdictSummary: formatMlRunVerdictSummary(validation?.res),
+    mlTopCandidatesSummary: formatMlTopCandidatesSummary(validation?.res),
+    paramsText: buildReqSnapshot(req, validationReq),
+  };
 }

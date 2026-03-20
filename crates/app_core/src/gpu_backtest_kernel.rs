@@ -915,7 +915,7 @@ impl CudaKernelRuntime {
     }
 }
 
-fn load_double_crossover_module(device: Device) -> Result<Module, String> {
+pub(crate) fn load_double_crossover_module(device: Device) -> Result<Module, String> {
     if device_compute_capability(device) == Some((8, 9)) {
         let cubin: &[u8] =
             include_bytes!(concat!(env!("OUT_DIR"), "/double_crossover.sm_89.cubin"));
@@ -3660,8 +3660,9 @@ fn estimate_tile_bytes(
         bytes = bytes.saturating_add(bytes_i32(cand_len).saturating_mul(2)); // cand_a + cand_b
         bytes = bytes.saturating_add(bytes_i32(topk).saturating_mul(2)); // top_fast + top_slow
         bytes = bytes.saturating_add(bytes_f32(topk.saturating_mul(metrics_count))); // top_metrics
-        bytes =
-            bytes.saturating_add(bytes_f32(topk.saturating_mul(metrics_count.saturating_add(2)))); // packed top rows
+        bytes = bytes.saturating_add(bytes_f32(
+            topk.saturating_mul(metrics_count.saturating_add(2)),
+        )); // packed top rows
 
         if heatmap_bins > 0 {
             let heat_len = heatmap_bins.saturating_mul(heatmap_bins);
@@ -4660,8 +4661,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 .d_fast_ma_tm
                 .as_mut()
                 .ok_or_else(|| {
-                    "internal error: missing d_fast_ma_tm for precomputed fast matrix"
-                        .to_string()
+                    "internal error: missing d_fast_ma_tm for precomputed fast matrix".to_string()
                 })?
                 .copy_from(&fast_precomputed_host_tile)
                 .map_err(|e| e.to_string())?;
@@ -6325,8 +6325,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .d_fast_ma_tm
                 .as_mut()
                 .ok_or_else(|| {
-                    "internal error: missing d_fast_ma_tm for precomputed fast matrix"
-                        .to_string()
+                    "internal error: missing d_fast_ma_tm for precomputed fast matrix".to_string()
                 })?
                 .copy_from(&fast_precomputed_host_tile)
                 .map_err(|e| e.to_string())?;
@@ -7052,7 +7051,11 @@ fn optimize_double_ma_gpu_kernel_impl(
             let fast_chunk = &fast_periods[f_start..f_start + pf];
             let slow_chunk = &slow_periods[s_start..s_start + ps];
             let tile_rows_compact = compact_valid_pair_output && launch_pairs < pairs;
-            let tile_row_count = if tile_rows_compact { launch_pairs } else { pairs };
+            let tile_row_count = if tile_rows_compact {
+                launch_pairs
+            } else {
+                pairs
+            };
 
             if include_all {
                 copy_device_prefix_to_host_f32(
@@ -7717,9 +7720,20 @@ fn optimize_double_ma_gpu_kernel_impl(
                         bt_stream,
                         scratch,
                         &pack_metric_rows,
-                        scratch.d_top_fast.as_ref().unwrap().as_device_ptr().as_raw(),
-                        scratch.d_top_slow.as_ref().unwrap().as_device_ptr().as_raw(),
-                        scratch.d_top_metrics
+                        scratch
+                            .d_top_fast
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw(),
+                        scratch
+                            .d_top_slow
+                            .as_ref()
+                            .unwrap()
+                            .as_device_ptr()
+                            .as_raw(),
+                        scratch
+                            .d_top_metrics
                             .as_ref()
                             .unwrap()
                             .as_device_ptr()

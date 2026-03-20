@@ -9,6 +9,8 @@ pub mod cdmc;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod cdmc_gpu_kernel;
 pub mod composite_cpu;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) mod composite_gpu_metric_decode;
 pub mod composite_mo;
 pub(crate) mod composite_profile_route;
 pub mod composite_validate;
@@ -26,8 +28,6 @@ pub(crate) mod double_ma_vdps;
 pub mod dynamic_indicator_adapter;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod gpu_backtest_kernel;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-pub(crate) mod composite_gpu_metric_decode;
 pub mod indicator_catalog;
 pub mod indicator_factory;
 pub mod iterative_sim;
@@ -44,6 +44,7 @@ pub mod mkcs;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod mkcs_gpu_kernel;
 pub mod ml_confidence;
+pub mod ml_signal;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;
@@ -164,6 +165,20 @@ pub use ml_confidence::{
     MlConfidenceCalibrationBin, MlConfidenceLabelConfig, MlConfidenceModel,
     MlConfidenceModelFamily, MlConfidenceModelKind, MlConfidenceScope, MlConfidenceTrainConfig,
     MlConfidenceTrainMetrics,
+};
+
+pub use ml_signal::{
+    assign_ml_signal_ticker_holdout, build_ml_signal_score_cache_from_csv,
+    build_ml_signal_split_windows, classify_ml_signal_manifest, export_ml_signal_dataset_with_candles,
+    list_ml_signal_model_bundle_summaries, read_ml_signal_manifest,
+    run_ml_signal_policy_sweep_blocking_with_candles, run_ml_signal_validation_blocking_with_candles,
+    MlSignalDatasetExportManifest, MlSignalDatasetExportRequest, MlSignalDatasetExportResult,
+    MlSignalFeatureSchema, MlSignalModelBundleManifest, MlSignalModelBundleStatus,
+    MlSignalModelBundleSummary, MlSignalPolicyParams, MlSignalPolicySweepRequest,
+    MlSignalPolicySweepResult, MlSignalScoreCacheBuildRequest, MlSignalScoreCacheBuildResult,
+    MlSignalScoreCacheManifest, MlSignalSplitPlan, MlSignalSplitWindow, MlSignalSweepAxisF64,
+    MlSignalSweepAxisUsize, MlSignalTickerHoldoutConfig, MlSignalValidationRequest,
+    MlSignalValidationResult,
 };
 
 pub use sharpe_stats::{
