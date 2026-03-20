@@ -62,6 +62,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::composite_validate::WalkForwardStats;
     use crate::cscv_pbo::CscvCandidatePboStats;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
     use crate::validation_pipeline::{
@@ -95,7 +96,7 @@ mod tests {
             None
         }
 
-        fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)> {
+        fn walk_forward_stats(&self) -> Option<&WalkForwardStats> {
             None
         }
 

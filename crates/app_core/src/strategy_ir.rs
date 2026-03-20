@@ -106,7 +106,9 @@ pub enum IndicatorKind {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ValueRef {
-    Indicator { id: String },
+    Indicator {
+        id: String,
+    },
     MaSource,
     Close,
     ConstantBits {
@@ -134,7 +136,9 @@ where
 
     match RawConstantBits::deserialize(deserializer)? {
         RawConstantBits::Number(bits) => Ok(bits),
-        RawConstantBits::String(bits) => bits.trim().parse::<u64>().map_err(serde::de::Error::custom),
+        RawConstantBits::String(bits) => {
+            bits.trim().parse::<u64>().map_err(serde::de::Error::custom)
+        }
     }
 }
 

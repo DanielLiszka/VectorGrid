@@ -512,8 +512,8 @@ fn build_request(
         constraints: None,
         vdps,
         dynamic_strategy_ir: None,
-    gpu_execution: Default::default(),
-    persist_followup_cache: false,
+        gpu_execution: Default::default(),
+        persist_followup_cache: false,
     }
 }
 
@@ -904,5 +904,3 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
     }
     total
 }
-
-

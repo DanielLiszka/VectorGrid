@@ -113,19 +113,6 @@ use crate::rocb::{
     build_rocb_desired_positions, compute_rocb_breakout_signals, compute_rocb_risk_signals,
     compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbStrategyParams,
 };
-use crate::vcet::{
-    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
-    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params, VcetStrategyParams,
-};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::vcet::{
-    compute_vcet_chandelier_signal_cuda_device, compute_vcet_vidya_signal_cuda_device,
-    VcetOwnedDeviceMatrix,
-};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::vcet_gpu_kernel::{
-    eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
-};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::rocb::{
     compute_rocb_atr_sweep_cuda_device, compute_rocb_donchian_output_sweep_cuda_device,
@@ -147,6 +134,19 @@ use crate::vcc::{
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc_gpu_kernel::{
     eval_vcc_metrics_gpu_kernel_device_rows, VccGpuComboBatch, VccGpuDeviceSignalMatrices,
+};
+use crate::vcet::{
+    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
+    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params, VcetStrategyParams,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcet::{
+    compute_vcet_chandelier_signal_cuda_device, compute_vcet_vidya_signal_cuda_device,
+    VcetOwnedDeviceMatrix,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcet_gpu_kernel::{
+    eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
 };
 use crate::vemr::{
     build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
@@ -4809,7 +4809,10 @@ fn run_vcet_optimization(
                 | Backend::GpuKernel { device_id } => device_id,
                 Backend::CpuOnly => 0,
             };
-            if matches!(req.backend, Backend::GpuOnly { .. } | Backend::GpuHybridKernel { .. }) {
+            if matches!(
+                req.backend,
+                Backend::GpuOnly { .. } | Backend::GpuHybridKernel { .. }
+            ) {
                 let mut cpu_res = run_vcet_optimization_cpu(req, candles, cancel, progress)?;
                 cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
                 cpu_res.backend_fallback_reason = Some(
@@ -5065,7 +5068,8 @@ fn run_vcet_optimization_gpu(
         ce_rows: ce_long_rows.len(),
     };
     let combo_end_t = vec![
-        i32::try_from(n).map_err(|_| "VCET end_t exceeds i32 range".to_string())?;
+        i32::try_from(n)
+            .map_err(|_| "VCET end_t exceeds i32 range".to_string())?;
         combo_vidya_row_idx.len()
     ];
     let combos = VcetGpuComboBatch {
@@ -5076,8 +5080,9 @@ fn run_vcet_optimization_gpu(
     };
 
     let start = std::time::Instant::now();
-    let metrics =
-        eval_vcet_metrics_gpu_kernel_device_rows(device_id, &signals, &combos, &strategy, &vcet_cfg)?;
+    let metrics = eval_vcet_metrics_gpu_kernel_device_rows(
+        device_id, &signals, &combos, &strategy, &vcet_cfg,
+    )?;
     if metrics.len() != combo_params.len() {
         return Err("VCET GPU kernel output length mismatch".to_string());
     }
@@ -5093,7 +5098,11 @@ fn run_vcet_optimization_gpu(
             *slow_periods.iter().max().unwrap_or(&0),
         );
     }
-    for (i, (params, m)) in combo_params.into_iter().zip(metrics.into_iter()).enumerate() {
+    for (i, (params, m)) in combo_params
+        .into_iter()
+        .zip(metrics.into_iter())
+        .enumerate()
+    {
         agg.push(params, m);
         if (i & 0x03ff) == 0 {
             emit_progress(progress, i + 1, total_pairs, "vcet_optimize");
@@ -10458,11 +10467,13 @@ mod tests {
 
     struct TestEnvGuard {
         _env: std::sync::MutexGuard<'static, ()>,
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
         _gpu: crate::gpu_backtest_kernel::GpuTestLockGuard,
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn lock_env() -> TestEnvGuard {
-        let env = crate::gpu_backtest_kernel::lock_test_env();
+        let env = crate::test_support::lock_test_env();
         let gpu = crate::gpu_backtest_kernel::lock_gpu_test();
         crate::gpu_backtest_kernel::reset_test_runtime();
         crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
@@ -10470,6 +10481,12 @@ mod tests {
             _env: env,
             _gpu: gpu,
         }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    fn lock_env() -> TestEnvGuard {
+        let env = crate::test_support::lock_test_env();
+        TestEnvGuard { _env: env }
     }
 
     fn with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
@@ -13656,12 +13673,11 @@ mod tests {
                 .expect("vcet gpu fallback optimization");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("without overlays/stop-loss/take-profit")
-        );
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -13965,6 +13981,3 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
-
-
-

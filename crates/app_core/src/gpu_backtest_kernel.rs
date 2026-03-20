@@ -132,7 +132,18 @@ pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOn
     }
 }
 
-const METRICS_COUNT: usize = 7;
+const BASE_METRICS_COUNT: usize = 7;
+const METRICS_COUNT: usize = 10;
+const METRIC_IDX_PNL: usize = 0;
+const METRIC_IDX_TRADES: usize = 1;
+const METRIC_IDX_MAX_DD: usize = 2;
+const METRIC_IDX_MEAN: usize = 3;
+const METRIC_IDX_STD: usize = 4;
+const METRIC_IDX_EXPOSURE: usize = 5;
+const METRIC_IDX_NET_EXPOSURE: usize = 6;
+const METRIC_IDX_DOWNSIDE_DEVIATION: usize = 7;
+const METRIC_IDX_ULCER_INDEX: usize = 8;
+const METRIC_IDX_MARTIN_RATIO: usize = 9;
 const TOPK_BLOCK_ITEMS: usize = 512;
 
 #[derive(Clone, Copy, Debug)]
@@ -489,32 +500,12 @@ fn choose_backtest_launch_shape_1d(
     device_caps: DeviceLaunchCaps,
     kernel_caps: KernelLaunchCaps,
 ) -> LaunchShape1d {
-    let mut launch = choose_launch_shape_1d(total_items, device_caps, kernel_caps);
-    if fixed_block_override().is_some() || total_items == 0 {
-        return launch;
-    }
-
-    let total_u32 = total_items.min(u32::MAX as usize) as u32;
-    let warp = device_caps.warp_size.max(1);
-    let max_block = device_caps
-        .max_threads_per_block
-        .min(kernel_caps.max_threads_per_block)
-        .max(warp);
-    let pairs_per_sm = (total_u32 / device_caps.sm_count.max(1)).max(1);
-
-    let mut min_block = warp;
-    if pairs_per_sm >= 1024 {
-        min_block = 512;
-    } else if pairs_per_sm >= 192 {
-        min_block = 256;
-    }
-    min_block = normalize_block_x(min_block, warp, max_block);
-
-    if launch.block_x < min_block {
-        launch.block_x = min_block;
-        launch.grid_x = div_ceil_u32(total_u32, launch.block_x);
-    }
-    launch
+    choose_launch_shape_1d_from_candidates(
+        total_items,
+        device_caps,
+        kernel_caps,
+        &[128u32, 256, 512],
+    )
 }
 
 #[derive(Debug)]
@@ -652,9 +643,94 @@ fn calmar_ratio(pnl: f64, max_dd: f64) -> f64 {
     raw.clamp(-CLAMP_MAX, CLAMP_MAX)
 }
 
+#[inline]
+fn search_rows_use_log_space(metrics_count: usize) -> bool {
+    metrics_count < METRICS_COUNT
+}
+
+#[inline]
+fn search_log_pnl_to_pnl(log_pnl: f64) -> f64 {
+    log_pnl.exp_m1()
+}
+
+#[inline]
+fn search_log_max_dd_to_max_dd(max_log_dd: f64) -> f64 {
+    if max_log_dd > 0.0 {
+        -(-max_log_dd).exp_m1()
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn max_drawdown_constraint_to_search_space(max_dd: f64, metrics_count: usize) -> f32 {
+    if !search_rows_use_log_space(metrics_count) {
+        return max_dd as f32;
+    }
+    if !max_dd.is_finite() {
+        return f32::INFINITY;
+    }
+    if max_dd <= 0.0 {
+        return 0.0;
+    }
+    if max_dd >= 1.0 {
+        return f32::INFINITY;
+    }
+    (-(1.0 - max_dd).ln()) as f32
+}
+
+#[inline]
+fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) -> Metrics {
+    let metric = |idx: usize| -> f64 {
+        if metrics_count > idx && base + idx < src.len() {
+            src[base + idx] as f64
+        } else {
+            0.0
+        }
+    };
+
+    let raw_pnl = metric(METRIC_IDX_PNL);
+    let trades = metric(METRIC_IDX_TRADES);
+    let raw_max_dd = metric(METRIC_IDX_MAX_DD);
+    let mean = metric(METRIC_IDX_MEAN);
+    let std = metric(METRIC_IDX_STD);
+    let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+    let pnl = if search_rows_use_log_space(metrics_count) {
+        search_log_pnl_to_pnl(raw_pnl)
+    } else {
+        raw_pnl
+    };
+    let max_dd = if search_rows_use_log_space(metrics_count) {
+        search_log_max_dd_to_max_dd(raw_max_dd)
+    } else {
+        raw_max_dd
+    };
+
+    Metrics {
+        pnl,
+        sharpe,
+        sortino: 0.0,
+        downside_deviation: metric(METRIC_IDX_DOWNSIDE_DEVIATION),
+        calmar: calmar_ratio(pnl, max_dd),
+        omega: 0.0,
+        volatility: std,
+        ulcer_index: metric(METRIC_IDX_ULCER_INDEX),
+        martin_ratio: metric(METRIC_IDX_MARTIN_RATIO),
+        max_dd,
+        trades: if trades.is_finite() && trades >= 0.0 {
+            trades as u32
+        } else {
+            0
+        },
+        exposure: metric(METRIC_IDX_EXPOSURE),
+        net_exposure: metric(METRIC_IDX_NET_EXPOSURE),
+    }
+}
+
 #[derive(Default)]
 struct KernelScratch {
     d_lr: Option<DeviceBuffer<f32>>,
+    d_ret1: Option<DeviceBuffer<f32>>,
     d_fast_p: Option<DeviceBuffer<i32>>,
     d_fast_ma: Option<DeviceBuffer<f32>>,
     d_fast_ma_tm: Option<DeviceBuffer<f32>>,
@@ -740,6 +816,7 @@ impl KernelScratch {
 
     fn clear_async(&mut self, stream: &Stream) -> Result<(), String> {
         Self::drop_opt_async(&mut self.d_lr, stream)?;
+        Self::drop_opt_async(&mut self.d_ret1, stream)?;
         Self::drop_opt_async(&mut self.d_fast_p, stream)?;
         Self::drop_opt_async(&mut self.d_fast_ma, stream)?;
         Self::drop_opt_async(&mut self.d_fast_ma_tm, stream)?;
@@ -1192,6 +1269,7 @@ pub(crate) fn probe_uploaded_gpu_strategy_program(
 
 pub struct UploadedDoubleMaDynamicProgramBatch {
     d_lr: DeviceBuffer<f32>,
+    d_ret1: DeviceBuffer<f32>,
     d_fast_ma_tm: DeviceBuffer<f32>,
     d_slow_ma_tm: DeviceBuffer<f32>,
     d_fast_periods: DeviceBuffer<i32>,
@@ -1220,6 +1298,10 @@ fn transpose_row_major_to_tm_f32(row_major: &[f32], rows: usize, cols: usize) ->
         }
     }
     out
+}
+
+fn simple_returns_from_log_returns_f32(lr: &[f32]) -> Vec<f32> {
+    lr.iter().map(|&v| v.exp_m1()).collect()
 }
 
 fn validate_double_ma_dynamic_strategy_handle(handle: &StrategyHandle) -> Result<(), String> {
@@ -1320,6 +1402,7 @@ pub fn upload_double_ma_dynamic_program_batch(
     }
     let fast_tm = transpose_row_major_to_tm_f32(fast_row_major, fast_rows, stride);
     let slow_tm = transpose_row_major_to_tm_f32(slow_row_major, slow_rows, stride);
+    let ret1 = simple_returns_from_log_returns_f32(lr);
 
     let mut fast_idx: HashMap<u16, usize> = HashMap::with_capacity(fast_periods.len());
     for (i, &period) in fast_periods.iter().enumerate() {
@@ -1365,6 +1448,7 @@ pub fn upload_double_ma_dynamic_program_batch(
 
             Ok(UploadedDoubleMaDynamicProgramBatch {
                 d_lr: DeviceBuffer::from_slice(lr).map_err(|e| e.to_string())?,
+                d_ret1: DeviceBuffer::from_slice(&ret1).map_err(|e| e.to_string())?,
                 d_fast_ma_tm: DeviceBuffer::from_slice(&fast_tm).map_err(|e| e.to_string())?,
                 d_slow_ma_tm: DeviceBuffer::from_slice(&slow_tm).map_err(|e| e.to_string())?,
                 d_fast_periods: DeviceBuffer::from_slice(&fast_periods_i32)
@@ -1421,7 +1505,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 rt.launch_caps,
                 launch_caps,
             );
-            let out_stride = 7usize;
+            let out_stride = METRICS_COUNT;
             let out_len = uploaded_batch
                 .fast_tm_stride
                 .checked_mul(uploaded_batch.slow_tm_stride)
@@ -1430,6 +1514,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
             let scratch_key = (uploaded_batch.device_id, out_len);
 
             let mut lr_ptr = uploaded_batch.d_lr.as_device_ptr().as_raw();
+            let mut ret1_ptr = uploaded_batch.d_ret1.as_device_ptr().as_raw();
             let mut t_i = uploaded_batch.d_lr.len() as i32;
             let mut fast_ptr = uploaded_batch.d_fast_ma_tm.as_device_ptr().as_raw();
             let mut fast_stride_i = uploaded_batch.fast_tm_stride as i32;
@@ -1459,6 +1544,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
             let mut metrics_stride_i = out_stride as i32;
             let mut pair_map_ptr = uploaded_batch.d_pair_index_map.as_device_ptr().as_raw();
             let mut pair_count_i = uploaded_batch.combo_count as i32;
+            let mut compact_output_i = 0i32;
             let mut host_out = vec![0.0f32; out_len];
             DYNAMIC_GPU_METRICS_SCRATCH.with(|scratch| -> Result<(), String> {
                 let mut scratch = scratch.borrow_mut();
@@ -1477,6 +1563,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                     &mut fast_ptr as *mut _ as *mut c_void,
                     &mut slow_ptr as *mut _ as *mut c_void,
                     &mut lr_ptr as *mut _ as *mut c_void,
+                    &mut ret1_ptr as *mut _ as *mut c_void,
                     &mut t_i as *mut _ as *mut c_void,
                     &mut pf_tile_i as *mut _ as *mut c_void,
                     &mut ps_tile_i as *mut _ as *mut c_void,
@@ -1504,6 +1591,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                     &mut metrics_stride_i as *mut _ as *mut c_void,
                     &mut pair_map_ptr as *mut _ as *mut c_void,
                     &mut pair_count_i as *mut _ as *mut c_void,
+                    &mut compact_output_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
                 unsafe {
@@ -1524,24 +1612,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
             let mut out_metrics = Vec::with_capacity(uploaded_batch.combo_count);
             for &dense_pair_idx in &uploaded_batch.combo_dense_pair_idx {
                 let base = dense_pair_idx * out_stride;
-                let pnl = host_out[base + 0] as f64;
-                let trades = host_out[base + 1].round().max(0.0) as u32;
-                let max_dd = host_out[base + 2] as f64;
-                let mean = host_out[base + 3] as f64;
-                let std = host_out[base + 4] as f64;
-                let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-                out_metrics.push(Metrics {
-                    pnl,
-                    sharpe,
-                    sortino: 0.0,
-                    calmar: calmar_ratio(pnl, max_dd),
-                    omega: 0.0,
-                    volatility: std,
-                    max_dd,
-                    trades,
-                    exposure: host_out[base + 5] as f64,
-                    net_exposure: host_out[base + 6] as f64,
-                });
+                out_metrics.push(decode_tm_flex_metrics_row(&host_out, base, out_stride));
             }
             Ok(out_metrics)
         })
@@ -2910,7 +2981,7 @@ fn kernel_should_use_m7_specialize(
 ) -> bool {
     if !kernel_m7_specialize_enabled()
         || is_multi_tile_workload
-        || metrics_count != 7
+        || metrics_count < BASE_METRICS_COUNT
         || !kernel_available
     {
         return false;
@@ -2955,7 +3026,8 @@ fn kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma: &str, slow_ma: &
 }
 
 fn kernel_metrics_pad8_enabled_for_pair(fast_ma: &str, slow_ma: &str) -> bool {
-    // Pad full M=7 metric rows to 8 floats to improve alignment/coalescing in tile buffers.
+    // Pad legacy 7-float rows to 8 floats to improve alignment/coalescing in tile buffers.
+    // Wider rows should use their natural stride.
     // Default only for ALMA/ALMA (current proven win); env override still wins.
     if let Some(v) = env_flag_override("VECTORBT_KERNEL_METRICS_PAD8") {
         return v;
@@ -2985,11 +3057,51 @@ fn effective_metrics_stride(
             return v;
         }
     }
-    if pad8_enabled && metrics_count == METRICS_COUNT {
+    if pad8_enabled && metrics_count == BASE_METRICS_COUNT {
         8
     } else {
         metrics_count
     }
+}
+
+#[inline]
+fn search_metrics_count_for_optimization(
+    objective: ObjectiveKind,
+    constraints: Option<&DoubleMaConstraints>,
+    include_all: bool,
+    export_enabled: bool,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+) -> usize {
+    if include_all || export_enabled || fast_precomputed_enabled || slow_precomputed_enabled {
+        return METRICS_COUNT;
+    }
+
+    let mut metrics_count = match objective {
+        ObjectiveKind::Pnl => 1,
+        ObjectiveKind::Sharpe | ObjectiveKind::Volatility => 5,
+        ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => 3,
+        ObjectiveKind::Sortino | ObjectiveKind::Omega => METRICS_COUNT,
+    };
+
+    if constraints.and_then(|c| c.min_trades).is_some() {
+        metrics_count = metrics_count.max(2);
+    }
+    if constraints.and_then(|c| c.max_drawdown).is_some() {
+        metrics_count = metrics_count.max(3);
+    }
+
+    metrics_count.min(METRICS_COUNT)
+}
+
+#[inline]
+fn should_use_compact_valid_pair_output(
+    include_all: bool,
+    export_enabled: bool,
+    host_filter_mode: bool,
+    metrics_count: usize,
+) -> bool {
+    !include_all && !export_enabled && !host_filter_mode && metrics_count < METRICS_COUNT
 }
 
 #[inline]
@@ -3198,6 +3310,7 @@ fn estimate_tile_bytes(
         bytes = bytes.saturating_add(bytes_f32(series_len)); // d_ma_buf
     }
     bytes = bytes.saturating_add(bytes_f32(series_len)); // d_lr
+    bytes = bytes.saturating_add(bytes_f32(series_len)); // d_ret1
 
     if fast_ma == "vwma" || slow_ma == "vwma" {
         bytes = bytes.saturating_add(bytes_f32(series_len)); // d_volume
@@ -4043,11 +4156,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
     let device_launch_caps = rt.launch_caps;
-    let compute_lr = rt
+    let compute_returns = rt
         .module
-        .get_function("compute_log_returns_f32")
+        .get_function("compute_log_and_simple_returns_f32")
         .map_err(|e| e.to_string())?;
-    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
+    let compute_returns_launch_caps =
+        detect_kernel_launch_caps(&compute_returns, device_launch_caps);
     let d_close = &resident.close;
     let d_high = if needs_high_low {
         resident.high.as_ref()
@@ -4206,21 +4320,25 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let fill_launch_caps = detect_kernel_launch_caps(&fill_f32, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
+    let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
     unsafe {
         let mut prices_ptr = d_close.as_device_ptr().as_raw();
         let mut t_i = n as i32;
-        let mut out_ptr = d_lr_ptr;
-        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_lr_launch_caps);
+        let mut lr_out_ptr = d_lr_ptr;
+        let mut ret1_out_ptr = d_ret1_ptr;
+        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_returns_launch_caps);
         let block_x: u32 = launch.block_x;
         let grid_x: u32 = launch.grid_x;
         let args: &mut [*mut c_void] = &mut [
             &mut prices_ptr as *mut _ as *mut c_void,
             &mut t_i as *mut _ as *mut c_void,
-            &mut out_ptr as *mut _ as *mut c_void,
+            &mut lr_out_ptr as *mut _ as *mut c_void,
+            &mut ret1_out_ptr as *mut _ as *mut c_void,
         ];
         bt_stream
-            .launch(&compute_lr, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+            .launch(&compute_returns, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
             .map_err(|e| e.to_string())?;
     }
 
@@ -4615,8 +4733,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 )?;
                 launch_pairs = cached_valid_map.map(|(_, len)| len).unwrap_or(0);
                 if launch_pairs > 0 {
-                    pair_index_map_ptr =
-                        cached_valid_map.map(|(ptr, _)| ptr).unwrap_or_default();
+                    pair_index_map_ptr = cached_valid_map.map(|(ptr, _)| ptr).unwrap_or_default();
                 }
 
                 unsafe {
@@ -4624,7 +4741,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let mut n_i = out_len as i32;
                     let mut v = 0.0f32;
                     let launch =
-                        choose_launch_shape_1d(out_len, device_launch_caps, compute_lr_launch_caps);
+                        choose_launch_shape_1d(out_len, device_launch_caps, fill_launch_caps);
                     let block_x: u32 = launch.block_x;
                     let grid_x: u32 = launch.grid_x;
                     let args: &mut [*mut c_void] = &mut [
@@ -4653,6 +4770,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .as_device_ptr()
                         .as_raw();
                     let mut lr = d_lr_ptr;
+                    let mut ret1 = d_ret1_ptr;
                     let mut t_i = n as i32;
                     let mut pf_tile_i = pf as i32;
                     let mut ps_tile_i = ps as i32;
@@ -4683,6 +4801,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let mut metrics_stride_i = tile_metrics_stride as i32;
                     let mut pair_map_ptr = pair_index_map_ptr;
                     let mut pair_count_i = launch_pairs as i32;
+                    let mut compact_output_i = 0i32;
                     let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut eval_start_i = eval_start_t as i32;
                     let mut eval_end_i = eval_end_t as i32;
@@ -4830,6 +4949,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             &mut f_ma_tm as *mut _ as *mut c_void,
                             &mut s_ma_tm as *mut _ as *mut c_void,
                             &mut lr as *mut _ as *mut c_void,
+                            &mut ret1 as *mut _ as *mut c_void,
                             &mut t_i as *mut _ as *mut c_void,
                             &mut pf_tile_i as *mut _ as *mut c_void,
                             &mut ps_tile_i as *mut _ as *mut c_void,
@@ -4859,6 +4979,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             &mut metrics_stride_i as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -4869,6 +4990,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             &mut f_ma_tm as *mut _ as *mut c_void,
                             &mut s_ma_tm as *mut _ as *mut c_void,
                             &mut lr as *mut _ as *mut c_void,
+                            &mut ret1 as *mut _ as *mut c_void,
                             &mut t_i as *mut _ as *mut c_void,
                             &mut pf_tile_i as *mut _ as *mut c_void,
                             &mut ps_tile_i as *mut _ as *mut c_void,
@@ -4896,6 +5018,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             &mut metrics_stride_i as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -4919,30 +5042,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let global_s = s_start + j;
                     if let Some(combo_idx) = pair_to_combo[global_f * s_total + global_s] {
                         let src_base = (i * ps + j) * tile_metrics_stride;
-                        let pnl = tile_host_buf[src_base + 0] as f64;
-                        let trades = tile_host_buf[src_base + 1];
-                        let max_dd = tile_host_buf[src_base + 2] as f64;
-                        let mean = tile_host_buf[src_base + 3] as f64;
-                        let std = tile_host_buf[src_base + 4] as f64;
-                        let exposure = tile_host_buf[src_base + 5] as f64;
-                        let net_exposure = tile_host_buf[src_base + 6] as f64;
-                        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-                        out_metrics[combo_idx] = Metrics {
-                            pnl,
-                            sharpe,
-                            sortino: 0.0,
-                            calmar: calmar_ratio(pnl, max_dd),
-                            omega: 0.0,
-                            volatility: std,
-                            max_dd,
-                            trades: if trades.is_finite() && trades >= 0.0 {
-                                trades as u32
-                            } else {
-                                0
-                            },
-                            exposure,
-                            net_exposure,
-                        };
+                        out_metrics[combo_idx] = decode_tm_flex_metrics_row(
+                            &tile_host_buf,
+                            src_base,
+                            tile_metrics_stride,
+                        );
                     }
                 }
             }
@@ -4959,6 +5063,73 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     }
 
     Ok(out_metrics)
+}
+
+fn recompute_optimization_result_finalists_with_full_gpu_pass(
+    rt: &mut CudaKernelRuntime,
+    candles: &Candles,
+    result: &mut OptimizationResult,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
+    cfg: KernelConfig,
+    strategy: &StrategyConfig,
+) -> Result<(), String> {
+    let mut finalists: Vec<DoubleMaParams> = Vec::new();
+    let mut seen: HashMap<(u16, u16), usize> = HashMap::new();
+    let mut top_indices: Vec<usize> = Vec::with_capacity(result.top.len());
+
+    let best_key = (result.best_params.fast_len, result.best_params.slow_len);
+    seen.insert(best_key, 0);
+    finalists.push(result.best_params.clone());
+
+    for (params, _) in &result.top {
+        let key = (params.fast_len, params.slow_len);
+        let idx = if let Some(&existing) = seen.get(&key) {
+            existing
+        } else {
+            let next = finalists.len();
+            seen.insert(key, next);
+            finalists.push(params.clone());
+            next
+        };
+        top_indices.push(idx);
+    }
+
+    let recomputed = eval_double_ma_batch_gpu_kernel_impl(
+        rt,
+        candles,
+        finalists.as_slice(),
+        fast_periods,
+        slow_periods,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        cfg,
+        strategy,
+    )?;
+    if recomputed.len() != finalists.len() {
+        return Err(format!(
+            "full finalist recompute returned {} metrics for {} finalists",
+            recomputed.len(),
+            finalists.len()
+        ));
+    }
+
+    result.best_metrics = recomputed[0].clone();
+    for ((_, metrics), &idx) in result.top.iter_mut().zip(top_indices.iter()) {
+        *metrics = recomputed[idx].clone();
+    }
+
+    Ok(())
 }
 
 pub fn optimize_double_ma_gpu_kernel(
@@ -5244,7 +5415,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         let mut w = BufWriter::new(f);
         writeln!(
             w,
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,trades,exposure,net_exposure,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,martin_ratio,trades,exposure,net_exposure,score"
         )
         .map_err(|e| e.to_string())?;
         Some(w)
@@ -5470,7 +5641,14 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut processed = 0usize;
     emit_progress(progress, processed, total_pairs, "gpu-kernel");
 
-    let metrics_count: usize = METRICS_COUNT;
+    let metrics_count: usize = search_metrics_count_for_optimization(
+        objective,
+        constraints,
+        include_all,
+        export_enabled,
+        fast_precomputed_enabled,
+        slow_precomputed_enabled,
+    );
     match objective {
         ObjectiveKind::Pnl
         | ObjectiveKind::Sharpe
@@ -5529,11 +5707,12 @@ fn optimize_double_ma_gpu_kernel_impl(
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
     let device_launch_caps = rt.launch_caps;
-    let compute_lr = rt
+    let compute_returns = rt
         .module
-        .get_function("compute_log_returns_f32")
+        .get_function("compute_log_and_simple_returns_f32")
         .map_err(|e| e.to_string())?;
-    let compute_lr_launch_caps = detect_kernel_launch_caps(&compute_lr, device_launch_caps);
+    let compute_returns_launch_caps =
+        detect_kernel_launch_caps(&compute_returns, device_launch_caps);
     let d_close = &resident.close;
     let d_high = if needs_high_low {
         resident.high.as_ref()
@@ -5729,21 +5908,25 @@ fn optimize_double_ma_gpu_kernel_impl(
     let heatmap_launch_caps = detect_kernel_launch_caps(&heatmap_update, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
+    let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
     unsafe {
         let mut prices_ptr = d_close.as_device_ptr().as_raw();
         let mut t_i = n as i32;
-        let mut out_ptr = d_lr_ptr;
-        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_lr_launch_caps);
+        let mut lr_out_ptr = d_lr_ptr;
+        let mut ret1_out_ptr = d_ret1_ptr;
+        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_returns_launch_caps);
         let block_x: u32 = launch.block_x;
         let grid_x: u32 = launch.grid_x;
         let args: &mut [*mut c_void] = &mut [
             &mut prices_ptr as *mut _ as *mut c_void,
             &mut t_i as *mut _ as *mut c_void,
-            &mut out_ptr as *mut _ as *mut c_void,
+            &mut lr_out_ptr as *mut _ as *mut c_void,
+            &mut ret1_out_ptr as *mut _ as *mut c_void,
         ];
         bt_stream
-            .launch(&compute_lr, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+            .launch(&compute_returns, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
             .map_err(|e| e.to_string())?;
     }
 
@@ -5810,6 +5993,12 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     let constraints_on_device = constraints.is_some() && !include_all && select_v2_supported;
     let host_filter_mode = constraints.is_some() && !include_all && !constraints_on_device;
+    let compact_valid_pair_output = should_use_compact_valid_pair_output(
+        include_all,
+        export_enabled,
+        host_filter_mode,
+        metrics_count,
+    );
     let row_select_v2_supported = !kernel_force_legacy_topk_enabled()
         && select_topk_rows_v2.is_some()
         && select_topk_rows_candidates_v2.is_some();
@@ -5830,7 +6019,10 @@ fn optimize_double_ma_gpu_kernel_impl(
         };
     let (constraint_use_max_dd, constraint_max_dd) = match constraints.and_then(|c| c.max_drawdown)
     {
-        Some(v) => (1i32, v as f32),
+        Some(v) => (
+            1i32,
+            max_drawdown_constraint_to_search_space(v, metrics_count),
+        ),
         None => (0i32, f32::INFINITY),
     };
     let mut tile_host_buf: Vec<f32> = if include_all || export_enabled || host_filter_mode {
@@ -5937,7 +6129,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         && !host_filter_mode
         && heatmap_cfg.is_none();
     let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
-    let mut tile_graph_shape: Option<(usize, usize, usize, usize, bool)> = None;
+    let mut tile_graph_shape: Option<(usize, usize, usize, usize, bool, bool)> = None;
     let mut graph_capture_disabled = false;
 
     let mut f_start = 0usize;
@@ -6278,28 +6470,29 @@ fn optimize_double_ma_gpu_kernel_impl(
                 )?;
                 launch_pairs = cached_valid_map.map(|(_, len)| len).unwrap_or(0);
                 if launch_pairs > 0 {
-                    pair_index_map_ptr =
-                        cached_valid_map.map(|(ptr, _)| ptr).unwrap_or_default();
+                    pair_index_map_ptr = cached_valid_map.map(|(ptr, _)| ptr).unwrap_or_default();
                 }
 
-                // Keep output dense (Pf*Ps*M) for downstream kernels by zero-filling
-                // and only computing valid fast<slow pairs.
-                unsafe {
-                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut n_i = out_len as i32;
-                    let mut v = 0.0f32;
-                    let launch =
-                        choose_launch_shape_1d(out_len, device_launch_caps, compute_lr_launch_caps);
-                    let block_x: u32 = launch.block_x;
-                    let grid_x: u32 = launch.grid_x;
-                    let args: &mut [*mut c_void] = &mut [
-                        &mut out_ptr as *mut _ as *mut c_void,
-                        &mut n_i as *mut _ as *mut c_void,
-                        &mut v as *mut _ as *mut c_void,
-                    ];
-                    bt_stream
-                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                if !compact_valid_pair_output {
+                    // Keep output dense (Pf*Ps*M) for downstream kernels by zero-filling
+                    // and only computing valid fast<slow pairs.
+                    unsafe {
+                        let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+                        let mut n_i = out_len as i32;
+                        let mut v = 0.0f32;
+                        let launch =
+                            choose_launch_shape_1d(out_len, device_launch_caps, fill_launch_caps);
+                        let block_x: u32 = launch.block_x;
+                        let grid_x: u32 = launch.grid_x;
+                        let args: &mut [*mut c_void] = &mut [
+                            &mut out_ptr as *mut _ as *mut c_void,
+                            &mut n_i as *mut _ as *mut c_void,
+                            &mut v as *mut _ as *mut c_void,
+                        ];
+                        bt_stream
+                            .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
             }
 
@@ -6328,6 +6521,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             .as_device_ptr()
                             .as_raw();
                         let mut lr = d_lr_ptr;
+                        let mut ret1 = d_ret1_ptr;
                         let mut t_i = n as i32;
                         let mut pf_tile_i = pf as i32;
                         let mut ps_tile_i = ps as i32;
@@ -6355,6 +6549,11 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut metrics_stride_i = tile_metrics_stride as i32;
                         let mut pair_map_ptr = pair_index_map_ptr;
                         let mut pair_count_i = launch_pairs as i32;
+                        let mut compact_output_i = if compact_valid_pair_output {
+                            1i32
+                        } else {
+                            0i32
+                        };
                         let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut eval_start_i = eval_start_t as i32;
                         let mut eval_end_i = eval_end_t as i32;
@@ -6530,6 +6729,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut f_ma_tm as *mut _ as *mut c_void,
                                 &mut s_ma_tm as *mut _ as *mut c_void,
                                 &mut lr as *mut _ as *mut c_void,
+                                &mut ret1 as *mut _ as *mut c_void,
                                 &mut t_i as *mut _ as *mut c_void,
                                 &mut pf_tile_i as *mut _ as *mut c_void,
                                 &mut ps_tile_i as *mut _ as *mut c_void,
@@ -6559,6 +6759,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
                             bt_stream
@@ -6569,6 +6770,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut f_ma_tm as *mut _ as *mut c_void,
                                 &mut s_ma_tm as *mut _ as *mut c_void,
                                 &mut lr as *mut _ as *mut c_void,
+                                &mut ret1 as *mut _ as *mut c_void,
                                 &mut t_i as *mut _ as *mut c_void,
                                 &mut pf_tile_i as *mut _ as *mut c_void,
                                 &mut ps_tile_i as *mut _ as *mut c_void,
@@ -6596,6 +6798,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
                             bt_stream
@@ -6639,6 +6842,11 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                         let mut pair_map_ptr = pair_index_map_ptr;
                         let mut pair_count_i = launch_pairs as i32;
+                        let mut compact_output_i = if compact_valid_pair_output {
+                            1i32
+                        } else {
+                            0i32
+                        };
                         let heatmap_pairs = if pair_map_ptr != 0 && launch_pairs > 0 {
                             launch_pairs
                         } else {
@@ -6669,6 +6877,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut s_max_i as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -6695,7 +6904,14 @@ fn optimize_double_ma_gpu_kernel_impl(
                 && ps == ps_tile
                 && !host_filter_mode;
             if can_graph_tile {
-                let shape = (pf, ps, pairs, launch_pairs, heatmap_cfg.is_some());
+                let shape = (
+                    pf,
+                    ps,
+                    pairs,
+                    launch_pairs,
+                    heatmap_cfg.is_some(),
+                    compact_valid_pair_output,
+                );
                 let reusable = tile_graph_shape.map_or(false, |s| s == shape);
                 if !reusable {
                     tile_graph_exec = None;
@@ -6742,55 +6958,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             continue;
                         }
                         let src_base = (i * ps + j) * tile_metrics_stride;
-                        let pnl = tile_host_buf[src_base + 0] as f64;
-                        let trades = if metrics_count > 1 {
-                            tile_host_buf[src_base + 1]
-                        } else {
-                            0.0
-                        };
-                        let max_dd = if metrics_count > 2 {
-                            tile_host_buf[src_base + 2] as f64
-                        } else {
-                            0.0
-                        };
-                        let mean = if metrics_count > 3 {
-                            tile_host_buf[src_base + 3] as f64
-                        } else {
-                            0.0
-                        };
-                        let std = if metrics_count > 4 {
-                            tile_host_buf[src_base + 4] as f64
-                        } else {
-                            0.0
-                        };
-                        let exposure = if metrics_count > 5 {
-                            tile_host_buf[src_base + 5] as f64
-                        } else {
-                            0.0
-                        };
-                        let net_exposure = if metrics_count > 6 {
-                            tile_host_buf[src_base + 6] as f64
-                        } else {
-                            0.0
-                        };
-                        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-
-                        let metrics = Metrics {
-                            pnl,
-                            sharpe,
-                            sortino: 0.0,
-                            calmar: calmar_ratio(pnl, max_dd),
-                            omega: 0.0,
-                            volatility: std,
-                            max_dd,
-                            trades: if trades.is_finite() && trades >= 0.0 {
-                                trades as u32
-                            } else {
-                                0
-                            },
-                            exposure,
-                            net_exposure,
-                        };
+                        let metrics =
+                            decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count);
                         if metrics_pass_constraints(&metrics, constraints) {
                             let params = DoubleMaParams {
                                 fast_len,
@@ -6838,55 +7007,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             if src_base + metrics_count > tile_host_buf.len() {
                                 continue;
                             }
-                            let pnl = tile_host_buf[src_base + 0] as f64;
-                            let trades = if metrics_count > 1 {
-                                tile_host_buf[src_base + 1]
-                            } else {
-                                0.0
-                            };
-                            let max_dd = if metrics_count > 2 {
-                                tile_host_buf[src_base + 2] as f64
-                            } else {
-                                0.0
-                            };
-                            let mean = if metrics_count > 3 {
-                                tile_host_buf[src_base + 3] as f64
-                            } else {
-                                0.0
-                            };
-                            let std = if metrics_count > 4 {
-                                tile_host_buf[src_base + 4] as f64
-                            } else {
-                                0.0
-                            };
-                            let exposure = if metrics_count > 5 {
-                                tile_host_buf[src_base + 5] as f64
-                            } else {
-                                0.0
-                            };
-                            let net_exposure = if metrics_count > 6 {
-                                tile_host_buf[src_base + 6] as f64
-                            } else {
-                                0.0
-                            };
-                            let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-
-                            let metrics = Metrics {
-                                pnl,
-                                sharpe,
-                                sortino: 0.0,
-                                calmar: calmar_ratio(pnl, max_dd),
-                                omega: 0.0,
-                                volatility: std,
-                                max_dd,
-                                trades: if trades.is_finite() && trades >= 0.0 {
-                                    trades as u32
-                                } else {
-                                    0
-                                },
-                                exposure,
-                                net_exposure,
-                            };
+                            let metrics =
+                                decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count);
                             if !metrics_pass_constraints(&metrics, constraints) {
                                 continue;
                             }
@@ -6901,28 +7023,31 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                             if let Some(w) = export_writer.as_mut() {
                                 let score = match objective {
-                                    ObjectiveKind::Pnl => pnl,
-                                    ObjectiveKind::Sharpe => sharpe,
-                                    ObjectiveKind::MaxDrawdown => -max_dd,
-                                    ObjectiveKind::Calmar => calmar_ratio(pnl, max_dd),
-                                    ObjectiveKind::Volatility => -std,
+                                    ObjectiveKind::Pnl => metrics.pnl,
+                                    ObjectiveKind::Sharpe => metrics.sharpe,
+                                    ObjectiveKind::MaxDrawdown => -metrics.max_dd,
+                                    ObjectiveKind::Calmar => metrics.calmar,
+                                    ObjectiveKind::Volatility => -metrics.volatility,
                                     ObjectiveKind::Sortino | ObjectiveKind::Omega => {
                                         f64::NEG_INFINITY
                                     }
                                 };
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
                                     slow_len,
-                                    pnl,
-                                    sharpe,
-                                    max_dd,
+                                    metrics.pnl,
+                                    metrics.sharpe,
+                                    metrics.max_dd,
+                                    metrics.downside_deviation,
+                                    metrics.ulcer_index,
+                                    metrics.martin_ratio,
                                     metrics.trades,
-                                    exposure,
-                                    net_exposure,
+                                    metrics.exposure,
+                                    metrics.net_exposure,
                                     score
                                 )
                                 .map_err(|e| e.to_string())?;
@@ -6982,6 +7107,11 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut topk_i = topk_select as i32;
                     let mut pair_map_ptr = pair_index_map_ptr;
                     let mut pair_count_i = launch_pairs as i32;
+                    let mut compact_output_i = if compact_valid_pair_output {
+                        1i32
+                    } else {
+                        0i32
+                    };
                     let mut out_ptr = cand_a.as_device_ptr().as_raw();
 
                     let block_x: u32 = 256;
@@ -7008,6 +7138,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut max_dd as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -7035,6 +7166,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut topk_i as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
+                            &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
@@ -7078,6 +7210,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                         } else {
                             cand_a.as_device_ptr().as_raw()
                         };
+                        let mut pair_map_ptr = pair_index_map_ptr;
+                        let mut pair_count_i = launch_pairs as i32;
+                        let mut compact_output_i = if compact_valid_pair_output {
+                            1i32
+                        } else {
+                            0i32
+                        };
 
                         let block_x: u32 = 256;
                         let grid_x: u32 = blocks_next as u32;
@@ -7103,6 +7242,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut min_trades as *mut _ as *mut c_void,
                                 &mut use_max_dd as *mut _ as *mut c_void,
                                 &mut max_dd as *mut _ as *mut c_void,
+                                &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
                             bt_stream
@@ -7130,6 +7272,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut topk_i as *mut _ as *mut c_void,
                                 &mut in_ptr as *mut _ as *mut c_void,
                                 &mut in_len_i as *mut _ as *mut c_void,
+                                &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
                             bt_stream
@@ -7163,6 +7308,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                         cand_b.as_device_ptr().as_raw()
                     };
                     let mut topk_i = topk_select as i32;
+                    let mut pair_map_ptr = pair_index_map_ptr;
+                    let mut pair_count_i = launch_pairs as i32;
+                    let mut compact_output_i = if compact_valid_pair_output {
+                        1i32
+                    } else {
+                        0i32
+                    };
                     let mut out_f = scratch
                         .d_top_fast
                         .as_ref()
@@ -7195,6 +7347,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut s_per as *mut _ as *mut c_void,
                         &mut top_ptr as *mut _ as *mut c_void,
                         &mut topk_i as *mut _ as *mut c_void,
+                        &mut pair_map_ptr as *mut _ as *mut c_void,
+                        &mut pair_count_i as *mut _ as *mut c_void,
+                        &mut compact_output_i as *mut _ as *mut c_void,
                         &mut out_f as *mut _ as *mut c_void,
                         &mut out_s as *mut _ as *mut c_void,
                         &mut out_m as *mut _ as *mut c_void,
@@ -7359,50 +7514,18 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 if src_base + metrics_count > tile_host_buf.len() {
                                     continue;
                                 }
-                                let pnl = tile_host_buf[src_base + 0] as f64;
-                                let trades = if metrics_count > 1 {
-                                    tile_host_buf[src_base + 1]
-                                } else {
-                                    0.0
-                                };
-                                let max_dd = if metrics_count > 2 {
-                                    tile_host_buf[src_base + 2] as f64
-                                } else {
-                                    0.0
-                                };
-                                let mean = if metrics_count > 3 {
-                                    tile_host_buf[src_base + 3] as f64
-                                } else {
-                                    0.0
-                                };
-                                let std = if metrics_count > 4 {
-                                    tile_host_buf[src_base + 4] as f64
-                                } else {
-                                    0.0
-                                };
-                                let exposure = if metrics_count > 5 {
-                                    tile_host_buf[src_base + 5] as f64
-                                } else {
-                                    0.0
-                                };
-                                let net_exposure = if metrics_count > 6 {
-                                    tile_host_buf[src_base + 6] as f64
-                                } else {
-                                    0.0
-                                };
-                                let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-                                let trades_u = if trades.is_finite() && trades >= 0.0 {
-                                    trades as u32
-                                } else {
-                                    0
-                                };
+                                let metrics = decode_tm_flex_metrics_row(
+                                    &tile_host_buf,
+                                    src_base,
+                                    metrics_count,
+                                );
 
                                 let score = match objective {
-                                    ObjectiveKind::Pnl => pnl,
-                                    ObjectiveKind::Sharpe => sharpe,
-                                    ObjectiveKind::MaxDrawdown => -max_dd,
-                                    ObjectiveKind::Calmar => calmar_ratio(pnl, max_dd),
-                                    ObjectiveKind::Volatility => -std,
+                                    ObjectiveKind::Pnl => metrics.pnl,
+                                    ObjectiveKind::Sharpe => metrics.sharpe,
+                                    ObjectiveKind::MaxDrawdown => -metrics.max_dd,
+                                    ObjectiveKind::Calmar => metrics.calmar,
+                                    ObjectiveKind::Volatility => -metrics.volatility,
                                     ObjectiveKind::Sortino | ObjectiveKind::Omega => {
                                         f64::NEG_INFINITY
                                     }
@@ -7410,17 +7533,20 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
                                     slow_len,
-                                    pnl,
-                                    sharpe,
-                                    max_dd,
-                                    trades_u,
-                                    exposure,
-                                    net_exposure,
+                                    metrics.pnl,
+                                    metrics.sharpe,
+                                    metrics.max_dd,
+                                    metrics.downside_deviation,
+                                    metrics.ulcer_index,
+                                    metrics.martin_ratio,
+                                    metrics.trades,
+                                    metrics.exposure,
+                                    metrics.net_exposure,
                                     score
                                 )
                                 .map_err(|e| e.to_string())?;
@@ -7468,55 +7594,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         if base >= top_metrics_host.len() {
                             continue;
                         }
-                        let pnl = top_metrics_host[base + 0] as f64;
-                        let trades = if metrics_count > 1 {
-                            top_metrics_host[base + 1]
-                        } else {
-                            0.0
-                        };
-                        let max_dd = if metrics_count > 2 {
-                            top_metrics_host[base + 2] as f64
-                        } else {
-                            0.0
-                        };
-                        let mean = if metrics_count > 3 {
-                            top_metrics_host[base + 3] as f64
-                        } else {
-                            0.0
-                        };
-                        let std = if metrics_count > 4 {
-                            top_metrics_host[base + 4] as f64
-                        } else {
-                            0.0
-                        };
-                        let exposure = if metrics_count > 5 {
-                            top_metrics_host[base + 5] as f64
-                        } else {
-                            0.0
-                        };
-                        let net_exposure = if metrics_count > 6 {
-                            top_metrics_host[base + 6] as f64
-                        } else {
-                            0.0
-                        };
-                        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-
-                        let metrics = Metrics {
-                            pnl,
-                            sharpe,
-                            sortino: 0.0,
-                            calmar: calmar_ratio(pnl, max_dd),
-                            omega: 0.0,
-                            volatility: std,
-                            max_dd,
-                            trades: if trades.is_finite() && trades >= 0.0 {
-                                trades as u32
-                            } else {
-                                0
-                            },
-                            exposure,
-                            net_exposure,
-                        };
+                        let metrics =
+                            decode_tm_flex_metrics_row(&top_metrics_host, base, metrics_count);
                         if metrics_pass_constraints(&metrics, constraints) {
                             let params = DoubleMaParams {
                                 fast_len,
@@ -7638,55 +7717,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             if base >= top_metrics_host.len() {
                 continue;
             }
-            let pnl = top_metrics_host[base + 0] as f64;
-            let trades = if metrics_count > 1 {
-                top_metrics_host[base + 1]
-            } else {
-                0.0
-            };
-            let max_dd = if metrics_count > 2 {
-                top_metrics_host[base + 2] as f64
-            } else {
-                0.0
-            };
-            let mean = if metrics_count > 3 {
-                top_metrics_host[base + 3] as f64
-            } else {
-                0.0
-            };
-            let std = if metrics_count > 4 {
-                top_metrics_host[base + 4] as f64
-            } else {
-                0.0
-            };
-            let exposure = if metrics_count > 5 {
-                top_metrics_host[base + 5] as f64
-            } else {
-                0.0
-            };
-            let net_exposure = if metrics_count > 6 {
-                top_metrics_host[base + 6] as f64
-            } else {
-                0.0
-            };
-            let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-
-            let metrics = Metrics {
-                pnl,
-                sharpe,
-                sortino: 0.0,
-                calmar: calmar_ratio(pnl, max_dd),
-                omega: 0.0,
-                volatility: std,
-                max_dd,
-                trades: if trades.is_finite() && trades >= 0.0 {
-                    trades as u32
-                } else {
-                    0
-                },
-                exposure,
-                net_exposure,
-            };
+            let metrics = decode_tm_flex_metrics_row(&top_metrics_host, base, metrics_count);
             if metrics_pass_constraints(&metrics, constraints) {
                 let params = DoubleMaParams {
                     fast_len,
@@ -7740,6 +7771,28 @@ fn optimize_double_ma_gpu_kernel_impl(
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
+    if !include_all
+        && metrics_count < METRICS_COUNT
+        && !fast_precomputed_enabled
+        && !slow_precomputed_enabled
+    {
+        recompute_optimization_result_finalists_with_full_gpu_pass(
+            rt,
+            candles,
+            &mut result,
+            fast_periods,
+            slow_periods,
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            cfg,
+            strategy,
+        )?;
+    }
+
     if !include_all {
         result.num_combos = total_pairs;
         if heatmap_out.is_some() {
@@ -7779,10 +7832,14 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        eval_double_ma_dynamic_program_precomputed_gpu_kernel, kernel_async_alloc_enabled,
-        kernel_effective_pair_bars, kernel_pinned_h2d_enabled, kernel_should_use_lockstep_time,
-        kernel_should_use_m7_specialize, upload_double_ma_dynamic_program_batch,
+        decode_tm_flex_metrics_row, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
+        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_h2d_enabled,
+        kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
+        max_drawdown_constraint_to_search_space, search_metrics_count_for_optimization,
+        should_use_compact_valid_pair_output, upload_double_ma_dynamic_program_batch,
+        METRICS_COUNT,
     };
+    use crate::double_ma::DoubleMaConstraints;
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
         eval_dynamic_plan_metrics_cpu,
@@ -7791,6 +7848,7 @@ mod tests {
         reset_gpu_strategy_executable_cache, StrategyCapabilityReport, StrategyHandle,
     };
     use crate::strategy_plan::StrategyPlanBackend;
+    use ta_optimizer::ObjectiveKind;
     use ta_strategies::double_ma::{DoubleMaParams, StrategyConfig};
     use vector_ta::utilities::data_loader::{source_type, Candles};
 
@@ -7898,6 +7956,118 @@ mod tests {
     }
 
     #[test]
+    fn search_metrics_count_uses_minimal_search_payload_when_allowed() {
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Pnl,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            1
+        );
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Calmar,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            3
+        );
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Sharpe,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn search_metrics_count_falls_back_to_full_metrics_when_required() {
+        let constraints = super::DoubleMaConstraints {
+            min_trades: Some(10),
+            max_drawdown: Some(0.2),
+        };
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Pnl,
+                Some(&constraints),
+                false,
+                false,
+                false,
+                false,
+            ),
+            3
+        );
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Pnl,
+                None,
+                true,
+                false,
+                false,
+                false,
+            ),
+            super::METRICS_COUNT
+        );
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Pnl,
+                None,
+                false,
+                true,
+                false,
+                false,
+            ),
+            super::METRICS_COUNT
+        );
+    }
+
+    #[test]
+    fn compact_valid_pair_output_requires_reduced_search_mode() {
+        assert!(super::should_use_compact_valid_pair_output(
+            false,
+            false,
+            false,
+            5
+        ));
+        assert!(!super::should_use_compact_valid_pair_output(
+            true,
+            false,
+            false,
+            5
+        ));
+        assert!(!super::should_use_compact_valid_pair_output(
+            false,
+            true,
+            false,
+            5
+        ));
+        assert!(!super::should_use_compact_valid_pair_output(
+            false,
+            false,
+            true,
+            5
+        ));
+        assert!(!super::should_use_compact_valid_pair_output(
+            false,
+            false,
+            false,
+            super::METRICS_COUNT
+        ));
+    }
+
+    #[test]
     fn kernel_m7_gate_uses_pair_bars_for_large_long_workloads() {
         let _guard = lock_env();
         let prev_pairs = std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIRS").ok();
@@ -7967,6 +8137,153 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_LOCKSTEP_TIME", v),
             None => std::env::remove_var("VECTORBT_KERNEL_LOCKSTEP_TIME"),
         }
+    }
+
+    #[test]
+    fn search_metrics_count_tracks_objective_and_constraints() {
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            1
+        );
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Sharpe,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            5
+        );
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Volatility,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            5
+        );
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::MaxDrawdown,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            3
+        );
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Calmar,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            3
+        );
+
+        let min_trades = DoubleMaConstraints {
+            min_trades: Some(20),
+            max_drawdown: None,
+        };
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                Some(&min_trades),
+                false,
+                false,
+                false,
+                false,
+            ),
+            2
+        );
+
+        let max_dd = DoubleMaConstraints {
+            min_trades: None,
+            max_drawdown: Some(0.25),
+        };
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                Some(&max_dd),
+                false,
+                false,
+                false,
+                false,
+            ),
+            3
+        );
+
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                true,
+                false,
+                false,
+                false,
+            ),
+            METRICS_COUNT
+        );
+    }
+
+    #[test]
+    fn compact_valid_pair_output_only_enables_for_search_rows() {
+        assert!(should_use_compact_valid_pair_output(false, false, false, 3));
+        assert!(!should_use_compact_valid_pair_output(true, false, false, 3));
+        assert!(!should_use_compact_valid_pair_output(false, true, false, 3));
+        assert!(!should_use_compact_valid_pair_output(false, false, true, 3));
+        assert!(!should_use_compact_valid_pair_output(
+            false,
+            false,
+            false,
+            METRICS_COUNT
+        ));
+    }
+
+    #[test]
+    fn decode_reduced_search_rows_restores_arithmetic_metrics() {
+        let pnl = 0.25f64;
+        let max_dd = 0.40f64;
+        let row = vec![
+            pnl.ln_1p() as f32,
+            12.0,
+            (-(1.0 - max_dd).ln()) as f32,
+            0.0,
+            0.0,
+        ];
+
+        let metrics = decode_tm_flex_metrics_row(&row, 0, 5);
+        assert!((metrics.pnl - pnl).abs() < 1e-6);
+        assert_eq!(metrics.trades, 12);
+        assert!((metrics.max_dd - max_dd).abs() < 1e-6);
+    }
+
+    #[test]
+    fn max_drawdown_constraint_converts_for_reduced_search_rows() {
+        let raw = max_drawdown_constraint_to_search_space(0.25, METRICS_COUNT);
+        assert!((raw - 0.25).abs() < 1e-6);
+
+        let search = max_drawdown_constraint_to_search_space(0.25, 3);
+        let expected = (-(1.0f64 - 0.25).ln()) as f32;
+        assert!((search - expected).abs() < 1e-6);
+
+        assert!(max_drawdown_constraint_to_search_space(1.0, 3).is_infinite());
     }
 
     #[test]
@@ -8077,14 +8394,30 @@ mod tests {
             gpu.sharpe,
             cpu_metrics.sharpe
         );
-        assert_eq!(gpu.sortino, 0.0);
+        assert!(
+            approx_eq(gpu.downside_deviation, cpu_metrics.downside_deviation, 1e-5),
+            "downside gpu={} cpu={}",
+            gpu.downside_deviation,
+            cpu_metrics.downside_deviation
+        );
         assert!(
             approx_eq(gpu.calmar, cpu_metrics.calmar, 1e-2),
             "calmar gpu={} cpu={}",
             gpu.calmar,
             cpu_metrics.calmar
         );
-        assert_eq!(gpu.omega, 0.0);
+        assert!(
+            approx_eq(gpu.ulcer_index, cpu_metrics.ulcer_index, 1e-5),
+            "ulcer gpu={} cpu={}",
+            gpu.ulcer_index,
+            cpu_metrics.ulcer_index
+        );
+        assert!(
+            approx_eq(gpu.martin_ratio, cpu_metrics.martin_ratio, 1e-1),
+            "martin gpu={} cpu={}",
+            gpu.martin_ratio,
+            cpu_metrics.martin_ratio
+        );
         assert!(
             approx_eq(gpu.volatility, cpu_metrics.volatility, 1e-5),
             "vol gpu={} cpu={}",

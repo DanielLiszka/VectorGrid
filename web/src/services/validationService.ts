@@ -736,8 +736,13 @@ function buildValidationMetaText(result: unknown): string {
   const reopt = asRecord(row?.reopt_walk_forward)
   const reoptWindows = Math.max(0, Math.floor(Number(reopt?.windows ?? 0)))
   const reoptSharpe = Number(reopt?.forward_sharpe_median ?? Number.NaN)
+  const reoptUlcer = Number(reopt?.forward_ulcer_index_worst ?? Number.NaN)
+  const reoptMartin = Number(reopt?.forward_martin_ratio_median ?? Number.NaN)
   const reoptSuffix = reoptWindows > 0
-    ? ` • reopt_wf=${reoptWindows}w${Number.isFinite(reoptSharpe) ? ` sh_med=${reoptSharpe.toFixed(3)}` : ''}`
+    ? ` • reopt_wf=${reoptWindows}w` +
+      `${Number.isFinite(reoptSharpe) ? ` sh_med=${reoptSharpe.toFixed(3)}` : ''}` +
+      `${Number.isFinite(reoptUlcer) ? ` ulcer_worst=${reoptUlcer.toFixed(3)}` : ''}` +
+      `${Number.isFinite(reoptMartin) ? ` martin_med=${reoptMartin.toFixed(2)}` : ''}`
     : ''
   const spa = asRecord(row?.spa)
   const spaP = Number(spa?.p_value ?? Number.NaN)
@@ -846,6 +851,8 @@ function buildValidationRegimeSummary(result: unknown): string {
   const worstBucket = normalizeText(regime.worst_bucket_label) || 'unknown'
   const worstSharpe = Number(regime.worst_sharpe ?? Number.NaN)
   const worstMaxDd = Number(regime.worst_max_dd ?? Number.NaN)
+  const worstUlcer = Number(regime.worst_ulcer_index ?? Number.NaN)
+  const worstMartin = Number(regime.worst_martin_ratio ?? Number.NaN)
   const flag = deriveRegimeFragilityLabel(
     stableBucketCount,
     Number.isFinite(worstSharpe) ? worstSharpe : Number.NEGATIVE_INFINITY,
@@ -853,10 +860,12 @@ function buildValidationRegimeSummary(result: unknown): string {
   )
   const support = deriveRegimeSupportLabel(regime)
   const sharpeSuffix = Number.isFinite(worstSharpe) ? ` • sh=${worstSharpe.toFixed(2)}` : ''
+  const ulcerSuffix = Number.isFinite(worstUlcer) ? ` • ulcer=${worstUlcer.toFixed(3)}` : ''
+  const martinSuffix = Number.isFinite(worstMartin) ? ` • martin=${worstMartin.toFixed(2)}` : ''
   const stableSuffix = Number.isFinite(stableBucketFrac)
     ? ` • stable=${stableBucketCount}/5 (${(stableBucketFrac * 100).toFixed(0)}%)`
     : ` • stable=${stableBucketCount}/5`
-  return `${flag} • support=${support} • worst=${worstBucket}${stableSuffix}${sharpeSuffix}`
+  return `${flag} • support=${support} • worst=${worstBucket}${stableSuffix}${sharpeSuffix}${ulcerSuffix}${martinSuffix}`
 }
 
 function buildValidationFrictionSummary(result: unknown): string {
@@ -866,9 +875,13 @@ function buildValidationFrictionSummary(result: unknown): string {
   const passFrac = Number(friction.pass_frac ?? Number.NaN)
   const maxRankDrift = Math.max(0, Math.floor(Number(friction.max_rank_drift ?? 0)))
   const worstScenario = normalizeText(friction.worst_scenario_label) || 'unknown'
+  const worstUlcer = Number(friction.worst_ulcer_index ?? Number.NaN)
+  const worstMartin = Number(friction.worst_martin_ratio ?? Number.NaN)
   const flag = Number.isFinite(passFrac) && passFrac >= 1 && maxRankDrift < 2 ? 'stable' : 'fragile'
   const passSuffix = Number.isFinite(passFrac) ? ` • pass=${(passFrac * 100).toFixed(1)}%` : ''
-  return `${flag} • worst=${worstScenario}${passSuffix} • drift=${maxRankDrift} • absolute pnl/sharpe rule`
+  const ulcerSuffix = Number.isFinite(worstUlcer) ? ` • ulcer=${worstUlcer.toFixed(3)}` : ''
+  const martinSuffix = Number.isFinite(worstMartin) ? ` • martin=${worstMartin.toFixed(2)}` : ''
+  return `${flag} • worst=${worstScenario}${passSuffix} • drift=${maxRankDrift}${ulcerSuffix}${martinSuffix} • absolute pnl/sharpe rule`
 }
 
 type ValidationModuleCategory =
@@ -1143,6 +1156,8 @@ function buildValidationReoptMetaText(result: unknown): string {
   const hitRate = Number(reopt.forward_positive_pnl_frac ?? Number.NaN)
   const sharpeMedian = Number(reopt.forward_sharpe_median ?? Number.NaN)
   const ddWorst = Number(reopt.forward_max_dd_worst ?? Number.NaN)
+  const ulcerWorst = Number(reopt.forward_ulcer_index_worst ?? Number.NaN)
+  const martinMedian = Number(reopt.forward_martin_ratio_median ?? Number.NaN)
   const sequenceRaw = Array.isArray(reopt.winner_sequence) ? reopt.winner_sequence : []
   const sequence = sequenceRaw
     .slice(0, 4)
@@ -1156,6 +1171,8 @@ function buildValidationReoptMetaText(result: unknown): string {
     `${Number.isFinite(hitRate) ? ` • oos_hit=${fmtPct(hitRate, 1)}` : ''}` +
     `${Number.isFinite(sharpeMedian) ? ` • sh_med=${sharpeMedian.toFixed(3)}` : ''}` +
     `${Number.isFinite(ddWorst) ? ` • dd_worst=${ddWorst.toFixed(3)}` : ''}` +
+    `${Number.isFinite(ulcerWorst) ? ` • ulcer_worst=${ulcerWorst.toFixed(3)}` : ''}` +
+    `${Number.isFinite(martinMedian) ? ` • martin_med=${martinMedian.toFixed(2)}` : ''}` +
     `${Number.isFinite(driftMean) ? ` • drift_mean=${driftMean.toFixed(3)}` : ''}` +
     `${Number.isFinite(driftMax) ? ` • drift_max=${driftMax.toFixed(3)}` : ''}` +
     sequenceSuffix

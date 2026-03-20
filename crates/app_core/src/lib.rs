@@ -56,16 +56,18 @@ pub mod strategy_gpu_runtime;
 pub mod strategy_ir;
 pub mod strategy_plan;
 pub mod strategy_presets;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod timeframe;
 pub(crate) mod validation_core;
 pub mod validation_pipeline;
 pub mod validation_stats;
-pub mod vcet;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-pub mod vcet_gpu_kernel;
 pub mod vcc;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vcc_gpu_kernel;
+pub mod vcet;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub mod vcet_gpu_kernel;
 pub mod vemr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod vemr_gpu_kernel;
@@ -82,11 +84,10 @@ pub use timeframe::{parse_timeframe_label, resample_candles, TimeframeSpec};
 
 pub use double_ma::{
     compute_double_ma_drilldown_blocking_with_candles,
-    compute_double_ma_local_stability_blocking_with_candles,
-    reset_dynamic_gpu_preflight_cache, run_double_ma_optimization_blocking_with_candles, Backend,
-    BackendOptimizationResult, BackendUsed, DoubleMaDrilldownRequest,
-    DoubleMaLocalStabilityRequest, DoubleMaParamsResolved, DoubleMaRequest, LocalStabilityResult,
-    OptimizationModeResolved,
+    compute_double_ma_local_stability_blocking_with_candles, reset_dynamic_gpu_preflight_cache,
+    run_double_ma_optimization_blocking_with_candles, Backend, BackendOptimizationResult,
+    BackendUsed, DoubleMaDrilldownRequest, DoubleMaLocalStabilityRequest, DoubleMaParamsResolved,
+    DoubleMaRequest, LocalStabilityResult, OptimizationModeResolved,
 };
 
 pub use composite_cpu::{
@@ -103,8 +104,8 @@ pub use kqsr::KqsrStrategyParams;
 pub use kvdf::KvdfStrategyParams;
 pub use mkcs::MkcsStrategyParams;
 pub use rocb::RocbStrategyParams;
-pub use vcet::VcetStrategyParams;
 pub use vcc::VccStrategyParams;
+pub use vcet::VcetStrategyParams;
 pub use vemr::VemrStrategyParams;
 
 pub use composite_mo::{
@@ -177,12 +178,11 @@ pub use strategy_ir::{
 };
 
 pub use strategy_gpu_program::{
-    compile_gpu_predicate_program, compile_gpu_predicate_program_abi,
-    CompiledGpuPredicateProgram, CompiledGpuPredicateProgramAbi, GpuConditionAbi,
-    GpuConditionGroupAbi, GpuConditionGroupSlice, GpuConditionPredicate, GpuIndicatorSlot,
-    GpuIndicatorSlotAbi, GpuSignalBindings, GpuSignalBindingsAbi, GpuValueOperand,
-    GpuValueOperandAbi, GpuValueSourceKind, STRATEGY_GPU_EXECUTABLE_ABI_VERSION,
-    STRATEGY_GPU_PROGRAM_SCHEMA_VERSION,
+    compile_gpu_predicate_program, compile_gpu_predicate_program_abi, CompiledGpuPredicateProgram,
+    CompiledGpuPredicateProgramAbi, GpuConditionAbi, GpuConditionGroupAbi, GpuConditionGroupSlice,
+    GpuConditionPredicate, GpuIndicatorSlot, GpuIndicatorSlotAbi, GpuSignalBindings,
+    GpuSignalBindingsAbi, GpuValueOperand, GpuValueOperandAbi, GpuValueSourceKind,
+    STRATEGY_GPU_EXECUTABLE_ABI_VERSION, STRATEGY_GPU_PROGRAM_SCHEMA_VERSION,
 };
 
 pub use strategy_gpu_runtime::{
@@ -202,9 +202,8 @@ pub use strategy_dynamic::{
     eval_dynamic_plan_metrics_cpu, prepare_dynamic_cpu_context,
     prepare_dynamic_indicator_slot_series, prepare_dynamic_indicator_slot_series_cpu,
     prepare_dynamic_indicator_slot_series_cpu_with_controls,
-    prepare_dynamic_indicator_slot_series_with_controls, DynamicIndicatorStagingProgressFn,
-    DynamicDoubleMaStrategyIrPreview, PreparedDynamicCpuContext,
-    preview_dynamic_double_ma_strategy_ir,
+    prepare_dynamic_indicator_slot_series_with_controls, preview_dynamic_double_ma_strategy_ir,
+    DynamicDoubleMaStrategyIrPreview, DynamicIndicatorStagingProgressFn, PreparedDynamicCpuContext,
 };
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

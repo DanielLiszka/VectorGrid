@@ -4,8 +4,8 @@ use crate::strategy_gpu_program::{
 };
 use crate::strategy_plan::{CompiledStrategyPlan, StrategyPlanBackend};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -201,21 +201,20 @@ pub fn get_or_build_gpu_strategy_executable(
             if !map.contains_key(&key_for_upload) {
                 let uploaded =
                     crate::gpu_backtest_kernel::upload_gpu_strategy_program_abi(device_id, abi)?;
-                let probe = crate::gpu_backtest_kernel::probe_uploaded_gpu_strategy_program(
-                    &uploaded,
-                )?;
+                let probe =
+                    crate::gpu_backtest_kernel::probe_uploaded_gpu_strategy_program(&uploaded)?;
                 if probe[0] != uploaded.abi_version
                     || probe[1] != uploaded.d_indicator_slots.len() as u32
                     || probe[2] != uploaded.d_conditions.len() as u32
                 {
-                    return Err("uploaded gpu strategy program probe returned inconsistent metadata"
-                        .to_string());
+                    return Err(
+                        "uploaded gpu strategy program probe returned inconsistent metadata"
+                            .to_string(),
+                    );
                 }
                 map.insert(
                     key_for_upload,
-                    Rc::new(UploadedGpuStrategyExecutableEntry {
-                        uploaded,
-                    }),
+                    Rc::new(UploadedGpuStrategyExecutableEntry { uploaded }),
                 );
             }
             Ok(())

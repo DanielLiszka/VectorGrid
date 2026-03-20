@@ -80,13 +80,7 @@ fn build_double_crossover_artifacts() {
                 "Falling back to -arch=compute_80 (nvcc doesn't support {})",
                 arch
             );
-            out = build_nvcc_output(
-                &nvcc,
-                kernel,
-                &ptx_out,
-                NvccArtifact::Ptx,
-                "compute_80",
-            );
+            out = build_nvcc_output(&nvcc, kernel, &ptx_out, NvccArtifact::Ptx, "compute_80");
         }
     }
 

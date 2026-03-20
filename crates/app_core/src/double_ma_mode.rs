@@ -13,7 +13,9 @@ pub(crate) struct ModeSelectionContext<'a> {
     pub gpu_hybrid_viable: bool,
 }
 
-pub(crate) fn resolve_optimization_mode(ctx: &ModeSelectionContext<'_>) -> OptimizationModeResolved {
+pub(crate) fn resolve_optimization_mode(
+    ctx: &ModeSelectionContext<'_>,
+) -> OptimizationModeResolved {
     match ctx.requested_mode {
         OptimizationMode::Grid => OptimizationModeResolved::Grid,
         OptimizationMode::CoarseToFine => OptimizationModeResolved::CoarseToFine,

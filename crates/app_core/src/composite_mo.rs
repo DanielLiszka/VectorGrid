@@ -2219,11 +2219,13 @@ mod tests {
 
     struct TestEnvGuard {
         _env: std::sync::MutexGuard<'static, ()>,
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
         _gpu: crate::gpu_backtest_kernel::GpuTestLockGuard,
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn lock_env() -> TestEnvGuard {
-        let env = crate::gpu_backtest_kernel::lock_test_env();
+        let env = crate::test_support::lock_test_env();
         let gpu = crate::gpu_backtest_kernel::lock_gpu_test();
         crate::gpu_backtest_kernel::reset_test_runtime();
         crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
@@ -2231,6 +2233,12 @@ mod tests {
             _env: env,
             _gpu: gpu,
         }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    fn lock_env() -> TestEnvGuard {
+        let env = crate::test_support::lock_test_env();
+        TestEnvGuard { _env: env }
     }
 
     fn with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
@@ -2957,5 +2965,3 @@ mod tests {
         assert!(!res.pareto.is_empty());
     }
 }
-
-

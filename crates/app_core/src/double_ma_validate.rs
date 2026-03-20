@@ -296,8 +296,8 @@ fn gpu_fixed_candidate_metric_map(
                     constraints: None,
                     vdps: None,
                     dynamic_strategy_ir: None,
-                gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
-                persist_followup_cache: false,
+                    gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
+                    persist_followup_cache: false,
                 },
                 candles,
                 &AtomicBool::new(false),
@@ -447,6 +447,9 @@ fn compute_gpu_walk_forward_stats_for_candidates(
         let mut sharpes = Vec::new();
         let mut dds = Vec::new();
         let mut pnls = Vec::new();
+        let mut downside_ratios = Vec::new();
+        let mut ulcers = Vec::new();
+        let mut martins = Vec::new();
         let mut trades = Vec::new();
         for &t0 in &candidate_windows[idx] {
             let metric = by_window
@@ -462,11 +465,21 @@ fn compute_gpu_walk_forward_stats_for_candidates(
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
+            if let Some(ratio) =
+                crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric)
+            {
+                downside_ratios.push(ratio);
+            }
+            ulcers.push(metric.ulcer_index);
+            martins.push(metric.martin_ratio);
             trades.push(metric.trades);
         }
         sharpes.sort_by(|a, b| a.total_cmp(b));
         dds.sort_by(|a, b| a.total_cmp(b));
         pnls.sort_by(|a, b| a.total_cmp(b));
+        downside_ratios.sort_by(|a, b| a.total_cmp(b));
+        ulcers.sort_by(|a, b| a.total_cmp(b));
+        martins.sort_by(|a, b| a.total_cmp(b));
         out.push(WalkForwardStats {
             windows: sharpes.len(),
             sharpe_median: crate::stats_common::median(&sharpes),
@@ -475,6 +488,12 @@ fn compute_gpu_walk_forward_stats_for_candidates(
             max_dd_worst: crate::stats_common::worst_max(&dds),
             pnl_median: crate::stats_common::median(&pnls),
             pnl_worst: crate::stats_common::worst_min(&pnls),
+            downside_vol_ratio_median: crate::stats_common::median(&downside_ratios),
+            downside_vol_ratio_worst: crate::stats_common::worst_max(&downside_ratios),
+            ulcer_index_median: crate::stats_common::median(&ulcers),
+            ulcer_index_worst: crate::stats_common::worst_max(&ulcers),
+            martin_ratio_median: crate::stats_common::median(&martins),
+            martin_ratio_worst: crate::stats_common::worst_min(&martins),
             trades_median: crate::stats_common::median_u32(&trades),
             trades_worst: crate::stats_common::worst_min_u32(&trades),
         });
@@ -1271,10 +1290,8 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
         self.iterative_in_sample.as_ref()
     }
 
-    fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)> {
-        self.walk_forward
-            .as_ref()
-            .map(|w| (w.sharpe_median, w.max_dd_worst))
+    fn walk_forward_stats(&self) -> Option<&WalkForwardStats> {
+        self.walk_forward.as_ref()
     }
 
     fn cscv_oos_metric_p50(&self) -> Option<f64> {
@@ -1369,6 +1386,9 @@ pub struct RegimeBucketStats {
     pub active_frac: f64,
     pub pnl: f64,
     pub sharpe: f64,
+    pub downside_deviation: f64,
+    pub ulcer_index: f64,
+    pub martin_ratio: f64,
     pub max_dd: f64,
     pub trades: usize,
 }
@@ -1383,6 +1403,8 @@ pub struct RegimeSliceRobustnessStats {
     pub range: RegimeBucketStats,
     pub worst_bucket_label: String,
     pub worst_sharpe: f64,
+    pub worst_ulcer_index: f64,
+    pub worst_martin_ratio: f64,
     pub worst_max_dd: f64,
     pub stable_bucket_count: usize,
     pub stable_bucket_frac: f64,
@@ -1399,6 +1421,9 @@ pub struct FrictionStressStats {
     pub worst_scenario_label: String,
     pub worst_pnl: f64,
     pub worst_sharpe: f64,
+    pub worst_downside_deviation: f64,
+    pub worst_ulcer_index: f64,
+    pub worst_martin_ratio: f64,
     pub worst_max_dd: f64,
     pub mean_rank: f64,
     pub max_rank_drift: usize,
@@ -1411,6 +1436,13 @@ fn emit_progress(
     phase: &'static str,
 ) {
     crate::progress::emit_double_ma_progress(progress, processed, total, phase);
+}
+
+fn double_ma_validation_robust_score(
+    in_sample: &Metrics,
+    walk_forward: Option<&WalkForwardStats>,
+) -> f64 {
+    crate::validation_pipeline::robust_score_from_metrics(in_sample, walk_forward)
 }
 
 #[derive(Clone)]
@@ -1837,6 +1869,8 @@ fn summarize_regime_bucket(
     let mut eq = 1.0_f64;
     let mut peak = 1.0_f64;
     let mut max_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
+    let mut sum_neg_sq = 0.0_f64;
     let mut samples: Vec<f64> = Vec::new();
 
     for idx in 0..membership.len() {
@@ -1860,6 +1894,10 @@ fn summarize_regime_bucket(
         if dd > max_dd {
             max_dd = dd;
         }
+        ulcer_sum_sq += dd * dd;
+        if r < 0.0 {
+            sum_neg_sq += r * r;
+        }
     }
 
     if bars == 0 {
@@ -1868,6 +1906,9 @@ fn summarize_regime_bucket(
             active_frac: 0.0,
             pnl: 0.0,
             sharpe: 0.0,
+            downside_deviation: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
         };
@@ -1891,11 +1932,26 @@ fn summarize_regime_bucket(
         (sumsq / (samples.len() - 1) as f64).sqrt()
     };
     let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+    let downside_deviation = (sum_neg_sq / bars as f64).sqrt();
+    let ulcer_index = (ulcer_sum_sq / bars as f64).sqrt();
+    let pnl = eq - 1.0;
+    let martin_ratio = if ulcer_index > 1.0e-12 {
+        (pnl / ulcer_index).clamp(-1.0e6, 1.0e6)
+    } else if pnl > 0.0 {
+        1.0e6
+    } else if pnl < 0.0 {
+        -1.0e6
+    } else {
+        0.0
+    };
     RegimeBucketStats {
         bars,
         active_frac: active_bars as f64 / bars as f64,
-        pnl: eq - 1.0,
+        pnl,
         sharpe,
+        downside_deviation,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
     }
@@ -1978,6 +2034,8 @@ fn compute_regime_slice_robustness_stats(
     ];
     let mut worst_bucket_label = String::new();
     let mut worst_sharpe = f64::INFINITY;
+    let mut worst_ulcer_index = 0.0_f64;
+    let mut worst_martin_ratio = f64::INFINITY;
     let mut worst_max_dd = 0.0_f64;
     let mut stable_bucket_count = 0usize;
     for (label, stats) in buckets {
@@ -1991,12 +2049,21 @@ fn compute_regime_slice_robustness_stats(
         if stats.max_dd > worst_max_dd {
             worst_max_dd = stats.max_dd;
         }
+        if stats.ulcer_index > worst_ulcer_index {
+            worst_ulcer_index = stats.ulcer_index;
+        }
+        if stats.martin_ratio < worst_martin_ratio {
+            worst_martin_ratio = stats.martin_ratio;
+        }
         if stats.sharpe >= 0.0 && stats.pnl >= 0.0 {
             stable_bucket_count += 1;
         }
     }
     if !worst_sharpe.is_finite() {
         return None;
+    }
+    if !worst_martin_ratio.is_finite() {
+        worst_martin_ratio = 0.0;
     }
     let stable_bucket_frac = stable_bucket_count as f64 / 5.0;
     let support_label = derive_regime_support_label(trend_pass, range_pass, stable_bucket_count);
@@ -2010,6 +2077,8 @@ fn compute_regime_slice_robustness_stats(
         range,
         worst_bucket_label,
         worst_sharpe,
+        worst_ulcer_index,
+        worst_martin_ratio,
         worst_max_dd,
         stable_bucket_count,
         stable_bucket_frac,
@@ -2107,7 +2176,7 @@ fn compute_friction_stress_summaries(
             params,
         )?;
         let metrics = eval_metrics_window(&series, series.start_t, series.n);
-        let score = crate::validation_pipeline::robust_score_from_metrics(&metrics, None);
+        let score = double_ma_validation_robust_score(&metrics, None);
         base_scored.push((idx, metrics, score));
     }
     sort_scored(&mut base_scored);
@@ -2133,7 +2202,7 @@ fn compute_friction_stress_summaries(
                 &stressed,
             )?;
             let metrics = eval_metrics_window(&series, series.start_t, series.n);
-            let score = crate::validation_pipeline::robust_score_from_metrics(&metrics, None);
+            let score = double_ma_validation_robust_score(&metrics, None);
             scored.push((idx, metrics, score));
         }
         sort_scored(&mut scored);
@@ -2158,6 +2227,9 @@ fn compute_friction_stress_summaries(
         let mut worst_score = f64::INFINITY;
         let mut worst_pnl = 0.0_f64;
         let mut worst_sharpe = 0.0_f64;
+        let mut worst_downside_deviation = 0.0_f64;
+        let mut worst_ulcer_index = 0.0_f64;
+        let mut worst_martin_ratio = 0.0_f64;
         let mut worst_max_dd = 0.0_f64;
         let mut rank_sum = 0usize;
         let mut max_rank_drift = 0usize;
@@ -2171,6 +2243,9 @@ fn compute_friction_stress_summaries(
                 worst_score = scenario_score;
                 worst_pnl = metrics.pnl;
                 worst_sharpe = metrics.sharpe;
+                worst_downside_deviation = metrics.downside_deviation;
+                worst_ulcer_index = metrics.ulcer_index;
+                worst_martin_ratio = metrics.martin_ratio;
                 worst_max_dd = metrics.max_dd;
                 worst_label = scenario_labels[scenario_idx].to_string();
             }
@@ -2188,6 +2263,9 @@ fn compute_friction_stress_summaries(
             worst_scenario_label: worst_label,
             worst_pnl,
             worst_sharpe,
+            worst_downside_deviation,
+            worst_ulcer_index,
+            worst_martin_ratio,
             worst_max_dd,
             mean_rank: rank_sum as f64 / scenario_count as f64,
             max_rank_drift,
@@ -2606,12 +2684,8 @@ pub fn run_double_ma_validation_blocking_with_candles(
                     .walk_forwards
                     .as_ref()
                     .and_then(|stats| stats.get(idx).cloned());
-                let robust_score = crate::validation_pipeline::robust_score_from_metrics(
-                    &in_sample,
-                    walk_forward
-                        .as_ref()
-                        .map(|w| (w.sharpe_median, w.max_dd_worst)),
-                );
+                let robust_score =
+                    double_ma_validation_robust_score(&in_sample, walk_forward.as_ref());
                 let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
                     compute_cpu_perturb_stats_for_candidate(
                         candles,
@@ -2744,12 +2818,8 @@ pub fn run_double_ma_validation_blocking_with_candles(
                 );
 
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
-            let robust_score = crate::validation_pipeline::robust_score_from_metrics(
-                robust_base,
-                walk_forward
-                    .as_ref()
-                    .map(|w| (w.sharpe_median, w.max_dd_worst)),
-            );
+            let robust_score =
+                double_ma_validation_robust_score(robust_base, walk_forward.as_ref());
 
             Ok((
                 DoubleMaValidationCandidateResult {
@@ -3277,10 +3347,15 @@ mod tests {
             assert!(regime.vol_window >= DEFAULT_REGIME_SLICE_VOL_WINDOW);
             assert!(!regime.worst_bucket_label.is_empty());
             assert!(regime.worst_sharpe.is_finite());
+            assert!(regime.worst_ulcer_index.is_finite());
+            assert!(regime.worst_martin_ratio.is_finite());
             assert!(regime.worst_max_dd.is_finite());
             assert!(regime.stable_bucket_count <= 5);
             assert!((0.0..=1.0).contains(&regime.stable_bucket_frac));
             assert!(!regime.support_label.is_empty());
+            assert!(regime.low_vol.downside_deviation.is_finite());
+            assert!(regime.low_vol.ulcer_index.is_finite());
+            assert!(regime.low_vol.martin_ratio.is_finite());
         }
     }
 
@@ -3347,6 +3422,9 @@ mod tests {
             assert!(friction.pass_frac.is_finite());
             assert!(!friction.worst_scenario_label.is_empty());
             assert!(friction.worst_sharpe.is_finite());
+            assert!(friction.worst_downside_deviation.is_finite());
+            assert!(friction.worst_ulcer_index.is_finite());
+            assert!(friction.worst_martin_ratio.is_finite());
             assert!(friction.worst_max_dd.is_finite());
         }
     }
@@ -7130,5 +7208,3 @@ mod tests {
         assert!(meta.groups[0].meta_score.is_finite());
     }
 }
-
-

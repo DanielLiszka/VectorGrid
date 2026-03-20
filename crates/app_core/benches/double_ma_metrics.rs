@@ -125,8 +125,9 @@ fn bench_gpu_kernel_pnl_full_metrics(c: &mut Criterion) {
         ("large_batched_1gb", (5, 200, 1), (10, 400, 1), Some("1024")),
     ];
 
-    let mut group =
-        c.benchmark_group(format!("double_ma/gpu_kernel_pnl_full_metrics/{ma_label}/200k"));
+    let mut group = c.benchmark_group(format!(
+        "double_ma/gpu_kernel_pnl_full_metrics/{ma_label}/200k"
+    ));
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 
@@ -191,5 +192,3 @@ fn bench_gpu_kernel_pnl_full_metrics(_c: &mut Criterion) {}
 
 criterion_group!(benches, bench_gpu_kernel_pnl_full_metrics);
 criterion_main!(benches);
-
-

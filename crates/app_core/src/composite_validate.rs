@@ -98,20 +98,6 @@ use crate::rocb::{
     compute_rocb_start_t, resolve_rocb_periods, validate_rocb_params, RocbBreakoutSignals,
     RocbRiskSignals, RocbStrategyParams,
 };
-use crate::vcet::{
-    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
-    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params,
-    VcetChandelierSignals, VcetStrategyParams, VcetVidyaSignals,
-};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::vcet::{
-    compute_vcet_chandelier_signal_cuda_device, compute_vcet_vidya_signal_cuda_device,
-    VcetOwnedDeviceMatrix,
-};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::vcet_gpu_kernel::{
-    eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
-};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::rocb_gpu_kernel::{
     eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
@@ -136,6 +122,20 @@ use crate::vcc::{vcc_momentum_roundtrip_is_fp32_stable, vcc_momentum_roundtrip_p
 use crate::vcc_gpu_kernel::{
     eval_vcc_metrics_gpu_kernel_device_rows, eval_vcc_metrics_gpu_kernel_device_rows_detailed,
     VccGpuComboBatch, VccGpuDeviceSignalMatrices,
+};
+use crate::vcet::{
+    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
+    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params, VcetChandelierSignals,
+    VcetStrategyParams, VcetVidyaSignals,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcet::{
+    compute_vcet_chandelier_signal_cuda_device, compute_vcet_vidya_signal_cuda_device,
+    VcetOwnedDeviceMatrix,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::vcet_gpu_kernel::{
+    eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
 };
 use crate::vemr::{
     build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
@@ -618,15 +618,21 @@ fn spa_slice_sums_from_slice_stats(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn summarize_walk_forward_metric_samples(
+fn summarize_walk_forward_metric_samples_full(
     mut sharpes: Vec<f64>,
     mut dds: Vec<f64>,
     mut pnls: Vec<f64>,
+    mut downside_ratios: Vec<f64>,
+    mut ulcers: Vec<f64>,
+    mut martins: Vec<f64>,
     trades: Vec<u32>,
 ) -> WalkForwardStats {
     sharpes.sort_by(|a, b| a.total_cmp(b));
     dds.sort_by(|a, b| a.total_cmp(b));
     pnls.sort_by(|a, b| a.total_cmp(b));
+    downside_ratios.sort_by(|a, b| a.total_cmp(b));
+    ulcers.sort_by(|a, b| a.total_cmp(b));
+    martins.sort_by(|a, b| a.total_cmp(b));
 
     WalkForwardStats {
         windows: sharpes.len(),
@@ -636,9 +642,33 @@ fn summarize_walk_forward_metric_samples(
         max_dd_worst: crate::stats_common::worst_max(&dds),
         pnl_median: crate::stats_common::median(&pnls),
         pnl_worst: crate::stats_common::worst_min(&pnls),
+        downside_vol_ratio_median: crate::stats_common::median(&downside_ratios),
+        downside_vol_ratio_worst: crate::stats_common::worst_max(&downside_ratios),
+        ulcer_index_median: crate::stats_common::median(&ulcers),
+        ulcer_index_worst: crate::stats_common::worst_max(&ulcers),
+        martin_ratio_median: crate::stats_common::median(&martins),
+        martin_ratio_worst: crate::stats_common::worst_min(&martins),
         trades_median: crate::stats_common::median_u32(&trades),
         trades_worst: crate::stats_common::worst_min_u32(&trades),
     }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn summarize_walk_forward_metric_samples(
+    sharpes: Vec<f64>,
+    dds: Vec<f64>,
+    pnls: Vec<f64>,
+    trades: Vec<u32>,
+) -> WalkForwardStats {
+    summarize_walk_forward_metric_samples_full(
+        sharpes,
+        dds,
+        pnls,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        trades,
+    )
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -1088,6 +1118,9 @@ fn compute_base_composite_gpu_walk_forward_stats(
         let mut sharpes = Vec::new();
         let mut dds = Vec::new();
         let mut pnls = Vec::new();
+        let mut downside_ratios = Vec::new();
+        let mut ulcers = Vec::new();
+        let mut martins = Vec::new();
         let mut trades = Vec::new();
         for &t0 in &candidate_windows[idx] {
             let metric = by_window
@@ -1103,22 +1136,24 @@ fn compute_base_composite_gpu_walk_forward_stats(
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
+            if let Some(ratio) =
+                crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric)
+            {
+                downside_ratios.push(ratio);
+            }
+            ulcers.push(metric.ulcer_index);
+            martins.push(metric.martin_ratio);
             trades.push(metric.trades);
         }
-        sharpes.sort_by(|a, b| a.total_cmp(b));
-        dds.sort_by(|a, b| a.total_cmp(b));
-        pnls.sort_by(|a, b| a.total_cmp(b));
-        out.push(WalkForwardStats {
-            windows: sharpes.len(),
-            sharpe_median: crate::stats_common::median(&sharpes),
-            sharpe_worst: crate::stats_common::worst_min(&sharpes),
-            max_dd_median: crate::stats_common::median(&dds),
-            max_dd_worst: crate::stats_common::worst_max(&dds),
-            pnl_median: crate::stats_common::median(&pnls),
-            pnl_worst: crate::stats_common::worst_min(&pnls),
-            trades_median: crate::stats_common::median_u32(&trades),
-            trades_worst: crate::stats_common::worst_min_u32(&trades),
-        });
+        out.push(summarize_walk_forward_metric_samples_full(
+            sharpes,
+            dds,
+            pnls,
+            downside_ratios,
+            ulcers,
+            martins,
+            trades,
+        ));
     }
     Ok(out)
 }
@@ -1525,6 +1560,9 @@ fn compute_asr_gpu_walk_forward_stats_for_candidate(
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut downside_ratios: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
 
     let mut t0 = start_t;
@@ -1559,6 +1597,11 @@ fn compute_asr_gpu_walk_forward_stats_for_candidate(
         sharpes.push(metric.sharpe);
         dds.push(metric.max_dd);
         pnls.push(metric.pnl);
+        if let Some(ratio) = crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric) {
+            downside_ratios.push(ratio);
+        }
+        ulcers.push(metric.ulcer_index);
+        martins.push(metric.martin_ratio);
         trades.push(metric.trades);
         if end == n {
             break;
@@ -1566,21 +1609,15 @@ fn compute_asr_gpu_walk_forward_stats_for_candidate(
         t0 = t0.saturating_add(step);
     }
 
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-
-    Ok(WalkForwardStats {
-        windows: sharpes.len(),
-        sharpe_median: crate::stats_common::median(&sharpes),
-        sharpe_worst: crate::stats_common::worst_min(&sharpes),
-        max_dd_median: crate::stats_common::median(&dds),
-        max_dd_worst: crate::stats_common::worst_max(&dds),
-        pnl_median: crate::stats_common::median(&pnls),
-        pnl_worst: crate::stats_common::worst_min(&pnls),
-        trades_median: crate::stats_common::median_u32(&trades),
-        trades_worst: crate::stats_common::worst_min_u32(&trades),
-    })
+    Ok(summarize_walk_forward_metric_samples_full(
+        sharpes,
+        dds,
+        pnls,
+        downside_ratios,
+        ulcers,
+        martins,
+        trades,
+    ))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2576,6 +2613,9 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut downside_ratios: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
 
     let mut t0 = start_t;
@@ -2612,6 +2652,11 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         sharpes.push(metric.sharpe);
         dds.push(metric.max_dd);
         pnls.push(metric.pnl);
+        if let Some(ratio) = crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric) {
+            downside_ratios.push(ratio);
+        }
+        ulcers.push(metric.ulcer_index);
+        martins.push(metric.martin_ratio);
         trades.push(metric.trades);
         if end == n {
             break;
@@ -2619,21 +2664,15 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         t0 = t0.saturating_add(step);
     }
 
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-
-    Ok(WalkForwardStats {
-        windows: sharpes.len(),
-        sharpe_median: crate::stats_common::median(&sharpes),
-        sharpe_worst: crate::stats_common::worst_min(&sharpes),
-        max_dd_median: crate::stats_common::median(&dds),
-        max_dd_worst: crate::stats_common::worst_max(&dds),
-        pnl_median: crate::stats_common::median(&pnls),
-        pnl_worst: crate::stats_common::worst_min(&pnls),
-        trades_median: crate::stats_common::median_u32(&trades),
-        trades_worst: crate::stats_common::worst_min_u32(&trades),
-    })
+    Ok(summarize_walk_forward_metric_samples_full(
+        sharpes,
+        dds,
+        pnls,
+        downside_ratios,
+        ulcers,
+        martins,
+        trades,
+    ))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3081,6 +3120,9 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut downside_ratios: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
 
     let mut t0 = start_t;
@@ -3117,6 +3159,11 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
         sharpes.push(metric.sharpe);
         dds.push(metric.max_dd);
         pnls.push(metric.pnl);
+        if let Some(ratio) = crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric) {
+            downside_ratios.push(ratio);
+        }
+        ulcers.push(metric.ulcer_index);
+        martins.push(metric.martin_ratio);
         trades.push(metric.trades);
         if end == n {
             break;
@@ -3124,21 +3171,15 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
         t0 = t0.saturating_add(step);
     }
 
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-
-    Ok(WalkForwardStats {
-        windows: sharpes.len(),
-        sharpe_median: crate::stats_common::median(&sharpes),
-        sharpe_worst: crate::stats_common::worst_min(&sharpes),
-        max_dd_median: crate::stats_common::median(&dds),
-        max_dd_worst: crate::stats_common::worst_max(&dds),
-        pnl_median: crate::stats_common::median(&pnls),
-        pnl_worst: crate::stats_common::worst_min(&pnls),
-        trades_median: crate::stats_common::median_u32(&trades),
-        trades_worst: crate::stats_common::worst_min_u32(&trades),
-    })
+    Ok(summarize_walk_forward_metric_samples_full(
+        sharpes,
+        dds,
+        pnls,
+        downside_ratios,
+        ulcers,
+        martins,
+        trades,
+    ))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3557,9 +3598,7 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         "GPU composite validation currently supports VCET candidates only".to_string()
     })?;
     if first.asr.is_some() || first.vcc.is_some() || first.vemr.is_some() || first.rocb.is_some() {
-        return Err(
-            "GPU composite validation currently supports VCET candidates only".to_string(),
-        );
+        return Err("GPU composite validation currently supports VCET candidates only".to_string());
     }
     validate_strategy_cfg(&first.strategy)?;
     validate_vcet_params(first_vcet)?;
@@ -3658,7 +3697,10 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         }
         let idx = i32::try_from(vidya_rows.len())
             .map_err(|_| "VCET GPU VIDYA row index exceeds i32 range".to_string())?;
-        vidya_lookup.insert((vidya_short, vidya_long), (idx, usize::from(vidya_long.saturating_sub(1))));
+        vidya_lookup.insert(
+            (vidya_short, vidya_long),
+            (idx, usize::from(vidya_long.saturating_sub(1))),
+        );
         vidya_rows.push(matrix.device_ptr());
         vidya_keepalive.push(matrix);
     }
@@ -3713,8 +3755,7 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         vidya_row_index.push(vidya_row);
         ce_row_index.push(ce_row);
         combo_start_t.push(
-            i32::try_from(start_t)
-                .map_err(|_| "VCET GPU start_t exceeds i32 range".to_string())?,
+            i32::try_from(start_t).map_err(|_| "VCET GPU start_t exceeds i32 range".to_string())?,
         );
         start_ts.push(start_t);
     }
@@ -3729,7 +3770,8 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         ce_rows: ce_long_rows.len(),
     };
     let combo_end_t = vec![
-        i32::try_from(n).map_err(|_| "VCET GPU end_t exceeds i32 range".to_string())?;
+        i32::try_from(n)
+            .map_err(|_| "VCET GPU end_t exceeds i32 range".to_string())?;
         vidya_row_index.len()
     ];
     let combos = VcetGpuComboBatch {
@@ -3738,8 +3780,13 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         start_t: &combo_start_t,
         end_t: &combo_end_t,
     };
-    let metrics =
-        eval_vcet_metrics_gpu_kernel_device_rows(device_id, &signals, &combos, &first.strategy, first_vcet)?;
+    let metrics = eval_vcet_metrics_gpu_kernel_device_rows(
+        device_id,
+        &signals,
+        &combos,
+        &first.strategy,
+        first_vcet,
+    )?;
     if metrics.len() != req.candidates.len() {
         return Err("VCET GPU validation output length mismatch".to_string());
     }
@@ -4254,6 +4301,9 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut downside_ratios: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
 
     let mut t0 = start_t;
@@ -4303,6 +4353,11 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
         sharpes.push(metric.sharpe);
         dds.push(metric.max_dd);
         pnls.push(metric.pnl);
+        if let Some(ratio) = crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric) {
+            downside_ratios.push(ratio);
+        }
+        ulcers.push(metric.ulcer_index);
+        martins.push(metric.martin_ratio);
         trades.push(metric.trades);
         if end == n {
             break;
@@ -4310,21 +4365,15 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
         t0 = t0.saturating_add(step);
     }
 
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-
-    Ok(WalkForwardStats {
-        windows: sharpes.len(),
-        sharpe_median: crate::stats_common::median(&sharpes),
-        sharpe_worst: crate::stats_common::worst_min(&sharpes),
-        max_dd_median: crate::stats_common::median(&dds),
-        max_dd_worst: crate::stats_common::worst_max(&dds),
-        pnl_median: crate::stats_common::median(&pnls),
-        pnl_worst: crate::stats_common::worst_min(&pnls),
-        trades_median: crate::stats_common::median_u32(&trades),
-        trades_worst: crate::stats_common::worst_min_u32(&trades),
-    })
+    Ok(summarize_walk_forward_metric_samples_full(
+        sharpes,
+        dds,
+        pnls,
+        downside_ratios,
+        ulcers,
+        martins,
+        trades,
+    ))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -5243,6 +5292,9 @@ fn compute_vcc_gpu_walk_forward_stats_for_candidate(
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut downside_ratios: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
 
     let mut t0 = start_t;
@@ -5280,6 +5332,11 @@ fn compute_vcc_gpu_walk_forward_stats_for_candidate(
         sharpes.push(metric.sharpe);
         dds.push(metric.max_dd);
         pnls.push(metric.pnl);
+        if let Some(ratio) = crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric) {
+            downside_ratios.push(ratio);
+        }
+        ulcers.push(metric.ulcer_index);
+        martins.push(metric.martin_ratio);
         trades.push(metric.trades);
         if end == n {
             break;
@@ -5287,21 +5344,15 @@ fn compute_vcc_gpu_walk_forward_stats_for_candidate(
         t0 = t0.saturating_add(step);
     }
 
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-
-    Ok(WalkForwardStats {
-        windows: sharpes.len(),
-        sharpe_median: crate::stats_common::median(&sharpes),
-        sharpe_worst: crate::stats_common::worst_min(&sharpes),
-        max_dd_median: crate::stats_common::median(&dds),
-        max_dd_worst: crate::stats_common::worst_max(&dds),
-        pnl_median: crate::stats_common::median(&pnls),
-        pnl_worst: crate::stats_common::worst_min(&pnls),
-        trades_median: crate::stats_common::median_u32(&trades),
-        trades_worst: crate::stats_common::worst_min_u32(&trades),
-    })
+    Ok(summarize_walk_forward_metric_samples_full(
+        sharpes,
+        dds,
+        pnls,
+        downside_ratios,
+        ulcers,
+        martins,
+        trades,
+    ))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -9335,6 +9386,12 @@ pub struct WalkForwardStats {
     pub max_dd_worst: f64,
     pub pnl_median: f64,
     pub pnl_worst: f64,
+    pub downside_vol_ratio_median: f64,
+    pub downside_vol_ratio_worst: f64,
+    pub ulcer_index_median: f64,
+    pub ulcer_index_worst: f64,
+    pub martin_ratio_median: f64,
+    pub martin_ratio_worst: f64,
     pub trades_median: u32,
     pub trades_worst: u32,
 }
@@ -9348,9 +9405,13 @@ pub struct ReoptWalkForwardWindowStats {
     pub train_score: f64,
     pub train_pnl: f64,
     pub train_sharpe: f64,
+    pub train_ulcer_index: f64,
+    pub train_martin_ratio: f64,
     pub forward_pnl: f64,
     pub forward_sharpe: f64,
     pub forward_max_dd: f64,
+    pub forward_ulcer_index: f64,
+    pub forward_martin_ratio: f64,
     pub forward_trades: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pnl_efficiency: Option<f64>,
@@ -9375,6 +9436,10 @@ pub struct ReoptWalkForwardStats {
     pub forward_max_dd_worst: f64,
     pub forward_pnl_median: f64,
     pub forward_pnl_worst: f64,
+    pub forward_ulcer_index_median: f64,
+    pub forward_ulcer_index_worst: f64,
+    pub forward_martin_ratio_median: f64,
+    pub forward_martin_ratio_worst: f64,
     pub forward_trades_median: u32,
     pub forward_trades_worst: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -9684,10 +9749,8 @@ impl ValidationPostCandidate for CompositeValidationCandidateResult {
         self.iterative_in_sample.as_ref()
     }
 
-    fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)> {
-        self.walk_forward
-            .as_ref()
-            .map(|w| (w.sharpe_median, w.max_dd_worst))
+    fn walk_forward_stats(&self) -> Option<&WalkForwardStats> {
+        self.walk_forward.as_ref()
     }
 
     fn cscv_oos_metric_p50(&self) -> Option<f64> {
@@ -10680,7 +10743,8 @@ fn build_vcet_candidate_series<'a>(
         return Err("not enough candles after warmup".to_string());
     }
 
-    let desired = build_vcet_desired_positions(close, &vidya, &ce, start_t, &params.strategy, vcet_cfg);
+    let desired =
+        build_vcet_desired_positions(close, &vidya, &ce, start_t, &params.strategy, vcet_cfg);
 
     Ok(CandidateSeries::Vcet(VcetCandidateSeries {
         candles,
@@ -12411,9 +12475,7 @@ pub fn run_composite_validation_blocking_with_candles(
                 };
                 let robust_score = crate::validation_pipeline::robust_score_from_metrics(
                     &in_sample,
-                    walk_forward
-                        .as_ref()
-                        .map(|w| (w.sharpe_median, w.max_dd_worst)),
+                    walk_forward.as_ref(),
                 );
                 let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
                     compute_gpu_perturb_stats_for_composite_candidate(
@@ -12587,9 +12649,7 @@ pub fn run_composite_validation_blocking_with_candles(
             let robust_base = iterative_in_sample.as_ref().unwrap_or(&in_sample);
             let robust_score = crate::validation_pipeline::robust_score_from_metrics(
                 robust_base,
-                walk_forward
-                    .as_ref()
-                    .map(|w| (w.sharpe_median, w.max_dd_worst)),
+                walk_forward.as_ref(),
             );
 
             Ok((
@@ -13173,6 +13233,8 @@ fn summarize_regime_bucket_generic(
     let mut eq = 1.0_f64;
     let mut peak = 1.0_f64;
     let mut max_dd = 0.0_f64;
+    let mut ulcer_sum_sq = 0.0_f64;
+    let mut sum_neg_sq = 0.0_f64;
     let mut samples = Vec::new();
 
     for idx in 0..membership.len() {
@@ -13196,6 +13258,10 @@ fn summarize_regime_bucket_generic(
         if dd > max_dd {
             max_dd = dd;
         }
+        ulcer_sum_sq += dd * dd;
+        if r < 0.0 {
+            sum_neg_sq += r * r;
+        }
     }
 
     if bars == 0 {
@@ -13204,6 +13270,9 @@ fn summarize_regime_bucket_generic(
             active_frac: 0.0,
             pnl: 0.0,
             sharpe: 0.0,
+            downside_deviation: 0.0,
+            ulcer_index: 0.0,
+            martin_ratio: 0.0,
             max_dd: 0.0,
             trades: 0,
         };
@@ -13227,11 +13296,26 @@ fn summarize_regime_bucket_generic(
         (sumsq / (samples.len() - 1) as f64).sqrt()
     };
     let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+    let downside_deviation = (sum_neg_sq / bars as f64).sqrt();
+    let ulcer_index = (ulcer_sum_sq / bars as f64).sqrt();
+    let pnl = eq - 1.0;
+    let martin_ratio = if ulcer_index > 1.0e-12 {
+        (pnl / ulcer_index).clamp(-1.0e6, 1.0e6)
+    } else if pnl > 0.0 {
+        1.0e6
+    } else if pnl < 0.0 {
+        -1.0e6
+    } else {
+        0.0
+    };
     RegimeBucketStats {
         bars,
         active_frac: active_bars as f64 / bars as f64,
-        pnl: eq - 1.0,
+        pnl,
         sharpe,
+        downside_deviation,
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades,
     }
@@ -13322,6 +13406,8 @@ fn compute_composite_regime_slice_robustness_stats(
     ];
     let mut worst_bucket_label = String::new();
     let mut worst_sharpe = f64::INFINITY;
+    let mut worst_ulcer_index = 0.0_f64;
+    let mut worst_martin_ratio = f64::INFINITY;
     let mut worst_max_dd = 0.0_f64;
     let mut stable_bucket_count = 0usize;
     for (label, stats) in buckets {
@@ -13335,12 +13421,21 @@ fn compute_composite_regime_slice_robustness_stats(
         if stats.max_dd > worst_max_dd {
             worst_max_dd = stats.max_dd;
         }
+        if stats.ulcer_index > worst_ulcer_index {
+            worst_ulcer_index = stats.ulcer_index;
+        }
+        if stats.martin_ratio < worst_martin_ratio {
+            worst_martin_ratio = stats.martin_ratio;
+        }
         if stats.sharpe >= 0.0 && stats.pnl >= 0.0 {
             stable_bucket_count += 1;
         }
     }
     if !worst_sharpe.is_finite() {
         return None;
+    }
+    if !worst_martin_ratio.is_finite() {
+        worst_martin_ratio = 0.0;
     }
     let stable_bucket_frac = stable_bucket_count as f64 / 5.0;
     let support_label =
@@ -13355,6 +13450,8 @@ fn compute_composite_regime_slice_robustness_stats(
         range,
         worst_bucket_label,
         worst_sharpe,
+        worst_ulcer_index,
+        worst_martin_ratio,
         worst_max_dd,
         stable_bucket_count,
         stable_bucket_frac,
@@ -13518,6 +13615,9 @@ fn compute_composite_friction_stress_summaries(
         let mut worst_score = f64::INFINITY;
         let mut worst_pnl = 0.0_f64;
         let mut worst_sharpe = 0.0_f64;
+        let mut worst_downside_deviation = 0.0_f64;
+        let mut worst_ulcer_index = 0.0_f64;
+        let mut worst_martin_ratio = 0.0_f64;
         let mut worst_max_dd = 0.0_f64;
         let mut rank_sum = 0usize;
         let mut max_rank_drift = 0usize;
@@ -13531,6 +13631,9 @@ fn compute_composite_friction_stress_summaries(
                 worst_score = scenario_score;
                 worst_pnl = metrics.pnl;
                 worst_sharpe = metrics.sharpe;
+                worst_downside_deviation = metrics.downside_deviation;
+                worst_ulcer_index = metrics.ulcer_index;
+                worst_martin_ratio = metrics.martin_ratio;
                 worst_max_dd = metrics.max_dd;
                 worst_label = scenario_labels[scenario_idx].to_string();
             }
@@ -13548,6 +13651,9 @@ fn compute_composite_friction_stress_summaries(
             worst_scenario_label: worst_label,
             worst_pnl,
             worst_sharpe,
+            worst_downside_deviation,
+            worst_ulcer_index,
+            worst_martin_ratio,
             worst_max_dd,
             mean_rank: rank_sum as f64 / scenario_count as f64,
             max_rank_drift,
@@ -13730,7 +13836,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn make_noisy_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);
@@ -15466,12 +15571,11 @@ mod tests {
             .expect("vcet gpu fallback validation");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(
-            res.backend_fallback_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("without overlays/stop-loss/take-profit")
-        );
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[test]
@@ -19259,7 +19363,6 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn vcc_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -19680,7 +19783,6 @@ mod tests {
         assert!(gpu_res.backend_fallback_reason.is_none());
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn mkcs_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "sma".to_string(),
@@ -19709,7 +19811,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn kqsr_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -19738,7 +19839,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn carm_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -19767,7 +19867,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn kvdf_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -19796,7 +19895,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn cdmc_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -21211,6 +21309,7 @@ mod tests {
         assert_eq!(gpu_eval.start_ts, vec![series_start_t(&cpu_series)]);
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn kvdf_validation_gpu_kernel_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
@@ -21898,6 +21997,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn kqsr_validation_gpu_kernel_advanced_routes_smoke() {
         let candles = make_noisy_trending_candles(8192);
@@ -22878,4 +22978,3 @@ mod tests {
         );
     }
 }
-

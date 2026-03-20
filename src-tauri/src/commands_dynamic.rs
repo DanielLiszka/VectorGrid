@@ -36,8 +36,8 @@ pub fn preview_dynamic_double_ma_strategy_ir_json(
         top_k.unwrap_or(50),
         include_all.unwrap_or(false),
     )?;
-    let pretty_json =
-        serde_json::to_string_pretty(&ir).map_err(|e| format!("serialize strategy_ir json: {e}"))?;
+    let pretty_json = serde_json::to_string_pretty(&ir)
+        .map_err(|e| format!("serialize strategy_ir json: {e}"))?;
 
     Ok(DynamicDoubleMaStrategyIrJsonPreviewResponse {
         schema_compatibility: format!("{schema_compatibility:?}"),
@@ -53,7 +53,9 @@ pub fn format_dynamic_strategy_ir_json(ir: StrategyIr) -> Result<String, String>
 }
 
 #[tauri::command]
-pub fn encode_dynamic_strategy_constant_bits(value: f64) -> Result<DynamicStrategyConstantBitsResponse, String> {
+pub fn encode_dynamic_strategy_constant_bits(
+    value: f64,
+) -> Result<DynamicStrategyConstantBitsResponse, String> {
     if !value.is_finite() {
         return Err("dynamic strategy constant must be finite".to_string());
     }
@@ -94,7 +96,10 @@ mod tests {
         .expect("preview should succeed");
 
         assert_eq!(preview.ir.profile, StrategyProfileKind::DoubleMa);
-        assert_eq!(preview.preview.requested_backend, StrategyPlanBackend::GpuUnified);
+        assert_eq!(
+            preview.preview.requested_backend,
+            StrategyPlanBackend::GpuUnified
+        );
         assert!(!preview.pretty_json.is_empty());
     }
 

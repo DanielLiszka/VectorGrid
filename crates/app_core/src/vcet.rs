@@ -10,20 +10,20 @@ use crate::dynamic_indicator_adapter::{
 use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
-use serde::{Deserialize, Serialize};
-use ta_strategies::double_ma::StrategyConfig;
-use vector_ta::utilities::data_loader::Candles;
-use vector_ta::utilities::enums::Kernel;
 #[cfg(feature = "cuda")]
 use cust::memory::DeviceBuffer;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
-#[cfg(feature = "cuda")]
-use vector_ta::cuda::CudaChandelierExit;
+use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::moving_averages::alma_wrapper::DeviceArrayF32;
 #[cfg(feature = "cuda")]
+use vector_ta::cuda::CudaChandelierExit;
+#[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
+use vector_ta::utilities::data_loader::Candles;
+use vector_ta::utilities::enums::Kernel;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VcetStrategyParams {
@@ -557,8 +557,9 @@ pub fn compute_vcet_vidya_signal_cuda_device(
             value: IndicatorParamValue::Float(alpha),
         },
     ];
-    let descriptor = find_dynamic_indicator_descriptor("vidya")
-        .ok_or_else(|| "VCET indicator 'vidya' is not registered for dynamic dispatch".to_string())?;
+    let descriptor = find_dynamic_indicator_descriptor("vidya").ok_or_else(|| {
+        "VCET indicator 'vidya' is not registered for dynamic dispatch".to_string()
+    })?;
     let out = compute_dynamic_indicator_cuda_direct_with_inputs(
         prepared_inputs,
         "vidya",
@@ -761,8 +762,26 @@ mod tests {
             first_valid: 1,
         };
         let ce = VcetChandelierSignals {
-            long_stop: vec![f64::NAN, 9.9, 10.2, 10.6, 10.9, f64::NAN, f64::NAN, f64::NAN],
-            short_stop: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, 11.2, 11.0, 10.8],
+            long_stop: vec![
+                f64::NAN,
+                9.9,
+                10.2,
+                10.6,
+                10.9,
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+            ],
+            short_stop: vec![
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+                11.2,
+                11.0,
+                10.8,
+            ],
             first_valid: 1,
         };
         let desired = build_vcet_desired_positions(

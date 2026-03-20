@@ -1,12 +1,12 @@
 use crate::asr::eval_asr_metrics_from_desired;
 use crate::composite_cpu::{compute_macz_hist, compute_ott_line};
-use crate::double_ma_backend::build_strategy_capability_report_for_request;
-use crate::double_ma_strategy::validate_strategy_cfg;
 use crate::double_ma::{
     compute_halftrend_trend, compute_kaufman_stop_series, compute_log_returns_f64,
     eval_metrics_f64_with_exit_mode, strategy_cfg_for_optimization,
     validate_strategy_cfg_for_optimization, KaufmanStopSeries,
 };
+use crate::double_ma_backend::build_strategy_capability_report_for_request;
+use crate::double_ma_strategy::validate_strategy_cfg;
 use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cpu, DynamicIndicatorComputeOutput,
 };
@@ -14,12 +14,12 @@ use crate::dynamic_indicator_adapter::{
 use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_with_inputs, PreparedCudaIndicatorInputs,
 };
+use crate::strategy_gpu_runtime::{StrategyCapabilityReport, StrategyHandle};
 use crate::strategy_ir::{build_static_strategy_ir, StaticStrategyIrInput, StrategyProfileKind};
 use crate::strategy_plan::{
     compile_strategy_plan, CompiledConditionGroup, CompiledConditionOp, CompiledStrategyPlan,
     CompiledValueRef, StrategyPlanBackend,
 };
-use crate::strategy_gpu_runtime::{StrategyCapabilityReport, StrategyHandle};
 use crate::CompositeSignalMode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -80,12 +80,13 @@ fn enforce_dynamic_double_ma_v1_output_refs(
         let Some(source_indicator_id) = indicator.indicator_id.as_deref() else {
             continue;
         };
-        let descriptor = find_dynamic_indicator_descriptor(source_indicator_id).ok_or_else(|| {
-            format!(
-                "unsupported_indicator: '{}' is not in dynamic indicator registry",
-                source_indicator_id
-            )
-        })?;
+        let descriptor =
+            find_dynamic_indicator_descriptor(source_indicator_id).ok_or_else(|| {
+                format!(
+                    "unsupported_indicator: '{}' is not in dynamic indicator registry",
+                    source_indicator_id
+                )
+            })?;
         let output_id = crate::indicator_catalog::normalize_and_validate_indicator_output_ref(
             descriptor.id.as_str(),
             indicator.output_id.as_deref(),
@@ -100,7 +101,10 @@ fn enforce_dynamic_double_ma_v1_output_refs(
                     descriptor.id, output_id
                 )
             })?;
-        if !matches!(output.value_type, IndicatorValueType::F64 | IndicatorValueType::F32) {
+        if !matches!(
+            output.value_type,
+            IndicatorValueType::F64 | IndicatorValueType::F32
+        ) {
             return Err(format!(
                 "dynamic gpu v1 supports only floating scalar outputs; indicator '{}' output '{}' is {:?}",
                 descriptor.id, output.id, output.value_type
@@ -111,7 +115,9 @@ fn enforce_dynamic_double_ma_v1_output_refs(
     Ok(())
 }
 
-fn enforce_dynamic_double_ma_product_caps(ir: &crate::strategy_ir::StrategyIr) -> Result<(), String> {
+fn enforce_dynamic_double_ma_product_caps(
+    ir: &crate::strategy_ir::StrategyIr,
+) -> Result<(), String> {
     let indicators = ir.program.indicators.len();
     if indicators > DYNAMIC_V1_MAX_INDICATORS {
         return Err(format!(
@@ -142,8 +148,7 @@ fn enforce_dynamic_double_ma_product_caps(ir: &crate::strategy_ir::StrategyIr) -
 
     if !ir.execution.strategy.long_only && ir.program.signals.short_entry_group.is_none() {
         return Err(
-            "dynamic gpu v1 bidirectional plans must bind short_entry_group explicitly"
-                .to_string(),
+            "dynamic gpu v1 bidirectional plans must bind short_entry_group explicitly".to_string(),
         );
     }
 
@@ -252,7 +257,9 @@ pub fn preview_dynamic_double_ma_strategy_ir(
     include_all: bool,
 ) -> Result<DynamicDoubleMaStrategyIrPreview, String> {
     if ir.profile != StrategyProfileKind::DoubleMa {
-        return Err("dynamic strategy preview currently supports only profile=DoubleMa".to_string());
+        return Err(
+            "dynamic strategy preview currently supports only profile=DoubleMa".to_string(),
+        );
     }
 
     validate_strategy_cfg(&ir.execution.strategy)?;
@@ -273,7 +280,10 @@ pub fn preview_dynamic_double_ma_strategy_ir(
     let mut compiled_backend = requested_backend;
     let mut plan = match compile_strategy_plan(ir, requested_backend, None) {
         Ok(plan) => plan,
-        Err(err) if requested_backend == StrategyPlanBackend::GpuUnified && capability.cpu_dynamic_supported => {
+        Err(err)
+            if requested_backend == StrategyPlanBackend::GpuUnified
+                && capability.cpu_dynamic_supported =>
+        {
             capability.gpu_static_supported = false;
             capability.gpu_dynamic_supported = false;
             capability.reasons.push(err);
@@ -938,7 +948,9 @@ fn dynamic_indicator_series_f64<'a>(
     indicator_id: &str,
 ) -> Result<&'a [f64], String> {
     match &output.series {
-        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::F64(values) => Ok(values.as_slice()),
+        crate::dynamic_indicator_adapter::DynamicIndicatorSeries::F64(values) => {
+            Ok(values.as_slice())
+        }
         crate::dynamic_indicator_adapter::DynamicIndicatorSeries::I32(_) => Err(format!(
             "dynamic indicator '{}' materialized i32 output at runtime",
             indicator_id
@@ -962,9 +974,15 @@ fn load_double_ma_plan_indicator_value(
         .indicator_plan
         .get(index as usize)
         .ok_or_else(|| format!("compiled indicator index {} out of range", index))?;
-    if t >= fast.len() || t >= slow.len() || t >= context.close.len() || t >= context.ma_source_prices.len()
+    if t >= fast.len()
+        || t >= slow.len()
+        || t >= context.close.len()
+        || t >= context.ma_source_prices.len()
     {
-        return Err(format!("bar index {} out of range for dynamic plan load", t));
+        return Err(format!(
+            "bar index {} out of range for dynamic plan load",
+            t
+        ));
     }
 
     match slot.indicator_kind {
@@ -995,12 +1013,19 @@ fn load_double_ma_plan_indicator_value(
             let output = context
                 .dynamic_slot_series
                 .get(slot.indicator_id.as_str())
-                .ok_or_else(|| format!("dynamic indicator slot '{}' missing from cpu context", slot.indicator_id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "dynamic indicator slot '{}' missing from cpu context",
+                        slot.indicator_id
+                    )
+                })?;
             let series = dynamic_indicator_series_f64(output, slot.indicator_id.as_str())?;
-            series
-                .get(t)
-                .copied()
-                .ok_or_else(|| format!("dynamic indicator '{}' missing bar {}", slot.indicator_id, t))
+            series.get(t).copied().ok_or_else(|| {
+                format!(
+                    "dynamic indicator '{}' missing bar {}",
+                    slot.indicator_id, t
+                )
+            })
         }
     }
 }
@@ -1081,10 +1106,12 @@ fn eval_double_ma_compiled_group(
     match group.mode {
         crate::strategy_ir::ConditionGroupMode::All => {
             for condition_index in &group.condition_indexes {
-                let condition = plan
-                    .conditions
-                    .get(*condition_index as usize)
-                    .ok_or_else(|| format!("compiled condition index {} out of range", condition_index))?;
+                let condition =
+                    plan.conditions
+                        .get(*condition_index as usize)
+                        .ok_or_else(|| {
+                            format!("compiled condition index {} out of range", condition_index)
+                        })?;
                 if !eval_double_ma_compiled_condition(
                     condition, plan, context, fast, slow, sig_t, prev_t,
                 )? {
@@ -1095,10 +1122,12 @@ fn eval_double_ma_compiled_group(
         }
         crate::strategy_ir::ConditionGroupMode::Any => {
             for condition_index in &group.condition_indexes {
-                let condition = plan
-                    .conditions
-                    .get(*condition_index as usize)
-                    .ok_or_else(|| format!("compiled condition index {} out of range", condition_index))?;
+                let condition =
+                    plan.conditions
+                        .get(*condition_index as usize)
+                        .ok_or_else(|| {
+                            format!("compiled condition index {} out of range", condition_index)
+                        })?;
                 if eval_double_ma_compiled_condition(
                     condition, plan, context, fast, slow, sig_t, prev_t,
                 )? {
@@ -1119,11 +1148,20 @@ fn build_dynamic_double_ma_desired_positions(
 ) -> Result<Vec<i32>, String> {
     let n = fast.len();
     let mut out = vec![0; n];
-    if n == 0 || start_t >= n || slow.len() != n || context.close.len() != n || context.ma_source_prices.len() != n {
+    if n == 0
+        || start_t >= n
+        || slow.len() != n
+        || context.close.len() != n
+        || context.ma_source_prices.len() != n
+    {
         return Ok(out);
     }
 
-    let trade_offset = if plan.strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if plan.strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
     let no_flip = !plan.strategy.allow_flip;
     let long_only = plan.strategy.long_only;
     let mut pos: i32 = 0;
@@ -1253,14 +1291,7 @@ pub fn eval_dynamic_plan_metrics_cpu_with_candles(
                 Ok(fast_metrics)
             }
         }
-        _ => eval_dynamic_plan_metrics_cpu(
-            plan,
-            context,
-            fast,
-            slow,
-            start_t,
-            compute_sharpe,
-        ),
+        _ => eval_dynamic_plan_metrics_cpu(plan, context, fast, slow, start_t, compute_sharpe),
     }
 }
 
@@ -1406,7 +1437,10 @@ fn eval_dynamic_condition_for_double_ma(
                 &condition.rhs,
                 prev_t,
             );
-            lhs_prev.is_finite() && rhs_prev.is_finite() && lhs_prev <= rhs_prev && lhs_now > rhs_now
+            lhs_prev.is_finite()
+                && rhs_prev.is_finite()
+                && lhs_prev <= rhs_prev
+                && lhs_now > rhs_now
         }
         crate::strategy_ir::ConditionOp::CrossDown => {
             let lhs_prev = load_compiled_value_for_dynamic_double_ma(
@@ -1425,7 +1459,10 @@ fn eval_dynamic_condition_for_double_ma(
                 &condition.rhs,
                 prev_t,
             );
-            lhs_prev.is_finite() && rhs_prev.is_finite() && lhs_prev >= rhs_prev && lhs_now < rhs_now
+            lhs_prev.is_finite()
+                && rhs_prev.is_finite()
+                && lhs_prev >= rhs_prev
+                && lhs_now < rhs_now
         }
     }
 }
@@ -1453,13 +1490,7 @@ fn eval_dynamic_group_for_double_ma(
             return false;
         };
         let ok = eval_dynamic_condition_for_double_ma(
-            plan,
-            context,
-            fast,
-            slow,
-            condition,
-            sig_t,
-            prev_t,
+            plan, context, fast, slow, condition, sig_t, prev_t,
         );
         if is_all {
             aggregate &= ok;
@@ -1507,7 +1538,11 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
     };
     let stop_log = cfg.stop_loss_pct().map(|pct| (1.0 - pct).ln());
     let take_log = cfg.take_profit_pct().map(|pct| (1.0 + pct).ln());
-    let trade_offset = if cfg.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
 
     let mut pos: i32 = 0;
     let mut log_eq = 0.0_f64;
@@ -1740,9 +1775,17 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         });
     }
 
-    let variance = if n_obs > 1 { m2 / (n_obs - 1) as f64 } else { 0.0 };
+    let variance = if n_obs > 1 {
+        m2 / (n_obs - 1) as f64
+    } else {
+        0.0
+    };
     let volatility = variance.max(0.0).sqrt();
-    let sharpe = if volatility > 0.0 { mean / volatility } else { 0.0 };
+    let sharpe = if volatility > 0.0 {
+        mean / volatility
+    } else {
+        0.0
+    };
     let downside_dev = (sum_neg_sq / denom).max(0.0).sqrt();
     let sortino = if downside_dev > 0.0 {
         mean / downside_dev
@@ -1890,8 +1933,7 @@ mod tests {
     use crate::strategy_ir::{
         build_static_strategy_ir, ConditionGroup, ConditionGroupMode, ConditionNode, ConditionOp,
         ExecutionPolicy, IndicatorNode, SignalBindings, SignalProgramGraph, StaticStrategyIrInput,
-        StrategyIr, ValueRef,
-        STRATEGY_IR_SCHEMA_VERSION,
+        StrategyIr, ValueRef, STRATEGY_IR_SCHEMA_VERSION,
     };
     use crate::MovingAverageSpec;
     use std::sync::atomic::AtomicBool;
@@ -2023,7 +2065,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -2168,9 +2210,15 @@ mod tests {
                 .expect("slow matrix");
         assert_eq!(cols_fast, cols_slow);
 
-        let dynamic_metrics =
-            eval_dynamic_plan_metrics_cpu(&plan, &context, &fast_mat[..cols_fast], &slow_mat[..cols_fast], 64, true)
-                .expect("dynamic eval should succeed");
+        let dynamic_metrics = eval_dynamic_plan_metrics_cpu(
+            &plan,
+            &context,
+            &fast_mat[..cols_fast],
+            &slow_mat[..cols_fast],
+            64,
+            true,
+        )
+        .expect("dynamic eval should succeed");
 
         assert_eq!(dynamic_metrics.trades, 1);
         assert!(dynamic_metrics.pnl.is_finite());
@@ -2516,7 +2564,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -2562,7 +2610,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -2753,7 +2801,9 @@ mod tests {
 
     #[test]
     fn preview_dynamic_double_ma_strategy_ir_rejects_non_float_dynamic_output() {
-        use crate::indicator_catalog::{list_dynamic_indicator_descriptors_cached, IndicatorValueType};
+        use crate::indicator_catalog::{
+            list_dynamic_indicator_descriptors_cached, IndicatorValueType,
+        };
         use crate::strategy_ir::{
             ConditionGroup, ConditionGroupMode, ConditionNode, ExecutionPolicy, MovingAverageSpec,
             SignalBindings, SignalProgramGraph, StrategyIr, STRATEGY_IR_SCHEMA_VERSION,
@@ -2763,8 +2813,10 @@ mod tests {
             .iter()
             .find_map(|descriptor| {
                 descriptor.outputs.iter().find_map(|output| {
-                    if matches!(output.value_type, IndicatorValueType::I32 | IndicatorValueType::Bool)
-                    {
+                    if matches!(
+                        output.value_type,
+                        IndicatorValueType::I32 | IndicatorValueType::Bool
+                    ) {
                         Some((descriptor.id.clone(), output.id.clone()))
                     } else {
                         None
@@ -2873,7 +2925,10 @@ mod tests {
             false,
         )
         .expect_err("product cap overflow should fail preview");
-        assert!(err.contains("at most 12 indicators"), "unexpected error: {err}");
+        assert!(
+            err.contains("at most 12 indicators"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -2904,8 +2959,9 @@ mod tests {
             false,
         )
         .expect_err("bidirectional missing short entry should fail preview");
-        assert!(err.contains("bidirectional plans must bind short_entry_group"), "unexpected error: {err}");
+        assert!(
+            err.contains("bidirectional plans must bind short_entry_group"),
+            "unexpected error: {err}"
+        );
     }
 }
-
-

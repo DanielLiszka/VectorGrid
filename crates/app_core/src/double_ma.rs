@@ -2,9 +2,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2465,9 +2465,11 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         (
             entry.regime_filter,
             entry.kaufman_stops,
-            entry.base_first_valid
+            entry
+                .base_first_valid
                 .ok_or_else(|| "follow-up cache entry missing base_first_valid".to_string())?,
-            entry.log_returns
+            entry
+                .log_returns
                 .ok_or_else(|| "follow-up cache entry missing log_returns".to_string())?,
         )
     } else {
@@ -2527,7 +2529,12 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
 
     let followup_prices_f32 = match followup_backend.as_ref() {
         Some(Backend::CpuOnly) | None => None,
-        Some(_) => Some(ma_prices.iter().map(|&value| value as f32).collect::<Vec<f32>>()),
+        Some(_) => Some(
+            ma_prices
+                .iter()
+                .map(|&value| value as f32)
+                .collect::<Vec<f32>>(),
+        ),
     };
     let fast_periods = [req.params.fast_len];
     let (fast_mat, cols) = ma_matrix_with_backend_f64(
@@ -2633,9 +2640,11 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
         (
             entry.regime_filter,
             entry.kaufman_stops,
-            entry.base_first_valid
+            entry
+                .base_first_valid
                 .ok_or_else(|| "follow-up cache entry missing base_first_valid".to_string())?,
-            entry.log_returns
+            entry
+                .log_returns
                 .ok_or_else(|| "follow-up cache entry missing log_returns".to_string())?,
         )
     } else {
@@ -2726,7 +2735,12 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
 
     let followup_prices_f32 = match followup_backend.as_ref() {
         Some(Backend::CpuOnly) | None => None,
-        Some(_) => Some(ma_prices.iter().map(|&value| value as f32).collect::<Vec<f32>>()),
+        Some(_) => Some(
+            ma_prices
+                .iter()
+                .map(|&value| value as f32)
+                .collect::<Vec<f32>>(),
+        ),
     };
     let (fast_mat, cols) = ma_matrix_with_backend_f64(
         candles,
@@ -2847,7 +2861,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     let requested_backend = req.backend.clone();
     let normalized_backend = requested_backend.clone().with_preferred_cuda_device()?;
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
     let _gpu_guard = match normalized_backend {
         Backend::GpuOnly { .. }
         | Backend::GpuKernel { .. }
@@ -3239,29 +3253,31 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     );
                 }
             }
-            crate::strategy_plan::StrategyPlanBackend::GpuUnified => {
-                match backend {
-                    Backend::CpuOnly => {}
-                    Backend::GpuKernel { .. } => {}
-                    Backend::GpuOnly { device_id } | Backend::GpuHybridKernel { device_id } => {
-                        backend = Backend::GpuKernel { device_id };
-                        merge_optional_note(
+            crate::strategy_plan::StrategyPlanBackend::GpuUnified => match backend {
+                Backend::CpuOnly => {}
+                Backend::GpuKernel { .. } => {}
+                Backend::GpuOnly { device_id } | Backend::GpuHybridKernel { device_id } => {
+                    backend = Backend::GpuKernel { device_id };
+                    merge_optional_note(
                             &mut backend_fallback_reason,
                             Some(format!(
                                 "DynamicDoubleMa uses the GpuKernel(dynamic_strategy_v1) route instead of {}.",
                                 backend_kind_label(&original_backend)
                             )),
                         );
-                    }
-                    Backend::Auto { device_id } => {
-                        backend = Backend::GpuKernel { device_id };
-                    }
                 }
-            }
+                Backend::Auto { device_id } => {
+                    backend = Backend::GpuKernel { device_id };
+                }
+            },
         }
         dynamic_runtime_plan = Some(runnable);
     }
-    enforce_gpu_execution_policy_before_run(req.gpu_execution, &backend, &indicator_route_plan_summary)?;
+    enforce_gpu_execution_policy_before_run(
+        req.gpu_execution,
+        &backend,
+        &indicator_route_plan_summary,
+    )?;
 
     let requested_backend_label = backend_kind_label(&requested_backend);
     let resolved_backend_label = backend_kind_label(&backend);
@@ -3756,8 +3772,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 device_id: *device_id,
             }),
             Backend::GpuKernel { device_id } => {
-                if let DynamicGpuExecutionSelection::CpuFallback { reason } =
-                    dynamic_gpu_execution
+                if let DynamicGpuExecutionSelection::CpuFallback { reason } = dynamic_gpu_execution
                 {
                     let regime_filter = ensure_combined_regime_filter_cached(
                         &mut host_regime_filter_cache,
@@ -4762,12 +4777,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 match (&backend, runtime_plan.gpu_handle.as_ref()) {
                     (Backend::GpuKernel { device_id }, Some(handle)) => {
                         crate::strategy_gpu_runtime::get_or_build_gpu_strategy_executable(
-                            handle,
-                            *device_id,
+                            handle, *device_id,
                         )
-                        .map_err(|e| {
-                            format!("dynamic GPU executable upload/probe failed: {e}")
-                        })?;
+                        .map_err(|e| format!("dynamic GPU executable upload/probe failed: {e}"))?;
                         DynamicGpuExecutionSelection::Supported(handle.clone())
                     }
                     (Backend::GpuKernel { .. }, None) => {
@@ -6423,7 +6435,7 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
     device_id: u32,
     strategy: &StrategyConfig,
 ) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
     let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
 
     if !strategy.uses_pressure_impulse_trend_filter() {
@@ -6586,7 +6598,7 @@ pub(crate) fn build_slope_efficiency_trend_regime_device(
     device_id: u32,
     strategy: &StrategyConfig,
 ) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
     let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
 
     if !strategy.uses_slope_efficiency_trend_filter() {
@@ -6677,7 +6689,7 @@ pub(crate) fn build_momentum_triple_stack_regime_device(
     device_id: u32,
     strategy: &StrategyConfig,
 ) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
     let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
 
     if !strategy.uses_momentum_triple_stack_filter() {
@@ -6768,7 +6780,7 @@ pub(crate) fn build_oscillator_reversion_confluence_regime_device(
     device_id: u32,
     strategy: &StrategyConfig,
 ) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
     let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
 
     if !strategy.uses_oscillator_reversion_confluence_filter() {
@@ -6862,7 +6874,7 @@ pub(crate) fn build_volume_flow_confirmation_regime_device(
     device_id: u32,
     strategy: &StrategyConfig,
 ) -> Result<crate::gpu_backtest_kernel::DeviceRegimeFilter, String> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
     let _gpu_guard = crate::gpu_backtest_kernel::lock_gpu_test();
 
     if !strategy.uses_volume_flow_confirm_filter() {
@@ -7106,7 +7118,8 @@ fn build_followup_cache_entry(
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
     let mut base_first_valid = fv_close.max(fv_ma);
 
-    let regime_filter = compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
+    let regime_filter =
+        compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
     if let Some(trend) = regime_filter.as_ref() {
         if trend.len() != close.len() {
             return Err("regime trend series length mismatch".to_string());
@@ -7144,9 +7157,7 @@ fn build_lazy_followup_cache_entry(backend_hint: Option<&Backend>) -> FollowupCa
     }
 }
 
-fn maybe_load_followup_cache_entry(
-    key: Option<&str>,
-) -> Option<FollowupCacheEntry> {
+fn maybe_load_followup_cache_entry(key: Option<&str>) -> Option<FollowupCacheEntry> {
     let token = key?.trim();
     if token.is_empty() {
         return None;
@@ -7259,8 +7270,10 @@ fn enforce_gpu_execution_policy_before_run(
 }
 
 fn enforce_gpu_execution_policy_after_run(summary: &GpuResidencySummary) -> Result<(), String> {
-    if matches!(summary.requested_policy, GpuExecutionPolicy::StrictGpuResident)
-        && !summary.fully_gpu_resident
+    if matches!(
+        summary.requested_policy,
+        GpuExecutionPolicy::StrictGpuResident
+    ) && !summary.fully_gpu_resident
     {
         return Err(format!(
             "gpu_execution=StrictGpuResident was requested, but the run resolved to {} and was not fully GPU resident.",
@@ -8208,34 +8221,33 @@ fn optimize_double_ma_cpu_tiled(
         first_valid = first_valid.max(fv_k_long.max(fv_k_short));
     }
 
-    let dynamic_plan_ctx_owned =
-        if dynamic_request_plan.is_none()
-            && crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled()
-        {
-            let plan = crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config(
-                ma_source,
-                fast_ma_type,
-                slow_ma_type,
-                fast_ma_params,
-                slow_ma_params,
-                strategy,
-                None,
-                crate::strategy_plan::StrategyPlanBackend::Cpu,
-            )?;
-            let ctx = crate::strategy_dynamic::build_dynamic_cpu_context_from_precomputed(
-                &lr,
-                close,
-                ma_prices,
-                halftrend_trend,
-                None,
-                None,
-                None,
-                kaufman_stops.as_ref(),
-            );
-            Some((plan, ctx))
-        } else {
-            None
-        };
+    let dynamic_plan_ctx_owned = if dynamic_request_plan.is_none()
+        && crate::strategy_dynamic::dynamic_strategy_opt_experimental_enabled()
+    {
+        let plan = crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config(
+            ma_source,
+            fast_ma_type,
+            slow_ma_type,
+            fast_ma_params,
+            slow_ma_params,
+            strategy,
+            None,
+            crate::strategy_plan::StrategyPlanBackend::Cpu,
+        )?;
+        let ctx = crate::strategy_dynamic::build_dynamic_cpu_context_from_precomputed(
+            &lr,
+            close,
+            ma_prices,
+            halftrend_trend,
+            None,
+            None,
+            None,
+            kaufman_stops.as_ref(),
+        );
+        Some((plan, ctx))
+    } else {
+        None
+    };
     let dynamic_plan_ctx = if let Some(runtime_plan) = dynamic_request_plan {
         Some((&runtime_plan.cpu_plan, &runtime_plan.cpu_context, true))
     } else {
@@ -8315,60 +8327,55 @@ fn optimize_double_ma_cpu_tiled(
                     let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                     let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                     let start_t = t_valid.saturating_add(trade_offset);
-                    let metrics = if let Some((plan, ctx, request_owned)) = dynamic_plan_ctx.as_ref() {
-                        let dynamic_metrics = if *request_owned {
-                            crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu_with_candles(
-                                plan,
-                                candles,
-                                ctx,
-                                fast_row,
-                                slow_row,
-                                start_t,
-                                true,
-                            )?
-                        } else {
-                            crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
-                                plan, ctx, fast_row, slow_row, start_t, true,
-                            )?
-                        };
-                        if dynamic_shadow_enabled {
-                            let sampled = dynamic_shadow_sampled
-                                .fetch_add(1, Ordering::Relaxed)
-                                .saturating_add(1);
-                            if sampled % dynamic_shadow_every == 0 {
-                                let static_metrics = eval_metrics_f64_with_exit_mode(
-                                    &lr,
-                                    close,
-                                    fast_row,
-                                    slow_row,
-                                    halftrend_trend,
-                                    start_t,
-                                    strategy,
-                                    kaufman_stops.as_ref(),
-                                    true,
-                                );
-                                if !crate::strategy_dynamic::metrics_shadow_equivalent(
-                                    &dynamic_metrics,
-                                    &static_metrics,
-                                ) {
-                                    dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
+                    let metrics =
+                        if let Some((plan, ctx, request_owned)) = dynamic_plan_ctx.as_ref() {
+                            let dynamic_metrics = if *request_owned {
+                                crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu_with_candles(
+                                    plan, candles, ctx, fast_row, slow_row, start_t, true,
+                                )?
+                            } else {
+                                crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
+                                    plan, ctx, fast_row, slow_row, start_t, true,
+                                )?
+                            };
+                            if dynamic_shadow_enabled {
+                                let sampled = dynamic_shadow_sampled
+                                    .fetch_add(1, Ordering::Relaxed)
+                                    .saturating_add(1);
+                                if sampled % dynamic_shadow_every == 0 {
+                                    let static_metrics = eval_metrics_f64_with_exit_mode(
+                                        &lr,
+                                        close,
+                                        fast_row,
+                                        slow_row,
+                                        halftrend_trend,
+                                        start_t,
+                                        strategy,
+                                        kaufman_stops.as_ref(),
+                                        true,
+                                    );
+                                    if !crate::strategy_dynamic::metrics_shadow_equivalent(
+                                        &dynamic_metrics,
+                                        &static_metrics,
+                                    ) {
+                                        dynamic_shadow_mismatches.fetch_add(1, Ordering::Relaxed);
+                                    }
                                 }
                             }
-                        }
-                        dynamic_metrics
-                    } else {
-                        eval_metrics_f64_with_exit_mode(
-                            &lr,
-                            close,
-                            fast_row,
-                            slow_row,
-                            halftrend_trend,
-                            start_t,
-                            strategy,
-                            kaufman_stops.as_ref(),
-                            true,
-                        )
-                    };
+                            dynamic_metrics
+                        } else {
+                            eval_metrics_f64_with_exit_mode(
+                                &lr,
+                                close,
+                                fast_row,
+                                slow_row,
+                                halftrend_trend,
+                                start_t,
+                                strategy,
+                                kaufman_stops.as_ref(),
+                                true,
+                            )
+                        };
                     if metrics_pass_constraints(&metrics, constraints) {
                         let params = DoubleMaParams {
                             fast_len,
@@ -8414,7 +8421,9 @@ fn optimize_double_ma_cpu_tiled(
                         let max_p = (fast_len as usize).max(slow_len as usize).max(1);
                         let t_valid = first_valid.saturating_add(max_p.saturating_sub(1));
                         let start_t = t_valid.saturating_add(trade_offset);
-                        let metrics = if let Some((plan, ctx, request_owned)) = dynamic_plan_ctx.as_ref() {
+                        let metrics = if let Some((plan, ctx, request_owned)) =
+                            dynamic_plan_ctx.as_ref()
+                        {
                             let dynamic_metrics = if *request_owned {
                                 crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu_with_candles(
                                     plan,
@@ -8572,13 +8581,7 @@ fn optimize_double_ma_cpu_tiled(
             if let Some((plan, ctx, request_owned)) = dynamic_plan_ctx.as_ref() {
                 if *request_owned {
                     crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu_with_candles(
-                        plan,
-                        candles,
-                        ctx,
-                        fast,
-                        slow,
-                        start_t,
-                        true,
+                        plan, candles, ctx, fast, slow, start_t, true,
                     )
                 } else {
                     crate::strategy_dynamic::eval_dynamic_plan_metrics_cpu(
@@ -8790,9 +8793,8 @@ fn prepare_dynamic_gpu_execution_selection(
         crate::strategy_plan::StrategyPlanBackend::GpuUnified,
     )
     .map_err(|e| format!("dynamic GPU plan compile failed: {e}"))?;
-    let handle =
-        crate::strategy_gpu_runtime::StrategyHandle::from_plan(plan, capability.clone())
-            .map_err(|e| format!("dynamic GPU strategy handle build failed: {e}"))?;
+    let handle = crate::strategy_gpu_runtime::StrategyHandle::from_plan(plan, capability.clone())
+        .map_err(|e| format!("dynamic GPU strategy handle build failed: {e}"))?;
     if let Err(reason) = crate::strategy_dynamic::validate_dynamic_double_ma_gpu_handle_v1(&handle)
     {
         if capability.cpu_dynamic_supported {
@@ -10077,19 +10079,20 @@ fn get_or_build_dynamic_gpu_uploaded_batch(
         slow_periods,
         first_valid,
     )?;
-    if let Some(existing) = DYNAMIC_GPU_BATCH_CACHE.with(|cell| cell.borrow().get(&cache_key).cloned()) {
+    if let Some(existing) =
+        DYNAMIC_GPU_BATCH_CACHE.with(|cell| cell.borrow().get(&cache_key).cloned())
+    {
         return Ok(existing);
     }
 
     let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
     let ma_prices_f32: Vec<f32> = ma_prices.iter().map(|&v| v as f32).collect();
-    let matrix_f32 = |
-        ma_type: &str,
-        periods: &[u16],
-        params: Option<&HashMap<String, f64>>,
-        alma_offset: f64,
-        alma_sigma: f64,
-    | -> Result<(Vec<f32>, usize), String> {
+    let matrix_f32 = |ma_type: &str,
+                      periods: &[u16],
+                      params: Option<&HashMap<String, f64>>,
+                      alma_offset: f64,
+                      alma_sigma: f64|
+     -> Result<(Vec<f32>, usize), String> {
         let info = lookup_ma_info(ma_type).ok_or_else(|| format!("unknown MA: '{ma_type}'"))?;
         if info.supports_cuda_single {
             let selector = CudaMaSelector::new(device_id as usize);
@@ -10150,18 +10153,20 @@ fn get_or_build_dynamic_gpu_uploaded_batch(
         .into_iter()
         .map(|v| v as f32)
         .collect();
-    let uploaded = Rc::new(crate::gpu_backtest_kernel::upload_double_ma_dynamic_program_batch(
-        &lr_f32,
-        &fast_mat,
-        &slow_mat,
-        n,
-        fast_periods,
-        slow_periods,
-        &combos,
-        first_valid,
-        strategy,
-        device_id,
-    )?);
+    let uploaded = Rc::new(
+        crate::gpu_backtest_kernel::upload_double_ma_dynamic_program_batch(
+            &lr_f32,
+            &fast_mat,
+            &slow_mat,
+            n,
+            fast_periods,
+            slow_periods,
+            &combos,
+            first_valid,
+            strategy,
+            device_id,
+        )?,
+    );
     DYNAMIC_GPU_BATCH_CACHE.with(|cell| {
         cell.borrow_mut().insert(cache_key, uploaded.clone());
     });
@@ -10553,11 +10558,13 @@ mod tests {
 
     struct TestEnvGuard {
         _env: std::sync::MutexGuard<'static, ()>,
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
         _gpu: crate::gpu_backtest_kernel::GpuTestLockGuard,
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn lock_env() -> TestEnvGuard {
-        let env = crate::gpu_backtest_kernel::lock_test_env();
+        let env = crate::test_support::lock_test_env();
         let gpu = crate::gpu_backtest_kernel::lock_gpu_test();
         crate::gpu_backtest_kernel::reset_test_runtime();
         crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
@@ -10568,6 +10575,15 @@ mod tests {
             _env: env,
             _gpu: gpu,
         }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    fn lock_env() -> TestEnvGuard {
+        let env = crate::test_support::lock_test_env();
+        if let Some(cache) = DYNAMIC_GPU_PREFLIGHT_CACHE.get() {
+            cache.lock().expect("preflight cache lock").clear();
+        }
+        TestEnvGuard { _env: env }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -11071,7 +11087,7 @@ mod tests {
             heatmap_bins: Some(16),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11112,7 +11128,7 @@ mod tests {
             heatmap_bins: Some(16),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11167,7 +11183,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11234,7 +11250,7 @@ mod tests {
                 max_drawdown: Some(10.0),
             }),
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11285,7 +11301,7 @@ mod tests {
             heatmap_bins: Some(16),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11355,7 +11371,7 @@ mod tests {
             heatmap_bins: Some(16),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11422,7 +11438,7 @@ mod tests {
             heatmap_bins: Some(16),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11449,17 +11465,14 @@ mod tests {
     fn request_dynamic_strategy_ir_cpu_run_executes_through_optimizer() {
         let candles = make_trending_candles(5_000);
         let cancel = AtomicBool::new(false);
-        let mut dynamic_req = make_dynamic_request(Backend::CpuOnly, Some(make_dynamic_constant_close_ir()));
+        let mut dynamic_req =
+            make_dynamic_request(Backend::CpuOnly, Some(make_dynamic_constant_close_ir()));
         dynamic_req.fast_ma_types = vec!["alma".to_string()];
         dynamic_req.slow_ma_types = vec!["alma".to_string()];
 
-        let dynamic = run_double_ma_optimization_blocking_with_candles(
-            dynamic_req,
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("request-backed dynamic cpu run");
+        let dynamic =
+            run_double_ma_optimization_blocking_with_candles(dynamic_req, &candles, &cancel, None)
+                .expect("request-backed dynamic cpu run");
 
         assert!(matches!(dynamic.backend_used, BackendUsed::Cpu));
         assert_eq!(dynamic.best_params.fast_ma_type, "sma");
@@ -11719,7 +11732,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11769,7 +11782,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11832,7 +11845,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11905,7 +11918,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -11959,7 +11972,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12023,7 +12036,7 @@ mod tests {
             heatmap_bins: Some(64),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12149,7 +12162,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12225,7 +12238,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12288,7 +12301,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12351,7 +12364,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12436,7 +12449,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12514,7 +12527,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12591,7 +12604,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12683,7 +12696,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12742,16 +12755,16 @@ mod tests {
                 heatmap_bins: Some(0),
                 constraints: None,
                 vdps: None,
-            
+
                 dynamic_strategy_ir: None,
-            gpu_execution: GpuExecutionPolicy::BestEffort,
-            persist_followup_cache: false,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             };
             let hybrid_req = DoubleMaRequest {
                 backend: Backend::GpuHybridKernel { device_id: 0 },
                 dynamic_strategy_ir: None,
-            gpu_execution: GpuExecutionPolicy::BestEffort,
-            persist_followup_cache: false,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
                 ..cpu_req.clone()
             };
 
@@ -12850,7 +12863,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12909,7 +12922,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -12975,7 +12988,7 @@ mod tests {
                 quality_check_max_pairs: None,
                 quality_check_top_k: None,
             }),
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13046,7 +13059,7 @@ mod tests {
                 quality_check_max_pairs: Some(0),
                 quality_check_top_k: Some(12),
             }),
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13140,10 +13153,10 @@ mod tests {
                     quality_check_max_pairs: Some(0),
                     quality_check_top_k: Some(10),
                 }),
-            
+
                 dynamic_strategy_ir: None,
-            gpu_execution: GpuExecutionPolicy::BestEffort,
-            persist_followup_cache: false,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             };
 
             let a = run_double_ma_optimization_blocking_with_candles(
@@ -13229,7 +13242,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13312,7 +13325,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13382,10 +13395,10 @@ mod tests {
                 heatmap_bins: Some(0),
                 constraints: None,
                 vdps: None,
-            
+
                 dynamic_strategy_ir: None,
-            gpu_execution: GpuExecutionPolicy::BestEffort,
-            persist_followup_cache: false,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             };
 
             let legacy = with_dynamic_strategy_opt_env(false, || {
@@ -13471,7 +13484,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13542,7 +13555,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13605,7 +13618,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13665,7 +13678,7 @@ mod tests {
                 quality_check_max_pairs: Some(25_000),
                 quality_check_top_k: Some(10),
             }),
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13857,7 +13870,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13903,7 +13916,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13943,7 +13956,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -13983,7 +13996,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14023,7 +14036,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14063,7 +14076,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14103,7 +14116,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14143,7 +14156,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14189,7 +14202,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14235,7 +14248,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14281,7 +14294,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14327,7 +14340,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14373,7 +14386,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14419,7 +14432,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -14465,7 +14478,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15044,7 +15057,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15103,7 +15116,7 @@ mod tests {
                 max_drawdown: None,
             }),
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15391,10 +15404,10 @@ mod tests {
                 heatmap_bins: Some(0),
                 constraints: None,
                 vdps: None,
-            
+
                 dynamic_strategy_ir: None,
-            gpu_execution: GpuExecutionPolicy::BestEffort,
-            persist_followup_cache: false,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
             };
 
             let out =
@@ -15445,7 +15458,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15473,7 +15486,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15532,7 +15545,7 @@ mod tests {
                 max_drawdown: None,
             }),
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15607,7 +15620,7 @@ mod tests {
                 max_drawdown: None,
             }),
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15690,7 +15703,7 @@ mod tests {
             heatmap_bins: Some(0),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15704,13 +15717,13 @@ mod tests {
         assert!(!lines.is_empty(), "expected non-empty csv");
         assert_eq!(
             lines[0],
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,trades,exposure,net_exposure,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,martin_ratio,trades,exposure,net_exposure,score"
         );
         assert_eq!(lines.len(), res.num_combos + 1);
         for (i, line) in lines.iter().enumerate().skip(1) {
             assert_eq!(
                 line.split(',').count(),
-                11,
+                14,
                 "bad csv column count on line {i}"
             );
         }
@@ -15761,7 +15774,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15825,7 +15838,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15885,7 +15898,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -15945,7 +15958,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16009,7 +16022,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16072,7 +16085,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16132,7 +16145,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16192,7 +16205,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16252,7 +16265,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16312,7 +16325,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16371,7 +16384,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16434,7 +16447,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16494,7 +16507,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16554,7 +16567,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16614,7 +16627,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16674,7 +16687,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16734,7 +16747,7 @@ mod tests {
             heatmap_bins: Some(16),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16794,7 +16807,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16854,7 +16867,7 @@ mod tests {
             heatmap_bins: Some(32),
             constraints: None,
             vdps: None,
-        
+
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
@@ -16880,6 +16893,3 @@ mod tests {
         assert_eq!(h1.values, h2.values);
     }
 }
-
-
-

@@ -732,8 +732,8 @@ fn main() -> Result<(), String> {
         constraints: None,
         vdps: None,
         dynamic_strategy_ir: None,
-    gpu_execution: Default::default(),
-    persist_followup_cache: false,
+        gpu_execution: Default::default(),
+        persist_followup_cache: false,
     };
 
     println!("Running optimization baseline...");
@@ -1020,5 +1020,3 @@ fn main() -> Result<(), String> {
 
     Ok(())
 }
-
-

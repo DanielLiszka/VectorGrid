@@ -97,7 +97,7 @@ pub struct ValidationRunVerdict {
 pub trait ValidationPostCandidate {
     fn in_sample_metrics(&self) -> &Metrics;
     fn iterative_in_sample_metrics(&self) -> Option<&Metrics>;
-    fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)>;
+    fn walk_forward_stats(&self) -> Option<&WalkForwardStats>;
     fn cscv_oos_metric_p50(&self) -> Option<f64>;
     fn cscv_oos_rank_frac_p50(&self) -> Option<f64>;
 
@@ -118,12 +118,120 @@ pub trait ValidationPostCandidate {
     fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict);
 }
 
-pub fn robust_score_from_metrics(in_sample: &Metrics, wf: Option<(f64, f64)>) -> f64 {
-    if let Some((sharpe_median, max_dd_worst)) = wf {
-        sharpe_median - 2.0 * max_dd_worst
+pub fn downside_vol_ratio_from_metrics(metrics: &Metrics) -> Option<f64> {
+    if metrics.downside_deviation.is_finite()
+        && metrics.volatility.is_finite()
+        && metrics.volatility > 1.0e-12
+    {
+        Some((metrics.downside_deviation / metrics.volatility).clamp(0.0, 10.0))
     } else {
-        in_sample.sharpe - 2.0 * in_sample.max_dd
+        None
     }
+}
+
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn robust_score_from_components(
+    sharpe_like: f64,
+    max_dd_like: f64,
+    ulcer_like: f64,
+    martin_like: f64,
+    downside_vol_ratio_like: Option<f64>,
+) -> f64 {
+    let base = sharpe_like - 2.0 * max_dd_like;
+    let martin_bonus = if martin_like.is_finite() {
+        0.05 * martin_like.clamp(-10.0, 10.0)
+    } else {
+        0.0
+    };
+    let ulcer_penalty = if ulcer_like.is_finite() {
+        0.5 * ulcer_like.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let downside_penalty = downside_vol_ratio_like
+        .filter(|ratio| ratio.is_finite())
+        .map(|ratio| 0.25 * ratio.clamp(0.0, 2.0))
+        .unwrap_or(0.0);
+
+    base + martin_bonus - ulcer_penalty - downside_penalty
+}
+
+pub fn robust_score_from_metrics(in_sample: &Metrics, wf: Option<&WalkForwardStats>) -> f64 {
+    let sharpe_like = wf
+        .map(|stats| finite_or(stats.sharpe_median, in_sample.sharpe))
+        .unwrap_or(in_sample.sharpe);
+    let max_dd_like = wf
+        .map(|stats| finite_or(stats.max_dd_worst, in_sample.max_dd))
+        .unwrap_or(in_sample.max_dd);
+    let ulcer_like = wf
+        .map(|stats| finite_or(stats.ulcer_index_worst, in_sample.ulcer_index))
+        .unwrap_or(in_sample.ulcer_index);
+    let martin_like = wf
+        .map(|stats| finite_or(stats.martin_ratio_median, in_sample.martin_ratio))
+        .unwrap_or(in_sample.martin_ratio);
+    let downside_vol_ratio_like = wf
+        .and_then(|stats| {
+            if stats.downside_vol_ratio_median.is_finite() {
+                Some(stats.downside_vol_ratio_median)
+            } else {
+                None
+            }
+        })
+        .or_else(|| downside_vol_ratio_from_metrics(in_sample));
+
+    robust_score_from_components(
+        sharpe_like,
+        max_dd_like,
+        ulcer_like,
+        martin_like,
+        downside_vol_ratio_like,
+    )
+}
+
+fn risk_warning_flags_from_metrics(
+    in_sample: &Metrics,
+    wf: Option<&WalkForwardStats>,
+) -> Vec<String> {
+    const HIGH_ULCER_INDEX_WARNING: f64 = 0.10;
+    const WEAK_MARTIN_RATIO_WARNING: f64 = 0.25;
+    const HIGH_DOWNSIDE_VOL_RATIO_WARNING: f64 = 0.85;
+
+    let ulcer = wf
+        .map(|stats| finite_or(stats.ulcer_index_worst, in_sample.ulcer_index))
+        .unwrap_or(in_sample.ulcer_index);
+    let martin = wf
+        .map(|stats| finite_or(stats.martin_ratio_median, in_sample.martin_ratio))
+        .unwrap_or(in_sample.martin_ratio);
+    let downside_ratio = wf
+        .and_then(|stats| {
+            if stats.downside_vol_ratio_median.is_finite() {
+                Some(stats.downside_vol_ratio_median)
+            } else {
+                None
+            }
+        })
+        .or_else(|| downside_vol_ratio_from_metrics(in_sample));
+
+    let mut flags = Vec::new();
+    if ulcer.is_finite() && ulcer > HIGH_ULCER_INDEX_WARNING {
+        flags.push(format!("ulcer_index_high:{ulcer:.3}"));
+    }
+    if martin.is_finite() && martin < WEAK_MARTIN_RATIO_WARNING {
+        flags.push(format!("martin_ratio_weak:{martin:.3}"));
+    }
+    if let Some(ratio) = downside_ratio.filter(|ratio| ratio.is_finite()) {
+        if ratio > HIGH_DOWNSIDE_VOL_RATIO_WARNING {
+            flags.push(format!("downside_vol_ratio_high:{ratio:.3}"));
+        }
+    }
+    flags
 }
 
 pub fn fold_cscv_metric(base: f64, oos_metric_p50: Option<f64>) -> f64 {
@@ -191,21 +299,39 @@ pub fn compute_probability_metrics<C: ValidationPostCandidate>(
 
 pub fn mark_robust_pareto<C: ValidationPostCandidate>(out: &mut [C]) {
     for i in 0..out.len() {
-        let (xi, yi) = out[i].walk_forward_sharpe_maxdd().unwrap_or_else(|| {
-            let m = out[i].in_sample_metrics();
-            (m.sharpe, m.max_dd)
-        });
+        let base_i = out[i]
+            .iterative_in_sample_metrics()
+            .unwrap_or_else(|| out[i].in_sample_metrics());
+        let wf_i = out[i].walk_forward_stats();
+        let score_i = robust_score_from_metrics(base_i, wf_i);
+        let ulcer_i = wf_i
+            .map(|stats| finite_or(stats.ulcer_index_worst, base_i.ulcer_index))
+            .unwrap_or(base_i.ulcer_index);
+        let dd_i = wf_i
+            .map(|stats| finite_or(stats.max_dd_worst, base_i.max_dd))
+            .unwrap_or(base_i.max_dd);
 
         let mut dominated = false;
         for j in 0..out.len() {
             if i == j {
                 continue;
             }
-            let (xj, yj) = out[j].walk_forward_sharpe_maxdd().unwrap_or_else(|| {
-                let m = out[j].in_sample_metrics();
-                (m.sharpe, m.max_dd)
-            });
-            if xj >= xi && yj <= yi && (xj > xi || yj < yi) {
+            let base_j = out[j]
+                .iterative_in_sample_metrics()
+                .unwrap_or_else(|| out[j].in_sample_metrics());
+            let wf_j = out[j].walk_forward_stats();
+            let score_j = robust_score_from_metrics(base_j, wf_j);
+            let ulcer_j = wf_j
+                .map(|stats| finite_or(stats.ulcer_index_worst, base_j.ulcer_index))
+                .unwrap_or(base_j.ulcer_index);
+            let dd_j = wf_j
+                .map(|stats| finite_or(stats.max_dd_worst, base_j.max_dd))
+                .unwrap_or(base_j.max_dd);
+            if score_j >= score_i
+                && ulcer_j <= ulcer_i
+                && dd_j <= dd_i
+                && (score_j > score_i || ulcer_j < ulcer_i || dd_j < dd_i)
+            {
                 dominated = true;
                 break;
             }
@@ -234,6 +360,10 @@ pub fn apply_candidate_hard_gates<C: ValidationPostCandidate>(
 
     for cand in out.iter_mut() {
         let mut verdict = ValidationCandidateVerdict::default();
+        let base_metrics = cand
+            .iterative_in_sample_metrics()
+            .unwrap_or_else(|| cand.in_sample_metrics());
+        let walk_forward = cand.walk_forward_stats();
 
         if let Some(thr) = gates.min_psr {
             let psr = cand.psr().unwrap_or(0.0);
@@ -287,6 +417,10 @@ pub fn apply_candidate_hard_gates<C: ValidationPostCandidate>(
                     .push(format!("min_track_record_length_not_met:{obs}/{mintrl}"));
             }
         }
+
+        verdict
+            .warning_flags
+            .extend(risk_warning_flags_from_metrics(base_metrics, walk_forward));
 
         verdict.passed = verdict.fail_reasons.is_empty();
         cand.set_validation_verdict(verdict);
@@ -347,6 +481,13 @@ pub fn build_run_verdict<C: ValidationPostCandidate>(
         top_candidate.and_then(|cand| cand.min_track_record_length_bars());
     let top_candidate_psr = top_candidate.and_then(|cand| cand.psr());
     let top_candidate_dsr = top_candidate.and_then(|cand| cand.dsr());
+    if let Some(top) = top_candidate {
+        for flag in &top.validation_verdict().warning_flags {
+            if !warning_flags.iter().any(|existing| existing == flag) {
+                warning_flags.push(flag.clone());
+            }
+        }
+    }
 
     if candidates_survived_hard_gates > 0 && approved_candidate_count == 0 {
         warning_flags.push("no_candidate_approved".to_string());
@@ -482,6 +623,9 @@ where
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut downside_ratios: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
 
     let mut t0 = start_t;
@@ -494,6 +638,11 @@ where
         sharpes.push(m.sharpe);
         dds.push(m.max_dd);
         pnls.push(m.pnl);
+        if let Some(ratio) = downside_vol_ratio_from_metrics(&m) {
+            downside_ratios.push(ratio);
+        }
+        ulcers.push(m.ulcer_index);
+        martins.push(m.martin_ratio);
         trades.push(m.trades);
         if end == n {
             break;
@@ -504,6 +653,9 @@ where
     sharpes.sort_by(|a, b| a.total_cmp(b));
     dds.sort_by(|a, b| a.total_cmp(b));
     pnls.sort_by(|a, b| a.total_cmp(b));
+    downside_ratios.sort_by(|a, b| a.total_cmp(b));
+    ulcers.sort_by(|a, b| a.total_cmp(b));
+    martins.sort_by(|a, b| a.total_cmp(b));
 
     WalkForwardStats {
         windows: sharpes.len(),
@@ -513,6 +665,12 @@ where
         max_dd_worst: worst_max(&dds),
         pnl_median: median(&pnls),
         pnl_worst: worst_min(&pnls),
+        downside_vol_ratio_median: median(&downside_ratios),
+        downside_vol_ratio_worst: worst_max(&downside_ratios),
+        ulcer_index_median: median(&ulcers),
+        ulcer_index_worst: worst_max(&ulcers),
+        martin_ratio_median: median(&martins),
+        martin_ratio_worst: worst_min(&martins),
         trades_median: median_u32(&trades),
         trades_worst: worst_min_u32(&trades),
     }
@@ -623,6 +781,8 @@ where
     let mut sharpes: Vec<f64> = Vec::new();
     let mut dds: Vec<f64> = Vec::new();
     let mut pnls: Vec<f64> = Vec::new();
+    let mut ulcers: Vec<f64> = Vec::new();
+    let mut martins: Vec<f64> = Vec::new();
     let mut trades: Vec<u32> = Vec::new();
     let mut winner_keys: Vec<String> = Vec::new();
     let mut window_stats: Vec<ReoptWalkForwardWindowStats> = Vec::new();
@@ -677,6 +837,8 @@ where
         sharpes.push(forward.sharpe);
         dds.push(forward.max_dd);
         pnls.push(forward.pnl);
+        ulcers.push(forward.ulcer_index);
+        martins.push(forward.martin_ratio);
         trades.push(forward.trades);
         if forward.pnl > 0.0 {
             positive_forward_pnl = positive_forward_pnl.saturating_add(1);
@@ -696,9 +858,13 @@ where
             train_score: best_score,
             train_pnl: train_metrics.pnl,
             train_sharpe: train_metrics.sharpe,
+            train_ulcer_index: train_metrics.ulcer_index,
+            train_martin_ratio: train_metrics.martin_ratio,
             forward_pnl: forward.pnl,
             forward_sharpe: forward.sharpe,
             forward_max_dd: forward.max_dd,
+            forward_ulcer_index: forward.ulcer_index,
+            forward_martin_ratio: forward.martin_ratio,
             forward_trades: forward.trades,
             pnl_efficiency,
             sharpe_efficiency,
@@ -718,6 +884,8 @@ where
     sharpes.sort_by(|a, b| a.total_cmp(b));
     dds.sort_by(|a, b| a.total_cmp(b));
     pnls.sort_by(|a, b| a.total_cmp(b));
+    ulcers.sort_by(|a, b| a.total_cmp(b));
+    martins.sort_by(|a, b| a.total_cmp(b));
     pnl_efficiencies.sort_by(|a, b| a.total_cmp(b));
     sharpe_efficiencies.sort_by(|a, b| a.total_cmp(b));
 
@@ -773,6 +941,10 @@ where
         forward_max_dd_worst: worst_max(&dds),
         forward_pnl_median: median(&pnls),
         forward_pnl_worst: worst_min(&pnls),
+        forward_ulcer_index_median: median(&ulcers),
+        forward_ulcer_index_worst: worst_max(&ulcers),
+        forward_martin_ratio_median: median(&martins),
+        forward_martin_ratio_worst: worst_min(&martins),
         forward_trades_median: median_u32(&trades),
         forward_trades_worst: worst_min_u32(&trades),
         window_pnl_efficiency_median: if pnl_efficiencies.is_empty() {
@@ -1316,7 +1488,7 @@ mod tests {
             None
         }
 
-        fn walk_forward_sharpe_maxdd(&self) -> Option<(f64, f64)> {
+        fn walk_forward_stats(&self) -> Option<&WalkForwardStats> {
             None
         }
 
@@ -1395,9 +1567,67 @@ mod tests {
             ..Metrics::default()
         };
         let a = robust_score_from_metrics(&m, None);
-        let b = robust_score_from_metrics(&m, Some((2.0, 0.3)));
+        let wf = WalkForwardStats {
+            windows: 3,
+            sharpe_median: 2.0,
+            sharpe_worst: 1.0,
+            max_dd_median: 0.2,
+            max_dd_worst: 0.3,
+            pnl_median: 0.1,
+            pnl_worst: 0.0,
+            downside_vol_ratio_median: 0.5,
+            downside_vol_ratio_worst: 0.8,
+            ulcer_index_median: 0.05,
+            ulcer_index_worst: 0.1,
+            martin_ratio_median: 1.0,
+            martin_ratio_worst: 0.5,
+            trades_median: 10,
+            trades_worst: 5,
+        };
+        let b = robust_score_from_metrics(&m, Some(&wf));
         assert!((a - 0.6).abs() < 1e-12);
-        assert!((b - 1.4).abs() < 1e-12);
+        assert!((b - 1.275).abs() < 1e-12);
+    }
+
+    #[test]
+    fn apply_candidate_hard_gates_preserves_new_metric_warning_flags() {
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                pnl: 0.10,
+                sharpe: 1.0,
+                volatility: 0.10,
+                downside_deviation: 0.095,
+                ulcer_index: 0.15,
+                martin_ratio: 0.20,
+                max_dd: 0.2,
+                trades: 32,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.0,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+
+        apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+        let flags = &out[0].validation_verdict.warning_flags;
+        assert!(
+            flags.iter().any(|flag| flag == "ulcer_index_high:0.150"),
+            "expected ulcer warning in {flags:?}"
+        );
+        assert!(
+            flags.iter().any(|flag| flag == "martin_ratio_weak:0.200"),
+            "expected martin warning in {flags:?}"
+        );
+        assert!(
+            flags.iter()
+                .any(|flag| flag == "downside_vol_ratio_high:0.950"),
+            "expected downside ratio warning in {flags:?}"
+        );
     }
 
     #[test]

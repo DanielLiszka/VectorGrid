@@ -258,5 +258,3 @@ pub async fn run_composite_mo_optimization(
     .await
     .map_err(|e| e.to_string())?
 }
-
-

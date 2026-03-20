@@ -3074,15 +3074,27 @@ void transpose_row_to_tm(const float* __restrict__ in,
 
 
 extern "C" __global__
-void compute_log_returns_f32(const float* __restrict__ prices,
-                             int T,
-                             float* __restrict__ lr_out)
+void compute_log_and_simple_returns_f32(const float* __restrict__ prices,
+                                        int T,
+                                        float* __restrict__ lr_out,
+                                        float* __restrict__ ret1_out)
 {
     for (int t = blockIdx.x * blockDim.x + threadIdx.x; t < T; t += blockDim.x * gridDim.x) {
-        if (t == 0) { lr_out[0] = 0.0f; continue; }
+        if (t == 0) {
+            lr_out[0] = 0.0f;
+            ret1_out[0] = 0.0f;
+            continue;
+        }
         const float p  = prices[t];
         const float pm = prices[t-1];
-        lr_out[t] = (p > 0.0f && pm > 0.0f && isfinite(p) && isfinite(pm)) ? logf(p) - logf(pm) : 0.0f;
+        if (p > 0.0f && pm > 0.0f && isfinite(p) && isfinite(pm)) {
+            const float ratio = p / pm;
+            lr_out[t] = logf(ratio);
+            ret1_out[t] = ratio - 1.0f;
+        } else {
+            lr_out[t] = 0.0f;
+            ret1_out[t] = 0.0f;
+        }
     }
 }
 
@@ -3302,6 +3314,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
 
     int T,
     int Pf_tile, int Ps_tile,
@@ -3331,6 +3344,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     const int metrics_stride = (metrics_out_stride > 0) ? metrics_out_stride : (FULL_M7 ? 7 : M);
@@ -3340,6 +3354,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const int need_stats  = FULL_M7 ? 1 : (M > 3);
     const int need_std    = FULL_M7 ? 1 : (M > 4);
     const int need_expo   = FULL_M7 ? 1 : (M > 5);
+    const int need_downside_dev = FULL_M7 ? 1 : (M > 7);
+    const int need_ulcer = FULL_M7 ? 1 : (M > 8);
+    const int need_martin = FULL_M7 ? 1 : (M > 9);
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk_runtime = use_stop || use_take;
@@ -3369,7 +3386,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         const int period_s = slow_periods[ps_global];
 
         const size_t pair_global = (size_t)pf_global * (size_t)Ps_total + (size_t)ps_global;
-        const size_t base = pair_global * (size_t)metrics_stride;
+        const size_t row_idx = compact_output ? (size_t)pair_local : pair_global;
+        const size_t base = row_idx * (size_t)metrics_stride;
 
         if ((flags & STRAT_ENFORCE_FAST_LT_SLOW) && (period_f >= period_s)) {
             if (M > 0) metrics_out[base + 0] = 0.0f;
@@ -3379,6 +3397,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (M > 4) metrics_out[base + 4] = 0.0f;
             if (M > 5) metrics_out[base + 5] = 0.0f;
             if (M > 6) metrics_out[base + 6] = 0.0f;
+            if (M > 7) metrics_out[base + 7] = 0.0f;
+            if (M > 8) metrics_out[base + 8] = 0.0f;
+            if (M > 9) metrics_out[base + 9] = 0.0f;
             continue;
         }
 
@@ -3396,6 +3417,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (M > 4) metrics_out[base + 4] = 0.0f;
             if (M > 5) metrics_out[base + 5] = 0.0f;
             if (M > 6) metrics_out[base + 6] = 0.0f;
+            if (M > 7) metrics_out[base + 7] = 0.0f;
+            if (M > 8) metrics_out[base + 8] = 0.0f;
+            if (M > 9) metrics_out[base + 9] = 0.0f;
             continue;
         }
 
@@ -3408,6 +3432,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         long long sum_pos     = 0;
         float mean = 0.0f, m2 = 0.0f;
         long long n = 0;
+        long long obs = 0;
+        float sum_neg_sq = 0.0f;
+        float ulcer_sum_sq = 0.0f;
 
         if (!use_risk) {
             const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
@@ -3456,19 +3483,34 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
                 const float lr_t = lr[t];
                 log_eq += (float)pos * lr_t;
+                obs += 1;
 
                 if (need_max_dd) {
                     if (log_eq > log_peak) log_peak = log_eq;
                     const float dd_log = log_peak - log_eq;
                     if (dd_log > max_log_dd) max_log_dd = dd_log;
+                    if (need_ulcer) {
+                        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+                        ulcer_sum_sq += dd * dd;
+                    }
+                } else if (need_ulcer) {
+                    if (log_eq > log_peak) log_peak = log_eq;
+                    const float dd_log = log_peak - log_eq;
+                    const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+                    ulcer_sum_sq += dd * dd;
                 }
 
-                if (need_stats) {
-                    const float step_r = (pos == 0) ? 0.0f : (float)pos * expm1f(lr_t);
-                    n += 1;
-                    const float delta = step_r - mean;
-                    mean += delta / (float)n;
-                    m2   += delta * (step_r - mean);
+                if (need_stats || need_downside_dev) {
+                    const float step_r = (pos == 0) ? 0.0f : (float)pos * ret1[t];
+                    if (need_stats) {
+                        n += 1;
+                        const float delta = step_r - mean;
+                        mean += delta / (float)n;
+                        m2   += delta * (step_r - mean);
+                    }
+                    if (need_downside_dev && step_r < 0.0f) {
+                        sum_neg_sq += step_r * step_r;
+                    }
 
                     if (need_expo) {
                         sum_abs_pos += llabs((long long)pos);
@@ -3539,6 +3581,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 const float lr_t = lr[t];
                 const float step_log = (float)pos_bar * lr_t;
                 log_eq += step_log;
+                obs += 1;
 
                 if (pos_bar != 0) {
                     trade_log_ret += step_log;
@@ -3556,14 +3599,28 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     if (log_eq > log_peak) log_peak = log_eq;
                     const float dd_log = log_peak - log_eq;
                     if (dd_log > max_log_dd) max_log_dd = dd_log;
+                    if (need_ulcer) {
+                        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+                        ulcer_sum_sq += dd * dd;
+                    }
+                } else if (need_ulcer) {
+                    if (log_eq > log_peak) log_peak = log_eq;
+                    const float dd_log = log_peak - log_eq;
+                    const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
+                    ulcer_sum_sq += dd * dd;
                 }
 
-                if (need_stats) {
-                    const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * expm1f(lr_t);
-                    n += 1;
-                    const float delta = step_r - mean;
-                    mean += delta / (float)n;
-                    m2 += delta * (step_r - mean);
+                if (need_stats || need_downside_dev) {
+                    const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * ret1[t];
+                    if (need_stats) {
+                        n += 1;
+                        const float delta = step_r - mean;
+                        mean += delta / (float)n;
+                        m2 += delta * (step_r - mean);
+                    }
+                    if (need_downside_dev && step_r < 0.0f) {
+                        sum_neg_sq += step_r * step_r;
+                    }
 
                     if (need_expo) {
                         sum_abs_pos += llabs((long long)pos_bar);
@@ -3579,6 +3636,23 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         const float net_expo = (need_expo && n > 0) ? (float)((double)sum_pos / (double)n)     : 0.0f;
         const float pnl = expf(log_eq) - 1.0f;
         const float std = sqrtf(variance);
+        const float downside_dev =
+            (need_downside_dev && obs > 0) ? sqrtf(fmaxf(sum_neg_sq / (float)obs, 0.0f)) : 0.0f;
+        const float ulcer_index =
+            (need_ulcer && obs > 0) ? sqrtf(fmaxf(ulcer_sum_sq / (float)obs, 0.0f)) : 0.0f;
+        const float eps = 1.0e-12f;
+        const float clamp_max = 1.0e6f;
+        float martin_ratio = 0.0f;
+        if (need_martin) {
+            if (ulcer_index > eps) {
+                martin_ratio = pnl / ulcer_index;
+            } else if (pnl > 0.0f) {
+                martin_ratio = clamp_max;
+            } else if (pnl < 0.0f) {
+                martin_ratio = -clamp_max;
+            }
+            martin_ratio = fminf(clamp_max, fmaxf(-clamp_max, martin_ratio));
+        }
 
         if constexpr (FULL_M7) {
             metrics_out[base + 0] = pnl;
@@ -3588,14 +3662,21 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             metrics_out[base + 4] = std;
             metrics_out[base + 5] = exposure;
             metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+            if (metrics_stride > 7) metrics_out[base + 7] = downside_dev;
+            if (metrics_stride > 8) metrics_out[base + 8] = ulcer_index;
+            if (metrics_stride > 9) metrics_out[base + 9] = martin_ratio;
         } else {
-            if (M > 0) metrics_out[base + 0] = pnl;
+            const bool search_row = M < 10;
+            if (M > 0) metrics_out[base + 0] = search_row ? log_eq : pnl;
             if (M > 1) metrics_out[base + 1] = (float)trades;
-            if (M > 2) metrics_out[base + 2] = max_dd;
+            if (M > 2) metrics_out[base + 2] = search_row ? max_log_dd : max_dd;
             if (M > 3) metrics_out[base + 3] = mean;
             if (M > 4) metrics_out[base + 4] = std;
             if (M > 5) metrics_out[base + 5] = exposure;
             if (M > 6) metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+            if (M > 7) metrics_out[base + 7] = downside_dev;
+            if (M > 8) metrics_out[base + 8] = ulcer_index;
+            if (M > 9) metrics_out[base + 9] = martin_ratio;
         }
     }
 }
@@ -3605,6 +3686,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
 
     int T,
     int Pf_tile, int Ps_tile,
@@ -3631,24 +3713,26 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         0, T,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3672,23 +3756,25 @@ void double_cross_backtest_tm_flex_f32(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, false, false>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_windowed(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3714,24 +3800,26 @@ void double_cross_backtest_tm_flex_f32_windowed(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, false, false>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3755,23 +3843,25 @@ void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<true, false, false>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3795,23 +3885,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, false>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_m7(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m7(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3835,23 +3927,25 @@ void double_cross_backtest_tm_flex_f32_m7(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, false, true>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3875,23 +3969,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3915,23 +4011,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 0>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3955,23 +4053,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 0, 0>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -3995,23 +4095,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 0, 0, 0>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -4035,23 +4137,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 1>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -4075,23 +4179,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 1, 0>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -4115,23 +4221,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 2>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -4155,23 +4263,25 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk(
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 2, 0>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 extern "C" __global__
-void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0(
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
+    const float* __restrict__ ret1,
     int T,
     int Pf_tile, int Ps_tile,
     int fast_tm_stride, int slow_tm_stride,
@@ -4195,15 +4305,16 @@ void double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ metrics_out
 ){
     double_cross_backtest_tm_flex_f32_body<false, true, true, 2, 0, 0>(
-        fast_ma_T, slow_ma_T, lr,
+        fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, metrics_out
+        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4226,8 +4337,9 @@ static __device__ __forceinline__ float objective_score_f32(const float* __restr
     }
     if (objective == 3) {
         if (M <= 2) return NEG_INF_F;
-        const float pnl = metrics[base + 0];
-        const float max_dd = metrics[base + 2];
+        const bool search_row = M < 10;
+        const float pnl = search_row ? expm1f(metrics[base + 0]) : metrics[base + 0];
+        const float max_dd = search_row ? -expm1f(-metrics[base + 2]) : metrics[base + 2];
         const float eps = 1e-12f;
         const float clamp_max = 1.0e6f;
         float raw = 0.0f;
@@ -4361,6 +4473,7 @@ void heatmap_update_scores_tm_f32(
     int slow_max,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     float* __restrict__ heatmap_out
 ) {
     const int dense_pairs = pairs;
@@ -4379,7 +4492,8 @@ void heatmap_update_scores_tm_f32(
         const int s = slow_periods[ps_local];
         if (f >= s) continue;
 
-        const size_t base = (size_t)pair * (size_t)metrics_stride;
+        const size_t row_idx = compact_output ? (size_t)compact_pair : (size_t)pair;
+        const size_t base = row_idx * (size_t)metrics_stride;
         const float score = objective_score_f32(metrics, base, M, objective);
         if (!isfinite(score)) continue;
 
@@ -4408,6 +4522,7 @@ void select_topk_from_pairs_tm_f32(
     int topk,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     int* __restrict__ out_pair_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
@@ -4430,10 +4545,12 @@ void select_topk_from_pairs_tm_f32(
                     const int f = fast_periods[pf_local];
                     const int s = slow_periods[ps_local];
                     if (f < s) {
-                        const size_t base = (size_t)pair * (size_t)metrics_stride;
+                        const size_t row_idx =
+                            compact_output ? (size_t)compact_idx : (size_t)pair;
+                        const size_t base = row_idx * (size_t)metrics_stride;
                         score = objective_score_f32(metrics, base, M, objective);
                         if (!isfinite(score)) score = NEG_INF_F;
-                        val = pair;
+                        val = compact_output ? compact_idx : pair;
                     }
                 }
             }
@@ -4469,19 +4586,30 @@ void select_topk_from_candidates_tm_f32(
     int topk,
     const int* __restrict__ in_pair_idx,
     int in_len,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
     int* __restrict__ out_pair_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    const int dense_pairs = pairs;
+    const int total_rows = (compact_output && pair_count > 0) ? pair_count : pairs;
     float keys[TOPK_ITEMS_PER_THREAD];
     int vals[TOPK_ITEMS_PER_THREAD];
 
 #pragma unroll
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int row = -1;
         int pair = -1;
         float score = NEG_INF_F;
         if (in_pos < in_len) {
-            pair = in_pair_idx[in_pos];
+            row = in_pair_idx[in_pos];
+            if (row >= 0 && row < total_rows) {
+                pair = compact_output
+                    ? resolve_dense_pair_idx(row, dense_pairs, pair_index_map)
+                    : row;
+            }
             if (pair >= 0 && pair < pairs) {
                 const int pf_local = pair / Ps_tile;
                 const int ps_local = pair - pf_local * Ps_tile;
@@ -4489,7 +4617,8 @@ void select_topk_from_candidates_tm_f32(
                     const int f = fast_periods[pf_local];
                     const int s = slow_periods[ps_local];
                     if (f < s) {
-                        const size_t base = (size_t)pair * (size_t)metrics_stride;
+                        const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
+                        const size_t base = row_idx * (size_t)metrics_stride;
                         score = objective_score_f32(metrics, base, M, objective);
                         if (!isfinite(score)) score = NEG_INF_F;
                     }
@@ -4497,7 +4626,7 @@ void select_topk_from_candidates_tm_f32(
             }
         }
         keys[item] = score;
-        vals[item] = pair;
+        vals[item] = row;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -4531,6 +4660,7 @@ void select_topk_from_pairs_tm_f32_v2(
     float max_dd,
     const int* __restrict__ pair_index_map,
     int pair_count,
+    int compact_output,
     int* __restrict__ out_pair_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
@@ -4553,11 +4683,13 @@ void select_topk_from_pairs_tm_f32_v2(
                     const int f = fast_periods[pf_local];
                     const int s = slow_periods[ps_local];
                     if (f < s) {
-                        const size_t base = (size_t)pair * (size_t)metrics_stride;
+                        const size_t row_idx =
+                            compact_output ? (size_t)compact_idx : (size_t)pair;
+                        const size_t base = row_idx * (size_t)metrics_stride;
                         if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
                             score = objective_score_f32(metrics, base, M, objective);
                             if (!isfinite(score)) score = NEG_INF_F;
-                            val = pair;
+                            val = compact_output ? compact_idx : pair;
                         }
                     }
                 }
@@ -4598,19 +4730,30 @@ void select_topk_from_candidates_tm_f32_v2(
     float min_trades,
     int use_max_dd,
     float max_dd,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
     int* __restrict__ out_pair_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    const int dense_pairs = pairs;
+    const int total_rows = (compact_output && pair_count > 0) ? pair_count : pairs;
     float keys[TOPK_ITEMS_PER_THREAD];
     int vals[TOPK_ITEMS_PER_THREAD];
 
 #pragma unroll
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int row = -1;
         int pair = -1;
         float score = NEG_INF_F;
         if (in_pos < in_len) {
-            pair = in_pair_idx[in_pos];
+            row = in_pair_idx[in_pos];
+            if (row >= 0 && row < total_rows) {
+                pair = compact_output
+                    ? resolve_dense_pair_idx(row, dense_pairs, pair_index_map)
+                    : row;
+            }
             if (pair >= 0 && pair < pairs) {
                 const int pf_local = pair / Ps_tile;
                 const int ps_local = pair - pf_local * Ps_tile;
@@ -4618,7 +4761,8 @@ void select_topk_from_candidates_tm_f32_v2(
                     const int f = fast_periods[pf_local];
                     const int s = slow_periods[ps_local];
                     if (f < s) {
-                        const size_t base = (size_t)pair * (size_t)metrics_stride;
+                        const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
+                        const size_t base = row_idx * (size_t)metrics_stride;
                         if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
                             score = objective_score_f32(metrics, base, M, objective);
                             if (!isfinite(score)) score = NEG_INF_F;
@@ -4628,7 +4772,7 @@ void select_topk_from_candidates_tm_f32_v2(
             }
         }
         keys[item] = score;
-        vals[item] = pair;
+        vals[item] = row;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -4656,12 +4800,21 @@ void gather_topk_pairs_tm_f32(
     const int* __restrict__ slow_periods,
     const int* __restrict__ top_pair_idx,
     int topk,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
     int* __restrict__ out_fast_len,
     int* __restrict__ out_slow_len,
     float* __restrict__ out_metrics
 ) {
+    const int total_rows = (compact_output && pair_count > 0) ? pair_count : pairs;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < topk; i += blockDim.x * gridDim.x) {
-        const int pair = top_pair_idx[i];
+        const int row = top_pair_idx[i];
+        const int pair = compact_output
+            ? ((row >= 0 && row < total_rows)
+                ? resolve_dense_pair_idx(row, pairs, pair_index_map)
+                : -1)
+            : row;
         if (pair < 0 || pair >= pairs) {
             out_fast_len[i] = 0;
             out_slow_len[i] = 0;
@@ -4678,7 +4831,8 @@ void gather_topk_pairs_tm_f32(
         }
         out_fast_len[i] = fast_periods[pf_local];
         out_slow_len[i] = slow_periods[ps_local];
-        const size_t base_in = (size_t)pair * (size_t)metrics_stride;
+        const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
+        const size_t base_in = row_idx * (size_t)metrics_stride;
         const size_t base_out = (size_t)i * (size_t)M;
         for (int m = 0; m < M; ++m) out_metrics[base_out + (size_t)m] = metrics[base_in + (size_t)m];
     }

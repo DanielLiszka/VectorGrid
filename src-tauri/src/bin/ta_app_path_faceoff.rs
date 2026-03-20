@@ -220,8 +220,8 @@ fn make_request(cli: &Cli, data_id: &str) -> DoubleMaRequest {
         constraints: None,
         vdps: None,
         dynamic_strategy_ir: None,
-    gpu_execution: Default::default(),
-    persist_followup_cache: false,
+        gpu_execution: Default::default(),
+        persist_followup_cache: false,
     }
 }
 
@@ -328,5 +328,3 @@ fn main() -> Result<(), String> {
     })?;
     Ok(())
 }
-
-

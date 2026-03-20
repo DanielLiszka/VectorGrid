@@ -189,6 +189,7 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
         pnl: if pnl.is_finite() { pnl } else { 0.0 },
         sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
         sortino: if sortino.is_finite() { sortino } else { 0.0 },
+        downside_deviation: 0.0,
         calmar: if calmar.is_finite() { calmar } else { 0.0 },
         omega: if omega.is_finite() { omega } else { 0.0 },
         volatility: if volatility.is_finite() {
@@ -196,6 +197,8 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
         } else {
             0.0
         },
+        ulcer_index: 0.0,
+        martin_ratio: 0.0,
         max_dd: if max_dd.is_finite() {
             max_dd.max(0.0)
         } else {

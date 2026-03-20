@@ -162,7 +162,9 @@ fn indicator_staging_reason(
                     Some("cpu_preferred_by_speedup")
                 }
             }
-            crate::ma_policy::HybridCapabilityTier::CudaOnly => Some("kernel_unsupported_cuda_only"),
+            crate::ma_policy::HybridCapabilityTier::CudaOnly => {
+                Some("kernel_unsupported_cuda_only")
+            }
             crate::ma_policy::HybridCapabilityTier::CpuOnly => Some("kernel_unsupported_cpu_only"),
             crate::ma_policy::HybridCapabilityTier::Unsupported => Some("unsupported"),
         },
@@ -177,13 +179,10 @@ pub(crate) fn should_cpu_stage_indicator(
     match decision.route {
         crate::ma_policy::HybridRouteTier::GpuKernel => false,
         crate::ma_policy::HybridRouteTier::CpuStaged => match decision.capability {
-            crate::ma_policy::HybridCapabilityTier::GpuKernel => {
-                !matches!(
-                    gpu_execution,
-                    GpuExecutionPolicy::PreferGpuResident
-                        | GpuExecutionPolicy::StrictGpuResident
-                )
-            }
+            crate::ma_policy::HybridCapabilityTier::GpuKernel => !matches!(
+                gpu_execution,
+                GpuExecutionPolicy::PreferGpuResident | GpuExecutionPolicy::StrictGpuResident
+            ),
             crate::ma_policy::HybridCapabilityTier::CudaOnly
             | crate::ma_policy::HybridCapabilityTier::CpuOnly
             | crate::ma_policy::HybridCapabilityTier::Unsupported => true,
