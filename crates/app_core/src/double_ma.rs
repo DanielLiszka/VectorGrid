@@ -15,7 +15,7 @@ use ta_strategies::double_ma::{
     DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig, Trade, TradeStats,
 };
 
-use crate::alloc_policy::alloc_f64_with_prefix_uninit_tail;
+use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, alloc_uninit_f32, alloc_uninit_f64};
 use crate::double_ma_backend::{
     backend_kind_label, build_indicator_route_plan_summary, gpu_kernel_blockers_for_request,
     hybrid_backend_enabled, should_cpu_stage_indicator,
@@ -5402,7 +5402,7 @@ fn build_ma_matrices_cuda(
                 values
             }
             Err(sweep_err) => {
-                let mut host = vec![f32::NAN; expected_len];
+                let mut host = alloc_uninit_f32(expected_len);
                 for (row, period) in (start..=end).enumerate() {
                     let data = if requires_candles {
                         CudaMaData::Candles {
@@ -5572,7 +5572,7 @@ fn merge_regime_filters(
             if x.len() != y.len() {
                 return Err("regime filter length mismatch".to_string());
             }
-            let mut out = vec![f64::NAN; x.len()];
+            let mut out = alloc_uninit_f64(x.len());
             for i in 0..x.len() {
                 let (a_long, a_short) = if !x[i].is_finite() {
                     (false, false)
@@ -5705,10 +5705,11 @@ pub(crate) fn compute_trend_quality_regime(
     };
 
     if !strategy.uses_regime_hybrid_filter() {
-        let mut regime = vec![f64::NAN; n];
+        let mut regime = alloc_uninit_f64(n);
         for i in 0..n {
             let a = lr_angle[i];
             let b = bbw[i];
+            regime[i] = f64::NAN;
             if !a.is_finite() || !b.is_finite() || b < bbw_min {
                 continue;
             }
@@ -5750,7 +5751,7 @@ pub(crate) fn compute_trend_quality_regime(
     let adx_exit = strategy.regime_hybrid_adx_exit();
     let angle_exit = (angle_min * 0.6).max(0.0001);
     let bbw_exit = (bbw_min * 0.7).max(0.0);
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     let mut state: i8 = 0; // +1 trend-long, -1 trend-short, 0 range
     for i in 0..n {
         let a = lr_angle[i];
@@ -5760,6 +5761,7 @@ pub(crate) fn compute_trend_quality_regime(
             .and_then(|v| v.get(i))
             .copied()
             .unwrap_or(f64::NAN);
+        regime[i] = f64::NAN;
         if !a.is_finite() || !b.is_finite() || !d.is_finite() {
             continue;
         }
@@ -5912,7 +5914,7 @@ pub(crate) fn compute_breakout_momentum_regime(
     let cmo_min_abs = strategy.breakout_cmo_min_abs();
     let adx_min = strategy.breakout_adx_min();
 
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     let mut long_count = 0usize;
     let mut short_count = 0usize;
     for i in 0..n {
@@ -5929,6 +5931,7 @@ pub(crate) fn compute_breakout_momentum_regime(
             true
         };
 
+        regime[i] = f64::NAN;
         if !close.is_finite()
             || !upper.is_finite()
             || !lower.is_finite()
@@ -6013,7 +6016,7 @@ pub(crate) fn compute_volume_flow_confirmation_regime(
     let long_min = strategy.volume_flow_mfi_long_min();
     let short_max = strategy.volume_flow_mfi_short_max();
 
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     let mut long_count = 0usize;
     let mut short_count = 0usize;
     for i in 0..n {
@@ -6021,6 +6024,7 @@ pub(crate) fn compute_volume_flow_confirmation_regime(
         let obv_s = obv_ma[i];
         let mfi_v = mfi.values[i];
 
+        regime[i] = f64::NAN;
         if !obv_v.is_finite() || !obv_s.is_finite() || !mfi_v.is_finite() {
             long_count = 0;
             short_count = 0;
@@ -6153,7 +6157,7 @@ pub(crate) fn compute_pressure_impulse_trend_regime(
     }
 
     let confirm_bars = strategy.pit_confirm_bars();
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     let mut long_count = 0usize;
     let mut short_count = 0usize;
     for i in 0..n {
@@ -6162,6 +6166,7 @@ pub(crate) fn compute_pressure_impulse_trend_regime(
         let vosc_v = vosc[i];
         let acosc_v = acosc[i];
         let cfo_v = cfo[i];
+        regime[i] = f64::NAN;
         if !efi_v.is_finite()
             || !bop_v.is_finite()
             || !vosc_v.is_finite()
@@ -6264,11 +6269,12 @@ pub(crate) fn compute_slope_efficiency_trend_regime(
     let angle_min = strategy.set_angle_min_deg();
     let er_min = strategy.set_er_min();
     let chop_max = strategy.set_chop_max();
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     for i in 0..n {
         let angle_v = angle[i];
         let er_v = er[i];
         let chop_v = chop[i];
+        regime[i] = f64::NAN;
         if !angle_v.is_finite() || !er_v.is_finite() || !chop_v.is_finite() {
             continue;
         }
@@ -6329,11 +6335,12 @@ pub(crate) fn compute_momentum_triple_stack_regime(
         return Err("mts indicator length mismatch".to_string());
     }
 
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     for i in 0..n {
         let roc_v = roc[i];
         let mom_v = mom[i];
         let ppo_v = ppo[i];
+        regime[i] = f64::NAN;
         if !roc_v.is_finite() || !mom_v.is_finite() || !ppo_v.is_finite() {
             continue;
         }
@@ -6401,11 +6408,12 @@ pub(crate) fn compute_oscillator_reversion_confluence_regime(
         return Err("orc indicator length mismatch".to_string());
     }
 
-    let mut regime = vec![f64::NAN; n];
+    let mut regime = alloc_uninit_f64(n);
     for i in 0..n {
         let rsi_v = rsi[i];
         let stoch_v = stoch.k[i];
         let willr_v = willr[i];
+        regime[i] = f64::NAN;
         if !rsi_v.is_finite() || !stoch_v.is_finite() || !willr_v.is_finite() {
             continue;
         }
@@ -7577,6 +7585,28 @@ fn ma_period_step(periods: &[u16]) -> usize {
 }
 
 #[inline]
+fn fill_missing_rows_with_nan_f64(values: &mut [f64], cols: usize, row_written: &[bool]) {
+    for (row, written) in row_written.iter().copied().enumerate() {
+        if written {
+            continue;
+        }
+        let offset = row.saturating_mul(cols);
+        values[offset..offset + cols].fill(f64::NAN);
+    }
+}
+
+#[inline]
+fn fill_missing_rows_with_nan_f32(values: &mut [f32], cols: usize, row_written: &[bool]) {
+    for (row, written) in row_written.iter().copied().enumerate() {
+        if written {
+            continue;
+        }
+        let offset = row.saturating_mul(cols);
+        values[offset..offset + cols].fill(f32::NAN);
+    }
+}
+
+#[inline]
 pub(crate) fn first_finite_idx(series: &[f64]) -> Option<usize> {
     series.iter().position(|v| v.is_finite())
 }
@@ -7691,7 +7721,7 @@ pub(crate) fn ma_matrix_cpu_f64(
     let end = periods[rows - 1] as usize;
     let step = ma_period_step(periods);
 
-    let mut values: Vec<f64> = vec![f64::NAN; expected_len];
+    let mut values: Vec<f64> = alloc_uninit_f64(expected_len);
 
     if ma_type.eq_ignore_ascii_case("alma") {
         let prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
@@ -7709,6 +7739,7 @@ pub(crate) fn ma_matrix_cpu_f64(
         if out.cols != n {
             return Err(format!("alma batch cols {} != {n}", out.cols));
         }
+        let mut row_written = vec![false; rows];
         for (src_row, params) in out.combos.iter().enumerate() {
             let per = params.period.unwrap_or(start) as usize;
             let row = if step == 0 {
@@ -7727,7 +7758,9 @@ pub(crate) fn ma_matrix_cpu_f64(
                 continue;
             }
             values[dst_off..dst_off + n].copy_from_slice(&out.values[src_off..src_off + n]);
+            row_written[row] = true;
         }
+        fill_missing_rows_with_nan_f64(&mut values, n, &row_written);
         return Ok((values, n));
     }
 
@@ -7763,6 +7796,7 @@ pub(crate) fn ma_matrix_cpu_f64(
         if out.cols != n {
             return Err(format!("frama batch cols {} != {n}", out.cols));
         }
+        let mut row_written = vec![false; rows];
         for (src_row, params) in out.combos.iter().enumerate() {
             let per = params.window.unwrap_or(start) as usize;
             let row = if step == 0 {
@@ -7786,7 +7820,9 @@ pub(crate) fn ma_matrix_cpu_f64(
             {
                 *dst = src as f64;
             }
+            row_written[row] = true;
         }
+        fill_missing_rows_with_nan_f64(&mut values, n, &row_written);
         return Ok((values, n));
     }
 
@@ -7803,6 +7839,7 @@ pub(crate) fn ma_matrix_cpu_f64(
     );
     match batch {
         Ok(b) if b.cols == n => {
+            let mut row_written = vec![false; rows];
             for (src_row, &period) in b.periods.iter().enumerate() {
                 let per = period as usize;
                 let row = if step == 0 {
@@ -7825,7 +7862,9 @@ pub(crate) fn ma_matrix_cpu_f64(
                     continue;
                 }
                 values[dst_off..dst_off + n].copy_from_slice(&b.values[src_off..src_off + n]);
+                row_written[row] = true;
             }
+            fill_missing_rows_with_nan_f64(&mut values, n, &row_written);
         }
         _ => {
             for (row, &period) in periods.iter().enumerate() {
@@ -7961,7 +8000,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
     let end = periods[rows - 1] as usize;
     let step = ma_period_step(periods);
 
-    let mut values: Vec<f32> = vec![f32::NAN; expected_len];
+    let mut values: Vec<f32> = alloc_uninit_f32(expected_len);
 
     if ma_type.eq_ignore_ascii_case("alma") {
         let prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
@@ -7979,6 +8018,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
         if out.cols != n {
             return Err(format!("alma batch cols {} != {n}", out.cols));
         }
+        let mut row_written = vec![false; rows];
         for (src_row, params) in out.combos.iter().enumerate() {
             let per = params.period.unwrap_or(start) as usize;
             let row = if step == 0 {
@@ -8002,7 +8042,9 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
             {
                 *dst = src as f32;
             }
+            row_written[row] = true;
         }
+        fill_missing_rows_with_nan_f32(&mut values, n, &row_written);
         return Ok((values, n));
     }
 
@@ -8038,6 +8080,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
         if out.cols != n {
             return Err(format!("frama batch cols {} != {n}", out.cols));
         }
+        let mut row_written = vec![false; rows];
         for (src_row, params) in out.combos.iter().enumerate() {
             let per = params.window.unwrap_or(start) as usize;
             let row = if step == 0 {
@@ -8061,7 +8104,9 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
             {
                 *dst = src as f32;
             }
+            row_written[row] = true;
         }
+        fill_missing_rows_with_nan_f32(&mut values, n, &row_written);
         return Ok((values, n));
     }
 
@@ -8079,6 +8124,7 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
 
     match batch {
         Ok(b) if b.cols == n => {
+            let mut row_written = vec![false; rows];
             for (src_row, &period) in b.periods.iter().enumerate() {
                 let per = period as usize;
                 let row = if step == 0 {
@@ -8106,7 +8152,9 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
                 {
                     *dst = src as f32;
                 }
+                row_written[row] = true;
             }
+            fill_missing_rows_with_nan_f32(&mut values, n, &row_written);
             Ok((values, n))
         }
         _ => {
@@ -8974,7 +9022,7 @@ fn ma_matrix_cuda_host_f32(
             values
         }
         Err(sweep_err) => {
-            let mut out = vec![f32::NAN; expected_len];
+            let mut out = alloc_uninit_f32(expected_len);
             for (row, &period) in periods.iter().enumerate() {
                 let data = if requires_candles {
                     CudaMaData::Candles {

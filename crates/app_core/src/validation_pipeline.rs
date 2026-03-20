@@ -1624,7 +1624,8 @@ mod tests {
             "expected martin warning in {flags:?}"
         );
         assert!(
-            flags.iter()
+            flags
+                .iter()
                 .any(|flag| flag == "downside_vol_ratio_high:0.950"),
             "expected downside ratio warning in {flags:?}"
         );

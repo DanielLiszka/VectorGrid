@@ -8036,28 +8036,16 @@ mod tests {
     #[test]
     fn compact_valid_pair_output_requires_reduced_search_mode() {
         assert!(super::should_use_compact_valid_pair_output(
-            false,
-            false,
-            false,
-            5
+            false, false, false, 5
         ));
         assert!(!super::should_use_compact_valid_pair_output(
-            true,
-            false,
-            false,
-            5
+            true, false, false, 5
         ));
         assert!(!super::should_use_compact_valid_pair_output(
-            false,
-            true,
-            false,
-            5
+            false, true, false, 5
         ));
         assert!(!super::should_use_compact_valid_pair_output(
-            false,
-            false,
-            true,
-            5
+            false, false, true, 5
         ));
         assert!(!super::should_use_compact_valid_pair_output(
             false,
