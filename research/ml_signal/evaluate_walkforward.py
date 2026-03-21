@@ -87,6 +87,31 @@ def summarize_roll(
     }
 
 
+def summarize_ticker(
+    ticker_id: str,
+    scored_slice: pd.DataFrame,
+) -> dict[str, Any]:
+    rows_scored = int(len(scored_slice))
+    long_count = int((scored_slice["position"] == 1).sum())
+    short_count = int((scored_slice["position"] == -1).sum())
+    flat_count = int((scored_slice["position"] == 0).sum())
+    active_count = long_count + short_count
+    active_share = float(active_count / rows_scored) if rows_scored > 0 else 0.0
+    mean_return = float(scored_slice["policy_return"].mean()) if rows_scored else 0.0
+    sum_return = float(scored_slice["policy_return"].sum()) if rows_scored else 0.0
+
+    return {
+        "ticker_id": ticker_id,
+        "rows_scored": rows_scored,
+        "signals_long": long_count,
+        "signals_short": short_count,
+        "signals_flat": flat_count,
+        "active_share": active_share,
+        "mean_policy_return": mean_return,
+        "sum_policy_return": sum_return,
+    }
+
+
 def main() -> int:
     args = parse_args()
     dataset = Path(args.dataset)
@@ -184,9 +209,26 @@ def main() -> int:
     scored.to_csv(output_scores, index=False)
 
     positive_rolls = sum(1 for row in roll_summaries if float(row["sum_policy_return"]) > 0.0)
+    ticker_summaries = [
+        summarize_ticker(str(ticker_id), ticker_frame.copy())
+        for ticker_id, ticker_frame in scored.groupby("ticker_id", sort=True)
+    ]
+    positive_tickers = sum(
+        1 for row in ticker_summaries if float(row["sum_policy_return"]) > 0.0
+    )
+
     summary = {
+        "bundle_id": str(bundle_dir.name),
+        "bundle_dir": str(bundle_dir),
+        "dataset_path": str(bundle.dataset_path),
+        "feature_schema_path": str(bundle.schema_path),
+        "export_manifest_path": str(bundle.export_manifest_path) if bundle.export_manifest_path else "",
+        "split_manifest_path": str(bundle.split_manifest_path) if bundle.split_manifest_path else "",
+        "ticker_holdout": (bundle.export_manifest or {}).get("ticker_holdout"),
+        "calibration_path_present": bool(calibration_path.exists()),
         "rows_scored": int(len(scored)),
         "splits_scored": int(len(roll_summaries)),
+        "tickers_scored": int(len(ticker_summaries)),
         "signals_long": int((scored["position"] == 1).sum()),
         "signals_short": int((scored["position"] == -1).sum()),
         "signals_flat": int((scored["position"] == 0).sum()),
@@ -194,6 +236,9 @@ def main() -> int:
         "mean_policy_return": float(scored["policy_return"].mean()),
         "sum_policy_return": float(scored["policy_return"].sum()),
         "positive_roll_rate": float(positive_rolls / len(roll_summaries)),
+        "positive_ticker_rate": float(positive_tickers / len(ticker_summaries))
+        if ticker_summaries
+        else 0.0,
         "thresholds": {
             "t_long": args.t_long,
             "t_short": args.t_short,
@@ -201,13 +246,16 @@ def main() -> int:
         },
         "score_path": str(output_scores),
         "roll_summary_path": str(bundle_dir / "walkforward_rolls.json"),
+        "ticker_summary_path": str(bundle_dir / "walkforward_tickers.json"),
     }
 
     dump_json(bundle_dir / "walkforward_rolls.json", {"rolls": roll_summaries})
+    dump_json(bundle_dir / "walkforward_tickers.json", {"tickers": ticker_summaries})
     dump_json(bundle_dir / "walkforward_summary.json", summary)
 
     print(f"wrote walk-forward scores -> {output_scores}")
     print(f"wrote roll summary -> {bundle_dir / 'walkforward_rolls.json'}")
+    print(f"wrote ticker summary -> {bundle_dir / 'walkforward_tickers.json'}")
     print(summary)
     return 0
 

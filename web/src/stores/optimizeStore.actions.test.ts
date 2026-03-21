@@ -72,9 +72,11 @@ function installDocumentHarness(): DocumentHarness {
 
 describe("optimize store actions", () => {
   let harness: DocumentHarness;
+  let pinia: ReturnType<typeof createPinia>;
 
   beforeEach(() => {
-    setActivePinia(createPinia());
+    pinia = createPinia();
+    setActivePinia(pinia);
     harness = installDocumentHarness();
     applyPresetMock.mockClear();
     applyPresetMock.mockResolvedValue(undefined);
@@ -97,7 +99,7 @@ describe("optimize store actions", () => {
   });
 
   it("updates Vue optimize state without legacy DOM mirroring", () => {
-    const store = useOptimizeStore();
+    const store = useOptimizeStore(pinia);
     store.setInputField("fastStart", "5");
     store.setSelectField("backend", "CpuOnly");
 
@@ -109,7 +111,7 @@ describe("optimize store actions", () => {
   });
 
   it("dispatches optimize run/cancel/validation through optimize service", () => {
-    const store = useOptimizeStore();
+    const store = useOptimizeStore(pinia);
     store.runOptimization();
     store.cancelOptimization();
     store.runValidation();
@@ -120,9 +122,9 @@ describe("optimize store actions", () => {
   });
 
   it("routes MlSignal run and validation through the dedicated ML service", async () => {
-    const store = useOptimizeStore();
-    const data = useDataStore();
-    const strategy = useStrategyStore();
+    const store = useOptimizeStore(pinia);
+    const data = useDataStore(pinia);
+    const strategy = useStrategyStore(pinia);
     store.strategyKind = "MlSignal";
     store.mlSignalScoreInputPath = "C:\\data\\scores.csv";
     store.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
@@ -182,7 +184,7 @@ describe("optimize store actions", () => {
   });
 
   it("dispatches optimize preset and gpu utility actions through optimize service", () => {
-    const store = useOptimizeStore();
+    const store = useOptimizeStore(pinia);
     store.applyPreset();
     store.presetKernel();
     store.previewDynamicStrategyIr();
@@ -197,7 +199,7 @@ describe("optimize store actions", () => {
   });
 
   it("syncs MA param/sweep state from provided payload", () => {
-    const store = useOptimizeStore();
+    const store = useOptimizeStore(pinia);
     store.syncMaParamState({
       fast: {
         params: { alpha: 3 },
@@ -217,7 +219,7 @@ describe("optimize store actions", () => {
   });
 
   it("keeps new backend options when hydrating an older snapshot", () => {
-    const store = useOptimizeStore();
+    const store = useOptimizeStore(pinia);
     store.applyLegacySnapshot({
       backend: "GpuHybridKernel",
       backendOptions: [
@@ -236,7 +238,7 @@ describe("optimize store actions", () => {
   });
 
   it("includes the staged GPU-native expansion strategies in the selector options", () => {
-    const store = useOptimizeStore();
+    const store = useOptimizeStore(pinia);
     const values = store.strategyOptions.map((option) => option.value);
     expect(values).toEqual(
       expect.arrayContaining([

@@ -124,10 +124,20 @@ def train_model(
 
     score_frame = pd.DataFrame(
         {
+            "row_index": frame.index[calibration_mask].astype("int64").to_numpy(),
             "timestamp": frame.loc[calibration_mask, "timestamp"].astype("int64").to_numpy(),
+            "ticker_id": frame.loc[calibration_mask, "ticker_id"].astype(str).to_numpy(),
+            "split_id": frame.loc[calibration_mask, "split_id"].astype(str).to_numpy(),
             f"y_{name}": frame.loc[calibration_mask, target_col].astype(int).to_numpy(),
         },
     )
+    if "ticker_holdout" in frame.columns:
+        score_frame["ticker_holdout"] = (
+            pd.to_numeric(frame.loc[calibration_mask, "ticker_holdout"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+            .to_numpy()
+        )
     score_frame[f"p_{name}"] = model.predict_proba(frame.loc[calibration_mask, feature_cols])[:, 1]
     score_frame[f"raw_{name}"] = model.predict(
         frame.loc[calibration_mask, feature_cols],
@@ -186,7 +196,12 @@ def main() -> int:
     long_model.save_model(str(long_model_path))
     short_model.save_model(str(short_model_path))
 
-    merged_scores = pd.merge(long_scores, short_scores, on="timestamp", how="outer").sort_values("timestamp")
+    merge_keys = ["row_index", "timestamp", "ticker_id", "split_id"]
+    if "ticker_holdout" in long_scores.columns and "ticker_holdout" in short_scores.columns:
+        merge_keys.append("ticker_holdout")
+    merged_scores = pd.merge(long_scores, short_scores, on=merge_keys, how="outer").sort_values(
+        ["row_index", "timestamp"],
+    )
     validation_scores_path = out_dir / "validation_scores.csv"
     merged_scores.to_csv(validation_scores_path, index=False)
 

@@ -1856,6 +1856,25 @@ Measured and updated on 2026-03-20:
 - Vectorized metric stores were re-evaluated against the current mixed `1/3/5/10` optimizer row widths and dynamic strides. No store rewrite was adopted in the current kernel because the present layout does not give a clear aligned-vector-store win.
 - The per-tile global-top-k D2D append-copy removal experiment was implemented and benchmarked, but it regressed the end-to-end ALMA product benchmark by roughly `4%`, so it was reverted. The tracker item is therefore complete as measured-and-not-warranted, not as a retained code change.
 
+Measured and updated on 2026-03-21:
+
+- Fresh GPU-only reruns on the same `alma_alma / 200k / 58,300-pair` workload reported:
+  - `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`: `182.47 ms .. 183.97 ms`
+  - `double_ma/gpu_kernel/alma_alma/200k/large_batched_1gb/58300pairs`: `241.39 ms .. 244.15 ms`
+  - `double_ma/gpu_hybrid_kernel/alma_alma/200k/large/58300pairs`: `164.19 ms .. 170.78 ms`
+  - `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/search_only`: `89.074 ms .. 89.277 ms`
+  - `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product`: `181.95 ms .. 182.40 ms`
+  - `double_ma/gpu_kernel_pnl_full_metrics/alma_alma/200k/large/58300pairs`: `164.83 ms .. 167.64 ms`
+  - `double_ma/gpu_kernel_pnl_full_metrics/alma_alma/200k/large_batched_1gb/58300pairs`: `233.63 ms .. 243.93 ms`
+- Semantic note for the split ALMA benchmark family:
+  - `search_only` is still a `Sharpe` search benchmark. It disables finalist recompute and sets `heatmap_bins=0`, but it is not the separate `Pnl` benchmark family.
+  - `end_to_end_product` is the corresponding `Sharpe` product-contract benchmark with finalist recompute enabled and `heatmap_bins=64`.
+  - The separate `Pnl` benchmark family is `double_ma/gpu_kernel_pnl_full_metrics/...`, which keeps `top_k` and heatmap work while using `ObjectiveKind::Pnl`.
+- Interpretation:
+  - The old `~75-77 ms` note in this guide belongs to the older narrow `gpu_kernel` benchmark family and should not be conflated with the later `gpu_kernel_pnl_full_metrics` family.
+  - The `~156 ms` note from `2026-03-20` corresponds to the `Sharpe` end-to-end product contract on that day's machine state, not to the separate `Pnl` full-metrics bench.
+  - On this 2026-03-21 rerun, the narrow search timing is still roughly `89 ms`, while the full `Sharpe` product-contract timing is back up around `182 ms`.
+
 ### Buffer sizing notes (2026-03-19)
 
 The current `NaN`-backed buffers are not all the same size class.

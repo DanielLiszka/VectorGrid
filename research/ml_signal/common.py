@@ -136,3 +136,23 @@ def dump_json(path: Path, value: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def stable_hash_mod(text: str, modulus: int) -> int | None:
+    if modulus <= 0:
+        return None
+    value = str(text).strip()
+    if not value:
+        return None
+    hash_value = 0xCBF29CE484222325
+    for byte in value.encode("utf-8"):
+        hash_value ^= byte
+        hash_value = (hash_value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return int(hash_value % modulus)
+
+
+def assign_ticker_holdout(ticker_id: str, modulus: int, residue: int) -> bool | None:
+    mod_value = stable_hash_mod(ticker_id, modulus)
+    if mod_value is None:
+        return None
+    return mod_value == (int(residue) % max(1, int(modulus)))

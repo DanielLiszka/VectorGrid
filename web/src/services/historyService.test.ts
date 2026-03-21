@@ -119,9 +119,12 @@ function installStorageHarness(
 }
 
 describe("historyService", () => {
+  let pinia: ReturnType<typeof createPinia>;
+
   beforeEach(() => {
     vi.unstubAllGlobals();
-    setActivePinia(createPinia());
+    pinia = createPinia();
+    setActivePinia(pinia);
     vi.clearAllMocks();
     installStorageHarness();
     loadDataCsvMock.mockResolvedValue({
@@ -247,11 +250,11 @@ describe("historyService", () => {
       String(storage.get(SETTINGS_KEY) || "{}"),
     ) as Record<string, unknown>;
     expect(storedPreset.backend).toBe("GpuKernel");
-    expect(useOptimizeStore().backend).toBe("GpuKernel");
-    expect(useOptimizeStore().objective).toBe("Sharpe");
-    expect(useValidationStore().autoRun).toBe(true);
-    expect(useExecutionStore().mode).toBe("live");
-    expect(useSettingsStore().theme).toBe("dark");
+    expect(useOptimizeStore(pinia).backend).toBe("GpuKernel");
+    expect(useOptimizeStore(pinia).objective).toBe("Sharpe");
+    expect(useValidationStore(pinia).autoRun).toBe(true);
+    expect(useExecutionStore(pinia).mode).toBe("live");
+    expect(useSettingsStore(pinia).theme).toBe("dark");
   });
 
   it("reads session history from storage and applies selected session run to workflow artifacts", async () => {
@@ -270,7 +273,7 @@ describe("historyService", () => {
     const sessions = readSessionHistory();
     await applySession("2026-02-25T00:00:00Z");
 
-    const artifacts = useWorkflowArtifactsStore();
+    const artifacts = useWorkflowArtifactsStore(pinia);
     expect(sessions).toEqual([
       {
         ts: "2026-02-25T00:00:00Z",
@@ -296,7 +299,7 @@ describe("historyService", () => {
         },
       ]),
     });
-    const artifacts = useWorkflowArtifactsStore();
+    const artifacts = useWorkflowArtifactsStore(pinia);
     artifacts.applyVueRuntimePayload({
       currentRun: {
         ts: "2026-02-25T00:00:00Z",
@@ -335,7 +338,7 @@ describe("historyService", () => {
 
     await loadSavedRun(" C:/runs/run1.json ");
 
-    const artifacts = useWorkflowArtifactsStore();
+    const artifacts = useWorkflowArtifactsStore(pinia);
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
       path: "C:/runs/run1.json",
     });
@@ -373,7 +376,7 @@ describe("historyService", () => {
 
     await loadSavedRun(" C:/runs/ml_signal.json ");
 
-    const artifacts = useWorkflowArtifactsStore();
+    const artifacts = useWorkflowArtifactsStore(pinia);
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/ml_signal.json");
     expect(
       (artifacts.currentRun?.req as { strategy_kind?: string } | null)
@@ -403,9 +406,9 @@ describe("historyService", () => {
 
     await applySavedRun(" C:/runs/run1.json ");
 
-    const optimize = useOptimizeStore();
-    const advanced = useAdvancedStore();
-    const data = useDataStore();
+    const optimize = useOptimizeStore(pinia);
+    const advanced = useAdvancedStore(pinia);
+    const data = useDataStore(pinia);
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
       path: "C:/runs/run1.json",
     });
@@ -435,8 +438,8 @@ describe("historyService", () => {
 
     await applySavedRun(" C:/runs/ml_signal.json ");
 
-    const optimize = useOptimizeStore();
-    const data = useDataStore();
+    const optimize = useOptimizeStore(pinia);
+    const data = useDataStore(pinia);
     expect(optimize.strategyKind).toBe("MlSignal");
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
@@ -497,7 +500,7 @@ describe("historyService", () => {
     expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/spy.csv");
     expect(runOptimizationMock).not.toHaveBeenCalled();
     expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
-    const optimize = useOptimizeStore();
+    const optimize = useOptimizeStore(pinia);
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
     expect(optimize.mlSignalModelBundleId).toBe("bundle-a");
