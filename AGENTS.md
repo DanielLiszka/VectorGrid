@@ -35,6 +35,7 @@ Instructions for AI coding agents working in this repository.
 - Prefer small, surgical changes; avoid unrelated refactors.
 - Keep CPU-only builds working without any CUDA toolchain installed.
 - Add/adjust tests close to the crate being changed (usually under `crates/*`).
+- Never run multiple benchmarks at the same time. Before starting any benchmark or profiling run, verify no other benchmark process is still active, and serialize benchmark executions so timing conclusions are not contaminated by self-inflicted load.
 - For performance-sensitive changes, run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` before handoff (or `scripts/run_workflow_gate.ps1 -Mode candidate` at minimum).
 - For CUDA backtest-kernel changes, run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (when GPU is available).
 
@@ -50,7 +51,7 @@ You MUST continue working autonomously towards any known objectives until the us
 ## Execution quality
 
 - Use the full set of available tools and skills when it improves solution quality, verification quality, or speed of understanding.
-- Always use sub-agents whenever delegation is beneficial to gather context about the codebase, check verification quality, or context preservation.
+- Always use sub-agents whenever delegation is beneficial to gather context about the codebase, check verification quality, or context preservation. Use the GPT-5.4 model with high reasoning effort for all sub-agents.
 - Prefer maximal beneficial use of sub-agents for bounded analysis, context gathering, profiling, and verification tasks, especially when scanning separate backend/frontend/runtime surfaces in parallel will preserve context and reduce mistakes.
 - Use profiling, targeted diagnostics, and existing repo tooling before guessing about performance or parity issues.
 - Favor evidence-backed implementation over assumption-backed implementation, especially for CUDA/runtime-path changes.

@@ -504,7 +504,8 @@ fn choose_backtest_launch_shape_1d(
         total_items,
         device_caps,
         kernel_caps,
-        &[128u32, 256, 512],
+        // Backtest kernels are sensitive to block shape on mid-sized ALMA workloads.
+        &[64u32, 96, 128, 160, 192, 224, 256, 320, 384, 512],
     )
 }
 
@@ -3110,6 +3111,23 @@ fn kernel_should_use_m7_specialize(
 }
 
 #[inline]
+fn should_force_low_pair_m7_recompute(
+    prefer_low_pair_m7_dispatch: bool,
+    use_windowed_eval: bool,
+    is_multi_tile_workload: bool,
+    launch_pairs: usize,
+    kernel_available: bool,
+) -> bool {
+    prefer_low_pair_m7_dispatch
+        && kernel_m7_specialize_enabled()
+        && !use_windowed_eval
+        && !is_multi_tile_workload
+        && launch_pairs > 0
+        && launch_pairs <= 128
+        && kernel_available
+}
+
+#[inline]
 fn kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
     fast_ma: &str,
     slow_ma: &str,
@@ -4063,6 +4081,7 @@ pub fn eval_double_ma_batch_gpu_kernel(
                 Some(RegimeFilterInput::DeviceF32(&device_regime)),
                 cfg,
                 strategy,
+                false,
             )
         } else {
             eval_double_ma_batch_gpu_kernel_impl(
@@ -4079,6 +4098,7 @@ pub fn eval_double_ma_batch_gpu_kernel(
                 None,
                 cfg,
                 strategy,
+                false,
             )
         }
     })
@@ -4098,6 +4118,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     regime_filter: Option<RegimeFilterInput<'_>>,
     cfg: KernelConfig,
     strategy: &StrategyConfig,
+    prefer_low_pair_m7_dispatch: bool,
 ) -> Result<Vec<Metrics>, String> {
     if combos.is_empty() {
         return Err("no parameter combinations".to_string());
@@ -4306,18 +4327,15 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         slow_idx.insert(p, i);
     }
 
-    let pair_len = f_total
-        .checked_mul(s_total)
-        .ok_or_else(|| "fast_total*slow_total overflow".to_string())?;
-    let mut pair_to_combo: Vec<Option<usize>> = vec![None; pair_len];
-    for (ci, p) in combos.iter().enumerate() {
+    let mut combo_period_indices: Vec<(usize, usize)> = Vec::with_capacity(combos.len());
+    for p in combos.iter() {
         let fi = *fast_idx
             .get(&p.fast_len)
             .ok_or_else(|| format!("fast_len {} not in requested fast range", p.fast_len))?;
         let si = *slow_idx
             .get(&p.slow_len)
             .ok_or_else(|| format!("slow_len {} not in requested slow range", p.slow_len))?;
-        pair_to_combo[fi * s_total + si] = Some(ci);
+        combo_period_indices.push((fi, si));
     }
 
     let mut out_metrics = vec![Metrics::default(); combos.len()];
@@ -4326,12 +4344,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let ma_source_key = normalize_market_source_key(ma_source);
     let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let (resident_market, ma, scratch, valid_pair_maps) = (
-        &mut rt.resident_market,
-        &mut rt.ma,
-        &mut rt.scratch,
-        &mut rt.valid_pair_maps,
-    );
+    let (resident_market, ma, scratch) = (&mut rt.resident_market, &mut rt.ma, &mut rt.scratch);
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -4433,9 +4446,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let use_fast_path = !fast_precomputed_enabled
         && !slow_precomputed_enabled
         && kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
-    let use_valid_pair_map = kernel_valid_pair_map_enabled();
-    let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
-
     let transpose = bt_module
         .get_function("transpose_row_to_tm")
         .map_err(|e| e.to_string())?;
@@ -4600,6 +4610,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let mut fast_precomputed_host_tile: Vec<f32> = Vec::new();
     let mut slow_precomputed_host_tile: Vec<f32> = Vec::new();
     let mut tile_host_buf: Vec<f32> = alloc_uninit_copy(tile_out_cap);
+    let mut tile_combo_indices: Vec<usize> = Vec::new();
+    let mut tile_pair_index_map: Vec<i32> = Vec::new();
 
     let strategy_kernel = kernel_strategy_params(strategy);
     let flags = strategy_kernel.flags;
@@ -4864,38 +4876,46 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 ));
             }
 
-            let mut launch_pairs = pairs;
+            tile_combo_indices.clear();
+            tile_pair_index_map.clear();
+            for (combo_idx, &(global_f, global_s)) in combo_period_indices.iter().enumerate() {
+                if global_f >= f_start
+                    && global_f < f_start + pf
+                    && global_s >= s_start
+                    && global_s < s_start + ps
+                {
+                    let local_f = global_f - f_start;
+                    let local_s = global_s - s_start;
+                    tile_combo_indices.push(combo_idx);
+                    tile_pair_index_map.push(
+                        i32::try_from(local_f.saturating_mul(ps).saturating_add(local_s))
+                            .map_err(|_| "tile pair index exceeds i32::MAX".to_string())?,
+                    );
+                }
+            }
+            let launch_pairs = tile_combo_indices.len();
+            let out_len = launch_pairs
+                .checked_mul(tile_metrics_stride)
+                .ok_or_else(|| "launch_pairs*metrics overflow".to_string())?;
             let mut pair_index_map_ptr: u64 = 0;
-            if use_valid_pair_map && pairs <= valid_pair_map_max_pairs {
-                let cached_valid_map = ensure_cached_valid_pair_map(
-                    valid_pair_maps,
-                    &fast_periods[f_start..f_start + pf],
-                    &slow_periods[s_start..s_start + ps],
+            if launch_pairs > 0 {
+                KernelScratch::ensure_len_i32(
+                    &mut scratch.d_valid_pair_index,
+                    launch_pairs,
+                    bt_stream,
                 )?;
-                launch_pairs = cached_valid_map.map(|(_, len, _, _)| len).unwrap_or(0);
-                if launch_pairs > 0 {
-                    pair_index_map_ptr = cached_valid_map
-                        .map(|(ptr, _, _, _)| ptr)
-                        .unwrap_or_default();
-                }
-
-                unsafe {
-                    let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut n_i = out_len as i32;
-                    let mut v = 0.0f32;
-                    let launch =
-                        choose_launch_shape_1d(out_len, device_launch_caps, fill_launch_caps);
-                    let block_x: u32 = launch.block_x;
-                    let grid_x: u32 = launch.grid_x;
-                    let args: &mut [*mut c_void] = &mut [
-                        &mut out_ptr as *mut _ as *mut c_void,
-                        &mut n_i as *mut _ as *mut c_void,
-                        &mut v as *mut _ as *mut c_void,
-                    ];
-                    bt_stream
-                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
-                }
+                scratch
+                    .d_valid_pair_index
+                    .as_mut()
+                    .ok_or_else(|| "missing exact pair index buffer".to_string())?
+                    .copy_from(&tile_pair_index_map)
+                    .map_err(|e| e.to_string())?;
+                pair_index_map_ptr = scratch
+                    .d_valid_pair_index
+                    .as_ref()
+                    .ok_or_else(|| "missing exact pair index buffer".to_string())?
+                    .as_device_ptr()
+                    .as_raw();
             }
 
             if launch_pairs > 0 {
@@ -4944,7 +4964,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let mut metrics_stride_i = tile_metrics_stride as i32;
                     let mut pair_map_ptr = pair_index_map_ptr;
                     let mut pair_count_i = launch_pairs as i32;
-                    let mut compact_output_i = 0i32;
+                    let mut compact_output_i = 1i32;
                     let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut eval_start_i = eval_start_t as i32;
                     let mut eval_end_i = eval_end_t as i32;
@@ -4957,15 +4977,26 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             max_start_t,
                             backtest_lockstep.is_some(),
                         );
-                    let use_m7 = !use_windowed_eval
-                        && kernel_should_use_m7_specialize(
-                            launch_pairs,
-                            n,
-                            max_start_t,
-                            is_multi_tile_workload,
-                            METRICS_COUNT,
-                            backtest_m7.is_some(),
-                        );
+                    // Full-metric finalist reruns are tiny in pair count but still walk the
+                    // entire time axis. The M7 kernel is a much better fit here than the
+                    // generic full-metric path, so allow a recompute-only low-pair fast path.
+                    let force_low_pair_m7 = should_force_low_pair_m7_recompute(
+                        prefer_low_pair_m7_dispatch,
+                        use_windowed_eval,
+                        is_multi_tile_workload,
+                        launch_pairs,
+                        backtest_m7.is_some(),
+                    );
+                    let use_m7 = force_low_pair_m7
+                        || (!use_windowed_eval
+                            && kernel_should_use_m7_specialize(
+                                launch_pairs,
+                                n,
+                                max_start_t,
+                                is_multi_tile_workload,
+                                METRICS_COUNT,
+                                backtest_m7.is_some(),
+                            ));
                     let use_lockstep_m7 = use_lockstep_time
                         && !is_multi_tile_workload
                         && kernel_should_use_m7_specialize(
@@ -5172,25 +5203,22 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             }
             bt_stream.synchronize().map_err(|e| e.to_string())?;
 
-            scratch
-                .d_tile
-                .as_ref()
-                .unwrap()
-                .copy_to(&mut tile_host_buf)
-                .map_err(|e| e.to_string())?;
+            if launch_pairs > 0 {
+                copy_device_prefix_to_host_f32(
+                    scratch
+                        .d_tile
+                        .as_ref()
+                        .ok_or_else(|| "missing tile buffer".to_string())?,
+                    &mut tile_host_buf,
+                    out_len,
+                    bt_stream,
+                )?;
+                bt_stream.synchronize().map_err(|e| e.to_string())?;
 
-            for i in 0..pf {
-                for j in 0..ps {
-                    let global_f = f_start + i;
-                    let global_s = s_start + j;
-                    if let Some(combo_idx) = pair_to_combo[global_f * s_total + global_s] {
-                        let src_base = (i * ps + j) * tile_metrics_stride;
-                        out_metrics[combo_idx] = decode_tm_flex_metrics_row(
-                            &tile_host_buf,
-                            src_base,
-                            tile_metrics_stride,
-                        );
-                    }
+                for (row_idx, &combo_idx) in tile_combo_indices.iter().enumerate() {
+                    let src_base = row_idx * tile_metrics_stride;
+                    out_metrics[combo_idx] =
+                        decode_tm_flex_metrics_row(&tile_host_buf, src_base, tile_metrics_stride);
                 }
             }
 
@@ -5271,6 +5299,7 @@ fn recompute_optimization_result_finalists_with_full_gpu_pass(
         regime_filter,
         cfg,
         strategy,
+        true,
     )?;
     if recomputed.len() != finalists.len() {
         return Err(format!(
@@ -7943,8 +7972,8 @@ mod tests {
         kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_h2d_enabled,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, search_metrics_count_for_optimization,
-        should_use_compact_valid_pair_output, upload_double_ma_dynamic_program_batch,
-        METRICS_COUNT,
+        should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
+        upload_double_ma_dynamic_program_batch, METRICS_COUNT,
     };
     use crate::double_ma::DoubleMaConstraints;
     use crate::strategy_dynamic::{
@@ -8194,6 +8223,58 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS", v),
             None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE_MIN_PAIR_BARS"),
         }
+        match prev_enabled {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE"),
+        }
+    }
+
+    #[test]
+    fn low_pair_recompute_m7_force_respects_global_enable_flag() {
+        let _guard = lock_env();
+        let prev_enabled = std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE").ok();
+
+        std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", "0");
+        assert!(!should_force_low_pair_m7_recompute(
+            true, false, false, 50, true
+        ));
+
+        std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", "1");
+        assert!(should_force_low_pair_m7_recompute(
+            true, false, false, 50, true
+        ));
+
+        match prev_enabled {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE"),
+        }
+    }
+
+    #[test]
+    fn low_pair_recompute_m7_force_requires_small_single_tile_workload() {
+        let _guard = lock_env();
+        let prev_enabled = std::env::var("VECTORBT_KERNEL_M7_SPECIALIZE").ok();
+        std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", "1");
+
+        assert!(!should_force_low_pair_m7_recompute(
+            false, false, false, 50, true
+        ));
+        assert!(!should_force_low_pair_m7_recompute(
+            true, true, false, 50, true
+        ));
+        assert!(!should_force_low_pair_m7_recompute(
+            true, false, true, 50, true
+        ));
+        assert!(!should_force_low_pair_m7_recompute(
+            true, false, false, 0, true
+        ));
+        assert!(!should_force_low_pair_m7_recompute(
+            true, false, false, 129, true
+        ));
+        assert!(!should_force_low_pair_m7_recompute(
+            true, false, false, 50, false
+        ));
+
         match prev_enabled {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_M7_SPECIALIZE", v),
             None => std::env::remove_var("VECTORBT_KERNEL_M7_SPECIALIZE"),
