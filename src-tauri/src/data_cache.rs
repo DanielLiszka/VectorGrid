@@ -15,7 +15,7 @@ const FNV1A64_PRIME: u64 = 0x100000001b3;
 const CONTENT_FP_FULL_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const CONTENT_FP_SAMPLE_BYTES: u64 = 4 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceIdentity {
     pub size: u64,
     pub mtime_utc_ms: i64,
@@ -270,6 +270,14 @@ fn read_le_vec_f64(r: &mut dyn Read, len: usize) -> Result<Vec<f64>, String> {
 
 pub fn load_or_build(csv_path: &Path, app_cache_dir: &Path) -> Result<LoadOutcome, String> {
     let src_id = identity_for_source(csv_path)?;
+    load_or_build_with_identity(csv_path, app_cache_dir, src_id)
+}
+
+pub fn load_or_build_with_identity(
+    csv_path: &Path,
+    app_cache_dir: &Path,
+    src_id: SourceIdentity,
+) -> Result<LoadOutcome, String> {
     let sidecar = sidecar_cache_path(csv_path);
     let fallback = fallback_cache_path(app_cache_dir, csv_path);
 
@@ -416,9 +424,38 @@ fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::content_fingerprint_for_source;
+    use super::{
+        content_fingerprint_for_source, identity_for_source, load_or_build,
+        load_or_build_with_identity, SourceIdentity,
+    };
     use std::fs;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let pid = std::process::id();
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}_{pid}_{uniq}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_candles_csv(path: &Path) {
+        fs::write(
+            path,
+            concat!(
+                "timestamp,open,high,low,close,volume\n",
+                "1700000000000,100,101,99,100.5,1000\n",
+                "1700000060000,100.5,101.5,100,101,1100\n",
+                "1700000120000,101,102,100.5,101.5,1200\n"
+            ),
+        )
+        .expect("write candles csv");
+    }
 
     fn temp_file_path(name: &str) -> std::path::PathBuf {
         let pid = std::process::id();
@@ -455,5 +492,46 @@ mod tests {
 
         assert_ne!(a, b);
         let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn source_identity_equality_uses_size_and_mtime() {
+        let a = SourceIdentity {
+            size: 123,
+            mtime_utc_ms: 456,
+        };
+        let b = SourceIdentity {
+            size: 123,
+            mtime_utc_ms: 456,
+        };
+        let c = SourceIdentity {
+            size: 124,
+            mtime_utc_ms: 456,
+        };
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn load_or_build_with_identity_matches_default_loader_behavior() {
+        let temp = make_temp_dir("data_cache_loader");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+
+        let src_id = identity_for_source(&csv).expect("source identity");
+        let first = load_or_build_with_identity(&csv, &cache_dir, src_id).expect("first load");
+        let second = load_or_build(&csv, &cache_dir).expect("second load");
+
+        assert!(!first.cache_hit);
+        assert_eq!(first.source_identity, src_id);
+        assert_eq!(second.source_identity, src_id);
+        assert!(second.cache_hit);
+        assert_eq!(first.candles.timestamp, second.candles.timestamp);
+        assert_eq!(first.candles.close, second.candles.close);
+        assert_eq!(first.cache_path, second.cache_path);
     }
 }

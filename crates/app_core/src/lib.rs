@@ -169,16 +169,16 @@ pub use ml_confidence::{
 
 pub use ml_signal::{
     assign_ml_signal_ticker_holdout, build_ml_signal_score_cache_from_csv,
-    build_ml_signal_split_windows, classify_ml_signal_manifest, export_ml_signal_dataset_with_candles,
-    list_ml_signal_model_bundle_summaries, read_ml_signal_manifest,
-    run_ml_signal_policy_sweep_blocking_with_candles, run_ml_signal_validation_blocking_with_candles,
-    MlSignalDatasetExportManifest, MlSignalDatasetExportRequest, MlSignalDatasetExportResult,
-    MlSignalFeatureSchema, MlSignalModelBundleManifest, MlSignalModelBundleStatus,
-    MlSignalModelBundleSummary, MlSignalPolicyParams, MlSignalPolicySweepRequest,
-    MlSignalPolicySweepResult, MlSignalScoreCacheBuildRequest, MlSignalScoreCacheBuildResult,
-    MlSignalScoreCacheManifest, MlSignalSplitPlan, MlSignalSplitWindow, MlSignalSweepAxisF64,
-    MlSignalSweepAxisUsize, MlSignalTickerHoldoutConfig, MlSignalValidationRequest,
-    MlSignalValidationResult,
+    build_ml_signal_split_windows, classify_ml_signal_manifest,
+    export_ml_signal_dataset_with_candles, list_ml_signal_model_bundle_summaries,
+    read_ml_signal_manifest, run_ml_signal_policy_sweep_blocking_with_candles,
+    run_ml_signal_validation_blocking_with_candles, MlSignalDatasetExportManifest,
+    MlSignalDatasetExportRequest, MlSignalDatasetExportResult, MlSignalFeatureSchema,
+    MlSignalModelBundleManifest, MlSignalModelBundleStatus, MlSignalModelBundleSummary,
+    MlSignalPolicyParams, MlSignalPolicySweepRequest, MlSignalPolicySweepResult,
+    MlSignalScoreCacheBuildRequest, MlSignalScoreCacheBuildResult, MlSignalScoreCacheManifest,
+    MlSignalSplitPlan, MlSignalSplitWindow, MlSignalSweepAxisF64, MlSignalSweepAxisUsize,
+    MlSignalTickerHoldoutConfig, MlSignalValidationRequest, MlSignalValidationResult,
 };
 
 pub use sharpe_stats::{

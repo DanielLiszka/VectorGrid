@@ -995,8 +995,13 @@ mod tests {
         }
 
         let candles = make_trending_candles(512);
-        let prepared = PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
-            .expect("cuda inputs");
+        let prepared = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+            &candles,
+            "close",
+            0,
+            &[crate::indicator_catalog::IndicatorInputKind::Slice],
+        )
+        .expect("cuda inputs");
         let cfg = CdmcStrategyParams::default();
         let periods = resolve_cdmc_periods(&cfg, 12, 34);
 

@@ -804,7 +804,7 @@ fn workbook_uses_validation_context_strategy_kind_when_run_req_is_missing() {
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
     let xml = all_xml(&bytes);
     assert!(xml.contains(
-        "CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation."
+        "CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
     ));
     assert!(!xml.contains(">Unknown<"));
 }
@@ -823,7 +823,7 @@ fn workbook_surfaces_composite_route_detail_note_in_expected_execution() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation."
+        "CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
     ));
 }
 
@@ -862,7 +862,7 @@ fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation."
+        "CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
     ));
     assert!(xml.contains("GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
     assert!(xml.contains("WF Efficiency"));

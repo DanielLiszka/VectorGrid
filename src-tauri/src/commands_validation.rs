@@ -1006,6 +1006,7 @@ mod tests {
             csv_path: path.to_string(),
             label: "loaded".to_string(),
             timeframe: timeframe.map(str::to_string),
+            source_identity: None,
         }
     }
 

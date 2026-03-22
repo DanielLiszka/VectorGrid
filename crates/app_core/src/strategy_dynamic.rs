@@ -22,11 +22,14 @@ use crate::strategy_plan::{
 };
 use crate::CompositeSignalMode;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use ta_strategies::double_ma::Metrics;
 use vector_ta::utilities::data_loader::{source_type, Candles};
@@ -58,12 +61,67 @@ pub struct DynamicDoubleMaStrategyIrPreview {
     pub group_count: usize,
 }
 
+struct ResolvedDynamicDoubleMaPreview {
+    preview: DynamicDoubleMaStrategyIrPreview,
+    resolved_plan: CompiledStrategyPlan,
+    gpu_handle: Option<StrategyHandle>,
+}
+
+struct LazyPreparedDynamicCpuContext {
+    deferred_ma_source: Option<String>,
+    context: OnceLock<Result<PreparedDynamicCpuContext, String>>,
+}
+
+impl LazyPreparedDynamicCpuContext {
+    fn eager(context: PreparedDynamicCpuContext) -> Self {
+        let ready = OnceLock::new();
+        assert!(
+            ready.set(Ok(context)).is_ok(),
+            "fresh OnceLock should accept eager dynamic cpu context"
+        );
+        Self {
+            deferred_ma_source: None,
+            context: ready,
+        }
+    }
+
+    fn deferred(ma_source: &str) -> Self {
+        Self {
+            deferred_ma_source: Some(ma_source.to_string()),
+            context: OnceLock::new(),
+        }
+    }
+
+    fn get<'a>(
+        &'a self,
+        plan: &CompiledStrategyPlan,
+        candles: &Candles,
+    ) -> Result<&'a PreparedDynamicCpuContext, String> {
+        self.context
+            .get_or_init(|| {
+                let ma_source = self
+                    .deferred_ma_source
+                    .as_ref()
+                    .expect("deferred dynamic cpu context build inputs missing");
+                prepare_dynamic_cpu_context(plan, candles, ma_source.as_str())
+            })
+            .as_ref()
+            .map_err(|err| err.clone())
+    }
+}
+
 pub struct RunnableDynamicDoubleMaPlan {
     pub ir: crate::strategy_ir::StrategyIr,
     pub preview: DynamicDoubleMaStrategyIrPreview,
     pub cpu_plan: CompiledStrategyPlan,
-    pub cpu_context: PreparedDynamicCpuContext,
+    cpu_context: LazyPreparedDynamicCpuContext,
     pub gpu_handle: Option<StrategyHandle>,
+}
+
+impl RunnableDynamicDoubleMaPlan {
+    pub fn cpu_context(&self, candles: &Candles) -> Result<&PreparedDynamicCpuContext, String> {
+        self.cpu_context.get(&self.cpu_plan, candles)
+    }
 }
 
 const DYNAMIC_V1_MAX_INDICATORS: usize = 12;
@@ -249,13 +307,13 @@ pub(crate) fn validate_dynamic_double_ma_gpu_handle_v1(
     Ok(())
 }
 
-pub fn preview_dynamic_double_ma_strategy_ir(
+fn resolve_dynamic_double_ma_strategy_ir_preview(
     ir: &crate::strategy_ir::StrategyIr,
     requested_backend: StrategyPlanBackend,
     objective: ta_optimizer::ObjectiveKind,
     top_k: usize,
     include_all: bool,
-) -> Result<DynamicDoubleMaStrategyIrPreview, String> {
+) -> Result<ResolvedDynamicDoubleMaPreview, String> {
     if ir.profile != StrategyProfileKind::DoubleMa {
         return Err(
             "dynamic strategy preview currently supports only profile=DoubleMa".to_string(),
@@ -278,7 +336,15 @@ pub fn preview_dynamic_double_ma_strategy_ir(
     );
 
     let mut compiled_backend = requested_backend;
-    let mut plan = match compile_strategy_plan(ir, requested_backend, None) {
+    if compiled_backend == StrategyPlanBackend::GpuUnified
+        && !capability.gpu_dynamic_supported
+        && capability.cpu_dynamic_supported
+    {
+        compiled_backend = StrategyPlanBackend::Cpu;
+    }
+
+    let initial_backend = compiled_backend;
+    let mut plan = match compile_strategy_plan(ir, initial_backend, None) {
         Ok(plan) => plan,
         Err(err)
             if requested_backend == StrategyPlanBackend::GpuUnified
@@ -293,14 +359,11 @@ pub fn preview_dynamic_double_ma_strategy_ir(
         Err(err) => return Err(err),
     };
 
-    if compiled_backend == StrategyPlanBackend::GpuUnified
-        && !capability.gpu_dynamic_supported
-        && capability.cpu_dynamic_supported
-    {
-        compiled_backend = StrategyPlanBackend::Cpu;
+    if compiled_backend != requested_backend {
         plan = compile_strategy_plan(ir, compiled_backend, None)?;
     }
 
+    let mut gpu_handle = None;
     if compiled_backend == StrategyPlanBackend::GpuUnified && capability.gpu_dynamic_supported {
         let handle = StrategyHandle::from_plan(plan.clone(), capability.clone())?;
         if let Err(reason) = validate_dynamic_double_ma_gpu_handle_v1(&handle) {
@@ -309,18 +372,41 @@ pub fn preview_dynamic_double_ma_strategy_ir(
             capability.reasons.push(reason);
             compiled_backend = StrategyPlanBackend::Cpu;
             plan = compile_strategy_plan(ir, compiled_backend, None)?;
+        } else {
+            gpu_handle = Some(handle);
         }
     }
 
-    Ok(DynamicDoubleMaStrategyIrPreview {
-        capability,
-        requested_backend,
-        resolved_backend: compiled_backend,
-        plan_fingerprint_hex: plan.ir_fingerprint_hex.clone(),
-        indicator_count: plan.indicator_plan.len(),
-        condition_count: plan.conditions.len(),
-        group_count: plan.groups.len(),
+    Ok(ResolvedDynamicDoubleMaPreview {
+        preview: DynamicDoubleMaStrategyIrPreview {
+            capability,
+            requested_backend,
+            resolved_backend: compiled_backend,
+            plan_fingerprint_hex: plan.ir_fingerprint_hex.clone(),
+            indicator_count: plan.indicator_plan.len(),
+            condition_count: plan.conditions.len(),
+            group_count: plan.groups.len(),
+        },
+        resolved_plan: plan,
+        gpu_handle,
     })
+}
+
+pub fn preview_dynamic_double_ma_strategy_ir(
+    ir: &crate::strategy_ir::StrategyIr,
+    requested_backend: StrategyPlanBackend,
+    objective: ta_optimizer::ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+) -> Result<DynamicDoubleMaStrategyIrPreview, String> {
+    Ok(resolve_dynamic_double_ma_strategy_ir_preview(
+        ir,
+        requested_backend,
+        objective,
+        top_k,
+        include_all,
+    )?
+    .preview)
 }
 
 pub fn prepare_runnable_dynamic_double_ma_plan(
@@ -331,21 +417,37 @@ pub fn prepare_runnable_dynamic_double_ma_plan(
     include_all: bool,
     candles: &Candles,
 ) -> Result<RunnableDynamicDoubleMaPlan, String> {
-    let preview = preview_dynamic_double_ma_strategy_ir(
+    let resolved = resolve_dynamic_double_ma_strategy_ir_preview(
         &ir,
         requested_backend,
         objective,
         top_k,
         include_all,
     )?;
-    let cpu_plan = compile_strategy_plan(&ir, StrategyPlanBackend::Cpu, None)?;
-    let cpu_context = prepare_dynamic_cpu_context(&cpu_plan, candles, ir.ma_source.as_str())?;
-    let gpu_handle = if preview.resolved_backend == StrategyPlanBackend::GpuUnified {
-        let gpu_plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None)?;
-        Some(StrategyHandle::from_plan(
-            gpu_plan,
-            preview.capability.clone(),
+    let preview = resolved.preview;
+    let resolved_plan = resolved.resolved_plan;
+    let resolved_gpu_handle = resolved.gpu_handle;
+    let cpu_plan = if preview.resolved_backend == StrategyPlanBackend::Cpu {
+        resolved_plan.clone()
+    } else {
+        compile_strategy_plan(&ir, StrategyPlanBackend::Cpu, None)?
+    };
+    let cpu_context = if preview.resolved_backend == StrategyPlanBackend::Cpu {
+        LazyPreparedDynamicCpuContext::eager(prepare_dynamic_cpu_context(
+            &cpu_plan,
+            candles,
+            ir.ma_source.as_str(),
         )?)
+    } else {
+        LazyPreparedDynamicCpuContext::deferred(ir.ma_source.as_str())
+    };
+    let gpu_handle = if preview.resolved_backend == StrategyPlanBackend::GpuUnified {
+        resolved_gpu_handle.or_else(|| {
+            Some(
+                StrategyHandle::from_plan(resolved_plan, preview.capability.clone())
+                    .expect("resolved GPU preview should produce a GPU handle"),
+            )
+        })
     } else {
         None
     };
@@ -599,6 +701,8 @@ pub fn prepare_dynamic_cpu_context(
     candles: &Candles,
     ma_source: &str,
 ) -> Result<PreparedDynamicCpuContext, String> {
+    #[cfg(test)]
+    PREPARE_DYNAMIC_CPU_CONTEXT_CALLS.fetch_add(1, Ordering::Relaxed);
     let close = source_type(candles, "close");
     let ma_source_prices = source_type(candles, ma_source);
     if close.len() != ma_source_prices.len() {
@@ -656,38 +760,105 @@ pub fn prepare_dynamic_cpu_context(
     })
 }
 
+#[cfg(test)]
+static PREPARE_DYNAMIC_CPU_CONTEXT_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn reset_prepare_dynamic_cpu_context_call_count() {
+    PREPARE_DYNAMIC_CPU_CONTEXT_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn prepare_dynamic_cpu_context_call_count() -> usize {
+    PREPARE_DYNAMIC_CPU_CONTEXT_CALLS.load(Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct DynamicIndicatorDatasetSignature {
+    len: usize,
+    first_ts: i64,
+    last_ts: i64,
+    first_close_bits: u64,
+    last_close_bits: u64,
+    first_src_bits: u64,
+    last_src_bits: u64,
+    ma_source_hash: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct DynamicIndicatorCacheKey {
+    dataset_signature: DynamicIndicatorDatasetSignature,
+    route: crate::strategy_plan::IndicatorRouteKind,
+    source_indicator_hash: u64,
+    output_id_hash: u64,
+    params_fingerprint: u64,
+}
+
+#[inline]
+fn normalized_ascii_hash(value: &str) -> u64 {
+    let normalized = value.trim().to_ascii_lowercase();
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn indicator_params_fingerprint(params: &[crate::indicator_catalog::IndicatorParamKV]) -> u64 {
+    use crate::indicator_catalog::IndicatorParamValue;
+
+    let mut hasher = DefaultHasher::new();
+    for param in params {
+        normalized_ascii_hash(param.key.as_str()).hash(&mut hasher);
+        match &param.value {
+            IndicatorParamValue::Int(v) => {
+                0u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            IndicatorParamValue::Float(v) => {
+                1u8.hash(&mut hasher);
+                v.to_bits().hash(&mut hasher);
+            }
+            IndicatorParamValue::Bool(v) => {
+                2u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            IndicatorParamValue::EnumString(v) => {
+                3u8.hash(&mut hasher);
+                normalized_ascii_hash(v.as_str()).hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
 fn dynamic_indicator_cache_key(
-    dataset_signature: &str,
+    dataset_signature: DynamicIndicatorDatasetSignature,
     route: crate::strategy_plan::IndicatorRouteKind,
     source_indicator_id: &str,
     output_id: Option<&str>,
     params: &[crate::indicator_catalog::IndicatorParamKV],
-) -> Result<String, String> {
-    let params_json = serde_json::to_string(params)
-        .map_err(|e| format!("serialize indicator params for cache key: {e}"))?;
-    Ok(format!(
-        "{}|{:?}|{}|{}|{}",
+) -> DynamicIndicatorCacheKey {
+    DynamicIndicatorCacheKey {
         dataset_signature,
         route,
-        source_indicator_id.trim().to_ascii_lowercase(),
-        output_id.unwrap_or("").trim().to_ascii_lowercase(),
-        params_json
-    ))
+        source_indicator_hash: normalized_ascii_hash(source_indicator_id),
+        output_id_hash: normalized_ascii_hash(output_id.unwrap_or("")),
+        params_fingerprint: indicator_params_fingerprint(params),
+    }
 }
 
-fn dataset_cache_signature(candles: &Candles, ma_source: &str) -> String {
-    let len = candles.close.len();
-    let first_ts = candles.timestamp.first().copied().unwrap_or_default();
-    let last_ts = candles.timestamp.last().copied().unwrap_or_default();
-    let first_close = candles.close.first().copied().unwrap_or_default();
-    let last_close = candles.close.last().copied().unwrap_or_default();
+fn dataset_cache_signature(candles: &Candles, ma_source: &str) -> DynamicIndicatorDatasetSignature {
     let ma_slice = source_type(candles, ma_source);
-    let first_src = ma_slice.first().copied().unwrap_or_default();
-    let last_src = ma_slice.last().copied().unwrap_or_default();
-    format!(
-        "n={len}|ts={first_ts}:{last_ts}|close={first_close:.8}:{last_close:.8}|src={first_src:.8}:{last_src:.8}|ma={}",
-        ma_source.trim().to_ascii_lowercase()
-    )
+    DynamicIndicatorDatasetSignature {
+        len: candles.close.len(),
+        first_ts: candles.timestamp.first().copied().unwrap_or_default(),
+        last_ts: candles.timestamp.last().copied().unwrap_or_default(),
+        first_close_bits: candles.close.first().copied().unwrap_or_default().to_bits(),
+        last_close_bits: candles.close.last().copied().unwrap_or_default().to_bits(),
+        first_src_bits: ma_slice.first().copied().unwrap_or_default().to_bits(),
+        last_src_bits: ma_slice.last().copied().unwrap_or_default().to_bits(),
+        ma_source_hash: normalized_ascii_hash(ma_source),
+    }
 }
 
 fn dynamic_indicator_staging_cancelled(cancel: Option<&AtomicBool>) -> bool {
@@ -707,6 +878,23 @@ fn emit_dynamic_indicator_staging_progress(
     }
 }
 
+fn clone_cached_dynamic_indicator_output(
+    slot_outputs: &HashMap<String, DynamicIndicatorComputeOutput>,
+    cache: &HashMap<DynamicIndicatorCacheKey, String>,
+    cache_key: DynamicIndicatorCacheKey,
+) -> Result<Option<DynamicIndicatorComputeOutput>, String> {
+    let Some(origin_slot_id) = cache.get(&cache_key) else {
+        return Ok(None);
+    };
+    let cached = slot_outputs.get(origin_slot_id.as_str()).ok_or_else(|| {
+        format!(
+            "dynamic indicator staging cache origin '{}' missing output",
+            origin_slot_id
+        )
+    })?;
+    Ok(Some(cached.clone()))
+}
+
 pub fn prepare_dynamic_indicator_slot_series_cpu(
     plan: &CompiledStrategyPlan,
     candles: &Candles,
@@ -723,7 +911,7 @@ pub fn prepare_dynamic_indicator_slot_series_cpu_with_controls(
     mut progress: Option<&mut DynamicIndicatorStagingProgressFn<'_>>,
 ) -> Result<HashMap<String, DynamicIndicatorComputeOutput>, String> {
     let mut slot_outputs: HashMap<String, DynamicIndicatorComputeOutput> = HashMap::new();
-    let mut cache: HashMap<String, DynamicIndicatorComputeOutput> = HashMap::new();
+    let mut cache: HashMap<DynamicIndicatorCacheKey, String> = HashMap::new();
     let dataset_sig = dataset_cache_signature(candles, ma_source);
     let total = plan
         .indicator_plan
@@ -740,14 +928,16 @@ pub fn prepare_dynamic_indicator_slot_series_cpu_with_controls(
             continue;
         };
         let cache_key = dynamic_indicator_cache_key(
-            dataset_sig.as_str(),
+            dataset_sig,
             slot.route,
             source_indicator_id,
             slot.output_id.as_deref(),
             slot.params.as_slice(),
-        )?;
-        if let Some(cached) = cache.get(cache_key.as_str()) {
-            slot_outputs.insert(slot.indicator_id.clone(), cached.clone());
+        );
+        if let Some(cached) =
+            clone_cached_dynamic_indicator_output(&slot_outputs, &cache, cache_key)?
+        {
+            slot_outputs.insert(slot.indicator_id.clone(), cached);
             completed = completed.saturating_add(1);
             emit_dynamic_indicator_staging_progress(
                 &mut progress,
@@ -773,8 +963,9 @@ pub fn prepare_dynamic_indicator_slot_series_cpu_with_controls(
         )
         .map_err(|e| e.to_string())?;
         validate_dynamic_indicator_output_for_gpu_v1(slot.indicator_id.as_str(), &computed)?;
-        cache.insert(cache_key, computed.clone());
+
         slot_outputs.insert(slot.indicator_id.clone(), computed);
+        cache.insert(cache_key, slot.indicator_id.clone());
         completed = completed.saturating_add(1);
         emit_dynamic_indicator_staging_progress(
             &mut progress,
@@ -817,6 +1008,95 @@ fn cast_cuda_output_to_cpu_series(
     })
 }
 
+#[cfg(feature = "cuda")]
+enum LazyPreparedCudaIndicatorInputs {
+    Uninitialized,
+    Ready(PreparedCudaIndicatorInputs),
+    Unavailable,
+}
+
+#[cfg(all(test, feature = "cuda"))]
+static PREPARED_CUDA_INPUTS_FROM_CANDLES_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "cuda")]
+fn prepare_cuda_indicator_inputs_from_candles(
+    candles: &Candles,
+    ma_source: &str,
+    input_kinds: &[crate::indicator_catalog::IndicatorInputKind],
+) -> Result<PreparedCudaIndicatorInputs, String> {
+    #[cfg(test)]
+    PREPARED_CUDA_INPUTS_FROM_CANDLES_CALLS.fetch_add(1, Ordering::Relaxed);
+    PreparedCudaIndicatorInputs::from_candles_for_input_kinds(candles, ma_source, input_kinds)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "cuda")]
+fn ensure_prepared_cuda_indicator_inputs<'a>(
+    state: &'a mut LazyPreparedCudaIndicatorInputs,
+    candles: &Candles,
+    ma_source: &str,
+    input_kinds: &[crate::indicator_catalog::IndicatorInputKind],
+) -> Option<&'a PreparedCudaIndicatorInputs> {
+    match state {
+        LazyPreparedCudaIndicatorInputs::Ready(inputs) => Some(inputs),
+        LazyPreparedCudaIndicatorInputs::Unavailable => None,
+        LazyPreparedCudaIndicatorInputs::Uninitialized => {
+            *state =
+                match prepare_cuda_indicator_inputs_from_candles(candles, ma_source, input_kinds) {
+                    Ok(inputs) => LazyPreparedCudaIndicatorInputs::Ready(inputs),
+                    Err(_) => LazyPreparedCudaIndicatorInputs::Unavailable,
+                };
+            match state {
+                LazyPreparedCudaIndicatorInputs::Ready(inputs) => Some(inputs),
+                LazyPreparedCudaIndicatorInputs::Unavailable => None,
+                LazyPreparedCudaIndicatorInputs::Uninitialized => None,
+            }
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn collect_gpu_indicator_input_kinds(
+    plan: &CompiledStrategyPlan,
+) -> Result<Vec<crate::indicator_catalog::IndicatorInputKind>, String> {
+    let mut input_kinds = Vec::new();
+    for slot in &plan.indicator_plan {
+        if !matches!(
+            slot.route,
+            crate::strategy_plan::IndicatorRouteKind::GpuSingle
+                | crate::strategy_plan::IndicatorRouteKind::GpuKernel
+        ) {
+            continue;
+        }
+        let Some(source_indicator_id) = slot.source_indicator_id.as_deref() else {
+            continue;
+        };
+        let descriptor =
+            crate::indicator_catalog::find_dynamic_indicator_descriptor(source_indicator_id)
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported_indicator: '{}' is not in dynamic indicator registry",
+                        source_indicator_id
+                    )
+                })?;
+        if !input_kinds.contains(&descriptor.input_kind) {
+            input_kinds.push(descriptor.input_kind);
+        }
+    }
+    Ok(input_kinds)
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn reset_prepared_cuda_indicator_inputs_from_candles_call_count() {
+    PREPARED_CUDA_INPUTS_FROM_CANDLES_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn prepared_cuda_indicator_inputs_from_candles_call_count() -> usize {
+    PREPARED_CUDA_INPUTS_FROM_CANDLES_CALLS.load(Ordering::Relaxed)
+}
+
 pub fn prepare_dynamic_indicator_slot_series(
     plan: &CompiledStrategyPlan,
     candles: &Candles,
@@ -842,17 +1122,10 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
     {
         let mut progress = progress;
         let mut slot_outputs: HashMap<String, DynamicIndicatorComputeOutput> = HashMap::new();
-        let mut cache: HashMap<String, DynamicIndicatorComputeOutput> = HashMap::new();
+        let mut cache: HashMap<DynamicIndicatorCacheKey, String> = HashMap::new();
         let dataset_sig = dataset_cache_signature(candles, ma_source);
-        let prepared_cuda_inputs =
-            match PreparedCudaIndicatorInputs::from_candles(candles, ma_source) {
-                Ok(v) => v,
-                Err(_) => {
-                    return prepare_dynamic_indicator_slot_series_cpu_with_controls(
-                        plan, candles, ma_source, cancel, progress,
-                    );
-                }
-            };
+        let gpu_input_kinds = collect_gpu_indicator_input_kinds(plan)?;
+        let mut prepared_cuda_inputs = LazyPreparedCudaIndicatorInputs::Uninitialized;
         let total = plan
             .indicator_plan
             .iter()
@@ -868,14 +1141,16 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
                 continue;
             };
             let cache_key = dynamic_indicator_cache_key(
-                dataset_sig.as_str(),
+                dataset_sig,
                 slot.route,
                 source_indicator_id,
                 slot.output_id.as_deref(),
                 slot.params.as_slice(),
-            )?;
-            if let Some(cached) = cache.get(cache_key.as_str()) {
-                slot_outputs.insert(slot.indicator_id.clone(), cached.clone());
+            );
+            if let Some(cached) =
+                clone_cached_dynamic_indicator_output(&slot_outputs, &cache, cache_key)?
+            {
+                slot_outputs.insert(slot.indicator_id.clone(), cached);
                 completed = completed.saturating_add(1);
                 emit_dynamic_indicator_staging_progress(
                     &mut progress,
@@ -903,17 +1178,34 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
                 .map_err(|e| e.to_string())?,
                 crate::strategy_plan::IndicatorRouteKind::GpuSingle
                 | crate::strategy_plan::IndicatorRouteKind::GpuKernel => {
-                    let cuda_attempt = compute_dynamic_indicator_cuda_with_inputs(
-                        &prepared_cuda_inputs,
-                        source_indicator_id,
-                        slot.output_id.as_deref(),
-                        slot.params.as_slice(),
-                        Kernel::Auto,
-                        vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-                    );
-                    match cuda_attempt {
-                        Ok(out) => cast_cuda_output_to_cpu_series(out)?,
-                        Err(_) => compute_dynamic_indicator_cpu(
+                    if let Some(prepared_cuda_inputs) = ensure_prepared_cuda_indicator_inputs(
+                        &mut prepared_cuda_inputs,
+                        candles,
+                        ma_source,
+                        gpu_input_kinds.as_slice(),
+                    ) {
+                        let cuda_attempt = compute_dynamic_indicator_cuda_with_inputs(
+                            prepared_cuda_inputs,
+                            source_indicator_id,
+                            slot.output_id.as_deref(),
+                            slot.params.as_slice(),
+                            Kernel::Auto,
+                            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                        );
+                        match cuda_attempt {
+                            Ok(out) => cast_cuda_output_to_cpu_series(out)?,
+                            Err(_) => compute_dynamic_indicator_cpu(
+                                candles,
+                                ma_source,
+                                source_indicator_id,
+                                slot.output_id.as_deref(),
+                                slot.params.as_slice(),
+                                Kernel::Auto,
+                            )
+                            .map_err(|e| e.to_string())?,
+                        }
+                    } else {
+                        compute_dynamic_indicator_cpu(
                             candles,
                             ma_source,
                             source_indicator_id,
@@ -921,14 +1213,14 @@ pub fn prepare_dynamic_indicator_slot_series_with_controls(
                             slot.params.as_slice(),
                             Kernel::Auto,
                         )
-                        .map_err(|e| e.to_string())?,
+                        .map_err(|e| e.to_string())?
                     }
                 }
             };
             validate_dynamic_indicator_output_for_gpu_v1(slot.indicator_id.as_str(), &computed)?;
 
-            cache.insert(cache_key, computed.clone());
             slot_outputs.insert(slot.indicator_id.clone(), computed);
+            cache.insert(cache_key, slot.indicator_id.clone());
             completed = completed.saturating_add(1);
             emit_dynamic_indicator_staging_progress(
                 &mut progress,
@@ -1935,6 +2227,7 @@ mod tests {
         ExecutionPolicy, IndicatorNode, SignalBindings, SignalProgramGraph, StaticStrategyIrInput,
         StrategyIr, ValueRef, STRATEGY_IR_SCHEMA_VERSION,
     };
+    use crate::test_support::lock_test_env;
     use crate::MovingAverageSpec;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2481,6 +2774,43 @@ mod tests {
         assert!(err.contains("cancelled"));
     }
 
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepare_dynamic_indicator_slot_series_under_cuda_skips_prepared_inputs_for_cpu_only_slots() {
+        reset_prepared_cuda_indicator_inputs_from_candles_call_count();
+
+        let (mut plan, candles) = make_dynamic_indicator_plan_for_slot_prep();
+        for slot in &mut plan.indicator_plan {
+            slot.route = crate::strategy_plan::IndicatorRouteKind::Cpu;
+        }
+
+        let slot_outputs = prepare_dynamic_indicator_slot_series_with_controls(
+            &plan, &candles, "close", None, None,
+        )
+        .expect("slot prep should succeed");
+
+        assert_eq!(slot_outputs.len(), 2);
+        assert_eq!(prepared_cuda_indicator_inputs_from_candles_call_count(), 0);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepare_dynamic_indicator_slot_series_under_cuda_prepares_inputs_at_first_gpu_slot() {
+        reset_prepared_cuda_indicator_inputs_from_candles_call_count();
+
+        let (mut plan, candles) = make_dynamic_indicator_plan_for_slot_prep();
+        plan.indicator_plan[0].route = crate::strategy_plan::IndicatorRouteKind::Cpu;
+        plan.indicator_plan[1].route = crate::strategy_plan::IndicatorRouteKind::GpuSingle;
+
+        let slot_outputs = prepare_dynamic_indicator_slot_series_with_controls(
+            &plan, &candles, "close", None, None,
+        )
+        .expect("slot prep should succeed");
+
+        assert_eq!(slot_outputs.len(), 2);
+        assert_eq!(prepared_cuda_indicator_inputs_from_candles_call_count(), 1);
+    }
+
     #[test]
     fn compile_composite_plan_maps_profile_from_strategy_flags() {
         let mut strategy = StrategyConfig::default();
@@ -2723,6 +3053,53 @@ mod tests {
         assert!(preview.capability.gpu_dynamic_supported);
         assert_eq!(preview.resolved_backend, StrategyPlanBackend::GpuUnified);
         assert!(!preview.plan_fingerprint_hex.is_empty());
+    }
+
+    #[test]
+    fn prepare_runnable_dynamic_double_ma_plan_defers_cpu_context_until_cpu_execution() {
+        let _guard = lock_test_env();
+        let candles = make_trending_candles(128);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+
+        reset_prepare_dynamic_cpu_context_call_count();
+        let runnable = prepare_runnable_dynamic_double_ma_plan(
+            ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+            &candles,
+        )
+        .expect("runnable plan should prepare");
+
+        match runnable.preview.resolved_backend {
+            StrategyPlanBackend::GpuUnified => {
+                assert_eq!(prepare_dynamic_cpu_context_call_count(), 0);
+                runnable
+                    .cpu_context(&candles)
+                    .expect("deferred cpu context should build on first access");
+                assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
+            }
+            StrategyPlanBackend::Cpu => {
+                assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
+                runnable
+                    .cpu_context(&candles)
+                    .expect("eager cpu context should remain accessible");
+                assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
+            }
+        }
     }
 
     #[test]

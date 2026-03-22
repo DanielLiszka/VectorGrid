@@ -41,10 +41,24 @@ pub struct LoadedDataContext {
     pub csv_path: String,
     pub label: String,
     pub timeframe: Option<String>,
+    pub source_identity: Option<data_cache::SourceIdentity>,
 }
 
-const MAX_ACTIVE_BASE_DATASETS: usize = 1;
-const MAX_ACTIVE_DERIVED_DATASETS: usize = 1;
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
+}
+
+fn max_active_base_datasets() -> usize {
+    env_usize("VECTORBT_MAX_ACTIVE_BASE_DATASETS", 1)
+}
+
+fn max_active_derived_datasets() -> usize {
+    env_usize("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS", 1)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DatasetRetentionKind {
@@ -183,7 +197,14 @@ impl AppState {
         app_cache_dir: &Path,
     ) -> Result<LoadPriceDataResponse, String> {
         let pathbuf = Path::new(path);
-        let outcome = data_cache::load_or_build(pathbuf, app_cache_dir)?;
+        let source_identity = data_cache::identity_for_source(pathbuf)?;
+
+        if let Some(existing) = self.find_matching_loaded_base(path, source_identity)? {
+            return Ok(existing);
+        }
+
+        let outcome =
+            data_cache::load_or_build_with_identity(pathbuf, app_cache_dir, source_identity)?;
         let candles = outcome.candles;
         let meta = build_price_data_meta(
             &candles,
@@ -225,6 +246,7 @@ impl AppState {
                 csv_path: path.to_string(),
                 label: dataset_label_from_path(path),
                 timeframe: meta.timeframe.clone(),
+                source_identity: Some(outcome.source_identity),
             },
         );
         Ok(LoadPriceDataResponse {
@@ -343,6 +365,7 @@ impl AppState {
                 csv_path: base_ctx.csv_path,
                 label: base_ctx.label,
                 timeframe: meta.timeframe.clone(),
+                source_identity: base_ctx.source_identity,
             },
         );
 
@@ -583,6 +606,53 @@ impl AppState {
         }))
     }
 
+    fn find_matching_loaded_base(
+        &self,
+        path: &str,
+        source_identity: data_cache::SourceIdentity,
+    ) -> Result<Option<LoadPriceDataResponse>, String> {
+        let access_seq = self.next_access_seq();
+
+        let ctx_map = self
+            .loaded_data_context
+            .lock()
+            .map_err(|_| "failed to lock loaded-data context map".to_string())?;
+        let candidate_id = ctx_map.iter().find_map(|(id, ctx)| {
+            (ctx.timeframe.is_none()
+                && ctx.csv_path == path
+                && ctx.source_identity == Some(source_identity))
+            .then(|| id.clone())
+        });
+        drop(ctx_map);
+
+        let Some(id) = candidate_id else {
+            return Ok(None);
+        };
+
+        let mut map = self
+            .candles
+            .lock()
+            .map_err(|_| "failed to lock candles map".to_string())?;
+        let Some(entry) = map.get_mut(&id) else {
+            return Ok(None);
+        };
+
+        entry.last_access_seq = access_seq;
+        let meta = build_price_data_meta(
+            entry.candles.as_ref(),
+            infer_timeframe_label(&entry.candles.timestamp),
+            Some(source_identity.size),
+            Some(source_identity.mtime_utc_ms),
+        );
+
+        Ok(Some(LoadPriceDataResponse {
+            id,
+            meta,
+            cache_hit: true,
+            cache_path: String::new(),
+        }))
+    }
+
     fn remove_loaded_context_entries(&self, ids: &[String]) -> Result<(), String> {
         if ids.is_empty() {
             return Ok(());
@@ -733,7 +803,7 @@ fn enforce_dataset_retention_locked(
             .values()
             .filter(|entry| entry.version_meta.kind.retention_kind() == DatasetRetentionKind::Base)
             .count();
-        if base_count <= MAX_ACTIVE_BASE_DATASETS {
+        if base_count <= max_active_base_datasets() {
             break;
         }
         let Some(id) = eviction_candidate_locked(map, DatasetRetentionKind::Base, &protect_ids)
@@ -750,7 +820,7 @@ fn enforce_dataset_retention_locked(
                 entry.version_meta.kind.retention_kind() == DatasetRetentionKind::Derived
             })
             .count();
-        if derived_count <= MAX_ACTIVE_DERIVED_DATASETS {
+        if derived_count <= max_active_derived_datasets() {
             break;
         }
         let Some(id) = eviction_candidate_locked(map, DatasetRetentionKind::Derived, &protect_ids)
@@ -904,6 +974,102 @@ mod state_residency_tests {
 
         assert_eq!(first.id, second.id);
         assert!(Arc::ptr_eq(&first_arc, &second_arc));
+    }
+
+    #[test]
+    fn identical_base_load_reuses_existing_id_and_preserves_derived_cache() {
+        let temp = make_temp_dir("state_base_reuse");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(36, 0.2));
+
+        let state = AppState::default();
+        let first = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("first load");
+        let first_arc = state.get_candles(&first.id).expect("first base");
+        let derived = state
+            .resample_loaded_data(&first.id, "5m")
+            .expect("derived load");
+
+        let second = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("second load");
+        let second_arc = state.get_candles(&second.id).expect("second base");
+        let loaded = state
+            .get_loaded_data_context(&second.id)
+            .expect("loaded context");
+
+        assert_eq!(first.id, second.id);
+        assert!(second.cache_hit);
+        assert!(Arc::ptr_eq(&first_arc, &second_arc));
+        assert!(state.get_candles(&derived.id).is_ok());
+        assert_eq!(
+            loaded.source_identity,
+            Some(data_cache::identity_for_source(&csv).expect("source identity"))
+        );
+    }
+
+    #[test]
+    fn matching_base_load_updates_access_sequence() {
+        let temp = make_temp_dir("state_access_seq_reuse");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(28, 0.15));
+
+        let state = AppState::default();
+        let first = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("first load");
+
+        let before_seq = {
+            let map = state.candles.lock().expect("lock candles");
+            map.get(&first.id)
+                .map(|entry| entry.last_access_seq)
+                .expect("base entry")
+        };
+
+        let second = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("second load");
+
+        let after_seq = {
+            let map = state.candles.lock().expect("lock candles");
+            map.get(&first.id)
+                .map(|entry| entry.last_access_seq)
+                .expect("base entry")
+        };
+
+        assert_eq!(first.id, second.id);
+        assert!(after_seq > before_seq);
+    }
+
+    #[test]
+    fn retention_limits_can_be_overridden_by_env() {
+        let prev_base = std::env::var("VECTORBT_MAX_ACTIVE_BASE_DATASETS").ok();
+        let prev_derived = std::env::var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS").ok();
+
+        std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", "2");
+        std::env::set_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS", "3");
+
+        assert_eq!(max_active_base_datasets(), 2);
+        assert_eq!(max_active_derived_datasets(), 3);
+
+        if let Some(value) = prev_base {
+            std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", value);
+        } else {
+            std::env::remove_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS");
+        }
+
+        if let Some(value) = prev_derived {
+            std::env::set_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS", value);
+        } else {
+            std::env::remove_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS");
+        }
     }
 }
 

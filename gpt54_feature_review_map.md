@@ -147,7 +147,7 @@ The highest-signal current themes are:
 - support-matrix drift review
 - benchmark-backed defaults review
 
-## 3. GPU runtime, residency, and dynamic-strategy overhead *****
+## 3. GPU runtime, residency, and dynamic-strategy overhead *****  ______
 
 ### Primary files
 
@@ -192,7 +192,7 @@ The highest-signal current themes are:
 - warm app-path latency review
 - benchmark-boundary review
 
-## 4. Validation throughput and fallback behavior
+## 4. Validation throughput and fallback behavior  ******** _____
 
 ### Primary files
 
@@ -1093,3 +1093,25 @@ Ask for:
 - safe `MaybeUninit` adoption review
 - prefix-init / NaN-warmup review
 - host-readback copy-elision review
+
+### Bundle P: Double MA search-only vs product-path gap
+
+- `crates/app_core/benches/double_ma_opt.rs`
+- `crates/app_core/src/double_ma.rs`
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+- `crates/app_core/src/kernels/double_crossover.cu`
+- `crates/optimizer/src/stream.rs`
+
+Optionally add:
+
+- `crates/app_core/benches/double_ma_metrics.rs`
+- `research/DOUBLE_MA_ALMA_GPU_FULL_OPTIMIZATION_PASS_2026-03-21.md`
+- `research/double_ma_cuda13_optimization_guide.md`
+
+Ask for:
+
+- root-cause review of the remaining gap between `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/search_only` and `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product`
+- finalist full-metrics recompute redesign review
+- one-pass full-metrics versus two-pass reduced-search-plus-recompute tradeoff review
+- small-finalist GPU execution-shape review
+- device-resident reuse / state-carry-forward review

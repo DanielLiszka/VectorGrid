@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -1444,6 +1444,24 @@ fn bench_double_ma_dynamic_program_execution(c: &mut Criterion) {
     ));
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
+    group.bench_function("gpu_kernel_upload_batch_only", |b| {
+        b.iter(|| {
+            let uploaded = upload_double_ma_dynamic_program_batch(
+                &lr,
+                &fast_values,
+                &slow_values,
+                fast_batch.cols,
+                &fast_periods,
+                &slow_periods,
+                &combos,
+                0,
+                &strategy,
+                0,
+            )
+            .expect("upload dynamic alma batch");
+            black_box(uploaded.combo_count());
+        })
+    });
     group.bench_function("gpu_kernel_warm_uploaded", |b| {
         b.iter(|| {
             let _ =

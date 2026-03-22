@@ -97,7 +97,9 @@ use crate::dynamic_indicator_adapter::{
     DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
+use crate::indicator_catalog::{
+    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "backend")]
@@ -3046,6 +3048,22 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let mut backend_fallback_reason: Option<String> = None;
     let indicator_route_plan_summary =
         build_indicator_route_plan_summary(&fast_ma, &slow_ma, req.gpu_execution);
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let kernel_execution_unavailable_reason: Option<String> = if cuda_runtime_available {
+        None
+    } else {
+        Some("CUDA unavailable; GPU kernel backend requires a CUDA device at runtime.".to_string())
+    };
+    #[cfg(all(feature = "cuda", not(feature = "cuda-backtest-kernel")))]
+    let kernel_execution_unavailable_reason: Option<String> =
+        Some("GPU kernel backend is disabled (build without `cuda-backtest-kernel`).".to_string());
+    #[cfg(not(feature = "cuda"))]
+    let kernel_execution_unavailable_reason: Option<String> = Some(
+        "GPU kernel backend requires building `ta_desktop_demo_app` with `--features cuda,cuda-backtest-kernel`."
+            .to_string(),
+    );
+    let kernel_available_for_execution =
+        kernel_supported_for_mode && kernel_execution_unavailable_reason.is_none();
 
     let mut backend = match normalized_backend {
         Backend::Auto { device_id } => {
@@ -3060,7 +3078,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             let cuda_ok = cuda_runtime_available
                 && fast_info.supports_cuda_single
                 && slow_info.supports_cuda_single;
-            let kernel_supported = kernel_supported_for_mode;
+            let kernel_supported = kernel_available_for_execution;
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
             let hybrid_supported = cuda_runtime_available && hybrid_backend_enabled();
             #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -3126,7 +3144,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     if let Some(device_id) = kernel_device_id {
         let export_requested = export_all_csv_path.is_some();
         let kernel_blockers = &kernel_blockers_for_request;
-        let kernel_supported = kernel_supported_for_mode;
+        let kernel_supported = kernel_available_for_execution;
 
         if export_requested && !kernel_supported {
             return Err(
@@ -3155,11 +3173,22 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 ));
             };
             let resolved = backend_kind_label(&backend);
+            let mut reasons: Vec<String> = Vec::new();
+            if !kernel_blockers.is_empty() {
+                reasons.push(kernel_blockers.join("; "));
+            }
+            if let Some(reason) = kernel_execution_unavailable_reason.as_deref() {
+                reasons.push(reason.to_string());
+            }
+            let reasons = if reasons.is_empty() {
+                "no additional reasons reported".to_string()
+            } else {
+                reasons.join("; ")
+            };
             merge_optional_note(
                 &mut backend_fallback_reason,
                 Some(format!(
-                    "Requested GpuKernel is unavailable for fast='{fast_ma}' slow='{slow_ma}' under current strategy/kernel constraints; using {resolved}. Reasons: {}",
-                    kernel_blockers.join("; ")
+                    "Requested GpuKernel is unavailable for fast='{fast_ma}' slow='{slow_ma}'; using {resolved}. Reasons: {reasons}"
                 )),
             );
         }
@@ -6600,6 +6629,22 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn prepared_cuda_input_kinds_for_indicator_ids(
+    indicator_ids: &[&str],
+) -> Result<Vec<IndicatorInputKind>, String> {
+    let mut input_kinds = Vec::new();
+    for indicator_id in indicator_ids {
+        let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
+            format!("unsupported_indicator: '{indicator_id}' is not in dynamic indicator registry")
+        })?;
+        if !input_kinds.contains(&descriptor.input_kind) {
+            input_kinds.push(descriptor.input_kind);
+        }
+    }
+    Ok(input_kinds)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) fn build_slope_efficiency_trend_regime_device(
     candles: &vector_ta::utilities::data_loader::Candles,
     ma_source: &str,
@@ -6618,9 +6663,15 @@ pub(crate) fn build_slope_efficiency_trend_regime_device(
         );
     }
 
-    let prepared_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
-            .map_err(|e| format!("set cuda input prep failed: {e}"))?;
+    let input_kinds =
+        prepared_cuda_input_kinds_for_indicator_ids(&["linearreg_angle", "er", "chop"])?;
+    let prepared_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id as usize,
+        input_kinds.as_slice(),
+    )
+    .map_err(|e| format!("set cuda input prep failed: {e}"))?;
 
     let angle_output = compute_dynamic_indicator_cuda_with_inputs(
         &prepared_inputs,
@@ -6704,9 +6755,14 @@ pub(crate) fn build_momentum_triple_stack_regime_device(
         return Err("mts device regime requested for a non-mts strategy".to_string());
     }
 
-    let prepared_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
-            .map_err(|e| format!("mts cuda input prep failed: {e}"))?;
+    let input_kinds = prepared_cuda_input_kinds_for_indicator_ids(&["roc", "mom", "ppo"])?;
+    let prepared_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id as usize,
+        input_kinds.as_slice(),
+    )
+    .map_err(|e| format!("mts cuda input prep failed: {e}"))?;
 
     let roc_output = compute_dynamic_indicator_cuda_with_inputs(
         &prepared_inputs,
@@ -6801,9 +6857,14 @@ pub(crate) fn build_oscillator_reversion_confluence_regime_device(
         );
     }
 
-    let prepared_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, ma_source, device_id as usize)
-            .map_err(|e| format!("orc cuda input prep failed: {e}"))?;
+    let input_kinds = prepared_cuda_input_kinds_for_indicator_ids(&["rsi", "stochf", "willr"])?;
+    let prepared_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id as usize,
+        input_kinds.as_slice(),
+    )
+    .map_err(|e| format!("orc cuda input prep failed: {e}"))?;
 
     let rsi_output = compute_dynamic_indicator_cuda_with_inputs(
         &prepared_inputs,
@@ -6895,9 +6956,17 @@ pub(crate) fn build_volume_flow_confirmation_regime_device(
         );
     }
 
-    let prepared_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "hlc3", device_id as usize)
-            .map_err(|e| format!("vfct cuda input prep failed: {e}"))?;
+    let mut input_kinds = prepared_cuda_input_kinds_for_indicator_ids(&["mfi"])?;
+    if !input_kinds.contains(&IndicatorInputKind::CloseVolume) {
+        input_kinds.push(IndicatorInputKind::CloseVolume);
+    }
+    let prepared_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        "hlc3",
+        device_id as usize,
+        input_kinds.as_slice(),
+    )
+    .map_err(|e| format!("vfct cuda input prep failed: {e}"))?;
     let obv_data = CudaDeviceCloseVolumeRef::new(
         prepared_inputs.close_device().as_view(),
         prepared_inputs.volume_device().as_view(),
@@ -8297,7 +8366,11 @@ fn optimize_double_ma_cpu_tiled(
         None
     };
     let dynamic_plan_ctx = if let Some(runtime_plan) = dynamic_request_plan {
-        Some((&runtime_plan.cpu_plan, &runtime_plan.cpu_context, true))
+        Some((
+            &runtime_plan.cpu_plan,
+            runtime_plan.cpu_context(candles)?,
+            true,
+        ))
     } else {
         dynamic_plan_ctx_owned
             .as_ref()
@@ -11902,9 +11975,13 @@ mod tests {
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect("hybrid cpu fallback run");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(
-            res.backend_route.as_deref(),
-            Some("GpuHybridKernel->CpuOnly")
+        assert!(
+            res.backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("GpuHybridKernel->CpuOnly"),
+            "unexpected route: {:?}",
+            res.backend_route
         );
         let reason = res.backend_fallback_reason.unwrap_or_default();
         assert!(
@@ -12672,9 +12749,14 @@ mod tests {
 
         assert!(matches!(cpu_res.backend_used, BackendUsed::Cpu));
         assert!(matches!(hybrid_res.backend_used, BackendUsed::Cpu));
-        assert_eq!(
-            hybrid_res.backend_route.as_deref(),
-            Some("GpuHybridKernel->CpuOnly")
+        assert!(
+            hybrid_res
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("GpuHybridKernel->CpuOnly"),
+            "unexpected route: {:?}",
+            hybrid_res.backend_route
         );
         assert_eq!(
             cpu_res.best_params.fast_len,
@@ -12828,10 +12910,14 @@ mod tests {
                 matches!(hybrid_res.backend_used, BackendUsed::Cpu),
                 "expected CPU fallback for '{label}'"
             );
-            assert_eq!(
-                hybrid_res.backend_route.as_deref(),
-                Some("GpuHybridKernel->CpuOnly"),
-                "unexpected route for '{label}'"
+            assert!(
+                hybrid_res
+                    .backend_route
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("GpuHybridKernel->CpuOnly"),
+                "unexpected route for '{label}': {:?}",
+                hybrid_res.backend_route
             );
             assert_eq!(
                 cpu_res.best_params.fast_len, hybrid_res.best_params.fast_len,

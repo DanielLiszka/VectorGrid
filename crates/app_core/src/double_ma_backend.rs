@@ -7,9 +7,6 @@ use crate::double_ma::{
 };
 use crate::strategy_gpu_runtime::StrategyCapabilityReport;
 
-#[cfg(feature = "cuda")]
-use vector_ta::cuda::cuda_available;
-
 #[inline]
 pub(crate) fn backend_kind_label(backend: &Backend) -> &'static str {
     match backend {
@@ -73,33 +70,15 @@ pub(crate) fn gpu_kernel_blockers_for_request(
             "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
         );
     }
-    #[cfg(feature = "cuda")]
-    {
-        if !cuda_available() {
-            blockers.push("CUDA runtime is unavailable".to_string());
-        }
+    if !crate::ma_policy::supports_gpu_kernel_ma(fast_ma) {
+        blockers.push(format!(
+            "fast MA '{fast_ma}' is not supported by GPU kernel path"
+        ));
     }
-    #[cfg(not(feature = "cuda"))]
-    {
-        blockers.push("CUDA feature is not enabled in this build".to_string());
-    }
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    {
-        if !crate::vram_ma::supports_vram_kernel_ma(fast_ma) {
-            blockers.push(format!(
-                "fast MA '{fast_ma}' is not supported by GPU kernel path"
-            ));
-        }
-        if !crate::vram_ma::supports_vram_kernel_ma(slow_ma) {
-            blockers.push(format!(
-                "slow MA '{slow_ma}' is not supported by GPU kernel path"
-            ));
-        }
-    }
-    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-    {
-        let _ = (fast_ma, slow_ma);
-        blockers.push("GPU kernel backend is not enabled in this build".to_string());
+    if !crate::ma_policy::supports_gpu_kernel_ma(slow_ma) {
+        blockers.push(format!(
+            "slow MA '{slow_ma}' is not supported by GPU kernel path"
+        ));
     }
     blockers
 }

@@ -129,10 +129,57 @@ struct Cli {
 }
 
 #[derive(Debug, Serialize)]
+struct TrialTimingArtifact {
+    total_wall_ms: f64,
+    harness_wall_ms: f64,
+    state_lookup_ms: f64,
+    engine_wall_ms: f64,
+    engine_runtime_ms: u64,
+    hybrid_planner_ms: Option<u64>,
+    hybrid_cpu_indicator_prep_ms: Option<u64>,
+    hybrid_gpu_indicator_prep_ms: Option<u64>,
+    hybrid_h2d_upload_ms: Option<u64>,
+    hybrid_kernel_eval_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
 struct TrialArtifact {
     trial_index: usize,
     runtime_ms_wall: f64,
+    timing: TrialTimingArtifact,
     result: ta_app_core::BackendOptimizationResult,
+}
+
+#[derive(Debug, Serialize)]
+struct TrialTimingSummaryArtifact {
+    count: usize,
+    harness_wall_ms_min: f64,
+    harness_wall_ms_median: f64,
+    harness_wall_ms_max: f64,
+    engine_runtime_ms_min: u64,
+    engine_runtime_ms_median: f64,
+    engine_runtime_ms_max: u64,
+    hybrid_planner_ms_min: Option<u64>,
+    hybrid_planner_ms_median: Option<f64>,
+    hybrid_planner_ms_max: Option<u64>,
+    hybrid_cpu_indicator_prep_ms_min: Option<u64>,
+    hybrid_cpu_indicator_prep_ms_median: Option<f64>,
+    hybrid_cpu_indicator_prep_ms_max: Option<u64>,
+    hybrid_gpu_indicator_prep_ms_min: Option<u64>,
+    hybrid_gpu_indicator_prep_ms_median: Option<f64>,
+    hybrid_gpu_indicator_prep_ms_max: Option<u64>,
+    hybrid_h2d_upload_ms_min: Option<u64>,
+    hybrid_h2d_upload_ms_median: Option<f64>,
+    hybrid_h2d_upload_ms_max: Option<u64>,
+    hybrid_kernel_eval_ms_min: Option<u64>,
+    hybrid_kernel_eval_ms_median: Option<f64>,
+    hybrid_kernel_eval_ms_max: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct FaceoffTimingSummaryArtifact {
+    warmup: Option<TrialTimingSummaryArtifact>,
+    measured: Option<TrialTimingSummaryArtifact>,
 }
 
 #[derive(Debug, Serialize)]
@@ -150,11 +197,131 @@ struct FaceoffDatasetArtifact {
 struct AppPathFaceoffArtifact {
     tool: &'static str,
     mode: &'static str,
+    timing_boundary_note: &'static str,
     backend: String,
     dataset: FaceoffDatasetArtifact,
+    timing_summary: FaceoffTimingSummaryArtifact,
     warmup_trials: Vec<TrialArtifact>,
     measured_trials: Vec<TrialArtifact>,
     generated_at_utc: String,
+}
+
+fn median_f64(values: &mut [f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) * 0.5
+    } else {
+        values[mid]
+    }
+}
+
+fn median_u64_as_f64(values: &mut [u64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_unstable();
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] as f64 + values[mid] as f64) * 0.5
+    } else {
+        values[mid] as f64
+    }
+}
+
+fn summarize_optional_u64(
+    values: impl IntoIterator<Item = Option<u64>>,
+) -> (Option<u64>, Option<f64>, Option<u64>) {
+    let mut present = values.into_iter().flatten().collect::<Vec<_>>();
+    if present.is_empty() {
+        return (None, None, None);
+    }
+    let min = present.iter().copied().min();
+    let max = present.iter().copied().max();
+    let median = Some(median_u64_as_f64(present.as_mut_slice()));
+    (min, median, max)
+}
+
+fn summarize_trials(trials: &[TrialArtifact]) -> Option<TrialTimingSummaryArtifact> {
+    if trials.is_empty() {
+        return None;
+    }
+
+    let mut harness_wall_ms: Vec<f64> = trials
+        .iter()
+        .map(|trial| trial.timing.harness_wall_ms)
+        .collect();
+    let mut engine_runtime_ms: Vec<u64> = trials
+        .iter()
+        .map(|trial| trial.timing.engine_runtime_ms)
+        .collect();
+
+    let harness_wall_ms_min = harness_wall_ms
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let harness_wall_ms_max = harness_wall_ms
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let engine_runtime_ms_min = engine_runtime_ms.iter().copied().min().unwrap_or(0);
+    let engine_runtime_ms_max = engine_runtime_ms.iter().copied().max().unwrap_or(0);
+    let (hybrid_planner_ms_min, hybrid_planner_ms_median, hybrid_planner_ms_max) =
+        summarize_optional_u64(trials.iter().map(|trial| trial.timing.hybrid_planner_ms));
+    let (
+        hybrid_cpu_indicator_prep_ms_min,
+        hybrid_cpu_indicator_prep_ms_median,
+        hybrid_cpu_indicator_prep_ms_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.hybrid_cpu_indicator_prep_ms),
+    );
+    let (
+        hybrid_gpu_indicator_prep_ms_min,
+        hybrid_gpu_indicator_prep_ms_median,
+        hybrid_gpu_indicator_prep_ms_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.hybrid_gpu_indicator_prep_ms),
+    );
+    let (hybrid_h2d_upload_ms_min, hybrid_h2d_upload_ms_median, hybrid_h2d_upload_ms_max) =
+        summarize_optional_u64(trials.iter().map(|trial| trial.timing.hybrid_h2d_upload_ms));
+    let (hybrid_kernel_eval_ms_min, hybrid_kernel_eval_ms_median, hybrid_kernel_eval_ms_max) =
+        summarize_optional_u64(
+            trials
+                .iter()
+                .map(|trial| trial.timing.hybrid_kernel_eval_ms),
+        );
+
+    Some(TrialTimingSummaryArtifact {
+        count: trials.len(),
+        harness_wall_ms_min,
+        harness_wall_ms_median: median_f64(harness_wall_ms.as_mut_slice()),
+        harness_wall_ms_max,
+        engine_runtime_ms_min,
+        engine_runtime_ms_median: median_u64_as_f64(engine_runtime_ms.as_mut_slice()),
+        engine_runtime_ms_max,
+        hybrid_planner_ms_min,
+        hybrid_planner_ms_median,
+        hybrid_planner_ms_max,
+        hybrid_cpu_indicator_prep_ms_min,
+        hybrid_cpu_indicator_prep_ms_median,
+        hybrid_cpu_indicator_prep_ms_max,
+        hybrid_gpu_indicator_prep_ms_min,
+        hybrid_gpu_indicator_prep_ms_median,
+        hybrid_gpu_indicator_prep_ms_max,
+        hybrid_h2d_upload_ms_min,
+        hybrid_h2d_upload_ms_median,
+        hybrid_h2d_upload_ms_max,
+        hybrid_kernel_eval_ms_min,
+        hybrid_kernel_eval_ms_median,
+        hybrid_kernel_eval_ms_max,
+    })
 }
 
 fn backend_from_arg(arg: BackendArg) -> Backend {
@@ -231,18 +398,42 @@ fn run_trial(
     data_id: &str,
     trial_index: usize,
 ) -> Result<TrialArtifact, String> {
+    let total_started = Instant::now();
+    let lookup_started = Instant::now();
     let candles = state.get_candles(data_id)?;
+    let state_lookup_ms = lookup_started.elapsed().as_secs_f64() * 1000.0;
     let cancel = AtomicBool::new(false);
-    let started = Instant::now();
+    let engine_started = Instant::now();
     let result = ta_app_core::run_double_ma_optimization_blocking_with_candles(
         req.clone(),
         candles.as_ref(),
         &cancel,
         None,
     )?;
+    let engine_wall_ms = engine_started.elapsed().as_secs_f64() * 1000.0;
+    let total_wall_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+    let timing = TrialTimingArtifact {
+        total_wall_ms,
+        harness_wall_ms: total_wall_ms,
+        state_lookup_ms,
+        engine_wall_ms,
+        engine_runtime_ms: result.runtime_ms,
+        hybrid_planner_ms: result.hybrid_timing_ms.as_ref().map(|t| t.planner_ms),
+        hybrid_cpu_indicator_prep_ms: result
+            .hybrid_timing_ms
+            .as_ref()
+            .map(|t| t.cpu_indicator_prep_ms),
+        hybrid_gpu_indicator_prep_ms: result
+            .hybrid_timing_ms
+            .as_ref()
+            .map(|t| t.gpu_indicator_prep_ms),
+        hybrid_h2d_upload_ms: result.hybrid_timing_ms.as_ref().map(|t| t.h2d_upload_ms),
+        hybrid_kernel_eval_ms: result.hybrid_timing_ms.as_ref().map(|t| t.kernel_eval_ms),
+    };
     Ok(TrialArtifact {
         trial_index,
-        runtime_ms_wall: started.elapsed().as_secs_f64() * 1000.0,
+        runtime_ms_wall: total_wall_ms,
+        timing,
         result,
     })
 }
@@ -296,6 +487,8 @@ fn main() -> Result<(), String> {
     let artifact = AppPathFaceoffArtifact {
         tool: "vectorgrid",
         mode: "app-path",
+        timing_boundary_note:
+            "same-thread harness using AppState plus blocking optimizer call; not the full Tauri command path",
         backend: format!("{:?}", backend_from_arg(cli.backend)),
         dataset: FaceoffDatasetArtifact {
             csv_path: cli.csv.to_string_lossy().to_string(),
@@ -305,6 +498,10 @@ fn main() -> Result<(), String> {
             data_id,
             version,
             bars,
+        },
+        timing_summary: FaceoffTimingSummaryArtifact {
+            warmup: summarize_trials(warmup_trials.as_slice()),
+            measured: summarize_trials(measured_trials.as_slice()),
         },
         warmup_trials,
         measured_trials,
@@ -327,4 +524,22 @@ fn main() -> Result<(), String> {
         )
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{median_f64, median_u64_as_f64};
+
+    #[test]
+    fn median_helpers_handle_even_and_odd_lengths() {
+        let mut odd_f64 = vec![9.0, 1.0, 5.0];
+        let mut even_f64 = vec![8.0, 2.0, 6.0, 4.0];
+        let mut odd_u64 = vec![9_u64, 1, 5];
+        let mut even_u64 = vec![8_u64, 2, 6, 4];
+
+        assert_eq!(median_f64(odd_f64.as_mut_slice()), 5.0);
+        assert_eq!(median_f64(even_f64.as_mut_slice()), 5.0);
+        assert_eq!(median_u64_as_f64(odd_u64.as_mut_slice()), 5.0);
+        assert_eq!(median_u64_as_f64(even_u64.as_mut_slice()), 5.0);
+    }
 }

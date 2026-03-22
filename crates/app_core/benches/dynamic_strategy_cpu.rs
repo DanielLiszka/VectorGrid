@@ -1,6 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::collections::HashMap;
 use std::time::Duration;
+#[cfg(feature = "cuda")]
+use ta_app_core::prepare_dynamic_indicator_slot_series;
 use ta_app_core::{
     compile_dynamic_plan_for_composite_cpu_config, compile_dynamic_plan_for_double_ma_config,
     compile_strategy_plan, eval_dynamic_plan_metrics_cpu,
@@ -131,6 +133,65 @@ fn build_mixed_route_plan() -> Option<ta_app_core::CompiledStrategyPlan> {
                 op: ConditionOp::Gt,
                 lhs: ValueRef::Indicator {
                     id: "gpu_slot".to_string(),
+                },
+                rhs: ValueRef::constant(0.0),
+            }],
+            groups: vec![ConditionGroup {
+                id: "entry_group".to_string(),
+                mode: ConditionGroupMode::All,
+                condition_ids: vec!["entry".to_string()],
+            }],
+            signals: SignalBindings {
+                long_entry_group: Some("entry_group".to_string()),
+                long_exit_group: None,
+                short_entry_group: None,
+                short_exit_group: None,
+            },
+        },
+        execution: ExecutionPolicy {
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            halftrend: None,
+            macz: None,
+            ott: None,
+            signal_mode: None,
+        },
+    };
+    compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None).ok()
+}
+
+#[cfg(feature = "cuda")]
+fn build_cpu_only_route_plan() -> Option<ta_app_core::CompiledStrategyPlan> {
+    let descriptors = list_dynamic_indicator_descriptors_cached();
+    let cpu_only = descriptors.iter().find(|d| {
+        d.supports_cpu_single && !d.supports_cuda_single && descriptor_supports_mixed_route_bench(d)
+    })?;
+
+    let ir = StrategyIr {
+        schema_version: STRATEGY_IR_SCHEMA_VERSION,
+        profile: StrategyProfileKind::DoubleMa,
+        ma_source: "close".to_string(),
+        fast_ma: MovingAverageSpec {
+            ma_type: "sma".to_string(),
+            params: HashMap::new(),
+        },
+        slow_ma: MovingAverageSpec {
+            ma_type: "sma".to_string(),
+            params: HashMap::new(),
+        },
+        program: SignalProgramGraph {
+            indicators: vec![IndicatorNode {
+                id: "cpu_only_slot".to_string(),
+                kind: None,
+                indicator_id: Some(cpu_only.id.clone()),
+                params: dynamic_params_from_defaults(cpu_only),
+                output_id: Some(cpu_only.outputs[0].id.clone()),
+            }],
+            conditions: vec![ConditionNode {
+                id: "entry".to_string(),
+                op: ConditionOp::Gt,
+                lhs: ValueRef::Indicator {
+                    id: "cpu_only_slot".to_string(),
                 },
                 rhs: ValueRef::constant(0.0),
             }],
@@ -357,6 +418,25 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
                     ma_source,
                 )
                 .expect("mixed-route slot prep should succeed");
+                black_box(slot_outputs.len());
+            })
+        });
+        staging_group.finish();
+    }
+
+    #[cfg(feature = "cuda")]
+    if let Some(cpu_only_route_plan) = build_cpu_only_route_plan() {
+        let mut staging_group = c.benchmark_group("dynamic_strategy_cpu/staging_cuda_build/50k");
+        staging_group.measurement_time(Duration::from_secs(8));
+        staging_group.sample_size(10);
+        staging_group.bench_function("cpu_route_slot_prep", |b| {
+            b.iter(|| {
+                let slot_outputs = prepare_dynamic_indicator_slot_series(
+                    &cpu_only_route_plan,
+                    &candles,
+                    ma_source,
+                )
+                .expect("cpu-route slot prep should succeed under cuda build");
                 black_box(slot_outputs.len());
             })
         });

@@ -100,7 +100,27 @@ function Invoke-DynamicStrategyProfileRun([bool]$dynamicStrategyEnabled, [int]$i
     "--dynamic-mode", $dynMode,
     "--device-id", "0"
   )
-  $output = cargo @runnerCmd 2>&1
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process -FilePath "cargo" `
+      -ArgumentList $runnerCmd `
+      -NoNewWindow `
+      -Wait `
+      -PassThru `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath
+    $output = @()
+    if (Test-Path $stdoutPath) {
+      $output += Get-Content $stdoutPath
+    }
+    if (Test-Path $stderrPath) {
+      $output += Get-Content $stderrPath
+    }
+    $global:LASTEXITCODE = $proc.ExitCode
+  } finally {
+    Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
+  }
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }

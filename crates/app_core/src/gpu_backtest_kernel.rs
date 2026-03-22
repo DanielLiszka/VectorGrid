@@ -888,6 +888,25 @@ struct CudaKernelRuntime {
     launch_caps: DeviceLaunchCaps,
     resident_market: Option<ResidentMarketSeriesCache>,
     valid_pair_maps: HashMap<ValidPairMapSignature, CachedValidPairMap>,
+    kernel_caps: RefCell<HashMap<CachedKernelKey, KernelLaunchCaps>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CachedKernelKey {
+    ComputeReturns,
+    TransposeRowToTm,
+    DoubleCrossBacktest,
+    DoubleCrossBacktestM7,
+    DoubleCrossBacktestLockstep,
+    DoubleCrossBacktestLockstepM7,
+    DoubleCrossBacktestFastWarpDedup,
+    FillF32,
+    HeatmapUpdateScores,
+    BuildVfctRegime,
+    BuildPitRegime,
+    BuildSetRegime,
+    BuildMtsRegime,
+    BuildOrcRegime,
 }
 
 impl CudaKernelRuntime {
@@ -908,11 +927,21 @@ impl CudaKernelRuntime {
             launch_caps,
             resident_market: None,
             valid_pair_maps: HashMap::new(),
+            kernel_caps: RefCell::new(HashMap::new()),
         })
     }
 
     fn set_current(&self) -> Result<(), String> {
         CurrentContext::set_current(self.context.as_ref()).map_err(|e| e.to_string())
+    }
+
+    fn launch_caps_for_kernel(&self, key: CachedKernelKey, func: &Function) -> KernelLaunchCaps {
+        if let Some(cached) = self.kernel_caps.borrow().get(&key) {
+            return *cached;
+        }
+        let caps = detect_kernel_launch_caps(func, self.launch_caps);
+        self.kernel_caps.borrow_mut().insert(key, caps);
+        caps
     }
 }
 
@@ -1361,7 +1390,11 @@ fn transpose_row_major_to_tm_f32(row_major: &[f32], rows: usize, cols: usize) ->
 }
 
 fn simple_returns_from_log_returns_f32(lr: &[f32]) -> Vec<f32> {
-    lr.iter().map(|&v| v.exp_m1()).collect()
+    let mut out = alloc_uninit_f32(lr.len());
+    for (dst, &v) in out.iter_mut().zip(lr.iter()) {
+        *dst = v.exp_m1();
+    }
+    out
 }
 
 fn validate_double_ma_dynamic_strategy_handle(handle: &StrategyHandle) -> Result<(), String> {
@@ -1559,7 +1592,8 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 .module
                 .get_function("double_cross_backtest_tm_flex_f32_m7")
                 .map_err(|e| e.to_string())?;
-            let launch_caps = detect_kernel_launch_caps(&func, rt.launch_caps);
+            let launch_caps =
+                rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM7, &func);
             let launch = choose_backtest_launch_shape_1d(
                 uploaded_batch.combo_count,
                 rt.launch_caps,
@@ -1772,7 +1806,8 @@ pub(crate) fn build_vfct_regime_filter(
             .module
             .get_function("build_vfct_regime_f32")
             .map_err(|e| e.to_string())?;
-        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch_caps =
+            rt.launch_caps_for_kernel(CachedKernelKey::BuildVfctRegime, &regime_kernel);
         let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
         let out = if kernel_async_alloc_enabled() {
             unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
@@ -1872,7 +1907,8 @@ pub(crate) fn build_pit_regime_filter(
             .module
             .get_function("build_pit_regime_f32")
             .map_err(|e| e.to_string())?;
-        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch_caps =
+            rt.launch_caps_for_kernel(CachedKernelKey::BuildPitRegime, &regime_kernel);
         let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
         let out = if kernel_async_alloc_enabled() {
             unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
@@ -1967,7 +2003,8 @@ pub(crate) fn build_set_regime_filter(
             .module
             .get_function("build_set_regime_f32")
             .map_err(|e| e.to_string())?;
-        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch_caps =
+            rt.launch_caps_for_kernel(CachedKernelKey::BuildSetRegime, &regime_kernel);
         let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
         let out = if kernel_async_alloc_enabled() {
             unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
@@ -2057,7 +2094,8 @@ pub(crate) fn build_mts_regime_filter(
             .module
             .get_function("build_mts_regime_f32")
             .map_err(|e| e.to_string())?;
-        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch_caps =
+            rt.launch_caps_for_kernel(CachedKernelKey::BuildMtsRegime, &regime_kernel);
         let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
         let out = if kernel_async_alloc_enabled() {
             unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
@@ -2143,7 +2181,8 @@ pub(crate) fn build_orc_regime_filter(
             .module
             .get_function("build_orc_regime_f32")
             .map_err(|e| e.to_string())?;
-        let launch_caps = detect_kernel_launch_caps(&regime_kernel, rt.launch_caps);
+        let launch_caps =
+            rt.launch_caps_for_kernel(CachedKernelKey::BuildOrcRegime, &regime_kernel);
         let launch = choose_launch_shape_1d(len, rt.launch_caps, launch_caps);
         let out = if kernel_async_alloc_enabled() {
             unsafe { DeviceBuffer::<f32>::uninitialized_async(len, &rt.stream) }
@@ -2779,6 +2818,38 @@ fn upload_ephemeral_series_f32(stream: &Stream, src: &[f32]) -> Result<DeviceBuf
     Ok(buf)
 }
 
+struct ResidentUploadBatch<'a> {
+    stream: &'a Stream,
+    guard: AsyncPinnedUploadGuard<'a>,
+    use_pinned: bool,
+}
+
+impl<'a> ResidentUploadBatch<'a> {
+    #[inline]
+    fn new(stream: &'a Stream) -> Self {
+        Self {
+            stream,
+            guard: AsyncPinnedUploadGuard::new(stream),
+            use_pinned: kernel_pinned_h2d_enabled(),
+        }
+    }
+
+    #[inline]
+    fn upload_f64(&mut self, src: &[f64]) -> Result<DeviceBuffer<f32>, String> {
+        upload_f32_source_to_device(
+            self.stream,
+            HostF32Source::F64(src),
+            self.use_pinned,
+            &mut self.guard,
+        )
+    }
+
+    #[inline]
+    fn finish(self) -> Result<(), String> {
+        self.guard.finalize()
+    }
+}
+
 fn ensure_resident_market_series(
     stream: &Stream,
     resident: &mut Option<ResidentMarketSeriesCache>,
@@ -2802,51 +2873,78 @@ fn ensure_resident_market_series(
         .unwrap_or(true);
     if should_reset {
         reset_resident_market_cache(stream, resident)?;
-        *resident = Some(ResidentMarketSeriesCache {
+        let mut batch = ResidentUploadBatch::new(stream);
+        let mut cache = ResidentMarketSeriesCache {
             signature,
-            close: upload_resident_series_f64(stream, close)?,
+            close: batch.upload_f64(close)?,
             high: None,
             low: None,
             volume: None,
             source_overrides: HashMap::new(),
-        });
+        };
+
+        if needs_high_low {
+            cache.high = Some(batch.upload_f64(
+                high.ok_or_else(|| "high prices required for resident upload".to_string())?,
+            )?);
+            cache.low = Some(batch.upload_f64(
+                low.ok_or_else(|| "low prices required for resident upload".to_string())?,
+            )?);
+        }
+
+        if needs_volume {
+            cache.volume = Some(batch.upload_f64(
+                volume.ok_or_else(|| "volume prices required for resident upload".to_string())?,
+            )?);
+        }
+
+        if needs_ma_prices && source_key != "close" {
+            let uploaded =
+                batch
+                    .upload_f64(ma_prices.ok_or_else(|| {
+                        format!("ma prices required for ma_source={source_key}")
+                    })?)?;
+            cache.source_overrides.insert(source_key.clone(), uploaded);
+        }
+
+        batch.finish()?;
+        *resident = Some(cache);
     }
 
     let cache = resident
         .as_mut()
         .ok_or_else(|| "resident market cache unavailable".to_string())?;
 
+    let mut batch = ResidentUploadBatch::new(stream);
+
     if needs_high_low {
         if cache.high.is_none() {
-            cache.high = Some(upload_resident_series_f64(
-                stream,
+            cache.high = Some(batch.upload_f64(
                 high.ok_or_else(|| "high prices required for resident upload".to_string())?,
             )?);
         }
         if cache.low.is_none() {
-            cache.low = Some(upload_resident_series_f64(
-                stream,
+            cache.low = Some(batch.upload_f64(
                 low.ok_or_else(|| "low prices required for resident upload".to_string())?,
             )?);
         }
     }
 
     if needs_volume && cache.volume.is_none() {
-        cache.volume = Some(upload_resident_series_f64(
-            stream,
+        cache.volume = Some(batch.upload_f64(
             volume.ok_or_else(|| "volume prices required for resident upload".to_string())?,
         )?);
     }
 
     if needs_ma_prices && source_key != "close" && !cache.source_overrides.contains_key(&source_key)
     {
-        let uploaded = upload_resident_series_f64(
-            stream,
+        let uploaded = batch.upload_f64(
             ma_prices.ok_or_else(|| format!("ma prices required for ma_source={source_key}"))?,
         )?;
         cache.source_overrides.insert(source_key, uploaded);
     }
 
+    batch.finish()?;
     Ok(())
 }
 
@@ -2905,6 +3003,15 @@ impl HostF32Source<'_> {
 }
 
 #[inline]
+fn cast_f64_slice_to_f32_vec(src: &[f64]) -> Vec<f32> {
+    let mut out = alloc_uninit_f32(src.len());
+    for (dst, &v) in out.iter_mut().zip(src.iter()) {
+        *dst = v as f32;
+    }
+    out
+}
+
+#[inline]
 fn upload_f32_source_to_device(
     stream: &Stream,
     src: HostF32Source<'_>,
@@ -2939,7 +3046,7 @@ fn upload_f32_source_to_device(
     match src {
         HostF32Source::F32(slice) => DeviceBuffer::from_slice(slice).map_err(|e| e.to_string()),
         HostF32Source::F64(slice) => {
-            let tmp: Vec<f32> = slice.iter().map(|&x| x as f32).collect();
+            let tmp = cast_f64_slice_to_f32_vec(slice);
             DeviceBuffer::from_slice(&tmp).map_err(|e| e.to_string())
         }
     }
@@ -4341,6 +4448,84 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let mut out_metrics = vec![Metrics::default(); combos.len()];
 
     let bt_stream = &rt.stream;
+    let bt_module = &rt.module;
+    let device_launch_caps = rt.launch_caps;
+    let compute_returns = bt_module
+        .get_function("compute_log_and_simple_returns_f32")
+        .map_err(|e| e.to_string())?;
+    let compute_returns_launch_caps =
+        rt.launch_caps_for_kernel(CachedKernelKey::ComputeReturns, &compute_returns);
+    let use_fast_path = !fast_precomputed_enabled
+        && !slow_precomputed_enabled
+        && kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
+    let transpose = bt_module
+        .get_function("transpose_row_to_tm")
+        .map_err(|e| e.to_string())?;
+    let backtest = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32")
+        .map_err(|e| e.to_string())?;
+    let backtest_windowed = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed")
+        .map_err(|e| e.to_string())?;
+    let backtest_m7 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m7")
+        .ok();
+    let backtest_lockstep = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
+        .ok();
+    let backtest_lockstep_m7 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
+        .ok();
+    let backtest_lockstep_m7_regime_off = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
+        .ok();
+    let backtest_lockstep_m7_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m7_regime_on = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on")
+        .ok();
+    let backtest_lockstep_m7_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m7_regime_hybrid_norisk_eps0 = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0",
+        )
+        .ok();
+    let backtest_fast_warp = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
+        .ok();
+    let fill_f32 = bt_module
+        .get_function("fill_f32")
+        .map_err(|e| e.to_string())?;
+    let transpose_launch_caps =
+        rt.launch_caps_for_kernel(CachedKernelKey::TransposeRowToTm, &transpose);
+    let backtest_launch_caps =
+        rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktest, &backtest);
+    let backtest_m7_launch_caps = backtest_m7
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM7, f));
+    let backtest_lockstep_launch_caps = backtest_lockstep
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
+    let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM7, f));
+    let backtest_fast_launch_caps = backtest_fast_warp
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestFastWarpDedup, f));
+    let fill_launch_caps = rt.launch_caps_for_kernel(CachedKernelKey::FillF32, &fill_f32);
+
     let ma_source_key = normalize_market_source_key(ma_source);
     let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
@@ -4362,13 +4547,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let resident = resident_market
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
-    let device_launch_caps = rt.launch_caps;
-    let compute_returns = rt
-        .module
-        .get_function("compute_log_and_simple_returns_f32")
-        .map_err(|e| e.to_string())?;
-    let compute_returns_launch_caps =
-        detect_kernel_launch_caps(&compute_returns, device_launch_caps);
     let d_close = &resident.close;
     let d_high = if needs_high_low {
         resident.high.as_ref()
@@ -4442,60 +4620,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         )?;
     }
 
-    let bt_module = &rt.module;
-    let use_fast_path = !fast_precomputed_enabled
-        && !slow_precomputed_enabled
-        && kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
-    let transpose = bt_module
-        .get_function("transpose_row_to_tm")
-        .map_err(|e| e.to_string())?;
-    let backtest = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32")
-        .map_err(|e| e.to_string())?;
-    let backtest_windowed = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_windowed")
-        .map_err(|e| e.to_string())?;
-    let backtest_m7 = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_m7")
-        .ok();
-    let backtest_lockstep = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
-        .ok();
-    let backtest_lockstep_m7 = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
-        .ok();
-    let backtest_lockstep_m7_regime_off = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
-        .ok();
-    let backtest_lockstep_m7_regime_off_norisk = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk")
-        .ok();
-    let backtest_lockstep_m7_regime_off_norisk_eps0 = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0")
-        .ok();
-    let backtest_lockstep_m7_regime_on = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on")
-        .ok();
-    let backtest_lockstep_m7_regime_on_norisk = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on_norisk")
-        .ok();
-    let backtest_lockstep_m7_regime_hybrid = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid")
-        .ok();
-    let backtest_lockstep_m7_regime_hybrid_norisk = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk")
-        .ok();
-    let backtest_lockstep_m7_regime_hybrid_norisk_eps0 = bt_module
-        .get_function(
-            "double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_hybrid_norisk_eps0",
-        )
-        .ok();
-    let backtest_fast_warp = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
-        .ok();
-    let fill_f32 = bt_module
-        .get_function("fill_f32")
-        .map_err(|e| e.to_string())?;
     let lockstep_m7_regime_mode_specialize_enabled =
         kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
             fast_ma.as_str(),
@@ -4507,21 +4631,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
     let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
     let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
-    let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
-    let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
-    let backtest_m7_launch_caps = backtest_m7
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let backtest_lockstep_launch_caps = backtest_lockstep
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let backtest_fast_launch_caps = backtest_fast_warp
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let fill_launch_caps = detect_kernel_launch_caps(&fill_f32, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;
@@ -5865,117 +5974,13 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
     };
     let bt_stream = &rt.stream;
-    let ma_source_key = normalize_market_source_key(ma_source);
-    let ma_is_close = ma_source_key == "close";
-    let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let (resident_market, ma, scratch, valid_pair_maps) = (
-        &mut rt.resident_market,
-        &mut rt.ma,
-        &mut rt.scratch,
-        &mut rt.valid_pair_maps,
-    );
-    ensure_resident_market_series(
-        bt_stream,
-        resident_market,
-        candles,
-        close,
-        ma_source,
-        ma_prices,
-        needs_ma_prices,
-        needs_high_low,
-        high,
-        low,
-        needs_volume,
-        volume,
-    )?;
-    let resident = resident_market
-        .as_ref()
-        .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    let bt_module = &rt.module;
     let device_launch_caps = rt.launch_caps;
-    let compute_returns = rt
-        .module
+    let compute_returns = bt_module
         .get_function("compute_log_and_simple_returns_f32")
         .map_err(|e| e.to_string())?;
     let compute_returns_launch_caps =
-        detect_kernel_launch_caps(&compute_returns, device_launch_caps);
-    let d_close = &resident.close;
-    let d_high = if needs_high_low {
-        resident.high.as_ref()
-    } else {
-        None
-    };
-    let d_low = if needs_high_low {
-        resident.low.as_ref()
-    } else {
-        None
-    };
-    let d_volume = if needs_volume {
-        resident.volume.as_ref()
-    } else {
-        None
-    };
-    let d_regime = match regime_f32.as_deref() {
-        Some(src) => Some(upload_ephemeral_series_f32(bt_stream, src)?),
-        None => None,
-    };
-    let d_regime_ptr = d_regime
-        .as_ref()
-        .map(|d| d.as_device_ptr().as_raw())
-        .or_else(|| device_regime_filter.map(DeviceRegimeFilter::as_device_ptr_raw));
-    let d_ma_prices: &DeviceBuffer<f32> = if alloc_ma_buf {
-        resident
-            .source_overrides
-            .get(&ma_source_key)
-            .ok_or_else(|| format!("resident ma_source buffer missing for {ma_source_key}"))?
-    } else {
-        d_close
-    };
-
-    let vram_inputs = VramMaInputs {
-        prices: d_ma_prices,
-        close: d_close,
-        high: d_high,
-        low: d_low,
-        volume: d_volume,
-    };
-
-    let mut fast_params_from_cfg: HashMap<String, f64> = HashMap::new();
-    let mut slow_params_from_cfg: HashMap<String, f64> = HashMap::new();
-    let fast_params: Option<&HashMap<String, f64>> =
-        if fast_ma == "alma" && fast_ma_params.is_none() {
-            fast_params_from_cfg.insert("offset".to_string(), cfg.fast_alma_offset);
-            fast_params_from_cfg.insert("sigma".to_string(), cfg.fast_alma_sigma);
-            Some(&fast_params_from_cfg)
-        } else {
-            fast_ma_params
-        };
-    let slow_params: Option<&HashMap<String, f64>> =
-        if slow_ma == "alma" && slow_ma_params.is_none() {
-            slow_params_from_cfg.insert("offset".to_string(), cfg.slow_alma_offset);
-            slow_params_from_cfg.insert("sigma".to_string(), cfg.slow_alma_sigma);
-            Some(&slow_params_from_cfg)
-        } else {
-            slow_ma_params
-        };
-    if fast_ma == "sma" || slow_ma == "sma" {
-        let t0 = Instant::now();
-        ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)?;
-        gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
-    }
-    if fast_ma == "vwma" || slow_ma == "vwma" {
-        let t0 = Instant::now();
-        ma.ensure_vwma_prefix_pv_vol_f64(
-            d_ma_prices,
-            d_volume
-                .as_ref()
-                .ok_or_else(|| "vwma requires volume".to_string())?,
-            n,
-            first_valid,
-        )?;
-        gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
-    }
-
-    let bt_module = &rt.module;
+        rt.launch_caps_for_kernel(CachedKernelKey::ComputeReturns, &compute_returns);
     let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str())
         && !fast_precomputed_enabled
         && !slow_precomputed_enabled;
@@ -6067,7 +6072,129 @@ fn optimize_double_ma_gpu_kernel_impl(
         .get_function("select_topk_metric_rows_from_candidates_f32_v2")
         .ok();
     let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
-    let fill_launch_caps = detect_kernel_launch_caps(&fill_f32, device_launch_caps);
+    let fill_launch_caps = rt.launch_caps_for_kernel(CachedKernelKey::FillF32, &fill_f32);
+    let transpose_launch_caps =
+        rt.launch_caps_for_kernel(CachedKernelKey::TransposeRowToTm, &transpose);
+    let backtest_launch_caps =
+        rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktest, &backtest);
+    let backtest_m7_launch_caps = backtest_m7
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM7, f));
+    let backtest_lockstep_launch_caps = backtest_lockstep
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
+    let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM7, f));
+    let backtest_fast_launch_caps = backtest_fast_warp
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestFastWarpDedup, f));
+    let heatmap_launch_caps =
+        rt.launch_caps_for_kernel(CachedKernelKey::HeatmapUpdateScores, &heatmap_update);
+
+    let ma_source_key = normalize_market_source_key(ma_source);
+    let ma_is_close = ma_source_key == "close";
+    let alloc_ma_buf = needs_ma_prices && !ma_is_close;
+    let (resident_market, ma, scratch, valid_pair_maps) = (
+        &mut rt.resident_market,
+        &mut rt.ma,
+        &mut rt.scratch,
+        &mut rt.valid_pair_maps,
+    );
+    ensure_resident_market_series(
+        bt_stream,
+        resident_market,
+        candles,
+        close,
+        ma_source,
+        ma_prices,
+        needs_ma_prices,
+        needs_high_low,
+        high,
+        low,
+        needs_volume,
+        volume,
+    )?;
+    let resident = resident_market
+        .as_ref()
+        .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    let d_close = &resident.close;
+    let d_high = if needs_high_low {
+        resident.high.as_ref()
+    } else {
+        None
+    };
+    let d_low = if needs_high_low {
+        resident.low.as_ref()
+    } else {
+        None
+    };
+    let d_volume = if needs_volume {
+        resident.volume.as_ref()
+    } else {
+        None
+    };
+    let d_regime = match regime_f32.as_deref() {
+        Some(src) => Some(upload_ephemeral_series_f32(bt_stream, src)?),
+        None => None,
+    };
+    let d_regime_ptr = d_regime
+        .as_ref()
+        .map(|d| d.as_device_ptr().as_raw())
+        .or_else(|| device_regime_filter.map(DeviceRegimeFilter::as_device_ptr_raw));
+    let d_ma_prices: &DeviceBuffer<f32> = if alloc_ma_buf {
+        resident
+            .source_overrides
+            .get(&ma_source_key)
+            .ok_or_else(|| format!("resident ma_source buffer missing for {ma_source_key}"))?
+    } else {
+        d_close
+    };
+
+    let vram_inputs = VramMaInputs {
+        prices: d_ma_prices,
+        close: d_close,
+        high: d_high,
+        low: d_low,
+        volume: d_volume,
+    };
+
+    let mut fast_params_from_cfg: HashMap<String, f64> = HashMap::new();
+    let mut slow_params_from_cfg: HashMap<String, f64> = HashMap::new();
+    let fast_params: Option<&HashMap<String, f64>> =
+        if fast_ma == "alma" && fast_ma_params.is_none() {
+            fast_params_from_cfg.insert("offset".to_string(), cfg.fast_alma_offset);
+            fast_params_from_cfg.insert("sigma".to_string(), cfg.fast_alma_sigma);
+            Some(&fast_params_from_cfg)
+        } else {
+            fast_ma_params
+        };
+    let slow_params: Option<&HashMap<String, f64>> =
+        if slow_ma == "alma" && slow_ma_params.is_none() {
+            slow_params_from_cfg.insert("offset".to_string(), cfg.slow_alma_offset);
+            slow_params_from_cfg.insert("sigma".to_string(), cfg.slow_alma_sigma);
+            Some(&slow_params_from_cfg)
+        } else {
+            slow_ma_params
+        };
+    if fast_ma == "sma" || slow_ma == "sma" {
+        let t0 = Instant::now();
+        ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)?;
+        gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
+    }
+    if fast_ma == "vwma" || slow_ma == "vwma" {
+        let t0 = Instant::now();
+        ma.ensure_vwma_prefix_pv_vol_f64(
+            d_ma_prices,
+            d_volume
+                .as_ref()
+                .ok_or_else(|| "vwma requires volume".to_string())?,
+            n,
+            first_valid,
+        )?;
+        gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
+    }
+
     let lockstep_m7_regime_mode_specialize_enabled =
         kernel_lockstep_m7_regime_mode_specialize_enabled_for_pair(
             fast_ma.as_str(),
@@ -6079,21 +6206,6 @@ fn optimize_double_ma_gpu_kernel_impl(
         kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
     let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
     let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
-    let transpose_launch_caps = detect_kernel_launch_caps(&transpose, device_launch_caps);
-    let backtest_launch_caps = detect_kernel_launch_caps(&backtest, device_launch_caps);
-    let backtest_m7_launch_caps = backtest_m7
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let backtest_lockstep_launch_caps = backtest_lockstep
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let backtest_fast_launch_caps = backtest_fast_warp
-        .as_ref()
-        .map(|f| detect_kernel_launch_caps(f, device_launch_caps));
-    let heatmap_launch_caps = detect_kernel_launch_caps(&heatmap_update, device_launch_caps);
 
     KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;

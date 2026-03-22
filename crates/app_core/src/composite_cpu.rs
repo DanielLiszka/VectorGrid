@@ -168,6 +168,90 @@ use crate::PreparedCudaIndicatorInputs;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::CudaOutputTarget;
 
+#[cfg(feature = "cuda")]
+fn prepared_cuda_inputs_for_source_hlc(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+) -> Option<PreparedCudaIndicatorInputs> {
+    PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+        candles,
+        ma_source,
+        &[crate::indicator_catalog::IndicatorInputKind::Ohlc],
+    )
+    .ok()
+}
+
+#[cfg(feature = "cuda")]
+fn prepared_cuda_inputs_for_source_hlc_on_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: usize,
+) -> Result<PreparedCudaIndicatorInputs, String> {
+    PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id,
+        &[crate::indicator_catalog::IndicatorInputKind::Ohlc],
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "cuda")]
+fn prepared_cuda_inputs_for_source_ohlcv(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+) -> Option<PreparedCudaIndicatorInputs> {
+    PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+        candles,
+        ma_source,
+        &[crate::indicator_catalog::IndicatorInputKind::Ohlcv],
+    )
+    .ok()
+}
+
+#[cfg(feature = "cuda")]
+fn prepared_cuda_inputs_for_source_ohlcv_on_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: usize,
+) -> Result<PreparedCudaIndicatorInputs, String> {
+    PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id,
+        &[crate::indicator_catalog::IndicatorInputKind::Ohlcv],
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "cuda")]
+fn prepared_cuda_inputs_for_source_slice(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+) -> Option<PreparedCudaIndicatorInputs> {
+    PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+        candles,
+        ma_source,
+        &[crate::indicator_catalog::IndicatorInputKind::Slice],
+    )
+    .ok()
+}
+
+#[cfg(feature = "cuda")]
+fn prepared_cuda_inputs_for_source_slice_on_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: usize,
+) -> Result<PreparedCudaIndicatorInputs, String> {
+    PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id,
+        &[crate::indicator_catalog::IndicatorInputKind::Slice],
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MaczGateParams {
     #[serde(default = "default_macz_fast_length")]
@@ -978,12 +1062,8 @@ fn run_asr_optimization_gpu(
     let fv_ma =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &ma_source, device_id as usize)?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &strategy, device_id)?;
     if kaufman.long.rows != 1
@@ -1391,7 +1471,7 @@ fn run_asr_optimization_cpu(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &ma_source)
     };
 
     let mut fast_cache: HashMap<u16, crate::asr::AsrFastSignals> = HashMap::new();
@@ -1716,12 +1796,8 @@ fn run_vcc_optimization_gpu(
     let fv_ma =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &ma_source, device_id as usize)?;
 
     let mut fast_keys: Vec<(u16, u16)> = fast_periods
         .iter()
@@ -2397,12 +2473,8 @@ fn run_vemr_optimization_gpu(
     let fv_ma =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &ma_source, device_id as usize)?;
 
     let mut fast_keys: Vec<(u16, u16)> = fast_periods
         .iter()
@@ -2867,7 +2939,7 @@ fn run_vemr_optimization_impl(
     let prepared_cuda_inputs = if matches!(indicator_backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &ma_source)
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
@@ -3094,7 +3166,7 @@ fn run_asr_drilldown(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let periods = resolve_asr_periods(&asr_cfg, fast_len, slow_len);
@@ -3206,7 +3278,7 @@ fn run_vemr_drilldown(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let periods = resolve_vemr_periods(&vemr_cfg, fast_len, slow_len);
@@ -3306,7 +3378,7 @@ fn run_asr_local_stability(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let radius = req.radius.unwrap_or(1).min(32);
@@ -3538,7 +3610,7 @@ fn run_vemr_local_stability(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let radius = req.radius.unwrap_or(1).min(32);
@@ -3755,7 +3827,7 @@ fn run_vcc_local_stability(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let radius = req.radius.unwrap_or(1).min(32);
@@ -4254,9 +4326,13 @@ fn run_rocb_optimization_gpu(
     let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        "close",
+        device_id as usize,
+        &[crate::indicator_catalog::IndicatorInputKind::Slice],
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut channel_keys: Vec<u16> = fast_periods
         .iter()
@@ -4609,20 +4685,17 @@ fn run_rocb_optimization_impl(
 
     #[cfg(feature = "cuda")]
     let prepared_cuda_inputs = if !matches!(indicator_backend, Backend::CpuOnly) {
-        Some(
-            PreparedCudaIndicatorInputs::from_candles_on_device(
-                candles,
-                "close",
-                match indicator_backend {
-                    Backend::Auto { device_id }
-                    | Backend::GpuOnly { device_id }
-                    | Backend::GpuHybridKernel { device_id }
-                    | Backend::GpuKernel { device_id } => *device_id as usize,
-                    Backend::CpuOnly => 0,
-                },
-            )
-            .map_err(|e| e.to_string())?,
-        )
+        Some(prepared_cuda_inputs_for_source_hlc_on_device(
+            candles,
+            "close",
+            match indicator_backend {
+                Backend::Auto { device_id }
+                | Backend::GpuOnly { device_id }
+                | Backend::GpuHybridKernel { device_id }
+                | Backend::GpuKernel { device_id } => *device_id as usize,
+                Backend::CpuOnly => 0,
+            },
+        )?)
     } else {
         None
     };
@@ -4918,12 +4991,8 @@ fn run_vcet_optimization_gpu(
     let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let mut vidya_keys: Vec<(u16, u16)> = Vec::new();
     let mut ce_keys: Vec<u16> = Vec::new();
@@ -5268,20 +5337,17 @@ fn run_vcet_optimization_impl(
 
     #[cfg(feature = "cuda")]
     let prepared_cuda_inputs = if !matches!(indicator_backend, Backend::CpuOnly) {
-        Some(
-            PreparedCudaIndicatorInputs::from_candles_on_device(
-                candles,
-                &req.ma_source,
-                match indicator_backend {
-                    Backend::Auto { device_id }
-                    | Backend::GpuOnly { device_id }
-                    | Backend::GpuHybridKernel { device_id }
-                    | Backend::GpuKernel { device_id } => *device_id as usize,
-                    Backend::CpuOnly => 0,
-                },
-            )
-            .map_err(|e| e.to_string())?,
-        )
+        Some(prepared_cuda_inputs_for_source_hlc_on_device(
+            candles,
+            &req.ma_source,
+            match indicator_backend {
+                Backend::Auto { device_id }
+                | Backend::GpuOnly { device_id }
+                | Backend::GpuHybridKernel { device_id }
+                | Backend::GpuKernel { device_id } => *device_id as usize,
+                Backend::CpuOnly => 0,
+            },
+        )?)
     } else {
         None
     };
@@ -5579,8 +5645,7 @@ fn run_mkcs_optimization_gpu(
     let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
 
     let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
-            .map_err(|e| e.to_string())?;
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, "close", device_id as usize)?;
 
     let mut stddev_keys: Vec<u16> = fast_periods
         .iter()
@@ -5976,12 +6041,11 @@ fn run_kqsr_optimization_gpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let slow_seed = *slow_periods
         .first()
@@ -6326,7 +6390,7 @@ fn run_kqsr_optimization_cpu(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
@@ -6575,12 +6639,11 @@ fn run_carm_optimization_gpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let fast_rows = fast_periods.len();
     let row_major_len_fast = fast_rows
@@ -6916,7 +6979,7 @@ fn run_carm_optimization_cpu(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
@@ -7166,12 +7229,11 @@ fn run_kvdf_optimization_gpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_ohlcv_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let fast_rows = fast_periods.len();
     let slow_rows = slow_periods.len();
@@ -7550,7 +7612,7 @@ fn run_kvdf_optimization_cpu(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_ohlcv(candles, &req.ma_source)
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
@@ -7801,8 +7863,7 @@ fn run_cdmc_optimization_gpu(
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
 
     let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
-            .map_err(|e| e.to_string())?;
+        prepared_cuda_inputs_for_source_slice_on_device(candles, "close", device_id as usize)?;
 
     let mut dpo_keys: Vec<u16> = fast_periods
         .iter()
@@ -8196,7 +8257,7 @@ fn run_cdmc_optimization_cpu(
     let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
         None
     } else {
-        PreparedCudaIndicatorInputs::from_candles(candles, &req.ma_source).ok()
+        prepared_cuda_inputs_for_source_slice(candles, &req.ma_source)
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
@@ -12731,12 +12792,20 @@ mod tests {
             run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
                 .expect("kqsr fallback optimization");
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(res
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or("")
-            .contains("disabled"));
+        #[cfg(feature = "cuda")]
+        {
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+            assert!(res
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("disabled"));
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            assert!(res.backend_route.is_none());
+            assert!(res.backend_fallback_reason.is_none());
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

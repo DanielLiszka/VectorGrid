@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 default = []
-cuda = ["vector-ta/cuda"]
-cuda-backtest-kernel = ["cuda", "cust"]
+cuda = ["vector-ta/cuda", "dep:cust"]
+cuda-backtest-kernel = ["cuda"]
 cli = ["dep:clap"]
 
 [dependencies]

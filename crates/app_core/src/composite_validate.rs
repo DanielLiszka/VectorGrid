@@ -174,6 +174,36 @@ use crate::strategy_ir::StrategyProfileKind;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use ta_optimizer::ObjectiveKind;
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn prepared_cuda_inputs_for_source_hlc_on_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: usize,
+) -> Result<PreparedCudaIndicatorInputs, String> {
+    PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id,
+        &[crate::indicator_catalog::IndicatorInputKind::Ohlc],
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn prepared_cuda_inputs_for_source_ohlcv_on_device(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    device_id: usize,
+) -> Result<PreparedCudaIndicatorInputs, String> {
+    PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        ma_source,
+        device_id,
+        &[crate::indicator_catalog::IndicatorInputKind::Ohlcv],
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CompositeParams {
     pub fast_ma_type: String,
@@ -786,12 +816,9 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| format!("ASR prepared_cuda_inputs: {e}"))?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)
+            .map_err(|e| format!("ASR prepared_cuda_inputs: {e}"))?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &first.strategy, device_id)?;
 
@@ -1414,12 +1441,8 @@ fn compute_asr_gpu_walk_forward_stats_for_candidate(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &params.strategy, device_id)?;
     let periods = resolve_asr_periods(asr, params.fast_len, params.slow_len);
@@ -1716,12 +1739,8 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let kaufman =
         compute_asr_kaufman_stops_cuda_device(&prepared_cuda_inputs, &first.strategy, device_id)?;
     let fast_squeeze_sweep = compute_asr_ttm_squeeze_sweep_cuda_device(
@@ -2093,12 +2112,8 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
         &["upper_band", "upper", "up"],
@@ -2331,12 +2346,8 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let stddev_sweep =
         compute_mkcs_stddev_sweep_cuda_device(&prepared_cuda_inputs, min_stddev, max_stddev, 1)?;
     let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
@@ -2527,12 +2538,8 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let periods = resolve_mkcs_periods(mkcs, params.fast_len, params.slow_len);
     let stddev_sweep = compute_mkcs_stddev_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -2767,12 +2774,8 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let stddev_sweep =
         compute_mkcs_stddev_sweep_cuda_device(&prepared_cuda_inputs, min_stddev, max_stddev, 1)?;
     let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
@@ -3040,12 +3043,8 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let periods = resolve_rocb_periods(rocb, params.fast_len, params.slow_len);
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -3274,12 +3273,8 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
         &prepared_cuda_inputs,
         &["upper_band", "upper", "up"],
@@ -3658,12 +3653,8 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
     let first_valid_low =
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
 
     let mut vidya_lookup: HashMap<(u16, u16), (i32, usize)> =
@@ -3925,12 +3916,8 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let z_sweep = compute_vemr_zscore_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vemr,
@@ -4173,12 +4160,8 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let periods = resolve_vemr_periods(vemr, params.fast_len, params.slow_len);
     let z_sweep = compute_vemr_zscore_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -4468,12 +4451,8 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let z_sweep = compute_vemr_zscore_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vemr,
@@ -4895,12 +4874,8 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let (fast_squeeze_sweep, fast_momentum_sweep) = compute_vcc_fast_dual_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vcc,
@@ -5241,12 +5216,8 @@ fn compute_vcc_gpu_walk_forward_stats_for_candidate(
     let first_valid_source =
         first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let periods = resolve_vcc_periods(vcc, params.fast_len, params.slow_len);
     let fast_squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_device(
         &prepared_cuda_inputs,
@@ -5519,12 +5490,8 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
         ));
     }
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let fast_squeeze_sweep = compute_vcc_ttm_squeeze_sweep_cuda_device(
         &prepared_cuda_inputs,
         first_vcc,
@@ -6307,12 +6274,11 @@ fn try_prepare_kqsr_gpu_fixed_candidate_validation(
         .first()
         .ok_or_else(|| "KQSR validation fast period set is empty".to_string())?;
 
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let fast_rows = fast_periods.len();
     let slow_rows = slow_periods.len();
@@ -6630,12 +6596,11 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
     }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let mut fast_periods: Vec<u16> = finalists.iter().map(|cand| cand.fast_len).collect();
     let mut slow_periods: Vec<u16> = finalists.iter().map(|cand| cand.slow_len).collect();
@@ -7149,12 +7114,11 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
     let lr = compute_log_returns_f64(close);
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let mut fast_periods: Vec<u16> = req.candidates.iter().map(|cand| cand.fast_len).collect();
     fast_periods.sort_unstable();
@@ -7503,12 +7467,11 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
     }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let mut fast_periods: Vec<u16> = finalists.iter().map(|cand| cand.fast_len).collect();
     fast_periods.sort_unstable();
@@ -8006,12 +7969,11 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
     }
     let first_valid_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_ohlcv_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     let runtime = prepared_cuda_inputs.runtime();
 
     let mut keltner_upper_row_major: Vec<f32> = Vec::with_capacity(finalists.len() * n);
@@ -8337,12 +8299,11 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
     }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_ohlcv_on_device(
         candles,
         &req.ma_source,
         device_id as usize,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let shared = compute_kvdf_shared_signals(
         candles,
@@ -8850,9 +8811,13 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
     }
     let first_valid_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        "close",
+        device_id as usize,
+        &[crate::indicator_catalog::IndicatorInputKind::Slice],
+    )
+    .map_err(|e| e.to_string())?;
 
     let total = finalists.len();
     let mut dpo_row_major: Vec<f32> = Vec::with_capacity(total * n);
@@ -9129,9 +9094,13 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
     let lr = compute_log_returns_f64(close);
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs =
-        PreparedCudaIndicatorInputs::from_candles_on_device(candles, "close", device_id as usize)
-            .map_err(|e| e.to_string())?;
+    let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device_for_input_kinds(
+        candles,
+        "close",
+        device_id as usize,
+        &[crate::indicator_catalog::IndicatorInputKind::Slice],
+    )
+    .map_err(|e| e.to_string())?;
 
     let total = req.candidates.len();
     let mut dpo_row_major: Vec<f32> = Vec::with_capacity(total * n);
