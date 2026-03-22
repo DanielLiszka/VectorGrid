@@ -144,4 +144,27 @@ mod tests {
             "RegimeHybridCpu"
         );
     }
+
+    #[test]
+    fn breakout_precedence_wins_over_regime_and_trend() {
+        let mut strategy = StrategyConfig::default();
+        strategy.trend_quality_enable = true;
+        strategy.regime_hybrid_enable = true;
+        strategy.breakout_momentum_enable = true;
+        assert_eq!(
+            composite_profile_from_strategy(&strategy),
+            StrategyProfileKind::BreakoutMomentum
+        );
+    }
+
+    #[test]
+    fn regime_precedence_wins_over_trend() {
+        let mut strategy = StrategyConfig::default();
+        strategy.trend_quality_enable = true;
+        strategy.regime_hybrid_enable = true;
+        assert_eq!(
+            composite_profile_from_strategy(&strategy),
+            StrategyProfileKind::RegimeHybrid
+        );
+    }
 }

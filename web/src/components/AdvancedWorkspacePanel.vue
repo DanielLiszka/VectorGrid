@@ -5,11 +5,13 @@ import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { applyRecommendedOptimizationDefaults } from '../services/recommendedOptimizationDefaults'
 import { useAdvancedStore, type AdvancedOption } from '../stores/advancedStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useStrategyStore } from '../stores/strategyStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { describeStrategyOptimizationCapabilities } from '../utils/strategyOptimizationCapabilities'
 
 const advancedStore = useAdvancedStore()
 const optimizeStore = useOptimizeStore()
+const strategyStore = useStrategyStore()
 const workflowStore = useWorkflowStore()
 const {
   maSource,
@@ -47,7 +49,14 @@ const includeAllDraft = ref('false')
 const exportPathDraft = ref('')
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'advanced')
-const strategyCapabilities = computed(() => describeStrategyOptimizationCapabilities(optimizeStore.strategyKind))
+const strategyCapabilities = computed(() => describeStrategyOptimizationCapabilities(
+  optimizeStore.strategyKind,
+  {
+    requestedBackend: optimizeStore.backend,
+    trendUseAdx: strategyStore.trendUseAdx,
+    breakoutUseAdx: strategyStore.breakoutUseAdx,
+  },
+))
 const showModeControl = computed(() => strategyCapabilities.value.usesGlobalMode)
 const showHeatmapControl = computed(() => strategyCapabilities.value.supportsHeatmap)
 const showTopKControl = computed(() => strategyCapabilities.value.supportsTopK)

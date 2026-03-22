@@ -788,6 +788,46 @@ describe('optimizeRequestBuilder', () => {
     })
   })
 
+  const compositeDataMeta = {
+    has_open: true,
+    has_high: true,
+    has_low: true,
+    has_close: true,
+    has_volume: true,
+  }
+
+  function buildCompositeDoubleMaRequest(
+    strategyKind: 'CompositeTrend' | 'RegimeHybrid' | 'BreakoutMomentum',
+    overrides: Record<string, unknown> = {},
+  ) {
+    return buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: strategyKind,
+        data_id: `data-${strategyKind}`,
+        current_data_meta: compositeDataMeta,
+      },
+      backend: 'GpuKernel',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+      exportAllCsvPath: '',
+      trendUseAdx: false,
+      breakoutUseAdx: false,
+      ...overrides,
+    })
+  }
+
   it('builds a CompositeTrend request through the double-MA builder path with GPU kernel when ADX is off', () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -1065,6 +1105,169 @@ describe('optimizeRequestBuilder', () => {
     expect((trendReq as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
     expect((regimeReq as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
     expect((breakoutReq as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
+    expect((trendReq as Record<string, unknown>).heatmap_bins).toBe(64)
+    expect((trendReq as Record<string, unknown>).top_k).toBe(20)
+    expect((trendReq as Record<string, unknown>).include_all).toBe(false)
+  })
+
+  it('still allows include-all and large top-k on CpuOnly composite requests', () => {
+    const req = buildCompositeDoubleMaRequest('CompositeTrend', {
+      backend: 'CpuOnly',
+      topK: '257',
+      includeAll: 'true',
+      heatmapBins: '64',
+    })
+
+    expect((req as Record<string, unknown>).backend).toEqual({ backend: 'CpuOnly' })
+    expect((req as Record<string, unknown>).top_k).toBe(257)
+    expect((req as Record<string, unknown>).include_all).toBe(true)
+    expect((req as Record<string, unknown>).heatmap_bins).toBe(64)
+  })
+
+  it('uses route-aware guardrails so hybrid composite requests can keep kaufman-stop and execution overlays', () => {
+    const req = buildCompositeDoubleMaRequest('CompositeTrend', {
+      trendUseAdx: true,
+      exitMode: 'kaufman_stop',
+      cooldownBars: '3',
+      signalPersistenceBars: '2',
+    })
+
+    expect(req).toBeTruthy()
+    expect((req as Record<string, unknown>).backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+  })
+
+  it('makes exportAllCsvPath follow the composite route target instead of the requested GPU token', () => {
+    const kernelReq = buildCompositeDoubleMaRequest('CompositeTrend', {
+      trendUseAdx: false,
+      exportAllCsvPath: 'trend.csv',
+    })
+    const hybridReq = () => buildCompositeDoubleMaRequest('CompositeTrend', {
+      trendUseAdx: true,
+      exportAllCsvPath: 'trend-adx.csv',
+    })
+    const regimeReq = () => buildCompositeDoubleMaRequest('RegimeHybrid', {
+      exportAllCsvPath: 'regime.csv',
+    })
+    const cpuReq = () => buildCompositeDoubleMaRequest('CompositeTrend', {
+      backend: 'CpuOnly',
+      exportAllCsvPath: 'trend-cpu.csv',
+    })
+
+    expect(kernelReq).toBeTruthy()
+    expect((kernelReq as Record<string, unknown>).export_all_csv_path).toBe('trend.csv')
+    expect(hybridReq).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+    expect(regimeReq).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+    expect(cpuReq).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+  })
+
+  it('resolves Auto on the composite trio to the current target route preview', () => {
+    const trendKernel = buildCompositeDoubleMaRequest('CompositeTrend', {
+      backend: 'Auto',
+      trendUseAdx: false,
+    })
+    const trendHybrid = buildCompositeDoubleMaRequest('CompositeTrend', {
+      backend: 'Auto',
+      trendUseAdx: true,
+    })
+    const regimeHybrid = buildCompositeDoubleMaRequest('RegimeHybrid', {
+      backend: 'Auto',
+    })
+    const breakoutKernel = buildCompositeDoubleMaRequest('BreakoutMomentum', {
+      backend: 'Auto',
+      breakoutUseAdx: false,
+    })
+    const breakoutHybrid = buildCompositeDoubleMaRequest('BreakoutMomentum', {
+      backend: 'Auto',
+      breakoutUseAdx: true,
+    })
+
+    expect((trendKernel as Record<string, unknown>).backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect((trendHybrid as Record<string, unknown>).backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+    expect((regimeHybrid as Record<string, unknown>).backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+    expect((breakoutKernel as Record<string, unknown>).backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+    expect((breakoutHybrid as Record<string, unknown>).backend).toEqual({ backend: 'GpuHybridKernel', device_id: 0 })
+  })
+
+  it('applies the kernel topK preflight only when the resolved route stays on the kernel path', () => {
+    const kernelReq = () => buildCompositeDoubleMaRequest('CompositeTrend', {
+      trendUseAdx: false,
+      topK: '257',
+    })
+    const hybridReq = buildCompositeDoubleMaRequest('CompositeTrend', {
+      trendUseAdx: true,
+      topK: '257',
+    })
+    const cpuReq = buildCompositeDoubleMaRequest('CompositeTrend', {
+      backend: 'CpuOnly',
+      topK: '257',
+    })
+
+    expect(kernelReq).toThrow(/topK <= 256/)
+    expect(hybridReq).toBeTruthy()
+    expect(cpuReq).toBeTruthy()
+  })
+
+  it('accepts canonicalized MA support keys without cloning the whole support map', () => {
+    const req = buildCompositeDoubleMaRequest('CompositeTrend', {
+      backend: 'Auto',
+      maSupportMap: {
+        SMA: { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+        ' EMA ': { supports_cpu: true, supports_cuda: true, supports_cuda_kernel: true },
+      },
+    })
+
+    expect(req).toBeTruthy()
+    expect((req as Record<string, unknown>).backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
+  })
+
+  it('keeps trade_on_next_bar fixed to true on the optimize request path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-trade-next',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'Auto',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      tradeOnNext: false,
+    })
+
+    expect((req as Record<string, unknown>).strategy).toMatchObject({ trade_on_next_bar: true })
+  })
+
+  it('still accepts the legacy GpuOnly alias on the double-MA request path', () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-gpu-only',
+        current_data_meta: { has_close: true },
+      },
+      backend: 'GpuOnly',
+      fastStart: '5',
+      fastEnd: '15',
+      fastStep: '5',
+      slowStart: '20',
+      slowEnd: '40',
+      slowStep: '10',
+      fastMaType: 'sma',
+      slowMaType: 'ema',
+      maSource: 'close',
+      objective: 'Sharpe',
+      mode: 'Grid',
+      topK: '20',
+      includeAll: 'false',
+      heatmapBins: '64',
+    })
+
+    expect((req as Record<string, unknown>).backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
   })
 
   it('builds a VCC request through the composite CPU builder path', () => {

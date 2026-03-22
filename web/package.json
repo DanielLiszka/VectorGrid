@@ -17,6 +17,8 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json",
     "parity": "node ./scripts/check-tauri-parity.mjs",
     "test": "vitest run",
+    "bench:request-builder": "vitest run src/services/optimizeRequestBuilder.bench.test.ts",
+    "bench:request-builder:compare": "node ./scripts/compare-request-builder-bench.mjs",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview"
   },

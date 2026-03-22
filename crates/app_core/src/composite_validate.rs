@@ -581,7 +581,6 @@ fn composite_candidate_index_map(
     Ok(out)
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn sanitize_gpu_cscv_slices(slices: usize) -> usize {
     let s = slices.clamp(4, 32);
     if (s & 1) == 0 {

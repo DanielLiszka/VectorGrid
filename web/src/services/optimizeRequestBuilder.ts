@@ -1,7 +1,15 @@
-import { countF64RangeValues, countPairsFastLtSlow, expandRangeU16Like, num } from '../utils/core/ranges'
+import { countF64RangeValues, countPairsFastLtSlowRanges, num, parseU16LikeRange } from '../utils/core/ranges'
 import { validateCandleFieldRequirements } from '../utils/core/candleFields'
+import {
+  isCompositeProfileKind,
+  resolveCompositeProfileRoute,
+  type CompositeProfileRoutePreview,
+} from '../strategies/compositeProfileGpuPolicy'
 
 const DEFAULT_STARTING_EQUITY = 10_000
+const MAX_HEATMAP_BINS = 512
+const MAX_INCLUDE_ALL_ROWS = 2_000_000
+const MAX_GPU_KERNEL_TOP_K = 256
 
 export interface OptimizeBuildContext {
   strategy_kind?: unknown
@@ -493,7 +501,9 @@ function maSweepVariantCount(value: Record<string, [number, number, number]> | n
   return Math.max(1, Math.floor(count))
 }
 
-function normalizeBackend(value: unknown): 'Auto' | 'CpuOnly' | 'GpuKernel' {
+type NormalizedBackend = 'Auto' | 'CpuOnly' | 'GpuKernel'
+
+function normalizeBackend(value: unknown): NormalizedBackend {
   const backend = normalizeText(value)
   if (backend === 'CpuOnly') return 'CpuOnly'
   if (backend === 'GpuOnly') return 'GpuKernel'
@@ -517,11 +527,31 @@ function isDoubleMaOverlayKind(kind: string): boolean {
     || kind === 'BreakoutMomentum'
 }
 
+function resolveCompositeRoutePreview(
+  kind: string,
+  backend: NormalizedBackend,
+  inputs: Pick<DoubleMaOptimizationBuildInputs, 'trendUseAdx' | 'breakoutUseAdx'>,
+): CompositeProfileRoutePreview | null {
+  if (!isCompositeProfileKind(kind)) return null
+  return resolveCompositeProfileRoute(kind, backend, {
+    trendUseAdx: normalizeBoolean(inputs.trendUseAdx),
+    breakoutUseAdx: normalizeBoolean(inputs.breakoutUseAdx),
+  })
+}
+
 function resolveDoubleMaBackendPayload(
   kind: string,
-  backend: 'Auto' | 'CpuOnly' | 'GpuKernel',
+  backend: NormalizedBackend,
   strategy: Record<string, unknown>,
+  compositeRoute: CompositeProfileRoutePreview | null = null,
 ): Record<string, unknown> {
+  if (compositeRoute) {
+    if (compositeRoute.targetBackend === 'CpuOnly') return { backend: 'CpuOnly' }
+    return {
+      backend: compositeRoute.targetBackend,
+      device_id: 0,
+    }
+  }
   if (backend === 'CpuOnly') return { backend: 'CpuOnly' }
 
   const useHybrid =
@@ -580,38 +610,88 @@ interface MovingAverageSupportEntry {
   supports_cuda_kernel?: unknown
 }
 
-function normalizeMovingAverageSupportMap(raw: unknown): Record<string, MovingAverageSupportEntry> {
-  if (!raw || typeof raw !== 'object') return {}
-  const out: Record<string, MovingAverageSupportEntry> = {}
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    const id = normalizeText(key)
-    if (!id || !value || typeof value !== 'object') continue
-    out[id] = value as MovingAverageSupportEntry
+interface MovingAverageSupportLookup {
+  hasAny(): boolean
+  get(id: string): MovingAverageSupportEntry | null
+}
+
+function canonicalizeMovingAverageId(value: unknown): string {
+  return normalizeText(value).toLowerCase()
+}
+
+function createMovingAverageSupportLookup(raw: unknown): MovingAverageSupportLookup {
+  const map = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  const cache = new Map<string, MovingAverageSupportEntry | null>()
+  return {
+    hasAny(): boolean {
+      return !!map && Object.keys(map).length > 0
+    },
+    get(id: string): MovingAverageSupportEntry | null {
+      const canonicalId = canonicalizeMovingAverageId(id)
+      if (!canonicalId || !map) return null
+      if (cache.has(canonicalId)) return cache.get(canonicalId) ?? null
+
+      let resolved: MovingAverageSupportEntry | null = null
+      for (const [key, value] of Object.entries(map)) {
+        if (canonicalizeMovingAverageId(key) !== canonicalId) continue
+        if (value && typeof value === 'object') {
+          resolved = value as MovingAverageSupportEntry
+        }
+        break
+      }
+      cache.set(canonicalId, resolved)
+      return resolved
+    },
   }
-  return out
 }
 
-function hasMovingAverageSupportData(map: Record<string, MovingAverageSupportEntry>): boolean {
-  return Object.keys(map).length > 0
-}
-
-function maSupportsCpu(map: Record<string, MovingAverageSupportEntry>, id: string): boolean {
-  const row = map[id]
+function maSupportsCpu(lookup: MovingAverageSupportLookup, id: string): boolean {
+  const row = lookup.get(id)
   return !!row?.supports_cpu
 }
 
-function maSupportsCuda(map: Record<string, MovingAverageSupportEntry>, id: string): boolean {
-  const row = map[id]
+function maSupportsCuda(lookup: MovingAverageSupportLookup, id: string): boolean {
+  const row = lookup.get(id)
   return !!row?.supports_cuda
 }
 
-function maSupportsKernel(map: Record<string, MovingAverageSupportEntry>, id: string): boolean {
-  const row = map[id]
+function maSupportsKernel(lookup: MovingAverageSupportLookup, id: string): boolean {
+  const row = lookup.get(id)
   return !!row?.supports_cuda_kernel
 }
 
-function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRaw: unknown): Record<string, unknown> {
-  const kind = normalizeStrategyKindRaw(kindRaw)
+function multiplyClamped(values: number[], limit: number): number {
+  let product = 1
+  for (const value of values) {
+    const next = Math.max(1, Math.floor(value))
+    if (!Number.isFinite(next)) return limit + 1
+    product *= next
+    if (!Number.isFinite(product) || product > limit) return limit + 1
+  }
+  return Math.max(1, Math.floor(product))
+}
+
+interface CommonStrategyConfigFields {
+  longOnly: boolean
+  allowFlip: boolean
+  costPreset: string
+  startingEquity: number
+  feeBps: number
+  spreadBps: number
+  slippageBps: number
+  commission: number
+  epsRel: number
+  stopLossPct: number | null
+  takeProfitPct: number | null
+  cooldownBars: number
+  signalPersistenceBars: number
+  exitMode: string
+  kaufmanStopPeriod: number
+  kaufmanStopMult: number
+  kaufmanStopMaType: string
+}
+
+function parseCommonStrategyConfigFields(inputs: StrategyConfigBuildInputs): CommonStrategyConfigFields {
   const feeBps = Math.max(0, num(inputs.feeBps, 0))
   const spreadBps = Math.max(0, num(inputs.spreadBps, 0))
   const slippageBps = Math.max(0, num(inputs.slippageBps, 0))
@@ -626,6 +706,49 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
   const kaufmanStopPeriod = Math.max(1, Math.floor(num(inputs.kaufmanStopPeriod, 22)))
   const kaufmanStopMult = Math.max(0.0001, num(inputs.kaufmanStopMult, 2.0))
   const kaufmanStopMaType = normalizeText(inputs.kaufmanStopMaType || 'sma') || 'sma'
+
+  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error('total cost must be in [0, 1).')
+  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error('eps_rel must be >= 0.')
+  if (!Number.isFinite(cooldownBars) || cooldownBars < 0 || cooldownBars > 65535) {
+    throw new Error('cooldown bars must be in [0, 65535].')
+  }
+  if (!Number.isFinite(signalPersistenceBars) || signalPersistenceBars < 1 || signalPersistenceBars > 65535) {
+    throw new Error('signal persistence bars must be in [1, 65535].')
+  }
+  if (!(exitMode === 'cross' || exitMode === 'kaufman_stop')) {
+    throw new Error("exit mode must be 'cross' or 'kaufman_stop'.")
+  }
+  if (!Number.isFinite(kaufmanStopMult) || kaufmanStopMult <= 0) {
+    throw new Error('kaufman-stop multiplier must be > 0.')
+  }
+
+  return {
+    longOnly: normalizeBoolean(inputs.longOnly),
+    allowFlip: normalizeBoolean(inputs.allowFlip),
+    costPreset: normalizeText(inputs.costPreset || 'custom') || 'custom',
+    startingEquity,
+    feeBps,
+    spreadBps,
+    slippageBps,
+    commission,
+    epsRel,
+    stopLossPct,
+    takeProfitPct,
+    cooldownBars,
+    signalPersistenceBars,
+    exitMode,
+    kaufmanStopPeriod,
+    kaufmanStopMult,
+    kaufmanStopMaType,
+  }
+}
+
+function buildStrategyConfigFromInputs(
+  inputs: StrategyConfigBuildInputs,
+  kindRaw: unknown,
+  common: CommonStrategyConfigFields = parseCommonStrategyConfigFields(inputs),
+): Record<string, unknown> {
+  const kind = normalizeStrategyKindRaw(kindRaw)
 
   const trendQualityEnable = kind === 'CompositeTrend' || kind === 'RegimeHybrid'
   const trendQualityLinearregPeriod = Math.max(1, Math.floor(num(inputs.trendLrPeriod, 34)))
@@ -679,17 +802,6 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
   const slopeEfficiencyTrendEnable = kind === 'Set'
   const momentumTripleStackEnable = kind === 'Mts'
   const oscillatorReversionConfluenceEnable = kind === 'Orc'
-
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) throw new Error('total cost must be in [0, 1).')
-  if (!Number.isFinite(epsRel) || epsRel < 0) throw new Error('eps_rel must be >= 0.')
-  if (!Number.isFinite(cooldownBars) || cooldownBars < 0 || cooldownBars > 65535) {
-    throw new Error('cooldown bars must be in [0, 65535].')
-  }
-  if (!Number.isFinite(signalPersistenceBars) || signalPersistenceBars < 1 || signalPersistenceBars > 65535) {
-    throw new Error('signal persistence bars must be in [1, 65535].')
-  }
-  if (!(exitMode === 'cross' || exitMode === 'kaufman_stop')) throw new Error("exit mode must be 'cross' or 'kaufman_stop'.")
-  if (!Number.isFinite(kaufmanStopMult) || kaufmanStopMult <= 0) throw new Error('kaufman-stop multiplier must be > 0.')
   if (!Number.isFinite(trendQualityAngleMinDeg) || trendQualityAngleMinDeg <= 0) throw new Error('trend min angle must be > 0.')
   if (!Number.isFinite(trendQualityBbwMult) || trendQualityBbwMult <= 0) throw new Error('trend BB width multiplier must be > 0.')
   if (!Number.isFinite(trendQualityBbwMin) || trendQualityBbwMin < 0) throw new Error('trend min BB width must be >= 0.')
@@ -751,23 +863,24 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
   }
 
   return {
-    long_only: normalizeBoolean(inputs.longOnly),
-    allow_flip: normalizeBoolean(inputs.allowFlip),
+    long_only: common.longOnly,
+    allow_flip: common.allowFlip,
+    // The optimize request path currently keeps this fixed for parity with the existing runtime behavior.
     trade_on_next_bar: true,
-    cost_preset: normalizeText(inputs.costPreset || 'custom') || 'custom',
-    starting_equity: startingEquity,
-    fee_bps: feeBps,
-    spread_bps: spreadBps,
-    slippage_bps: slippageBps,
-    commission,
-    stop_loss_pct: stopLossPct,
-    take_profit_pct: takeProfitPct,
-    cooldown_bars: cooldownBars,
-    signal_persistence_bars: signalPersistenceBars,
-    exit_mode: exitMode,
-    kaufman_stop_period: kaufmanStopPeriod,
-    kaufman_stop_mult: kaufmanStopMult,
-    kaufman_stop_ma_type: kaufmanStopMaType,
+    cost_preset: common.costPreset,
+    starting_equity: common.startingEquity,
+    fee_bps: common.feeBps,
+    spread_bps: common.spreadBps,
+    slippage_bps: common.slippageBps,
+    commission: common.commission,
+    stop_loss_pct: common.stopLossPct,
+    take_profit_pct: common.takeProfitPct,
+    cooldown_bars: common.cooldownBars,
+    signal_persistence_bars: common.signalPersistenceBars,
+    exit_mode: common.exitMode,
+    kaufman_stop_period: common.kaufmanStopPeriod,
+    kaufman_stop_mult: common.kaufmanStopMult,
+    kaufman_stop_ma_type: common.kaufmanStopMaType,
     trend_quality_enable: trendQualityEnable,
     trend_quality_linearreg_period: trendQualityLinearregPeriod,
     trend_quality_angle_min_deg: trendQualityAngleMinDeg,
@@ -829,7 +942,7 @@ function buildStrategyConfigFromInputs(inputs: StrategyConfigBuildInputs, kindRa
     orc_stoch_fastk_period: 5,
     orc_stoch_fastd_period: 3,
     orc_willr_period: 14,
-    eps_rel: epsRel,
+    eps_rel: common.epsRel,
   }
 }
 
@@ -1113,9 +1226,9 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     Number(inputs.slowEnd),
     Number(inputs.slowStep),
   ]
-  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2])
-  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2])
-  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods)
+  const fastRange = parseU16LikeRange(fast[0], fast[1], fast[2])
+  const slowRange = parseU16LikeRange(slow[0], slow[1], slow[2])
+  const pairs = countPairsFastLtSlowRanges(fastRange, slowRange)
   if (!pairs) throw new Error('No valid parameter combinations (fast must be < slow).')
 
   const fastMaType = normalizeText(inputs.fastMaType)
@@ -1184,30 +1297,31 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   }
   const objective = normalizeText(inputs.objective || 'Sharpe') || 'Sharpe'
   const backend = normalizeBackend(inputs.backend)
-  const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
-  const hasMaSupportMap = hasMovingAverageSupportData(maSupportMap)
+  const compositeRoute = resolveCompositeRoutePreview(kind, backend, inputs)
+  const maSupport = createMovingAverageSupportLookup(inputs.maSupportMap)
+  const hasMaSupportMap = maSupport.hasAny()
   if (hasMaSupportMap) {
     if (backend === 'CpuOnly') {
-      if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
+      if (!maSupportsCpu(maSupport, fastMaType) || !maSupportsCpu(maSupport, slowMaType)) {
         throw new Error('CPU backend does not support one of the selected MA types. Choose a supported MA or switch backend.')
       }
     } else if (backend === 'GpuKernel') {
-      const okFast = maSupportsCpu(maSupportMap, fastMaType)
-        || maSupportsCuda(maSupportMap, fastMaType)
-        || maSupportsKernel(maSupportMap, fastMaType)
-      const okSlow = maSupportsCpu(maSupportMap, slowMaType)
-        || maSupportsCuda(maSupportMap, slowMaType)
-        || maSupportsKernel(maSupportMap, slowMaType)
+      const okFast = maSupportsCpu(maSupport, fastMaType)
+        || maSupportsCuda(maSupport, fastMaType)
+        || maSupportsKernel(maSupport, fastMaType)
+      const okSlow = maSupportsCpu(maSupport, slowMaType)
+        || maSupportsCuda(maSupport, slowMaType)
+        || maSupportsKernel(maSupport, slowMaType)
       if (!okFast || !okSlow) {
         throw new Error('GPU unified backend cannot run one of the selected MA types. Choose a supported MA or switch backend.')
       }
     } else {
-      const okFast = maSupportsCpu(maSupportMap, fastMaType)
-        || maSupportsCuda(maSupportMap, fastMaType)
-        || maSupportsKernel(maSupportMap, fastMaType)
-      const okSlow = maSupportsCpu(maSupportMap, slowMaType)
-        || maSupportsCuda(maSupportMap, slowMaType)
-        || maSupportsKernel(maSupportMap, slowMaType)
+      const okFast = maSupportsCpu(maSupport, fastMaType)
+        || maSupportsCuda(maSupport, fastMaType)
+        || maSupportsKernel(maSupport, fastMaType)
+      const okSlow = maSupportsCpu(maSupport, slowMaType)
+        || maSupportsCuda(maSupport, slowMaType)
+        || maSupportsKernel(maSupport, slowMaType)
       if (!okFast || !okSlow) {
         throw new Error('Auto backend cannot run the selected MA(s). Choose a period-based, single-output MA that supports CPU or CUDA.')
       }
@@ -1216,39 +1330,14 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   const topK = Math.max(0, Math.floor(num(inputs.topK, 0)))
   const includeAll = normalizeIncludeAll(inputs.includeAll)
   const heatmapBins = Math.max(0, Math.floor(num(inputs.heatmapBins, 0)))
-  if (heatmapBins > 512) throw new Error('heatmapBins must be <= 512.')
+  if (heatmapBins > MAX_HEATMAP_BINS) throw new Error(`heatmapBins must be <= ${MAX_HEATMAP_BINS}.`)
   const exportAllCsvPath = normalizeText(inputs.exportAllCsvPath)
   const mode = normalizeMode(inputs.mode, {
     includeAll,
     heatmapBins,
     exportAllCsvPath,
   })
-
-  const feeBps = Math.max(0, num(inputs.feeBps, 0))
-  const spreadBps = Math.max(0, num(inputs.spreadBps, 0))
-  const slippageBps = Math.max(0, num(inputs.slippageBps, 0))
-  const perSideBps = feeBps + slippageBps + (spreadBps / 2)
-  const commission = perSideBps / 10_000
-  if (!Number.isFinite(commission) || commission < 0 || commission >= 1) {
-    throw new Error('total cost must be in [0, 1).')
-  }
-  const startingEquity = normalizeStartingEquity(inputs.startingEquity)
-  const cooldownBars = Math.max(0, Math.floor(num(inputs.cooldownBars, 0)))
-  if (!Number.isFinite(cooldownBars) || cooldownBars < 0 || cooldownBars > 65535) {
-    throw new Error('cooldown bars must be in [0, 65535].')
-  }
-  const signalPersistenceBars = Math.max(1, Math.floor(num(inputs.signalPersistenceBars, 1)))
-  if (!Number.isFinite(signalPersistenceBars) || signalPersistenceBars < 1 || signalPersistenceBars > 65535) {
-    throw new Error('signal persistence bars must be in [1, 65535].')
-  }
-  const exitMode = normalizeText(inputs.exitMode || 'cross') || 'cross'
-  if (!(exitMode === 'cross' || exitMode === 'kaufman_stop')) {
-    throw new Error("exit mode must be 'cross' or 'kaufman_stop'.")
-  }
-  const kaufmanStopMult = Math.max(0.0001, num(inputs.kaufmanStopMult, 2.0))
-  if (!Number.isFinite(kaufmanStopMult) || kaufmanStopMult <= 0) {
-    throw new Error('kaufman-stop multiplier must be > 0.')
-  }
+  const common = parseCommonStrategyConfigFields(inputs)
 
   const fastMaParams = normalizeMaParams(inputs.fastMaParams)
   const slowMaParams = normalizeMaParams(inputs.slowMaParams)
@@ -1256,15 +1345,26 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   const slowMaParamSweeps = normalizeMaParamSweeps(inputs.slowMaParamSweeps)
   const fastVariantCount = maSweepVariantCount(fastMaParamSweeps)
   const slowVariantCount = maSweepVariantCount(slowMaParamSweeps)
-  const combos = pairs * fastVariantCount * slowVariantCount
-  if (includeAll && combos > 2_000_000) {
+  const combos = multiplyClamped([pairs, fastVariantCount, slowVariantCount], MAX_INCLUDE_ALL_ROWS)
+  if (includeAll && combos > MAX_INCLUDE_ALL_ROWS) {
     throw new Error(`includeAll=true would return ${combos} rows; disable it or reduce ranges/sweeps.`)
   }
 
-  const hasExecutionOverlays = cooldownBars > 0 || signalPersistenceBars > 1
+  const hasExecutionOverlays = common.cooldownBars > 0 || common.signalPersistenceBars > 1
+  const kernelRoute =
+    compositeRoute != null
+      ? compositeRoute.targetBackend === 'GpuKernel'
+      : backend === 'GpuKernel'
+  const exportAllAllowedRoute =
+    compositeRoute != null
+      ? compositeRoute.supportsExportAll
+      : backend === 'GpuKernel'
 
-  if (backend === 'GpuKernel') {
-    if (exitMode !== 'cross') {
+  if (kernelRoute) {
+    if (!includeAll && topK > MAX_GPU_KERNEL_TOP_K) {
+      throw new Error(`GPU (kernel) currently supports topK <= ${MAX_GPU_KERNEL_TOP_K} when includeAll=false.`)
+    }
+    if (common.exitMode !== 'cross') {
       throw new Error('GPU (kernel) currently supports exit mode = cross only.')
     }
     if (hasExecutionOverlays) {
@@ -1275,10 +1375,10 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
   if (exportAllCsvPath) {
     if (includeAll) throw new Error('exportAllCsvPath requires includeAll=false (stream export avoids huge RAM usage).')
     if (mode !== 'Grid') throw new Error('exportAllCsvPath requires mode=Grid.')
-    if (backend !== 'GpuKernel') {
-      throw new Error('exportAllCsvPath is currently supported only for the GPU unified backend.')
+    if (!exportAllAllowedRoute) {
+      throw new Error('exportAllCsvPath is currently supported only for the GPU kernel route.')
     }
-    if ((fastVariantCount * slowVariantCount) > 1) {
+    if (multiplyClamped([fastVariantCount, slowVariantCount], 1) > 1) {
       throw new Error('exportAllCsvPath is not supported when optimizing MA parameters. Disable MA param sweeps or export.')
     }
   }
@@ -1295,8 +1395,8 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     if (maxDrawdown != null) constraints.max_drawdown = maxDrawdown
   }
 
-  const strategy = buildStrategyConfigFromInputs(inputs, kind)
-  const backendPayload = resolveDoubleMaBackendPayload(kind, backend, strategy)
+  const strategy = buildStrategyConfigFromInputs(inputs, kind, common)
+  const backendPayload = resolveDoubleMaBackendPayload(kind, backend, strategy, compositeRoute)
   const gpuExecution = resolveDoubleMaGpuExecutionPolicy(backendPayload, mode)
   const dynamicStrategyIr =
     kind === 'DynamicDoubleMa' && inputs.dynamicStrategyIr && typeof inputs.dynamicStrategyIr === 'object' && !Array.isArray(inputs.dynamicStrategyIr)
@@ -1307,7 +1407,7 @@ export function buildDoubleMaOptimizationRequest(inputs: DoubleMaOptimizationBui
     strategy_kind: kind,
     backend: backendPayload,
     data_id: dataId,
-    starting_equity: startingEquity,
+    starting_equity: common.startingEquity,
     fast_range: fast,
     slow_range: slow,
     fast_ma_types: [fastMaType],
@@ -1384,16 +1484,16 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     Number(inputs.slowEnd),
     Number(inputs.slowStep),
   ]
-  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2])
-  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2])
-  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods)
+  const fastRange = parseU16LikeRange(fast[0], fast[1], fast[2])
+  const slowRange = parseU16LikeRange(slow[0], slow[1], slow[2])
+  const pairs = countPairsFastLtSlowRanges(fastRange, slowRange)
   if (!pairs) throw new Error('No valid parameter combinations (fast must be < slow).')
 
   const fastMaType = normalizeText(inputs.fastMaType)
   const slowMaType = normalizeText(inputs.slowMaType)
   if (!fastMaType) throw new Error('Select a fast MA type.')
   if (!slowMaType) throw new Error('Select a slow MA type.')
-  const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
+  const maSupport = createMovingAverageSupportLookup(inputs.maSupportMap)
   if (
     kind !== 'Asr'
     && kind !== 'Vcc'
@@ -1405,9 +1505,9 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     && kind !== 'Kvdf'
     && kind !== 'Mkcs'
     && kind !== 'Cdmc'
-    && hasMovingAverageSupportData(maSupportMap)
+    && maSupport.hasAny()
   ) {
-    if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
+    if (!maSupportsCpu(maSupport, fastMaType) || !maSupportsCpu(maSupport, slowMaType)) {
       throw new Error('Composite strategy is CPU-only and does not support one of the selected MA types.')
     }
   }
@@ -1467,12 +1567,12 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
   const objective = normalizeText(inputs.objective || 'Sharpe') || 'Sharpe'
   const topK = Math.max(0, Math.floor(num(inputs.topK, 0)))
   const includeAll = normalizeIncludeAll(inputs.includeAll)
-  if (includeAll && pairs > 2_000_000) {
+  if (includeAll && pairs > MAX_INCLUDE_ALL_ROWS) {
     throw new Error(`includeAll=true would return ${pairs} rows; disable it or reduce ranges.`)
   }
 
-  const startingEquity = normalizeStartingEquity(inputs.startingEquity)
-  const strategy = buildStrategyConfigFromInputs(inputs, kind)
+  const common = parseCommonStrategyConfigFields(inputs)
+  const strategy = buildStrategyConfigFromInputs(inputs, kind, common)
   const signalMode = normalizeCompositeSignalMode(inputs.compositeSignalMode)
   const backend = normalizeBackend(inputs.backend)
   const backendPayload = (
@@ -1811,7 +1911,7 @@ export function buildCompositeCpuOptimizationRequest(inputs: CompositeCpuOptimiz
     strategy_kind: kind,
     backend: backendPayload,
     data_id: dataId,
-    starting_equity: startingEquity,
+    starting_equity: common.startingEquity,
     fast_range: fast,
     slow_range: slow,
     fast_ma_types: [fastMaType],
@@ -1866,18 +1966,18 @@ export function buildCompositeMoOptimizationRequest(inputs: CompositeMoOptimizat
     Number(inputs.slowEnd),
     Number(inputs.slowStep),
   ]
-  const fastPeriods = expandRangeU16Like(fast[0], fast[1], fast[2])
-  const slowPeriods = expandRangeU16Like(slow[0], slow[1], slow[2])
-  const pairs = countPairsFastLtSlow(fastPeriods, slowPeriods)
+  const fastRange = parseU16LikeRange(fast[0], fast[1], fast[2])
+  const slowRange = parseU16LikeRange(slow[0], slow[1], slow[2])
+  const pairs = countPairsFastLtSlowRanges(fastRange, slowRange)
   if (!pairs) throw new Error('No valid parameter combinations (fast must be < slow).')
 
   const fastMaType = normalizeText(inputs.fastMaType)
   const slowMaType = normalizeText(inputs.slowMaType)
   if (!fastMaType) throw new Error('Select a fast MA type.')
   if (!slowMaType) throw new Error('Select a slow MA type.')
-  const maSupportMap = normalizeMovingAverageSupportMap(inputs.maSupportMap)
-  if (hasMovingAverageSupportData(maSupportMap)) {
-    if (!maSupportsCpu(maSupportMap, fastMaType) || !maSupportsCpu(maSupportMap, slowMaType)) {
+  const maSupport = createMovingAverageSupportLookup(inputs.maSupportMap)
+  if (maSupport.hasAny()) {
+    if (!maSupportsCpu(maSupport, fastMaType) || !maSupportsCpu(maSupport, slowMaType)) {
       throw new Error('Composite strategy is CPU-only and does not support one of the selected MA types.')
     }
   }
@@ -1885,7 +1985,8 @@ export function buildCompositeMoOptimizationRequest(inputs: CompositeMoOptimizat
   const maSource = normalizeText(inputs.maSource || 'close') || 'close'
   validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource)
 
-  const baseStrategy = buildStrategyConfigFromInputs(inputs, 'CompositeMo')
+  const common = parseCommonStrategyConfigFields(inputs)
+  const baseStrategy = buildStrategyConfigFromInputs(inputs, 'CompositeMo', common)
   const signalMode = normalizeCompositeSignalMode(inputs.compositeSignalMode)
   const maximize = normalizeText(inputs.objective || 'Sharpe') || 'Sharpe'
   const minimize = normalizeText(inputs.moObjectiveMin || 'MaxDrawdown') || 'MaxDrawdown'
@@ -1938,23 +2039,28 @@ export function buildCompositeMoOptimizationRequest(inputs: CompositeMoOptimizat
     ? buildCompositeMoSearchSpaceFromInputs(inputs)
     : parseCompositeMoSearchSpace(inputs.moSearchSpace)
 
-  const rawFastStep = Math.floor(num(inputs.fastStep, 1))
-  const rawSlowStep = Math.floor(num(inputs.slowStep, 1))
-  const fastStep = Math.max(1, rawFastStep)
-  const slowStep = Math.max(1, rawSlowStep)
-  const fastLow = Math.floor(fast[0])
-  const slowLow = Math.floor(slow[0])
-  const fastHigh = rawFastStep === 0 ? fastLow : Math.floor(fast[1])
-  const slowHigh = rawSlowStep === 0 ? slowLow : Math.floor(slow[1])
-  const fastDomain = { IntRange: { low: fastLow, high: fastHigh, step: fastStep, log: false } }
-  const slowDomain = { IntRange: { low: slowLow, high: slowHigh, step: slowStep, log: false } }
+  const fastDomain = {
+    IntRange: {
+      low: fastRange?.low ?? Math.floor(fast[0]),
+      high: fastRange?.high ?? Math.floor(fast[0]),
+      step: fastRange?.step ?? 1,
+      log: false,
+    },
+  }
+  const slowDomain = {
+    IntRange: {
+      low: slowRange?.low ?? Math.floor(slow[0]),
+      high: slowRange?.high ?? Math.floor(slow[0]),
+      step: slowRange?.step ?? 1,
+      log: false,
+    },
+  }
   const searchSpace = normalizeCompositeMoSearchSpace(space, fastDomain, slowDomain)
 
-  const startingEquity = normalizeStartingEquity(inputs.startingEquity)
   return {
     strategy_kind: 'CompositeMo',
     data_id: dataId,
-    starting_equity: startingEquity,
+    starting_equity: common.startingEquity,
     fast_ma_type: fastMaType,
     slow_ma_type: slowMaType,
     ma_source: maSource,

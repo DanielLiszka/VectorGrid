@@ -10,6 +10,7 @@ import {
 } from "vue";
 import { storeToRefs } from "pinia";
 import { useOptimizeStore, type OptimizeOption } from "../stores/optimizeStore";
+import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import {
@@ -44,6 +45,11 @@ import {
   type DynamicBuilderOperand,
   type DynamicDoubleMaBuilderState,
 } from "../strategies/dynamicDoubleMaBuilder";
+import {
+  isCompositeProfileKind,
+  normalizeCompositeRequestedBackend,
+  resolveCompositeProfileRoute,
+} from "../strategies/compositeProfileGpuPolicy";
 
 type MaSide = "fast" | "slow";
 interface MaParamUiState {
@@ -65,6 +71,7 @@ interface BuilderOption {
 }
 
 const optimizeStore = useOptimizeStore();
+const strategyStore = useStrategyStore();
 const workflowStore = useWorkflowStore();
 const {
   strategyKind,
@@ -153,8 +160,25 @@ const hasTauriRuntime = computed(() => tauriRuntimeAvailable());
 const strategyCapabilities = computed(() =>
   describeStrategyOptimizationCapabilities(
     strategyDraft.value || strategyKind.value,
+    {
+      requestedBackend: backendDraft.value || backend.value,
+      trendUseAdx: strategyStore.trendUseAdx,
+      breakoutUseAdx: strategyStore.breakoutUseAdx,
+    },
   ),
 );
+const compositeRoutePreview = computed(() => {
+  const kind = String(strategyDraft.value || strategyKind.value || "").trim();
+  if (!isCompositeProfileKind(kind)) return null;
+  return resolveCompositeProfileRoute(
+    kind,
+    normalizeCompositeRequestedBackend(backendDraft.value || backend.value),
+    {
+      trendUseAdx: strategyStore.trendUseAdx,
+      breakoutUseAdx: strategyStore.breakoutUseAdx,
+    },
+  );
+});
 const isDynamicDoubleMaKind = computed(
   () =>
     String(strategyDraft.value || strategyKind.value || "").trim() ===
@@ -320,9 +344,27 @@ function backendOptionDisplayLabel(option: OptimizeOption): string {
   return String(option.label || option.value || "").trim() || value;
 }
 
+function routeBackendLabel(
+  backendKind: "CpuOnly" | "GpuKernel" | "GpuHybridKernel",
+): string {
+  if (backendKind === "CpuOnly") return "CPU";
+  if (backendKind === "GpuHybridKernel") return "GPU hybrid";
+  return "GPU kernel";
+}
+
 const backendExecutionHint = computed(() => {
   if (!strategyCapabilities.value.usesGlobalBackend) {
     return strategyCapabilities.value.executionSummary;
+  }
+  const routePreview = compositeRoutePreview.value;
+  if (routePreview) {
+    if (routePreview.targetBackend === "CpuOnly") {
+      return "Composite route preview: current inputs resolve to the CPU route. Heatmap, Top-K, and include-all remain available; export-all does not.";
+    }
+    if (routePreview.targetBackend === "GpuHybridKernel") {
+      return "Composite route preview: current inputs resolve to the hybrid GPU route. Export-all stays disabled on hybrid execution.";
+    }
+    return "Composite route preview: current inputs resolve to the GPU kernel route.";
   }
   const backendKind = selectedBackend.value;
   if (backendKind === "CpuOnly") {
@@ -568,7 +610,11 @@ const optimizeSummaryChips = computed(() => {
   const presetLabel = compactSummaryLabel(
     optionLabelFor(presetOptionItems.value, presetValue, presetValue),
   );
-  const backendName = compactSummaryLabel(backendLabel(selectedBackend.value));
+  const backendName = compactSummaryLabel(
+    compositeRoutePreview.value
+      ? routeBackendLabel(compositeRoutePreview.value.targetBackend)
+      : backendLabel(selectedBackend.value),
+  );
   const pairs = String(pairsPreview.value || "").trim();
   if (strategyLabel) chips.push(`Strategy: ${strategyLabel}`);
   if (presetLabel) chips.push(`Preset: ${presetLabel}`);

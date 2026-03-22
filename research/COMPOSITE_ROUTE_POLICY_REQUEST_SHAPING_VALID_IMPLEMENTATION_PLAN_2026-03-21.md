@@ -2,6 +2,37 @@
 
 Date: 2026-03-21
 
+## Current Status
+
+Core phases 1 through 6 in this document have been implemented in the working
+tree.
+
+Verification completed after implementation:
+
+- frontend typecheck passed: `npm run typecheck`
+- frontend lint passed: `npm run lint`
+- request-builder benchmark harness added and executed:
+  `npm run bench:request-builder`
+  with a tinybench-backed JSON artifact at `target/request-builder-bench.json`
+  and refreshed baseline at `target/request-builder-bench-baseline.json`
+- targeted frontend tests passed:
+  `src/services/optimizeRequestBuilder.test.ts`,
+  `src/utils/strategyOptimizationCapabilities.test.ts`,
+  `src/strategies/compositeProfileGpuPolicy.test.ts`
+- Rust route-precedence test passed:
+  `cargo test -p ta_app_core composite_profile_route`
+- workflow gate passed:
+  `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`
+
+Verification note:
+
+- `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` completed
+  the workflow and benchmark runs but failed the criterion baseline check for
+  `double_ma/cpu/sma_sma/200k/small` at
+  `146.146592 ms` vs baseline `125.30684 ms`.
+  This remains a follow-up item outside the frontend-only checklist work in
+  this document.
+
 ## Purpose
 
 This document is the implementation-facing follow-up to
@@ -99,17 +130,17 @@ backend fallback behavior.
 
 ### Checklist
 
-- [ ] Add a shared composite requested-backend normalizer in
+- [x] Add a shared composite requested-backend normalizer in
       `web/src/strategies/compositeProfileGpuPolicy.ts`.
-- [ ] Add a composite route preview type in
+- [x] Add a composite route preview type in
       `web/src/strategies/compositeProfileGpuPolicy.ts`.
-- [ ] Keep the preview scoped to composite route policy only; do not claim it
+- [x] Keep the preview scoped to composite route policy only; do not claim it
       is the full runtime-effective backend.
-- [ ] Preserve alias support for `GpuOnly` and `GpuHybridKernel`.
-- [ ] Keep blank or unspecified backend behavior consistent with current
+- [x] Preserve alias support for `GpuOnly` and `GpuHybridKernel`.
+- [x] Keep blank or unspecified backend behavior consistent with current
       product defaults unless a separate UI-default change is intentionally
       approved.
-- [ ] Do not serialize any new preview-only fields into the backend request.
+- [x] Do not serialize any new preview-only fields into the backend request.
 
 ## Phase 2: Route-Aware Guardrails in `optimizeRequestBuilder.ts`
 
@@ -148,18 +179,18 @@ the raw requested backend string. That is the main correctness drift to remove.
 
 ### Checklist
 
-- [ ] Add named frontend guardrail constants near the top of
+- [x] Add named frontend guardrail constants near the top of
       `web/src/services/optimizeRequestBuilder.ts`.
-- [ ] Resolve the composite route preview before kernel-only guardrails run in
+- [x] Resolve the composite route preview before kernel-only guardrails run in
       `buildDoubleMaOptimizationRequest`.
-- [ ] Make kernel-only overlay restrictions use the resolved route target.
-- [ ] Make `exportAllCsvPath` use the resolved route target rather than the raw
+- [x] Make kernel-only overlay restrictions use the resolved route target.
+- [x] Make `exportAllCsvPath` use the resolved route target rather than the raw
       requested backend string.
-- [ ] Add frontend preflight for `topK > 256` when the resolved route is
+- [x] Add frontend preflight for `topK > 256` when the resolved route is
       kernel and `includeAll=false`.
-- [ ] Keep CPU heatmap support intact.
-- [ ] Keep CPU `topK` and `includeAll` support intact.
-- [ ] Keep legacy backend alias normalization intact during the transition.
+- [x] Keep CPU heatmap support intact.
+- [x] Keep CPU `topK` and `includeAll` support intact.
+- [x] Keep legacy backend alias normalization intact during the transition.
 
 ## Phase 3: Capability-Layer Correctness
 
@@ -199,21 +230,21 @@ The most important user-visible correctness fix is:
 
 ### Checklist
 
-- [ ] Add `Pit`, `Set`, `Mts`, `Orc`, and `Marrt` to
+- [x] Add `Pit`, `Set`, `Mts`, `Orc`, and `Marrt` to
       `StrategyOptimizationKind`.
-- [ ] Replace partial repeated double-MA-family checks with a shared family set.
-- [ ] Add optional composite route inputs to
+- [x] Replace partial repeated double-MA-family checks with a shared family set.
+- [x] Add optional composite route inputs to
       `describeStrategyOptimizationCapabilities(...)`.
-- [ ] Make `supportsExportAll` route-aware for the composite trio.
-- [ ] Keep `supportsHeatmap=true` for explicit `CpuOnly` requests on the
+- [x] Make `supportsExportAll` route-aware for the composite trio.
+- [x] Keep `supportsHeatmap=true` for explicit `CpuOnly` requests on the
       composite trio.
-- [ ] Keep `supportsTopK=true` for explicit `CpuOnly` requests on the
+- [x] Keep `supportsTopK=true` for explicit `CpuOnly` requests on the
       composite trio.
-- [ ] Keep `supportsIncludeAll=true` for explicit `CpuOnly` requests on the
+- [x] Keep `supportsIncludeAll=true` for explicit `CpuOnly` requests on the
       composite trio.
-- [ ] Update `web/src/components/AdvancedWorkspacePanel.vue` to pass
+- [x] Update `web/src/components/AdvancedWorkspacePanel.vue` to pass
       `requestedBackend`, `trendUseAdx`, and `breakoutUseAdx`.
-- [ ] Update `web/src/components/OptimizeWorkspacePanel.vue` to pass the same
+- [x] Update `web/src/components/OptimizeWorkspacePanel.vue` to pass the same
       route inputs where capability text is shown.
 
 ## Phase 4: Request-Builder Warm-Path Cleanup
@@ -238,18 +269,18 @@ hotspots, so they should remain surgical and parity-safe.
 
 ### Checklist
 
-- [ ] Add parsed integer-range helpers for the request builders.
-- [ ] Replace range expansion in `buildDoubleMaOptimizationRequest`.
-- [ ] Replace range expansion in `buildCompositeCpuOptimizationRequest`.
-- [ ] Replace range expansion in `buildCompositeMoOptimizationRequest`.
-- [ ] Reuse parsed ranges directly when building `CompositeMo` `IntRange`
+- [x] Add parsed integer-range helpers for the request builders.
+- [x] Replace range expansion in `buildDoubleMaOptimizationRequest`.
+- [x] Replace range expansion in `buildCompositeCpuOptimizationRequest`.
+- [x] Replace range expansion in `buildCompositeMoOptimizationRequest`.
+- [x] Reuse parsed ranges directly when building `CompositeMo` `IntRange`
       domains.
-- [ ] Replace full MA support-map cloning with a lookup-oriented helper.
-- [ ] Canonicalize MA IDs once for support lookups.
-- [ ] Add capped multiplication for combo guardrails.
-- [ ] Split common parsed execution/strategy fields from kind-specific parsing
+- [x] Replace full MA support-map cloning with a lookup-oriented helper.
+- [x] Canonicalize MA IDs once for support lookups.
+- [x] Add capped multiplication for combo guardrails.
+- [x] Split common parsed execution/strategy fields from kind-specific parsing
       in `buildStrategyConfigFromInputs`.
-- [ ] Keep the refactor surgical; do not rewrite per-kind strategy object
+- [x] Keep the refactor surgical; do not rewrite per-kind strategy object
       literals unless a later benchmark proves they remain material.
 
 ## Phase 5: `tradeOnNext` Cleanup
@@ -271,10 +302,10 @@ behavior change.
 
 ### Checklist
 
-- [ ] Document in code comments or nearby planning notes that
+- [x] Document in code comments or nearby planning notes that
       `trade_on_next_bar` is intentionally fixed to `true` on this path.
-- [ ] Add a test that makes the fixed `true` behavior explicit.
-- [ ] Do not wire `tradeOnNext` through to runtime behavior until backend
+- [x] Add a test that makes the fixed `true` behavior explicit.
+- [x] Do not wire `tradeOnNext` through to runtime behavior until backend
       semantics are separately confirmed.
 
 ## Phase 6: Regression Test Expansion
@@ -325,17 +356,17 @@ cleanup.
 
 ### Checklist
 
-- [ ] Add composite route-target matrix tests to
+- [x] Add composite route-target matrix tests to
       `web/src/services/optimizeRequestBuilder.test.ts`.
-- [ ] Add composite capability-route tests to
+- [x] Add composite capability-route tests to
       `web/src/utils/strategyOptimizationCapabilities.test.ts`.
-- [ ] Add tests for the missing overlay kinds in
+- [x] Add tests for the missing overlay kinds in
       `web/src/utils/strategyOptimizationCapabilities.test.ts`.
-- [ ] Add tests for `exportAllCsvPath` kernel-vs-hybrid behavior.
-- [ ] Add tests for `Auto` + composite route-target behavior.
-- [ ] Add tests that confirm CPU composite requests still support heatmap.
-- [ ] Add a test for fixed `trade_on_next_bar: true`.
-- [ ] Add optional precedence tests in
+- [x] Add tests for `exportAllCsvPath` kernel-vs-hybrid behavior.
+- [x] Add tests for `Auto` + composite route-target behavior.
+- [x] Add tests that confirm CPU composite requests still support heatmap.
+- [x] Add a test for fixed `trade_on_next_bar: true`.
+- [x] Add optional precedence tests in
       `crates/app_core/src/composite_profile_route.rs`.
 
 ## Gated but Valid Items
@@ -349,16 +380,46 @@ This is reasonable, but only after auditing current kind normalization,
 saved-state behavior, and the existing fallback-to-`DoubleMa` behavior in other
 frontend surfaces.
 
+Audit result:
+
+- The current repo still intentionally normalizes unknown or stale strategy
+  kinds to `DoubleMa` in multiple non-capability surfaces, including:
+  `web/src/services/optimizeRequestBuilder.ts`,
+  `web/src/services/analysisService.ts`,
+  `web/src/services/validationRequestBuilder.ts`,
+  `web/src/services/validationService.ts`
+- Because of that broader behavior, changing only the capability layer to
+  fail closed would create inconsistent UX between capability exposure,
+  request building, analysis, and validation.
+- A true fail-closed move needs a coordinated repo-wide strategy-kind
+  normalization change, plus migration review for saved state and restored run
+  history.
+
 ### Gated item 2: Strict Unknown Backend Rejection
 
 This is reasonable, but only after auditing all backend callers and preserving
 legacy aliases.
 
+Audit result:
+
+- The optimize store still normalizes unknown backend values to `CpuOnly` and
+  explicitly maps legacy `GpuOnly` and `GpuHybridKernel` to `GpuKernel` in
+  `web/src/stores/optimizeStore.ts`.
+- The optimize request builder preserves the same alias behavior and still
+  falls back to `CpuOnly` for unknown values in
+  `web/src/services/optimizeRequestBuilder.ts`.
+- Validation request/summary code still explicitly understands legacy backend
+  vocabulary and route summaries in
+  `web/src/services/validationRequestBuilder.ts`.
+- A strict unknown-backend rejection change would therefore require coordinated
+  updates across optimize-store restore paths, validation request building, and
+  legacy history/snapshot expectations before it is safe to enable.
+
 ### Gated checklist
 
-- [ ] Audit strategy kind normalization before changing unknown-capability
+- [x] Audit strategy kind normalization before changing unknown-capability
       behavior.
-- [ ] Audit backend caller vocabulary before making unknown backend tokens hard
+- [x] Audit backend caller vocabulary before making unknown backend tokens hard
       errors.
 
 ## Source-Guide Optional Items / Implement Last
@@ -370,6 +431,13 @@ complete.
 ### Optional item 1: Request-Builder Microbenchmark
 
 Useful for evidence, but not required to implement the core correctness fixes.
+
+Status:
+
+- Implemented as a diagnostic frontend benchmark harness in
+  `web/src/services/optimizeRequestBuilder.bench.test.ts`
+- Runnable via `npm run bench:request-builder`
+- Not currently wired into CI or perf gates
 
 ### Optional item 2: Property-Based Arithmetic Counter Tests
 
@@ -395,7 +463,7 @@ only with the active `double_ma` route owner in scope.
 
 ### Optional checklist
 
-- [ ] Add a request-builder benchmark harness if later prioritization needs it.
+- [x] Add a request-builder benchmark harness if later prioritization needs it.
 - [ ] Add property-based tests for arithmetic counters after the refactor lands.
 - [ ] Consider frozen capability tables only if reactive churn remains worth
       reducing.
@@ -432,45 +500,45 @@ written:
 
 ## Full Implementation Checklist
 
-- [ ] Create the shared composite route preview helper in
+- [x] Create the shared composite route preview helper in
       `web/src/strategies/compositeProfileGpuPolicy.ts`.
-- [ ] Keep the preview scoped to composite route policy, not full runtime
+- [x] Keep the preview scoped to composite route policy, not full runtime
       backend resolution.
-- [ ] Preserve legacy backend aliases while centralizing requested-backend
+- [x] Preserve legacy backend aliases while centralizing requested-backend
       normalization.
-- [ ] Resolve composite route preview before composite guardrails run in
+- [x] Resolve composite route preview before composite guardrails run in
       `web/src/services/optimizeRequestBuilder.ts`.
-- [ ] Convert kernel-only guardrails to use the resolved route target.
-- [ ] Convert `exportAllCsvPath` gating to use the resolved route target.
-- [ ] Add named constants for heatmap, include-all, and kernel `topK`
+- [x] Convert kernel-only guardrails to use the resolved route target.
+- [x] Convert `exportAllCsvPath` gating to use the resolved route target.
+- [x] Add named constants for heatmap, include-all, and kernel `topK`
       guardrails.
-- [ ] Add frontend `topK <= 256` kernel-route preflight.
-- [ ] Keep CPU heatmap support intact.
-- [ ] Expand `StrategyOptimizationKind` with the missing double-MA overlay
+- [x] Add frontend `topK <= 256` kernel-route preflight.
+- [x] Keep CPU heatmap support intact.
+- [x] Expand `StrategyOptimizationKind` with the missing double-MA overlay
       kinds.
-- [ ] Replace repeated double-MA-family checks with a shared family helper.
-- [ ] Add composite route inputs to
+- [x] Replace repeated double-MA-family checks with a shared family helper.
+- [x] Add composite route inputs to
       `describeStrategyOptimizationCapabilities(...)`.
-- [ ] Wire route inputs from `OptimizeWorkspacePanel.vue`.
-- [ ] Wire route inputs from `AdvancedWorkspacePanel.vue`.
-- [ ] Keep CPU composite-trio heatmap, `topK`, and `includeAll` capability
+- [x] Wire route inputs from `OptimizeWorkspacePanel.vue`.
+- [x] Wire route inputs from `AdvancedWorkspacePanel.vue`.
+- [x] Keep CPU composite-trio heatmap, `topK`, and `includeAll` capability
       support visible.
-- [ ] Replace range-array expansion with arithmetic range helpers across all
+- [x] Replace range-array expansion with arithmetic range helpers across all
       three builders.
-- [ ] Reuse parsed ranges for `CompositeMo` domain construction.
-- [ ] Replace full MA support-map cloning with a lookup-oriented helper.
-- [ ] Canonicalize MA IDs once in the support-lookup path.
-- [ ] Add capped multiplication for combo guardrails.
-- [ ] Split common strategy parsing from kind-specific strategy shaping.
-- [ ] Document the fixed `trade_on_next_bar: true` behavior.
-- [ ] Add a fixed-true `tradeOnNext` regression test.
-- [ ] Add route-target matrix tests for the composite trio.
-- [ ] Add `exportAllCsvPath` route-target tests.
-- [ ] Add `Auto` composite-route tests.
-- [ ] Add capability tests for the missing overlay kinds.
-- [ ] Add capability tests for composite `supportsExportAll`.
-- [ ] Add capability tests that keep CPU heatmap support visible.
-- [ ] Add optional precedence tests in
+- [x] Reuse parsed ranges for `CompositeMo` domain construction.
+- [x] Replace full MA support-map cloning with a lookup-oriented helper.
+- [x] Canonicalize MA IDs once in the support-lookup path.
+- [x] Add capped multiplication for combo guardrails.
+- [x] Split common strategy parsing from kind-specific strategy shaping.
+- [x] Document the fixed `trade_on_next_bar: true` behavior.
+- [x] Add a fixed-true `tradeOnNext` regression test.
+- [x] Add route-target matrix tests for the composite trio.
+- [x] Add `exportAllCsvPath` route-target tests.
+- [x] Add `Auto` composite-route tests.
+- [x] Add capability tests for the missing overlay kinds.
+- [x] Add capability tests for composite `supportsExportAll`.
+- [x] Add capability tests that keep CPU heatmap support visible.
+- [x] Add optional precedence tests in
       `crates/app_core/src/composite_profile_route.rs`.
-- [ ] Leave all optional items for last, and only after core correctness work is
+- [x] Leave all optional items for last, and only after core correctness work is
       merged or at least fully implemented.
