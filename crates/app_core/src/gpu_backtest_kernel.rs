@@ -790,29 +790,85 @@ struct KernelScratch {
 }
 
 #[derive(Default)]
+struct HostTransferScratchF32 {
+    pageable: Vec<f32>,
+    pinned: Option<LockedBuffer<f32>>,
+}
+
+impl HostTransferScratchF32 {
+    fn ensure_capacity(&mut self, len: usize) -> Result<(), String> {
+        if kernel_pinned_d2h_enabled() {
+            let needs_realloc = self
+                .pinned
+                .as_ref()
+                .map(|buf| buf.len() < len)
+                .unwrap_or(true);
+            if needs_realloc {
+                self.pinned = Some(
+                    unsafe { LockedBuffer::<f32>::uninitialized(len) }
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+        } else if self.pageable.capacity() < len {
+            self.pageable = alloc_uninit_copy(len);
+        }
+        Ok(())
+    }
+
+    fn copy_device_prefix_to_host<'a>(
+        &'a mut self,
+        src: &DeviceBuffer<f32>,
+        elems: usize,
+        stream: &Stream,
+    ) -> Result<&'a [f32], String> {
+        if elems == 0 {
+            return Ok(&[]);
+        }
+
+        if kernel_pinned_d2h_enabled() {
+            self.ensure_capacity(elems)?;
+            let pinned = self
+                .pinned
+                .as_mut()
+                .ok_or_else(|| "missing pinned host transfer scratch".to_string())?;
+            let bytes = elems
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or_else(|| "pinned device-to-host copy size overflow".to_string())?;
+            cu_result(unsafe {
+                cuda_sys::cuMemcpyDtoHAsync_v2(
+                    pinned.as_mut_ptr() as *mut c_void,
+                    src.as_device_ptr().as_raw(),
+                    bytes,
+                    stream.as_inner(),
+                )
+            })?;
+            stream.synchronize().map_err(|e| e.to_string())?;
+            return Ok(&pinned.as_slice()[..elems]);
+        }
+
+        copy_device_prefix_to_host_f32(src, &mut self.pageable, elems, stream)?;
+        stream.synchronize().map_err(|e| e.to_string())?;
+        Ok(&self.pageable[..elems])
+    }
+}
+
+#[derive(Default)]
 struct HostExactComboScratch {
     host_p_fast: Vec<i32>,
     host_p_slow: Vec<i32>,
     fast_precomputed_host_tile: Vec<f32>,
     slow_precomputed_host_tile: Vec<f32>,
-    tile_host_buf: Vec<f32>,
+    tile_host_buf: HostTransferScratchF32,
     tile_combo_indices: Vec<usize>,
     tile_pair_index_map: Vec<i32>,
     last_fast_period_upload: Option<PeriodUploadSignature>,
     last_slow_period_upload: Option<PeriodUploadSignature>,
+    last_pair_index_upload: Option<PeriodUploadSignature>,
 }
 
 impl HostExactComboScratch {
-    fn ensure_tile_host_buf_len(&mut self, len: usize) {
-        if self.tile_host_buf.capacity() < len {
-            self.tile_host_buf = alloc_uninit_copy(len);
-        } else {
-            unsafe {
-                // SAFETY: callers only use this buffer for device copies that fully overwrite
-                // the prefix before any host read.
-                self.tile_host_buf.set_len(len);
-            }
-        }
+    fn ensure_tile_host_buf_len(&mut self, len: usize) -> Result<(), String> {
+        self.tile_host_buf.ensure_capacity(len)
     }
 }
 
@@ -2767,6 +2823,11 @@ fn kernel_async_alloc_enabled() -> bool {
 #[inline]
 fn kernel_pinned_h2d_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_PINNED_H2D", true)
+}
+
+#[inline]
+fn kernel_pinned_d2h_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_PINNED_D2H", true)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4882,7 +4943,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     host_exact_combo.slow_precomputed_host_tile.clear();
     host_exact_combo.tile_combo_indices.clear();
     host_exact_combo.tile_pair_index_map.clear();
-    host_exact_combo.ensure_tile_host_buf_len(tile_out_cap);
+    host_exact_combo.ensure_tile_host_buf_len(tile_out_cap)?;
 
     let strategy_kernel = kernel_strategy_params(strategy);
     let flags = strategy_kernel.flags;
@@ -5177,10 +5238,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 .checked_mul(tile_metrics_stride)
                 .ok_or_else(|| "launch_pairs*metrics overflow".to_string())?;
             let mut pair_index_map_ptr: u64 = 0;
-            for (range_idx, &(eval_start_t, eval_end_t_raw)) in ranges.iter().enumerate() {
-                let eval_end_t = eval_end_t_raw.min(n);
-
-                if launch_pairs > 0 {
+            if launch_pairs > 0 {
+                let pair_index_upload_signature =
+                    period_upload_signature(&host_exact_combo.tile_pair_index_map);
+                if host_exact_combo.last_pair_index_upload != Some(pair_index_upload_signature) {
                     KernelScratch::ensure_len_i32(
                         &mut scratch.d_valid_pair_index,
                         launch_pairs,
@@ -5192,13 +5253,17 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .ok_or_else(|| "missing exact pair index buffer".to_string())?
                         .copy_from(&host_exact_combo.tile_pair_index_map)
                         .map_err(|e| e.to_string())?;
-                    pair_index_map_ptr = scratch
-                        .d_valid_pair_index
-                        .as_ref()
-                        .ok_or_else(|| "missing exact pair index buffer".to_string())?
-                        .as_device_ptr()
-                        .as_raw();
+                    host_exact_combo.last_pair_index_upload = Some(pair_index_upload_signature);
                 }
+                pair_index_map_ptr = scratch
+                    .d_valid_pair_index
+                    .as_ref()
+                    .ok_or_else(|| "missing exact pair index buffer".to_string())?
+                    .as_device_ptr()
+                    .as_raw();
+            }
+            for (range_idx, &(eval_start_t, eval_end_t_raw)) in ranges.iter().enumerate() {
+                let eval_end_t = eval_end_t_raw.min(n);
 
                 if launch_pairs > 0 {
                     unsafe {
@@ -5486,24 +5551,21 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 bt_stream.synchronize().map_err(|e| e.to_string())?;
 
                 if launch_pairs > 0 {
-                    copy_device_prefix_to_host_f32(
+                    let host_metrics = host_exact_combo.tile_host_buf.copy_device_prefix_to_host(
                         scratch
                             .d_tile
                             .as_ref()
                             .ok_or_else(|| "missing tile buffer".to_string())?,
-                        &mut host_exact_combo.tile_host_buf,
                         out_len,
                         bt_stream,
                     )?;
-                    bt_stream.synchronize().map_err(|e| e.to_string())?;
-
                     for (row_idx, &combo_idx) in
                         host_exact_combo.tile_combo_indices.iter().enumerate()
                     {
                         let src_base = row_idx * tile_metrics_stride;
                         out_metrics[range_idx * combo_count + combo_idx] =
                             decode_tm_flex_metrics_row(
-                                &host_exact_combo.tile_host_buf,
+                                host_metrics,
                                 src_base,
                                 tile_metrics_stride,
                             );
@@ -5522,6 +5584,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         scratch.clear_async(bt_stream)?;
         host_exact_combo.last_fast_period_upload = None;
         host_exact_combo.last_slow_period_upload = None;
+        host_exact_combo.last_pair_index_upload = None;
     }
 
     Ok(out_metrics)
@@ -5563,18 +5626,14 @@ fn recompute_optimization_result_finalists_with_full_gpu_pass(
         top_indices.push(idx);
     }
 
-    let finalist_fast_periods: Vec<u16> = finalists
-        .iter()
-        .map(|params| params.fast_len)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let finalist_slow_periods: Vec<u16> = finalists
-        .iter()
-        .map(|params| params.slow_len)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    let mut finalist_fast_periods: Vec<u16> =
+        finalists.iter().map(|params| params.fast_len).collect();
+    finalist_fast_periods.sort_unstable();
+    finalist_fast_periods.dedup();
+    let mut finalist_slow_periods: Vec<u16> =
+        finalists.iter().map(|params| params.slow_len).collect();
+    finalist_slow_periods.sort_unstable();
+    finalist_slow_periods.dedup();
 
     let recomputed = eval_double_ma_batch_gpu_kernel_impl(
         rt,
@@ -8241,6 +8300,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         rt.scratch.clear_async(&rt.stream)?;
         rt.host_exact_combo_scratch.last_fast_period_upload = None;
         rt.host_exact_combo_scratch.last_slow_period_upload = None;
+        rt.host_exact_combo_scratch.last_pair_index_upload = None;
     }
 
     if let (Some(t0), Some(p)) = (final_finalize_t0, pipeline_profile.as_mut()) {
@@ -8267,7 +8327,8 @@ fn optimize_double_ma_gpu_kernel_impl(
 mod tests {
     use super::{
         decode_tm_flex_metrics_row, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
-        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_h2d_enabled,
+        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_d2h_enabled,
+        kernel_pinned_h2d_enabled,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, search_metrics_count_for_optimization,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
@@ -8366,6 +8427,38 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", v),
             None => std::env::remove_var("VECTORBT_KERNEL_PINNED_H2D"),
+        }
+    }
+
+    #[test]
+    fn kernel_d2h_flag_defaults_to_enabled() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PINNED_D2H").ok();
+        std::env::remove_var("VECTORBT_KERNEL_PINNED_D2H");
+        assert!(kernel_pinned_d2h_enabled());
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_D2H", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PINNED_D2H"),
+        }
+    }
+
+    #[test]
+    fn kernel_d2h_flag_respects_false_tokens() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PINNED_D2H").ok();
+
+        std::env::set_var("VECTORBT_KERNEL_PINNED_D2H", "0");
+        assert!(!kernel_pinned_d2h_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_PINNED_D2H", "false");
+        assert!(!kernel_pinned_d2h_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_PINNED_D2H", "1");
+        assert!(kernel_pinned_d2h_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_D2H", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PINNED_D2H"),
         }
     }
 

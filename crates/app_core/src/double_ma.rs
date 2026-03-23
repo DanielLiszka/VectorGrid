@@ -13633,10 +13633,15 @@ mod tests {
             None,
         )
         .expect("cpu run for plain strategy");
-        let gpu = with_dynamic_strategy_opt_env(false, || {
-            run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
-                .expect("legacy gpu-kernel run for plain strategy")
-        });
+        let dynamic_opt_key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
+        let prev_dynamic_opt = std::env::var(dynamic_opt_key).ok();
+        std::env::remove_var(dynamic_opt_key);
+        let gpu = run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
+            .expect("legacy gpu-kernel run for plain strategy");
+        match prev_dynamic_opt {
+            Some(v) => std::env::set_var(dynamic_opt_key, v),
+            None => std::env::remove_var(dynamic_opt_key),
+        }
 
         assert_eq!(
             (cpu.best_params.fast_len, cpu.best_params.slow_len),
