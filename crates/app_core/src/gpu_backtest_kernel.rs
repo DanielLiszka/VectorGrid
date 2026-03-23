@@ -13,6 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
@@ -788,6 +789,49 @@ struct KernelScratch {
     d_valid_pair_index: Option<DeviceBuffer<i32>>,
 }
 
+#[derive(Default)]
+struct HostExactComboScratch {
+    host_p_fast: Vec<i32>,
+    host_p_slow: Vec<i32>,
+    fast_precomputed_host_tile: Vec<f32>,
+    slow_precomputed_host_tile: Vec<f32>,
+    tile_host_buf: Vec<f32>,
+    tile_combo_indices: Vec<usize>,
+    tile_pair_index_map: Vec<i32>,
+    last_fast_period_upload: Option<PeriodUploadSignature>,
+    last_slow_period_upload: Option<PeriodUploadSignature>,
+}
+
+impl HostExactComboScratch {
+    fn ensure_tile_host_buf_len(&mut self, len: usize) {
+        if self.tile_host_buf.capacity() < len {
+            self.tile_host_buf = alloc_uninit_copy(len);
+        } else {
+            unsafe {
+                // SAFETY: callers only use this buffer for device copies that fully overwrite
+                // the prefix before any host read.
+                self.tile_host_buf.set_len(len);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PeriodUploadSignature {
+    len: usize,
+    hash: u64,
+}
+
+#[inline]
+fn period_upload_signature(periods: &[i32]) -> PeriodUploadSignature {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    periods.hash(&mut hasher);
+    PeriodUploadSignature {
+        len: periods.len(),
+        hash: hasher.finish(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct PeriodSliceSignature {
     len: usize,
@@ -885,6 +929,7 @@ struct CudaKernelRuntime {
     stream: Stream,
     ma: VramMaComputer,
     scratch: KernelScratch,
+    host_exact_combo_scratch: HostExactComboScratch,
     launch_caps: DeviceLaunchCaps,
     resident_market: Option<ResidentMarketSeriesCache>,
     valid_pair_maps: HashMap<ValidPairMapSignature, CachedValidPairMap>,
@@ -924,6 +969,7 @@ impl CudaKernelRuntime {
             stream,
             ma: VramMaComputer::new(device_id),
             scratch: KernelScratch::default(),
+            host_exact_combo_scratch: HostExactComboScratch::default(),
             launch_caps,
             resident_market: None,
             valid_pair_maps: HashMap::new(),
@@ -4640,7 +4686,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let ma_source_key = normalize_market_source_key(ma_source);
     let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let (resident_market, ma, scratch) = (&mut rt.resident_market, &mut rt.ma, &mut rt.scratch);
+    let (resident_market, ma, scratch, host_exact_combo) = (
+        &mut rt.resident_market,
+        &mut rt.ma,
+        &mut rt.scratch,
+        &mut rt.host_exact_combo_scratch,
+    );
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -4825,13 +4876,13 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
-    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
-    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
-    let mut fast_precomputed_host_tile: Vec<f32> = Vec::new();
-    let mut slow_precomputed_host_tile: Vec<f32> = Vec::new();
-    let mut tile_host_buf: Vec<f32> = alloc_uninit_copy(tile_out_cap);
-    let mut tile_combo_indices: Vec<usize> = Vec::new();
-    let mut tile_pair_index_map: Vec<i32> = Vec::new();
+    host_exact_combo.host_p_fast.clear();
+    host_exact_combo.host_p_slow.clear();
+    host_exact_combo.fast_precomputed_host_tile.clear();
+    host_exact_combo.slow_precomputed_host_tile.clear();
+    host_exact_combo.tile_combo_indices.clear();
+    host_exact_combo.tile_pair_index_map.clear();
+    host_exact_combo.ensure_tile_host_buf_len(tile_out_cap);
 
     let strategy_kernel = kernel_strategy_params(strategy);
     let flags = strategy_kernel.flags;
@@ -4865,29 +4916,33 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             pf.max(1)
         };
 
-        host_p_fast.clear();
-        host_p_fast.extend(
+        host_exact_combo.host_p_fast.clear();
+        host_exact_combo.host_p_fast.extend(
             fast_periods[f_start..f_start + pf]
                 .iter()
                 .map(|&x| x as i32),
         );
-        let f_pad = host_p_fast.last().copied().unwrap_or(2);
-        host_p_fast.resize(pf_tile_tm, f_pad);
-        // Host period vectors are pageable and mutated per tile; keep this copy
-        // synchronous to avoid host-data races with async H2D semantics.
-        scratch
-            .d_fast_p
-            .as_mut()
-            .unwrap()
-            .copy_from(&host_p_fast)
-            .map_err(|e| e.to_string())?;
+        let f_pad = host_exact_combo.host_p_fast.last().copied().unwrap_or(2);
+        host_exact_combo.host_p_fast.resize(pf_tile_tm, f_pad);
+        let fast_upload_signature = period_upload_signature(&host_exact_combo.host_p_fast);
+        if host_exact_combo.last_fast_period_upload != Some(fast_upload_signature) {
+            // Host period vectors are pageable and mutated per tile; keep this copy
+            // synchronous to avoid host-data races with async H2D semantics.
+            scratch
+                .d_fast_p
+                .as_mut()
+                .unwrap()
+                .copy_from(&host_exact_combo.host_p_fast)
+                .map_err(|e| e.to_string())?;
+            host_exact_combo.last_fast_period_upload = Some(fast_upload_signature);
+        }
         if let Some(precomputed_fast) = fast_precomputed {
             pack_precomputed_rows_tm_with_padding(
                 precomputed_fast,
                 f_start,
                 pf,
                 fast_tm_rows,
-                &mut fast_precomputed_host_tile,
+                &mut host_exact_combo.fast_precomputed_host_tile,
             )?;
             scratch
                 .d_fast_ma_tm
@@ -4895,7 +4950,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 .ok_or_else(|| {
                     "internal error: missing d_fast_ma_tm for precomputed fast matrix".to_string()
                 })?
-                .copy_from(&fast_precomputed_host_tile)
+                .copy_from(&host_exact_combo.fast_precomputed_host_tile)
                 .map_err(|e| e.to_string())?;
         } else if use_fast_path {
             ma.compute_period_ma_tm_into(
@@ -4904,7 +4959,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 &vram_inputs,
                 n,
                 first_valid,
-                &host_p_fast[..fast_tm_rows],
+                &host_exact_combo.host_p_fast[..fast_tm_rows],
                 scratch.d_fast_p.as_ref().unwrap(),
                 scratch.d_fast_ma_tm.as_mut().unwrap(),
             )?;
@@ -4935,7 +4990,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 &vram_inputs,
                 n,
                 first_valid,
-                &host_p_fast,
+                &host_exact_combo.host_p_fast,
                 scratch.d_fast_p.as_ref().unwrap(),
                 scratch.d_fast_ma.as_mut().unwrap(),
             )?;
@@ -4978,29 +5033,33 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 ps.max(1)
             };
 
-            host_p_slow.clear();
-            host_p_slow.extend(
+            host_exact_combo.host_p_slow.clear();
+            host_exact_combo.host_p_slow.extend(
                 slow_periods[s_start..s_start + ps]
                     .iter()
                     .map(|&x| x as i32),
             );
-            let s_pad = host_p_slow.last().copied().unwrap_or(2);
-            host_p_slow.resize(ps_tile_tm, s_pad);
-            // Host period vectors are pageable and mutated per tile; keep this copy
-            // synchronous to avoid host-data races with async H2D semantics.
-            scratch
-                .d_slow_p
-                .as_mut()
-                .unwrap()
-                .copy_from(&host_p_slow)
-                .map_err(|e| e.to_string())?;
+            let s_pad = host_exact_combo.host_p_slow.last().copied().unwrap_or(2);
+            host_exact_combo.host_p_slow.resize(ps_tile_tm, s_pad);
+            let slow_upload_signature = period_upload_signature(&host_exact_combo.host_p_slow);
+            if host_exact_combo.last_slow_period_upload != Some(slow_upload_signature) {
+                // Host period vectors are pageable and mutated per tile; keep this copy
+                // synchronous to avoid host-data races with async H2D semantics.
+                scratch
+                    .d_slow_p
+                    .as_mut()
+                    .unwrap()
+                    .copy_from(&host_exact_combo.host_p_slow)
+                    .map_err(|e| e.to_string())?;
+                host_exact_combo.last_slow_period_upload = Some(slow_upload_signature);
+            }
             if let Some(precomputed_slow) = slow_precomputed {
                 pack_precomputed_rows_tm_with_padding(
                     precomputed_slow,
                     s_start,
                     ps,
                     slow_tm_rows,
-                    &mut slow_precomputed_host_tile,
+                    &mut host_exact_combo.slow_precomputed_host_tile,
                 )?;
                 scratch
                     .d_slow_ma_tm
@@ -5009,7 +5068,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         "internal error: missing d_slow_ma_tm for precomputed slow matrix"
                             .to_string()
                     })?
-                    .copy_from(&slow_precomputed_host_tile)
+                    .copy_from(&host_exact_combo.slow_precomputed_host_tile)
                     .map_err(|e| e.to_string())?;
             } else if use_fast_path {
                 ma.compute_period_ma_tm_into(
@@ -5018,7 +5077,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &vram_inputs,
                     n,
                     first_valid,
-                    &host_p_slow[..slow_tm_rows],
+                    &host_exact_combo.host_p_slow[..slow_tm_rows],
                     scratch.d_slow_p.as_ref().unwrap(),
                     scratch.d_slow_ma_tm.as_mut().unwrap(),
                 )?;
@@ -5049,7 +5108,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     &vram_inputs,
                     n,
                     first_valid,
-                    &host_p_slow,
+                    &host_exact_combo.host_p_slow,
                     scratch.d_slow_p.as_ref().unwrap(),
                     scratch.d_slow_ma.as_mut().unwrap(),
                 )?;
@@ -5096,8 +5155,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 ));
             }
 
-            tile_combo_indices.clear();
-            tile_pair_index_map.clear();
+            host_exact_combo.tile_combo_indices.clear();
+            host_exact_combo.tile_pair_index_map.clear();
             for (combo_idx, &(global_f, global_s)) in combo_period_indices.iter().enumerate() {
                 if global_f >= f_start
                     && global_f < f_start + pf
@@ -5106,14 +5165,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 {
                     let local_f = global_f - f_start;
                     let local_s = global_s - s_start;
-                    tile_combo_indices.push(combo_idx);
-                    tile_pair_index_map.push(
+                    host_exact_combo.tile_combo_indices.push(combo_idx);
+                    host_exact_combo.tile_pair_index_map.push(
                         i32::try_from(local_f.saturating_mul(ps).saturating_add(local_s))
                             .map_err(|_| "tile pair index exceeds i32::MAX".to_string())?,
                     );
                 }
             }
-            let launch_pairs = tile_combo_indices.len();
+            let launch_pairs = host_exact_combo.tile_combo_indices.len();
             let out_len = launch_pairs
                 .checked_mul(tile_metrics_stride)
                 .ok_or_else(|| "launch_pairs*metrics overflow".to_string())?;
@@ -5131,7 +5190,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .d_valid_pair_index
                         .as_mut()
                         .ok_or_else(|| "missing exact pair index buffer".to_string())?
-                        .copy_from(&tile_pair_index_map)
+                        .copy_from(&host_exact_combo.tile_pair_index_map)
                         .map_err(|e| e.to_string())?;
                     pair_index_map_ptr = scratch
                         .d_valid_pair_index
@@ -5432,17 +5491,19 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             .d_tile
                             .as_ref()
                             .ok_or_else(|| "missing tile buffer".to_string())?,
-                        &mut tile_host_buf,
+                        &mut host_exact_combo.tile_host_buf,
                         out_len,
                         bt_stream,
                     )?;
                     bt_stream.synchronize().map_err(|e| e.to_string())?;
 
-                    for (row_idx, &combo_idx) in tile_combo_indices.iter().enumerate() {
+                    for (row_idx, &combo_idx) in
+                        host_exact_combo.tile_combo_indices.iter().enumerate()
+                    {
                         let src_base = row_idx * tile_metrics_stride;
                         out_metrics[range_idx * combo_count + combo_idx] =
                             decode_tm_flex_metrics_row(
-                                &tile_host_buf,
+                                &host_exact_combo.tile_host_buf,
                                 src_base,
                                 tile_metrics_stride,
                             );
@@ -5459,6 +5520,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     if !kernel_persist_buffers_enabled() {
         ma.clear_cached_constants();
         scratch.clear_async(bt_stream)?;
+        host_exact_combo.last_fast_period_upload = None;
+        host_exact_combo.last_slow_period_upload = None;
     }
 
     Ok(out_metrics)
@@ -6410,9 +6473,6 @@ fn optimize_double_ma_gpu_kernel_impl(
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
-    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
-    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
-
     let constraints_on_device = constraints.is_some() && !include_all && select_v2_supported;
     let host_filter_mode = constraints.is_some() && !include_all && !constraints_on_device;
     let compact_valid_pair_output = should_use_compact_valid_pair_output(
@@ -6447,6 +6507,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         ),
         None => (0i32, f32::INFINITY),
     };
+    let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
+    let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
     let mut tile_host_buf: Vec<f32> = if include_all || export_enabled || host_filter_mode {
         alloc_uninit_copy(tile_out_cap)
     } else {
@@ -8177,6 +8239,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     if !kernel_persist_buffers_enabled() {
         rt.ma.clear_cached_constants();
         rt.scratch.clear_async(&rt.stream)?;
+        rt.host_exact_combo_scratch.last_fast_period_upload = None;
+        rt.host_exact_combo_scratch.last_slow_period_upload = None;
     }
 
     if let (Some(t0), Some(p)) = (final_finalize_t0, pipeline_profile.as_mut()) {
@@ -8259,6 +8323,18 @@ mod tests {
 
     fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol
+    }
+
+    #[test]
+    fn period_upload_signature_tracks_full_period_contents() {
+        let a = super::period_upload_signature(&[5, 10, 10]);
+        let b = super::period_upload_signature(&[5, 10, 10]);
+        let c = super::period_upload_signature(&[5, 10, 11]);
+        let d = super::period_upload_signature(&[5, 10]);
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
     }
 
     #[test]

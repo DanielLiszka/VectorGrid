@@ -6,9 +6,9 @@ use crate::composite_validate::{
 };
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
-    compute_combined_regime_filter, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
-    resolve_alma_params_for_side, validate_ma_kind, validate_strategy_cfg, Backend, BackendUsed,
-    HalfTrendRegimeFilter,
+    compute_combined_regime_filter, compute_log_returns_f64, first_finite_idx,
+    ma_matrix_cpu_f32_staging, ma_matrix_cpu_f64, resolve_alma_params_for_side, validate_ma_kind,
+    validate_strategy_cfg, Backend, BackendUsed, GpuExecutionPolicy, HalfTrendRegimeFilter,
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
@@ -173,6 +173,14 @@ fn gpu_exact_combo_metrics_for_ranges(
                 plan.fast_alma_sigma,
                 plan.slow_alma_offset,
                 plan.slow_alma_sigma,
+                plan.hybrid_precomputed
+                    .as_ref()
+                    .and_then(|pre| pre.fast_values.as_deref()),
+                plan.hybrid_precomputed.as_ref().and_then(|pre| pre.fast_cols),
+                plan.hybrid_precomputed
+                    .as_ref()
+                    .and_then(|pre| pre.slow_values.as_deref()),
+                plan.hybrid_precomputed.as_ref().and_then(|pre| pre.slow_cols),
                 ranges,
             )
             .map(|result| result.0)
@@ -269,6 +277,15 @@ impl ValidationExecutionProfile {
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 #[derive(Clone)]
+struct PreparedHybridPrecomputedMa {
+    fast_values: Option<Vec<f32>>,
+    fast_cols: Option<usize>,
+    slow_values: Option<Vec<f32>>,
+    slow_cols: Option<usize>,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[derive(Clone)]
 struct PreparedGpuValidationPlan {
     combo_pairs: Vec<(u16, u16)>,
     pair_to_idx: HashMap<(u16, u16), usize>,
@@ -288,6 +305,7 @@ struct PreparedGpuValidationPlan {
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
     device_regime_filter: Option<Rc<crate::gpu_backtest_kernel::DeviceRegimeFilter>>,
+    hybrid_precomputed: Option<PreparedHybridPrecomputedMa>,
     unique_candidates: usize,
     evaluated_pairs_on_device: usize,
 }
@@ -361,6 +379,14 @@ fn gpu_fixed_candidate_metric_map(
                     plan.fast_alma_sigma,
                     plan.slow_alma_offset,
                     plan.slow_alma_sigma,
+                    plan.hybrid_precomputed
+                        .as_ref()
+                        .and_then(|pre| pre.fast_values.as_deref()),
+                    plan.hybrid_precomputed.as_ref().and_then(|pre| pre.fast_cols),
+                    plan.hybrid_precomputed
+                        .as_ref()
+                        .and_then(|pre| pre.slow_values.as_deref()),
+                    plan.hybrid_precomputed.as_ref().and_then(|pre| pre.slow_cols),
                     &ranges,
                 )?;
             let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
@@ -965,6 +991,64 @@ fn prepare_gpu_validation_plan(
             .map(Rc::new)
         })
         .transpose()?;
+    let hybrid_precomputed = if matches!(req.backend, Backend::GpuHybridKernel { .. })
+        && crate::double_ma_backend::hybrid_backend_enabled()
+    {
+        let route_plan =
+            crate::ma_policy::plan_double_ma_hybrid_route(fast_ma_type.as_str(), slow_ma_type.as_str());
+        if route_plan.is_fully_supported() {
+            let fast_requires_cpu_precompute = crate::double_ma_backend::should_cpu_stage_indicator(
+                &route_plan.fast,
+                GpuExecutionPolicy::BestEffort,
+            );
+            let slow_requires_cpu_precompute = crate::double_ma_backend::should_cpu_stage_indicator(
+                &route_plan.slow,
+                GpuExecutionPolicy::BestEffort,
+            );
+            if fast_requires_cpu_precompute || slow_requires_cpu_precompute {
+                let (fast_values, fast_cols) = if fast_requires_cpu_precompute {
+                    let (values, cols) = ma_matrix_cpu_f32_staging(
+                        candles,
+                        fast_ma_type.as_str(),
+                        &req.ma_source,
+                        &fast_periods,
+                        first_fast_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                    )?;
+                    (Some(values), Some(cols))
+                } else {
+                    (None, None)
+                };
+                let (slow_values, slow_cols) = if slow_requires_cpu_precompute {
+                    let (values, cols) = ma_matrix_cpu_f32_staging(
+                        candles,
+                        slow_ma_type.as_str(),
+                        &req.ma_source,
+                        &slow_periods,
+                        first_slow_params,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                    )?;
+                    (Some(values), Some(cols))
+                } else {
+                    (None, None)
+                };
+                Some(PreparedHybridPrecomputedMa {
+                    fast_values,
+                    fast_cols,
+                    slow_values,
+                    slow_cols,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let evaluated_pairs_on_device =
         crate::double_ma::estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
 
@@ -987,6 +1071,7 @@ fn prepare_gpu_validation_plan(
         slow_alma_offset,
         slow_alma_sigma,
         device_regime_filter,
+        hybrid_precomputed,
         unique_candidates: candidate_keys
             .iter()
             .collect::<std::collections::HashSet<_>>()
@@ -1025,6 +1110,14 @@ fn build_dense_metrics_with_current_gpu_map(
                 plan.fast_alma_sigma,
                 plan.slow_alma_offset,
                 plan.slow_alma_sigma,
+                plan.hybrid_precomputed
+                    .as_ref()
+                    .and_then(|pre| pre.fast_values.as_deref()),
+                plan.hybrid_precomputed.as_ref().and_then(|pre| pre.fast_cols),
+                plan.hybrid_precomputed
+                    .as_ref()
+                    .and_then(|pre| pre.slow_values.as_deref()),
+                plan.hybrid_precomputed.as_ref().and_then(|pre| pre.slow_cols),
                 ranges,
             )?
             .0
