@@ -612,37 +612,56 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
     };
     let mut search_req = base_req.clone();
     search_req.heatmap_bins = Some(0);
+    let search_plus_heatmap_req = base_req.clone();
+    let mut search_plus_finalist_req = base_req.clone();
+    search_plus_finalist_req.heatmap_bins = Some(0);
     let product_req = base_req;
 
     let mut group = c.benchmark_group("double_ma/gpu_kernel_contract_split/alma_alma/200k");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 
-    let search_name = format!("large/{pairs}pairs/search_only");
-    group.bench_function(&search_name, |b| {
-        b.iter(|| {
-            let req2 = search_req.clone();
-            run_with_finalist_recompute_env(false, || {
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("gpu kernel search-only run");
-            });
-        })
-    });
+    let variants: [(&str, DoubleMaRequest, bool); 4] = [
+        ("large/{pairs}pairs/search_only", search_req, false),
+        (
+            "large/{pairs}pairs/search_plus_heatmap",
+            search_plus_heatmap_req,
+            false,
+        ),
+        (
+            "large/{pairs}pairs/search_plus_finalist_recompute",
+            search_plus_finalist_req,
+            true,
+        ),
+        ("large/{pairs}pairs/end_to_end_product", product_req, true),
+    ];
 
-    let product_name = format!("large/{pairs}pairs/end_to_end_product");
-    group.bench_function(&product_name, |b| {
-        b.iter(|| {
-            let req2 = product_req.clone();
-            run_with_finalist_recompute_env(true, || {
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("gpu kernel end-to-end product run");
-            });
-        })
-    });
+    // Prewarm each variant once so the first benchmark in the group does not
+    // absorb one-time CUDA/runtime setup costs that would distort the split.
+    for (_, req0, recompute_enabled) in variants.iter() {
+        let req2 = req0.clone();
+        run_with_finalist_recompute_env(*recompute_enabled, || {
+            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                req2, &candles, &cancel, None,
+            )
+            .expect("gpu kernel contract split prewarm run");
+        });
+    }
+
+    for (name_tmpl, req0, recompute_enabled) in variants {
+        let name = name_tmpl.replace("{pairs}", &pairs.to_string());
+        group.bench_function(&name, |b| {
+            b.iter(|| {
+                let req2 = req0.clone();
+                run_with_finalist_recompute_env(recompute_enabled, || {
+                    let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                        req2, &candles, &cancel, None,
+                    )
+                    .expect("gpu kernel contract split run");
+                });
+            })
+        });
+    }
 
     group.finish();
 

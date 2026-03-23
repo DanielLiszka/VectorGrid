@@ -3524,7 +3524,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         continue;
                     }
                 }
-                const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
+                const int t_sig = t - trade_offset;
 
                 const float f = FAST_WARP_DEDUP
                     ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
@@ -3608,7 +3608,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         continue;
                     }
                 }
-                const int t_sig = t - ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
+                const int t_sig = t - trade_offset;
 
                 const float f = FAST_WARP_DEDUP
                     ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
@@ -3735,9 +3735,13 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         }
 
         if constexpr (FULL_M7) {
-            metrics_out[base + 0] = pnl;
+            // Preserve the existing reduced-row contract even for the M7-specialized kernels:
+            // when M < 10, slots 0 and 2 are emitted in log-space (log_eq/max_log_dd) and the
+            // host decode restores arithmetic pnl/max_dd.
+            const bool search_row = M < 10;
+            metrics_out[base + 0] = search_row ? log_eq : pnl;
             metrics_out[base + 1] = (float)trades;
-            metrics_out[base + 2] = max_dd;
+            metrics_out[base + 2] = search_row ? max_log_dd : max_dd;
             metrics_out[base + 3] = mean;
             metrics_out[base + 4] = std;
             metrics_out[base + 5] = exposure;

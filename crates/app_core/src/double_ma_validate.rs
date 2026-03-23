@@ -309,6 +309,12 @@ struct PreparedGpuValidationPlan {
     evaluated_pairs_on_device: usize,
 }
 
+// Keep CPU-only builds compiling: several CUDA-gated helper stubs still mention the plan type
+// in their signatures.
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+#[derive(Clone)]
+struct PreparedGpuValidationPlan;
+
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 struct DenseRangeMetrics {
     ranges: Vec<(usize, usize)>,

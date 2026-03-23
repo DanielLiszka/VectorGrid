@@ -12433,6 +12433,131 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe() {
+        if !cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
+        let prev_reduced = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "1");
+        // Force the replay-backed baseline so this test truly compares:
+        // baseline = reduced rows + replay vs. reduced = 9-row + no replay.
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
+
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 60, 1),
+            slow_range: (10, 120, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+        };
+
+        crate::gpu_backtest_kernel::reset_test_runtime();
+        let replay_res =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("baseline replay-backed gpu kernel run");
+
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "1");
+        crate::gpu_backtest_kernel::reset_test_runtime();
+        let reduced_res =
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("product-reduced gpu kernel run");
+
+        assert_eq!(
+            replay_res.best_params.fast_len,
+            reduced_res.best_params.fast_len
+        );
+        assert_eq!(
+            replay_res.best_params.slow_len,
+            reduced_res.best_params.slow_len
+        );
+        assert!(
+            (replay_res.best_metrics.pnl - reduced_res.best_metrics.pnl).abs() <= 1e-5,
+            "best pnl mismatch: replay={} reduced={}",
+            replay_res.best_metrics.pnl,
+            reduced_res.best_metrics.pnl
+        );
+        assert!(
+            (replay_res.best_metrics.sharpe - reduced_res.best_metrics.sharpe).abs() <= 1e-5,
+            "best sharpe mismatch: replay={} reduced={}",
+            replay_res.best_metrics.sharpe,
+            reduced_res.best_metrics.sharpe
+        );
+        assert!(
+            (replay_res.best_metrics.max_dd - reduced_res.best_metrics.max_dd).abs() <= 1e-5,
+            "best max_dd mismatch: replay={} reduced={}",
+            replay_res.best_metrics.max_dd,
+            reduced_res.best_metrics.max_dd
+        );
+        assert!(
+            (replay_res.best_metrics.martin_ratio - reduced_res.best_metrics.martin_ratio).abs()
+                <= 1e-5
+        );
+        assert_eq!(
+            replay_res.best_metrics.trades,
+            reduced_res.best_metrics.trades
+        );
+        assert_eq!(replay_res.top.len(), reduced_res.top.len());
+
+        for ((rp, rm), (dp, dm)) in replay_res.top.iter().zip(reduced_res.top.iter()) {
+            assert_eq!(rp.fast_len, dp.fast_len);
+            assert_eq!(rp.slow_len, dp.slow_len);
+            assert!(
+                (rm.pnl - dm.pnl).abs() <= 1e-5,
+                "top pnl mismatch: replay={} reduced={}",
+                rm.pnl,
+                dm.pnl
+            );
+            assert!(
+                (rm.sharpe - dm.sharpe).abs() <= 1e-5,
+                "top sharpe mismatch: replay={} reduced={}",
+                rm.sharpe,
+                dm.sharpe
+            );
+            assert!(
+                (rm.max_dd - dm.max_dd).abs() <= 1e-5,
+                "top max_dd mismatch: replay={} reduced={}",
+                rm.max_dd,
+                dm.max_dd
+            );
+            assert!((rm.martin_ratio - dm.martin_ratio).abs() <= 1e-5);
+            assert_eq!(rm.trades, dm.trades);
+        }
+
+        match prev_recompute {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
+        }
+        match prev_reduced {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn gpu_kernel_precomputed_frama_matrix_executes() {
         if !cuda_available() {
             return;
@@ -13636,8 +13761,9 @@ mod tests {
         let dynamic_opt_key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
         let prev_dynamic_opt = std::env::var(dynamic_opt_key).ok();
         std::env::remove_var(dynamic_opt_key);
-        let gpu = run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
-            .expect("legacy gpu-kernel run for plain strategy");
+        let gpu =
+            run_double_ma_optimization_blocking_with_candles(req_gpu, &candles, &cancel, None)
+                .expect("legacy gpu-kernel run for plain strategy");
         match prev_dynamic_opt {
             Some(v) => std::env::set_var(dynamic_opt_key, v),
             None => std::env::remove_var(dynamic_opt_key),

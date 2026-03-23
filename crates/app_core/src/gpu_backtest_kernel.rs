@@ -134,6 +134,7 @@ pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOn
 }
 
 const BASE_METRICS_COUNT: usize = 7;
+const PRODUCT_REDUCED_METRICS_COUNT: usize = 9;
 const METRICS_COUNT: usize = 10;
 const METRIC_IDX_PNL: usize = 0;
 const METRIC_IDX_TRADES: usize = 1;
@@ -178,6 +179,67 @@ struct PipelineTimingProfile {
     tile_finalize: Duration,
     final_finalize: Duration,
     tile_count: usize,
+}
+
+#[derive(Default, Debug)]
+struct FinalistReplayTimingProfile {
+    returns: Duration,
+    fast_ma: Duration,
+    slow_ma: Duration,
+    pairmap: Duration,
+    backtest: Duration,
+    d2h_decode: Duration,
+    tile_count: usize,
+}
+
+impl FinalistReplayTimingProfile {
+    fn total(&self) -> Duration {
+        self.returns
+            .saturating_add(self.fast_ma)
+            .saturating_add(self.slow_ma)
+            .saturating_add(self.pairmap)
+            .saturating_add(self.backtest)
+            .saturating_add(self.d2h_decode)
+    }
+
+    fn emit(&self, fast_ma: &str, slow_ma: &str, finalists: usize, ranges: usize) {
+        let total = self.total();
+        eprintln!(
+            "VECTORBT_KERNEL_FINALIST_PROFILE: pair={fast_ma}/{slow_ma} finalists={finalists} ranges={ranges} tiles={} total_ms={:.3}",
+            self.tile_count,
+            total.as_secs_f64() * 1000.0
+        );
+        eprintln!(
+            "  returns      {:>10.3} ms  ({})",
+            self.returns.as_secs_f64() * 1000.0,
+            PipelineTimingProfile::pct_str(self.returns, total)
+        );
+        eprintln!(
+            "  fast_ma      {:>10.3} ms  ({})",
+            self.fast_ma.as_secs_f64() * 1000.0,
+            PipelineTimingProfile::pct_str(self.fast_ma, total)
+        );
+        eprintln!(
+            "  slow_ma      {:>10.3} ms  ({})",
+            self.slow_ma.as_secs_f64() * 1000.0,
+            PipelineTimingProfile::pct_str(self.slow_ma, total)
+        );
+        eprintln!(
+            "  pairmap      {:>10.3} ms  ({})",
+            self.pairmap.as_secs_f64() * 1000.0,
+            PipelineTimingProfile::pct_str(self.pairmap, total)
+        );
+        eprintln!(
+            "  backtest     {:>10.3} ms  ({})",
+            self.backtest.as_secs_f64() * 1000.0,
+            PipelineTimingProfile::pct_str(self.backtest, total)
+        );
+        eprintln!(
+            "  d2h_decode   {:>10.3} ms  ({})",
+            self.d2h_decode.as_secs_f64() * 1000.0,
+            PipelineTimingProfile::pct_str(self.d2h_decode, total)
+        );
+    }
 }
 
 impl PipelineTimingProfile {
@@ -646,6 +708,23 @@ fn calmar_ratio(pnl: f64, max_dd: f64) -> f64 {
 }
 
 #[inline]
+fn martin_ratio_from_components(pnl: f64, ulcer_index: f64) -> f64 {
+    const EPS_DENOM: f64 = 1e-12;
+    const CLAMP_MAX: f64 = 1e6;
+
+    let raw = if ulcer_index > EPS_DENOM {
+        pnl / ulcer_index
+    } else if pnl > 0.0 {
+        CLAMP_MAX
+    } else if pnl < 0.0 {
+        -CLAMP_MAX
+    } else {
+        0.0
+    };
+    raw.clamp(-CLAMP_MAX, CLAMP_MAX)
+}
+
+#[inline]
 fn search_rows_use_log_space(metrics_count: usize) -> bool {
     metrics_count < METRICS_COUNT
 }
@@ -720,6 +799,14 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
     } else {
         raw_max_dd
     };
+    let ulcer_index = metric(METRIC_IDX_ULCER_INDEX);
+    let martin_ratio = if metrics_count > METRIC_IDX_MARTIN_RATIO {
+        metric(METRIC_IDX_MARTIN_RATIO)
+    } else if metrics_count > METRIC_IDX_ULCER_INDEX {
+        martin_ratio_from_components(pnl, ulcer_index)
+    } else {
+        0.0
+    };
 
     Metrics {
         pnl,
@@ -729,8 +816,8 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
         calmar: calmar_ratio(pnl, max_dd),
         omega: 0.0,
         volatility: std,
-        ulcer_index: metric(METRIC_IDX_ULCER_INDEX),
-        martin_ratio: metric(METRIC_IDX_MARTIN_RATIO),
+        ulcer_index,
+        martin_ratio,
         max_dd,
         trades: if trades.is_finite() && trades >= 0.0 {
             trades as u32
@@ -767,6 +854,11 @@ fn decode_packed_topk_metric_row(
     Some((fast_len, slow_len, metrics))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReturnsCacheKey {
+    dataset: CandleDatasetSignature,
+}
+
 #[derive(Default)]
 struct KernelScratch {
     d_lr: Option<DeviceBuffer<f32>>,
@@ -787,6 +879,7 @@ struct KernelScratch {
     d_top_metrics: Option<DeviceBuffer<f32>>,
     d_top_packed: Option<DeviceBuffer<f32>>,
     d_valid_pair_index: Option<DeviceBuffer<i32>>,
+    returns_key: Option<ReturnsCacheKey>,
 }
 
 #[derive(Default)]
@@ -975,6 +1068,7 @@ impl KernelScratch {
         Self::drop_opt_async(&mut self.d_top_metrics, stream)?;
         Self::drop_opt_async(&mut self.d_top_packed, stream)?;
         Self::drop_opt_async(&mut self.d_valid_pair_index, stream)?;
+        self.returns_key = None;
         Ok(())
     }
 }
@@ -3055,6 +3149,61 @@ fn ensure_resident_market_series(
     Ok(())
 }
 
+fn ensure_log_and_simple_returns(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    d_close: &DeviceBuffer<f32>,
+    n: usize,
+    dataset_sig: CandleDatasetSignature,
+    compute_returns: &Function,
+    device_launch_caps: DeviceLaunchCaps,
+    compute_returns_launch_caps: KernelLaunchCaps,
+) -> Result<(), String> {
+    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;
+
+    let want = ReturnsCacheKey {
+        dataset: dataset_sig,
+    };
+    if scratch.returns_key == Some(want) {
+        return Ok(());
+    }
+
+    let d_lr_ptr = scratch
+        .d_lr
+        .as_ref()
+        .ok_or_else(|| "missing cached d_lr buffer".to_string())?
+        .as_device_ptr()
+        .as_raw();
+    let d_ret1_ptr = scratch
+        .d_ret1
+        .as_ref()
+        .ok_or_else(|| "missing cached d_ret1 buffer".to_string())?
+        .as_device_ptr()
+        .as_raw();
+    unsafe {
+        let mut prices_ptr = d_close.as_device_ptr().as_raw();
+        let mut t_i = n as i32;
+        let mut lr_out_ptr = d_lr_ptr;
+        let mut ret1_out_ptr = d_ret1_ptr;
+        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_returns_launch_caps);
+        let block_x: u32 = launch.block_x;
+        let grid_x: u32 = launch.grid_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut prices_ptr as *mut _ as *mut c_void,
+            &mut t_i as *mut _ as *mut c_void,
+            &mut lr_out_ptr as *mut _ as *mut c_void,
+            &mut ret1_out_ptr as *mut _ as *mut c_void,
+        ];
+        bt_stream
+            .launch(compute_returns, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+            .map_err(|e| e.to_string())?;
+    }
+
+    scratch.returns_key = Some(want);
+    Ok(())
+}
+
 struct AsyncPinnedUploadGuard<'a> {
     stream: &'a Stream,
     pinned: Vec<LockedBuffer<f32>>,
@@ -3183,6 +3332,31 @@ fn kernel_global_topk_enabled() -> bool {
 #[inline]
 fn kernel_finalist_recompute_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_FINALIST_RECOMPUTE", true)
+}
+
+#[inline]
+fn kernel_finalist_profile_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_FINALIST_PROFILE", false)
+}
+
+#[inline]
+fn kernel_product_reduced_rows_enabled_for_objective(objective: ObjectiveKind) -> bool {
+    // Default policy: for the Sharpe/Volatility product family, prefer a single pass that
+    // emits enough metrics to skip the small-finalist replay entirely.
+    //
+    // Env override:
+    // - Unset: enabled only for Sharpe/Volatility
+    // - Set to 1/true: enabled for all objectives
+    // - Set to 0/false: disabled for all objectives
+    match env_flag_override("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS") {
+        Some(v) => v,
+        None => {
+            // Keep `search_only` fast: if finalist recompute is disabled, there is no value in
+            // emitting extra product metrics (they won't be used to skip replay).
+            kernel_finalist_recompute_enabled()
+                && matches!(objective, ObjectiveKind::Sharpe | ObjectiveKind::Volatility)
+        }
+    }
 }
 
 #[inline]
@@ -3422,7 +3596,9 @@ fn search_metrics_count_for_optimization(
 
     let mut metrics_count = match objective {
         ObjectiveKind::Pnl => 1,
-        ObjectiveKind::Sharpe | ObjectiveKind::Volatility => 5,
+        // 7-row enables the faster M7 kernels while still skipping ulcer-index work unless the
+        // product-reduced promotion (9-row) is active.
+        ObjectiveKind::Sharpe | ObjectiveKind::Volatility => 7,
         ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => 3,
         ObjectiveKind::Sortino | ObjectiveKind::Omega => METRICS_COUNT,
     };
@@ -3433,8 +3609,16 @@ fn search_metrics_count_for_optimization(
     if constraints.and_then(|c| c.max_drawdown).is_some() {
         metrics_count = metrics_count.max(3);
     }
+    if kernel_product_reduced_rows_enabled_for_objective(objective) {
+        metrics_count = metrics_count.max(PRODUCT_REDUCED_METRICS_COUNT);
+    }
 
     metrics_count.min(METRICS_COUNT)
+}
+
+#[inline]
+fn can_decode_current_gpu_product_metrics_without_recompute(metrics_count: usize) -> bool {
+    metrics_count >= PRODUCT_REDUCED_METRICS_COUNT
 }
 
 #[inline]
@@ -4753,6 +4937,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         &mut rt.scratch,
         &mut rt.host_exact_combo_scratch,
     );
+    let dataset_sig = candle_dataset_signature(candles);
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -4855,28 +5040,24 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
     let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
 
-    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
-    KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;
+    let mut replay_profile =
+        kernel_finalist_profile_enabled().then(FinalistReplayTimingProfile::default);
+    let returns_t0 = replay_profile.as_ref().map(|_| Instant::now());
+    ensure_log_and_simple_returns(
+        bt_stream,
+        scratch,
+        d_close,
+        n,
+        dataset_sig,
+        &compute_returns,
+        device_launch_caps,
+        compute_returns_launch_caps,
+    )?;
+    if let (Some(t0), Some(p)) = (returns_t0, replay_profile.as_mut()) {
+        p.returns = p.returns.saturating_add(t0.elapsed());
+    }
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
-    unsafe {
-        let mut prices_ptr = d_close.as_device_ptr().as_raw();
-        let mut t_i = n as i32;
-        let mut lr_out_ptr = d_lr_ptr;
-        let mut ret1_out_ptr = d_ret1_ptr;
-        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_returns_launch_caps);
-        let block_x: u32 = launch.block_x;
-        let grid_x: u32 = launch.grid_x;
-        let args: &mut [*mut c_void] = &mut [
-            &mut prices_ptr as *mut _ as *mut c_void,
-            &mut t_i as *mut _ as *mut c_void,
-            &mut lr_out_ptr as *mut _ as *mut c_void,
-            &mut ret1_out_ptr as *mut _ as *mut c_void,
-        ];
-        bt_stream
-            .launch(&compute_returns, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-            .map_err(|e| e.to_string())?;
-    }
 
     let (pf_tile, ps_tile) = choose_tiles(
         f_total,
@@ -4970,6 +5151,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
 
     let mut f_start = 0usize;
     while f_start < f_total {
+        let fast_ma_t0 = replay_profile.as_ref().map(|_| Instant::now());
         let pf = pf_tile.min(f_total - f_start);
         let fast_tm_rows = if pad_tm {
             align_tm_stride(pf.max(1))
@@ -5084,9 +5266,13 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     .map_err(|e| e.to_string())?;
             }
         }
+        if let (Some(t0), Some(p)) = (fast_ma_t0, replay_profile.as_mut()) {
+            p.fast_ma = p.fast_ma.saturating_add(t0.elapsed());
+        }
 
         let mut s_start = 0usize;
         while s_start < s_total {
+            let slow_ma_t0 = replay_profile.as_ref().map(|_| Instant::now());
             let ps = ps_tile.min(s_total - s_start);
             let slow_tm_rows = if pad_tm {
                 align_tm_stride(ps.max(1))
@@ -5202,6 +5388,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .map_err(|e| e.to_string())?;
                 }
             }
+            if let (Some(t0), Some(p)) = (slow_ma_t0, replay_profile.as_mut()) {
+                p.slow_ma = p.slow_ma.saturating_add(t0.elapsed());
+            }
 
             let pairs = pf
                 .checked_mul(ps)
@@ -5216,6 +5405,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 ));
             }
 
+            let pairmap_t0 = replay_profile.as_ref().map(|_| Instant::now());
             host_exact_combo.tile_combo_indices.clear();
             host_exact_combo.tile_pair_index_map.clear();
             for (combo_idx, &(global_f, global_s)) in combo_period_indices.iter().enumerate() {
@@ -5262,10 +5452,17 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     .as_device_ptr()
                     .as_raw();
             }
+            if let (Some(t0), Some(p)) = (pairmap_t0, replay_profile.as_mut()) {
+                p.pairmap = p.pairmap.saturating_add(t0.elapsed());
+                if launch_pairs > 0 {
+                    p.tile_count = p.tile_count.saturating_add(1);
+                }
+            }
             for (range_idx, &(eval_start_t, eval_end_t_raw)) in ranges.iter().enumerate() {
                 let eval_end_t = eval_end_t_raw.min(n);
 
                 if launch_pairs > 0 {
+                    let backtest_t0 = replay_profile.as_ref().map(|_| Instant::now());
                     unsafe {
                         let mut f_ma_tm = scratch
                             .d_fast_ma_tm
@@ -5547,7 +5744,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 .map_err(|e| e.to_string())?;
                         }
                     }
+                    if let (Some(t0), Some(p)) = (backtest_t0, replay_profile.as_mut()) {
+                        p.backtest = p.backtest.saturating_add(t0.elapsed());
+                    }
                 }
+                let d2h_t0 = replay_profile.as_ref().map(|_| Instant::now());
                 bt_stream.synchronize().map_err(|e| e.to_string())?;
 
                 if launch_pairs > 0 {
@@ -5564,12 +5765,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     {
                         let src_base = row_idx * tile_metrics_stride;
                         out_metrics[range_idx * combo_count + combo_idx] =
-                            decode_tm_flex_metrics_row(
-                                host_metrics,
-                                src_base,
-                                tile_metrics_stride,
-                            );
+                            decode_tm_flex_metrics_row(host_metrics, src_base, tile_metrics_stride);
                     }
+                }
+                if let (Some(t0), Some(p)) = (d2h_t0, replay_profile.as_mut()) {
+                    p.d2h_decode = p.d2h_decode.saturating_add(t0.elapsed());
                 }
             }
 
@@ -5585,6 +5785,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         host_exact_combo.last_fast_period_upload = None;
         host_exact_combo.last_slow_period_upload = None;
         host_exact_combo.last_pair_index_upload = None;
+    }
+    if let Some(p) = replay_profile.as_ref() {
+        p.emit(
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+            combos.len(),
+            ranges.len(),
+        );
     }
 
     Ok(out_metrics)
@@ -6345,6 +6553,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         &mut rt.scratch,
         &mut rt.valid_pair_maps,
     );
+    let dataset_sig = candle_dataset_signature(candles);
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -6451,28 +6660,18 @@ fn optimize_double_ma_gpu_kernel_impl(
     let fast_warp_dedup_enabled = kernel_fast_warp_dedup_enabled();
     let fast_warp_dedup_min_pairs = kernel_fast_warp_dedup_min_pairs();
 
-    KernelScratch::ensure_len_f32(&mut scratch.d_lr, n, bt_stream)?;
-    KernelScratch::ensure_len_f32(&mut scratch.d_ret1, n, bt_stream)?;
+    ensure_log_and_simple_returns(
+        bt_stream,
+        scratch,
+        d_close,
+        n,
+        dataset_sig,
+        &compute_returns,
+        device_launch_caps,
+        compute_returns_launch_caps,
+    )?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
-    unsafe {
-        let mut prices_ptr = d_close.as_device_ptr().as_raw();
-        let mut t_i = n as i32;
-        let mut lr_out_ptr = d_lr_ptr;
-        let mut ret1_out_ptr = d_ret1_ptr;
-        let launch = choose_launch_shape_1d(n, device_launch_caps, compute_returns_launch_caps);
-        let block_x: u32 = launch.block_x;
-        let grid_x: u32 = launch.grid_x;
-        let args: &mut [*mut c_void] = &mut [
-            &mut prices_ptr as *mut _ as *mut c_void,
-            &mut t_i as *mut _ as *mut c_void,
-            &mut lr_out_ptr as *mut _ as *mut c_void,
-            &mut ret1_out_ptr as *mut _ as *mut c_void,
-        ];
-        bt_stream
-            .launch(&compute_returns, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-            .map_err(|e| e.to_string())?;
-    }
 
     let (pf_tile, ps_tile) = choose_tiles(
         f_total,
@@ -8263,6 +8462,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     if !include_all
         && metrics_count < METRICS_COUNT
+        && !can_decode_current_gpu_product_metrics_without_recompute(metrics_count)
         && !fast_precomputed_enabled
         && !slow_precomputed_enabled
         && kernel_finalist_recompute_enabled()
@@ -8326,13 +8526,13 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_tm_flex_metrics_row, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
-        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_pinned_d2h_enabled,
-        kernel_pinned_h2d_enabled,
+        can_decode_current_gpu_product_metrics_without_recompute, decode_tm_flex_metrics_row,
+        eval_double_ma_dynamic_program_precomputed_gpu_kernel, kernel_async_alloc_enabled,
+        kernel_effective_pair_bars, kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, search_metrics_count_for_optimization,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
-        upload_double_ma_dynamic_program_batch, METRICS_COUNT,
+        upload_double_ma_dynamic_program_batch, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
     };
     use crate::double_ma::DoubleMaConstraints;
     use crate::strategy_dynamic::{
@@ -8822,6 +9022,62 @@ mod tests {
     }
 
     #[test]
+    fn search_metrics_count_product_reduced_rows_default_and_override() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+
+        // Default: Sharpe/Volatility prefers the product-reduced rows to skip finalist replay.
+        std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS");
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Sharpe,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            PRODUCT_REDUCED_METRICS_COUNT
+        );
+        assert!(can_decode_current_gpu_product_metrics_without_recompute(
+            PRODUCT_REDUCED_METRICS_COUNT
+        ));
+
+        // Override disable: force legacy reduced rows.
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Sharpe,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            5
+        );
+
+        // Override enable: allow any objective to widen to product-reduced rows.
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "1");
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            PRODUCT_REDUCED_METRICS_COUNT
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS"),
+        }
+    }
+
+    #[test]
     fn compact_valid_pair_output_stays_enabled_with_full_metrics_rows() {
         assert!(should_use_compact_valid_pair_output(false, false, false, 3));
         assert!(should_use_compact_valid_pair_output(true, false, false, 3));
@@ -8871,6 +9127,29 @@ mod tests {
         let metrics = decode_tm_flex_metrics_row(&row, 0, METRICS_COUNT);
         assert!((metrics.sortino - 3.0).abs() < 1e-6);
         assert_eq!(metrics.omega, 0.0);
+    }
+
+    #[test]
+    fn decode_product_reduced_rows_derives_martin_ratio() {
+        let pnl = 0.15f64;
+        let max_dd = 0.20f64;
+        let ulcer = 0.05f64;
+        let row = vec![
+            pnl.ln_1p() as f32,
+            7.0f32,
+            (-(1.0 - max_dd).ln()) as f32,
+            0.06f32,
+            0.03f32,
+            0.40f32,
+            0.10f32,
+            0.02f32,
+            ulcer as f32,
+        ];
+
+        let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT);
+        assert!((metrics.pnl - pnl).abs() < 1e-6);
+        assert!((metrics.max_dd - max_dd).abs() < 1e-6);
+        assert!((metrics.martin_ratio - 3.0).abs() < 1e-6);
     }
 
     #[test]
