@@ -20,10 +20,13 @@ use crate::validation_pipeline::{
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
@@ -99,6 +102,7 @@ struct GpuFixedCandidateValidationEval {
     backend_used: BackendUsed,
     backend_route: Option<String>,
     backend_fallback_reason: Option<String>,
+    execution_profile: ValidationExecutionProfile,
 }
 
 fn validation_supports_gpu_fixed_candidates(
@@ -144,216 +148,240 @@ type GpuFixedMetricMapResult = (
 );
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-#[allow(clippy::too_many_arguments)]
-fn gpu_fixed_candidate_metric_map(
+fn gpu_exact_combo_metrics_for_ranges(
     req: &DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
-    fast_periods: &[u16],
-    slow_periods: &[u16],
-    fast_ma_type: &str,
-    slow_ma_type: &str,
-    first_fast_params: Option<&HashMap<String, f64>>,
-    first_slow_params: Option<&HashMap<String, f64>>,
-    regime_filter: Option<&[f64]>,
-    first_strategy: &StrategyConfig,
-    first_halftrend: &Option<HalfTrendRegimeFilter>,
-    combos: &[ta_strategies::double_ma::DoubleMaParams],
+    plan: &PreparedGpuValidationPlan,
+    ranges: &[(usize, usize)],
+) -> Result<Vec<Metrics>, String> {
+    match req.backend {
+        Backend::GpuHybridKernel { .. } if crate::double_ma_backend::hybrid_backend_enabled() => {
+            crate::double_ma::validate_double_ma_gpu_hybrid_kernel_exact_combos(
+                candles,
+                plan.device_id,
+                &plan.combos,
+                &plan.fast_periods,
+                &plan.slow_periods,
+                &plan.fast_ma_type,
+                &plan.slow_ma_type,
+                &req.ma_source,
+                plan.first_fast_params.as_ref(),
+                plan.first_slow_params.as_ref(),
+                plan.regime_filter.as_deref(),
+                &plan.first_strategy,
+                plan.fast_alma_offset,
+                plan.fast_alma_sigma,
+                plan.slow_alma_offset,
+                plan.slow_alma_sigma,
+                ranges,
+            )
+            .map(|result| result.0)
+        }
+        _ => crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_periods_and_regime(
+            candles,
+            &plan.combos,
+            &plan.fast_periods,
+            &plan.slow_periods,
+            &plan.fast_ma_type,
+            &plan.slow_ma_type,
+            &req.ma_source,
+            plan.first_fast_params.as_ref(),
+            plan.first_slow_params.as_ref(),
+            plan
+                .device_regime_filter
+                .as_deref()
+                .map(crate::gpu_backtest_kernel::RegimeFilterInput::DeviceF32)
+                .or_else(|| {
+                    plan.regime_filter
+                        .as_deref()
+                        .map(crate::gpu_backtest_kernel::RegimeFilterInput::HostF64)
+                }),
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id: plan.device_id,
+                fast_alma_offset: plan.fast_alma_offset,
+                fast_alma_sigma: plan.fast_alma_sigma,
+                slow_alma_offset: plan.slow_alma_offset,
+                slow_alma_sigma: plan.slow_alma_sigma,
+            },
+            &plan.first_strategy,
+            ranges,
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ValidationAuxWorkMask {
+    pub regime_slice_robustness: bool,
+    pub friction_stress: bool,
+}
+
+impl ValidationAuxWorkMask {
+    pub const fn full() -> Self {
+        Self {
+            regime_slice_robustness: true,
+            friction_stress: true,
+        }
+    }
+
+    pub const fn preserved_finalists() -> Self {
+        Self {
+            regime_slice_robustness: false,
+            friction_stress: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ValidationExecutionProfile {
+    pub requested_candidates: usize,
+    pub unique_candidates: usize,
+    pub unique_fast_periods: usize,
+    pub unique_slow_periods: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluated_pairs_on_device: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expansion_ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_range_eval_calls: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_range_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aux_finalist_analytics_wall_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_tail_wall_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_result_materialization_wall_ms: Option<u64>,
+}
+
+impl ValidationExecutionProfile {
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn from_candidate_keys(candidate_keys: &[String]) -> Self {
+        Self {
+            requested_candidates: candidate_keys.len(),
+            unique_candidates: candidate_keys
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            ..Self::default()
+        }
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[derive(Clone)]
+struct PreparedGpuValidationPlan {
+    combo_pairs: Vec<(u16, u16)>,
+    pair_to_idx: HashMap<(u16, u16), usize>,
+    combos: Vec<ta_strategies::double_ma::DoubleMaParams>,
+    start_ts: Vec<usize>,
+    fast_periods: Vec<u16>,
+    slow_periods: Vec<u16>,
+    fast_ma_type: String,
+    slow_ma_type: String,
+    first_fast_params: Option<HashMap<String, f64>>,
+    first_slow_params: Option<HashMap<String, f64>>,
+    first_strategy: StrategyConfig,
+    regime_filter: Option<Vec<f64>>,
     device_id: u32,
     fast_alma_offset: f64,
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    device_regime_filter: Option<Rc<crate::gpu_backtest_kernel::DeviceRegimeFilter>>,
+    unique_candidates: usize,
+    evaluated_pairs_on_device: usize,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+struct DenseRangeMetrics {
+    ranges: Vec<(usize, usize)>,
+    metrics: Vec<Metrics>,
+    combo_count: usize,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+impl DenseRangeMetrics {
+    #[inline]
+    fn metric(&self, range_idx: usize, combo_idx: usize) -> &Metrics {
+        &self.metrics[range_idx * self.combo_count + combo_idx]
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[derive(Clone, Copy, Debug, Default)]
+struct SharedStartGate {
+    regime_first_valid: Option<usize>,
+    kaufman_first_valid: Option<usize>,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn gpu_fixed_candidate_metric_map(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    plan: &PreparedGpuValidationPlan,
     eval_range: Option<(usize, usize)>,
 ) -> Result<GpuFixedMetricMapResult, String> {
     match req.backend {
         Backend::GpuHybridKernel { .. } => {
-            if let Some(eval_range) = eval_range {
-                if !crate::double_ma_backend::hybrid_backend_enabled() {
-                    let res = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_in_range(
-                        candles,
-                        fast_periods,
-                        slow_periods,
-                        fast_ma_type,
-                        slow_ma_type,
-                        &req.ma_source,
-                        first_fast_params,
-                        first_slow_params,
-                        regime_filter,
-                        first_strategy,
-                        ta_optimizer::ObjectiveKind::Sharpe,
-                        combos.len(),
-                        true,
-                        crate::gpu_backtest_kernel::KernelConfig {
-                            device_id,
-                            fast_alma_offset,
-                            fast_alma_sigma,
-                            slow_alma_offset,
-                            slow_alma_sigma,
-                        },
-                        None,
-                        None,
-                        combos.len(),
-                        0,
-                        None,
-                        Some(eval_range),
-                        &AtomicBool::new(false),
-                        None,
-                    )?;
-                    let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
-                        HashMap::with_capacity(combos.len());
-                    if let Some(all) = res.all.as_ref() {
-                        for (params, metric) in all {
-                            metric_by_pair
-                                .insert((params.fast_len, params.slow_len), metric.clone());
-                        }
-                    }
-                    return Ok((
-                        metric_by_pair,
-                        BackendUsed::Gpu,
-                        Some("GpuHybridKernel->GpuKernel".to_string()),
-                        Some(
-                            "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
-                                .to_string(),
-                        ),
-                    ));
-                }
-
-                let total_pairs =
-                    crate::double_ma::estimate_pairs_fast_lt_slow(fast_periods, slow_periods);
-                let (res, _, backend_used, route_note, fallback_reason) =
-                    crate::double_ma::optimize_double_ma_gpu_hybrid_kernel_phase1(
-                        candles,
-                        device_id,
-                        fast_periods,
-                        slow_periods,
-                        fast_ma_type,
-                        slow_ma_type,
-                        &req.ma_source,
-                        first_fast_params,
-                        first_slow_params,
-                        regime_filter,
-                        first_strategy,
-                        ta_optimizer::ObjectiveKind::Sharpe,
-                        combos.len(),
-                        true,
-                        fast_alma_offset,
-                        fast_alma_sigma,
-                        slow_alma_offset,
-                        slow_alma_sigma,
-                        None,
-                        None,
-                        total_pairs,
-                        0,
-                        &AtomicBool::new(false),
-                        None,
-                        crate::double_ma::GpuExecutionPolicy::BestEffort,
-                        true,
-                        Some(eval_range),
-                    )?;
+            if !crate::double_ma_backend::hybrid_backend_enabled() {
                 let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
-                    HashMap::with_capacity(combos.len());
-                if let Some(all) = res.all.as_ref() {
-                    for (params, metric) in all {
-                        metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
-                    }
+                    HashMap::with_capacity(plan.combos.len());
+                let ranges = [eval_range.unwrap_or((0, candles.close.len()))];
+                let metrics = gpu_exact_combo_metrics_for_ranges(req, candles, plan, &ranges)?;
+                for (params, metric) in plan.combos.iter().zip(metrics.into_iter()) {
+                    metric_by_pair.insert((params.fast_len, params.slow_len), metric);
                 }
                 return Ok((
                     metric_by_pair,
-                    backend_used,
-                    route_note.or_else(|| Some("GpuHybridKernel".to_string())),
-                    fallback_reason,
+                    BackendUsed::Gpu,
+                    Some("GpuHybridKernel->GpuKernel".to_string()),
+                    Some(
+                        "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
+                            .to_string(),
+                    ),
                 ));
             }
-            let res = crate::double_ma::run_double_ma_optimization_blocking_with_candles(
-                crate::double_ma::DoubleMaRequest {
-                    backend: req.backend.clone(),
-                    data_id: req.data_id.clone(),
-                    fast_range: (
-                        u32::from(*fast_periods.first().unwrap_or(&1)),
-                        u32::from(*fast_periods.last().unwrap_or(&1)),
-                        1,
-                    ),
-                    slow_range: (
-                        u32::from(*slow_periods.first().unwrap_or(&1)),
-                        u32::from(*slow_periods.last().unwrap_or(&1)),
-                        1,
-                    ),
-                    fast_ma_types: vec![fast_ma_type.to_string()],
-                    slow_ma_types: vec![slow_ma_type.to_string()],
-                    ma_source: req.ma_source.clone(),
-                    export_all_csv_path: None,
-                    fast_ma_params: first_fast_params.cloned(),
-                    slow_ma_params: first_slow_params.cloned(),
-                    fast_ma_param_sweeps: None,
-                    slow_ma_param_sweeps: None,
-                    strategy: first_strategy.clone(),
-                    halftrend_filter: first_halftrend.clone(),
-                    objective: ta_optimizer::ObjectiveKind::Sharpe,
-                    mode: ta_optimizer::OptimizationMode::Grid,
-                    top_k: Some(combos.len()),
-                    include_all: Some(true),
-                    heatmap_bins: Some(0),
-                    constraints: None,
-                    vdps: None,
-                    dynamic_strategy_ir: None,
-                    gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
-                    persist_followup_cache: false,
-                },
-                candles,
-                &AtomicBool::new(false),
-                None,
-            )?;
+
+            let ranges = [eval_range.unwrap_or((0, candles.close.len()))];
+            let (metrics, backend_used, route_note, fallback_reason) =
+                crate::double_ma::validate_double_ma_gpu_hybrid_kernel_exact_combos(
+                    candles,
+                    plan.device_id,
+                    &plan.combos,
+                    &plan.fast_periods,
+                    &plan.slow_periods,
+                    &plan.fast_ma_type,
+                    &plan.slow_ma_type,
+                    &req.ma_source,
+                    plan.first_fast_params.as_ref(),
+                    plan.first_slow_params.as_ref(),
+                    plan.regime_filter.as_deref(),
+                    &plan.first_strategy,
+                    plan.fast_alma_offset,
+                    plan.fast_alma_sigma,
+                    plan.slow_alma_offset,
+                    plan.slow_alma_sigma,
+                    &ranges,
+                )?;
             let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
-                HashMap::with_capacity(combos.len());
-            if let Some(all) = res.all.as_ref() {
-                for (params, metric) in all {
-                    metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
-                }
+                HashMap::with_capacity(plan.combos.len());
+            for (params, metric) in plan.combos.iter().zip(metrics.into_iter()) {
+                metric_by_pair.insert((params.fast_len, params.slow_len), metric);
             }
             Ok((
                 metric_by_pair,
-                res.backend_used,
-                res.backend_route,
-                res.backend_fallback_reason,
+                backend_used,
+                route_note.or_else(|| Some("GpuHybridKernel".to_string())),
+                fallback_reason,
             ))
         }
         _ => {
-            let res = crate::gpu_backtest_kernel::optimize_double_ma_gpu_kernel_in_range(
-                candles,
-                fast_periods,
-                slow_periods,
-                fast_ma_type,
-                slow_ma_type,
-                &req.ma_source,
-                first_fast_params,
-                first_slow_params,
-                regime_filter,
-                first_strategy,
-                ta_optimizer::ObjectiveKind::Sharpe,
-                combos.len(),
-                true,
-                crate::gpu_backtest_kernel::KernelConfig {
-                    device_id,
-                    fast_alma_offset,
-                    fast_alma_sigma,
-                    slow_alma_offset,
-                    slow_alma_sigma,
-                },
-                None,
-                None,
-                fast_periods.len().saturating_mul(slow_periods.len()),
-                0,
-                None,
-                eval_range,
-                &AtomicBool::new(false),
-                None,
-            )?;
             let mut metric_by_pair: HashMap<(u16, u16), Metrics> =
-                HashMap::with_capacity(combos.len());
-            if let Some(all) = res.all.as_ref() {
-                for (params, metric) in all {
-                    metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
-                }
+                HashMap::with_capacity(plan.combos.len());
+            let ranges = [eval_range.unwrap_or((0, candles.close.len()))];
+            let metrics = gpu_exact_combo_metrics_for_ranges(req, candles, plan, &ranges)?;
+            for (params, metric) in plan.combos.iter().zip(metrics.into_iter()) {
+                metric_by_pair.insert((params.fast_len, params.slow_len), metric);
             }
             Ok((
                 metric_by_pair,
@@ -373,31 +401,17 @@ fn gpu_fixed_candidate_metric_map(
 fn compute_gpu_walk_forward_stats_for_candidates(
     req: &DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
-    fast_periods: &[u16],
-    slow_periods: &[u16],
-    fast_ma_type: &str,
-    slow_ma_type: &str,
-    first_fast_params: Option<&HashMap<String, f64>>,
-    first_slow_params: Option<&HashMap<String, f64>>,
-    regime_filter: Option<&[f64]>,
-    first_strategy: &StrategyConfig,
-    first_halftrend: &Option<HalfTrendRegimeFilter>,
-    combos: &[ta_strategies::double_ma::DoubleMaParams],
-    start_ts: &[usize],
-    device_id: u32,
-    fast_alma_offset: f64,
-    fast_alma_sigma: f64,
-    slow_alma_offset: f64,
-    slow_alma_sigma: f64,
+    plan: &PreparedGpuValidationPlan,
     cfg: &WalkForwardConfigOptional,
+    execution_profile: &mut ValidationExecutionProfile,
 ) -> Result<Vec<WalkForwardStats>, String> {
     let n = candles.close.len();
     let window = cfg.window_bars.max(64);
     let step = cfg.step_bars.max(1);
 
-    let mut candidate_windows: Vec<Vec<usize>> = Vec::with_capacity(start_ts.len());
-    let mut unique_window_starts: BTreeSet<usize> = BTreeSet::new();
-    for &start_t in start_ts {
+    let mut candidate_windows: Vec<Vec<usize>> = Vec::with_capacity(plan.start_ts.len());
+    let mut unique_window_starts: Vec<usize> = Vec::new();
+    for &start_t in &plan.start_ts {
         let mut windows = Vec::new();
         let mut t0 = start_t;
         while t0 + 2 <= n {
@@ -406,7 +420,7 @@ fn compute_gpu_walk_forward_stats_for_candidates(
                 break;
             }
             windows.push(t0);
-            unique_window_starts.insert(t0);
+            unique_window_starts.push(t0);
             if end == n {
                 break;
             }
@@ -414,33 +428,15 @@ fn compute_gpu_walk_forward_stats_for_candidates(
         }
         candidate_windows.push(windows);
     }
+    unique_window_starts.sort_unstable();
+    unique_window_starts.dedup();
 
-    let mut by_window: HashMap<usize, HashMap<(u16, u16), Metrics>> =
-        HashMap::with_capacity(unique_window_starts.len());
-    for &t0 in &unique_window_starts {
-        let end = t0.saturating_add(window).min(n);
-        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
-            req,
-            candles,
-            fast_periods,
-            slow_periods,
-            fast_ma_type,
-            slow_ma_type,
-            first_fast_params,
-            first_slow_params,
-            regime_filter,
-            first_strategy,
-            first_halftrend,
-            combos,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
-            Some((t0, end)),
-        )?;
-        by_window.insert(t0, metric_map);
-    }
+    let ranges: Vec<(usize, usize)> = unique_window_starts
+        .iter()
+        .map(|&t0| (t0, t0.saturating_add(window).min(n)))
+        .collect();
+    let dense =
+        build_dense_metrics_with_current_gpu_map(req, candles, plan, &ranges, execution_profile)?;
 
     let mut out = Vec::with_capacity(req.candidates.len());
     for (idx, cand) in req.candidates.iter().enumerate() {
@@ -452,16 +448,19 @@ fn compute_gpu_walk_forward_stats_for_candidates(
         let mut martins = Vec::new();
         let mut trades = Vec::new();
         for &t0 in &candidate_windows[idx] {
-            let metric = by_window
-                .get(&t0)
-                .and_then(|m| m.get(&(cand.fast_len, cand.slow_len)))
-                .cloned()
+            let range_idx = unique_window_starts
+                .binary_search(&t0)
+                .map_err(|_| format!("missing GPU walk-forward range for window start {t0}"))?;
+            let combo_idx = *plan
+                .pair_to_idx
+                .get(&(cand.fast_len, cand.slow_len))
                 .ok_or_else(|| {
                     format!(
-                        "GPU walk-forward validation did not return metrics for pair ({}, {}) at window start {}",
-                        cand.fast_len, cand.slow_len, t0
+                        "GPU walk-forward validation missing pair index for ({}, {})",
+                        cand.fast_len, cand.slow_len
                     )
                 })?;
+            let metric = dense.metric(range_idx, combo_idx);
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
@@ -516,26 +515,12 @@ fn sanitize_gpu_cscv_slices(slices: usize) -> usize {
 fn compute_gpu_cscv_slice_stats_for_candidates(
     req: &DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
-    fast_periods: &[u16],
-    slow_periods: &[u16],
-    fast_ma_type: &str,
-    slow_ma_type: &str,
-    first_fast_params: Option<&HashMap<String, f64>>,
-    first_slow_params: Option<&HashMap<String, f64>>,
-    regime_filter: Option<&[f64]>,
-    first_strategy: &StrategyConfig,
-    first_halftrend: &Option<HalfTrendRegimeFilter>,
-    combos: &[ta_strategies::double_ma::DoubleMaParams],
-    start_ts: &[usize],
-    device_id: u32,
-    fast_alma_offset: f64,
-    fast_alma_sigma: f64,
-    slow_alma_offset: f64,
-    slow_alma_sigma: f64,
+    plan: &PreparedGpuValidationPlan,
     cfg: &CscvPboConfig,
+    execution_profile: &mut ValidationExecutionProfile,
 ) -> Result<Option<HashMap<(u16, u16), Vec<SliceReturnStats>>>, String> {
     let slices = sanitize_gpu_cscv_slices(cfg.slices);
-    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let common_start_t = plan.start_ts.iter().copied().max().unwrap_or(0);
     let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
     if slice_bars < 2 || req.candidates.len() < 2 {
         return Ok(None);
@@ -548,31 +533,19 @@ fn compute_gpu_cscv_slice_stats_for_candidates(
             .or_insert_with(|| vec![SliceReturnStats::default(); slices]);
     }
 
-    for slice_idx in 0..slices {
-        let t0 = common_start_t + slice_idx * slice_bars;
-        let end = t0.saturating_add(slice_bars).min(candles.close.len());
-        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
-            req,
-            candles,
-            fast_periods,
-            slow_periods,
-            fast_ma_type,
-            slow_ma_type,
-            first_fast_params,
-            first_slow_params,
-            regime_filter,
-            first_strategy,
-            first_halftrend,
-            combos,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
-            Some((t0, end)),
-        )?;
-        let nf = slice_bars as f64;
-        for (pair, metric) in metric_map {
+    let ranges: Vec<(usize, usize)> = (0..slices)
+        .map(|slice_idx| {
+            let t0 = common_start_t + slice_idx * slice_bars;
+            let end = t0.saturating_add(slice_bars).min(candles.close.len());
+            (t0, end)
+        })
+        .collect();
+    let dense =
+        build_dense_metrics_with_current_gpu_map(req, candles, plan, &ranges, execution_profile)?;
+    let nf = slice_bars as f64;
+    for (slice_idx, _) in dense.ranges.iter().enumerate() {
+        for (&pair, &combo_idx) in &plan.pair_to_idx {
+            let metric = dense.metric(slice_idx, combo_idx);
             if let Some(slice_vec) = out.get_mut(&pair) {
                 let mean = metric.sharpe * metric.volatility;
                 let sum = mean * nf;
@@ -591,26 +564,12 @@ fn compute_gpu_cscv_slice_stats_for_candidates(
 fn compute_gpu_spa_slice_sums_for_candidates(
     req: &DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
-    fast_periods: &[u16],
-    slow_periods: &[u16],
-    fast_ma_type: &str,
-    slow_ma_type: &str,
-    first_fast_params: Option<&HashMap<String, f64>>,
-    first_slow_params: Option<&HashMap<String, f64>>,
-    regime_filter: Option<&[f64]>,
-    first_strategy: &StrategyConfig,
-    first_halftrend: &Option<HalfTrendRegimeFilter>,
-    combos: &[ta_strategies::double_ma::DoubleMaParams],
-    start_ts: &[usize],
-    device_id: u32,
-    fast_alma_offset: f64,
-    fast_alma_sigma: f64,
-    slow_alma_offset: f64,
-    slow_alma_sigma: f64,
+    plan: &PreparedGpuValidationPlan,
     cfg: &SpaConfigOptional,
+    execution_profile: &mut ValidationExecutionProfile,
 ) -> Result<Option<HashMap<(u16, u16), Vec<f64>>>, String> {
     let slices = cfg.slices.max(4);
-    let common_start_t = start_ts.iter().copied().max().unwrap_or(0);
+    let common_start_t = plan.start_ts.iter().copied().max().unwrap_or(0);
     let slice_bars = candles.close.len().saturating_sub(common_start_t) / slices;
     if slice_bars < 2 || req.candidates.is_empty() {
         return Ok(None);
@@ -623,30 +582,18 @@ fn compute_gpu_spa_slice_sums_for_candidates(
     }
 
     let nf = slice_bars as f64;
-    for slice_idx in 0..slices {
-        let t0 = common_start_t + slice_idx * slice_bars;
-        let end = t0.saturating_add(slice_bars).min(candles.close.len());
-        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
-            req,
-            candles,
-            fast_periods,
-            slow_periods,
-            fast_ma_type,
-            slow_ma_type,
-            first_fast_params,
-            first_slow_params,
-            regime_filter,
-            first_strategy,
-            first_halftrend,
-            combos,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
-            Some((t0, end)),
-        )?;
-        for (pair, metric) in metric_map {
+    let ranges: Vec<(usize, usize)> = (0..slices)
+        .map(|slice_idx| {
+            let t0 = common_start_t + slice_idx * slice_bars;
+            let end = t0.saturating_add(slice_bars).min(candles.close.len());
+            (t0, end)
+        })
+        .collect();
+    let dense =
+        build_dense_metrics_with_current_gpu_map(req, candles, plan, &ranges, execution_profile)?;
+    for (slice_idx, _) in dense.ranges.iter().enumerate() {
+        for (&pair, &combo_idx) in &plan.pair_to_idx {
+            let metric = dense.metric(slice_idx, combo_idx);
             if let Some(slice_vec) = out.get_mut(&pair) {
                 slice_vec[slice_idx] = metric.sharpe * metric.volatility * nf;
             }
@@ -666,6 +613,7 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
     first_fast_params: Option<&HashMap<String, f64>>,
     first_slow_params: Option<&HashMap<String, f64>>,
     cfg: &ReoptWalkForwardConfigOptional,
+    execution_profile: &mut ValidationExecutionProfile,
 ) -> Result<Option<ReoptWalkForwardStats>, String> {
     if finalist_params.is_empty() || candles.close.len() < 3 {
         return Ok(None);
@@ -673,106 +621,29 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
 
     let top_n = cfg.top_n_candidates.max(1).min(finalist_params.len());
     let finalists = &finalist_params[..top_n];
-    let finalist_start_ts = &finalist_start_ts[..top_n];
-    let device_id = validation_supports_gpu_fixed_candidates(req)?;
-    let first = &finalists[0];
-    let fast_ma_type = first.fast_ma_type.trim().to_ascii_lowercase();
-    let slow_ma_type = first.slow_ma_type.trim().to_ascii_lowercase();
-    let first_fast_effective = first.fast_ma_params.as_ref().or(first_fast_params);
-    let first_slow_effective = first.slow_ma_params.as_ref().or(first_slow_params);
-    let first_halftrend = &first.halftrend_filter;
-    let first_strategy = &first.strategy;
+    if finalist_start_ts.len() < top_n {
+        return Err("GPU reopt_walk_forward finalist start_ts length mismatch".to_string());
+    }
+    let mut plan = prepare_gpu_validation_plan(
+        req,
+        candles,
+        0,
+        finalists,
+        first_fast_params,
+        first_slow_params,
+        "GPU reopt_walk_forward",
+    )?;
+    plan.start_ts = finalist_start_ts[..top_n].to_vec();
 
-    let mut fast_periods: BTreeSet<u16> = BTreeSet::new();
-    let mut slow_periods: BTreeSet<u16> = BTreeSet::new();
-    let mut combos = Vec::with_capacity(finalists.len());
     let mut finalist_entries = Vec::with_capacity(finalists.len());
     for (idx, params) in finalists.iter().enumerate() {
-        if params.fast_ma_type.trim().to_ascii_lowercase() != fast_ma_type
-            || params.slow_ma_type.trim().to_ascii_lowercase() != slow_ma_type
-        {
-            return Err(
-                "GPU reopt_walk_forward currently requires uniform fast/slow MA types".to_string(),
-            );
-        }
-        if !serialized_eq(&params.strategy, first_strategy)? {
-            return Err(
-                "GPU reopt_walk_forward currently requires a uniform StrategyConfig".to_string(),
-            );
-        }
-        if !serialized_eq(&params.halftrend_filter, first_halftrend)? {
-            return Err(
-                "GPU reopt_walk_forward currently requires a uniform halftrend filter".to_string(),
-            );
-        }
-        if !serialized_eq(
-            &params.fast_ma_params.as_ref().or(first_fast_params),
-            &first_fast_effective,
-        )? {
-            return Err(
-                "GPU reopt_walk_forward currently requires uniform fast MA params".to_string(),
-            );
-        }
-        if !serialized_eq(
-            &params.slow_ma_params.as_ref().or(first_slow_params),
-            &first_slow_effective,
-        )? {
-            return Err(
-                "GPU reopt_walk_forward currently requires uniform slow MA params".to_string(),
-            );
-        }
-        fast_periods.insert(params.fast_len);
-        slow_periods.insert(params.slow_len);
-        combos.push(ta_strategies::double_ma::DoubleMaParams {
-            fast_len: params.fast_len,
-            slow_len: params.slow_len,
-            fast_ma_id: 0,
-            slow_ma_id: 0,
-        });
-        let key = serde_json::to_string(params).unwrap_or_else(|_| {
-            format!(
-                "{}:{}:{}:{}",
-                params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
-            )
-        });
-        finalist_entries.push((
-            key,
-            (params.fast_len, params.slow_len),
-            finalist_start_ts[idx],
-        ));
+        let key = canonical_json_key(params)?;
+        finalist_entries.push((key, (params.fast_len, params.slow_len), plan.start_ts[idx]));
     }
-    let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
-    let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
-
-    let regime_filter = compute_combined_regime_filter(
-        candles,
-        &req.ma_source,
-        first_strategy,
-        first_halftrend.as_ref(),
-    )?;
-    let blockers = crate::double_ma_backend::gpu_kernel_blockers_for_request(
-        &fast_ma_type,
-        &slow_ma_type,
-        first_strategy,
-        regime_filter.is_some(),
-        ta_optimizer::ObjectiveKind::Sharpe,
-        combos.len(),
-        true,
-    );
-    if !blockers.is_empty() {
-        return Err(format!(
-            "GPU reopt_walk_forward is unavailable. Reasons: {}",
-            blockers.join("; ")
-        ));
-    }
-
-    let (fast_alma_offset, fast_alma_sigma) =
-        resolve_alma_params_for_side("fast", &fast_ma_type, first_fast_effective)?;
-    let (slow_alma_offset, slow_alma_sigma) =
-        resolve_alma_params_for_side("slow", &slow_ma_type, first_slow_effective)?;
 
     let n = candles.close.len();
-    let common_start_t = finalist_start_ts
+    let common_start_t = plan
+        .start_ts
         .iter()
         .copied()
         .max()
@@ -780,7 +651,7 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
         .min(n.saturating_sub(2));
     let window = cfg.window_bars.max(64);
     let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
     let mut t0 = common_start_t;
     while t0 + 2 < n {
         let train_end = t0.saturating_add(window).min(n);
@@ -791,42 +662,28 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
         if test_end <= train_end + 1 {
             break;
         }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
+        ranges.push((t0, train_end));
+        ranges.push((train_end, test_end));
         if test_end == n {
             break;
         }
         t0 = t0.saturating_add(step);
     }
+    ranges.sort_unstable();
+    ranges.dedup();
     if ranges.is_empty() {
         return Ok(None);
     }
 
-    let mut range_metrics: HashMap<(usize, usize), HashMap<(u16, u16), Metrics>> =
-        HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
-        let (metric_map, _, _, _) = gpu_fixed_candidate_metric_map(
-            req,
-            candles,
-            &fast_periods,
-            &slow_periods,
-            &fast_ma_type,
-            &slow_ma_type,
-            first_fast_effective,
-            first_slow_effective,
-            regime_filter.as_deref(),
-            first_strategy,
-            first_halftrend,
-            &combos,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
-            Some((start, end)),
-        )?;
-        range_metrics.insert((start, end), metric_map);
-    }
+    let dense =
+        build_dense_metrics_with_current_gpu_map(req, candles, &plan, &ranges, execution_profile)?;
+    let range_to_idx: HashMap<(usize, usize), usize> = dense
+        .ranges
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(idx, range)| (range, idx))
+        .collect();
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -834,16 +691,13 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
         cfg,
         |(_, _, start_t)| *start_t,
         |(_, pair, _), start, end| {
-            range_metrics
+            let range_idx = *range_to_idx
                 .get(&(start, end))
-                .and_then(|m| m.get(pair))
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing GPU reopt metrics for pair ({}, {}) in range {}..{}",
-                        pair.0, pair.1, start, end
-                    )
-                })
+                .unwrap_or_else(|| panic!("missing GPU reopt range {}..{}", start, end));
+            let combo_idx = *plan.pair_to_idx.get(pair).unwrap_or_else(|| {
+                panic!("missing GPU reopt pair index for ({}, {})", pair.0, pair.1)
+            });
+            dense.metric(range_idx, combo_idx).clone()
         },
         |(key, _, _)| key.clone(),
     )
@@ -861,28 +715,102 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
     _first_fast_params: Option<&HashMap<String, f64>>,
     _first_slow_params: Option<&HashMap<String, f64>>,
     _cfg: &ReoptWalkForwardConfigOptional,
+    _execution_profile: &mut ValidationExecutionProfile,
 ) -> Result<Option<ReoptWalkForwardStats>, String> {
     Err("GPU reopt_walk_forward requires cuda and cuda-backtest-kernel features".to_string())
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn serialized_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
-    Ok(serde_json::to_string(a).map_err(|e| e.to_string())?
-        == serde_json::to_string(b).map_err(|e| e.to_string())?)
+fn canonicalize_json_value(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(items) => {
+            JsonValue::Array(items.iter().map(canonicalize_json_value).collect())
+        }
+        JsonValue::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for key in keys {
+                if let Some(next) = map.get(key) {
+                    out.insert(key.clone(), canonicalize_json_value(next));
+                }
+            }
+            JsonValue::Object(out)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn canonical_json_key<T: Serialize>(value: &T) -> Result<String, String> {
+    let json = serde_json::to_value(value).map_err(|e| e.to_string())?;
+    serde_json::to_string(&canonicalize_json_value(&json)).map_err(|e| e.to_string())
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn candidate_start_t(
+fn build_validation_execution_profile_from_candidates(
+    candidates: &[DoubleMaValidationParams],
+) -> Result<ValidationExecutionProfile, String> {
+    let candidate_keys: Result<Vec<_>, _> = candidates.iter().map(canonical_json_key).collect();
+    let mut profile = ValidationExecutionProfile::from_candidate_keys(&candidate_keys?);
+    profile.unique_fast_periods = candidates
+        .iter()
+        .map(|candidate| candidate.fast_len)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    profile.unique_slow_periods = candidates
+        .iter()
+        .map(|candidate| candidate.slow_len)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    Ok(profile)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_shared_start_gate(
     candles: &vector_ta::utilities::data_loader::Candles,
     ma_source: &str,
+    strategy: &StrategyConfig,
+    halftrend: Option<&HalfTrendRegimeFilter>,
+) -> Result<(SharedStartGate, Option<Vec<f64>>), String> {
+    let n = candles.close.len();
+    let regime_filter = compute_combined_regime_filter(candles, ma_source, strategy, halftrend)?;
+    let regime_first_valid = regime_filter
+        .as_ref()
+        .map(|trend| {
+            if trend.len() != n {
+                return Err("regime trend series length mismatch".to_string());
+            }
+            first_finite_idx(trend).ok_or_else(|| "regime trend series all non-finite".to_string())
+        })
+        .transpose()?;
+    let kaufman_first_valid = crate::double_ma::compute_kaufman_stop_series(candles, strategy)?
+        .as_ref()
+        .map(|ks| {
+            let fv_k_long = first_finite_idx(&ks.long)
+                .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+            let fv_k_short = first_finite_idx(&ks.short)
+                .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+            Ok::<usize, String>(fv_k_long.max(fv_k_short))
+        })
+        .transpose()?;
+    Ok((
+        SharedStartGate {
+            regime_first_valid,
+            kaufman_first_valid,
+        },
+        regime_filter,
+    ))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn candidate_start_t_from_shared(
     base_first_valid: usize,
     params: &DoubleMaValidationParams,
-) -> Result<usize, String> {
-    let n = candles.close.len();
+    gate: SharedStartGate,
+) -> usize {
     let trade_offset = if params.strategy.trade_on_next_bar {
-        1
+        1usize
     } else {
-        0
+        0usize
     };
     let ma_warmup = base_first_valid
         .saturating_add(
@@ -891,49 +819,27 @@ fn candidate_start_t(
                 .saturating_sub(1),
         )
         .saturating_add(trade_offset);
-    let mut start_t = ma_warmup;
-    let halftrend_trend = compute_combined_regime_filter(
-        candles,
-        ma_source,
-        &params.strategy,
-        params.halftrend_filter.as_ref(),
-    )?;
-    if let Some(trend) = halftrend_trend.as_ref() {
-        if trend.len() != n {
-            return Err("regime trend series length mismatch".to_string());
-        }
-        let fv_ht = first_finite_idx(trend)
-            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
-        start_t = start_t.max(fv_ht);
-    }
-    if let Some(ks) =
-        crate::double_ma::compute_kaufman_stop_series(candles, &params.strategy)?.as_ref()
-    {
-        let fv_k_long = first_finite_idx(&ks.long)
-            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
-        let fv_k_short = first_finite_idx(&ks.short)
-            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
-        start_t = start_t.max(fv_k_long.max(fv_k_short));
-    }
-    Ok(start_t)
+    ma_warmup
+        .max(gate.regime_first_valid.unwrap_or(0))
+        .max(gate.kaufman_first_valid.unwrap_or(0))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn try_prepare_gpu_fixed_candidate_validation(
+fn prepare_gpu_validation_plan(
     req: &DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
     base_first_valid: usize,
-) -> Result<GpuFixedCandidateValidationEval, String> {
+    candidates: &[DoubleMaValidationParams],
+    fast_ma_params_req: Option<&HashMap<String, f64>>,
+    slow_ma_params_req: Option<&HashMap<String, f64>>,
+    unsupported_context: &str,
+) -> Result<PreparedGpuValidationPlan, String> {
     let device_id = validation_supports_gpu_fixed_candidates(req)?;
-    if let Some(reason) = gpu_validation_feature_blocker(req) {
-        return Err(reason);
-    }
-    if req.candidates.is_empty() {
+    if candidates.is_empty() {
         return Err("no candidates to validate".to_string());
     }
 
-    let first = req
-        .candidates
+    let first = candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
     let fast_ma_type = first.fast_ma_type.trim().to_ascii_lowercase();
@@ -942,89 +848,90 @@ fn try_prepare_gpu_fixed_candidate_validation(
         return Err("candidate MA types cannot be empty".to_string());
     }
 
-    let first_fast_params = first
-        .fast_ma_params
-        .as_ref()
-        .or(req.fast_ma_params.as_ref());
-    let first_slow_params = first
-        .slow_ma_params
-        .as_ref()
-        .or(req.slow_ma_params.as_ref());
+    let first_fast_params = first.fast_ma_params.as_ref().or(fast_ma_params_req);
+    let first_slow_params = first.slow_ma_params.as_ref().or(slow_ma_params_req);
     let first_strategy = &first.strategy;
     let first_halftrend = &first.halftrend_filter;
     if let Some(reason) = gpu_validation_strategy_blocker(first_strategy) {
         return Err(reason);
     }
 
-    let mut fast_periods: BTreeSet<u16> = BTreeSet::new();
-    let mut slow_periods: BTreeSet<u16> = BTreeSet::new();
-    let mut combos = Vec::with_capacity(req.candidates.len());
-    let mut start_ts = Vec::with_capacity(req.candidates.len());
+    let first_strategy_key = canonical_json_key(first_strategy)?;
+    let first_halftrend_key = canonical_json_key(first_halftrend)?;
+    let first_fast_params_key = canonical_json_key(&first_fast_params)?;
+    let first_slow_params_key = canonical_json_key(&first_slow_params)?;
 
-    for cand in &req.candidates {
-        if cand.fast_ma_type.trim().to_ascii_lowercase() != fast_ma_type
-            || cand.slow_ma_type.trim().to_ascii_lowercase() != slow_ma_type
-        {
-            return Err(
-                "GPU fixed-candidate validation currently requires uniform fast/slow MA types"
-                    .to_string(),
-            );
-        }
-        if !serialized_eq(&cand.strategy, first_strategy)? {
-            return Err(
-                "GPU fixed-candidate validation currently requires a uniform StrategyConfig"
-                    .to_string(),
-            );
-        }
-        if !serialized_eq(&cand.halftrend_filter, first_halftrend)? {
-            return Err(
-                "GPU fixed-candidate validation currently requires a uniform halftrend filter"
-                    .to_string(),
-            );
-        }
-        if !serialized_eq(
-            &cand.fast_ma_params.as_ref().or(req.fast_ma_params.as_ref()),
-            &first_fast_params,
-        )? {
-            return Err(
-                "GPU fixed-candidate validation currently requires uniform fast MA params"
-                    .to_string(),
-            );
-        }
-        if !serialized_eq(
-            &cand.slow_ma_params.as_ref().or(req.slow_ma_params.as_ref()),
-            &first_slow_params,
-        )? {
-            return Err(
-                "GPU fixed-candidate validation currently requires uniform slow MA params"
-                    .to_string(),
-            );
-        }
-
-        fast_periods.insert(cand.fast_len);
-        slow_periods.insert(cand.slow_len);
-        combos.push(ta_strategies::double_ma::DoubleMaParams {
-            fast_len: cand.fast_len,
-            slow_len: cand.slow_len,
-            fast_ma_id: 0,
-            slow_ma_id: 0,
-        });
-        start_ts.push(candidate_start_t(
-            candles,
-            &req.ma_source,
-            base_first_valid,
-            cand,
-        )?);
-    }
-
-    let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
-    let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
-    let regime_filter = compute_combined_regime_filter(
+    let (shared_gate, regime_filter) = compute_shared_start_gate(
         candles,
         &req.ma_source,
         first_strategy,
         first_halftrend.as_ref(),
     )?;
+    let mut fast_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut slow_periods: BTreeSet<u16> = BTreeSet::new();
+    let mut combo_pairs = Vec::with_capacity(candidates.len());
+    let mut pair_to_idx = HashMap::with_capacity(candidates.len().saturating_mul(2));
+    let mut combos = Vec::with_capacity(candidates.len());
+    let mut start_ts = Vec::with_capacity(candidates.len());
+    let mut candidate_keys = Vec::with_capacity(candidates.len());
+
+    for cand in candidates {
+        if cand.fast_ma_type.trim().to_ascii_lowercase() != fast_ma_type
+            || cand.slow_ma_type.trim().to_ascii_lowercase() != slow_ma_type
+        {
+            return Err(format!(
+                "{unsupported_context} currently requires uniform fast/slow MA types"
+            ));
+        }
+        if canonical_json_key(&cand.strategy)? != first_strategy_key {
+            return Err(format!(
+                "{unsupported_context} currently requires a uniform StrategyConfig"
+            ));
+        }
+        if canonical_json_key(&cand.halftrend_filter)? != first_halftrend_key {
+            return Err(format!(
+                "{unsupported_context} currently requires a uniform halftrend filter"
+            ));
+        }
+        if canonical_json_key(&cand.fast_ma_params.as_ref().or(fast_ma_params_req))?
+            != first_fast_params_key
+        {
+            return Err(format!(
+                "{unsupported_context} currently requires uniform fast MA params"
+            ));
+        }
+        if canonical_json_key(&cand.slow_ma_params.as_ref().or(slow_ma_params_req))?
+            != first_slow_params_key
+        {
+            return Err(format!(
+                "{unsupported_context} currently requires uniform slow MA params"
+            ));
+        }
+
+        candidate_keys.push(canonical_json_key(cand)?);
+        fast_periods.insert(cand.fast_len);
+        slow_periods.insert(cand.slow_len);
+        let pair = (cand.fast_len, cand.slow_len);
+        pair_to_idx.entry(pair).or_insert_with(|| {
+            let next_idx = combo_pairs.len();
+            combo_pairs.push(pair);
+            combos.push(ta_strategies::double_ma::DoubleMaParams {
+                fast_len: cand.fast_len,
+                slow_len: cand.slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+            next_idx
+        });
+        start_ts.push(candidate_start_t_from_shared(
+            base_first_valid,
+            cand,
+            shared_gate,
+        ));
+    }
+
+    let fast_periods: Vec<u16> = fast_periods.into_iter().collect();
+    let slow_periods: Vec<u16> = slow_periods.into_iter().collect();
     let blockers = crate::double_ma_backend::gpu_kernel_blockers_for_request(
         &fast_ma_type,
         &slow_ma_type,
@@ -1036,7 +943,7 @@ fn try_prepare_gpu_fixed_candidate_validation(
     );
     if !blockers.is_empty() {
         return Err(format!(
-            "GPU fixed-candidate validation is unavailable. Reasons: {}",
+            "{unsupported_context} is unavailable. Reasons: {}",
             blockers.join("; ")
         ));
     }
@@ -1045,31 +952,188 @@ fn try_prepare_gpu_fixed_candidate_validation(
         resolve_alma_params_for_side("fast", &fast_ma_type, first_fast_params)?;
     let (slow_alma_offset, slow_alma_sigma) =
         resolve_alma_params_for_side("slow", &slow_ma_type, first_slow_params)?;
-    let metric_by_pair = gpu_fixed_candidate_metric_map(
-        req,
-        candles,
-        &fast_periods,
-        &slow_periods,
-        &fast_ma_type,
-        &slow_ma_type,
-        first_fast_params,
-        first_slow_params,
-        regime_filter.as_deref(),
-        first_strategy,
-        first_halftrend,
-        &combos,
+    let device_regime_filter = regime_filter
+        .as_ref()
+        .map(|values| {
+            let regime_first_valid = first_finite_idx(values)
+                .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+            crate::gpu_backtest_kernel::upload_host_regime_filter(
+                device_id,
+                &values.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                regime_first_valid.max(shared_gate.regime_first_valid.unwrap_or(0)),
+            )
+            .map(Rc::new)
+        })
+        .transpose()?;
+    let evaluated_pairs_on_device =
+        crate::double_ma::estimate_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+
+    Ok(PreparedGpuValidationPlan {
+        combo_pairs,
+        pair_to_idx,
+        combos,
+        start_ts,
+        fast_periods: fast_periods.clone(),
+        slow_periods: slow_periods.clone(),
+        fast_ma_type,
+        slow_ma_type,
+        first_fast_params: first_fast_params.cloned(),
+        first_slow_params: first_slow_params.cloned(),
+        first_strategy: first_strategy.clone(),
+        regime_filter,
         device_id,
         fast_alma_offset,
         fast_alma_sigma,
         slow_alma_offset,
         slow_alma_sigma,
-        None,
+        device_regime_filter,
+        unique_candidates: candidate_keys
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        evaluated_pairs_on_device,
+    })
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn build_dense_metrics_with_current_gpu_map(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    plan: &PreparedGpuValidationPlan,
+    ranges: &[(usize, usize)],
+    execution_profile: &mut ValidationExecutionProfile,
+) -> Result<DenseRangeMetrics, String> {
+    let materialize_t0 = std::time::Instant::now();
+    let combo_count = plan.combo_pairs.len();
+    let expected_metrics = ranges.len().saturating_mul(combo_count);
+    let metrics = match req.backend {
+        Backend::GpuHybridKernel { .. } if crate::double_ma_backend::hybrid_backend_enabled() => {
+            crate::double_ma::validate_double_ma_gpu_hybrid_kernel_exact_combos(
+                candles,
+                plan.device_id,
+                &plan.combos,
+                &plan.fast_periods,
+                &plan.slow_periods,
+                &plan.fast_ma_type,
+                &plan.slow_ma_type,
+                &req.ma_source,
+                plan.first_fast_params.as_ref(),
+                plan.first_slow_params.as_ref(),
+                plan.regime_filter.as_deref(),
+                &plan.first_strategy,
+                plan.fast_alma_offset,
+                plan.fast_alma_sigma,
+                plan.slow_alma_offset,
+                plan.slow_alma_sigma,
+                ranges,
+            )?
+            .0
+        }
+        _ => gpu_exact_combo_metrics_for_ranges(req, candles, plan, ranges)?,
+    };
+    if metrics.len() != expected_metrics {
+        return Err(format!(
+            "expected {expected_metrics} GPU metrics for {} ranges and {combo_count} combos, got {}",
+            ranges.len(),
+            metrics.len()
+        ));
+    }
+
+    execution_profile.gpu_range_eval_calls = Some(
+        execution_profile
+            .gpu_range_eval_calls
+            .unwrap_or(0)
+            .saturating_add(1),
+    );
+    execution_profile.gpu_range_count = Some(
+        execution_profile
+            .gpu_range_count
+            .unwrap_or(0)
+            .saturating_add(ranges.len()),
+    );
+    execution_profile.gpu_result_materialization_wall_ms = Some(
+        execution_profile
+            .gpu_result_materialization_wall_ms
+            .unwrap_or(0)
+            .saturating_add(materialize_t0.elapsed().as_millis() as u64),
+    );
+
+    Ok(DenseRangeMetrics {
+        ranges: ranges.to_vec(),
+        metrics,
+        combo_count,
+    })
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(dead_code)]
+fn candidate_start_t(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    ma_source: &str,
+    base_first_valid: usize,
+    params: &DoubleMaValidationParams,
+) -> Result<usize, String> {
+    let (shared_gate, _) = compute_shared_start_gate(
+        candles,
+        ma_source,
+        &params.strategy,
+        params.halftrend_filter.as_ref(),
     )?;
+    Ok(candidate_start_t_from_shared(
+        base_first_valid,
+        params,
+        shared_gate,
+    ))
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn try_prepare_gpu_fixed_candidate_validation(
+    req: &DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    base_first_valid: usize,
+) -> Result<GpuFixedCandidateValidationEval, String> {
+    if let Some(reason) = gpu_validation_feature_blocker(req) {
+        return Err(reason);
+    }
+    let mut execution_profile =
+        build_validation_execution_profile_from_candidates(&req.candidates)?;
+    let plan = prepare_gpu_validation_plan(
+        req,
+        candles,
+        base_first_valid,
+        &req.candidates,
+        req.fast_ma_params.as_ref(),
+        req.slow_ma_params.as_ref(),
+        "GPU fixed-candidate validation",
+    )?;
+    execution_profile.unique_fast_periods = plan.fast_periods.len();
+    execution_profile.unique_slow_periods = plan.slow_periods.len();
+    let (metric_by_pair, backend_used, backend_route, backend_fallback_reason) =
+        gpu_fixed_candidate_metric_map(req, candles, &plan, None)?;
+    let exact_combo_backend = matches!(
+        backend_route.as_deref(),
+        Some("GpuKernel")
+            | Some("Auto->GpuKernel")
+            | Some("GpuHybridKernel")
+            | Some("GpuHybridKernel->GpuKernel")
+    ) && matches!(backend_used, BackendUsed::Gpu);
+    let evaluated_pairs_on_device = if exact_combo_backend {
+        plan.combo_pairs.len()
+    } else {
+        plan.evaluated_pairs_on_device
+    };
+    execution_profile.evaluated_pairs_on_device = Some(evaluated_pairs_on_device);
+    execution_profile.expansion_ratio = if plan.unique_candidates > 0 {
+        Some(evaluated_pairs_on_device as f64 / plan.unique_candidates as f64)
+    } else {
+        None
+    };
+    execution_profile.gpu_range_eval_calls = Some(1);
+    execution_profile.gpu_range_count = Some(1);
 
     let mut ordered_metrics = Vec::with_capacity(req.candidates.len());
     for cand in &req.candidates {
         let metric = metric_by_pair
-            .0
             .get(&(cand.fast_len, cand.slow_len))
             .cloned()
             .ok_or_else(|| {
@@ -1085,23 +1149,9 @@ fn try_prepare_gpu_fixed_candidate_validation(
         Some(compute_gpu_walk_forward_stats_for_candidates(
             req,
             candles,
-            &fast_periods,
-            &slow_periods,
-            &fast_ma_type,
-            &slow_ma_type,
-            first_fast_params,
-            first_slow_params,
-            regime_filter.as_deref(),
-            first_strategy,
-            first_halftrend,
-            &combos,
-            &start_ts,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
+            &plan,
             walk_cfg,
+            &mut execution_profile,
         )?)
     } else {
         None
@@ -1110,23 +1160,9 @@ fn try_prepare_gpu_fixed_candidate_validation(
         compute_gpu_cscv_slice_stats_for_candidates(
             req,
             candles,
-            &fast_periods,
-            &slow_periods,
-            &fast_ma_type,
-            &slow_ma_type,
-            first_fast_params,
-            first_slow_params,
-            regime_filter.as_deref(),
-            first_strategy,
-            first_halftrend,
-            &combos,
-            &start_ts,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
+            &plan,
             cscv_cfg,
+            &mut execution_profile,
         )?
     } else {
         None
@@ -1135,23 +1171,9 @@ fn try_prepare_gpu_fixed_candidate_validation(
         compute_gpu_spa_slice_sums_for_candidates(
             req,
             candles,
-            &fast_periods,
-            &slow_periods,
-            &fast_ma_type,
-            &slow_ma_type,
-            first_fast_params,
-            first_slow_params,
-            regime_filter.as_deref(),
-            first_strategy,
-            first_halftrend,
-            &combos,
-            &start_ts,
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
+            &plan,
             spa_cfg,
+            &mut execution_profile,
         )?
     } else {
         None
@@ -1159,13 +1181,14 @@ fn try_prepare_gpu_fixed_candidate_validation(
 
     Ok(GpuFixedCandidateValidationEval {
         metrics: ordered_metrics,
-        start_ts,
+        start_ts: plan.start_ts,
         walk_forwards,
         cscv_slices,
         spa_slice_sums,
-        backend_used: metric_by_pair.1,
-        backend_route: metric_by_pair.2,
-        backend_fallback_reason: metric_by_pair.3,
+        backend_used,
+        backend_route,
+        backend_fallback_reason,
+        execution_profile,
     })
 }
 
@@ -1377,6 +1400,8 @@ pub struct DoubleMaValidationResult {
     pub cross_ticker: Option<CrossTickerValidationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cscv_pbo: Option<CscvPboResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_profile: Option<ValidationExecutionProfile>,
     pub run_verdict: ValidationRunVerdict,
 }
 
@@ -1574,6 +1599,15 @@ fn build_candidate_series<'a>(
 }
 
 fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usize) -> Metrics {
+    eval_metrics_window_with_cfg(series, start_t, end_t, &series.cfg)
+}
+
+fn eval_metrics_window_with_cfg(
+    series: &CandidateSeries<'_>,
+    start_t: usize,
+    end_t: usize,
+    cfg: &StrategyConfig,
+) -> Metrics {
     let n = series.n;
     let end_t = end_t.min(n);
     if end_t < 2 || start_t >= end_t {
@@ -1592,7 +1626,7 @@ fn eval_metrics_window(series: &CandidateSeries<'_>, start_t: usize, end_t: usiz
         slow,
         ht2,
         start_t,
-        &series.cfg,
+        cfg,
         series.kaufman_stops.as_ref(),
         true,
     )
@@ -2142,6 +2176,7 @@ fn compute_friction_stress_summaries(
     fast_ma_params_req: Option<&HashMap<String, f64>>,
     slow_ma_params_req: Option<&HashMap<String, f64>>,
     finalists: &[DoubleMaValidationParams],
+    finalist_series: Option<&[CandidateSeries<'_>]>,
 ) -> Result<Vec<Option<FrictionStressStats>>, String> {
     if finalists.is_empty() {
         return Ok(Vec::new());
@@ -2166,15 +2201,21 @@ fn compute_friction_stress_summaries(
 
     let mut base_scored: Vec<(usize, Metrics, f64)> = Vec::with_capacity(finalists.len());
     for (idx, params) in finalists.iter().enumerate() {
-        let series = build_candidate_series(
-            candles,
-            lr,
-            base_first_valid,
-            ma_source,
-            fast_ma_params_req,
-            slow_ma_params_req,
-            params,
-        )?;
+        let owned_series;
+        let series = if let Some(cached) = finalist_series.and_then(|cache| cache.get(idx)) {
+            cached
+        } else {
+            owned_series = build_candidate_series(
+                candles,
+                lr,
+                base_first_valid,
+                ma_source,
+                fast_ma_params_req,
+                slow_ma_params_req,
+                params,
+            )?;
+            &owned_series
+        };
         let metrics = eval_metrics_window(&series, series.start_t, series.n);
         let score = double_ma_validation_robust_score(&metrics, None);
         base_scored.push((idx, metrics, score));
@@ -2192,16 +2233,20 @@ fn compute_friction_stress_summaries(
             stressed.strategy.fee_bps = scenario.fee_bps;
             stressed.strategy.spread_bps = scenario.spread_bps;
             stressed.strategy.slippage_bps = scenario.slippage_bps;
-            let series = build_candidate_series(
-                candles,
-                lr,
-                base_first_valid,
-                ma_source,
-                fast_ma_params_req,
-                slow_ma_params_req,
-                &stressed,
-            )?;
-            let metrics = eval_metrics_window(&series, series.start_t, series.n);
+            let metrics = if let Some(series) = finalist_series.and_then(|cache| cache.get(idx)) {
+                eval_metrics_window_with_cfg(series, series.start_t, series.n, &stressed.strategy)
+            } else {
+                let series = build_candidate_series(
+                    candles,
+                    lr,
+                    base_first_valid,
+                    ma_source,
+                    fast_ma_params_req,
+                    slow_ma_params_req,
+                    &stressed,
+                )?;
+                eval_metrics_window(&series, series.start_t, series.n)
+            };
             let score = double_ma_validation_robust_score(&metrics, None);
             scored.push((idx, metrics, score));
         }
@@ -2587,10 +2632,26 @@ fn compute_trade_bootstrap_for_candidate(
 }
 
 pub fn run_double_ma_validation_blocking_with_candles(
+    req: DoubleMaValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<DoubleMaValidationResult, String> {
+    run_double_ma_validation_blocking_with_candles_with_aux_mask(
+        req,
+        candles,
+        cancel,
+        progress,
+        ValidationAuxWorkMask::full(),
+    )
+}
+
+pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     mut req: DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
+    aux_work_mask: ValidationAuxWorkMask,
 ) -> Result<DoubleMaValidationResult, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
@@ -2641,7 +2702,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
     let reopt_walk_cfg = req.reopt_walk_forward.clone();
     let spa_cfg = req.spa.clone();
     let mut gpu_validation_fallback_reason: Option<String> = None;
-    let gpu_fixed_eval = match validation_supports_gpu_fixed_candidates(&req) {
+    let mut gpu_fixed_eval = match validation_supports_gpu_fixed_candidates(&req) {
         Ok(_) => {
             match try_prepare_gpu_fixed_candidate_validation(&req, candles, base_first_valid) {
                 Ok(eval) => Some(eval),
@@ -2665,6 +2726,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
         req.min_cscv_oos_metric,
         req.max_pbo,
     );
+    let gpu_cpu_tail_wall_ms = AtomicU64::new(0);
 
     let (mut out, cscv_pbo) = crate::validation_core::run_validation_candidates(
         &req.candidates,
@@ -2687,7 +2749,8 @@ pub fn run_double_ma_validation_blocking_with_candles(
                 let robust_score =
                     double_ma_validation_robust_score(&in_sample, walk_forward.as_ref());
                 let perturb = if let Some(cfg) = perturb_cfg.as_ref() {
-                    compute_cpu_perturb_stats_for_candidate(
+                    let perturb_t0 = std::time::Instant::now();
+                    let stats = compute_cpu_perturb_stats_for_candidate(
                         candles,
                         base_first_valid,
                         &lr,
@@ -2698,12 +2761,16 @@ pub fn run_double_ma_validation_blocking_with_candles(
                         cfg,
                         cancel,
                         rng,
-                    )?
+                    )?;
+                    gpu_cpu_tail_wall_ms
+                        .fetch_add(perturb_t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    stats
                 } else {
                     None
                 };
                 let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
-                    compute_trade_bootstrap_for_candidate(
+                    let bootstrap_t0 = std::time::Instant::now();
+                    let stats = compute_trade_bootstrap_for_candidate(
                         candles,
                         &lr,
                         base_first_valid,
@@ -2713,7 +2780,10 @@ pub fn run_double_ma_validation_blocking_with_candles(
                         p,
                         cfg,
                         rng,
-                    )?
+                    )?;
+                    gpu_cpu_tail_wall_ms
+                        .fetch_add(bootstrap_t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    stats
                 } else {
                     None
                 };
@@ -2875,21 +2945,49 @@ pub fn run_double_ma_validation_blocking_with_candles(
         },
     )?;
 
-    let regime_eval_count = DEFAULT_REGIME_SLICE_FINALISTS.min(out.len());
-    for cand in out.iter_mut().take(regime_eval_count) {
-        let series = build_candidate_series(
-            candles,
-            &lr,
-            base_first_valid,
-            &ma_source,
-            fast_ma_params.as_ref(),
-            slow_ma_params.as_ref(),
-            &cand.params,
-        )?;
-        cand.regime_slice_robustness = compute_regime_slice_robustness_stats(&series);
+    let aux_finalist_started = std::time::Instant::now();
+    let regime_eval_count = if aux_work_mask.regime_slice_robustness {
+        DEFAULT_REGIME_SLICE_FINALISTS.min(out.len())
+    } else {
+        0
+    };
+    let friction_eval_count = if aux_work_mask.friction_stress {
+        DEFAULT_FRICTION_STRESS_FINALISTS.min(out.len())
+    } else {
+        0
+    };
+    let finalist_cache_count = regime_eval_count.max(friction_eval_count);
+    let finalist_series_cache = if finalist_cache_count > 0 {
+        Some(
+            out.iter()
+                .take(finalist_cache_count)
+                .map(|cand| {
+                    build_candidate_series(
+                        candles,
+                        &lr,
+                        base_first_valid,
+                        &ma_source,
+                        fast_ma_params.as_ref(),
+                        slow_ma_params.as_ref(),
+                        &cand.params,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
+
+    if let Some(cache) = finalist_series_cache.as_ref() {
+        for (cand, series) in out
+            .iter_mut()
+            .take(regime_eval_count)
+            .zip(cache.iter().take(regime_eval_count))
+        {
+            cand.regime_slice_robustness = compute_regime_slice_robustness_stats(series);
+        }
     }
 
-    let friction_eval_count = DEFAULT_FRICTION_STRESS_FINALISTS.min(out.len());
     if friction_eval_count > 0 {
         let finalist_params: Vec<DoubleMaValidationParams> = out
             .iter()
@@ -2904,6 +3002,9 @@ pub fn run_double_ma_validation_blocking_with_candles(
             fast_ma_params.as_ref(),
             slow_ma_params.as_ref(),
             &finalist_params,
+            finalist_series_cache
+                .as_ref()
+                .map(|cache| &cache[..friction_eval_count]),
         )?;
         for (cand, summary) in out
             .iter_mut()
@@ -2913,6 +3014,11 @@ pub fn run_double_ma_validation_blocking_with_candles(
             cand.friction_stress = summary;
         }
     }
+    let aux_finalist_wall_ms = aux_finalist_started.elapsed().as_millis() as u64;
+    if let Some(gpu_eval) = gpu_fixed_eval.as_mut() {
+        gpu_eval.execution_profile.aux_finalist_analytics_wall_ms = Some(aux_finalist_wall_ms);
+        gpu_cpu_tail_wall_ms.fetch_add(aux_finalist_wall_ms, Ordering::Relaxed);
+    }
 
     let reopt_walk_forward = if let Some(cfg) = reopt_walk_cfg.as_ref() {
         let finalist_params: Vec<DoubleMaValidationParams> = out
@@ -2920,7 +3026,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
             .take(cfg.top_n_candidates.max(1))
             .map(|cand| cand.params.clone())
             .collect();
-        if gpu_fixed_eval.is_some() {
+        if let Some(gpu_eval) = gpu_fixed_eval.as_mut() {
             let finalist_start_ts: Vec<usize> = out
                 .iter()
                 .take(cfg.top_n_candidates.max(1))
@@ -2934,12 +3040,13 @@ pub fn run_double_ma_validation_blocking_with_candles(
                 fast_ma_params.as_ref(),
                 slow_ma_params.as_ref(),
                 cfg,
+                &mut gpu_eval.execution_profile,
             )?
         } else {
             let mut finalist_series: Vec<(String, CandidateSeries<'_>)> =
                 Vec::with_capacity(finalist_params.len());
             for params in finalist_params {
-                let key = serde_json::to_string(&params).unwrap_or_else(|_| {
+                let key = canonical_json_key(&params).unwrap_or_else(|_| {
                     format!(
                         "{}:{}:{}:{}",
                         params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
@@ -2990,7 +3097,7 @@ pub fn run_double_ma_validation_blocking_with_candles(
             let mut candidate_slice_returns: Vec<Vec<f64>> = Vec::with_capacity(out.len());
             for cand in &out {
                 let params = cand.params.clone();
-                let key = serde_json::to_string(&params).unwrap_or_else(|_| {
+                let key = canonical_json_key(&params).unwrap_or_else(|_| {
                     format!(
                         "{}:{}:{}:{}",
                         params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
@@ -3051,6 +3158,10 @@ pub fn run_double_ma_validation_blocking_with_candles(
     };
 
     let runtime_ms = start.elapsed().as_millis() as u64;
+    if let Some(gpu_eval) = gpu_fixed_eval.as_mut() {
+        gpu_eval.execution_profile.cpu_tail_wall_ms =
+            Some(gpu_cpu_tail_wall_ms.load(Ordering::Relaxed));
+    }
     let run_verdict = build_run_verdict(
         &out,
         req.candidates.len(),
@@ -3080,6 +3191,9 @@ pub fn run_double_ma_validation_blocking_with_candles(
         cross_ticker: None,
         cscv_pbo,
         run_verdict,
+        execution_profile: gpu_fixed_eval
+            .as_ref()
+            .map(|gpu_eval| gpu_eval.execution_profile.clone()),
     })
 }
 
@@ -3476,6 +3590,12 @@ mod tests {
             assert!(matches!(res.backend_used, BackendUsed::Gpu));
             assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
             assert!(res.backend_fallback_reason.is_none());
+            let profile = res
+                .execution_profile
+                .as_ref()
+                .expect("gpu validation execution profile");
+            assert_eq!(profile.evaluated_pairs_on_device, Some(1));
+            assert_eq!(profile.expansion_ratio, Some(1.0));
         }
         #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
         {
@@ -4029,6 +4149,17 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("GpuHybridKernel"));
+        let profile = gpu_res
+            .execution_profile
+            .as_ref()
+            .expect("gpu hybrid walk_forward execution profile");
+        assert_eq!(profile.evaluated_pairs_on_device, Some(1));
+        assert_eq!(profile.expansion_ratio, Some(1.0));
+        assert_eq!(profile.gpu_range_eval_calls, Some(2));
+        assert!(
+            profile.gpu_range_count.unwrap_or(0) > profile.gpu_range_eval_calls.unwrap_or(0),
+            "hybrid walk-forward should batch multiple ranges through one GPU execution"
+        );
         let cpu_wf = cpu_res.candidates[0]
             .walk_forward
             .as_ref()
@@ -6028,6 +6159,17 @@ mod tests {
         assert!(res.spa.is_some());
         assert!(res.cscv_pbo.is_some());
         assert!(res.reopt_walk_forward.is_some());
+        let profile = res
+            .execution_profile
+            .as_ref()
+            .expect("gpu full stack execution profile");
+        assert_eq!(profile.evaluated_pairs_on_device, Some(2));
+        assert_eq!(profile.expansion_ratio, Some(1.0));
+        assert_eq!(profile.gpu_range_eval_calls, Some(5));
+        assert!(
+            profile.gpu_range_count.unwrap_or(0) > profile.gpu_range_eval_calls.unwrap_or(0),
+            "full-stack GPU validation should batch multiple ranges per module"
+        );
         assert_eq!(res.candidates.len(), 2);
         for candidate in &res.candidates {
             assert!(candidate.walk_forward.is_some());
@@ -6117,6 +6259,17 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("GpuHybridKernel"));
+        let profile = gpu_res
+            .execution_profile
+            .as_ref()
+            .expect("gpu hybrid cscv execution profile");
+        assert_eq!(profile.evaluated_pairs_on_device, Some(2));
+        assert_eq!(profile.expansion_ratio, Some(1.0));
+        assert_eq!(profile.gpu_range_eval_calls, Some(2));
+        assert!(
+            profile.gpu_range_count.unwrap_or(0) > profile.gpu_range_eval_calls.unwrap_or(0),
+            "hybrid CSCV should batch all slices through one prepared ranged execution"
+        );
         let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu cscv");
         assert_eq!(gpu_cscv.slices, 8);
         assert!(gpu_cscv.slice_bars > 0);

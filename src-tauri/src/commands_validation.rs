@@ -45,14 +45,28 @@ fn slice_candles(
     )
 }
 
-fn align_cross_ticker_candles_to_base_horizon(
-    base: &vector_ta::utilities::data_loader::Candles,
-    cross: &vector_ta::utilities::data_loader::Candles,
-) -> vector_ta::utilities::data_loader::Candles {
+enum AlignedCandles<'a> {
+    Borrowed(&'a vector_ta::utilities::data_loader::Candles),
+    Owned(vector_ta::utilities::data_loader::Candles),
+}
+
+impl<'a> AlignedCandles<'a> {
+    fn as_ref(&self) -> &vector_ta::utilities::data_loader::Candles {
+        match self {
+            Self::Borrowed(candles) => candles,
+            Self::Owned(candles) => candles,
+        }
+    }
+}
+
+fn align_cross_ticker_candles_to_base_horizon<'a>(
+    base: &'a vector_ta::utilities::data_loader::Candles,
+    cross: &'a vector_ta::utilities::data_loader::Candles,
+) -> AlignedCandles<'a> {
     let base_len = base.close.len();
     let cross_len = cross.close.len();
     if base_len == 0 || cross_len == 0 {
-        return slice_candles(cross, 0, cross_len);
+        return AlignedCandles::Borrowed(cross);
     }
 
     let base_start = *base.timestamp.first().unwrap_or(&0);
@@ -60,14 +74,21 @@ fn align_cross_ticker_candles_to_base_horizon(
     let start = cross.timestamp.partition_point(|&ts| ts < base_start);
     let end = cross.timestamp.partition_point(|&ts| ts <= base_end);
     if start < end {
-        return slice_candles(cross, start, end);
+        if start == 0 && end == cross_len {
+            return AlignedCandles::Borrowed(cross);
+        }
+        return AlignedCandles::Owned(slice_candles(cross, start, end));
     }
 
     if cross_len > base_len {
-        return slice_candles(cross, cross_len.saturating_sub(base_len), cross_len);
+        return AlignedCandles::Owned(slice_candles(
+            cross,
+            cross_len.saturating_sub(base_len),
+            cross_len,
+        ));
     }
 
-    slice_candles(cross, 0, cross_len)
+    AlignedCandles::Borrowed(cross)
 }
 
 fn normalize_timeframe_label(raw: &str) -> String {
@@ -78,10 +99,6 @@ fn normalize_timeframe_label(raw: &str) -> String {
     ta_app_core::parse_timeframe_label(trimmed)
         .map(|tf| tf.label)
         .unwrap_or_else(|_| trimmed.to_ascii_lowercase())
-}
-
-fn normalize_path_key(raw: &str) -> String {
-    raw.trim().replace('/', "\\").to_ascii_lowercase()
 }
 
 fn normalize_strategy_kind(raw: &str) -> String {
@@ -132,8 +149,8 @@ fn validate_validation_context(
     }
 
     if let Some(expected_csv_path) = ctx.csv_path.as_deref() {
-        let expected = normalize_path_key(expected_csv_path);
-        let actual = normalize_path_key(&loaded.csv_path);
+        let expected = validation_common::normalize_path_key(expected_csv_path);
+        let actual = validation_common::normalize_path_key(&loaded.csv_path);
         if !expected.is_empty() && !actual.is_empty() && expected != actual {
             let label = ctx
                 .label
@@ -268,7 +285,7 @@ where
         datasets_meta.push(ta_app_core::CrossTickerDatasetMeta {
             label: validation_common::dataset_label(csv_path, &ds.label),
             csv_path: csv_path.to_string(),
-            bars: candles2.close.len(),
+            bars: candles2.as_ref().close.len(),
         });
 
         let req2 = make_req(di, total_candidates, candidate_params_template.clone());
@@ -283,12 +300,12 @@ where
             };
             run_validate(
                 req2,
-                &candles2,
+                candles2.as_ref(),
                 cancel,
                 Some(&sink2 as &dyn ta_app_core::progress::ProgressSink),
             )?
         } else {
-            run_validate(req2, &candles2, cancel, None)?
+            run_validate(req2, candles2.as_ref(), cancel, None)?
         };
 
         for c in res2.candidates() {
@@ -657,7 +674,21 @@ fn apply_cross_ticker_validation_double_ma(
                 if preserved_cross_mode { max_pbo } else { None },
             )
         },
-        ta_app_core::run_double_ma_validation_blocking_with_candles,
+        |req2, candles2, cancel2, progress2| {
+            if preserved_cross_mode {
+                ta_app_core::run_double_ma_validation_blocking_with_candles_with_aux_mask(
+                    req2,
+                    candles2,
+                    cancel2,
+                    progress2,
+                    ta_app_core::ValidationAuxWorkMask::preserved_finalists(),
+                )
+            } else {
+                ta_app_core::run_double_ma_validation_blocking_with_candles(
+                    req2, candles2, cancel2, progress2,
+                )
+            }
+        },
     )?;
 
     let hard_gates = ta_app_core::validation_pipeline::sanitize_hard_gates(
@@ -723,11 +754,11 @@ fn build_double_ma_cross_ticker_request(
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
-    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
-    reopt_walk_forward: Option<ta_app_core::composite_validate::ReoptWalkForwardConfigOptional>,
-    spa: Option<ta_app_core::composite_validate::SpaConfigOptional>,
-    perturb: Option<ta_app_core::PerturbConfig>,
-    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    _walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    _reopt_walk_forward: Option<ta_app_core::composite_validate::ReoptWalkForwardConfigOptional>,
+    _spa: Option<ta_app_core::composite_validate::SpaConfigOptional>,
+    _perturb: Option<ta_app_core::PerturbConfig>,
+    _trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
     cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     validation_engine: ta_app_core::ValidationEngine,
@@ -745,11 +776,11 @@ fn build_double_ma_cross_ticker_request(
         fast_ma_params,
         slow_ma_params,
         candidates,
-        walk_forward,
-        reopt_walk_forward,
-        spa,
-        perturb,
-        trade_bootstrap,
+        walk_forward: None,
+        reopt_walk_forward: None,
+        spa: None,
+        perturb: None,
+        trade_bootstrap: None,
         cross_ticker: None,
         cscv_pbo,
         seed,
@@ -1055,9 +1086,18 @@ mod tests {
         let base = candles_with_ts(100, 10);
         let cross = candles_with_ts(90, 30);
         let aligned = align_cross_ticker_candles_to_base_horizon(&base, &cross);
-        assert_eq!(aligned.timestamp.first().copied(), Some(100));
-        assert_eq!(aligned.timestamp.last().copied(), Some(109));
-        assert_eq!(aligned.close.len(), 10);
+        assert_eq!(aligned.as_ref().timestamp.first().copied(), Some(100));
+        assert_eq!(aligned.as_ref().timestamp.last().copied(), Some(109));
+        assert_eq!(aligned.as_ref().close.len(), 10);
+    }
+
+    #[test]
+    fn cross_ticker_alignment_borrows_when_cross_already_matches_base_horizon() {
+        let base = candles_with_ts(100, 10);
+        let cross = candles_with_ts(100, 10);
+        let aligned = align_cross_ticker_candles_to_base_horizon(&base, &cross);
+
+        assert!(matches!(aligned, AlignedCandles::Borrowed(_)));
     }
 
     #[test]
@@ -2230,6 +2270,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2329,6 +2370,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2428,6 +2470,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2527,6 +2570,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2626,6 +2670,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2725,6 +2770,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2824,6 +2870,7 @@ mod tests {
                 carm: Some(ta_app_core::carm::CarmStrategyParams::default()),
                 kvdf: None,
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -2923,6 +2970,7 @@ mod tests {
                 carm: None,
                 kvdf: Some(ta_app_core::kvdf::KvdfStrategyParams::default()),
                 cdmc: None,
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,
@@ -3022,6 +3070,7 @@ mod tests {
                 carm: None,
                 kvdf: None,
                 cdmc: Some(ta_app_core::cdmc::CdmcStrategyParams::default()),
+                vcet: None,
                 macz: ta_app_core::composite_cpu::MaczGateParams::default(),
                 ott: ta_app_core::composite_cpu::OttGateParams::default(),
                 signal_mode: ta_app_core::CompositeSignalMode::HardGate,

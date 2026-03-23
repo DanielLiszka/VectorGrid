@@ -1,11 +1,13 @@
 # Codex implementation prompt — validation throughput / CUDA optimization / fallback behavior
 
+Status note: the repo-valid implementation scope captured by this prompt has now been landed. Keep this file as the historical implementation brief, and use `validation_throughput_plan_disposition_matrix.md` as the live closure/status document.
+
 Use the following prompt verbatim with a Codex agent that has access to the repository and the referenced guide documents.
 
 ```text
 You are an implementation agent working inside my Rust/Tauri/TypeScript repository.
 
-Your task is to fully implement the validation-throughput / CUDA-optimization / fallback-behavior plan described in these documents:
+Your task is to implement the remaining repo-valid portions of the validation-throughput / CUDA-optimization / fallback-behavior plan described in these documents:
 
 1. `gpt54_feature_review_map.md`
    - Use the rules from:
@@ -14,14 +16,17 @@ Your task is to fully implement the validation-throughput / CUDA-optimization / 
      - `## 16. Allocation policy, prefix initialization, and copy-elision discipline`
 2. `validation_throughput_cuda_plan.md`
 3. `validation_throughput_cuda_plan_addendum.md`
+4. `validation_throughput_plan_disposition_matrix.md`
 
-These documents are the source of truth for scope and priorities.
+These documents are planning inputs for scope and priorities, but the current repository state overrides them where code has already landed or where a plan assumption is now stale.
+If a checklist item is already implemented, duplicated elsewhere, or depends on telemetry/runtime hooks that do not exist yet, prefer the current repo state and implement only the still-valid portion.
+Use `validation_throughput_plan_disposition_matrix.md` as the explicit keep/remove/defer audit when the plan docs and live code appear to disagree.
 
 --------------------------------
 PRIMARY OBJECTIVE
 --------------------------------
 
-Implement the performance/correctness plan end-to-end for the Double-MA validation surface.
+Implement the still-valid performance/correctness plan for the Double-MA validation surface.
 
 The goals are:
 - improve validation throughput, especially for CUDA-executed code
@@ -46,14 +51,40 @@ Read these first before changing code:
 2. `validation_throughput_cuda_plan.md`
    - this is the main implementation plan
 3. `validation_throughput_cuda_plan_addendum.md`
-   - this contains additional required fixes and optional stretch items
-4. then inspect the repo code starting from the files listed below
+   - use sections 1–6 as correction material for the main plan
+   - do not treat sections 7–8 as required work unless they are directly needed to unblock the core implementation
+4. `validation_throughput_plan_disposition_matrix.md`
+   - this is the explicit disposition audit for kept vs already-landed vs stale vs deferred work
+5. then inspect the repo code starting from the files listed below
+
+--------------------------------
+CURRENT-STATE CORRECTIONS YOU MUST APPLY BEFORE CODING
+--------------------------------
+
+The plan docs predate some Tauri/frontend/request-shaping changes already present in the repo. Treat the live code as authoritative:
+
+1. `src-tauri/src/validation_common.rs` already has canonical candidate key support via `candidate_key_canonical(...)`.
+   - Reuse and preserve that helper rather than re-implementing a second Tauri-side canonical-key path.
+
+2. `src-tauri/src/commands_validation.rs` already shapes Double-MA preserved-finalists cross reruns to keep the verdict-relevant stack only.
+   - Preserve the current behavior that strips walk-forward, reopt walk-forward, SPA, perturb, and trade bootstrap while retaining the preserved-finalists CSCV/PBO + hard-gate path.
+   - Existing preserved-finalists GPU route-preservation tests should continue to pass.
+
+3. `web/src/services/validationRequestBuilder.ts` already defaults double-like cross mode to `preserved_finalists` and already summarizes the current preserved-finalists omissions.
+   - Do not churn that summary text unless backend behavior actually changes.
+
+4. The still-open Tauri/frontend/request-shaping items are narrower:
+   - no-copy borrowed alignment in `src-tauri/src/commands_validation.rs`
+   - normalized cross-dataset dedupe in `src-tauri/src/validation_common.rs`
+   - candidate dedupe in `web/src/services/validationRequestBuilder.ts`
+   - normalized dataset dedupe in `web/src/services/validationRequestBuilder.ts`
+   - targeted tests for those remaining gaps
 
 --------------------------------
 FILES TO MODIFY (REQUIRED)
 --------------------------------
 
-Treat these as the required implementation surface unless a listed item truly ends up being a no-op after code inspection:
+Treat these as the required implementation surface unless a listed item is already implemented and only needs to be preserved after code inspection:
 
 Core app-core / Tauri / frontend files:
 - `crates/app_core/src/double_ma_validate.rs`
@@ -66,7 +97,11 @@ Core app-core / Tauri / frontend files:
 Benchmark / measurement files:
 - `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
 - `crates/app_core/benches/double_ma_validation_workflow.rs`
-- `crates/app_core/benches/composite_validation_workflow.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs` only if needed for shared telemetry visibility or shared GPU validation route coverage
+
+Measurement notes:
+- `ta_double_ma_validation_cost.rs` already reports coarse timing, route, fallback, candidate-count, and module-feasibility data. Extend that surface; do not rebuild it from scratch.
+- The workflow benches already exist. Extend them only where needed for repo-valid telemetry/work-shape coverage.
 
 --------------------------------
 ADJACENT FILES YOU ARE ALLOWED / EXPECTED TO MODIFY IF NEEDED
@@ -154,11 +189,9 @@ Required core implementation:
 5. Phase 4 — multi-range batching
 6. Phase 5 — CPU-tail shrinkage
 7. Phase 6 — request shaping and frontend alignment
-8. Required addendum items from sections 1–6 of `validation_throughput_cuda_plan_addendum.md`
+8. Remaining addendum items from sections 1–6 of `validation_throughput_cuda_plan_addendum.md` that are still missing after repo inspection
 
-Stretch implementation (only after the above is complete and compiling/tests passing):
-- optional addendum sections 7A–8C if they are low-risk and directly supported by the existing backend/runtime
-- if stretch items are not implemented, leave the core patch clean and do not block completion on them
+Do not spend this task on addendum sections 7–8 unless one of them is the minimum direct change needed to unblock the core path above.
 
 --------------------------------
 EXPLICIT REQUIRED CHANGES BY AREA
@@ -204,6 +237,7 @@ Required changes:
    - Replace them with one of:
      - structural equality where available/preferable
      - canonical/stable key helpers that sort object/map keys before comparison/stringification
+   - Use one shared canonicalization approach for this surface; do not add multiple competing canonical-key schemes for the same candidate/config identity.
    - Precompute the first candidate’s canonical keys once when validating GPU uniformity.
    - Apply the same stable/canonical identity fix to any params key generation used by:
      - reopt-walk-forward finalist keys
@@ -247,7 +281,7 @@ Required changes:
 10. Reduce cloning and host reshaping overhead.
    - Move owned GPU metrics out of containers where possible instead of cloning.
    - Prefer `Vec`/dense storage over repeated `HashMap` materialization.
-   - Replace `BTreeSet` uniqueness gathering with `Vec + sort_unstable + dedup` where appropriate and safe.
+   - Only replace `BTreeSet` uniqueness gathering with `Vec + sort_unstable + dedup` when it is a measured local win and does not make the code harder to reason about.
 
 11. Add a post-pass `SeriesCache`.
    - Cache built candidate series artifacts for finalists.
@@ -322,22 +356,11 @@ Required behavior:
 4. Only use safe uninitialized allocations where overwrite-before-read is guaranteed.
    - Prefer `alloc_policy` helpers if such helpers already exist or can be extended safely.
 
-5. If a compact internal validation DTO is feasible for batched range validation, you may add it.
-   - Example: a `ValidationMetricLite`-style internal result for the batched path.
-   - Keep `f64` fields unless there is already a validated precision rationale for `f32`.
-   - Do not change the public in-sample result contract unless necessary.
-
-6. Do not break the current optimizer route while adding the validation-specific path.
+5. Do not break the current optimizer route while adding the validation-specific path.
    - Reuse backend code where it helps.
    - Avoid duplicating large amounts of logic if a validation-specific thin wrapper can call into shared kernels.
 
-7. Optional stretch only after the core patch is stable:
-   - pinned host staging buffers and async H2D/D2H copies
-   - persistent device scratch / memory-pool reuse
-   - CUDA Graph capture for repeated launch shapes
-   - device-resident prepared-plan indicator/state cache
-
-Do not spend the whole task on these stretch items before the core exact-combo and range-batching work is landed.
+Do not spend this task on backend-adjacent stretch work such as compact DTOs, pinned-host staging, async copies, memory pools, CUDA Graphs, or device-resident prepared-plan caches unless one of them is strictly required to land the exact-combo or multi-range path.
 
 
 ==================================================
@@ -369,6 +392,7 @@ Required changes:
    - deterministic behavior with fixed seed
    - parity of SPA scratch reuse
    - parity of any flat row-major SPA prep optimization
+   - build on the existing `validation_pipeline.rs` unit-test module rather than adding separate CLI/bench-style tests for this area
 
 
 ==================================================
@@ -381,17 +405,18 @@ Required changes:
    - Introduce a borrowed-vs-owned aligned candle representation (or equivalent) so full-range no-op alignment does not clone full OHLCV arrays.
    - Update call sites to consume borrowed aligned data via `.as_ref()` / equivalent.
 
-2. Route preserved-finalists cross reruns through the aux-masked validation entry.
-   - Normal runs keep full aux work.
-   - Preserved-finalists reruns skip non-gating aux finalist analytics.
+2. Preserve the current preserved-finalists cross-rerun request shaping, and only extend it if backend aux-mask support is added.
+   - Keep the existing behavior that already omits walk-forward, reopt walk-forward, SPA, perturb, and trade bootstrap for preserved-finalists reruns.
+   - Keep the existing preserved-finalists retention of CSCV/PBO and hard-gate inputs.
+   - If a new backend aux-masked validation entry is added, wire preserved-finalists reruns through it without regressing the current preserved-stack behavior.
 
 3. Keep current route/fallback policy intact.
    - Reduce hidden work, but do not regress fallback transparency.
 
 4. Add/update tests for:
    - borrowed no-op alignment path
-   - preserved-finalists rerun using reduced aux mask
-   - unchanged route/fallback behavior outside the intended aux-work reduction
+   - any new backend aux-mask integration if you add it
+   - existing preserved-finalists route/fallback behavior remaining intact
 
 
 ==================================================
@@ -404,9 +429,9 @@ Required changes:
    - Sort `acc.trades` in place where possible.
    - Remove avoidable extra median/trade cloning.
 
-2. Improve candidate identity stability.
-   - Keep canonical/stable key fallback if needed.
-   - Avoid unstable/plain JSON serialization-based identity where that is a correctness or determinism risk.
+2. Preserve and reuse the existing canonical candidate-key path.
+   - `candidate_key_canonical(...)` already exists here and is already used by cross-ticker orchestration.
+   - Do not replace it with a second local identity scheme unless adjacent callers truly require broader reuse.
 
 3. Normalize dataset path keys during cross-ticker dedupe.
    - The addendum explicitly calls this out.
@@ -415,7 +440,7 @@ Required changes:
 4. Add/update tests for:
    - unchanged cross-ticker stats after the allocation reductions
    - normalized-path dedupe behavior
-   - candidate identity parity / determinism
+   - candidate identity parity / determinism only if you touch the canonical-key helper or its call sites
 
 
 ==================================================
@@ -435,8 +460,8 @@ Required changes:
 2. Deduplicate cross datasets by normalized path.
    - Do this on the frontend request-building side as well, not only backend-side.
 
-3. Update preserved-finalists summary wording after the aux mask lands.
-   - The summary should reflect the actual lighter rerun shape.
+3. Preserve the current preserved-finalists preview semantics unless backend behavior truly changes.
+   - The existing summary already describes the current lighter rerun shape.
    - Do not over-claim exact-combo GPU behavior unless the backend path truly changed and the summary text is consistent with reality.
 
 4. Keep backend-selection policy unchanged unless the backend path genuinely changes.
@@ -451,8 +476,8 @@ Required changes:
 Add/update test coverage for:
 - duplicate-candidate dedupe
 - duplicate cross-dataset dedupe using normalized paths
-- preserved-finalists summary wording after aux-mask landing
-- any summary text change that now mentions exact-combo GPU validation or more truthful fallback details
+- keep the current preserved-finalists summary assertions passing unless backend behavior actually changes
+- any summary text change only if backend semantics truly change
 
 
 ==================================================
@@ -463,20 +488,21 @@ This is the primary measurement/proof boundary for the validation-throughput wor
 
 Required changes:
 
-1. Thread the new execution-profile fields into the report JSON and stdout summaries.
-2. Print / serialize at least:
+1. Preserve the existing coarse timing/route/fallback/candidate-count report shape and extend it compatibly.
+2. If `DoubleMaValidationResult` gains an execution-profile field, thread the knowable work-shape fields into the report JSON and stdout summaries.
+3. Prefer these added fields where they are actually available from the result/runtime:
    - requested candidates
    - unique candidates
+   - unique fast periods
+   - unique slow periods
    - evaluated pairs on device
-   - grid expansion ratio
-   - range batches / total ranges
+   - one expansion-ratio field name, kept consistent end to end
+   - GPU range-eval call count and/or range batch count / total ranges
    - aux finalist analytics wall time
    - cpu-tail wall time if available
-   - gpu result materialization time if available
-   - GPU range-eval call count if available
-   - cold-vs-warm marker if that is already available or easy to add
-3. Keep the validation-cost harness as the primary evidence surface.
-4. Preserve existing report structure where reasonable; add fields compatibly.
+   - GPU result materialization / host-shaping time if available
+4. Do not invent estimated transport-byte or cold/warm-cache telemetry in this task unless the runtime already exposes a truthful source for it.
+5. Keep the validation-cost harness as the primary evidence surface.
 
 
 ==================================================
@@ -487,7 +513,7 @@ Required changes:
 
 1. Keep the existing CPU workflow bench as CPU regression coverage.
 2. Add a CUDA-gated sparse-finalist validation bench that makes pair-expansion/work-shape visible.
-3. Print execution-profile work-shape fields when present.
+3. Keep the existing route-probe output and extend it to print execution-profile work-shape fields when present.
 4. Do not treat this bench as the sole proof boundary for CUDA validation wins.
 
 
@@ -497,9 +523,9 @@ J. `crates/app_core/benches/composite_validation_workflow.rs`
 
 Required changes:
 
-1. Add at least one sparse-finalist composite GPU bench that makes pair-expansion/work shape visible.
-2. Print execution-profile work-shape fields when present.
-3. Keep this as supplementary evidence, not the sole Double-MA validation proof boundary.
+1. Keep the existing composite validation benches as supplementary evidence.
+2. Only modify this file if it directly helps shared telemetry visibility or shared GPU validation route coverage.
+3. If this file is touched, prefer extending an existing GPU bench/profile printout to include execution-profile work-shape fields when present instead of adding broad new benchmark matrices.
 
 --------------------------------
 COPY-ELISION / MEMORY / UNINITIALIZED-ALLOCATION RULES
@@ -531,21 +557,10 @@ Apply these rules throughout the implementation:
 5. Every unsafe or `MaybeUninit` path must include a clear overwrite-before-read safety explanation.
 
 --------------------------------
-IMPORTANT OPTIONAL ITEMS FROM THE ADDENDUM
+OPTIONAL ITEMS
 --------------------------------
 
-After the core patch is complete, you may implement these if they are straightforward and low-risk in the existing codebase:
-
-1. Internal compact validation DTO for batched range validation (`ValidationMetricLite`-style), keeping `f64`.
-2. Pinned host staging buffers and async transfers.
-3. Persistent device scratch / memory pool reuse.
-4. CUDA Graph capture for repeated prepared-plan launch shapes.
-5. Device-resident prepared-plan indicator/state cache.
-6. Larger borrowed candle-view refactor (`CandlesView<'a>` or equivalent) only if it stays local and low-risk.
-7. Deterministic CPU-tail parallelism only after caching is in place, and only for non-RNG-sensitive work with stable ordering.
-8. Stable candidate IDs generated once at request ingress if it naturally fits the code while replacing repeated textual key regeneration.
-
-These are stretch goals, not blockers for the core patch.
+Ignore the addendum’s optional backend-adjacent stretch layer for this task unless a small part of it is the minimum change needed to land the core exact-combo, batching, masking, or scratch-reuse work.
 
 --------------------------------
 TESTING / VALIDATION REQUIREMENTS
@@ -567,7 +582,7 @@ Required validation before declaring completion:
    - friction-stress series-cache reuse parity
    - trade-bootstrap scratch reuse parity
    - SPA scratch reuse parity
-   - any benchmark/report output changes that are testable
+   - benchmark/report changes only where they are naturally testable in existing nearby test modules
 3. Re-run parity-sensitive validation paths where applicable:
    - main metrics parity CPU vs GPU
    - walk-forward parity
@@ -578,6 +593,7 @@ Required validation before declaring completion:
 4. Capture before/after evidence from `ta_double_ma_validation_cost.rs` if possible in the repo environment.
    - At minimum, ensure the new telemetry fields are emitted.
    - Prefer to demonstrate reduced `evaluated_pairs_on_device` and reduced `gpu_range_eval_calls` on sparse-finalist workloads.
+5. Extend existing nearby test modules instead of creating fragile snapshot tests for Criterion output or CLI stdout unless there is already a stable testing pattern for that surface.
 
 --------------------------------
 IMPLEMENTATION ORDER / WORKFLOW
@@ -644,7 +660,7 @@ The task is complete only when all of the following are true:
 - multi-range validation no longer re-enters the GPU path once per range when the backend supports batching
 - unnecessary memory copies are reduced, especially no-op full-range alignment copies and repeated scratch allocations
 - safe uninitialized allocation is only used where overwrite-before-read is guaranteed
-- `ta_double_ma_validation_cost.rs` exposes the new work-shape/throughput telemetry
+- `ta_double_ma_validation_cost.rs` exposes the new work-shape/throughput telemetry that is truthfully available from the validation result/runtime
 
 If you encounter a genuine backend blocker that prevents the exact-combo or multi-range device implementation, do not abandon the task. Land the maximum safe subset, instrument the remaining gap clearly, and explain the blocker precisely in the final report.
 ```

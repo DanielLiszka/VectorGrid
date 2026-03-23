@@ -126,8 +126,10 @@ pub use composite_validate::{
 };
 
 pub use double_ma_validate::{
-    run_double_ma_validation_blocking_with_candles, DoubleMaValidationParams,
-    DoubleMaValidationRequest, DoubleMaValidationResult,
+    run_double_ma_validation_blocking_with_candles,
+    run_double_ma_validation_blocking_with_candles_with_aux_mask, DoubleMaValidationParams,
+    DoubleMaValidationRequest, DoubleMaValidationResult, ValidationAuxWorkMask,
+    ValidationExecutionProfile,
 };
 
 pub use iterative_sim::{

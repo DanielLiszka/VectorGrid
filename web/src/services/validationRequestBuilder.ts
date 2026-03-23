@@ -192,6 +192,27 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
+function canonicalizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeValue)
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nextValue]) => [key, canonicalizeValue(nextValue)])
+    return Object.fromEntries(entries)
+  }
+  return value
+}
+
+function canonicalKey(value: unknown): string {
+  return JSON.stringify(canonicalizeValue(value))
+}
+
+function normalizePathKey(value: unknown): string {
+  return normalizeText(value).replaceAll('/', '\\').toLowerCase()
+}
+
 function parseProbabilityGate(value: unknown): number | null {
   const raw = normalizeText(value)
   if (!raw) return null
@@ -210,11 +231,15 @@ function parseFiniteNumber(value: unknown): number | null {
 function normalizeCrossDatasets(value: unknown, maxDatasets: number): Array<{ csv_path: string; label: string }> {
   if (maxDatasets <= 0 || !Array.isArray(value)) return []
   const out: Array<{ csv_path: string; label: string }> = []
+  const seen = new Set<string>()
   for (const entry of value) {
     const row = asRecord(entry)
     if (!row) continue
     const csv_path = normalizeText(row.csv_path)
     if (!csv_path) continue
+    const dedupeKey = normalizePathKey(csv_path)
+    if (!dedupeKey || seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
     out.push({
       csv_path,
       label: normalizeText(row.label)
@@ -619,11 +644,10 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   const baseRows = useFiltered && rowsFiltered.length ? rowsFiltered : rowsAll
   if (!baseRows.length) throw new Error('No Top rows available. Go to the Top tab and run an optimization.')
 
-  const candidatesRaw = baseRows.slice(0, maxCandidates)
   const fastMaTypeFallback = Array.isArray(currentRunReq.fast_ma_types) ? normalizeText(currentRunReq.fast_ma_types[0]) : ''
   const slowMaTypeFallback = Array.isArray(currentRunReq.slow_ma_types) ? normalizeText(currentRunReq.slow_ma_types[0]) : ''
 
-  const candidates = candidatesRaw
+  const candidatesNormalized = baseRows
     .map((row): ValidationCandidateLike | null => {
       const rowRecord = asRecord(row)
       const p = asRecord(rowRecord?.params) || {}
@@ -832,6 +856,16 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
       if (kind === 'Cdmc') return true
       return !!candidate.halftrend
     })
+
+  const candidates: ValidationCandidateLike[] = []
+  const seenCandidateKeys = new Set<string>()
+  for (const candidate of candidatesNormalized) {
+    const key = canonicalKey(candidate)
+    if (seenCandidateKeys.has(key)) continue
+    seenCandidateKeys.add(key)
+    candidates.push(candidate)
+    if (candidates.length >= maxCandidates) break
+  }
 
   if (!candidates.length) throw new Error('No valid candidates found (try lowering filters or increasing Candidates).')
 

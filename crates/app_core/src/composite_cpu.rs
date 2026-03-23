@@ -6041,11 +6041,8 @@ fn run_kqsr_optimization_gpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let slow_seed = *slow_periods
         .first()
@@ -6639,11 +6636,8 @@ fn run_carm_optimization_gpu(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let fast_rows = fast_periods.len();
     let row_major_len_fast = fast_rows

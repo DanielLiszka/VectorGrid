@@ -6274,11 +6274,8 @@ fn try_prepare_kqsr_gpu_fixed_candidate_validation(
         .first()
         .ok_or_else(|| "KQSR validation fast period set is empty".to_string())?;
 
-    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let fast_rows = fast_periods.len();
     let slow_rows = slow_periods.len();
@@ -6596,11 +6593,8 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
     }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let mut fast_periods: Vec<u16> = finalists.iter().map(|cand| cand.fast_len).collect();
     let mut slow_periods: Vec<u16> = finalists.iter().map(|cand| cand.slow_len).collect();
@@ -7114,11 +7108,8 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
     let lr = compute_log_returns_f64(close);
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let mut fast_periods: Vec<u16> = req.candidates.iter().map(|cand| cand.fast_len).collect();
     fast_periods.sort_unstable();
@@ -7467,11 +7458,8 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
     }
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc_on_device(
-        candles,
-        &req.ma_source,
-        device_id as usize,
-    )?;
+    let prepared_cuda_inputs =
+        prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
 
     let mut fast_periods: Vec<u16> = finalists.iter().map(|cand| cand.fast_len).collect();
     fast_periods.sort_unstable();

@@ -30,6 +30,10 @@ pub trait CrossTickerCandidate {
     fn set_robust_score(&mut self, score: f64);
 }
 
+pub fn normalize_path_key(raw: &str) -> String {
+    raw.trim().replace('/', "\\").to_ascii_lowercase()
+}
+
 impl CrossTickerCandidate for CompositeValidationCandidateResult {
     type Params = ta_app_core::CompositeParams;
 
@@ -115,7 +119,7 @@ pub fn sanitize_cross_ticker_config(cross_cfg: &mut CrossTickerConfig) {
     let mut seen: HashSet<String> = HashSet::with_capacity(cross_cfg.datasets.len() * 2);
     cross_cfg
         .datasets
-        .retain(|d| seen.insert(d.csv_path.trim().to_string()));
+        .retain(|d| seen.insert(normalize_path_key(&d.csv_path)));
     cross_cfg.gate.min_datasets = cross_cfg.gate.min_datasets.max(1);
     cross_cfg.gate.min_score = if cross_cfg.gate.min_score.is_finite() {
         cross_cfg.gate.min_score
@@ -266,13 +270,11 @@ fn worst_max(xs: &[f64]) -> f64 {
     }
 }
 
-fn median_u32(xs: &[u32]) -> u32 {
+fn median_u32_sorted(xs: &[u32]) -> u32 {
     if xs.is_empty() {
         return 0;
     }
-    let mut ys = xs.to_vec();
-    ys.sort_unstable();
-    ys[ys.len() / 2]
+    xs[xs.len() / 2]
 }
 
 fn worst_min_u32(xs: &[u32]) -> u32 {
@@ -295,6 +297,7 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
         acc.sharpes.sort_by(|a, b| a.total_cmp(b));
         acc.dds.sort_by(|a, b| a.total_cmp(b));
         acc.pnls.sort_by(|a, b| a.total_cmp(b));
+        acc.trades.sort_unstable();
 
         let sharpe_median = median(&acc.sharpes);
         let max_dd_worst = worst_max(&acc.dds);
@@ -307,7 +310,7 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
             max_dd_worst,
             pnl_median: median(&acc.pnls),
             pnl_worst: worst_min(&acc.pnls),
-            trades_median: median_u32(&acc.trades),
+            trades_median: median_u32_sorted(&acc.trades),
             trades_worst: worst_min_u32(&acc.trades),
             pnl_positive_frac: acc.pnl_pos as f64 / ds_n as f64,
             score,
@@ -382,6 +385,35 @@ mod tests {
         assert_eq!(cfg.gate.min_sharpe_median, 0.0);
         assert_eq!(cfg.gate.min_pnl_positive_frac, 1.0);
         assert_eq!(cfg.gate.max_dd_worst, None);
+    }
+
+    #[test]
+    fn sanitize_cross_ticker_config_dedupes_normalized_paths() {
+        let mut cfg = CrossTickerConfig {
+            datasets: vec![
+                ta_app_core::CrossTickerDataset {
+                    csv_path: "C:/data/AAPL.csv".to_string(),
+                    label: "first".to_string(),
+                },
+                ta_app_core::CrossTickerDataset {
+                    csv_path: " c:\\DATA\\aapl.csv ".to_string(),
+                    label: "second".to_string(),
+                },
+                ta_app_core::CrossTickerDataset {
+                    csv_path: "D:/data/MSFT.csv".to_string(),
+                    label: "third".to_string(),
+                },
+            ],
+            max_datasets: 4,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: CrossTickerGateConfig::default(),
+        };
+
+        sanitize_cross_ticker_config(&mut cfg);
+
+        assert_eq!(cfg.datasets.len(), 2);
+        assert_eq!(cfg.datasets[0].label, "first");
+        assert_eq!(cfg.datasets[1].label, "third");
     }
 
     #[test]

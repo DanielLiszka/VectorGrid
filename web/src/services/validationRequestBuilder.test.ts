@@ -150,6 +150,100 @@ describe('validationRequestBuilder', () => {
     })
   })
 
+  it('dedupes normalized validation candidates before applying the max candidate limit', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-dedupe',
+        ma_source: 'close',
+        fast_ma_types: ['alma'],
+        slow_ma_types: ['alma'],
+        strategy: { fee_bps: 1.0 },
+        halftrend_filter: { enabled: true }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'alma',
+            slow_ma_type: 'alma',
+            fast_len: 9,
+            slow_len: 30,
+            fast_ma_params: { sigma: 6, offset: 0.85 },
+            slow_ma_params: { offset: 0.85, sigma: 6 }
+          }
+        },
+        {
+          params: {
+            fast_ma_type: 'alma',
+            slow_ma_type: 'alma',
+            fast_len: 9,
+            slow_len: 30,
+            fast_ma_params: { offset: 0.85, sigma: 6 },
+            slow_ma_params: { sigma: 6, offset: 0.85 }
+          }
+        },
+        {
+          params: {
+            fast_ma_type: 'alma',
+            slow_ma_type: 'alma',
+            fast_len: 11,
+            slow_len: 40,
+            fast_ma_params: { offset: 0.85, sigma: 6 },
+            slow_ma_params: { offset: 0.85, sigma: 6 }
+          }
+        }
+      ],
+      candidates: '2'
+    })
+
+    expect(req.candidates).toHaveLength(2)
+    expect(req.candidates[0]).toMatchObject({ fast_len: 9, slow_len: 30 })
+    expect(req.candidates[1]).toMatchObject({ fast_len: 11, slow_len: 40 })
+  })
+
+  it('dedupes cross datasets by normalized path', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-cross-dedupe',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['sma'],
+        slow_ma_types: ['sma'],
+        strategy: { fee_bps: 1.0 }
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'sma',
+            slow_ma_type: 'sma',
+            fast_len: 10,
+            slow_len: 40
+          }
+        }
+      ],
+      candidates: '4',
+      crossEnable: true,
+      crossMax: '3',
+      crossDatasets: [
+        { csv_path: 'C:/data/AAPL.csv', label: 'AAPL first' },
+        { csv_path: ' c:\\DATA\\aapl.csv ', label: 'AAPL duplicate' },
+        { csv_path: 'D:/data/MSFT.csv', label: 'MSFT' }
+      ]
+    })
+
+    expect(req.cross_ticker).toEqual({
+      max_datasets: 3,
+      mode: 'preserved_finalists',
+      datasets: [
+        { csv_path: 'C:/data/AAPL.csv', label: 'AAPL first' },
+        { csv_path: 'D:/data/MSFT.csv', label: 'MSFT' }
+      ]
+    })
+  })
+
   it('treats Marrt as a double-like validation strategy', () => {
     const req = buildValidationRequest({
       currentRunReq: {

@@ -10044,6 +10044,237 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     ))
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_double_ma_gpu_hybrid_kernel_exact_combos(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    device_id: u32,
+    combos: &[DoubleMaParams],
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<&[f64]>,
+    strategy: &StrategyConfig,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    ranges: &[(usize, usize)],
+) -> Result<(Vec<Metrics>, BackendUsed, Option<String>, Option<String>), String> {
+    if combos.is_empty() {
+        return Err("no parameter combinations".to_string());
+    }
+    if ranges.is_empty() {
+        return Err("no evaluation ranges".to_string());
+    }
+
+    let route_plan = crate::ma_policy::plan_double_ma_hybrid_route(fast_ma_type, slow_ma_type);
+    if !route_plan.is_fully_supported() {
+        return Err(format!(
+            "GpuHybridKernel has unsupported MA(s): {}",
+            route_plan.unsupported_ids().join(", ")
+        ));
+    }
+    let fast_info =
+        lookup_ma_info(fast_ma_type).ok_or_else(|| format!("unknown fast MA: '{fast_ma_type}'"))?;
+    let slow_info =
+        lookup_ma_info(slow_ma_type).ok_or_else(|| format!("unknown slow MA: '{slow_ma_type}'"))?;
+
+    let mut kernel_blockers: Vec<String> = Vec::new();
+    let fast_requires_cpu_precompute =
+        should_cpu_stage_indicator(&route_plan.fast, GpuExecutionPolicy::BestEffort);
+    let slow_requires_cpu_precompute =
+        should_cpu_stage_indicator(&route_plan.slow, GpuExecutionPolicy::BestEffort);
+    if fast_requires_cpu_precompute && !fast_info.supports_cpu_single {
+        kernel_blockers.push(format!(
+            "fast MA '{fast_ma_type}' requires CPU staging under the current hybrid route policy but has no CPU-single implementation"
+        ));
+    }
+    if slow_requires_cpu_precompute && !slow_info.supports_cpu_single {
+        kernel_blockers.push(format!(
+            "slow MA '{slow_ma_type}' requires CPU staging under the current hybrid route policy but has no CPU-single implementation"
+        ));
+    }
+    if strategy_uses_kaufman_stop_exit(strategy) {
+        kernel_blockers.push("kaufman-stop exit is not supported by GPU kernel path".to_string());
+    }
+    if strategy.uses_execution_overlays() {
+        kernel_blockers.push(
+            "execution overlays (cooldown/persistence) are not supported by GPU kernel path"
+                .to_string(),
+        );
+    }
+    if regime_filter.is_some() && !kernel_regime_filters_enabled() {
+        kernel_blockers
+            .push("regime filter provided while kernel regime filters are disabled".to_string());
+    }
+    #[cfg(feature = "cuda")]
+    {
+        if !cuda_available() {
+            kernel_blockers.push("CUDA runtime is unavailable".to_string());
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        kernel_blockers.push("CUDA feature is not enabled in this build".to_string());
+    }
+
+    let full_range = ranges.len() == 1 && ranges[0] == (0, candles.close.len());
+    let blockers_text = kernel_blockers.join("; ");
+    if !kernel_blockers.is_empty() {
+        if !full_range {
+            return Err(format!(
+                "GpuHybridKernel windowed evaluation requires kernel-executable routing. Reasons: {blockers_text}"
+            ));
+        }
+
+        let total_pairs = estimate_pairs_fast_lt_slow(fast_periods, slow_periods);
+        let cancel = AtomicBool::new(false);
+        let (res, _, backend_used, route_note, fallback_reason) =
+            optimize_double_ma_gpu_hybrid_kernel_phase1(
+                candles,
+                device_id,
+                fast_periods,
+                slow_periods,
+                fast_ma_type,
+                slow_ma_type,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                regime_filter,
+                strategy,
+                ObjectiveKind::Sharpe,
+                combos.len(),
+                true,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                None,
+                None,
+                total_pairs,
+                0,
+                &cancel,
+                None,
+                GpuExecutionPolicy::BestEffort,
+                true,
+                None,
+            )?;
+        let mut metric_by_pair: HashMap<(u16, u16), Metrics> = HashMap::with_capacity(combos.len());
+        if let Some(all) = res.all.as_ref() {
+            for (params, metric) in all {
+                metric_by_pair.insert((params.fast_len, params.slow_len), metric.clone());
+            }
+        }
+        let mut ordered = Vec::with_capacity(combos.len());
+        for combo in combos {
+            ordered.push(
+                metric_by_pair
+                    .get(&(combo.fast_len, combo.slow_len))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "GpuHybridKernel fallback did not return metrics for pair ({}, {})",
+                            combo.fast_len, combo.slow_len
+                        )
+                    })?,
+            );
+        }
+        return Ok((
+            ordered,
+            backend_used,
+            route_note.or_else(|| Some("GpuHybridKernel".to_string())),
+            fallback_reason,
+        ));
+    }
+
+    let mut fast_precomputed_host: Option<Vec<f32>> = None;
+    let mut slow_precomputed_host: Option<Vec<f32>> = None;
+    let mut fast_precomputed_cols: Option<usize> = None;
+    let mut slow_precomputed_cols: Option<usize> = None;
+    if fast_requires_cpu_precompute {
+        let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
+            candles,
+            fast_ma_type,
+            ma_source,
+            fast_periods,
+            fast_ma_params,
+            fast_alma_offset,
+            fast_alma_sigma,
+        )?;
+        fast_precomputed_host = Some(mat_f32);
+        fast_precomputed_cols = Some(cols);
+    }
+    if slow_requires_cpu_precompute {
+        let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
+            candles,
+            slow_ma_type,
+            ma_source,
+            slow_periods,
+            slow_ma_params,
+            slow_alma_offset,
+            slow_alma_sigma,
+        )?;
+        slow_precomputed_host = Some(mat_f32);
+        slow_precomputed_cols = Some(cols);
+    }
+
+    let fast_precomputed = match (fast_precomputed_host.as_deref(), fast_precomputed_cols) {
+        (Some(values), Some(cols)) => Some(crate::gpu_backtest_kernel::PrecomputedHostMaMatrix {
+            periods: fast_periods,
+            cols,
+            values_row_major: values,
+        }),
+        (None, None) => None,
+        _ => return Err("fast precomputed matrix requires both values and cols".to_string()),
+    };
+    let slow_precomputed = match (slow_precomputed_host.as_deref(), slow_precomputed_cols) {
+        (Some(values), Some(cols)) => Some(crate::gpu_backtest_kernel::PrecomputedHostMaMatrix {
+            periods: slow_periods,
+            cols,
+            values_row_major: values,
+        }),
+        (None, None) => None,
+        _ => return Err("slow precomputed matrix requires both values and cols".to_string()),
+    };
+
+    let metrics =
+        crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_precomputed_and_regime(
+            candles,
+            combos,
+            fast_periods,
+            slow_periods,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter.map(crate::gpu_backtest_kernel::RegimeFilterInput::HostF64),
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+            },
+            fast_precomputed.as_ref(),
+            slow_precomputed.as_ref(),
+            strategy,
+            ranges,
+        )?;
+
+    Ok((
+        metrics,
+        BackendUsed::Gpu,
+        Some("GpuHybridKernel".to_string()),
+        None,
+    ))
+}
+
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 fn optimize_double_ma_gpu_kernel_tiled(
     _candles: &vector_ta::utilities::data_loader::Candles,

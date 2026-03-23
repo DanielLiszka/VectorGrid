@@ -259,6 +259,7 @@ struct ValidationCaseSummary {
     run_verdict_approved_count: Option<usize>,
     run_verdict_total_count: Option<usize>,
     run_verdict_status: Option<String>,
+    execution_profile: Option<ValidationExecutionProfileSummary>,
     error: Option<String>,
 }
 
@@ -272,6 +273,21 @@ struct ModuleFeasibilitySummary {
     gpu_native_feasible_now: bool,
     blocker: Option<String>,
     next_step: String,
+}
+
+#[derive(Serialize)]
+struct ValidationExecutionProfileSummary {
+    requested_candidates: usize,
+    unique_candidates: usize,
+    unique_fast_periods: usize,
+    unique_slow_periods: usize,
+    evaluated_pairs_on_device: Option<usize>,
+    expansion_ratio: Option<f64>,
+    avg_gpu_range_eval_calls: Option<u64>,
+    avg_gpu_range_count: Option<u64>,
+    avg_aux_finalist_analytics_wall_ms: Option<u64>,
+    avg_cpu_tail_wall_ms: Option<u64>,
+    avg_gpu_result_materialization_wall_ms: Option<u64>,
 }
 
 struct ValidationCaseAggregate {
@@ -289,6 +305,22 @@ struct ValidationCaseAggregate {
     last_run_verdict_approved_count: Option<usize>,
     last_run_verdict_total_count: Option<usize>,
     last_run_verdict_status: Option<String>,
+    last_requested_candidates: Option<usize>,
+    last_unique_candidates: Option<usize>,
+    last_unique_fast_periods: Option<usize>,
+    last_unique_slow_periods: Option<usize>,
+    last_evaluated_pairs_on_device: Option<usize>,
+    last_expansion_ratio: Option<f64>,
+    total_gpu_range_eval_calls: u128,
+    gpu_range_eval_calls_samples: usize,
+    total_gpu_range_count: u128,
+    gpu_range_count_samples: usize,
+    total_aux_finalist_analytics_wall_ms: u128,
+    aux_finalist_analytics_wall_ms_samples: usize,
+    total_cpu_tail_wall_ms: u128,
+    cpu_tail_wall_ms_samples: usize,
+    total_gpu_result_materialization_wall_ms: u128,
+    gpu_result_materialization_wall_ms_samples: usize,
     last_error: Option<String>,
 }
 
@@ -631,6 +663,7 @@ fn merge_case_result(
     run_verdict_approved_count: Option<usize>,
     run_verdict_total_count: Option<usize>,
     run_verdict_status: Option<String>,
+    execution_profile: Option<&ta_app_core::ValidationExecutionProfile>,
     error: Option<String>,
 ) {
     agg.total_wall_ms += u128::from(wall_ms);
@@ -646,6 +679,34 @@ fn merge_case_result(
     agg.last_run_verdict_approved_count = run_verdict_approved_count;
     agg.last_run_verdict_total_count = run_verdict_total_count;
     agg.last_run_verdict_status = run_verdict_status;
+    if let Some(profile) = execution_profile {
+        agg.last_requested_candidates = Some(profile.requested_candidates);
+        agg.last_unique_candidates = Some(profile.unique_candidates);
+        agg.last_unique_fast_periods = Some(profile.unique_fast_periods);
+        agg.last_unique_slow_periods = Some(profile.unique_slow_periods);
+        agg.last_evaluated_pairs_on_device = profile.evaluated_pairs_on_device;
+        agg.last_expansion_ratio = profile.expansion_ratio;
+        if let Some(value) = profile.gpu_range_eval_calls {
+            agg.total_gpu_range_eval_calls += value as u128;
+            agg.gpu_range_eval_calls_samples += 1;
+        }
+        if let Some(value) = profile.gpu_range_count {
+            agg.total_gpu_range_count += value as u128;
+            agg.gpu_range_count_samples += 1;
+        }
+        if let Some(value) = profile.aux_finalist_analytics_wall_ms {
+            agg.total_aux_finalist_analytics_wall_ms += value as u128;
+            agg.aux_finalist_analytics_wall_ms_samples += 1;
+        }
+        if let Some(value) = profile.cpu_tail_wall_ms {
+            agg.total_cpu_tail_wall_ms += value as u128;
+            agg.cpu_tail_wall_ms_samples += 1;
+        }
+        if let Some(value) = profile.gpu_result_materialization_wall_ms {
+            agg.total_gpu_result_materialization_wall_ms += value as u128;
+            agg.gpu_result_materialization_wall_ms_samples += 1;
+        }
+    }
     agg.last_error = error;
 }
 
@@ -788,6 +849,22 @@ fn main() -> Result<(), String> {
             last_run_verdict_approved_count: None,
             last_run_verdict_total_count: None,
             last_run_verdict_status: None,
+            last_requested_candidates: None,
+            last_unique_candidates: None,
+            last_unique_fast_periods: None,
+            last_unique_slow_periods: None,
+            last_evaluated_pairs_on_device: None,
+            last_expansion_ratio: None,
+            total_gpu_range_eval_calls: 0,
+            gpu_range_eval_calls_samples: 0,
+            total_gpu_range_count: 0,
+            gpu_range_count_samples: 0,
+            total_aux_finalist_analytics_wall_ms: 0,
+            aux_finalist_analytics_wall_ms_samples: 0,
+            total_cpu_tail_wall_ms: 0,
+            cpu_tail_wall_ms_samples: 0,
+            total_gpu_result_materialization_wall_ms: 0,
+            gpu_result_materialization_wall_ms_samples: 0,
             last_error: None,
         };
 
@@ -869,6 +946,7 @@ fn main() -> Result<(), String> {
                                     None,
                                     None,
                                     None,
+                                    res.execution_profile.as_ref(),
                                     Some(err),
                                 );
                                 continue;
@@ -916,6 +994,7 @@ fn main() -> Result<(), String> {
                         run_verdict_approved_count,
                         run_verdict_total_count,
                         run_verdict_status,
+                        res.execution_profile.as_ref(),
                         None,
                     );
                 }
@@ -927,6 +1006,7 @@ fn main() -> Result<(), String> {
                         main_wall_ms,
                         0,
                         0,
+                        None,
                         None,
                         None,
                         None,
@@ -951,6 +1031,43 @@ fn main() -> Result<(), String> {
         } else {
             0.0
         };
+        let avg_u64 = |total: u128, samples: usize| -> Option<u64> {
+            if samples > 0 {
+                Some((total / samples as u128) as u64)
+            } else {
+                None
+            }
+        };
+        let execution_profile = agg.last_requested_candidates.map(|requested_candidates| {
+            ValidationExecutionProfileSummary {
+                requested_candidates,
+                unique_candidates: agg.last_unique_candidates.unwrap_or(requested_candidates),
+                unique_fast_periods: agg.last_unique_fast_periods.unwrap_or(0),
+                unique_slow_periods: agg.last_unique_slow_periods.unwrap_or(0),
+                evaluated_pairs_on_device: agg.last_evaluated_pairs_on_device,
+                expansion_ratio: agg.last_expansion_ratio,
+                avg_gpu_range_eval_calls: avg_u64(
+                    agg.total_gpu_range_eval_calls,
+                    agg.gpu_range_eval_calls_samples,
+                ),
+                avg_gpu_range_count: avg_u64(
+                    agg.total_gpu_range_count,
+                    agg.gpu_range_count_samples,
+                ),
+                avg_aux_finalist_analytics_wall_ms: avg_u64(
+                    agg.total_aux_finalist_analytics_wall_ms,
+                    agg.aux_finalist_analytics_wall_ms_samples,
+                ),
+                avg_cpu_tail_wall_ms: avg_u64(
+                    agg.total_cpu_tail_wall_ms,
+                    agg.cpu_tail_wall_ms_samples,
+                ),
+                avg_gpu_result_materialization_wall_ms: avg_u64(
+                    agg.total_gpu_result_materialization_wall_ms,
+                    agg.gpu_result_materialization_wall_ms_samples,
+                ),
+            }
+        });
 
         println!(
             "  status={} avg_wall_ms={} ratio_vs_opt={:.2} backend={} route={} fallback={} error={}",
@@ -986,6 +1103,7 @@ fn main() -> Result<(), String> {
             run_verdict_approved_count: agg.last_run_verdict_approved_count,
             run_verdict_total_count: agg.last_run_verdict_total_count,
             run_verdict_status: agg.last_run_verdict_status,
+            execution_profile,
             error: agg.last_error,
         });
     }

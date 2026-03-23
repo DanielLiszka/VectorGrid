@@ -1146,12 +1146,13 @@ pub fn compute_trade_bootstrap_stats(
     let mut stationary_pnls: Vec<f64> = Vec::with_capacity(simulations);
     let mut stationary_dds: Vec<f64> = Vec::with_capacity(simulations);
     let mut stationary_pos = 0usize;
+    let mut stationary_scratch = StationaryBootstrapScratch::default();
     for _ in 0..simulations {
-        let indices = stationary_bootstrap_indices(trade_count, stationary_mean_block_len, rng);
+        let indices = stationary_scratch.indices(trade_count, stationary_mean_block_len, rng);
         let mut eq = 1.0_f64;
         let mut peak = 1.0_f64;
         let mut max_dd = 0.0_f64;
-        for idx in indices {
+        for &idx in indices {
             let r = (1.0 + closed[idx]).max(0.000_000_1);
             eq *= r;
             if eq > peak {
@@ -1313,12 +1314,29 @@ fn sanitize_cscv_slices(slices: usize) -> usize {
     }
 }
 
-fn stationary_bootstrap_indices(n: usize, mean_block: usize, rng: &mut StdRng) -> Vec<usize> {
+#[derive(Default)]
+struct StationaryBootstrapScratch {
+    indices: Vec<usize>,
+}
+
+impl StationaryBootstrapScratch {
+    fn indices<'a>(&'a mut self, n: usize, mean_block: usize, rng: &mut StdRng) -> &'a [usize] {
+        stationary_bootstrap_indices_into(&mut self.indices, n, mean_block, rng);
+        &self.indices
+    }
+}
+
+fn stationary_bootstrap_indices_into(
+    out: &mut Vec<usize>,
+    n: usize,
+    mean_block: usize,
+    rng: &mut StdRng,
+) {
+    out.clear();
     if n == 0 {
-        return Vec::new();
+        return;
     }
     let restart_prob = (1.0 / mean_block.max(1) as f64).clamp(1e-6, 1.0);
-    let mut out = Vec::with_capacity(n);
     let mut idx = rng.gen_range(0..n);
     out.push(idx);
     while out.len() < n {
@@ -1329,6 +1347,12 @@ fn stationary_bootstrap_indices(n: usize, mean_block: usize, rng: &mut StdRng) -
         }
         out.push(idx);
     }
+}
+
+#[cfg(test)]
+fn stationary_bootstrap_indices(n: usize, mean_block: usize, rng: &mut StdRng) -> Vec<usize> {
+    let mut out = Vec::with_capacity(n);
+    stationary_bootstrap_indices_into(&mut out, n, mean_block, rng);
     out
 }
 
@@ -1418,18 +1442,19 @@ pub fn compute_spa_validation_stats(
     let block_length = cfg.block_length.max(1);
     let mut exceed = 0usize;
     let mut rng = StdRng::seed_from_u64(seed ^ 0x5eed_5aa5_u64);
+    let mut stationary_scratch = StationaryBootstrapScratch::default();
 
     for _ in 0..bootstrap_samples {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
-        let indices = stationary_bootstrap_indices(slice_count, block_length, &mut rng);
+        let indices = stationary_scratch.indices(slice_count, block_length, &mut rng);
         let mut boot_stat = 0.0_f64;
         for diff in &diffs {
             let mean = sample_mean(diff);
             let std = sample_std(diff, mean).max(1e-12);
             let mut centered_sum = 0.0_f64;
-            for &sample_idx in &indices {
+            for &sample_idx in indices {
                 centered_sum += diff[sample_idx] - mean;
             }
             let centered_mean = centered_sum / slice_count as f64;
@@ -1661,6 +1686,21 @@ mod tests {
     }
 
     #[test]
+    fn stationary_bootstrap_indices_into_matches_allocating_helper_across_draws() {
+        let mut scratch = StationaryBootstrapScratch::default();
+        let mut into_rng = StdRng::seed_from_u64(19);
+        let mut alloc_rng = StdRng::seed_from_u64(19);
+
+        for _ in 0..16 {
+            let expected = stationary_bootstrap_indices(12, 3, &mut alloc_rng);
+            let actual = scratch.indices(12, 3, &mut into_rng).to_vec();
+            assert_eq!(actual, expected);
+        }
+
+        assert!(scratch.indices.iter().all(|&idx| idx < 12));
+    }
+
+    #[test]
     fn trade_bootstrap_honors_stationary_block_len_override() {
         let trades = vec![
             Trade {
@@ -1718,6 +1758,56 @@ mod tests {
     }
 
     #[test]
+    fn trade_bootstrap_is_deterministic_with_same_seed() {
+        let trades = vec![
+            Trade {
+                entry_t: 0,
+                exit_t: 1,
+                direction: 1,
+                pnl: 0.04,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 2,
+                exit_t: 4,
+                direction: 1,
+                pnl: -0.02,
+                bars: 2,
+                open: false,
+            },
+            Trade {
+                entry_t: 5,
+                exit_t: 6,
+                direction: -1,
+                pnl: 0.07,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 7,
+                exit_t: 9,
+                direction: 1,
+                pnl: -0.01,
+                bars: 2,
+                open: false,
+            },
+        ];
+        let cfg = TradeBootstrapConfig {
+            simulations: 64,
+            stationary_mean_block_len: Some(2),
+        };
+        let mut rng_a = StdRng::seed_from_u64(42);
+        let mut rng_b = StdRng::seed_from_u64(42);
+        let stats_a = compute_trade_bootstrap_stats(&trades, &cfg, &mut rng_a);
+        let stats_b = compute_trade_bootstrap_stats(&trades, &cfg, &mut rng_b);
+
+        let stats_a = serde_json::to_value(&stats_a).expect("serialize trade bootstrap stats");
+        let stats_b = serde_json::to_value(&stats_b).expect("serialize trade bootstrap stats");
+        assert_eq!(stats_a, stats_b);
+    }
+
+    #[test]
     fn trade_bootstrap_iid_only_mode_skips_stationary_stats() {
         let trades = vec![
             Trade {
@@ -1748,6 +1838,45 @@ mod tests {
         assert!(stats.stationary_mean_block_len.is_none());
         assert!(stats.stationary_pnl_p05.is_none());
         assert!(stats.stationary_max_dd_p95.is_none());
+    }
+
+    #[test]
+    fn spa_validation_is_deterministic_with_same_seed() {
+        let candidate_keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let candidate_slice_returns = vec![
+            vec![0.03, 0.01, 0.02, 0.04, 0.01, 0.02],
+            vec![0.01, 0.02, 0.00, 0.01, 0.02, 0.01],
+            vec![0.00, -0.01, 0.01, 0.00, 0.01, -0.01],
+        ];
+        let benchmark_slice_returns = vec![0.0, 0.01, 0.0, 0.01, 0.0, 0.0];
+        let cfg = SpaConfigOptional {
+            slices: 6,
+            bootstrap_samples: 128,
+            block_length: 2,
+            benchmark: crate::composite_validate::SpaBenchmarkKind::BuyAndHold,
+        };
+        let cancel = AtomicBool::new(false);
+
+        let stats_a = compute_spa_validation_stats(
+            &candidate_keys,
+            &candidate_slice_returns,
+            &benchmark_slice_returns,
+            &cfg,
+            99,
+            &cancel,
+        );
+        let stats_b = compute_spa_validation_stats(
+            &candidate_keys,
+            &candidate_slice_returns,
+            &benchmark_slice_returns,
+            &cfg,
+            99,
+            &cancel,
+        );
+
+        let stats_a = serde_json::to_value(&stats_a).expect("serialize SPA stats");
+        let stats_b = serde_json::to_value(&stats_b).expect("serialize SPA stats");
+        assert_eq!(stats_a, stats_b);
     }
 
     #[test]
