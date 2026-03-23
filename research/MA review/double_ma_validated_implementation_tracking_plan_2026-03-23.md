@@ -22,6 +22,12 @@ Primary code surfaces:
 - `crates/app_core/src/kernels/double_crossover.cu`
 - `crates/app_core/src/double_ma.rs`
 
+Tracker note:
+
+- The original plan and first execution wave used a 9-row product-reduced path.
+- The current preferred single-pass product path has since been widened to 10 rows so it can carry exact `omega` while deriving `martin_ratio` from `pnl` and `ulcer_index`.
+- Historical references to "9-row" below describe that earlier execution wave unless a later status note or benchmark row explicitly supersedes them.
+
 ---
 
 ## Validated Scope
@@ -369,6 +375,8 @@ Use this table for every meaningful benchmark capture.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-03-23 | `cd3795e00a6f9f2ba923dc7ad22d3a9f930643ab` | Phase 7 | `PRODUCT_REDUCED_ROWS=0` | `98.75 ms` | `98.72 ms` | `185.71 ms` | `185.92 ms` | Forced legacy baseline (5-row + replay) |
 | 2026-03-23 | `cd3795e00a6f9f2ba923dc7ad22d3a9f930643ab` | Phase 7 | `none` | `86.70 ms` | `86.26 ms` | `86.81 ms` | `86.80 ms` | Default after promotion (9-row; replay skipped) |
+| 2026-03-23 | `4ad7379da4765526b125e32d398184059e73c852` | Omega follow-up | `none` | `76.72 ms` | `77.25 ms` | `77.19 ms` | `77.26 ms` | Current preferred path: 10-row single-pass with exact `omega`; replay skipped |
+| 2026-03-23 | `4ad7379da4765526b125e32d398184059e73c852` | Omega follow-up | `PRODUCT_REDUCED_ROWS=0` | `77.23 ms` | `77.26 ms` | `151.88 ms` | `152.01 ms` | Forced current legacy baseline: 7-row + replay |
 | YYYY-MM-DD | `<sha>` | Phase N | `none` | `... ms` | `... ms` | `... ms` | `... ms` | `...` |
 
 Use this table for replay profile captures.
@@ -384,6 +392,8 @@ Use this comparison summary for the 9-row experiment.
 | --- | --- | --- | --- | --- | --- |
 | baseline 5-row + replay | reference | no | `0%` | `0%` | baseline |
 | 9-row + no replay | pass (CUDA parity test) | yes | `-12.2%` | `-53.3%` | promote |
+| baseline 7-row + replay | reference | no | `0%` | `0%` | current diagnostic fallback |
+| 10-row + no replay + exact omega | pass (CUDA parity test + GPU/CPU omega parity test) | yes | `-0.7%` | `-49.2%` | keep as preferred/default path |
 
 ---
 
@@ -458,8 +468,8 @@ Treat the following as material until better local evidence exists:
 
 ### Phase 6
 
-- [ ] record the optimization decision:
-- [ ] promote 9-row path
+- [x] record the optimization decision:
+- [x] promote 10-row single-pass path with exact `omega`
 - [ ] or promote small-finalist replay path
 - [ ] or explicitly split out remaining `search_only` optimization work
 
@@ -478,7 +488,7 @@ Treat the following as material until better local evidence exists:
 
 - [x] Re-read `research/MA review/double_ma_finalist_recompute_optimization_plan.md` and this tracker before touching code.
 - [x] Confirm the target benchmark is still `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/...`.
-- [ ] Confirm no benchmark or Criterion process is already running before any timing work.
+- [x] Confirm no benchmark or Criterion process is already running before any timing work.
 - [x] Confirm the worktree is understood and no unrelated local changes in target files will be disturbed.
 - [ ] Identify the current line locations for:
 - [x] benchmark split in `crates/app_core/benches/double_ma_opt.rs`
@@ -559,7 +569,7 @@ Treat the following as material until better local evidence exists:
 ### Phase 6: Optimization Closure
 
 - [x] Make an explicit optimization decision for the current exact benchmark family.
-- Decision: promote the 9-row path (single-pass; replay skipped) as the default for `Sharpe`/`Volatility`.
+- Decision: promote the 10-row path (single-pass; replay skipped; exact `omega`) as the default for `Sharpe`/`Volatility`.
 - `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0` remains as the legacy-baseline override for benchmarking and diagnosis.
 
 ### Phase 7: Validation and Handoff
@@ -569,9 +579,9 @@ Treat the following as material until better local evidence exists:
 - [x] Run benchmark variants serially.
 - [x] Capture before/after timings for the four benchmark variants.
 - [x] Capture replay timing breakdown if instrumentation was added.
-- [x] Document whether 9-row replaces replay for this workload or not.
+- [x] Document whether the widened single-pass product path replaces replay for this workload or not.
 - [x] Document whether Phase 5 is still necessary after Phase 4 results.
-- [ ] Update research notes or inline comments if implementation invalidates earlier assumptions.
+- [x] Update research notes or inline comments if implementation invalidates earlier assumptions.
 
 ---
 
@@ -1031,19 +1041,21 @@ Use this section to track actual execution once implementation starts.
 
 ### Status
 
-- Current phase: Phase 7 complete (perf gate + replay profile captured)
+- Current phase: Phase 7 omega follow-up complete (targeted parity + serial benchmark capture recorded)
 - Owner: Codex
 - Last updated: 2026-03-23
 
 ### Notes
 
 - Process-safety check: no active `cargo` / `double_ma_opt` / `ta_cli` processes at time of last check.
-- CPU-only validation: `cargo test -p ta_app_core` currently fails due to unrelated `double_ma_validate.rs` references to `PreparedGpuValidationPlan` (see command log).
-- Benchmark capture: serial baseline vs promoted default timings are recorded in the capture table above.
-- Optimization closure: 9-row single-pass has been promoted as the default for `Sharpe`/`Volatility`; use `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0` to force the legacy 5-row+replay baseline.
+- CPU-only validation: clean CPU-only test compile now passes via `CARGO_TARGET_DIR=target_codex_cpu_omega cargo test -p ta_app_core --no-run`.
+- Benchmark capture: both the current 10-row exact-`omega` single-pass timings and the current forced legacy replay baseline are recorded in the capture table above.
+- Optimization closure: the preferred `Sharpe`/`Volatility` product path is now 10-row single-pass with exact `omega`; use `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0` to force the current 7-row+replay diagnostic baseline.
+- App-default follow-up: the default `Sharpe`/`Volatility` GPU-kernel path now prefers the 10-row single-pass contract even when `VECTORBT_KERNEL_FINALIST_RECOMPUTE=0`; the contract-split benchmark explicitly forces legacy rows on `search_only` / replay variants so those measurements remain meaningful.
 - Replay profiling: replay-profile capture recorded in the table above; for this workload, replay is dominated by `d2h_decode` overhead (not kernel compute).
-- GPU perf gate: `scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed.
-- Phase 5: no longer justified for this benchmark family after the 9-row promotion.
+- GPU perf gate: not rerun for the omega follow-up because the repo gate is baseline-bound to a different benchmark family; the relevant evidence for this change is the targeted contract-split Criterion capture above.
+- Phase 5: still not justified for this benchmark family after the single-pass product-path promotion.
+- Accuracy note: the CUDA flex-kernel omega formula has been aligned to the CPU epsilonized omega definition; the dynamic GPU-vs-CPU parity test now asserts `omega`.
 
 ### Command Log
 
@@ -1057,6 +1069,16 @@ Use this section to track actual execution once implementation starts.
 - 2026-03-23: `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0 CARGO_TARGET_DIR=target_codex_verify cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- \"double_ma/gpu_kernel_contract_split/alma_alma/200k\"` (legacy baseline captured)
 - 2026-03-23: `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (PASS; summary written to `target/gpu_perf_summary.json`)
 - 2026-03-23: `VECTORBT_KERNEL_FINALIST_PROFILE=1 VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0 VECTORBT_KERNEL_FINALIST_RECOMPUTE=1 cargo run -q -p ta_app_core --bin ta_cli --features cli,cuda,cuda-backtest-kernel -- --backend gpu-kernel --synth-len 200000 --fast-ma alma --slow-ma alma --fast-period 5:200:1 --slow-period 10:400:1 --objective sharpe --top-k 50 --heatmap-bins 64` (replay profile captured)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_omega cargo test -p ta_app_core --features cuda,cuda-backtest-kernel decode_product_reduced_rows_restore_omega -- --nocapture` (ok)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_omega cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe -- --nocapture` (ok; includes `omega` parity)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_omega cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_export_all_csv_writes_one_row_per_pair -- --nocapture` (ok; export header includes `omega`)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_omega cargo test -p ta_app_core --features cuda,cuda-backtest-kernel dynamic_double_ma_program_gpu_kernel_matches_cpu_plain_sma_metrics -- --nocapture` (ok; GPU `omega` matches CPU)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_omega cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs --noplot` (current 10-row exact-`omega` single-pass timings captured)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_omega VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0 cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs --noplot` (current 7-row+replay baseline captured)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_cpu_omega cargo test -p ta_app_core --no-run` (ok; CPU-only compile remains valid)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_app_default cargo test -p ta_app_core --features cuda,cuda-backtest-kernel search_metrics_count_product_reduced_rows_default_and_override -- --nocapture` (ok; default 10-row now independent of recompute env)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_app_default cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe -- --nocapture` (ok after app-default policy change)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_app_default_bench cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs --noplot` (ok; benchmark harness still isolates search-only, replay, and end-to-end product)
 
 ### Current Env State
 
@@ -1074,7 +1096,7 @@ The valid plan is:
 1. make the benchmark honest
 2. make replay measurable
 3. remove duplicated returns work
-4. test whether 9-row pass 1 is cheaper than replay
+4. test whether widened single-pass product rows are cheaper than replay
 5. only then build a narrower small-finalist replay path
 
 That is the full implementation scope for the validated parts of the guide.

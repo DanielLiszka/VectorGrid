@@ -134,7 +134,7 @@ pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOn
 }
 
 const BASE_METRICS_COUNT: usize = 7;
-const PRODUCT_REDUCED_METRICS_COUNT: usize = 9;
+const PRODUCT_REDUCED_METRICS_COUNT: usize = 10;
 const METRICS_COUNT: usize = 10;
 const METRIC_IDX_PNL: usize = 0;
 const METRIC_IDX_TRADES: usize = 1;
@@ -145,7 +145,7 @@ const METRIC_IDX_EXPOSURE: usize = 5;
 const METRIC_IDX_NET_EXPOSURE: usize = 6;
 const METRIC_IDX_DOWNSIDE_DEVIATION: usize = 7;
 const METRIC_IDX_ULCER_INDEX: usize = 8;
-const METRIC_IDX_MARTIN_RATIO: usize = 9;
+const METRIC_IDX_OMEGA: usize = 9;
 const TOPK_BLOCK_ITEMS: usize = 512;
 
 #[derive(Clone, Copy, Debug)]
@@ -800,9 +800,12 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
         raw_max_dd
     };
     let ulcer_index = metric(METRIC_IDX_ULCER_INDEX);
-    let martin_ratio = if metrics_count > METRIC_IDX_MARTIN_RATIO {
-        metric(METRIC_IDX_MARTIN_RATIO)
-    } else if metrics_count > METRIC_IDX_ULCER_INDEX {
+    let omega = if metrics_count > METRIC_IDX_OMEGA {
+        metric(METRIC_IDX_OMEGA).clamp(0.0, CLAMP_MAX)
+    } else {
+        0.0
+    };
+    let martin_ratio = if metrics_count > METRIC_IDX_ULCER_INDEX {
         martin_ratio_from_components(pnl, ulcer_index)
     } else {
         0.0
@@ -814,7 +817,7 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
         sortino,
         downside_deviation,
         calmar: calmar_ratio(pnl, max_dd),
-        omega: 0.0,
+        omega,
         volatility: std,
         ulcer_index,
         martin_ratio,
@@ -3350,12 +3353,7 @@ fn kernel_product_reduced_rows_enabled_for_objective(objective: ObjectiveKind) -
     // - Set to 0/false: disabled for all objectives
     match env_flag_override("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS") {
         Some(v) => v,
-        None => {
-            // Keep `search_only` fast: if finalist recompute is disabled, there is no value in
-            // emitting extra product metrics (they won't be used to skip replay).
-            kernel_finalist_recompute_enabled()
-                && matches!(objective, ObjectiveKind::Sharpe | ObjectiveKind::Volatility)
-        }
+        None => matches!(objective, ObjectiveKind::Sharpe | ObjectiveKind::Volatility),
     }
 }
 
@@ -3596,8 +3594,8 @@ fn search_metrics_count_for_optimization(
 
     let mut metrics_count = match objective {
         ObjectiveKind::Pnl => 1,
-        // 7-row enables the faster M7 kernels while still skipping ulcer-index work unless the
-        // product-reduced promotion (9-row) is active.
+        // 7-row enables the faster M7 kernels while still skipping ulcer-index/omega work unless
+        // the product-reduced promotion (10-row) is active.
         ObjectiveKind::Sharpe | ObjectiveKind::Volatility => 7,
         ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => 3,
         ObjectiveKind::Sortino | ObjectiveKind::Omega => METRICS_COUNT,
@@ -6161,7 +6159,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         let mut w = BufWriter::new(f);
         writeln!(
             w,
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,martin_ratio,trades,exposure,net_exposure,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,omega,martin_ratio,trades,exposure,net_exposure,score"
         )
         .map_err(|e| e.to_string())?;
         Some(w)
@@ -7730,7 +7728,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 };
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
@@ -7740,6 +7738,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     metrics.max_dd,
                                     metrics.downside_deviation,
                                     metrics.ulcer_index,
+                                    metrics.omega,
                                     metrics.martin_ratio,
                                     metrics.trades,
                                     metrics.exposure,
@@ -8272,7 +8271,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
@@ -8282,6 +8281,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     metrics.max_dd,
                                     metrics.downside_deviation,
                                     metrics.ulcer_index,
+                                    metrics.omega,
                                     metrics.martin_ratio,
                                     metrics.trades,
                                     metrics.exposure,
@@ -9025,9 +9025,11 @@ mod tests {
     fn search_metrics_count_product_reduced_rows_default_and_override() {
         let _guard = lock_env();
         let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
 
         // Default: Sharpe/Volatility prefers the product-reduced rows to skip finalist replay.
         std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS");
+        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Sharpe,
@@ -9054,7 +9056,7 @@ mod tests {
                 false,
                 false,
             ),
-            5
+            7
         );
 
         // Override enable: allow any objective to widen to product-reduced rows.
@@ -9074,6 +9076,10 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", v),
             None => std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS"),
+        }
+        match prev_recompute {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
         }
     }
 
@@ -9110,7 +9116,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_full_metric_rows_restores_sortino_from_mean_and_downside_deviation() {
+    fn decode_full_metric_rows_restore_omega_and_derive_martin_ratio() {
         let row = vec![
             0.15f32, // pnl
             7.0f32,  // trades
@@ -9121,34 +9127,37 @@ mod tests {
             0.10f32, // net_exposure
             0.02f32, // downside_deviation
             0.05f32, // ulcer_index
-            3.0f32,  // martin_ratio
+            4.0f32,  // omega
         ];
 
         let metrics = decode_tm_flex_metrics_row(&row, 0, METRICS_COUNT);
         assert!((metrics.sortino - 3.0).abs() < 1e-6);
-        assert_eq!(metrics.omega, 0.0);
+        assert!((metrics.omega - 4.0).abs() < 1e-6);
+        assert!((metrics.martin_ratio - 3.0).abs() < 1e-6);
     }
 
     #[test]
-    fn decode_product_reduced_rows_derives_martin_ratio() {
+    fn decode_product_reduced_rows_restore_omega_and_derive_martin_ratio() {
         let pnl = 0.15f64;
         let max_dd = 0.20f64;
         let ulcer = 0.05f64;
         let row = vec![
-            pnl.ln_1p() as f32,
+            pnl as f32,
             7.0f32,
-            (-(1.0 - max_dd).ln()) as f32,
+            max_dd as f32,
             0.06f32,
             0.03f32,
             0.40f32,
             0.10f32,
             0.02f32,
             ulcer as f32,
+            4.0f32,
         ];
 
         let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT);
         assert!((metrics.pnl - pnl).abs() < 1e-6);
         assert!((metrics.max_dd - max_dd).abs() < 1e-6);
+        assert!((metrics.omega - 4.0).abs() < 1e-6);
         assert!((metrics.martin_ratio - 3.0).abs() < 1e-6);
     }
 
@@ -9295,6 +9304,12 @@ mod tests {
             "martin gpu={} cpu={}",
             gpu.martin_ratio,
             cpu_metrics.martin_ratio
+        );
+        assert!(
+            approx_eq(gpu.omega, cpu_metrics.omega, 1e-5),
+            "omega gpu={} cpu={}",
+            gpu.omega,
+            cpu_metrics.omega
         );
         assert!(
             approx_eq(gpu.volatility, cpu_metrics.volatility, 1e-5),

@@ -255,6 +255,22 @@ fn run_with_finalist_recompute_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T
     out
 }
 
+fn run_with_product_reduced_rows_env<T>(value: Option<bool>, f: impl FnOnce() -> T) -> T {
+    let key = "VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS";
+    let prev = std::env::var(key).ok();
+    match value {
+        Some(true) => std::env::set_var(key, "1"),
+        Some(false) => std::env::set_var(key, "0"),
+        None => std::env::remove_var(key),
+    }
+    let out = f();
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    out
+}
+
 fn bench_double_ma_cpu(c: &mut Criterion) {
     let candles = make_synth_candles(200_000);
     let cancel = AtomicBool::new(false);
@@ -621,43 +637,49 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
 
-    let variants: [(&str, DoubleMaRequest, bool); 4] = [
-        ("large/{pairs}pairs/search_only", search_req, false),
+    let variants: [(&str, DoubleMaRequest, bool, Option<bool>); 4] = [
+        ("large/{pairs}pairs/search_only", search_req, false, Some(false)),
         (
             "large/{pairs}pairs/search_plus_heatmap",
             search_plus_heatmap_req,
             false,
+            Some(false),
         ),
         (
             "large/{pairs}pairs/search_plus_finalist_recompute",
             search_plus_finalist_req,
             true,
+            Some(false),
         ),
-        ("large/{pairs}pairs/end_to_end_product", product_req, true),
+        ("large/{pairs}pairs/end_to_end_product", product_req, true, None),
     ];
 
     // Prewarm each variant once so the first benchmark in the group does not
     // absorb one-time CUDA/runtime setup costs that would distort the split.
-    for (_, req0, recompute_enabled) in variants.iter() {
+    for (_, req0, recompute_enabled, reduced_rows_override) in variants.iter() {
         let req2 = req0.clone();
-        run_with_finalist_recompute_env(*recompute_enabled, || {
-            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                req2, &candles, &cancel, None,
-            )
-            .expect("gpu kernel contract split prewarm run");
+        run_with_product_reduced_rows_env(*reduced_rows_override, || {
+            run_with_finalist_recompute_env(*recompute_enabled, || {
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2, &candles, &cancel, None,
+                )
+                .expect("gpu kernel contract split prewarm run");
+            });
         });
     }
 
-    for (name_tmpl, req0, recompute_enabled) in variants {
+    for (name_tmpl, req0, recompute_enabled, reduced_rows_override) in variants {
         let name = name_tmpl.replace("{pairs}", &pairs.to_string());
         group.bench_function(&name, |b| {
             b.iter(|| {
                 let req2 = req0.clone();
-                run_with_finalist_recompute_env(recompute_enabled, || {
-                    let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                        req2, &candles, &cancel, None,
-                    )
-                    .expect("gpu kernel contract split run");
+                run_with_product_reduced_rows_env(reduced_rows_override, || {
+                    run_with_finalist_recompute_env(recompute_enabled, || {
+                        let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                            req2, &candles, &cancel, None,
+                        )
+                        .expect("gpu kernel contract split run");
+                    });
                 });
             })
         });

@@ -3436,7 +3436,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const int need_expo   = FULL_M7 ? 1 : (M > 5);
     const int need_downside_dev = FULL_M7 ? 1 : (M > 7);
     const int need_ulcer = FULL_M7 ? 1 : (M > 8);
-    const int need_martin = FULL_M7 ? 1 : (M > 9);
+    const int need_omega = FULL_M7 ? 1 : (M > 9);
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk_runtime = use_stop || use_take;
@@ -3515,6 +3515,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         int obs = 0;
         float sum_neg_sq = 0.0f;
         float ulcer_sum_sq = 0.0f;
+        float sum_pos_r = 0.0f;
+        float sum_neg_abs_r = 0.0f;
 
         if (!use_risk) {
             const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
@@ -3580,7 +3582,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     ulcer_sum_sq += dd * dd;
                 }
 
-                if (need_stats || need_downside_dev) {
+                if (need_stats || need_downside_dev || need_omega) {
                     const float step_r = (pos == 0) ? 0.0f : (float)pos * ret1[t];
                     if (need_stats) {
                         n += 1;
@@ -3590,6 +3592,13 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
                     if (need_downside_dev && step_r < 0.0f) {
                         sum_neg_sq += step_r * step_r;
+                    }
+                    if (need_omega) {
+                        if (step_r > 0.0f) {
+                            sum_pos_r += step_r;
+                        } else if (step_r < 0.0f) {
+                            sum_neg_abs_r -= step_r;
+                        }
                     }
 
                     if (need_expo) {
@@ -3690,7 +3699,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     ulcer_sum_sq += dd * dd;
                 }
 
-                if (need_stats || need_downside_dev) {
+                if (need_stats || need_downside_dev || need_omega) {
                     const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * ret1[t];
                     if (need_stats) {
                         n += 1;
@@ -3700,6 +3709,13 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
                     if (need_downside_dev && step_r < 0.0f) {
                         sum_neg_sq += step_r * step_r;
+                    }
+                    if (need_omega) {
+                        if (step_r > 0.0f) {
+                            sum_pos_r += step_r;
+                        } else if (step_r < 0.0f) {
+                            sum_neg_abs_r -= step_r;
+                        }
                     }
 
                     if (need_expo) {
@@ -3722,16 +3738,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             (need_ulcer && obs > 0) ? sqrtf(fmaxf(ulcer_sum_sq / (float)obs, 0.0f)) : 0.0f;
         const float eps = 1.0e-12f;
         const float clamp_max = 1.0e6f;
-        float martin_ratio = 0.0f;
-        if (need_martin) {
-            if (ulcer_index > eps) {
-                martin_ratio = pnl / ulcer_index;
-            } else if (pnl > 0.0f) {
-                martin_ratio = clamp_max;
-            } else if (pnl < 0.0f) {
-                martin_ratio = -clamp_max;
-            }
-            martin_ratio = fminf(clamp_max, fmaxf(-clamp_max, martin_ratio));
+        float omega = 0.0f;
+        if (need_omega) {
+            const float omega_raw = (sum_pos_r + eps) / (sum_neg_abs_r + eps);
+            omega = fminf(clamp_max, fmaxf(0.0f, omega_raw));
         }
 
         if constexpr (FULL_M7) {
@@ -3748,7 +3758,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
             if (metrics_stride > 7) metrics_out[base + 7] = downside_dev;
             if (metrics_stride > 8) metrics_out[base + 8] = ulcer_index;
-            if (metrics_stride > 9) metrics_out[base + 9] = martin_ratio;
+            if (metrics_stride > 9) metrics_out[base + 9] = omega;
         } else {
             const bool search_row = M < 10;
             if (M > 0) metrics_out[base + 0] = search_row ? log_eq : pnl;
@@ -3760,7 +3770,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (M > 6) metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
             if (M > 7) metrics_out[base + 7] = downside_dev;
             if (M > 8) metrics_out[base + 8] = ulcer_index;
-            if (M > 9) metrics_out[base + 9] = martin_ratio;
+            if (M > 9) metrics_out[base + 9] = omega;
         }
     }
 }

@@ -12442,7 +12442,7 @@ mod tests {
         let prev_reduced = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
         std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "1");
         // Force the replay-backed baseline so this test truly compares:
-        // baseline = reduced rows + replay vs. reduced = 9-row + no replay.
+        // baseline = 7-row + replay vs. reduced = 10-row + no replay.
         std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
 
         let candles = make_trending_candles(4096);
@@ -12515,6 +12515,7 @@ mod tests {
             (replay_res.best_metrics.martin_ratio - reduced_res.best_metrics.martin_ratio).abs()
                 <= 1e-5
         );
+        assert!((replay_res.best_metrics.omega - reduced_res.best_metrics.omega).abs() <= 1e-5);
         assert_eq!(
             replay_res.best_metrics.trades,
             reduced_res.best_metrics.trades
@@ -12543,6 +12544,7 @@ mod tests {
                 dm.max_dd
             );
             assert!((rm.martin_ratio - dm.martin_ratio).abs() <= 1e-5);
+            assert!((rm.omega - dm.omega).abs() <= 1e-5);
             assert_eq!(rm.trades, dm.trades);
         }
 
@@ -16221,13 +16223,13 @@ mod tests {
         assert!(!lines.is_empty(), "expected non-empty csv");
         assert_eq!(
             lines[0],
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,martin_ratio,trades,exposure,net_exposure,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,omega,martin_ratio,trades,exposure,net_exposure,score"
         );
         assert_eq!(lines.len(), res.num_combos + 1);
         for (i, line) in lines.iter().enumerate().skip(1) {
             assert_eq!(
                 line.split(',').count(),
-                14,
+                15,
                 "bad csv column count on line {i}"
             );
         }
