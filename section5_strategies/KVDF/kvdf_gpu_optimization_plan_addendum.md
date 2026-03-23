@@ -638,6 +638,7 @@ The adjacent shared GPU runtime already has patterns for:
 
 - resident market series
 - buffer reuse
+- dataset-keyed reusable returns
 - optional async allocation
 - graph replay
 - uninitialized host readback helpers
@@ -1061,4 +1062,3 @@ After the extra pass, my top five priorities would be:
 5. **Add no-fallback assertions to GPU benchmark paths.**
 
 That ordering keeps correctness ahead of performance, while still targeting the highest-value warm-path wins.
-

@@ -448,8 +448,9 @@ These are useful, but I would treat them as second-wave work after the main plan
 
 - resident market-series caching
 - grow-only scratch buffers
-- reusable `d_lr`
+- dataset-keyed reusable `d_lr` / `d_ret1`
 - reusable host scratch / copy-elision helpers
+- promoted single-pass product-path policy in the shared Double-MA backend
 
 A longer-horizon improvement would be to make VEMR converge toward those conventions instead of growing a one-off local runtime design forever.
 
@@ -578,4 +579,3 @@ Add these items to the bottom checklist in the main plan.
 - [ ] unit tests cover resident close/lr cache reuse
 - [ ] unit tests cover resident close/lr cache invalidation
 - [ ] parity tests still pass after staging and copy-elision changes
-

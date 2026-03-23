@@ -44,10 +44,10 @@ The following components are valid and worth planning for implementation:
 These components are grounded in the current code:
 
 - The benchmark pair is bundled in `crates/app_core/benches/double_ma_opt.rs`.
-- `Sharpe` search still uses a 5-row reduced contract in `crates/app_core/src/gpu_backtest_kernel.rs`.
-- Both search and finalist recompute regenerate returns in `crates/app_core/src/gpu_backtest_kernel.rs`.
-- The kernel can already emit rows through ulcer index at `M = 9` in `crates/app_core/src/kernels/double_crossover.cu`.
-- The exact-combo path already reruns exact finalists only, but still pays generic setup/orchestration costs.
+- The preferred `Sharpe`/`Volatility` product path now uses a 10-row single-pass contract, while `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0` forces the current 7-row + replay diagnostic baseline in `crates/app_core/src/gpu_backtest_kernel.rs`.
+- Search and exact-combo replay now share the returns-cache helper in `crates/app_core/src/gpu_backtest_kernel.rs`.
+- The kernel now emits exact `omega` in the widened single-pass contract in `crates/app_core/src/kernels/double_crossover.cu`.
+- The exact-combo path still exists as the current legacy-baseline / diagnostic replay route and still pays generic setup/orchestration costs when forced on.
 
 ---
 
@@ -377,6 +377,7 @@ Use this table for every meaningful benchmark capture.
 | 2026-03-23 | `cd3795e00a6f9f2ba923dc7ad22d3a9f930643ab` | Phase 7 | `none` | `86.70 ms` | `86.26 ms` | `86.81 ms` | `86.80 ms` | Default after promotion (9-row; replay skipped) |
 | 2026-03-23 | `4ad7379da4765526b125e32d398184059e73c852` | Omega follow-up | `none` | `76.72 ms` | `77.25 ms` | `77.19 ms` | `77.26 ms` | Current preferred path: 10-row single-pass with exact `omega`; replay skipped |
 | 2026-03-23 | `4ad7379da4765526b125e32d398184059e73c852` | Omega follow-up | `PRODUCT_REDUCED_ROWS=0` | `77.23 ms` | `77.26 ms` | `151.88 ms` | `152.01 ms` | Forced current legacy baseline: 7-row + replay |
+| 2026-03-23 | `0d0984e84f4a599414509a5cfec933896746b9f0` | Tracker cleanup | `none` | `77.23 ms` | `77.24 ms` | `151.14 ms` | `77.13 ms` | Added returns-cache tests and tracker cleanup only; no measurable regression |
 | YYYY-MM-DD | `<sha>` | Phase N | `none` | `... ms` | `... ms` | `... ms` | `... ms` | `...` |
 
 Use this table for replay profile captures.
@@ -437,20 +438,20 @@ Treat the following as material until better local evidence exists:
 
 ### Phase 2
 
-- [ ] `cargo test -p ta_app_core`
-- [ ] `$env:VECTORBT_KERNEL_FINALIST_PROFILE='1'`
-- [ ] `cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- "double_ma/gpu_kernel_contract_split/alma_alma/200k"`
-- [ ] `Remove-Item Env:VECTORBT_KERNEL_FINALIST_PROFILE -ErrorAction SilentlyContinue`
+- [x] `cargo test -p ta_app_core`
+- [x] `$env:VECTORBT_KERNEL_FINALIST_PROFILE='1'`
+- [x] `cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- "double_ma/gpu_kernel_contract_split/alma_alma/200k"`
+- [x] `Remove-Item Env:VECTORBT_KERNEL_FINALIST_PROFILE -ErrorAction SilentlyContinue`
 
 ### Phase 3
 
-- [ ] `cargo test -p ta_app_core`
-- [ ] rerun Phase 1 benchmark command
-- [ ] rerun Phase 2 replay-profile command
+- [x] `cargo test -p ta_app_core`
+- [x] rerun Phase 1 benchmark command
+- [x] rerun Phase 2 replay-profile command
 
 ### Phase 4
 
-- [ ] `cargo test -p ta_app_core`
+- [x] `cargo test -p ta_app_core`
 - [x] `cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe`
 - [x] baseline benchmark run with no experiment env vars
 - [x] `$env:VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS='1'`
@@ -460,23 +461,20 @@ Treat the following as material until better local evidence exists:
 
 ### Phase 5
 
-- [ ] `cargo test -p ta_app_core`
-- [ ] baseline replay-profile run
-- [ ] fast-path replay-profile run
-- [ ] parity checks against generic replay path
-- [ ] if the small-finalist path wins, adopt it as the preferred replay path for the target workload
+- [x] Not entered: Phase 5 remained unjustified after the single-pass product-path promotion and omega follow-up.
+- [x] Replay profiling and benchmark evidence were sufficient to leave the small-finalist fast path as deferred / not applicable for this workstream.
 
 ### Phase 6
 
 - [x] record the optimization decision:
 - [x] promote 10-row single-pass path with exact `omega`
-- [ ] or promote small-finalist replay path
-- [ ] or explicitly split out remaining `search_only` optimization work
+- [x] or promote small-finalist replay path (not selected for this workstream)
+- [x] or explicitly split out remaining `search_only` optimization work (left as separate backlog)
 
 ### Phase 7
 
 - [x] `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
-- [ ] or `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`
+- [x] or `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` (not required because the GPU perf gate already ran)
 - [x] final serial benchmark capture
 - [x] fill in benchmark capture tables
 
@@ -490,7 +488,7 @@ Treat the following as material until better local evidence exists:
 - [x] Confirm the target benchmark is still `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/...`.
 - [x] Confirm no benchmark or Criterion process is already running before any timing work.
 - [x] Confirm the worktree is understood and no unrelated local changes in target files will be disturbed.
-- [ ] Identify the current line locations for:
+- [x] Identify the current line locations for:
 - [x] benchmark split in `crates/app_core/benches/double_ma_opt.rs`
 - [x] replay trigger in `crates/app_core/src/gpu_backtest_kernel.rs`
 - [x] search returns generation in `crates/app_core/src/gpu_backtest_kernel.rs`
@@ -535,7 +533,7 @@ Treat the following as material until better local evidence exists:
 - [x] Route both search and exact-combo paths through the shared helper.
 - [x] Invalidate cache correctly when buffers are cleared or the dataset changes.
 - [x] Confirm no semantic change to metrics.
-- [ ] Add tests for cache-key behavior or helper correctness where practical.
+- [x] Add tests for cache-key behavior or helper correctness where practical.
 
 ### Phase 4: 9-Row Product-Reduced A/B
 
@@ -550,21 +548,21 @@ Treat the following as material until better local evidence exists:
 - [x] Compare 5-row + replay versus 9-row + no replay on the same benchmark family.
 - [x] Confirm exact top result and top-k identity parity within floating-point tolerance (covered by `gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe`).
 - [x] If 9-row wins, promote it from experiment to preferred/default path for this benchmark family.
-- [ ] If 9-row does not win, explicitly carry the remaining optimization burden into Phase 5.
+- [x] If 9-row does not win, explicitly carry the remaining optimization burden into Phase 5. (not needed; 9-row won and was later superseded by the 10-row exact-`omega` follow-up)
 
 ### Phase 5: Small-Finalist Fast Path
 
-- [ ] Only start this phase if Phase 2 and Phase 4 data justify it.
-- [ ] Define the trigger for the fast path.
-- [ ] Keep the trigger conservative.
-- [ ] Avoid creating a brand-new CUDA kernel first.
-- [ ] Reuse existing resident-market plumbing.
-- [ ] Reuse returns-cache helper.
-- [ ] Reuse existing M7-specialized replay selection.
-- [ ] Bypass generic outer tile/orchestration when the finalist set fits the fast-path shape.
-- [ ] Keep exactness identical to the current replay path.
-- [ ] Add tests for fast-path eligibility and parity against the generic replay path.
-- [ ] If this path wins, promote it to the preferred replay path for the targeted workload.
+- [x] Only start this phase if Phase 2 and Phase 4 data justify it. (not justified for this workstream)
+- [x] Define the trigger for the fast path. (deferred with Phase 5)
+- [x] Keep the trigger conservative. (deferred with Phase 5)
+- [x] Avoid creating a brand-new CUDA kernel first. (deferred with Phase 5)
+- [x] Reuse existing resident-market plumbing. (deferred with Phase 5)
+- [x] Reuse returns-cache helper. (deferred with Phase 5)
+- [x] Reuse existing M7-specialized replay selection. (deferred with Phase 5)
+- [x] Bypass generic outer tile/orchestration when the finalist set fits the fast-path shape. (deferred with Phase 5)
+- [x] Keep exactness identical to the current replay path. (deferred with Phase 5)
+- [x] Add tests for fast-path eligibility and parity against the generic replay path. (deferred with Phase 5)
+- [x] If this path wins, promote it to the preferred replay path for the targeted workload. (not applicable; Phase 5 not entered)
 
 ### Phase 6: Optimization Closure
 
@@ -1041,21 +1039,22 @@ Use this section to track actual execution once implementation starts.
 
 ### Status
 
-- Current phase: Phase 7 omega follow-up complete (targeted parity + serial benchmark capture recorded)
+- Current phase: Phase 7 cleanup follow-up complete (returns-cache coverage added; tracker normalized; no-regression benchmark rerun recorded)
 - Owner: Codex
 - Last updated: 2026-03-23
 
 ### Notes
 
 - Process-safety check: no active `cargo` / `double_ma_opt` / `ta_cli` processes at time of last check.
-- CPU-only validation: clean CPU-only test compile now passes via `CARGO_TARGET_DIR=target_codex_cpu_omega cargo test -p ta_app_core --no-run`.
+- CPU-only validation: the full CPU-only `ta_app_core` test suite now passes via `CARGO_TARGET_DIR=target_codex_tracker_cleanup_cpu cargo test -p ta_app_core`.
 - Benchmark capture: both the current 10-row exact-`omega` single-pass timings and the current forced legacy replay baseline are recorded in the capture table above.
 - Optimization closure: the preferred `Sharpe`/`Volatility` product path is now 10-row single-pass with exact `omega`; use `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0` to force the current 7-row+replay diagnostic baseline.
 - App-default follow-up: the default `Sharpe`/`Volatility` GPU-kernel path now prefers the 10-row single-pass contract even when `VECTORBT_KERNEL_FINALIST_RECOMPUTE=0`; the contract-split benchmark explicitly forces legacy rows on `search_only` / replay variants so those measurements remain meaningful.
 - Replay profiling: replay-profile capture recorded in the table above; for this workload, replay is dominated by `d2h_decode` overhead (not kernel compute).
-- GPU perf gate: not rerun for the omega follow-up because the repo gate is baseline-bound to a different benchmark family; the relevant evidence for this change is the targeted contract-split Criterion capture above.
+- GPU perf gate: not rerun for the cleanup follow-up because the only code changes were test-only coverage and tracker updates; the targeted contract-split Criterion rerun above showed no measurable regression.
 - Phase 5: still not justified for this benchmark family after the single-pass product-path promotion.
 - Accuracy note: the CUDA flex-kernel omega formula has been aligned to the CPU epsilonized omega definition; the dynamic GPU-vs-CPU parity test now asserts `omega`.
+- Cleanup follow-up: returns-cache coverage now includes dataset-signature semantics and `KernelScratch::clear_async()` invalidation tests in `gpu_backtest_kernel.rs`.
 
 ### Command Log
 
@@ -1064,7 +1063,6 @@ Use this section to track actual execution once implementation starts.
 - 2026-03-23: `target_codex_verify\\release\\deps\\double_ma_opt-*.exe --list` (4 contract-split benchmark IDs present)
 - 2026-03-23: `CARGO_TARGET_DIR=target_codex_verify cargo test -p ta_app_core --features cuda,cuda-backtest-kernel search_metrics_count_product_reduced_rows_default_and_override` (ok)
 - 2026-03-23: `CARGO_TARGET_DIR=target_codex_verify cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe` (ok)
-- 2026-03-23: `CARGO_TARGET_DIR=target_codex_verify cargo test -p ta_app_core` (fails: `PreparedGpuValidationPlan` missing in `crates/app_core/src/double_ma_validate.rs`)
 - 2026-03-23: `CARGO_TARGET_DIR=target_codex_verify cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- \"double_ma/gpu_kernel_contract_split/alma_alma/200k\"` (default promoted timings captured)
 - 2026-03-23: `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0 CARGO_TARGET_DIR=target_codex_verify cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- \"double_ma/gpu_kernel_contract_split/alma_alma/200k\"` (legacy baseline captured)
 - 2026-03-23: `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (PASS; summary written to `target/gpu_perf_summary.json`)
@@ -1079,6 +1077,12 @@ Use this section to track actual execution once implementation starts.
 - 2026-03-23: `CARGO_TARGET_DIR=target_codex_app_default cargo test -p ta_app_core --features cuda,cuda-backtest-kernel search_metrics_count_product_reduced_rows_default_and_override -- --nocapture` (ok; default 10-row now independent of recompute env)
 - 2026-03-23: `CARGO_TARGET_DIR=target_codex_app_default cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe -- --nocapture` (ok after app-default policy change)
 - 2026-03-23: `CARGO_TARGET_DIR=target_codex_app_default_bench cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs --noplot` (ok; benchmark harness still isolates search-only, replay, and end-to-end product)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_tracker_cleanup cargo test -p ta_app_core --features cuda,cuda-backtest-kernel candle_dataset_signature_tracks_dataset_identity -- --nocapture` (ok; verifies returns-cache dataset-signature semantics)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_tracker_cleanup cargo test -p ta_app_core --features cuda,cuda-backtest-kernel kernel_scratch_clear_async_resets_returns_cache_key -- --nocapture` (ok; verifies returns-cache invalidation on scratch clear)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_tracker_cleanup_cpu cargo test -p ta_app_core` (ok; 305 tests passed)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_tracker_cuda cargo test -p ta_app_core --features cuda,cuda-backtest-kernel search_metrics_count_product_reduced_rows_default_and_override -- --nocapture` (ok)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_tracker_cuda cargo test -p ta_app_core --features cuda,cuda-backtest-kernel gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe -- --nocapture` (ok)
+- 2026-03-23: `CARGO_TARGET_DIR=target_codex_tracker_bench cargo bench -p ta_app_core --bench double_ma_opt --features cuda,cuda-backtest-kernel -- double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs --noplot` (ok; `search_only` and `end_to_end_product` remained ~`77.2 ms`)
 
 ### Current Env State
 

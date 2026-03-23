@@ -234,7 +234,7 @@ The highest-signal current themes are:
 
 ## 5. Strategy-local GPU-native optimization and validation routes
 
-### Primary strategy files
+### Standalone strategy-local primary files
 
 - `crates/app_core/src/asr.rs`
 - `crates/app_core/src/vcc.rs`
@@ -247,7 +247,7 @@ The highest-signal current themes are:
 - `crates/app_core/src/cdmc.rs`
 - `crates/app_core/src/vcet.rs`
 
-### GPU companion files
+### Standalone strategy-local GPU companion files
 
 - `crates/app_core/src/asr_gpu_kernel.rs`
 - `crates/app_core/src/vcc_gpu_kernel.rs`
@@ -260,6 +260,14 @@ The highest-signal current themes are:
 - `crates/app_core/src/cdmc_gpu_kernel.rs`
 - `crates/app_core/src/vcet_gpu_kernel.rs`
 
+### Shared-kernel family surfaces that also matter for current repo state
+
+- `crates/app_core/src/double_ma.rs`
+- `crates/app_core/src/double_ma_validate.rs`
+- `crates/app_core/src/composite_profile_route.rs`
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+- `web/src/utils/strategyOptimizationCapabilities.ts`
+
 ### Supporting benchmark files
 
 - `crates/app_core/benches/gpu_native_expansion_opt.rs`
@@ -271,6 +279,13 @@ The highest-signal current themes are:
 - strategy-local CPU reference vs GPU scoring parity surfaces
 - per-strategy staging costs, fp32-stability constraints, and route blockers
 - strategy-specific validation cost differences that can be lost inside broad composite reviews
+- current GPU-native route policy for Double-MA-family composite profiles that execute through shared-kernel surfaces instead of standalone `*_gpu_kernel.rs` files
+
+### Scope note
+
+- This section still primarily targets the standalone strategy-local GPU-native paths.
+- Use the shared-kernel Double-MA-family surfaces above when the current repo route policy or validation path flows through them.
+- The specific Double-MA contract-split benchmark and product-gap history belong in Bundle P below, not in the standalone strategy-local docs.
 
 ### Performance review focus
 
@@ -1101,6 +1116,7 @@ Ask for:
 - `crates/app_core/src/gpu_backtest_kernel.rs`
 - `crates/app_core/src/kernels/double_crossover.cu`
 - `crates/optimizer/src/stream.rs`
+- `research/MA review/double_ma_validated_implementation_tracking_plan_2026-03-23.md`
 
 Optionally add:
 
@@ -1108,10 +1124,17 @@ Optionally add:
 - `research/DOUBLE_MA_ALMA_GPU_FULL_OPTIMIZATION_PASS_2026-03-21.md`
 - `research/double_ma_cuda13_optimization_guide.md`
 
+Current repo state:
+
+- The preferred `Sharpe` / `Volatility` product path is now a promoted 10-row single-pass contract with exact `omega`.
+- `VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS=0` forces the current 7-row + replay diagnostic baseline.
+- The old two-pass finalist-recompute path is no longer the default product route for this benchmark family.
+
 Ask for:
 
-- root-cause review of the remaining gap between `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/search_only` and `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product`
-- finalist full-metrics recompute redesign review
-- one-pass full-metrics versus two-pass reduced-search-plus-recompute tradeoff review
-- small-finalist GPU execution-shape review
+- review whether the remaining `search_only` versus `end_to_end_product` delta is still meaningful on the current promoted single-pass path
+- direct first-pass / `search_only` optimization review now that the product path no longer depends on finalist replay by default
+- review whether the legacy 7-row + replay diagnostic baseline should remain available as-is or be simplified further
+- review whether the promoted single-pass full-metrics contract should be generalized to adjacent shared-kernel routes or objectives
+- small-finalist GPU execution-shape review only if the legacy replay path is intentionally revisited
 - device-resident reuse / state-carry-forward review

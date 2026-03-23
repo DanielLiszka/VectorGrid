@@ -628,7 +628,7 @@ These are not required to implement the base plan, but they are strong candidate
 
 This is likely the biggest optional win beyond the attached-file-only scope.
 
-The broader GPU runtime path already has resident-market machinery in `gpu_backtest_kernel.rs`. If `PreparedCudaIndicatorInputs` or an adjacent resident-market cache already owns a device-resident close series, the best ROCB design is to consume that directly instead of uploading `close_f32` again.
+The broader GPU runtime path already has resident-market machinery and dataset-keyed returns reuse in `gpu_backtest_kernel.rs`. If `PreparedCudaIndicatorInputs` or an adjacent resident-market cache already owns a device-resident close series, the best ROCB design is to consume that directly instead of uploading `close_f32` again.
 
 Practical shape:
 

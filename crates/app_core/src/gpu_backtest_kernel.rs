@@ -8599,6 +8599,41 @@ mod tests {
     }
 
     #[test]
+    fn candle_dataset_signature_tracks_dataset_identity() {
+        let candles = make_trending_candles(32);
+        let same_a = super::candle_dataset_signature(&candles);
+        let same_b = super::candle_dataset_signature(&candles);
+        let cloned = candles.clone();
+        let clone_sig = super::candle_dataset_signature(&cloned);
+        let shorter = make_trending_candles(31);
+        let shorter_sig = super::candle_dataset_signature(&shorter);
+
+        assert_eq!(same_a, same_b);
+        assert_eq!(same_a.len, clone_sig.len);
+        assert_eq!(same_a.field_mask, clone_sig.field_mask);
+        assert_ne!(same_a, clone_sig);
+        assert_ne!(same_a, shorter_sig);
+    }
+
+    #[test]
+    fn kernel_scratch_clear_async_resets_returns_cache_key() {
+        let _guard = lock_env();
+        let candles = make_trending_candles(32);
+        let mut scratch = super::KernelScratch::default();
+        scratch.returns_key = Some(super::ReturnsCacheKey {
+            dataset: super::candle_dataset_signature(&candles),
+        });
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+        scratch
+            .clear_async(&rt.stream)
+            .expect("clear scratch buffers asynchronously");
+
+        assert!(scratch.returns_key.is_none());
+    }
+
+    #[test]
     fn kernel_h2d_flag_defaults_to_enabled() {
         let _guard = lock_env();
         let prev = std::env::var("VECTORBT_KERNEL_PINNED_H2D").ok();

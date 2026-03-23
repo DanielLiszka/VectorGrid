@@ -216,7 +216,7 @@ The current `VcetCudaRuntime` stores only:
 - `module`
 - `stream`
 
-By comparison, the adjacent `gpu_backtest_kernel.rs` runtime holds reusable scratch buffers, launch caps, and resident-market data. VCET does not need all of that complexity, but it **does** need a minimal version of it.
+By comparison, the adjacent `gpu_backtest_kernel.rs` runtime now holds reusable scratch buffers, launch caps, resident-market data, and dataset-keyed returns reuse. VCET does not need all of that complexity, but it **does** need a minimal version of it.
 
 ### Recommended code edit
 
