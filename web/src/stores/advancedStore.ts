@@ -63,6 +63,16 @@ interface AdvancedState {
   maSourceOptions: AdvancedOption[]
   objective: string
   objectiveOptions: AdvancedOption[]
+  scoreMode: string
+  hurdleTau: string
+  includeTradeMetrics: boolean
+  extraShortlistObjectives: string
+  shortlistConfidenceMode: string
+  shortlistUnionMode: string
+  shortlistSliceMode: string
+  shortlistSliceBenchmark: string
+  shortlistNeighborhoodRadius: string
+  shortlistNeighborhoodStep: string
   mode: string
   modeOptions: AdvancedOption[]
   vdpsVisible: boolean
@@ -171,6 +181,15 @@ interface AdvancedState {
 const ADVANCED_STRING_FIELD_IDS = new Set<string>([
   'maSource',
   'objective',
+  'scoreMode',
+  'hurdleTau',
+  'extraShortlistObjectives',
+  'shortlistConfidenceMode',
+  'shortlistUnionMode',
+  'shortlistSliceMode',
+  'shortlistSliceBenchmark',
+  'shortlistNeighborhoodRadius',
+  'shortlistNeighborhoodStep',
   'mode',
   'heatmapBins',
   'topK',
@@ -263,6 +282,7 @@ const ADVANCED_STRING_FIELD_IDS = new Set<string>([
 ])
 
 const ADVANCED_BOOLEAN_FIELD_IDS = new Set<string>([
+  'includeTradeMetrics',
   'vdpsDeterministic',
   'moPrescanEnable',
   'moPrescanRequireGpu',
@@ -270,7 +290,26 @@ const ADVANCED_BOOLEAN_FIELD_IDS = new Set<string>([
 ])
 
 function applyVueStringFieldUpdate(state: AdvancedState, field: string, value: string): boolean {
-  const key = String(field || '').trim()
+  const rawKey = String(field || '').trim()
+  const key = rawKey === 'score_mode'
+    ? 'scoreMode'
+    : rawKey === 'hurdle_tau'
+      ? 'hurdleTau'
+    : rawKey === 'extra_shortlist_objectives'
+      ? 'extraShortlistObjectives'
+      : rawKey === 'shortlist_confidence_mode'
+        ? 'shortlistConfidenceMode'
+      : rawKey === 'shortlist_union_mode'
+        ? 'shortlistUnionMode'
+      : rawKey === 'shortlist_slice_mode'
+        ? 'shortlistSliceMode'
+      : rawKey === 'shortlist_slice_benchmark'
+        ? 'shortlistSliceBenchmark'
+      : rawKey === 'shortlist_neighborhood_radius'
+        ? 'shortlistNeighborhoodRadius'
+      : rawKey === 'shortlist_neighborhood_step'
+        ? 'shortlistNeighborhoodStep'
+      : rawKey
   if (!key || !ADVANCED_STRING_FIELD_IDS.has(key)) return false
   ;(state as unknown as Record<string, string>)[key] = String(value || '').trim()
   return true
@@ -290,6 +329,16 @@ export const useAdvancedStore = defineStore('advanced', {
     maSourceOptions: [],
     objective: 'Sharpe',
     objectiveOptions: [],
+    scoreMode: '',
+    hurdleTau: '',
+    includeTradeMetrics: false,
+    extraShortlistObjectives: '',
+    shortlistConfidenceMode: '',
+    shortlistUnionMode: '',
+    shortlistSliceMode: '',
+    shortlistSliceBenchmark: '',
+    shortlistNeighborhoodRadius: '',
+    shortlistNeighborhoodStep: '',
     mode: 'Grid',
     modeOptions: [],
     vdpsVisible: false,
@@ -407,6 +456,16 @@ export const useAdvancedStore = defineStore('advanced', {
       this.maSourceOptions = normalizedOptions(snapshot.maSourceOptions ?? this.maSourceOptions ?? [])
       this.objective = String(snapshot.objective ?? this.objective ?? 'Sharpe').trim() || 'Sharpe'
       this.objectiveOptions = normalizedOptions(snapshot.objectiveOptions ?? this.objectiveOptions ?? [])
+      this.scoreMode = String(snapshot.scoreMode ?? this.scoreMode ?? '').trim()
+      this.hurdleTau = String(snapshot.hurdleTau ?? this.hurdleTau ?? '').trim()
+      this.includeTradeMetrics = Boolean(snapshot.includeTradeMetrics ?? this.includeTradeMetrics)
+      this.extraShortlistObjectives = String(snapshot.extraShortlistObjectives ?? this.extraShortlistObjectives ?? '').trim()
+      this.shortlistConfidenceMode = String(snapshot.shortlistConfidenceMode ?? this.shortlistConfidenceMode ?? '').trim()
+      this.shortlistUnionMode = String(snapshot.shortlistUnionMode ?? this.shortlistUnionMode ?? '').trim()
+      this.shortlistSliceMode = String(snapshot.shortlistSliceMode ?? this.shortlistSliceMode ?? '').trim()
+      this.shortlistSliceBenchmark = String(snapshot.shortlistSliceBenchmark ?? this.shortlistSliceBenchmark ?? '').trim()
+      this.shortlistNeighborhoodRadius = String(snapshot.shortlistNeighborhoodRadius ?? this.shortlistNeighborhoodRadius ?? '').trim()
+      this.shortlistNeighborhoodStep = String(snapshot.shortlistNeighborhoodStep ?? this.shortlistNeighborhoodStep ?? '').trim()
       this.mode = normalizeOptimizationMode(snapshot.mode ?? this.mode ?? 'Grid')
       this.modeOptions = normalizeModeOptions(snapshot.modeOptions ?? this.modeOptions ?? [])
       this.vdpsVisible = Boolean(snapshot.vdpsVisible ?? this.vdpsVisible)

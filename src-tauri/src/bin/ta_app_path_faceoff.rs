@@ -380,6 +380,14 @@ fn make_request(cli: &Cli, data_id: &str) -> DoubleMaRequest {
         strategy,
         halftrend_filter: None,
         objective: objective_from_arg(cli.objective.clone()),
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(cli.top_k),
         include_all: Some(false),
@@ -389,6 +397,9 @@ fn make_request(cli: &Cli, data_id: &str) -> DoubleMaRequest {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     }
 }
 
@@ -543,3 +554,7 @@ mod tests {
         assert_eq!(median_u64_as_f64(even_u64.as_mut_slice()), 5.0);
     }
 }
+
+
+
+

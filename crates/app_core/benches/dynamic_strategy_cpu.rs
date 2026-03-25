@@ -262,6 +262,14 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         strategy: strategy.clone(),
         halftrend_filter: None,
         objective: ObjectiveKind::Sharpe,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(10),
         include_all: Some(false),
@@ -271,6 +279,9 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     };
     let plan_double = compile_dynamic_plan_for_double_ma_config(
         &req_double.ma_source,
@@ -546,3 +557,7 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
 
 criterion_group!(benches, bench_dynamic_cpu_eval);
 criterion_main!(benches);
+
+
+
+

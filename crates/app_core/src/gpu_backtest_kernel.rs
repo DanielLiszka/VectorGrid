@@ -10,7 +10,7 @@ use cust::prelude::*;
 use cust::stream::{Stream, StreamFlags};
 use cust::sys as cuda_sys;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -26,7 +26,16 @@ use vector_ta::cuda::CudaDeviceSliceF32Ref;
 use vector_ta::utilities::data_loader::{source_type, Candles};
 
 use crate::alloc_policy::{alloc_uninit_copy, alloc_uninit_f32, resize_uninit_f32};
-use crate::double_ma::{metrics_pass_constraints, DoubleMaConstraints};
+use crate::composite_validate::SpaBenchmarkKind;
+use crate::double_ma::{
+    derived_active_mean, derived_active_sortino, derived_downside_share,
+    derived_drawdown_chronicity, derived_mean, effective_score, exact_fee_stress_pnl,
+    metrics_pass_constraints, objective_score, score_mode_metrics_count_floor, score_mode_score_fn,
+    DoubleMaConstraints, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
+    DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode, ShortlistSliceBenchmarkRelativeSummary,
+    ShortlistSliceCandidateDiagnostics, ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics,
+    ShortlistSliceSnapshot,
+};
 use crate::progress::ProgressSink;
 use crate::strategy_gpu_program::{
     CompiledGpuPredicateProgramAbi, GpuConditionAbi, GpuConditionGroupAbi, GpuIndicatorSlotAbi,
@@ -134,8 +143,20 @@ pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOn
 }
 
 const BASE_METRICS_COUNT: usize = 7;
+// The legacy 10-field reduced contract remains available for explicitly reduced/score-only
+// cases, but the normal single-pass product route now promotes to the wider 17-field contract
+// so the additive Phase 4 metrics, including underwater summaries, ride on the default one-pass
+// path. The 22-field row is an explicit opt-in extension that adds exact trade-distribution
+// summaries on top of that full product contract.
 const PRODUCT_REDUCED_METRICS_COUNT: usize = 10;
-const METRICS_COUNT: usize = 10;
+const METRICS_COUNT: usize = 17;
+const TRADE_METRICS_COUNT: usize = 22;
+const EXTRA_SHORTLIST_MAX_HEADS: usize = 3;
+const EXTRA_SHORTLIST_REQUEST_FIELD: &str = "extra_shortlist_objectives";
+const SHORTLIST_CONFIDENCE_REQUEST_FIELD: &str = "shortlist_confidence_mode";
+const SHORTLIST_UNION_REQUEST_FIELD: &str = "shortlist_union_mode";
+const SHORTLIST_SLICE_MODE_REQUEST_FIELD: &str = "shortlist_slice_mode";
+const SHORTLIST_SLICE_BENCHMARK_REQUEST_FIELD: &str = "shortlist_slice_benchmark";
 const METRIC_IDX_PNL: usize = 0;
 const METRIC_IDX_TRADES: usize = 1;
 const METRIC_IDX_MAX_DD: usize = 2;
@@ -146,6 +167,18 @@ const METRIC_IDX_NET_EXPOSURE: usize = 6;
 const METRIC_IDX_DOWNSIDE_DEVIATION: usize = 7;
 const METRIC_IDX_ULCER_INDEX: usize = 8;
 const METRIC_IDX_OMEGA: usize = 9;
+const METRIC_IDX_DOWNSIDE_FREQUENCY: usize = 10;
+const METRIC_IDX_DOWNSIDE_SEVERITY: usize = 11;
+const METRIC_IDX_LONG_MEAN_RETURN: usize = 12;
+const METRIC_IDX_SHORT_MEAN_RETURN: usize = 13;
+const METRIC_IDX_KAPPA_TAU: usize = 14;
+const METRIC_IDX_UNDERWATER_FRACTION: usize = 15;
+const METRIC_IDX_MAX_UNDERWATER_DURATION_BARS: usize = 16;
+const METRIC_IDX_CLOSED_TRADES: usize = 17;
+const METRIC_IDX_WINNING_TRADES: usize = 18;
+const METRIC_IDX_LOSING_TRADES: usize = 19;
+const METRIC_IDX_GROSS_PROFIT: usize = 20;
+const METRIC_IDX_GROSS_LOSS: usize = 21;
 const TOPK_BLOCK_ITEMS: usize = 512;
 
 #[derive(Clone, Copy, Debug)]
@@ -652,6 +685,7 @@ struct KernelStrategyParams {
     flags: u32,
     commission: f32,
     eps_rel: f32,
+    hurdle_tau: f32,
     stop_log: f32,
     take_log: f32,
 }
@@ -682,6 +716,7 @@ fn kernel_strategy_params(strategy: &StrategyConfig) -> KernelStrategyParams {
         flags,
         commission: strategy.effective_commission() as f32,
         eps_rel: strategy.eps_rel as f32,
+        hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0) as f32,
         stop_log: stop_loss_pct
             .map(|pct| (1.0 - pct).ln() as f32)
             .unwrap_or(0.0),
@@ -760,8 +795,111 @@ fn max_drawdown_constraint_to_search_space(max_dd: f64, metrics_count: usize) ->
     (-(1.0 - max_dd).ln()) as f32
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct DeviceConstraintArgs {
+    use_min_trades: i32,
+    min_trades: f32,
+    use_max_dd: i32,
+    max_dd: f32,
+    use_min_sharpe: i32,
+    min_sharpe: f32,
+    use_min_calmar: i32,
+    min_calmar: f32,
+    use_max_volatility: i32,
+    max_volatility: f32,
+    use_min_exposure: i32,
+    min_exposure: f32,
+    use_max_exposure: i32,
+    max_exposure: f32,
+    use_max_abs_net_exposure: i32,
+    max_abs_net_exposure: f32,
+    use_min_omega: i32,
+    min_omega: f32,
+    use_max_ulcer: i32,
+    max_ulcer: f32,
+    use_max_downside_deviation: i32,
+    max_downside_deviation: f32,
+}
+
 #[inline]
-fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) -> Metrics {
+fn min_metrics_count_for_constraints(constraints: Option<&DoubleMaConstraints>) -> usize {
+    let Some(cfg) = constraints else {
+        return 0;
+    };
+
+    let mut metrics_count = 0usize;
+    if cfg.min_trades.is_some() {
+        metrics_count = metrics_count.max(2);
+    }
+    if cfg.max_drawdown.is_some() || cfg.min_calmar.is_some() {
+        metrics_count = metrics_count.max(3);
+    }
+    if cfg.min_sharpe.is_some() || cfg.max_volatility.is_some() {
+        metrics_count = metrics_count.max(5);
+    }
+    if cfg.min_exposure.is_some() {
+        metrics_count = metrics_count.max(6);
+    }
+    if cfg.max_exposure.is_some() || cfg.max_abs_net_exposure.is_some() {
+        metrics_count = metrics_count.max(7);
+    }
+    if cfg.max_downside_deviation.is_some() {
+        metrics_count = metrics_count.max(8);
+    }
+    if cfg.max_ulcer.is_some() {
+        metrics_count = metrics_count.max(9);
+    }
+    if cfg.min_omega.is_some() {
+        metrics_count = metrics_count.max(METRICS_COUNT);
+    }
+    metrics_count
+}
+
+#[inline]
+fn build_device_constraint_args(
+    constraints: Option<&DoubleMaConstraints>,
+    metrics_count: usize,
+) -> DeviceConstraintArgs {
+    let Some(cfg) = constraints else {
+        return DeviceConstraintArgs::default();
+    };
+
+    DeviceConstraintArgs {
+        use_min_trades: i32::from(cfg.min_trades.is_some()),
+        min_trades: cfg.min_trades.map(|v| v as f32).unwrap_or(0.0),
+        use_max_dd: i32::from(cfg.max_drawdown.is_some()),
+        max_dd: cfg
+            .max_drawdown
+            .map(|v| max_drawdown_constraint_to_search_space(v, metrics_count))
+            .unwrap_or(f32::INFINITY),
+        use_min_sharpe: i32::from(cfg.min_sharpe.is_some()),
+        min_sharpe: cfg.min_sharpe.unwrap_or(f32::NEG_INFINITY as f64) as f32,
+        use_min_calmar: i32::from(cfg.min_calmar.is_some()),
+        min_calmar: cfg.min_calmar.unwrap_or(f32::NEG_INFINITY as f64) as f32,
+        use_max_volatility: i32::from(cfg.max_volatility.is_some()),
+        max_volatility: cfg.max_volatility.unwrap_or(f32::INFINITY as f64) as f32,
+        use_min_exposure: i32::from(cfg.min_exposure.is_some()),
+        min_exposure: cfg.min_exposure.unwrap_or(f32::NEG_INFINITY as f64) as f32,
+        use_max_exposure: i32::from(cfg.max_exposure.is_some()),
+        max_exposure: cfg.max_exposure.unwrap_or(f32::INFINITY as f64) as f32,
+        use_max_abs_net_exposure: i32::from(cfg.max_abs_net_exposure.is_some()),
+        max_abs_net_exposure: cfg.max_abs_net_exposure.unwrap_or(f32::INFINITY as f64) as f32,
+        use_min_omega: i32::from(cfg.min_omega.is_some()),
+        min_omega: cfg.min_omega.unwrap_or(f32::NEG_INFINITY as f64) as f32,
+        use_max_ulcer: i32::from(cfg.max_ulcer.is_some()),
+        max_ulcer: cfg.max_ulcer.unwrap_or(f32::INFINITY as f64) as f32,
+        use_max_downside_deviation: i32::from(cfg.max_downside_deviation.is_some()),
+        max_downside_deviation: cfg.max_downside_deviation.unwrap_or(f32::INFINITY as f64) as f32,
+    }
+}
+
+#[inline]
+fn decode_tm_flex_metrics_row(
+    src: &[f32],
+    base: usize,
+    metrics_count: usize,
+    hurdle_tau: f64,
+) -> Metrics {
     const CLAMP_MAX: f64 = 1e6;
 
     let metric = |idx: usize| -> f64 {
@@ -771,19 +909,27 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
             0.0
         }
     };
+    let metric_u32 = |idx: usize| -> u32 {
+        let value = metric(idx);
+        if value.is_finite() && value >= 0.0 {
+            value as u32
+        } else {
+            0
+        }
+    };
 
     let raw_pnl = metric(METRIC_IDX_PNL);
-    let trades = metric(METRIC_IDX_TRADES);
     let raw_max_dd = metric(METRIC_IDX_MAX_DD);
     let mean = metric(METRIC_IDX_MEAN);
     let std = metric(METRIC_IDX_STD);
     let sharpe = if std > 0.0 { mean / std } else { 0.0 };
     let downside_deviation = metric(METRIC_IDX_DOWNSIDE_DEVIATION);
+    let mean_excess = mean - hurdle_tau;
     let sortino = if downside_deviation > 0.0 {
-        mean / downside_deviation
-    } else if mean > 0.0 {
+        mean_excess / downside_deviation
+    } else if mean_excess > 0.0 {
         CLAMP_MAX
-    } else if mean < 0.0 {
+    } else if mean_excess < 0.0 {
         -CLAMP_MAX
     } else {
         0.0
@@ -805,8 +951,59 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
     } else {
         0.0
     };
+    let kappa_tau = if metrics_count > METRIC_IDX_KAPPA_TAU {
+        metric(METRIC_IDX_KAPPA_TAU).clamp(-CLAMP_MAX, CLAMP_MAX)
+    } else {
+        0.0
+    };
+    let downside_frequency = if metrics_count > METRIC_IDX_DOWNSIDE_FREQUENCY {
+        metric(METRIC_IDX_DOWNSIDE_FREQUENCY).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let downside_severity = if metrics_count > METRIC_IDX_DOWNSIDE_SEVERITY {
+        metric(METRIC_IDX_DOWNSIDE_SEVERITY).max(0.0)
+    } else {
+        0.0
+    };
+    let underwater_fraction = if metrics_count > METRIC_IDX_UNDERWATER_FRACTION {
+        metric(METRIC_IDX_UNDERWATER_FRACTION).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let max_underwater_duration_bars =
+        if metrics_count > METRIC_IDX_MAX_UNDERWATER_DURATION_BARS {
+            metric_u32(METRIC_IDX_MAX_UNDERWATER_DURATION_BARS)
+        } else {
+            0
+        };
     let martin_ratio = if metrics_count > METRIC_IDX_ULCER_INDEX {
         martin_ratio_from_components(pnl, ulcer_index)
+    } else {
+        0.0
+    };
+    let closed_trades = if metrics_count > METRIC_IDX_CLOSED_TRADES {
+        metric_u32(METRIC_IDX_CLOSED_TRADES)
+    } else {
+        0
+    };
+    let winning_trades = if metrics_count > METRIC_IDX_WINNING_TRADES {
+        metric_u32(METRIC_IDX_WINNING_TRADES)
+    } else {
+        0
+    };
+    let losing_trades = if metrics_count > METRIC_IDX_LOSING_TRADES {
+        metric_u32(METRIC_IDX_LOSING_TRADES)
+    } else {
+        0
+    };
+    let gross_profit = if metrics_count > METRIC_IDX_GROSS_PROFIT {
+        metric(METRIC_IDX_GROSS_PROFIT).max(0.0)
+    } else {
+        0.0
+    };
+    let gross_loss = if metrics_count > METRIC_IDX_GROSS_LOSS {
+        metric(METRIC_IDX_GROSS_LOSS).max(0.0)
     } else {
         0.0
     };
@@ -816,19 +1013,27 @@ fn decode_tm_flex_metrics_row(src: &[f32], base: usize, metrics_count: usize) ->
         sharpe,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         calmar: calmar_ratio(pnl, max_dd),
         omega,
+        kappa_tau,
         volatility: std,
         ulcer_index,
         martin_ratio,
         max_dd,
-        trades: if trades.is_finite() && trades >= 0.0 {
-            trades as u32
-        } else {
-            0
-        },
+        trades: metric_u32(METRIC_IDX_TRADES),
         exposure: metric(METRIC_IDX_EXPOSURE),
         net_exposure: metric(METRIC_IDX_NET_EXPOSURE),
+        long_mean_return: metric(METRIC_IDX_LONG_MEAN_RETURN),
+        short_mean_return: metric(METRIC_IDX_SHORT_MEAN_RETURN),
+        closed_trades,
+        winning_trades,
+        losing_trades,
+        gross_profit,
+        gross_loss,
+        underwater_fraction,
+        max_underwater_duration_bars,
     }
 }
 
@@ -837,6 +1042,7 @@ fn decode_packed_topk_metric_row(
     src: &[f32],
     row_idx: usize,
     metrics_count: usize,
+    hurdle_tau: f64,
 ) -> Option<(u16, u16, Metrics)> {
     let row_stride = metrics_count.saturating_add(2);
     let base = row_idx.checked_mul(row_stride)?;
@@ -853,7 +1059,7 @@ fn decode_packed_topk_metric_row(
     if fast_len >= slow_len {
         return None;
     }
-    let metrics = decode_tm_flex_metrics_row(src, base + 2, metrics_count);
+    let metrics = decode_tm_flex_metrics_row(src, base + 2, metrics_count, hurdle_tau);
     Some((fast_len, slow_len, metrics))
 }
 
@@ -875,6 +1081,8 @@ struct KernelScratch {
     d_tile: Option<DeviceBuffer<f32>>,
 
     d_heatmap: Option<DeviceBuffer<f32>>,
+    d_heatmap_sum: Option<DeviceBuffer<f32>>,
+    d_heatmap_count: Option<DeviceBuffer<i32>>,
     d_cand_a: Option<DeviceBuffer<i32>>,
     d_cand_b: Option<DeviceBuffer<i32>>,
     d_top_fast: Option<DeviceBuffer<i32>>,
@@ -1064,6 +1272,8 @@ impl KernelScratch {
         Self::drop_opt_async(&mut self.d_tile, stream)?;
 
         Self::drop_opt_async(&mut self.d_heatmap, stream)?;
+        Self::drop_opt_async(&mut self.d_heatmap_sum, stream)?;
+        Self::drop_opt_async(&mut self.d_heatmap_count, stream)?;
         Self::drop_opt_async(&mut self.d_cand_a, stream)?;
         Self::drop_opt_async(&mut self.d_cand_b, stream)?;
         Self::drop_opt_async(&mut self.d_top_fast, stream)?;
@@ -1099,6 +1309,7 @@ enum CachedKernelKey {
     DoubleCrossBacktestLockstepM7,
     DoubleCrossBacktestFastWarpDedup,
     FillF32,
+    FillI32,
     HeatmapUpdateScores,
     BuildVfctRegime,
     BuildPitRegime,
@@ -1247,6 +1458,7 @@ thread_local! {
     static CUDA_KERNEL_RUNTIME: RefCell<HashMap<u32, CudaKernelRuntime>> = RefCell::new(HashMap::new());
     static DYNAMIC_GPU_METRICS_SCRATCH: RefCell<HashMap<(u32, usize), DeviceBuffer<f32>>> = RefCell::new(HashMap::new());
     static LAST_KERNEL_EXECUTOR_TIMING: RefCell<Option<KernelExecutorTimingMs>> = RefCell::new(None);
+    static LAST_SHORTLIST_SLICE_DIAGNOSTICS: RefCell<Option<ShortlistSliceDiagnostics>> = RefCell::new(None);
 }
 
 fn clear_last_kernel_executor_timing() {
@@ -1263,6 +1475,22 @@ fn record_last_kernel_executor_timing(timing: KernelExecutorTimingMs) {
 
 pub(crate) fn take_last_kernel_executor_timing() -> Option<KernelExecutorTimingMs> {
     LAST_KERNEL_EXECUTOR_TIMING.with(|cell| cell.borrow_mut().take())
+}
+
+fn clear_last_shortlist_slice_diagnostics() {
+    LAST_SHORTLIST_SLICE_DIAGNOSTICS.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+fn record_last_shortlist_slice_diagnostics(diag: ShortlistSliceDiagnostics) {
+    LAST_SHORTLIST_SLICE_DIAGNOSTICS.with(|cell| {
+        *cell.borrow_mut() = Some(diag);
+    });
+}
+
+pub(crate) fn take_last_shortlist_slice_diagnostics() -> Option<ShortlistSliceDiagnostics> {
+    LAST_SHORTLIST_SLICE_DIAGNOSTICS.with(|cell| cell.borrow_mut().take())
 }
 
 fn emit_progress(
@@ -1313,6 +1541,8 @@ pub struct KernelConfig {
     pub fast_alma_sigma: f64,
     pub slow_alma_offset: f64,
     pub slow_alma_sigma: f64,
+    pub hurdle_tau: f64,
+    pub include_trade_metrics: bool,
 }
 
 pub struct PrecomputedHostMaMatrix<'a> {
@@ -1764,6 +1994,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
     uploaded_batch: &UploadedDoubleMaDynamicProgramBatch,
     strategy: &StrategyConfig,
     handle: &StrategyHandle,
+    metrics_count: usize,
 ) -> Result<Vec<Metrics>, String> {
     validate_double_ma_dynamic_strategy_handle(handle)?;
     let _ = get_or_build_gpu_strategy_executable(handle, uploaded_batch.device_id)?;
@@ -1798,7 +2029,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 rt.launch_caps,
                 launch_caps,
             );
-            let out_stride = METRICS_COUNT;
+            let out_stride = metrics_count.clamp(1, METRICS_COUNT);
             let out_len = uploaded_batch
                 .fast_tm_stride
                 .checked_mul(uploaded_batch.slow_tm_stride)
@@ -1831,6 +2062,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
             let mut flags_u = strategy_params.flags;
             let mut commission_f = strategy_params.commission;
             let mut eps_rel_f = strategy_params.eps_rel;
+            let mut hurdle_tau_f = strategy_params.hurdle_tau;
             let mut stop_log_f = strategy_params.stop_log;
             let mut take_log_f = strategy_params.take_log;
             let mut m_i = out_stride as i32;
@@ -1877,6 +2109,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                     &mut regime_first_valid_i as *mut _ as *mut c_void,
                     &mut commission_f as *mut _ as *mut c_void,
                     &mut eps_rel_f as *mut _ as *mut c_void,
+                    &mut hurdle_tau_f as *mut _ as *mut c_void,
                     &mut stop_log_f as *mut _ as *mut c_void,
                     &mut take_log_f as *mut _ as *mut c_void,
                     &mut flags_u as *mut _ as *mut c_void,
@@ -1905,7 +2138,12 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
             let mut out_metrics = Vec::with_capacity(uploaded_batch.combo_count);
             for &dense_pair_idx in &uploaded_batch.combo_dense_pair_idx {
                 let base = dense_pair_idx * out_stride;
-                out_metrics.push(decode_tm_flex_metrics_row(&host_out, base, out_stride));
+                out_metrics.push(decode_tm_flex_metrics_row(
+                    &host_out,
+                    base,
+                    out_stride,
+                    strategy_params.hurdle_tau as f64,
+                ));
             }
             Ok(out_metrics)
         })
@@ -1925,6 +2163,7 @@ pub fn eval_double_ma_dynamic_program_precomputed_gpu_kernel(
     strategy: &StrategyConfig,
     handle: &StrategyHandle,
     device_id: u32,
+    metrics_count: usize,
 ) -> Result<Vec<Metrics>, String> {
     let uploaded = upload_double_ma_dynamic_program_batch(
         lr,
@@ -1938,7 +2177,7 @@ pub fn eval_double_ma_dynamic_program_precomputed_gpu_kernel(
         strategy,
         device_id,
     )?;
-    eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, strategy, handle)
+    eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, strategy, handle, metrics_count)
 }
 
 #[derive(Clone, Copy)]
@@ -1955,6 +2194,8 @@ impl Default for KernelConfig {
             fast_alma_sigma: 6.0,
             slow_alma_offset: 0.85,
             slow_alma_sigma: 6.0,
+            hurdle_tau: 0.0,
+            include_trade_metrics: false,
         }
     }
 }
@@ -3333,6 +3574,738 @@ fn kernel_global_topk_enabled() -> bool {
 }
 
 #[inline]
+fn objective_kind_kernel_index(objective: ObjectiveKind) -> i32 {
+    match objective {
+        ObjectiveKind::Pnl => 0,
+        ObjectiveKind::Sharpe => 1,
+        ObjectiveKind::MaxDrawdown => 2,
+        ObjectiveKind::Calmar => 3,
+        ObjectiveKind::Volatility => 4,
+        ObjectiveKind::Sortino => 5,
+        ObjectiveKind::Omega => 6,
+    }
+}
+
+fn push_extra_shortlist_objective(
+    out: &mut Vec<ObjectiveKind>,
+    primary: ObjectiveKind,
+    objective: ObjectiveKind,
+    source: &str,
+) -> Result<(), String> {
+    if objective == primary || out.contains(&objective) {
+        return Ok(());
+    }
+    out.push(objective);
+    if out.len() > EXTRA_SHORTLIST_MAX_HEADS {
+        return Err(format!(
+            "{source} supports at most {EXTRA_SHORTLIST_MAX_HEADS} extra objectives"
+        ));
+    }
+    Ok(())
+}
+
+fn kernel_extra_shortlist_objectives(
+    primary: ObjectiveKind,
+    requested: Option<&[ObjectiveKind]>,
+) -> Result<Vec<ObjectiveKind>, String> {
+    let mut out = Vec::new();
+    if let Some(requested) = requested {
+        for &objective in requested {
+            push_extra_shortlist_objective(
+                &mut out,
+                primary,
+                objective,
+                EXTRA_SHORTLIST_REQUEST_FIELD,
+            )?;
+        }
+    }
+    Ok(out)
+}
+
+struct ExtraShortlistHeadState {
+    objective: ObjectiveKind,
+    objective_i: i32,
+    global_fast_rows: Option<DeviceBuffer<i32>>,
+    global_slow_rows: Option<DeviceBuffer<i32>>,
+    global_metrics_rows: Option<DeviceBuffer<f32>>,
+    global_rows_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShortlistConfidenceMode {
+    Psr,
+    Dsr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShortlistSliceMode {
+    Halves,
+    Quartiles,
+}
+
+impl ShortlistSliceMode {
+    #[inline]
+    fn slice_count(self) -> usize {
+        match self {
+            ShortlistSliceMode::Halves => 2,
+            ShortlistSliceMode::Quartiles => 4,
+        }
+    }
+
+    #[inline]
+    fn as_str(self) -> &'static str {
+        match self {
+            ShortlistSliceMode::Halves => "halves",
+            ShortlistSliceMode::Quartiles => "quartiles",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ShortlistSliceOmissionSummary {
+    best_label: String,
+    best_score: f64,
+    worst_label: String,
+    worst_score: f64,
+    spread: f64,
+}
+
+#[derive(Clone, Debug)]
+struct ShortlistSliceModeCandidateRecord {
+    params: DoubleMaParams,
+    full_metrics: Metrics,
+    diagnostics: ShortlistSliceModeDiagnostics,
+}
+
+#[inline]
+fn shortlist_slice_label_prefix(mode: ShortlistSliceMode) -> &'static str {
+    match mode {
+        ShortlistSliceMode::Halves => "half_",
+        ShortlistSliceMode::Quartiles => "q",
+    }
+}
+
+fn shortlist_slice_labels(mode: ShortlistSliceMode) -> Vec<String> {
+    let prefix = shortlist_slice_label_prefix(mode);
+    (0..mode.slice_count())
+        .map(|idx| format!("{prefix}{}", idx + 1))
+        .collect()
+}
+
+fn compute_shortlist_slice_omission_summary(
+    slice_scores: &[f64],
+    labels: &[String],
+) -> Result<ShortlistSliceOmissionSummary, String> {
+    if slice_scores.len() < 2 || slice_scores.len() != labels.len() {
+        return Err("slice omission summary requires >= 2 labeled slice scores".to_string());
+    }
+    let denom = (slice_scores.len() - 1) as f64;
+    let total_score: f64 = slice_scores.iter().copied().sum();
+    let mut best_idx = 0usize;
+    let mut worst_idx = 0usize;
+    let mut best_score = f64::NEG_INFINITY;
+    let mut worst_score = f64::INFINITY;
+    for (idx, &score) in slice_scores.iter().enumerate() {
+        let omission_score = (total_score - score) / denom;
+        if omission_score > best_score {
+            best_score = omission_score;
+            best_idx = idx;
+        }
+        if omission_score < worst_score {
+            worst_score = omission_score;
+            worst_idx = idx;
+        }
+    }
+    Ok(ShortlistSliceOmissionSummary {
+        best_label: labels[best_idx].clone(),
+        best_score,
+        worst_label: labels[worst_idx].clone(),
+        worst_score,
+        spread: best_score - worst_score,
+    })
+}
+
+#[inline]
+fn shortlist_slice_benchmark_label(benchmark: &SpaBenchmarkKind) -> &'static str {
+    match benchmark {
+        SpaBenchmarkKind::Flat => "flat",
+        SpaBenchmarkKind::BuyAndHold => "buy_and_hold",
+    }
+}
+
+#[inline]
+fn shortlist_slice_benchmark_step_return(lr: f64, benchmark: &SpaBenchmarkKind) -> f64 {
+    match benchmark {
+        SpaBenchmarkKind::Flat => 0.0,
+        SpaBenchmarkKind::BuyAndHold => lr.exp_m1(),
+    }
+}
+
+fn compute_shortlist_slice_benchmark_relative_summary(
+    slice_excess_returns: &[f64],
+    labels: &[String],
+    benchmark: &SpaBenchmarkKind,
+) -> Result<ShortlistSliceBenchmarkRelativeSummary, String> {
+    if slice_excess_returns.len() < 2 || slice_excess_returns.len() != labels.len() {
+        return Err(
+            "shortlist benchmark-relative summary requires >= 2 labeled slice returns".to_string(),
+        );
+    }
+
+    let total_excess: f64 = slice_excess_returns.iter().copied().sum();
+    let slice_count = slice_excess_returns.len();
+    let beat_rate = slice_excess_returns
+        .iter()
+        .filter(|&&value| value > 1.0e-12)
+        .count() as f64
+        / slice_count as f64;
+    let mean_excess_return = total_excess / slice_count as f64;
+    let best_excess_return = slice_excess_returns
+        .iter()
+        .copied()
+        .max_by(|a, b| a.total_cmp(b))
+        .ok_or_else(|| "missing best shortlist benchmark-relative slice".to_string())?;
+    let worst_excess_return = slice_excess_returns
+        .iter()
+        .copied()
+        .min_by(|a, b| a.total_cmp(b))
+        .ok_or_else(|| "missing worst shortlist benchmark-relative slice".to_string())?;
+    let omission = compute_shortlist_slice_omission_summary(slice_excess_returns, labels)?;
+
+    Ok(ShortlistSliceBenchmarkRelativeSummary {
+        benchmark: shortlist_slice_benchmark_label(benchmark).to_string(),
+        beat_rate,
+        mean_excess_return,
+        worst_excess_return,
+        best_excess_return,
+        best_omission_excess_return: omission.best_score,
+        worst_omission_excess_return: omission.worst_score,
+        omission_excess_spread: omission.spread,
+    })
+}
+
+#[inline]
+fn shortlist_slice_candidate_return_sum(metrics: &Metrics, obs: usize) -> f64 {
+    if obs == 0 {
+        return 0.0;
+    }
+    if metrics.volatility > 1.0e-12 {
+        return derived_mean(metrics) * obs as f64;
+    }
+
+    let base = (1.0 + metrics.pnl).max(0.0);
+    let step_return = if base > 0.0 {
+        base.powf(1.0 / obs as f64) - 1.0
+    } else {
+        -1.0
+    };
+    step_return * obs as f64
+}
+
+fn kernel_shortlist_confidence_mode(
+    requested: Option<DoubleMaShortlistConfidenceMode>,
+) -> Result<Option<ShortlistConfidenceMode>, String> {
+    Ok(requested.map(|mode| match mode {
+        DoubleMaShortlistConfidenceMode::Psr => ShortlistConfidenceMode::Psr,
+        DoubleMaShortlistConfidenceMode::Dsr => ShortlistConfidenceMode::Dsr,
+    }))
+}
+
+fn kernel_shortlist_union_mode(
+    requested: Option<DoubleMaShortlistUnionMode>,
+) -> Result<Option<DoubleMaShortlistUnionMode>, String> {
+    Ok(requested)
+}
+
+fn kernel_shortlist_slice_mode(
+    requested: Option<DoubleMaShortlistSliceMode>,
+) -> Result<Option<ShortlistSliceMode>, String> {
+    Ok(requested.map(|mode| match mode {
+        DoubleMaShortlistSliceMode::Halves => ShortlistSliceMode::Halves,
+        DoubleMaShortlistSliceMode::Quartiles => ShortlistSliceMode::Quartiles,
+    }))
+}
+
+fn kernel_shortlist_slice_benchmark(
+    requested: Option<SpaBenchmarkKind>,
+) -> Result<Option<SpaBenchmarkKind>, String> {
+    Ok(requested)
+}
+
+#[inline]
+fn shortlist_candidate_track_record_bars(
+    first_valid: usize,
+    regime_first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+    total_bars: usize,
+    fast_len: u16,
+    slow_len: u16,
+    trade_on_next_bar: bool,
+) -> usize {
+    let pair_first_valid = first_valid.saturating_add(fast_len.max(slow_len) as usize - 1);
+    let t_valid = pair_first_valid.max(regime_first_valid).max(eval_start);
+    let trade_offset = usize::from(trade_on_next_bar);
+    let start_t = t_valid.saturating_add(trade_offset).max(eval_start);
+    let end_t = total_bars.min(eval_end);
+    end_t.saturating_sub(start_t).max(2)
+}
+
+fn shortlist_slice_ranges(
+    rows: &[(DoubleMaParams, Metrics)],
+    mode: ShortlistSliceMode,
+    first_valid: usize,
+    regime_first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+    total_bars: usize,
+    strategy: &StrategyConfig,
+) -> Result<Vec<(usize, usize)>, String> {
+    if rows.is_empty() {
+        return Err("slice robustness requires a non-empty shortlist".to_string());
+    }
+    let trade_offset = usize::from(strategy.trade_on_next_bar);
+    let common_start = rows
+        .iter()
+        .map(|(params, _)| {
+            let pair_first_valid =
+                first_valid.saturating_add(params.fast_len.max(params.slow_len) as usize - 1);
+            pair_first_valid
+                .max(regime_first_valid)
+                .max(eval_start)
+                .saturating_add(trade_offset)
+                .max(eval_start)
+        })
+        .max()
+        .unwrap_or(eval_start);
+    let end_t = total_bars.min(eval_end);
+    let slice_count = mode.slice_count();
+    let span = end_t.saturating_sub(common_start);
+    let slice_bars = span / slice_count;
+    if slice_bars < 2 {
+        return Err(format!(
+            "{SHORTLIST_SLICE_MODE_REQUEST_FIELD} requires at least 2 bars per slice after warmup (common_start={common_start}, end={end_t}, slices={slice_count})"
+        ));
+    }
+
+    let mut ranges = Vec::with_capacity(slice_count);
+    for slice_idx in 0..slice_count {
+        let start = common_start + slice_idx * slice_bars;
+        let end = if slice_idx + 1 == slice_count {
+            end_t
+        } else {
+            common_start + (slice_idx + 1) * slice_bars
+        };
+        if end <= start {
+            return Err(format!(
+                "{SHORTLIST_SLICE_MODE_REQUEST_FIELD} produced an empty slice at index {slice_idx}"
+            ));
+        }
+        ranges.push((start, end));
+    }
+    Ok(ranges)
+}
+
+fn rerank_shortlist_by_confidence(
+    rows: &[(DoubleMaParams, Metrics)],
+    mode: ShortlistConfidenceMode,
+    first_valid: usize,
+    regime_first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+    total_bars: usize,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let sharpe_peers: Vec<f64> = rows
+        .iter()
+        .map(|(_, metrics)| metrics.sharpe)
+        .filter(|value| value.is_finite())
+        .collect();
+    let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
+    let trials = sharpe_peers.len().max(1);
+
+    let mut ranked: Vec<(DoubleMaParams, Metrics, f64)> = rows
+        .iter()
+        .cloned()
+        .map(|(params, metrics)| {
+            let obs = shortlist_candidate_track_record_bars(
+                first_valid,
+                regime_first_valid,
+                eval_start,
+                eval_end,
+                total_bars,
+                params.fast_len,
+                params.slow_len,
+                strategy.trade_on_next_bar,
+            );
+            let (psr, dsr) = crate::validation_stats::compute_psr_dsr(
+                metrics.sharpe,
+                obs,
+                trials,
+                peer_mean,
+                peer_std,
+            );
+            let confidence = match mode {
+                ShortlistConfidenceMode::Psr => psr.unwrap_or(0.0),
+                ShortlistConfidenceMode::Dsr => dsr.unwrap_or(0.0),
+            };
+            (params, metrics, confidence)
+        })
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        b.2.total_cmp(&a.2)
+            .then_with(|| {
+                let sa = effective_score(&a.1, objective, score_mode);
+                let sb = effective_score(&b.1, objective, score_mode);
+                sb.total_cmp(&sa)
+            })
+            .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+    });
+
+    ranked
+        .into_iter()
+        .map(|(params, metrics, _)| (params, metrics))
+        .collect()
+}
+
+fn shortlist_union_objectives(
+    primary_objective: ObjectiveKind,
+    extra_objectives: &[ObjectiveKind],
+) -> Vec<ObjectiveKind> {
+    let mut objectives = Vec::with_capacity(extra_objectives.len().saturating_add(1));
+    objectives.push(primary_objective);
+    for &objective in extra_objectives {
+        if objective != primary_objective && !objectives.contains(&objective) {
+            objectives.push(objective);
+        }
+    }
+    objectives
+}
+
+fn shortlist_union_score_rows(
+    rows: &[(DoubleMaParams, Metrics)],
+    objectives: &[ObjectiveKind],
+) -> Vec<Vec<f64>> {
+    rows.iter()
+        .map(|(_, metrics)| {
+            objectives
+                .iter()
+                .map(|&objective| objective_score(metrics, objective))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn shortlist_union_epsilon(score_rows: &[Vec<f64>]) -> Vec<f64> {
+    if score_rows.is_empty() {
+        return Vec::new();
+    }
+    let width = score_rows[0].len();
+    let mut mins = vec![f64::INFINITY; width];
+    let mut maxs = vec![f64::NEG_INFINITY; width];
+    for scores in score_rows {
+        for (idx, &score) in scores.iter().enumerate() {
+            mins[idx] = mins[idx].min(score);
+            maxs[idx] = maxs[idx].max(score);
+        }
+    }
+    mins.iter()
+        .zip(maxs.iter())
+        .map(|(&min_score, &max_score)| {
+            let span = (max_score - min_score).abs();
+            let scale = min_score.abs().max(max_score.abs()).max(1.0);
+            span * 0.01 + scale * 1.0e-6
+        })
+        .collect()
+}
+
+fn shortlist_union_dominates(a: &[f64], b: &[f64], eps: &[f64]) -> bool {
+    let mut strictly_better = false;
+    for idx in 0..a.len().min(b.len()).min(eps.len()) {
+        if a[idx] + eps[idx] < b[idx] {
+            return false;
+        }
+        if a[idx] > b[idx] + eps[idx] {
+            strictly_better = true;
+        }
+    }
+    strictly_better
+}
+
+fn shortlist_union_front_ranks(score_rows: &[Vec<f64>], eps: &[f64]) -> Vec<usize> {
+    let n = score_rows.len();
+    let mut dominates: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut dominated_by_count: Vec<usize> = vec![0; n];
+    let mut front_ranks: Vec<usize> = vec![usize::MAX; n];
+    let mut current_front: Vec<usize> = Vec::new();
+
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            if shortlist_union_dominates(&score_rows[i], &score_rows[j], eps) {
+                dominates[i].push(j);
+            } else if shortlist_union_dominates(&score_rows[j], &score_rows[i], eps) {
+                dominated_by_count[i] = dominated_by_count[i].saturating_add(1);
+            }
+        }
+        if dominated_by_count[i] == 0 {
+            front_ranks[i] = 0;
+            current_front.push(i);
+        }
+    }
+
+    let mut depth = 0usize;
+    while !current_front.is_empty() {
+        let mut next_front: Vec<usize> = Vec::new();
+        for &idx in current_front.iter() {
+            for &dominated_idx in dominates[idx].iter() {
+                dominated_by_count[dominated_idx] =
+                    dominated_by_count[dominated_idx].saturating_sub(1);
+                if dominated_by_count[dominated_idx] == 0
+                    && front_ranks[dominated_idx] == usize::MAX
+                {
+                    front_ranks[dominated_idx] = depth.saturating_add(1);
+                    next_front.push(dominated_idx);
+                }
+            }
+        }
+        depth = depth.saturating_add(1);
+        current_front = next_front;
+    }
+
+    for rank in front_ranks.iter_mut() {
+        if *rank == usize::MAX {
+            *rank = depth;
+        }
+    }
+    front_ranks
+}
+
+pub(crate) fn rerank_shortlist_by_union_mode(
+    rows: &[(DoubleMaParams, Metrics)],
+    primary_objective: ObjectiveKind,
+    extra_objectives: &[ObjectiveKind],
+    mode: DoubleMaShortlistUnionMode,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let objectives = shortlist_union_objectives(primary_objective, extra_objectives);
+    if objectives.len() <= 1 {
+        return rows.to_vec();
+    }
+
+    let score_rows = shortlist_union_score_rows(rows, objectives.as_slice());
+    let eps = if matches!(mode, DoubleMaShortlistUnionMode::EpsilonFront) {
+        shortlist_union_epsilon(&score_rows)
+    } else {
+        vec![0.0; objectives.len()]
+    };
+    let front_ranks = if matches!(
+        mode,
+        DoubleMaShortlistUnionMode::Pareto | DoubleMaShortlistUnionMode::EpsilonFront
+    ) {
+        shortlist_union_front_ranks(&score_rows, &eps)
+    } else {
+        vec![0usize; rows.len()]
+    };
+
+    let mut ranked: Vec<(DoubleMaParams, Metrics, Vec<f64>, usize)> = rows
+        .iter()
+        .cloned()
+        .zip(score_rows)
+        .zip(front_ranks)
+        .map(|(((params, metrics), scores), front_rank)| (params, metrics, scores, front_rank))
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        if !matches!(mode, DoubleMaShortlistUnionMode::Lexicographic) {
+            let front_cmp = a.3.cmp(&b.3);
+            if front_cmp != std::cmp::Ordering::Equal {
+                return front_cmp;
+            }
+        }
+        for idx in 0..a.2.len().min(b.2.len()) {
+            let cmp = b.2[idx].total_cmp(&a.2[idx]);
+            if cmp != std::cmp::Ordering::Equal {
+                return cmp;
+            }
+        }
+        a.1.max_dd.total_cmp(&b.1.max_dd)
+    });
+
+    ranked
+        .into_iter()
+        .map(|(params, metrics, _, _)| (params, metrics))
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_shortlist_slice_mode_records(
+    rt: &mut CudaKernelRuntime,
+    candles: &Candles,
+    rows: &[(DoubleMaParams, Metrics)],
+    mode: ShortlistSliceMode,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
+    cfg: KernelConfig,
+    fast_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    slow_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    benchmark: Option<&SpaBenchmarkKind>,
+    first_valid: usize,
+    regime_first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+) -> Result<Vec<ShortlistSliceModeCandidateRecord>, String> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ranges = shortlist_slice_ranges(
+        rows,
+        mode,
+        first_valid,
+        regime_first_valid,
+        eval_start,
+        eval_end,
+        candles.close.len(),
+        strategy,
+    )?;
+    let slice_count = ranges.len();
+    let slice_labels = shortlist_slice_labels(mode);
+    let benchmark_slice_returns = benchmark.map(|benchmark| {
+        let lr = crate::double_ma::compute_log_returns_f64(source_type(candles, "close"));
+        ranges
+            .iter()
+            .map(|&(start_bar, end_bar)| {
+                lr[start_bar..end_bar]
+                    .iter()
+                    .copied()
+                    .map(|value| shortlist_slice_benchmark_step_return(value, benchmark))
+                    .sum::<f64>()
+            })
+            .collect::<Vec<_>>()
+    });
+    let combos: Vec<DoubleMaParams> = rows.iter().map(|(params, _)| params.clone()).collect();
+    let combo_count = combos.len();
+
+    let mut fast_periods: Vec<u16> = combos.iter().map(|params| params.fast_len).collect();
+    fast_periods.sort_unstable();
+    fast_periods.dedup();
+    let mut slow_periods: Vec<u16> = combos.iter().map(|params| params.slow_len).collect();
+    slow_periods.sort_unstable();
+    slow_periods.dedup();
+
+    let range_metrics = eval_double_ma_batch_gpu_kernel_impl(
+        rt,
+        candles,
+        combos.as_slice(),
+        fast_periods.as_slice(),
+        slow_periods.as_slice(),
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        cfg,
+        fast_precomputed,
+        slow_precomputed,
+        strategy,
+        true,
+        ranges.as_slice(),
+    )?;
+    if range_metrics.len() != combo_count.saturating_mul(slice_count) {
+        return Err(format!(
+            "slice robustness expected {} metrics for {} combos across {} slices, got {}",
+            combo_count.saturating_mul(slice_count),
+            combo_count,
+            slice_count,
+            range_metrics.len()
+        ));
+    }
+
+    let mut records = Vec::with_capacity(combo_count);
+    for (combo_idx, (params, metrics)) in rows.iter().cloned().enumerate() {
+        let mut worst_slice_score = f64::INFINITY;
+        let mut positive_slice_count = 0usize;
+        let mut mean_slice_score = 0.0f64;
+        let mut slice_scores: Vec<f64> = Vec::with_capacity(slice_count);
+        let mut slice_excess_returns: Vec<f64> = Vec::with_capacity(slice_count);
+        let mut slices = Vec::with_capacity(slice_count);
+        for slice_idx in 0..slice_count {
+            let slice_metrics = range_metrics[slice_idx * combo_count + combo_idx].clone();
+            let slice_score = effective_score(&slice_metrics, objective, score_mode);
+            worst_slice_score = worst_slice_score.min(slice_score);
+            if slice_score >= 0.0 {
+                positive_slice_count += 1;
+            }
+            mean_slice_score += slice_score;
+            slice_scores.push(slice_score);
+            let (start_bar, end_bar) = ranges[slice_idx];
+            if let Some(benchmark_slice_returns) = benchmark_slice_returns.as_ref() {
+                let obs = end_bar.saturating_sub(start_bar);
+                let candidate_sum = shortlist_slice_candidate_return_sum(&slice_metrics, obs);
+                slice_excess_returns.push(candidate_sum - benchmark_slice_returns[slice_idx]);
+            }
+            slices.push(ShortlistSliceSnapshot {
+                label: slice_labels[slice_idx].clone(),
+                start_bar,
+                end_bar,
+                score: slice_score,
+                metrics: slice_metrics,
+            });
+        }
+        mean_slice_score /= slice_count as f64;
+        let omission = compute_shortlist_slice_omission_summary(&slice_scores, &slice_labels)?;
+        let benchmark_relative = benchmark
+            .map(|benchmark| {
+                compute_shortlist_slice_benchmark_relative_summary(
+                    &slice_excess_returns,
+                    &slice_labels,
+                    benchmark,
+                )
+            })
+            .transpose()?;
+        records.push(ShortlistSliceModeCandidateRecord {
+            params,
+            full_metrics: metrics,
+            diagnostics: ShortlistSliceModeDiagnostics {
+                worst_slice_score,
+                positive_slice_frac: positive_slice_count as f64 / slice_count as f64,
+                mean_slice_score,
+                best_omission_label: omission.best_label,
+                best_omission_score: omission.best_score,
+                worst_omission_label: omission.worst_label,
+                worst_omission_score: omission.worst_score,
+                omission_score_spread: omission.spread,
+                benchmark_relative,
+                slices,
+            },
+        });
+    }
+
+    Ok(records)
+}
+
+#[inline]
 fn kernel_finalist_recompute_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_FINALIST_RECOMPUTE", true)
 }
@@ -3580,35 +4553,36 @@ fn effective_metrics_stride(
 }
 
 #[inline]
-fn search_metrics_count_for_optimization(
+pub(crate) fn search_metrics_count_for_optimization(
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
     constraints: Option<&DoubleMaConstraints>,
     include_all: bool,
     export_enabled: bool,
     fast_precomputed_enabled: bool,
     slow_precomputed_enabled: bool,
+    include_trade_metrics: bool,
 ) -> usize {
+    if include_trade_metrics {
+        return TRADE_METRICS_COUNT;
+    }
     if include_all || export_enabled || fast_precomputed_enabled || slow_precomputed_enabled {
         return METRICS_COUNT;
     }
 
     let mut metrics_count = match objective {
         ObjectiveKind::Pnl => 1,
-        // 7-row enables the faster M7 kernels while still skipping ulcer-index/omega work unless
-        // the product-reduced promotion (10-row) is active.
+        // 7-row enables the faster M7 kernels while still skipping the widened product contract
+        // unless the default single-pass promotion is active.
         ObjectiveKind::Sharpe | ObjectiveKind::Volatility => 7,
         ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => 3,
         ObjectiveKind::Sortino | ObjectiveKind::Omega => METRICS_COUNT,
     };
 
-    if constraints.and_then(|c| c.min_trades).is_some() {
-        metrics_count = metrics_count.max(2);
-    }
-    if constraints.and_then(|c| c.max_drawdown).is_some() {
-        metrics_count = metrics_count.max(3);
-    }
+    metrics_count = metrics_count.max(min_metrics_count_for_constraints(constraints));
+    metrics_count = metrics_count.max(score_mode_metrics_count_floor(score_mode));
     if kernel_product_reduced_rows_enabled_for_objective(objective) {
-        metrics_count = metrics_count.max(PRODUCT_REDUCED_METRICS_COUNT);
+        metrics_count = metrics_count.max(METRICS_COUNT);
     }
 
     metrics_count.min(METRICS_COUNT)
@@ -4226,12 +5200,10 @@ fn reduce_metric_rows_topk_on_device(
     rows_len: usize,
     metrics_count: usize,
     objective_i: i32,
+    hurdle_tau: f32,
     topk_select: usize,
     constraints_on_device: bool,
-    constraint_use_min_trades: i32,
-    constraint_min_trades: f32,
-    constraint_use_max_dd: i32,
-    constraint_max_dd: f32,
+    constraint_args: DeviceConstraintArgs,
     select_rows_legacy: &cust::function::Function<'_>,
     select_rows_candidates_legacy: &cust::function::Function<'_>,
     select_rows_v2: Option<&cust::function::Function<'_>>,
@@ -4252,26 +5224,64 @@ fn reduce_metric_rows_topk_on_device(
         let mut rows_i = rows_len as i32;
         let mut m_i = metrics_count as i32;
         let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
         let mut topk_i = topk_select as i32;
         let mut out_ptr = scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw();
 
         let block_x: u32 = 256;
         let grid_x: u32 = blocks1 as u32;
         if constraints_on_device {
-            let mut use_min_trades = constraint_use_min_trades;
-            let mut min_trades = constraint_min_trades;
-            let mut use_max_dd = constraint_use_max_dd;
-            let mut max_dd = constraint_max_dd;
+            let mut use_min_trades = constraint_args.use_min_trades;
+            let mut min_trades = constraint_args.min_trades;
+            let mut use_max_dd = constraint_args.use_max_dd;
+            let mut max_dd = constraint_args.max_dd;
+            let mut use_min_sharpe = constraint_args.use_min_sharpe;
+            let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_calmar = constraint_args.use_min_calmar;
+            let mut min_calmar = constraint_args.min_calmar;
+            let mut use_max_volatility = constraint_args.use_max_volatility;
+            let mut max_volatility = constraint_args.max_volatility;
+            let mut use_min_exposure = constraint_args.use_min_exposure;
+            let mut min_exposure = constraint_args.min_exposure;
+            let mut use_max_exposure = constraint_args.use_max_exposure;
+            let mut max_exposure = constraint_args.max_exposure;
+            let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+            let mut use_min_omega = constraint_args.use_min_omega;
+            let mut min_omega = constraint_args.min_omega;
+            let mut use_max_ulcer = constraint_args.use_max_ulcer;
+            let mut max_ulcer = constraint_args.max_ulcer;
+            let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+            let mut max_downside_deviation = constraint_args.max_downside_deviation;
             let args: &mut [*mut c_void] = &mut [
                 &mut metrics_ptr as *mut _ as *mut c_void,
                 &mut rows_i as *mut _ as *mut c_void,
                 &mut m_i as *mut _ as *mut c_void,
                 &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                 &mut topk_i as *mut _ as *mut c_void,
                 &mut use_min_trades as *mut _ as *mut c_void,
                 &mut min_trades as *mut _ as *mut c_void,
                 &mut use_max_dd as *mut _ as *mut c_void,
                 &mut max_dd as *mut _ as *mut c_void,
+                &mut use_min_sharpe as *mut _ as *mut c_void,
+                &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_calmar as *mut _ as *mut c_void,
+                &mut min_calmar as *mut _ as *mut c_void,
+                &mut use_max_volatility as *mut _ as *mut c_void,
+                &mut max_volatility as *mut _ as *mut c_void,
+                &mut use_min_exposure as *mut _ as *mut c_void,
+                &mut min_exposure as *mut _ as *mut c_void,
+                &mut use_max_exposure as *mut _ as *mut c_void,
+                &mut max_exposure as *mut _ as *mut c_void,
+                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut use_min_omega as *mut _ as *mut c_void,
+                &mut min_omega as *mut _ as *mut c_void,
+                &mut use_max_ulcer as *mut _ as *mut c_void,
+                &mut max_ulcer as *mut _ as *mut c_void,
+                &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                &mut max_downside_deviation as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
             bt_stream
@@ -4290,6 +5300,7 @@ fn reduce_metric_rows_topk_on_device(
                 &mut rows_i as *mut _ as *mut c_void,
                 &mut m_i as *mut _ as *mut c_void,
                 &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                 &mut topk_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
@@ -4310,6 +5321,7 @@ fn reduce_metric_rows_topk_on_device(
             let mut rows_i = rows_len as i32;
             let mut m_i = metrics_count as i32;
             let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
             let mut topk_i = topk_select as i32;
             let mut in_ptr = if in_is_a {
                 scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
@@ -4326,15 +5338,34 @@ fn reduce_metric_rows_topk_on_device(
             let block_x: u32 = 256;
             let grid_x: u32 = blocks_next as u32;
             if constraints_on_device {
-                let mut use_min_trades = constraint_use_min_trades;
-                let mut min_trades = constraint_min_trades;
-                let mut use_max_dd = constraint_use_max_dd;
-                let mut max_dd = constraint_max_dd;
+                let mut use_min_trades = constraint_args.use_min_trades;
+                let mut min_trades = constraint_args.min_trades;
+                let mut use_max_dd = constraint_args.use_max_dd;
+                let mut max_dd = constraint_args.max_dd;
+                let mut use_min_sharpe = constraint_args.use_min_sharpe;
+                let mut min_sharpe = constraint_args.min_sharpe;
+                let mut use_min_calmar = constraint_args.use_min_calmar;
+                let mut min_calmar = constraint_args.min_calmar;
+                let mut use_max_volatility = constraint_args.use_max_volatility;
+                let mut max_volatility = constraint_args.max_volatility;
+                let mut use_min_exposure = constraint_args.use_min_exposure;
+                let mut min_exposure = constraint_args.min_exposure;
+                let mut use_max_exposure = constraint_args.use_max_exposure;
+                let mut max_exposure = constraint_args.max_exposure;
+                let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+                let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+                let mut use_min_omega = constraint_args.use_min_omega;
+                let mut min_omega = constraint_args.min_omega;
+                let mut use_max_ulcer = constraint_args.use_max_ulcer;
+                let mut max_ulcer = constraint_args.max_ulcer;
+                let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+                let mut max_downside_deviation = constraint_args.max_downside_deviation;
                 let args: &mut [*mut c_void] = &mut [
                     &mut metrics_ptr as *mut _ as *mut c_void,
                     &mut rows_i as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut in_len_i as *mut _ as *mut c_void,
@@ -4342,6 +5373,24 @@ fn reduce_metric_rows_topk_on_device(
                     &mut min_trades as *mut _ as *mut c_void,
                     &mut use_max_dd as *mut _ as *mut c_void,
                     &mut max_dd as *mut _ as *mut c_void,
+                    &mut use_min_sharpe as *mut _ as *mut c_void,
+                    &mut min_sharpe as *mut _ as *mut c_void,
+                    &mut use_min_calmar as *mut _ as *mut c_void,
+                    &mut min_calmar as *mut _ as *mut c_void,
+                    &mut use_max_volatility as *mut _ as *mut c_void,
+                    &mut max_volatility as *mut _ as *mut c_void,
+                    &mut use_min_exposure as *mut _ as *mut c_void,
+                    &mut min_exposure as *mut _ as *mut c_void,
+                    &mut use_max_exposure as *mut _ as *mut c_void,
+                    &mut max_exposure as *mut _ as *mut c_void,
+                    &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                    &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                    &mut use_min_omega as *mut _ as *mut c_void,
+                    &mut min_omega as *mut _ as *mut c_void,
+                    &mut use_max_ulcer as *mut _ as *mut c_void,
+                    &mut max_ulcer as *mut _ as *mut c_void,
+                    &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                    &mut max_downside_deviation as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
                 bt_stream
@@ -4361,6 +5410,7 @@ fn reduce_metric_rows_topk_on_device(
                     &mut rows_i as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut in_len_i as *mut _ as *mut c_void,
@@ -4429,6 +5479,566 @@ fn reduce_metric_rows_topk_on_device(
         ];
         bt_stream
             .launch(gather_rows, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_current_topk_rows_into_global_head(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    global_fast: &DeviceBuffer<i32>,
+    global_slow: &DeviceBuffer<i32>,
+    global_metrics: &DeviceBuffer<f32>,
+    global_rows_len: &mut usize,
+    global_rows_cap: usize,
+    metrics_count: usize,
+    objective_i: i32,
+    hurdle_tau: f32,
+    topk_select: usize,
+    global_constraints_on_device: bool,
+    constraint_args: DeviceConstraintArgs,
+    select_topk_rows_legacy: &cust::function::Function<'_>,
+    select_topk_rows_candidates_legacy: &cust::function::Function<'_>,
+    select_topk_rows_v2: Option<&cust::function::Function<'_>>,
+    select_topk_rows_candidates_v2: Option<&cust::function::Function<'_>>,
+    gather_topk_rows: &cust::function::Function<'_>,
+) -> Result<(), String> {
+    let row_i32_bytes = topk_select
+        .checked_mul(std::mem::size_of::<i32>())
+        .ok_or_else(|| "topk row bytes overflow (i32)".to_string())?;
+    let row_metrics_bytes = topk_select
+        .checked_mul(metrics_count)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| "topk row bytes overflow (metrics)".to_string())?;
+
+    if *global_rows_len == 0 {
+        cu_memcpy_d2d_async(
+            global_fast.as_device_ptr().as_raw(),
+            scratch
+                .d_top_fast
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_i32_bytes,
+            bt_stream,
+        )?;
+        cu_memcpy_d2d_async(
+            global_slow.as_device_ptr().as_raw(),
+            scratch
+                .d_top_slow
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_i32_bytes,
+            bt_stream,
+        )?;
+        cu_memcpy_d2d_async(
+            global_metrics.as_device_ptr().as_raw(),
+            scratch
+                .d_top_metrics
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_metrics_bytes,
+            bt_stream,
+        )?;
+        *global_rows_len = topk_select;
+        return Ok(());
+    }
+
+    if global_rows_len.saturating_add(topk_select) > global_rows_cap {
+        return Err(
+            "global top-k merge buffer overflow; expected capacity for 2 * top_k rows".to_string(),
+        );
+    }
+    let dst_fast = global_fast
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<i32>()) as u64);
+    let dst_slow = global_slow
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<i32>()) as u64);
+    let dst_metrics = global_metrics.as_device_ptr().as_raw().saturating_add(
+        ((*global_rows_len)
+            .saturating_mul(metrics_count)
+            .saturating_mul(std::mem::size_of::<f32>())) as u64,
+    );
+    cu_memcpy_d2d_async(
+        dst_fast,
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        dst_slow,
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        dst_metrics,
+        scratch
+            .d_top_metrics
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_metrics_bytes,
+        bt_stream,
+    )?;
+    *global_rows_len = global_rows_len.saturating_add(topk_select);
+
+    reduce_metric_rows_topk_on_device(
+        bt_stream,
+        scratch,
+        global_fast,
+        global_slow,
+        global_metrics,
+        *global_rows_len,
+        metrics_count,
+        objective_i,
+        hurdle_tau,
+        topk_select,
+        global_constraints_on_device,
+        constraint_args,
+        select_topk_rows_legacy,
+        select_topk_rows_candidates_legacy,
+        select_topk_rows_v2,
+        select_topk_rows_candidates_v2,
+        gather_topk_rows,
+    )?;
+    cu_memcpy_d2d_async(
+        global_fast.as_device_ptr().as_raw(),
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        global_slow.as_device_ptr().as_raw(),
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        global_metrics.as_device_ptr().as_raw(),
+        scratch
+            .d_top_metrics
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_metrics_bytes,
+        bt_stream,
+    )?;
+    *global_rows_len = topk_select;
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_tile_topk_rows_for_objective(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    pairs: usize,
+    launch_pairs: usize,
+    metrics_count: usize,
+    tile_metrics_stride: usize,
+    pf: usize,
+    ps: usize,
+    topk_select: usize,
+    objective_i: i32,
+    hurdle_tau: f32,
+    compact_valid_pair_output: bool,
+    pair_index_map_ptr: u64,
+    pair_fast_rows_ptr: u64,
+    pair_slow_rows_ptr: u64,
+    constraints_on_device: bool,
+    constraint_args: DeviceConstraintArgs,
+    select_topk_pairs_legacy: &cust::function::Function<'_>,
+    select_topk_candidates_legacy: &cust::function::Function<'_>,
+    select_topk_pairs_v2: Option<&cust::function::Function<'_>>,
+    select_topk_candidates_v2: Option<&cust::function::Function<'_>>,
+    gather_topk: &cust::function::Function<'_>,
+) -> Result<(), String> {
+    let pair_stage_pairs = if pair_index_map_ptr != 0 && launch_pairs > 0 {
+        launch_pairs
+    } else {
+        pairs
+    };
+    let blocks1 = (pair_stage_pairs + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+    let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
+    let cand_a = scratch.d_cand_a.as_mut().unwrap();
+    let cand_b = scratch.d_cand_b.as_mut().unwrap();
+
+    unsafe {
+        let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut pairs_i = pairs as i32;
+        let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = tile_metrics_stride as i32;
+        let mut pf_i = pf as i32;
+        let mut ps_i = ps as i32;
+        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
+        let mut topk_i = topk_select as i32;
+        let mut pair_map_ptr = pair_index_map_ptr;
+        let mut pair_count_i = launch_pairs as i32;
+        let mut compact_output_i = if compact_valid_pair_output {
+            1i32
+        } else {
+            0i32
+        };
+        let mut out_ptr = cand_a.as_device_ptr().as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = blocks1 as u32;
+        if constraints_on_device {
+            let mut use_min_trades = constraint_args.use_min_trades;
+            let mut min_trades = constraint_args.min_trades;
+            let mut use_max_dd = constraint_args.use_max_dd;
+            let mut max_dd = constraint_args.max_dd;
+            let mut use_min_sharpe = constraint_args.use_min_sharpe;
+            let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_calmar = constraint_args.use_min_calmar;
+            let mut min_calmar = constraint_args.min_calmar;
+            let mut use_max_volatility = constraint_args.use_max_volatility;
+            let mut max_volatility = constraint_args.max_volatility;
+            let mut use_min_exposure = constraint_args.use_min_exposure;
+            let mut min_exposure = constraint_args.min_exposure;
+            let mut use_max_exposure = constraint_args.use_max_exposure;
+            let mut max_exposure = constraint_args.max_exposure;
+            let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+            let mut use_min_omega = constraint_args.use_min_omega;
+            let mut min_omega = constraint_args.min_omega;
+            let mut use_max_ulcer = constraint_args.use_max_ulcer;
+            let mut max_ulcer = constraint_args.max_ulcer;
+            let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+            let mut max_downside_deviation = constraint_args.max_downside_deviation;
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut pairs_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
+                &mut pf_i as *mut _ as *mut c_void,
+                &mut ps_i as *mut _ as *mut c_void,
+                &mut f_per as *mut _ as *mut c_void,
+                &mut s_per as *mut _ as *mut c_void,
+                &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut use_min_trades as *mut _ as *mut c_void,
+                &mut min_trades as *mut _ as *mut c_void,
+                &mut use_max_dd as *mut _ as *mut c_void,
+                &mut max_dd as *mut _ as *mut c_void,
+                &mut use_min_sharpe as *mut _ as *mut c_void,
+                &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_calmar as *mut _ as *mut c_void,
+                &mut min_calmar as *mut _ as *mut c_void,
+                &mut use_max_volatility as *mut _ as *mut c_void,
+                &mut max_volatility as *mut _ as *mut c_void,
+                &mut use_min_exposure as *mut _ as *mut c_void,
+                &mut min_exposure as *mut _ as *mut c_void,
+                &mut use_max_exposure as *mut _ as *mut c_void,
+                &mut max_exposure as *mut _ as *mut c_void,
+                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut use_min_omega as *mut _ as *mut c_void,
+                &mut min_omega as *mut _ as *mut c_void,
+                &mut use_max_ulcer as *mut _ as *mut c_void,
+                &mut max_ulcer as *mut _ as *mut c_void,
+                &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                &mut max_downside_deviation as *mut _ as *mut c_void,
+                &mut pair_map_ptr as *mut _ as *mut c_void,
+                &mut pair_count_i as *mut _ as *mut c_void,
+                &mut compact_output_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            bt_stream
+                .launch(
+                    select_topk_pairs_v2
+                        .ok_or_else(|| "missing select_topk_from_pairs_tm_f32_v2".to_string())?,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        } else {
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut pairs_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
+                &mut pf_i as *mut _ as *mut c_void,
+                &mut ps_i as *mut _ as *mut c_void,
+                &mut f_per as *mut _ as *mut c_void,
+                &mut s_per as *mut _ as *mut c_void,
+                &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut pair_map_ptr as *mut _ as *mut c_void,
+                &mut pair_count_i as *mut _ as *mut c_void,
+                &mut compact_output_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            bt_stream
+                .launch(
+                    select_topk_pairs_legacy,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut blocks_prev = blocks1;
+    let mut in_len = cand_len1;
+    let mut in_is_a = true;
+    while blocks_prev > 1 {
+        let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+        let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
+        unsafe {
+            let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+            let mut pairs_i = pairs as i32;
+            let mut m_i = metrics_count as i32;
+            let mut metrics_stride_i = tile_metrics_stride as i32;
+            let mut pf_i = pf as i32;
+            let mut ps_i = ps as i32;
+            let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+            let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+            let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
+            let mut topk_i = topk_select as i32;
+            let mut in_ptr = if in_is_a {
+                cand_a.as_device_ptr().as_raw()
+            } else {
+                cand_b.as_device_ptr().as_raw()
+            };
+            let mut in_len_i = in_len as i32;
+            let mut out_ptr = if in_is_a {
+                cand_b.as_device_ptr().as_raw()
+            } else {
+                cand_a.as_device_ptr().as_raw()
+            };
+            let mut pair_map_ptr = pair_index_map_ptr;
+            let mut pair_count_i = launch_pairs as i32;
+            let mut compact_output_i = if compact_valid_pair_output {
+                1i32
+            } else {
+                0i32
+            };
+
+            let block_x: u32 = 256;
+            let grid_x: u32 = blocks_next as u32;
+            if constraints_on_device {
+                let mut use_min_trades = constraint_args.use_min_trades;
+                let mut min_trades = constraint_args.min_trades;
+                let mut use_max_dd = constraint_args.use_max_dd;
+                let mut max_dd = constraint_args.max_dd;
+                let mut use_min_sharpe = constraint_args.use_min_sharpe;
+                let mut min_sharpe = constraint_args.min_sharpe;
+                let mut use_min_calmar = constraint_args.use_min_calmar;
+                let mut min_calmar = constraint_args.min_calmar;
+                let mut use_max_volatility = constraint_args.use_max_volatility;
+                let mut max_volatility = constraint_args.max_volatility;
+                let mut use_min_exposure = constraint_args.use_min_exposure;
+                let mut min_exposure = constraint_args.min_exposure;
+                let mut use_max_exposure = constraint_args.use_max_exposure;
+                let mut max_exposure = constraint_args.max_exposure;
+                let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+                let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+                let mut use_min_omega = constraint_args.use_min_omega;
+                let mut min_omega = constraint_args.min_omega;
+                let mut use_max_ulcer = constraint_args.use_max_ulcer;
+                let mut max_ulcer = constraint_args.max_ulcer;
+                let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+                let mut max_downside_deviation = constraint_args.max_downside_deviation;
+                let args: &mut [*mut c_void] = &mut [
+                    &mut metrics_ptr as *mut _ as *mut c_void,
+                    &mut pairs_i as *mut _ as *mut c_void,
+                    &mut m_i as *mut _ as *mut c_void,
+                    &mut metrics_stride_i as *mut _ as *mut c_void,
+                    &mut pf_i as *mut _ as *mut c_void,
+                    &mut ps_i as *mut _ as *mut c_void,
+                    &mut f_per as *mut _ as *mut c_void,
+                    &mut s_per as *mut _ as *mut c_void,
+                    &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                    &mut topk_i as *mut _ as *mut c_void,
+                    &mut in_ptr as *mut _ as *mut c_void,
+                    &mut in_len_i as *mut _ as *mut c_void,
+                    &mut use_min_trades as *mut _ as *mut c_void,
+                    &mut min_trades as *mut _ as *mut c_void,
+                    &mut use_max_dd as *mut _ as *mut c_void,
+                    &mut max_dd as *mut _ as *mut c_void,
+                    &mut use_min_sharpe as *mut _ as *mut c_void,
+                    &mut min_sharpe as *mut _ as *mut c_void,
+                    &mut use_min_calmar as *mut _ as *mut c_void,
+                    &mut min_calmar as *mut _ as *mut c_void,
+                    &mut use_max_volatility as *mut _ as *mut c_void,
+                    &mut max_volatility as *mut _ as *mut c_void,
+                    &mut use_min_exposure as *mut _ as *mut c_void,
+                    &mut min_exposure as *mut _ as *mut c_void,
+                    &mut use_max_exposure as *mut _ as *mut c_void,
+                    &mut max_exposure as *mut _ as *mut c_void,
+                    &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                    &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                    &mut use_min_omega as *mut _ as *mut c_void,
+                    &mut min_omega as *mut _ as *mut c_void,
+                    &mut use_max_ulcer as *mut _ as *mut c_void,
+                    &mut max_ulcer as *mut _ as *mut c_void,
+                    &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                    &mut max_downside_deviation as *mut _ as *mut c_void,
+                    &mut pair_map_ptr as *mut _ as *mut c_void,
+                    &mut pair_count_i as *mut _ as *mut c_void,
+                    &mut compact_output_i as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                bt_stream
+                    .launch(
+                        select_topk_candidates_v2.ok_or_else(|| {
+                            "missing select_topk_from_candidates_tm_f32_v2".to_string()
+                        })?,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                    )
+                    .map_err(|e| e.to_string())?;
+            } else {
+                let args: &mut [*mut c_void] = &mut [
+                    &mut metrics_ptr as *mut _ as *mut c_void,
+                    &mut pairs_i as *mut _ as *mut c_void,
+                    &mut m_i as *mut _ as *mut c_void,
+                    &mut metrics_stride_i as *mut _ as *mut c_void,
+                    &mut pf_i as *mut _ as *mut c_void,
+                    &mut ps_i as *mut _ as *mut c_void,
+                    &mut f_per as *mut _ as *mut c_void,
+                    &mut s_per as *mut _ as *mut c_void,
+                    &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                    &mut topk_i as *mut _ as *mut c_void,
+                    &mut in_ptr as *mut _ as *mut c_void,
+                    &mut in_len_i as *mut _ as *mut c_void,
+                    &mut pair_map_ptr as *mut _ as *mut c_void,
+                    &mut pair_count_i as *mut _ as *mut c_void,
+                    &mut compact_output_i as *mut _ as *mut c_void,
+                    &mut out_ptr as *mut _ as *mut c_void,
+                ];
+                bt_stream
+                    .launch(
+                        select_topk_candidates_legacy,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        in_is_a = !in_is_a;
+        blocks_prev = blocks_next;
+        in_len = out_len;
+    }
+
+    unsafe {
+        let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut pairs_i = pairs as i32;
+        let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = tile_metrics_stride as i32;
+        let mut pf_i = pf as i32;
+        let mut ps_i = ps as i32;
+        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut top_ptr = if in_is_a {
+            cand_a.as_device_ptr().as_raw()
+        } else {
+            cand_b.as_device_ptr().as_raw()
+        };
+        let mut topk_i = topk_select as i32;
+        let mut pair_map_ptr = pair_index_map_ptr;
+        let mut pair_count_i = launch_pairs as i32;
+        let mut compact_output_i = if compact_valid_pair_output {
+            1i32
+        } else {
+            0i32
+        };
+        let mut out_f = scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_s = scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_m = scratch
+            .d_top_metrics
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut pair_fast_rows = pair_fast_rows_ptr;
+        let mut pair_slow_rows = pair_slow_rows_ptr;
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut metrics_ptr as *mut _ as *mut c_void,
+            &mut pairs_i as *mut _ as *mut c_void,
+            &mut m_i as *mut _ as *mut c_void,
+            &mut metrics_stride_i as *mut _ as *mut c_void,
+            &mut pf_i as *mut _ as *mut c_void,
+            &mut ps_i as *mut _ as *mut c_void,
+            &mut f_per as *mut _ as *mut c_void,
+            &mut s_per as *mut _ as *mut c_void,
+            &mut top_ptr as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut pair_map_ptr as *mut _ as *mut c_void,
+            &mut pair_fast_rows as *mut _ as *mut c_void,
+            &mut pair_slow_rows as *mut _ as *mut c_void,
+            &mut pair_count_i as *mut _ as *mut c_void,
+            &mut compact_output_i as *mut _ as *mut c_void,
+            &mut out_f as *mut _ as *mut c_void,
+            &mut out_s as *mut _ as *mut c_void,
+            &mut out_m as *mut _ as *mut c_void,
+        ];
+        bt_stream
+            .launch(gather_topk, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
             .map_err(|e| e.to_string())?;
     }
 
@@ -5128,6 +6738,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let flags = strategy_kernel.flags;
     let commission = strategy_kernel.commission;
     let eps_rel = strategy_kernel.eps_rel;
+    let hurdle_tau = strategy.hurdle_tau.unwrap_or(0.0) as f32;
     let stop_log = strategy_kernel.stop_log;
     let take_log = strategy_kernel.take_log;
     let regime_use = if d_regime_ptr.is_some() { 1i32 } else { 0i32 };
@@ -5499,6 +7110,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         let mut regime_fv = regime_first_valid as i32;
                         let mut commission = commission;
                         let mut eps_rel = eps_rel;
+                        let mut hurdle_tau_f = hurdle_tau;
                         let mut stop_log = stop_log;
                         let mut take_log = take_log;
                         let mut flags_u = flags;
@@ -5688,6 +7300,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 &mut eval_end_i as *mut _ as *mut c_void,
                                 &mut commission as *mut _ as *mut c_void,
                                 &mut eps_rel as *mut _ as *mut c_void,
+                                &mut hurdle_tau_f as *mut _ as *mut c_void,
                                 &mut stop_log as *mut _ as *mut c_void,
                                 &mut take_log as *mut _ as *mut c_void,
                                 &mut flags_u as *mut _ as *mut c_void,
@@ -5727,6 +7340,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 &mut regime_fv as *mut _ as *mut c_void,
                                 &mut commission as *mut _ as *mut c_void,
                                 &mut eps_rel as *mut _ as *mut c_void,
+                                &mut hurdle_tau_f as *mut _ as *mut c_void,
                                 &mut stop_log as *mut _ as *mut c_void,
                                 &mut take_log as *mut _ as *mut c_void,
                                 &mut flags_u as *mut _ as *mut c_void,
@@ -5763,7 +7377,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     {
                         let src_base = row_idx * tile_metrics_stride;
                         out_metrics[range_idx * combo_count + combo_idx] =
-                            decode_tm_flex_metrics_row(host_metrics, src_base, tile_metrics_stride);
+                            decode_tm_flex_metrics_row(host_metrics, src_base, tile_metrics_stride, cfg.hurdle_tau);
                     }
                 }
                 if let (Some(t0), Some(p)) = (d2h_t0, replay_profile.as_mut()) {
@@ -5794,6 +7408,203 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     }
 
     Ok(out_metrics)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rerank_shortlist_by_slice_robustness(
+    rt: &mut CudaKernelRuntime,
+    candles: &Candles,
+    rows: &[(DoubleMaParams, Metrics)],
+    mode: ShortlistSliceMode,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
+    cfg: KernelConfig,
+    fast_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    slow_precomputed: Option<&PrecomputedHostMaMatrix<'_>>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    benchmark: Option<&SpaBenchmarkKind>,
+    first_valid: usize,
+    regime_first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+) -> Result<(Vec<(DoubleMaParams, Metrics)>, ShortlistSliceDiagnostics), String> {
+    if rows.is_empty() {
+        return Ok((
+            Vec::new(),
+            ShortlistSliceDiagnostics {
+                ranking_mode: mode.as_str().to_string(),
+                neighborhood_robustness: None,
+                candidates: Vec::new(),
+            },
+        ));
+    }
+
+    let active_records = compute_shortlist_slice_mode_records(
+        rt,
+        candles,
+        rows,
+        mode,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        cfg,
+        fast_precomputed,
+        slow_precomputed,
+        strategy,
+        objective,
+        score_mode,
+        benchmark,
+        first_valid,
+        regime_first_valid,
+        eval_start,
+        eval_end,
+    )?;
+    let halves_records = if mode == ShortlistSliceMode::Halves {
+        active_records.clone()
+    } else {
+        compute_shortlist_slice_mode_records(
+            rt,
+            candles,
+            rows,
+            ShortlistSliceMode::Halves,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            cfg,
+            fast_precomputed,
+            slow_precomputed,
+            strategy,
+            objective,
+            score_mode,
+            benchmark,
+            first_valid,
+            regime_first_valid,
+            eval_start,
+            eval_end,
+        )?
+    };
+    let quartiles_records = if mode == ShortlistSliceMode::Quartiles {
+        active_records.clone()
+    } else {
+        compute_shortlist_slice_mode_records(
+            rt,
+            candles,
+            rows,
+            ShortlistSliceMode::Quartiles,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            cfg,
+            fast_precomputed,
+            slow_precomputed,
+            strategy,
+            objective,
+            score_mode,
+            benchmark,
+            first_valid,
+            regime_first_valid,
+            eval_start,
+            eval_end,
+        )?
+    };
+
+    let mut halves_by_pair: HashMap<(u16, u16), ShortlistSliceModeDiagnostics> = halves_records
+        .into_iter()
+        .map(|record| {
+            (
+                (record.params.fast_len, record.params.slow_len),
+                record.diagnostics,
+            )
+        })
+        .collect();
+    let mut quartiles_by_pair: HashMap<(u16, u16), ShortlistSliceModeDiagnostics> =
+        quartiles_records
+            .into_iter()
+            .map(|record| {
+                (
+                    (record.params.fast_len, record.params.slow_len),
+                    record.diagnostics,
+                )
+            })
+            .collect();
+
+    let mut ranked: Vec<(
+        DoubleMaParams,
+        Metrics,
+        ShortlistSliceModeDiagnostics,
+        ShortlistSliceCandidateDiagnostics,
+    )> = Vec::with_capacity(active_records.len());
+    for record in active_records {
+        let key = (record.params.fast_len, record.params.slow_len);
+        let halves = halves_by_pair
+            .remove(&key)
+            .ok_or_else(|| format!("missing half-split slice diagnostics for {key:?}"))?;
+        let quartiles = quartiles_by_pair
+            .remove(&key)
+            .ok_or_else(|| format!("missing quartile slice diagnostics for {key:?}"))?;
+        let candidate_diag = ShortlistSliceCandidateDiagnostics {
+            params: record.params.clone(),
+            full_metrics: record.full_metrics.clone(),
+            halves,
+            quartiles,
+        };
+        ranked.push((
+            record.params,
+            record.full_metrics,
+            record.diagnostics,
+            candidate_diag,
+        ));
+    }
+
+    ranked.sort_by(|a, b| {
+        b.2.worst_slice_score
+            .total_cmp(&a.2.worst_slice_score)
+            .then_with(|| {
+                b.2.worst_omission_score
+                    .total_cmp(&a.2.worst_omission_score)
+            })
+            .then_with(|| b.2.positive_slice_frac.total_cmp(&a.2.positive_slice_frac))
+            .then_with(|| {
+                a.2.omission_score_spread
+                    .total_cmp(&b.2.omission_score_spread)
+            })
+            .then_with(|| b.2.mean_slice_score.total_cmp(&a.2.mean_slice_score))
+            .then_with(|| {
+                let sa = effective_score(&a.1, objective, score_mode);
+                let sb = effective_score(&b.1, objective, score_mode);
+                sb.total_cmp(&sa)
+            })
+            .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+    });
+
+    let reranked_rows = ranked
+        .iter()
+        .map(|(params, metrics, _, _)| (params.clone(), metrics.clone()))
+        .collect();
+    let diagnostics = ShortlistSliceDiagnostics {
+        ranking_mode: mode.as_str().to_string(),
+        neighborhood_robustness: None,
+        candidates: ranked
+            .into_iter()
+            .map(|(_, _, _, candidate_diag)| candidate_diag)
+            .collect(),
+    };
+    Ok((reranked_rows, diagnostics))
 }
 
 fn recompute_optimization_result_finalists_with_full_gpu_pass(
@@ -5888,6 +7699,7 @@ pub fn optimize_double_ma_gpu_kernel(
     regime_filter: Option<&[f64]>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
@@ -5910,6 +7722,12 @@ pub fn optimize_double_ma_gpu_kernel(
         regime_filter,
         strategy,
         objective,
+        score_mode,
+        None,
+        None,
+        None,
+        None,
+        None,
         top_k,
         include_all,
         cfg,
@@ -5936,6 +7754,12 @@ pub fn optimize_double_ma_gpu_kernel_in_range(
     regime_filter: Option<&[f64]>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    extra_shortlist_objectives: Option<&[ObjectiveKind]>,
+    shortlist_confidence_mode: Option<DoubleMaShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<DoubleMaShortlistSliceMode>,
+    shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
@@ -5960,6 +7784,12 @@ pub fn optimize_double_ma_gpu_kernel_in_range(
         regime_filter,
         strategy,
         objective,
+        score_mode,
+        extra_shortlist_objectives,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        shortlist_slice_benchmark,
         top_k,
         include_all,
         cfg,
@@ -5988,6 +7818,12 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
     regime_filter: Option<&[f64]>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    extra_shortlist_objectives: Option<&[ObjectiveKind]>,
+    shortlist_confidence_mode: Option<DoubleMaShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<DoubleMaShortlistSliceMode>,
+    shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
@@ -6014,6 +7850,12 @@ pub fn optimize_double_ma_gpu_kernel_with_precomputed(
         regime_filter.map(RegimeFilterInput::HostF64),
         strategy,
         objective,
+        score_mode,
+        extra_shortlist_objectives,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        shortlist_slice_benchmark,
         top_k,
         include_all,
         cfg,
@@ -6042,6 +7884,12 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     regime_filter: Option<RegimeFilterInput<'_>>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    extra_shortlist_objectives: Option<&[ObjectiveKind]>,
+    shortlist_confidence_mode: Option<DoubleMaShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<DoubleMaShortlistSliceMode>,
+    shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
@@ -6060,6 +7908,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     let _gpu_guard = lock_gpu_test();
     let device_id = cfg.device_id;
     clear_last_kernel_executor_timing();
+    clear_last_shortlist_slice_diagnostics();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
         let mut map = cell.borrow_mut();
         if !map.contains_key(&device_id) {
@@ -6082,6 +7931,12 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
             regime_filter,
             strategy,
             objective,
+            score_mode,
+            extra_shortlist_objectives,
+            shortlist_confidence_mode,
+            shortlist_union_mode,
+            shortlist_slice_mode,
+            shortlist_slice_benchmark,
             top_k,
             include_all,
             cfg,
@@ -6114,6 +7969,12 @@ fn optimize_double_ma_gpu_kernel_impl(
     regime_filter: Option<RegimeFilterInput<'_>>,
     strategy: &StrategyConfig,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    extra_shortlist_objectives: Option<&[ObjectiveKind]>,
+    shortlist_confidence_mode: Option<DoubleMaShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    requested_shortlist_slice_mode: Option<DoubleMaShortlistSliceMode>,
+    requested_shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     top_k: usize,
     include_all: bool,
     cfg: KernelConfig,
@@ -6131,6 +7992,90 @@ fn optimize_double_ma_gpu_kernel_impl(
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
+    let extra_shortlist_objectives =
+        kernel_extra_shortlist_objectives(objective, extra_shortlist_objectives)?;
+    let extra_shortlist_enabled = !extra_shortlist_objectives.is_empty();
+    let shortlist_confidence_mode = kernel_shortlist_confidence_mode(shortlist_confidence_mode)?;
+    let shortlist_union_mode = kernel_shortlist_union_mode(shortlist_union_mode)?;
+    let shortlist_slice_mode = kernel_shortlist_slice_mode(requested_shortlist_slice_mode)?;
+    let shortlist_slice_benchmark =
+        kernel_shortlist_slice_benchmark(requested_shortlist_slice_benchmark)?;
+    if extra_shortlist_enabled {
+        if top_k == 0 {
+            return Err(
+                "extra shortlist objectives require top_k > 0 so the union shortlist has a bounded head size"
+                    .to_string(),
+            );
+        }
+        if include_all {
+            return Err(
+                "extra shortlist objectives require include_all=false in the current kernel implementation"
+                    .to_string(),
+            );
+        }
+        if score_mode.is_some() {
+            return Err(
+                "extra shortlist objectives currently require score_mode to be unset".to_string(),
+            );
+        }
+    }
+    if shortlist_union_mode.is_some() {
+        if !extra_shortlist_enabled {
+            return Err(format!(
+                "{SHORTLIST_UNION_REQUEST_FIELD} requires {EXTRA_SHORTLIST_REQUEST_FIELD} to be set so the exact union shortlist has multiple heads"
+            ));
+        }
+        if top_k == 0 {
+            return Err(format!(
+                "{SHORTLIST_UNION_REQUEST_FIELD} requires top_k > 0 so the union shortlist has a bounded head size"
+            ));
+        }
+        if include_all {
+            return Err(format!(
+                "{SHORTLIST_UNION_REQUEST_FIELD} requires include_all=false in the current kernel implementation"
+            ));
+        }
+        if score_mode.is_some() {
+            return Err(format!(
+                "{SHORTLIST_UNION_REQUEST_FIELD} currently requires score_mode to be unset"
+            ));
+        }
+    }
+    if shortlist_confidence_mode.is_some() {
+        if top_k == 0 {
+            return Err(format!(
+                "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} requires top_k > 0 so the shortlist has a bounded head size"
+            ));
+        }
+        if include_all {
+            return Err(format!(
+                "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} requires include_all=false in the current kernel implementation"
+            ));
+        }
+        if score_mode.is_some() {
+            return Err(format!(
+                "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} currently requires score_mode to be unset"
+            ));
+        }
+    }
+    if shortlist_slice_mode.is_some() {
+        if top_k == 0 {
+            return Err(format!(
+                "{SHORTLIST_SLICE_MODE_REQUEST_FIELD} requires top_k > 0 so slice robustness can rerank a bounded shortlist"
+            ));
+        }
+        if include_all {
+            return Err(format!(
+                "{SHORTLIST_SLICE_MODE_REQUEST_FIELD} requires include_all=false in the current kernel implementation"
+            ));
+        }
+    }
+    if shortlist_slice_benchmark.is_some() && shortlist_slice_mode.is_none() {
+        return Err(format!(
+            "{SHORTLIST_SLICE_BENCHMARK_REQUEST_FIELD} requires {SHORTLIST_SLICE_MODE_REQUEST_FIELD} to be set"
+        ));
+    }
+    let device_include_all = include_all || score_mode.is_some();
     let pipeline_profile_enabled = kernel_pipeline_profile_enabled();
     let mut pipeline_profile = if pipeline_profile_enabled {
         Some(PipelineTimingProfile::default())
@@ -6152,6 +8097,22 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .to_string(),
         );
     }
+    if extra_shortlist_enabled && export_path.is_some() {
+        return Err(
+            "extra shortlist objectives currently require export_all_csv_path to be unset"
+                .to_string(),
+        );
+    }
+    if shortlist_confidence_mode.is_some() && export_path.is_some() {
+        return Err(format!(
+            "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} currently requires export_all_csv_path to be unset"
+        ));
+    }
+    if shortlist_union_mode.is_some() && export_path.is_some() {
+        return Err(format!(
+            "{SHORTLIST_UNION_REQUEST_FIELD} currently requires export_all_csv_path to be unset"
+        ));
+    }
     let export_enabled = export_path.is_some();
     let mut export_writer: Option<BufWriter<File>> = if let Some(path) = export_path {
         let f = File::create(path)
@@ -6159,7 +8120,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         let mut w = BufWriter::new(f);
         writeln!(
             w,
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,ulcer_index,omega,martin_ratio,trades,exposure,net_exposure,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,downside_frequency,downside_severity,ulcer_index,omega,kappa_tau,martin_ratio,trades,exposure,net_exposure,long_mean_return,short_mean_return,underwater_fraction,max_underwater_duration_bars,closed_trades,winning_trades,losing_trades,gross_profit,gross_loss,win_rate,avg_win,avg_loss,profit_factor,expectancy,active_mean,active_sortino,drawdown_chronicity,downside_share,fee_stress_pnl,score"
         )
         .map_err(|e| e.to_string())?;
         Some(w)
@@ -6377,7 +8338,10 @@ fn optimize_double_ma_gpu_kernel_impl(
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
-    if include_all {
+    if let Some(score_fn) = score_mode_score_fn(score_mode) {
+        agg = agg.with_score_fn(score_fn);
+    }
+    if device_include_all {
         if let Some((f_min, f_max, s_min, s_max)) = heatmap_cfg {
             agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
         }
@@ -6387,42 +8351,21 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     let metrics_count: usize = search_metrics_count_for_optimization(
         objective,
+        score_mode,
         constraints,
-        include_all,
+        device_include_all,
         export_enabled,
         fast_precomputed_enabled,
         slow_precomputed_enabled,
+        cfg.include_trade_metrics,
     );
-    match objective {
-        ObjectiveKind::Pnl
-        | ObjectiveKind::Sharpe
-        | ObjectiveKind::MaxDrawdown
-        | ObjectiveKind::Calmar
-        | ObjectiveKind::Volatility => {}
-        ObjectiveKind::Sortino | ObjectiveKind::Omega => {
-            return Err(format!(
-                "GPU kernel backend does not support objective {objective:?}"
-            ));
-        }
-    }
     let topk_select: usize = if top_k == 0 { 1 } else { top_k };
-    if !include_all && topk_select > 256 {
+    if !device_include_all && topk_select > 256 {
         return Err(
             "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
         );
     }
-    let objective_i: i32 = match objective {
-        ObjectiveKind::Pnl => 0,
-        ObjectiveKind::Sharpe => 1,
-        ObjectiveKind::MaxDrawdown => 2,
-        ObjectiveKind::Calmar => 3,
-        ObjectiveKind::Volatility => 4,
-        ObjectiveKind::Sortino | ObjectiveKind::Omega => {
-            return Err(format!(
-                "GPU kernel backend does not support objective {objective:?}"
-            ));
-        }
-    };
+    let objective_i = objective_kind_kernel_index(objective);
     let bt_stream = &rt.stream;
     let bt_module = &rt.module;
     let device_launch_caps = rt.launch_caps;
@@ -6487,6 +8430,9 @@ fn optimize_double_ma_gpu_kernel_impl(
     let fill_f32 = bt_module
         .get_function("fill_f32")
         .map_err(|e| e.to_string())?;
+    let fill_i32 = bt_module
+        .get_function("fill_i32")
+        .map_err(|e| e.to_string())?;
     let heatmap_update = bt_module
         .get_function("heatmap_update_scores_tm_f32")
         .map_err(|e| e.to_string())?;
@@ -6523,6 +8469,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         .ok();
     let gather_topk_rows = bt_module.get_function("gather_topk_metric_rows_f32").ok();
     let fill_launch_caps = rt.launch_caps_for_kernel(CachedKernelKey::FillF32, &fill_f32);
+    let fill_i32_launch_caps = rt.launch_caps_for_kernel(CachedKernelKey::FillI32, &fill_i32);
     let transpose_launch_caps =
         rt.launch_caps_for_kernel(CachedKernelKey::TransposeRowToTm, &transpose);
     let backtest_launch_caps =
@@ -6682,7 +8629,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         !alloc_ma_buf,
         metrics_count,
         topk_select,
-        include_all,
+        device_include_all,
         heatmap_bins,
     );
     let is_multi_tile_workload = pf_tile < f_total || ps_tile < s_total;
@@ -6729,10 +8676,10 @@ fn optimize_double_ma_gpu_kernel_impl(
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
 
-    let constraints_on_device = constraints.is_some() && !include_all && select_v2_supported;
-    let host_filter_mode = constraints.is_some() && !include_all && !constraints_on_device;
+    let constraints_on_device = constraints.is_some() && !device_include_all && select_v2_supported;
+    let host_filter_mode = constraints.is_some() && !device_include_all && !constraints_on_device;
     let compact_valid_pair_output = should_use_compact_valid_pair_output(
-        include_all,
+        device_include_all,
         export_enabled,
         host_filter_mode,
         metrics_count,
@@ -6741,7 +8688,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         && select_topk_rows_v2.is_some()
         && select_topk_rows_candidates_v2.is_some();
     let global_topk_mode = kernel_global_topk_enabled()
-        && !include_all
+        && !device_include_all
         && !export_enabled
         && !host_filter_mode
         && topk_select > 0
@@ -6750,22 +8697,49 @@ fn optimize_double_ma_gpu_kernel_impl(
         && gather_topk_rows.is_some();
     let global_constraints_on_device =
         constraints.is_some() && global_topk_mode && row_select_v2_supported;
-    let (constraint_use_min_trades, constraint_min_trades) =
-        match constraints.and_then(|c| c.min_trades) {
-            Some(v) => (1i32, v as f32),
-            None => (0i32, 0.0f32),
-        };
-    let (constraint_use_max_dd, constraint_max_dd) = match constraints.and_then(|c| c.max_drawdown)
+    if extra_shortlist_enabled && !global_topk_mode {
+        return Err(
+            "extra shortlist objectives currently require the exact global top-k kernel path (disable conflicting host filtering / export overrides)"
+                .to_string(),
+        );
+    }
+    if extra_shortlist_enabled && host_filter_mode {
+        return Err(
+            "extra shortlist objectives currently require device-side filtering; this request forced host_filter_mode"
+                .to_string(),
+        );
+    }
+    if shortlist_confidence_mode.is_some() && host_filter_mode {
+        return Err(format!(
+            "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} currently requires device-side filtering; this request forced host_filter_mode"
+        ));
+    }
+    if shortlist_union_mode.is_some() && host_filter_mode {
+        return Err(format!(
+            "{SHORTLIST_UNION_REQUEST_FIELD} currently requires device-side filtering; this request forced host_filter_mode"
+        ));
+    }
+    if shortlist_confidence_mode.is_some() && !global_topk_mode {
+        return Err(format!(
+            "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} currently requires the exact global top-k kernel path (disable include_all / score_mode / export / host filtering overrides)"
+        ));
+    }
+    if shortlist_union_mode.is_some() && !global_topk_mode {
+        return Err(format!(
+            "{SHORTLIST_UNION_REQUEST_FIELD} currently requires the exact global top-k kernel path (disable include_all / score_mode / export / host filtering overrides)"
+        ));
+    }
+    if shortlist_confidence_mode.is_some()
+        && !can_decode_current_gpu_product_metrics_without_recompute(metrics_count)
     {
-        Some(v) => (
-            1i32,
-            max_drawdown_constraint_to_search_space(v, metrics_count),
-        ),
-        None => (0i32, f32::INFINITY),
-    };
+        return Err(format!(
+            "{SHORTLIST_CONFIDENCE_REQUEST_FIELD} currently requires the promoted single-pass product metric rows"
+        ));
+    }
+    let constraint_args = build_device_constraint_args(constraints, metrics_count);
     let mut host_p_fast: Vec<i32> = Vec::with_capacity(pf_tile_tm.max(1));
     let mut host_p_slow: Vec<i32> = Vec::with_capacity(ps_tile_tm.max(1));
-    let mut tile_host_buf: Vec<f32> = if include_all || export_enabled || host_filter_mode {
+    let mut tile_host_buf: Vec<f32> = if device_include_all || export_enabled || host_filter_mode {
         alloc_uninit_copy(tile_out_cap)
     } else {
         Vec::new()
@@ -6782,10 +8756,22 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         0
     };
+    let mut extra_shortlist_heads: Vec<ExtraShortlistHeadState> = extra_shortlist_objectives
+        .iter()
+        .copied()
+        .map(|head_objective| ExtraShortlistHeadState {
+            objective: head_objective,
+            objective_i: objective_kind_kernel_index(head_objective),
+            global_fast_rows: None,
+            global_slow_rows: None,
+            global_metrics_rows: None,
+            global_rows_len: 0,
+        })
+        .collect();
 
     let mut top_packed_host: Vec<f32> = Vec::new();
 
-    if !include_all {
+    if !device_include_all {
         let max_pairs_tile = pf_tile.saturating_mul(ps_tile).max(1);
         let blocks_max = (max_pairs_tile + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
         let cand_len_max = blocks_max.saturating_mul(topk_select).max(topk_select);
@@ -6808,18 +8794,43 @@ fn optimize_double_ma_gpu_kernel_impl(
                 global_rows_cap.saturating_mul(metrics_count),
                 bt_stream,
             )?;
+            for head in extra_shortlist_heads.iter_mut() {
+                KernelScratch::ensure_len_i32(
+                    &mut head.global_fast_rows,
+                    global_rows_cap,
+                    bt_stream,
+                )?;
+                KernelScratch::ensure_len_i32(
+                    &mut head.global_slow_rows,
+                    global_rows_cap,
+                    bt_stream,
+                )?;
+                KernelScratch::ensure_len_f32(
+                    &mut head.global_metrics_rows,
+                    global_rows_cap.saturating_mul(metrics_count),
+                    bt_stream,
+                )?;
+            }
         }
 
         if heatmap_cfg.is_some() {
             let heatmap_len = heatmap_bins.saturating_mul(heatmap_bins);
             if heatmap_len > 0 {
                 KernelScratch::ensure_len_f32(&mut scratch.d_heatmap, heatmap_len, bt_stream)?;
+                KernelScratch::ensure_len_f32(&mut scratch.d_heatmap_sum, heatmap_len, bt_stream)?;
+                KernelScratch::ensure_len_i32(
+                    &mut scratch.d_heatmap_count,
+                    heatmap_len,
+                    bt_stream,
+                )?;
                 unsafe {
                     let mut out_ptr = scratch.d_heatmap.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut n_i = heatmap_len as i32;
                     let mut v = f32::NEG_INFINITY;
-                    let block_x: u32 = 256;
-                    let grid_x: u32 = ((heatmap_len as u32) + block_x - 1) / block_x;
+                    let fill_launch =
+                        choose_launch_shape_1d(heatmap_len, device_launch_caps, fill_launch_caps);
+                    let block_x: u32 = fill_launch.block_x;
+                    let grid_x: u32 = fill_launch.grid_x;
                     let args: &mut [*mut c_void] = &mut [
                         &mut out_ptr as *mut _ as *mut c_void,
                         &mut n_i as *mut _ as *mut c_void,
@@ -6827,6 +8838,53 @@ fn optimize_double_ma_gpu_kernel_impl(
                     ];
                     bt_stream
                         .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+                unsafe {
+                    let mut out_ptr = scratch
+                        .d_heatmap_sum
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let mut n_i = heatmap_len as i32;
+                    let mut v = 0.0f32;
+                    let fill_launch =
+                        choose_launch_shape_1d(heatmap_len, device_launch_caps, fill_launch_caps);
+                    let block_x: u32 = fill_launch.block_x;
+                    let grid_x: u32 = fill_launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut out_ptr as *mut _ as *mut c_void,
+                        &mut n_i as *mut _ as *mut c_void,
+                        &mut v as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
+                        .map_err(|e| e.to_string())?;
+                }
+                unsafe {
+                    let mut out_ptr = scratch
+                        .d_heatmap_count
+                        .as_ref()
+                        .unwrap()
+                        .as_device_ptr()
+                        .as_raw();
+                    let mut n_i = heatmap_len as i32;
+                    let mut v = 0i32;
+                    let fill_launch = choose_launch_shape_1d(
+                        heatmap_len,
+                        device_launch_caps,
+                        fill_i32_launch_caps,
+                    );
+                    let block_x: u32 = fill_launch.block_x;
+                    let grid_x: u32 = fill_launch.grid_x;
+                    let args: &mut [*mut c_void] = &mut [
+                        &mut out_ptr as *mut _ as *mut c_void,
+                        &mut n_i as *mut _ as *mut c_void,
+                        &mut v as *mut _ as *mut c_void,
+                    ];
+                    bt_stream
+                        .launch(&fill_i32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
                         .map_err(|e| e.to_string())?;
                 }
             }
@@ -6837,6 +8895,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let flags = strategy_kernel.flags;
     let commission = strategy_kernel.commission;
     let eps_rel = strategy_kernel.eps_rel;
+    let hurdle_tau = cfg.hurdle_tau as f32;
     let stop_log = strategy_kernel.stop_log;
     let take_log = strategy_kernel.take_log;
     let regime_use = if d_regime.is_some() { 1i32 } else { 0i32 };
@@ -6859,7 +8918,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     // between batched/unbatched when score+heatmap nodes are captured and reused.
     let use_cuda_graphs = !pipeline_profile_enabled
         && kernel_cuda_graphs_enabled()
-        && !include_all
+        && !device_include_all
         && !host_filter_mode
         && heatmap_cfg.is_none();
     let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
@@ -7227,6 +9286,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut regime_fv = regime_first_valid as i32;
                         let mut commission = commission;
                         let mut eps_rel = eps_rel;
+                        let mut hurdle_tau_f = hurdle_tau;
                         let mut stop_log = stop_log;
                         let mut take_log = take_log;
                         let mut flags_u = flags;
@@ -7437,6 +9497,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut eval_end_i as *mut _ as *mut c_void,
                                 &mut commission as *mut _ as *mut c_void,
                                 &mut eps_rel as *mut _ as *mut c_void,
+                                &mut hurdle_tau_f as *mut _ as *mut c_void,
                                 &mut stop_log as *mut _ as *mut c_void,
                                 &mut take_log as *mut _ as *mut c_void,
                                 &mut flags_u as *mut _ as *mut c_void,
@@ -7476,6 +9537,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut regime_fv as *mut _ as *mut c_void,
                                 &mut commission as *mut _ as *mut c_void,
                                 &mut eps_rel as *mut _ as *mut c_void,
+                                &mut hurdle_tau_f as *mut _ as *mut c_void,
                                 &mut stop_log as *mut _ as *mut c_void,
                                 &mut take_log as *mut _ as *mut c_void,
                                 &mut flags_u as *mut _ as *mut c_void,
@@ -7498,9 +9560,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                     }
                 }
 
-                if let (Some(h), Some((f_min, f_max, s_min, s_max))) =
-                    (scratch.d_heatmap.as_ref(), heatmap_cfg)
-                {
+                if let (Some(h), Some(h_sum), Some(h_count), Some((f_min, f_max, s_min, s_max))) = (
+                    scratch.d_heatmap.as_ref(),
+                    scratch.d_heatmap_sum.as_ref(),
+                    scratch.d_heatmap_count.as_ref(),
+                    heatmap_cfg,
+                ) {
                     let heatmap_t0 = if pipeline_profile_enabled {
                         Some(Instant::now())
                     } else {
@@ -7517,6 +9582,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
                         let mut bins_f = heatmap_bins as i32;
                         let mut bins_s = heatmap_bins as i32;
                         let mut f_min_i = f_min as i32;
@@ -7524,6 +9590,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut s_min_i = s_min as i32;
                         let mut s_max_i = s_max as i32;
                         let mut out_ptr = h.as_device_ptr().as_raw();
+                        let mut sum_ptr = h_sum.as_device_ptr().as_raw();
+                        let mut count_ptr = h_count.as_device_ptr().as_raw();
 
                         let mut pair_map_ptr = pair_index_map_ptr;
                         let mut pair_fast_rows = pair_fast_rows_ptr;
@@ -7556,6 +9624,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_per as *mut _ as *mut c_void,
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                             &mut bins_f as *mut _ as *mut c_void,
                             &mut bins_s as *mut _ as *mut c_void,
                             &mut f_min_i as *mut _ as *mut c_void,
@@ -7568,6 +9637,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut pair_count_i as *mut _ as *mut c_void,
                             &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
+                            &mut sum_ptr as *mut _ as *mut c_void,
+                            &mut count_ptr as *mut _ as *mut c_void,
                         ];
                         bt_stream
                             .launch(&heatmap_update, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
@@ -7638,7 +9709,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 pairs
             };
 
-            if include_all {
+            if device_include_all {
                 copy_device_prefix_to_host_f32(
                     scratch.d_tile.as_ref().unwrap(),
                     &mut tile_host_buf,
@@ -7657,7 +9728,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             return Ok(());
                         }
                         let metrics =
-                            decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count);
+                            decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count, cfg.hurdle_tau);
                         if metrics_pass_constraints(&metrics, constraints) {
                             let params = DoubleMaParams {
                                 fast_len,
@@ -7702,7 +9773,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 return Ok(());
                             }
                             let metrics =
-                                decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count);
+                                decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count, cfg.hurdle_tau);
                             if !metrics_pass_constraints(&metrics, constraints) {
                                 return Ok(());
                             }
@@ -7716,19 +9787,46 @@ fn optimize_double_ma_gpu_kernel_impl(
                             agg.push(params, metrics.clone());
 
                             if let Some(w) = export_writer.as_mut() {
-                                let score = match objective {
-                                    ObjectiveKind::Pnl => metrics.pnl,
-                                    ObjectiveKind::Sharpe => metrics.sharpe,
-                                    ObjectiveKind::MaxDrawdown => -metrics.max_dd,
-                                    ObjectiveKind::Calmar => metrics.calmar,
-                                    ObjectiveKind::Volatility => -metrics.volatility,
-                                    ObjectiveKind::Sortino | ObjectiveKind::Omega => {
-                                        f64::NEG_INFINITY
-                                    }
+                                let score = effective_score(&metrics, objective, score_mode);
+                                let active_mean = derived_active_mean(&metrics);
+                                let active_sortino = derived_active_sortino(&metrics);
+                                let drawdown_chronicity = derived_drawdown_chronicity(&metrics);
+                                let downside_share = derived_downside_share(&metrics);
+                                let fee_stress_pnl = exact_fee_stress_pnl(&metrics, strategy);
+                                let denom = metrics
+                                    .winning_trades
+                                    .saturating_add(metrics.losing_trades);
+                                let win_rate = if denom > 0 {
+                                    metrics.winning_trades as f64 / denom as f64
+                                } else {
+                                    0.0
+                                };
+                                let avg_win = if metrics.winning_trades > 0 {
+                                    metrics.gross_profit / metrics.winning_trades as f64
+                                } else {
+                                    0.0
+                                };
+                                let avg_loss = if metrics.losing_trades > 0 {
+                                    -(metrics.gross_loss / metrics.losing_trades as f64)
+                                } else {
+                                    0.0
+                                };
+                                let profit_factor = if metrics.gross_loss > 0.0 {
+                                    metrics.gross_profit / metrics.gross_loss
+                                } else if metrics.gross_profit > 0.0 {
+                                    f64::INFINITY
+                                } else {
+                                    0.0
+                                };
+                                let expectancy = if metrics.closed_trades > 0 {
+                                    (metrics.gross_profit - metrics.gross_loss)
+                                        / metrics.closed_trades as f64
+                                } else {
+                                    0.0
                                 };
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
@@ -7737,12 +9835,34 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     metrics.sharpe,
                                     metrics.max_dd,
                                     metrics.downside_deviation,
+                                    metrics.downside_frequency,
+                                    metrics.downside_severity,
                                     metrics.ulcer_index,
                                     metrics.omega,
+                                    metrics.kappa_tau,
                                     metrics.martin_ratio,
                                     metrics.trades,
                                     metrics.exposure,
                                     metrics.net_exposure,
+                                    metrics.long_mean_return,
+                                    metrics.short_mean_return,
+                                    metrics.underwater_fraction,
+                                    metrics.max_underwater_duration_bars,
+                                    metrics.closed_trades,
+                                    metrics.winning_trades,
+                                    metrics.losing_trades,
+                                    metrics.gross_profit,
+                                    metrics.gross_loss,
+                                    win_rate,
+                                    avg_win,
+                                    avg_loss,
+                                    profit_factor,
+                                    expectancy,
+                                    active_mean,
+                                    active_sortino,
+                                    drawdown_chronicity,
+                                    downside_share,
+                                    fee_stress_pnl,
                                     score
                                 )
                                 .map_err(|e| e.to_string())?;
@@ -7800,6 +9920,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
                     let mut topk_i = topk_select as i32;
                     let mut pair_map_ptr = pair_index_map_ptr;
                     let mut pair_count_i = launch_pairs as i32;
@@ -7813,10 +9934,29 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let block_x: u32 = 256;
                     let grid_x: u32 = blocks1 as u32;
                     if constraints_on_device {
-                        let mut use_min_trades = constraint_use_min_trades;
-                        let mut min_trades = constraint_min_trades;
-                        let mut use_max_dd = constraint_use_max_dd;
-                        let mut max_dd = constraint_max_dd;
+                        let mut use_min_trades = constraint_args.use_min_trades;
+                        let mut min_trades = constraint_args.min_trades;
+                        let mut use_max_dd = constraint_args.use_max_dd;
+                        let mut max_dd = constraint_args.max_dd;
+                        let mut use_min_sharpe = constraint_args.use_min_sharpe;
+                        let mut min_sharpe = constraint_args.min_sharpe;
+                        let mut use_min_calmar = constraint_args.use_min_calmar;
+                        let mut min_calmar = constraint_args.min_calmar;
+                        let mut use_max_volatility = constraint_args.use_max_volatility;
+                        let mut max_volatility = constraint_args.max_volatility;
+                        let mut use_min_exposure = constraint_args.use_min_exposure;
+                        let mut min_exposure = constraint_args.min_exposure;
+                        let mut use_max_exposure = constraint_args.use_max_exposure;
+                        let mut max_exposure = constraint_args.max_exposure;
+                        let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+                        let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+                        let mut use_min_omega = constraint_args.use_min_omega;
+                        let mut min_omega = constraint_args.min_omega;
+                        let mut use_max_ulcer = constraint_args.use_max_ulcer;
+                        let mut max_ulcer = constraint_args.max_ulcer;
+                        let mut use_max_downside_deviation =
+                            constraint_args.use_max_downside_deviation;
+                        let mut max_downside_deviation = constraint_args.max_downside_deviation;
                         let args: &mut [*mut c_void] = &mut [
                             &mut metrics_ptr as *mut _ as *mut c_void,
                             &mut pairs_i as *mut _ as *mut c_void,
@@ -7827,11 +9967,30 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_per as *mut _ as *mut c_void,
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                             &mut topk_i as *mut _ as *mut c_void,
                             &mut use_min_trades as *mut _ as *mut c_void,
                             &mut min_trades as *mut _ as *mut c_void,
                             &mut use_max_dd as *mut _ as *mut c_void,
                             &mut max_dd as *mut _ as *mut c_void,
+                            &mut use_min_sharpe as *mut _ as *mut c_void,
+                            &mut min_sharpe as *mut _ as *mut c_void,
+                            &mut use_min_calmar as *mut _ as *mut c_void,
+                            &mut min_calmar as *mut _ as *mut c_void,
+                            &mut use_max_volatility as *mut _ as *mut c_void,
+                            &mut max_volatility as *mut _ as *mut c_void,
+                            &mut use_min_exposure as *mut _ as *mut c_void,
+                            &mut min_exposure as *mut _ as *mut c_void,
+                            &mut use_max_exposure as *mut _ as *mut c_void,
+                            &mut max_exposure as *mut _ as *mut c_void,
+                            &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                            &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                            &mut use_min_omega as *mut _ as *mut c_void,
+                            &mut min_omega as *mut _ as *mut c_void,
+                            &mut use_max_ulcer as *mut _ as *mut c_void,
+                            &mut max_ulcer as *mut _ as *mut c_void,
+                            &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                            &mut max_downside_deviation as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
                             &mut compact_output_i as *mut _ as *mut c_void,
@@ -7859,6 +10018,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_per as *mut _ as *mut c_void,
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                             &mut topk_i as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
@@ -7894,6 +10054,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
                         let mut topk_i = topk_select as i32;
                         let mut in_ptr = if in_is_a {
                             cand_a.as_device_ptr().as_raw()
@@ -7917,10 +10078,30 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let block_x: u32 = 256;
                         let grid_x: u32 = blocks_next as u32;
                         if constraints_on_device {
-                            let mut use_min_trades = constraint_use_min_trades;
-                            let mut min_trades = constraint_min_trades;
-                            let mut use_max_dd = constraint_use_max_dd;
-                            let mut max_dd = constraint_max_dd;
+                            let mut use_min_trades = constraint_args.use_min_trades;
+                            let mut min_trades = constraint_args.min_trades;
+                            let mut use_max_dd = constraint_args.use_max_dd;
+                            let mut max_dd = constraint_args.max_dd;
+                            let mut use_min_sharpe = constraint_args.use_min_sharpe;
+                            let mut min_sharpe = constraint_args.min_sharpe;
+                            let mut use_min_calmar = constraint_args.use_min_calmar;
+                            let mut min_calmar = constraint_args.min_calmar;
+                            let mut use_max_volatility = constraint_args.use_max_volatility;
+                            let mut max_volatility = constraint_args.max_volatility;
+                            let mut use_min_exposure = constraint_args.use_min_exposure;
+                            let mut min_exposure = constraint_args.min_exposure;
+                            let mut use_max_exposure = constraint_args.use_max_exposure;
+                            let mut max_exposure = constraint_args.max_exposure;
+                            let mut use_max_abs_net_exposure =
+                                constraint_args.use_max_abs_net_exposure;
+                            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+                            let mut use_min_omega = constraint_args.use_min_omega;
+                            let mut min_omega = constraint_args.min_omega;
+                            let mut use_max_ulcer = constraint_args.use_max_ulcer;
+                            let mut max_ulcer = constraint_args.max_ulcer;
+                            let mut use_max_downside_deviation =
+                                constraint_args.use_max_downside_deviation;
+                            let mut max_downside_deviation = constraint_args.max_downside_deviation;
                             let args: &mut [*mut c_void] = &mut [
                                 &mut metrics_ptr as *mut _ as *mut c_void,
                                 &mut pairs_i as *mut _ as *mut c_void,
@@ -7931,6 +10112,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut f_per as *mut _ as *mut c_void,
                                 &mut s_per as *mut _ as *mut c_void,
                                 &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                                 &mut topk_i as *mut _ as *mut c_void,
                                 &mut in_ptr as *mut _ as *mut c_void,
                                 &mut in_len_i as *mut _ as *mut c_void,
@@ -7938,6 +10120,24 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut min_trades as *mut _ as *mut c_void,
                                 &mut use_max_dd as *mut _ as *mut c_void,
                                 &mut max_dd as *mut _ as *mut c_void,
+                                &mut use_min_sharpe as *mut _ as *mut c_void,
+                                &mut min_sharpe as *mut _ as *mut c_void,
+                                &mut use_min_calmar as *mut _ as *mut c_void,
+                                &mut min_calmar as *mut _ as *mut c_void,
+                                &mut use_max_volatility as *mut _ as *mut c_void,
+                                &mut max_volatility as *mut _ as *mut c_void,
+                                &mut use_min_exposure as *mut _ as *mut c_void,
+                                &mut min_exposure as *mut _ as *mut c_void,
+                                &mut use_max_exposure as *mut _ as *mut c_void,
+                                &mut max_exposure as *mut _ as *mut c_void,
+                                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                                &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                                &mut use_min_omega as *mut _ as *mut c_void,
+                                &mut min_omega as *mut _ as *mut c_void,
+                                &mut use_max_ulcer as *mut _ as *mut c_void,
+                                &mut max_ulcer as *mut _ as *mut c_void,
+                                &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                                &mut max_downside_deviation as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
                                 &mut compact_output_i as *mut _ as *mut c_void,
@@ -7965,6 +10165,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut f_per as *mut _ as *mut c_void,
                                 &mut s_per as *mut _ as *mut c_void,
                                 &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
                                 &mut topk_i as *mut _ as *mut c_void,
                                 &mut in_ptr as *mut _ as *mut c_void,
                                 &mut in_len_i as *mut _ as *mut c_void,
@@ -8069,166 +10270,104 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let global_metrics = global_metrics_rows
                         .as_ref()
                         .ok_or_else(|| "missing global metrics-row buffer".to_string())?;
-                    let row_i32_bytes = topk_select
-                        .checked_mul(std::mem::size_of::<i32>())
-                        .ok_or_else(|| "topk row bytes overflow (i32)".to_string())?;
-                    let row_metrics_bytes = topk_select
-                        .checked_mul(metrics_count)
-                        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
-                        .ok_or_else(|| "topk row bytes overflow (metrics)".to_string())?;
+                    let select_rows_legacy = select_topk_rows_legacy
+                        .as_ref()
+                        .ok_or_else(|| "missing select_topk_metric_rows_f32".to_string())?;
+                    let select_rows_candidates_legacy =
+                        select_topk_rows_candidates_legacy.as_ref().ok_or_else(|| {
+                            "missing select_topk_metric_rows_from_candidates_f32".to_string()
+                        })?;
+                    let gather_rows = gather_topk_rows
+                        .as_ref()
+                        .ok_or_else(|| "missing gather_topk_metric_rows_f32".to_string())?;
 
-                    if global_rows_len == 0 {
-                        cu_memcpy_d2d_async(
-                            global_fast.as_device_ptr().as_raw(),
-                            scratch
-                                .d_top_fast
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_i32_bytes,
-                            bt_stream,
-                        )?;
-                        cu_memcpy_d2d_async(
-                            global_slow.as_device_ptr().as_raw(),
-                            scratch
-                                .d_top_slow
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_i32_bytes,
-                            bt_stream,
-                        )?;
-                        cu_memcpy_d2d_async(
-                            global_metrics.as_device_ptr().as_raw(),
-                            scratch
-                                .d_top_metrics
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_metrics_bytes,
-                            bt_stream,
-                        )?;
-                        global_rows_len = topk_select;
-                    } else {
-                        if global_rows_len.saturating_add(topk_select) > global_rows_cap {
-                            return Err(
-                                "global top-k merge buffer overflow; expected capacity for 2 * top_k rows"
-                                    .to_string(),
-                            );
-                        }
-                        let dst_fast = global_fast
-                            .as_device_ptr()
-                            .as_raw()
-                            .saturating_add((global_rows_len * std::mem::size_of::<i32>()) as u64);
-                        let dst_slow = global_slow
-                            .as_device_ptr()
-                            .as_raw()
-                            .saturating_add((global_rows_len * std::mem::size_of::<i32>()) as u64);
-                        let dst_metrics = global_metrics.as_device_ptr().as_raw().saturating_add(
-                            (global_rows_len
-                                .saturating_mul(metrics_count)
-                                .saturating_mul(std::mem::size_of::<f32>()))
-                                as u64,
-                        );
-                        cu_memcpy_d2d_async(
-                            dst_fast,
-                            scratch
-                                .d_top_fast
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_i32_bytes,
-                            bt_stream,
-                        )?;
-                        cu_memcpy_d2d_async(
-                            dst_slow,
-                            scratch
-                                .d_top_slow
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_i32_bytes,
-                            bt_stream,
-                        )?;
-                        cu_memcpy_d2d_async(
-                            dst_metrics,
-                            scratch
-                                .d_top_metrics
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_metrics_bytes,
-                            bt_stream,
-                        )?;
-                        global_rows_len = global_rows_len.saturating_add(topk_select);
+                    merge_current_topk_rows_into_global_head(
+                        bt_stream,
+                        scratch,
+                        global_fast,
+                        global_slow,
+                        global_metrics,
+                        &mut global_rows_len,
+                        global_rows_cap,
+                        metrics_count,
+                        objective_i,
+                        hurdle_tau,
+                        topk_select,
+                        global_constraints_on_device,
+                        constraint_args,
+                        select_rows_legacy,
+                        select_rows_candidates_legacy,
+                        select_topk_rows_v2.as_ref(),
+                        select_topk_rows_candidates_v2.as_ref(),
+                        gather_rows,
+                    )?;
 
-                        reduce_metric_rows_topk_on_device(
+                    for head in extra_shortlist_heads.iter_mut() {
+                        select_tile_topk_rows_for_objective(
                             bt_stream,
                             scratch,
-                            global_fast,
-                            global_slow,
-                            global_metrics,
-                            global_rows_len,
+                            pairs,
+                            launch_pairs,
                             metrics_count,
-                            objective_i,
+                            tile_metrics_stride,
+                            pf,
+                            ps,
+                            topk_select,
+                            head.objective_i,
+                            hurdle_tau,
+                            compact_valid_pair_output,
+                            pair_index_map_ptr,
+                            pair_fast_rows_ptr,
+                            pair_slow_rows_ptr,
+                            constraints_on_device,
+                            constraint_args,
+                            &select_topk_pairs_legacy,
+                            &select_topk_candidates_legacy,
+                            select_topk_pairs_v2.as_ref(),
+                            select_topk_candidates_v2.as_ref(),
+                            &gather_topk,
+                        )?;
+                        let head_global_fast = head.global_fast_rows.as_ref().ok_or_else(|| {
+                            format!(
+                                "missing global fast-row buffer for extra shortlist objective {:?}",
+                                head.objective
+                            )
+                        })?;
+                        let head_global_slow = head.global_slow_rows.as_ref().ok_or_else(|| {
+                            format!(
+                                "missing global slow-row buffer for extra shortlist objective {:?}",
+                                head.objective
+                            )
+                        })?;
+                        let head_global_metrics = head
+                            .global_metrics_rows
+                            .as_ref()
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing global metrics-row buffer for extra shortlist objective {:?}",
+                                    head.objective
+                                )
+                            })?;
+                        merge_current_topk_rows_into_global_head(
+                            bt_stream,
+                            scratch,
+                            head_global_fast,
+                            head_global_slow,
+                            head_global_metrics,
+                            &mut head.global_rows_len,
+                            global_rows_cap,
+                            metrics_count,
+                            head.objective_i,
+                            hurdle_tau,
                             topk_select,
                             global_constraints_on_device,
-                            constraint_use_min_trades,
-                            constraint_min_trades,
-                            constraint_use_max_dd,
-                            constraint_max_dd,
-                            select_topk_rows_legacy
-                                .as_ref()
-                                .ok_or_else(|| "missing select_topk_metric_rows_f32".to_string())?,
-                            select_topk_rows_candidates_legacy.as_ref().ok_or_else(|| {
-                                "missing select_topk_metric_rows_from_candidates_f32".to_string()
-                            })?,
+                            constraint_args,
+                            select_rows_legacy,
+                            select_rows_candidates_legacy,
                             select_topk_rows_v2.as_ref(),
                             select_topk_rows_candidates_v2.as_ref(),
-                            gather_topk_rows
-                                .as_ref()
-                                .ok_or_else(|| "missing gather_topk_metric_rows_f32".to_string())?,
+                            gather_rows,
                         )?;
-                        cu_memcpy_d2d_async(
-                            global_fast.as_device_ptr().as_raw(),
-                            scratch
-                                .d_top_fast
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_i32_bytes,
-                            bt_stream,
-                        )?;
-                        cu_memcpy_d2d_async(
-                            global_slow.as_device_ptr().as_raw(),
-                            scratch
-                                .d_top_slow
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_i32_bytes,
-                            bt_stream,
-                        )?;
-                        cu_memcpy_d2d_async(
-                            global_metrics.as_device_ptr().as_raw(),
-                            scratch
-                                .d_top_metrics
-                                .as_ref()
-                                .unwrap()
-                                .as_device_ptr()
-                                .as_raw(),
-                            row_metrics_bytes,
-                            bt_stream,
-                        )?;
-                        global_rows_len = topk_select;
                     }
                 } else {
                     bt_stream.synchronize().map_err(|e| e.to_string())?;
@@ -8256,22 +10395,50 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     &tile_host_buf,
                                     src_base,
                                     metrics_count,
+                                    cfg.hurdle_tau,
                                 );
 
-                                let score = match objective {
-                                    ObjectiveKind::Pnl => metrics.pnl,
-                                    ObjectiveKind::Sharpe => metrics.sharpe,
-                                    ObjectiveKind::MaxDrawdown => -metrics.max_dd,
-                                    ObjectiveKind::Calmar => metrics.calmar,
-                                    ObjectiveKind::Volatility => -metrics.volatility,
-                                    ObjectiveKind::Sortino | ObjectiveKind::Omega => {
-                                        f64::NEG_INFINITY
-                                    }
+                                let score = effective_score(&metrics, objective, score_mode);
+                                let active_mean = derived_active_mean(&metrics);
+                                let active_sortino = derived_active_sortino(&metrics);
+                                let drawdown_chronicity = derived_drawdown_chronicity(&metrics);
+                                let downside_share = derived_downside_share(&metrics);
+                                let fee_stress_pnl = exact_fee_stress_pnl(&metrics, strategy);
+                                let denom = metrics
+                                    .winning_trades
+                                    .saturating_add(metrics.losing_trades);
+                                let win_rate = if denom > 0 {
+                                    metrics.winning_trades as f64 / denom as f64
+                                } else {
+                                    0.0
+                                };
+                                let avg_win = if metrics.winning_trades > 0 {
+                                    metrics.gross_profit / metrics.winning_trades as f64
+                                } else {
+                                    0.0
+                                };
+                                let avg_loss = if metrics.losing_trades > 0 {
+                                    -(metrics.gross_loss / metrics.losing_trades as f64)
+                                } else {
+                                    0.0
+                                };
+                                let profit_factor = if metrics.gross_loss > 0.0 {
+                                    metrics.gross_profit / metrics.gross_loss
+                                } else if metrics.gross_profit > 0.0 {
+                                    f64::INFINITY
+                                } else {
+                                    0.0
+                                };
+                                let expectancy = if metrics.closed_trades > 0 {
+                                    (metrics.gross_profit - metrics.gross_loss)
+                                        / metrics.closed_trades as f64
+                                } else {
+                                    0.0
                                 };
 
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
@@ -8280,12 +10447,34 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     metrics.sharpe,
                                     metrics.max_dd,
                                     metrics.downside_deviation,
+                                    metrics.downside_frequency,
+                                    metrics.downside_severity,
                                     metrics.ulcer_index,
                                     metrics.omega,
+                                    metrics.kappa_tau,
                                     metrics.martin_ratio,
                                     metrics.trades,
                                     metrics.exposure,
                                     metrics.net_exposure,
+                                    metrics.long_mean_return,
+                                    metrics.short_mean_return,
+                                    metrics.underwater_fraction,
+                                    metrics.max_underwater_duration_bars,
+                                    metrics.closed_trades,
+                                    metrics.winning_trades,
+                                    metrics.losing_trades,
+                                    metrics.gross_profit,
+                                    metrics.gross_loss,
+                                    win_rate,
+                                    avg_win,
+                                    avg_loss,
+                                    profit_factor,
+                                    expectancy,
+                                    active_mean,
+                                    active_sortino,
+                                    drawdown_chronicity,
+                                    downside_share,
+                                    fee_stress_pnl,
                                     score
                                 )
                                 .map_err(|e| e.to_string())?;
@@ -8328,7 +10517,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                     for r in 0..topk_select {
                         let Some((fast_len, slow_len, metrics)) =
-                            decode_packed_topk_metric_row(&top_packed_host, r, metrics_count)
+                            decode_packed_topk_metric_row(&top_packed_host, r, metrics_count, cfg.hurdle_tau)
                         else {
                             continue;
                         };
@@ -8378,8 +10567,67 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         None
     };
+    let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> = if shortlist_union_mode
+        .is_some()
+        || shortlist_confidence_mode.is_some()
+        || shortlist_slice_mode.is_some()
+    {
+        Vec::with_capacity(
+            global_rows_cap
+                .saturating_mul(extra_shortlist_heads.len().saturating_add(1))
+                .max(topk_select),
+        )
+    } else {
+        Vec::new()
+    };
 
-    if global_topk_mode && !include_all && global_rows_len > 0 {
+    if global_topk_mode && !device_include_all && global_rows_len > 0 {
+        let mut shortlisted_pairs: HashSet<(u16, u16)> = HashSet::new();
+        let mut push_global_head_rows = |rows_fast: &DeviceBuffer<i32>,
+                                         rows_slow: &DeviceBuffer<i32>,
+                                         rows_metrics: &DeviceBuffer<f32>|
+         -> Result<(), String> {
+            pack_metric_rows_for_host_copy(
+                bt_stream,
+                scratch,
+                &pack_metric_rows,
+                rows_fast.as_device_ptr().as_raw(),
+                rows_slow.as_device_ptr().as_raw(),
+                rows_metrics.as_device_ptr().as_raw(),
+                topk_select,
+                metrics_count,
+                &mut top_packed_host,
+            )?;
+
+            for r in 0..topk_select {
+                let Some((fast_len, slow_len, metrics)) =
+                    decode_packed_topk_metric_row(&top_packed_host, r, metrics_count, cfg.hurdle_tau)
+                else {
+                    continue;
+                };
+                if !metrics_pass_constraints(&metrics, constraints) {
+                    continue;
+                }
+                if !shortlisted_pairs.insert((fast_len, slow_len)) {
+                    continue;
+                }
+                let params = DoubleMaParams {
+                    fast_len,
+                    slow_len,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                };
+                if shortlist_union_mode.is_some()
+                    || shortlist_confidence_mode.is_some()
+                    || shortlist_slice_mode.is_some()
+                {
+                    materialized_shortlist_rows.push((params.clone(), metrics.clone()));
+                }
+                agg.push(params, metrics);
+            }
+            Ok(())
+        };
+
         let global_fast = global_fast_rows
             .as_ref()
             .ok_or_else(|| "missing global fast-row buffer".to_string())?;
@@ -8389,46 +10637,53 @@ fn optimize_double_ma_gpu_kernel_impl(
         let global_metrics = global_metrics_rows
             .as_ref()
             .ok_or_else(|| "missing global metrics-row buffer".to_string())?;
-        pack_metric_rows_for_host_copy(
-            bt_stream,
-            scratch,
-            &pack_metric_rows,
-            global_fast.as_device_ptr().as_raw(),
-            global_slow.as_device_ptr().as_raw(),
-            global_metrics.as_device_ptr().as_raw(),
-            topk_select,
-            metrics_count,
-            &mut top_packed_host,
-        )?;
+        push_global_head_rows(global_fast, global_slow, global_metrics)?;
 
-        for r in 0..topk_select {
-            let Some((fast_len, slow_len, metrics)) =
-                decode_packed_topk_metric_row(&top_packed_host, r, metrics_count)
-            else {
+        for head in extra_shortlist_heads.iter() {
+            if head.global_rows_len == 0 {
                 continue;
-            };
-            if metrics_pass_constraints(&metrics, constraints) {
-                let params = DoubleMaParams {
-                    fast_len,
-                    slow_len,
-                    fast_ma_id: 0,
-                    slow_ma_id: 0,
-                };
-                agg.push(params, metrics);
             }
+            let head_fast = head.global_fast_rows.as_ref().ok_or_else(|| {
+                format!(
+                    "missing global fast-row buffer for extra shortlist objective {:?}",
+                    head.objective
+                )
+            })?;
+            let head_slow = head.global_slow_rows.as_ref().ok_or_else(|| {
+                format!(
+                    "missing global slow-row buffer for extra shortlist objective {:?}",
+                    head.objective
+                )
+            })?;
+            let head_metrics = head.global_metrics_rows.as_ref().ok_or_else(|| {
+                format!(
+                    "missing global metrics-row buffer for extra shortlist objective {:?}",
+                    head.objective
+                )
+            })?;
+            push_global_head_rows(head_fast, head_slow, head_metrics)?;
         }
     }
 
-    let heatmap_out: Option<OptimizationHeatmap> = if !include_all {
-        if let (Some(h), Some((f_min, f_max, s_min, s_max))) =
-            (scratch.d_heatmap.as_ref(), heatmap_cfg)
-        {
+    let heatmap_out: Option<OptimizationHeatmap> = if !device_include_all {
+        if let (Some(h), Some(h_sum), Some(h_count), Some((f_min, f_max, s_min, s_max))) = (
+            scratch.d_heatmap.as_ref(),
+            scratch.d_heatmap_sum.as_ref(),
+            scratch.d_heatmap_count.as_ref(),
+            heatmap_cfg,
+        ) {
             let heatmap_len = heatmap_bins.saturating_mul(heatmap_bins);
             if heatmap_len == 0 {
                 None
             } else {
                 let mut host: Vec<f32> = alloc_uninit_copy(heatmap_len);
                 h.copy_to(&mut host).map_err(|e| e.to_string())?;
+                let mut host_sum: Vec<f32> = alloc_uninit_copy(heatmap_len);
+                h_sum.copy_to(&mut host_sum).map_err(|e| e.to_string())?;
+                let mut host_count = vec![0i32; heatmap_len];
+                h_count
+                    .copy_to(&mut host_count)
+                    .map_err(|e| e.to_string())?;
                 let values: Vec<Option<f64>> = host
                     .into_iter()
                     .map(|v| {
@@ -8439,6 +10694,21 @@ fn optimize_double_ma_gpu_kernel_impl(
                         }
                     })
                     .collect();
+                let mean_values: Vec<Option<f64>> = host_sum
+                    .into_iter()
+                    .zip(host_count.iter().copied())
+                    .map(|(sum, count)| {
+                        if count > 0 {
+                            Some(sum as f64 / count as f64)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let sample_counts: Vec<u32> = host_count
+                    .into_iter()
+                    .map(|count| count.max(0) as u32)
+                    .collect();
                 Some(OptimizationHeatmap {
                     bins_fast: heatmap_bins,
                     bins_slow: heatmap_bins,
@@ -8447,6 +10717,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                     slow_min: s_min,
                     slow_max: s_max,
                     values,
+                    mean_values: Some(mean_values),
+                    sample_counts: Some(sample_counts),
                 })
             }
         } else {
@@ -8460,7 +10732,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
-    if !include_all
+    if !device_include_all
         && metrics_count < METRICS_COUNT
         && !can_decode_current_gpu_product_metrics_without_recompute(metrics_count)
         && !fast_precomputed_enabled
@@ -8483,8 +10755,98 @@ fn optimize_double_ma_gpu_kernel_impl(
             strategy,
         )?;
     }
+    if let Some(mode) = shortlist_union_mode {
+        if materialized_shortlist_rows.is_empty() {
+            return Err(
+                "shortlist-union mode produced no shortlist rows after device filtering"
+                    .to_string(),
+            );
+        }
+        let top_limit = result.top.len().max(1);
+        let reranked = rerank_shortlist_by_union_mode(
+            &materialized_shortlist_rows,
+            objective,
+            extra_shortlist_objectives.as_slice(),
+            mode,
+        );
+        materialized_shortlist_rows = reranked.clone();
+        if let Some((best_params, best_metrics)) = reranked.first() {
+            result.best_params = best_params.clone();
+            result.best_metrics = best_metrics.clone();
+            result.top = reranked.into_iter().take(top_limit).collect();
+        }
+    }
+    if let Some(mode) = shortlist_confidence_mode {
+        if materialized_shortlist_rows.is_empty() {
+            return Err(
+                "shortlist-confidence mode produced no shortlist rows after device filtering"
+                    .to_string(),
+            );
+        }
+        let top_limit = result.top.len().max(1);
+        let reranked = rerank_shortlist_by_confidence(
+            &materialized_shortlist_rows,
+            mode,
+            first_valid,
+            regime_first_valid,
+            eval_start_t,
+            eval_end_t,
+            n,
+            strategy,
+            objective,
+            score_mode,
+        );
+        if let Some((best_params, best_metrics)) = reranked.first() {
+            result.best_params = best_params.clone();
+            result.best_metrics = best_metrics.clone();
+            result.top = reranked.into_iter().take(top_limit).collect();
+        }
+    }
+    if let Some(mode) = shortlist_slice_mode {
+        let top_limit = result.top.len().max(1);
+        let slice_rows: Vec<(DoubleMaParams, Metrics)> = if materialized_shortlist_rows.is_empty() {
+            result.top.clone()
+        } else {
+            materialized_shortlist_rows.clone()
+        };
+        let (reranked, diagnostics) = rerank_shortlist_by_slice_robustness(
+            rt,
+            candles,
+            slice_rows.as_slice(),
+            mode,
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            cfg,
+            fast_precomputed,
+            slow_precomputed,
+            strategy,
+            objective,
+            score_mode,
+            shortlist_slice_benchmark.as_ref(),
+            first_valid,
+            regime_first_valid,
+            eval_start_t,
+            eval_end_t,
+        )?;
+        record_last_shortlist_slice_diagnostics(ShortlistSliceDiagnostics {
+            ranking_mode: diagnostics.ranking_mode.clone(),
+            neighborhood_robustness: diagnostics.neighborhood_robustness.clone(),
+            candidates: diagnostics.candidates.into_iter().take(top_limit).collect(),
+        });
+        let (best_params, best_metrics) = reranked
+            .first()
+            .cloned()
+            .ok_or_else(|| "shortlist-slice rerank produced no result".to_string())?;
+        result.best_params = best_params;
+        result.best_metrics = best_metrics;
+        result.top = reranked.into_iter().take(top_limit).collect();
+    }
 
-    if !include_all {
+    if !device_include_all {
         result.num_combos = total_pairs;
         if heatmap_out.is_some() {
             result.heatmap = heatmap_out;
@@ -8508,7 +10870,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         p.emit(
             fast_ma.as_str(),
             slow_ma.as_str(),
-            include_all,
+            device_include_all,
             topk_select,
             heatmap_bins,
         );
@@ -8526,15 +10888,25 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        can_decode_current_gpu_product_metrics_without_recompute, decode_tm_flex_metrics_row,
+        can_decode_current_gpu_product_metrics_without_recompute,
+        compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
         eval_double_ma_dynamic_program_precomputed_gpu_kernel, kernel_async_alloc_enabled,
-        kernel_effective_pair_bars, kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled,
+        kernel_effective_pair_bars, kernel_extra_shortlist_objectives, kernel_pinned_d2h_enabled,
+        kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
+        kernel_shortlist_slice_benchmark, kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
-        max_drawdown_constraint_to_search_space, search_metrics_count_for_optimization,
+        max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
+        rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
+        shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
-        upload_double_ma_dynamic_program_batch, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
+        upload_double_ma_dynamic_program_batch, ShortlistConfidenceMode, ShortlistSliceMode,
+        METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
     };
-    use crate::double_ma::DoubleMaConstraints;
+    use crate::composite_validate::SpaBenchmarkKind;
+    use crate::double_ma::{
+        objective_score, DoubleMaConstraints, DoubleMaShortlistConfidenceMode,
+        DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
+    };
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
         eval_dynamic_plan_metrics_cpu,
@@ -8544,6 +10916,7 @@ mod tests {
     };
     use crate::strategy_plan::StrategyPlanBackend;
     use ta_optimizer::ObjectiveKind;
+    use ta_strategies::double_ma::Metrics;
     use ta_strategies::double_ma::{DoubleMaParams, StrategyConfig};
     use vector_ta::utilities::data_loader::{source_type, Candles};
 
@@ -8646,6 +11019,455 @@ mod tests {
     }
 
     #[test]
+    fn extra_shortlist_objectives_without_request_is_empty() {
+        let parsed =
+            kernel_extra_shortlist_objectives(ObjectiveKind::Sharpe, None).expect("no extra heads");
+        assert!(
+            parsed.is_empty(),
+            "unexpected implicit extra heads: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn extra_shortlist_objectives_request_parses_and_deduplicates() {
+        let parsed = kernel_extra_shortlist_objectives(
+            ObjectiveKind::Sharpe,
+            Some(&[
+                ObjectiveKind::Pnl,
+                ObjectiveKind::Omega,
+                ObjectiveKind::Sharpe,
+                ObjectiveKind::Pnl,
+            ]),
+        )
+        .expect("parse request extra heads");
+        assert_eq!(
+            parsed,
+            vec![ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            "primary objective should be skipped and duplicates removed"
+        );
+    }
+
+    #[test]
+    fn shortlist_confidence_mode_request_maps_supported_values() {
+        assert_eq!(
+            kernel_shortlist_confidence_mode(Some(DoubleMaShortlistConfidenceMode::Psr))
+                .expect("map psr"),
+            Some(ShortlistConfidenceMode::Psr)
+        );
+        assert_eq!(
+            kernel_shortlist_confidence_mode(Some(DoubleMaShortlistConfidenceMode::Dsr))
+                .expect("map dsr"),
+            Some(ShortlistConfidenceMode::Dsr)
+        );
+        assert_eq!(
+            kernel_shortlist_confidence_mode(None).expect("unset confidence mode"),
+            None
+        );
+    }
+
+    #[test]
+    fn shortlist_union_mode_request_maps_supported_values() {
+        assert_eq!(
+            kernel_shortlist_union_mode(Some(DoubleMaShortlistUnionMode::Lexicographic))
+                .expect("map lexicographic"),
+            Some(DoubleMaShortlistUnionMode::Lexicographic)
+        );
+        assert_eq!(
+            kernel_shortlist_union_mode(Some(DoubleMaShortlistUnionMode::Pareto))
+                .expect("map pareto"),
+            Some(DoubleMaShortlistUnionMode::Pareto)
+        );
+        assert_eq!(
+            kernel_shortlist_union_mode(Some(DoubleMaShortlistUnionMode::EpsilonFront))
+                .expect("map epsilon"),
+            Some(DoubleMaShortlistUnionMode::EpsilonFront)
+        );
+        assert_eq!(
+            kernel_shortlist_union_mode(None).expect("unset union mode"),
+            None
+        );
+    }
+
+    #[test]
+    fn shortlist_slice_mode_request_maps_supported_values() {
+        assert_eq!(
+            kernel_shortlist_slice_mode(Some(DoubleMaShortlistSliceMode::Halves))
+                .expect("map halves"),
+            Some(ShortlistSliceMode::Halves)
+        );
+        assert_eq!(
+            kernel_shortlist_slice_mode(Some(DoubleMaShortlistSliceMode::Quartiles))
+                .expect("map quartiles"),
+            Some(ShortlistSliceMode::Quartiles)
+        );
+        assert_eq!(
+            kernel_shortlist_slice_mode(None).expect("unset slice mode"),
+            None
+        );
+    }
+
+    #[test]
+    fn shortlist_slice_benchmark_request_maps_supported_values() {
+        assert!(matches!(
+            kernel_shortlist_slice_benchmark(Some(SpaBenchmarkKind::Flat)).expect("map flat"),
+            Some(SpaBenchmarkKind::Flat)
+        ));
+        assert!(matches!(
+            kernel_shortlist_slice_benchmark(Some(SpaBenchmarkKind::BuyAndHold))
+                .expect("map buy and hold"),
+            Some(SpaBenchmarkKind::BuyAndHold)
+        ));
+        assert!(kernel_shortlist_slice_benchmark(None)
+            .expect("unset slice benchmark")
+            .is_none());
+    }
+
+    fn make_union_row(
+        fast_len: u16,
+        slow_len: u16,
+        sharpe: f64,
+        pnl: f64,
+        omega: f64,
+        max_dd: f64,
+    ) -> (DoubleMaParams, Metrics) {
+        (
+            DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            Metrics {
+                sharpe,
+                pnl,
+                omega,
+                max_dd,
+                ..Metrics::default()
+            },
+        )
+    }
+
+    #[test]
+    fn rerank_shortlist_by_union_mode_lexicographic_uses_objective_priority_order() {
+        let rows = vec![
+            make_union_row(5, 20, 2.0, 10.0, 1.1, 0.30),
+            make_union_row(6, 21, 2.0, 8.0, 3.0, 0.10),
+            make_union_row(7, 22, 1.9, 20.0, 2.0, 0.05),
+            make_union_row(8, 23, 2.0, 10.0, 1.1, 0.05),
+        ];
+
+        let reranked = rerank_shortlist_by_union_mode(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            DoubleMaShortlistUnionMode::Lexicographic,
+        );
+        let actual_keys: Vec<(u16, u16)> = reranked
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(actual_keys, vec![(8, 23), (5, 20), (6, 21), (7, 22)]);
+    }
+
+    #[test]
+    fn rerank_shortlist_by_union_mode_pareto_prioritizes_front_rank_before_primary_score() {
+        let rows = vec![
+            make_union_row(5, 20, 1.0, 10.0, 1.0, 0.20),
+            make_union_row(6, 21, 2.0, 8.0, 1.0, 0.10),
+            make_union_row(7, 22, 1.5, 9.0, 1.0, 0.15),
+            make_union_row(8, 23, 0.5, 7.0, 1.0, 0.05),
+        ];
+
+        let reranked = rerank_shortlist_by_union_mode(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl],
+            DoubleMaShortlistUnionMode::Pareto,
+        );
+        let actual_keys: Vec<(u16, u16)> = reranked
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(actual_keys, vec![(6, 21), (7, 22), (5, 20), (8, 23)]);
+    }
+
+    #[test]
+    fn rerank_shortlist_by_union_mode_epsilon_front_softens_near_dominance() {
+        let rows = vec![
+            make_union_row(5, 20, 10.0, 10.0, 1.0, 0.20),
+            make_union_row(6, 21, 10.001, 10.001, 1.0, 0.10),
+            make_union_row(7, 22, 9.0, 20.0, 1.0, 0.05),
+        ];
+
+        let strict = rerank_shortlist_by_union_mode(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl],
+            DoubleMaShortlistUnionMode::Pareto,
+        );
+        let relaxed = rerank_shortlist_by_union_mode(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl],
+            DoubleMaShortlistUnionMode::EpsilonFront,
+        );
+        let strict_keys: Vec<(u16, u16)> = strict
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let relaxed_keys: Vec<(u16, u16)> = relaxed
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(strict_keys, vec![(6, 21), (7, 22), (5, 20)]);
+        assert_eq!(relaxed_keys, vec![(6, 21), (5, 20), (7, 22)]);
+    }
+
+    #[test]
+    fn rerank_shortlist_by_union_mode_is_noop_without_distinct_extra_objectives() {
+        let rows = vec![
+            make_union_row(5, 20, 2.0, 1.0, 1.0, 0.20),
+            make_union_row(6, 21, 1.0, 2.0, 1.0, 0.10),
+        ];
+
+        let reranked = rerank_shortlist_by_union_mode(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Sharpe],
+            DoubleMaShortlistUnionMode::Pareto,
+        );
+
+        let original_scores: Vec<f64> = rows
+            .iter()
+            .map(|(_, metrics)| objective_score(metrics, ObjectiveKind::Sharpe))
+            .collect();
+        let reranked_scores: Vec<f64> = reranked
+            .iter()
+            .map(|(_, metrics)| objective_score(metrics, ObjectiveKind::Sharpe))
+            .collect();
+
+        assert_eq!(reranked.len(), rows.len());
+        assert_eq!(reranked_scores, original_scores);
+    }
+
+    #[test]
+    fn shortlist_slice_omission_summary_matches_expected_scores() {
+        let labels = super::shortlist_slice_labels(ShortlistSliceMode::Quartiles);
+        let summary =
+            super::compute_shortlist_slice_omission_summary(&[2.0, -1.0, 3.0, 0.0], &labels)
+                .expect("quartile omission summary");
+        assert_eq!(summary.best_label, "q2");
+        assert!(approx_eq(summary.best_score, 5.0 / 3.0, 1e-12));
+        assert_eq!(summary.worst_label, "q3");
+        assert!(approx_eq(summary.worst_score, 1.0 / 3.0, 1e-12));
+        assert!(approx_eq(summary.spread, 4.0 / 3.0, 1e-12));
+    }
+
+    #[test]
+    fn shortlist_slice_benchmark_relative_summary_matches_expected_scores() {
+        let labels = super::shortlist_slice_labels(ShortlistSliceMode::Quartiles);
+        let summary = compute_shortlist_slice_benchmark_relative_summary(
+            &[0.04, 0.00, -0.02, -0.03],
+            &labels,
+            &SpaBenchmarkKind::BuyAndHold,
+        )
+        .expect("benchmark-relative summary");
+        assert_eq!(summary.benchmark, "buy_and_hold");
+        assert!(approx_eq(summary.beat_rate, 0.25, 1e-12));
+        assert!(approx_eq(summary.mean_excess_return, -0.0025, 1e-12));
+        assert!(approx_eq(summary.best_excess_return, 0.04, 1e-12));
+        assert!(approx_eq(summary.worst_excess_return, -0.03, 1e-12));
+        assert!(approx_eq(
+            summary.best_omission_excess_return,
+            0.006666666666666667,
+            1e-12
+        ));
+        assert!(approx_eq(
+            summary.worst_omission_excess_return,
+            -0.016666666666666666,
+            1e-12
+        ));
+        assert!(approx_eq(
+            summary.omission_excess_spread,
+            0.023333333333333334,
+            1e-12
+        ));
+    }
+
+    #[test]
+    fn shortlist_candidate_track_record_bars_respects_warmup_and_trade_offset() {
+        let obs = shortlist_candidate_track_record_bars(0, 0, 0, 100, 100, 5, 20, false);
+        assert_eq!(obs, 81);
+
+        let delayed_obs = shortlist_candidate_track_record_bars(0, 0, 0, 100, 100, 5, 20, true);
+        assert_eq!(delayed_obs, 80);
+
+        let windowed_obs = shortlist_candidate_track_record_bars(3, 12, 10, 90, 100, 7, 25, true);
+        assert_eq!(windowed_obs, 62);
+    }
+
+    #[test]
+    fn shortlist_slice_ranges_use_common_shortlist_start() {
+        let rows = vec![
+            (
+                DoubleMaParams {
+                    fast_len: 5,
+                    slow_len: 20,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics::default(),
+            ),
+            (
+                DoubleMaParams {
+                    fast_len: 12,
+                    slow_len: 40,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics::default(),
+            ),
+        ];
+        let ranges = shortlist_slice_ranges(
+            &rows,
+            ShortlistSliceMode::Halves,
+            0,
+            0,
+            0,
+            200,
+            200,
+            &StrategyConfig::default(),
+        )
+        .expect("slice ranges");
+        assert_eq!(ranges, vec![(40, 120), (120, 200)]);
+    }
+
+    #[test]
+    fn rerank_shortlist_by_confidence_matches_manual_probability_order() {
+        let rows = vec![
+            (
+                DoubleMaParams {
+                    fast_len: 5,
+                    slow_len: 20,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 1.20,
+                    max_dd: 0.18,
+                    ..Metrics::default()
+                },
+            ),
+            (
+                DoubleMaParams {
+                    fast_len: 18,
+                    slow_len: 24,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 1.16,
+                    max_dd: 0.10,
+                    ..Metrics::default()
+                },
+            ),
+            (
+                DoubleMaParams {
+                    fast_len: 40,
+                    slow_len: 50,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 1.14,
+                    max_dd: 0.09,
+                    ..Metrics::default()
+                },
+            ),
+        ];
+        let strategy = StrategyConfig::default();
+        let sharpe_peers: Vec<f64> = rows.iter().map(|(_, metrics)| metrics.sharpe).collect();
+        let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
+        for mode in [ShortlistConfidenceMode::Psr, ShortlistConfidenceMode::Dsr] {
+            let reranked = rerank_shortlist_by_confidence(
+                &rows,
+                mode,
+                0,
+                0,
+                0,
+                400,
+                400,
+                &strategy,
+                ObjectiveKind::Sharpe,
+                None,
+            );
+
+            let mut expected = rows.clone();
+            expected.sort_by(|a, b| {
+                let obs_a = shortlist_candidate_track_record_bars(
+                    0,
+                    0,
+                    0,
+                    400,
+                    400,
+                    a.0.fast_len,
+                    a.0.slow_len,
+                    strategy.trade_on_next_bar,
+                );
+                let obs_b = shortlist_candidate_track_record_bars(
+                    0,
+                    0,
+                    0,
+                    400,
+                    400,
+                    b.0.fast_len,
+                    b.0.slow_len,
+                    strategy.trade_on_next_bar,
+                );
+                let (psr_a, dsr_a) = crate::validation_stats::compute_psr_dsr(
+                    a.1.sharpe,
+                    obs_a,
+                    sharpe_peers.len(),
+                    peer_mean,
+                    peer_std,
+                );
+                let (psr_b, dsr_b) = crate::validation_stats::compute_psr_dsr(
+                    b.1.sharpe,
+                    obs_b,
+                    sharpe_peers.len(),
+                    peer_mean,
+                    peer_std,
+                );
+                let score_a = match mode {
+                    ShortlistConfidenceMode::Psr => psr_a.unwrap_or(0.0),
+                    ShortlistConfidenceMode::Dsr => dsr_a.unwrap_or(0.0),
+                };
+                let score_b = match mode {
+                    ShortlistConfidenceMode::Psr => psr_b.unwrap_or(0.0),
+                    ShortlistConfidenceMode::Dsr => dsr_b.unwrap_or(0.0),
+                };
+                score_b
+                    .total_cmp(&score_a)
+                    .then_with(|| b.1.sharpe.total_cmp(&a.1.sharpe))
+                    .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+            });
+
+            let actual_keys: Vec<(u16, u16)> = reranked
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            let expected_keys: Vec<(u16, u16)> = expected
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            assert_eq!(actual_keys, expected_keys, "mode={mode:?}");
+        }
+    }
+
+    #[test]
     fn kernel_h2d_flag_respects_false_tokens() {
         let _guard = lock_env();
         let prev = std::env::var("VECTORBT_KERNEL_PINNED_H2D").ok();
@@ -8731,10 +11553,18 @@ mod tests {
 
     #[test]
     fn search_metrics_count_uses_minimal_search_payload_when_allowed() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
+        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
+
         assert_eq!(
             super::search_metrics_count_for_optimization(
                 super::ObjectiveKind::Pnl,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
@@ -8746,6 +11576,8 @@ mod tests {
             super::search_metrics_count_for_optimization(
                 super::ObjectiveKind::Calmar,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
@@ -8757,13 +11589,37 @@ mod tests {
             super::search_metrics_count_for_optimization(
                 super::ObjectiveKind::Sharpe,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
                 false,
             ),
-            5
+            7
         );
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Sortino,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            super::METRICS_COUNT
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS"),
+        }
+        match prev_recompute {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
+        }
     }
 
     #[test]
@@ -8771,11 +11627,14 @@ mod tests {
         let constraints = super::DoubleMaConstraints {
             min_trades: Some(10),
             max_drawdown: Some(0.2),
+            ..Default::default()
         };
         assert_eq!(
             super::search_metrics_count_for_optimization(
                 super::ObjectiveKind::Pnl,
+                None,
                 Some(&constraints),
+                false,
                 false,
                 false,
                 false,
@@ -8783,11 +11642,34 @@ mod tests {
             ),
             3
         );
+        let exposure = super::DoubleMaConstraints {
+            max_abs_net_exposure: Some(0.25),
+            ..Default::default()
+        };
         assert_eq!(
             super::search_metrics_count_for_optimization(
                 super::ObjectiveKind::Pnl,
                 None,
-                true,
+                Some(&exposure),
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            7
+        );
+        let omega = super::DoubleMaConstraints {
+            min_omega: Some(1.1),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Pnl,
+                None,
+                Some(&omega),
+                false,
+                false,
                 false,
                 false,
                 false,
@@ -8798,13 +11680,67 @@ mod tests {
             super::search_metrics_count_for_optimization(
                 super::ObjectiveKind::Pnl,
                 None,
-                false,
+                None,
                 true,
+                false,
+                false,
                 false,
                 false,
             ),
             super::METRICS_COUNT
         );
+        assert_eq!(
+            super::search_metrics_count_for_optimization(
+                super::ObjectiveKind::Pnl,
+                None,
+                None,
+                false,
+                true,
+                false,
+                false,
+                false,
+            ),
+            super::METRICS_COUNT
+        );
+    }
+
+    #[test]
+    fn search_metrics_count_promotes_to_full_rows_for_score_mode() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
+        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
+
+        for score_mode in [
+            super::DoubleMaScoreMode::BalancedRiskAdjusted10,
+            super::DoubleMaScoreMode::AdversarialEnvelope10,
+            super::DoubleMaScoreMode::SupportShrunk10,
+            super::DoubleMaScoreMode::ActiveSortino10,
+        ] {
+            assert_eq!(
+                super::search_metrics_count_for_optimization(
+                    super::ObjectiveKind::Sharpe,
+                    Some(score_mode),
+                    None,
+                    false,
+                    false,
+                    false,
+                    false,
+                false,
+                ),
+                super::PRODUCT_REDUCED_METRICS_COUNT
+            );
+        }
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS"),
+        }
+        match prev_recompute {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
+        }
     }
 
     #[test]
@@ -8955,10 +11891,18 @@ mod tests {
 
     #[test]
     fn search_metrics_count_tracks_objective_and_constraints() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
+        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
+
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Pnl,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
@@ -8970,28 +11914,34 @@ mod tests {
             search_metrics_count_for_optimization(
                 ObjectiveKind::Sharpe,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
                 false,
             ),
-            5
+            7
         );
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Volatility,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
                 false,
             ),
-            5
+            7
         );
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::MaxDrawdown,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
@@ -9003,6 +11953,8 @@ mod tests {
             search_metrics_count_for_optimization(
                 ObjectiveKind::Calmar,
                 None,
+                None,
+                false,
                 false,
                 false,
                 false,
@@ -9013,12 +11965,14 @@ mod tests {
 
         let min_trades = DoubleMaConstraints {
             min_trades: Some(20),
-            max_drawdown: None,
+            ..Default::default()
         };
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Pnl,
+                None,
                 Some(&min_trades),
+                false,
                 false,
                 false,
                 false,
@@ -9028,13 +11982,15 @@ mod tests {
         );
 
         let max_dd = DoubleMaConstraints {
-            min_trades: None,
             max_drawdown: Some(0.25),
+            ..Default::default()
         };
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Pnl,
+                None,
                 Some(&max_dd),
+                false,
                 false,
                 false,
                 false,
@@ -9043,49 +11999,16 @@ mod tests {
             3
         );
 
+        let exposure = DoubleMaConstraints {
+            max_abs_net_exposure: Some(0.30),
+            ..Default::default()
+        };
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Pnl,
                 None,
-                true,
+                Some(&exposure),
                 false,
-                false,
-                false,
-            ),
-            METRICS_COUNT
-        );
-    }
-
-    #[test]
-    fn search_metrics_count_product_reduced_rows_default_and_override() {
-        let _guard = lock_env();
-        let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
-        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
-
-        // Default: Sharpe/Volatility prefers the product-reduced rows to skip finalist replay.
-        std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS");
-        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
-        assert_eq!(
-            search_metrics_count_for_optimization(
-                ObjectiveKind::Sharpe,
-                None,
-                false,
-                false,
-                false,
-                false,
-            ),
-            PRODUCT_REDUCED_METRICS_COUNT
-        );
-        assert!(can_decode_current_gpu_product_metrics_without_recompute(
-            PRODUCT_REDUCED_METRICS_COUNT
-        ));
-
-        // Override disable: force legacy reduced rows.
-        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
-        assert_eq!(
-            search_metrics_count_for_optimization(
-                ObjectiveKind::Sharpe,
-                None,
                 false,
                 false,
                 false,
@@ -9094,18 +12017,36 @@ mod tests {
             7
         );
 
-        // Override enable: allow any objective to widen to product-reduced rows.
-        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "1");
+        let omega = DoubleMaConstraints {
+            min_omega: Some(1.2),
+            ..Default::default()
+        };
         assert_eq!(
             search_metrics_count_for_optimization(
                 ObjectiveKind::Pnl,
                 None,
+                Some(&omega),
+                false,
                 false,
                 false,
                 false,
                 false,
             ),
-            PRODUCT_REDUCED_METRICS_COUNT
+            METRICS_COUNT
+        );
+
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                None,
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
+            METRICS_COUNT
         );
 
         match prev {
@@ -9116,6 +12057,105 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
             None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
         }
+    }
+
+    #[test]
+    fn search_metrics_count_product_reduced_rows_default_and_override() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
+        let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
+
+        // Default: Sharpe/Volatility now promotes to the full 17-row single-pass product
+        // contract while still avoiding finalist replay.
+        std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS");
+        std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Sharpe,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            METRICS_COUNT
+        );
+        assert!(can_decode_current_gpu_product_metrics_without_recompute(
+            METRICS_COUNT
+        ));
+
+        // Override disable: force legacy reduced rows.
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Sharpe,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            7
+        );
+
+        // Override enable: allow any objective to widen to the full single-pass product rows.
+        std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "1");
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            METRICS_COUNT
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS"),
+        }
+        match prev_recompute {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
+        }
+    }
+
+    #[test]
+    fn search_metrics_count_promotes_to_trade_rows_when_requested() {
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Sharpe,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            TRADE_METRICS_COUNT
+        );
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            TRADE_METRICS_COUNT
+        );
     }
 
     #[test]
@@ -9144,7 +12184,7 @@ mod tests {
             0.0,
         ];
 
-        let metrics = decode_tm_flex_metrics_row(&row, 0, 5);
+        let metrics = decode_tm_flex_metrics_row(&row, 0, 5, 0.0);
         assert!((metrics.pnl - pnl).abs() < 1e-6);
         assert_eq!(metrics.trades, 12);
         assert!((metrics.max_dd - max_dd).abs() < 1e-6);
@@ -9153,22 +12193,93 @@ mod tests {
     #[test]
     fn decode_full_metric_rows_restore_omega_and_derive_martin_ratio() {
         let row = vec![
-            0.15f32, // pnl
-            7.0f32,  // trades
-            0.20f32, // max_dd
-            0.06f32, // mean
-            0.03f32, // std
-            0.40f32, // exposure
-            0.10f32, // net_exposure
-            0.02f32, // downside_deviation
-            0.05f32, // ulcer_index
-            4.0f32,  // omega
+            0.15f32,  // pnl
+            7.0f32,   // trades
+            0.20f32,  // max_dd
+            0.06f32,  // mean
+            0.03f32,  // std
+            0.40f32,  // exposure
+            0.10f32,  // net_exposure
+            0.02f32,  // downside_deviation
+            0.05f32,  // ulcer_index
+            4.0f32,   // omega
+            0.25f32,  // downside_frequency
+            0.08f32,  // downside_severity
+            0.07f32,  // long_mean_return
+            -0.04f32, // short_mean_return
+            1.75f32,  // kappa_tau
+            0.35f32,  // underwater_fraction
+            12.0f32,  // max_underwater_duration_bars
         ];
 
-        let metrics = decode_tm_flex_metrics_row(&row, 0, METRICS_COUNT);
+        let metrics = decode_tm_flex_metrics_row(&row, 0, METRICS_COUNT, 0.0);
         assert!((metrics.sortino - 3.0).abs() < 1e-6);
         assert!((metrics.omega - 4.0).abs() < 1e-6);
         assert!((metrics.martin_ratio - 3.0).abs() < 1e-6);
+        assert!((metrics.downside_frequency - 0.25).abs() < 1e-6);
+        assert!((metrics.downside_severity - 0.08).abs() < 1e-6);
+        assert!((metrics.long_mean_return - 0.07).abs() < 1e-6);
+        assert!((metrics.short_mean_return + 0.04).abs() < 1e-6);
+        assert!((metrics.kappa_tau - 1.75).abs() < 1e-6);
+        assert!((metrics.underwater_fraction - 0.35).abs() < 1e-6);
+        assert_eq!(metrics.max_underwater_duration_bars, 12);
+    }
+
+    #[test]
+    fn decode_trade_metric_rows_restore_trade_distribution_summaries() {
+        let row = vec![
+            0.15f32,  // pnl
+            7.0f32,   // trades
+            0.20f32,  // max_dd
+            0.06f32,  // mean
+            0.03f32,  // std
+            0.40f32,  // exposure
+            0.10f32,  // net_exposure
+            0.02f32,  // downside_deviation
+            0.05f32,  // ulcer_index
+            4.0f32,   // omega
+            0.25f32,  // downside_frequency
+            0.08f32,  // downside_severity
+            0.07f32,  // long_mean_return
+            -0.04f32, // short_mean_return
+            1.75f32,  // kappa_tau
+            0.35f32,  // underwater_fraction
+            12.0f32,  // max_underwater_duration_bars
+            5.0f32,   // closed_trades
+            3.0f32,   // winning_trades
+            2.0f32,   // losing_trades
+            0.90f32,  // gross_profit
+            0.30f32,  // gross_loss
+        ];
+
+        let metrics = decode_tm_flex_metrics_row(&row, 0, TRADE_METRICS_COUNT, 0.0);
+        assert_eq!(metrics.closed_trades, 5);
+        assert_eq!(metrics.winning_trades, 3);
+        assert_eq!(metrics.losing_trades, 2);
+        assert!((metrics.gross_profit - 0.90).abs() < 1e-6);
+        assert!((metrics.gross_loss - 0.30).abs() < 1e-6);
+        assert!((metrics.underwater_fraction - 0.35).abs() < 1e-6);
+        assert_eq!(metrics.max_underwater_duration_bars, 12);
+    }
+
+    #[test]
+    fn decode_full_metric_rows_apply_hurdle_tau_to_sortino() {
+        let row = vec![
+            0.15f32,  // pnl
+            7.0f32,   // trades
+            0.20f32,  // max_dd
+            0.06f32,  // mean
+            0.03f32,  // std
+            0.40f32,  // exposure
+            0.10f32,  // net_exposure
+            0.02f32,  // downside_deviation (tau-adjusted)
+            0.05f32,  // ulcer_index
+            4.0f32,   // omega (tau-adjusted)
+        ];
+
+        let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT, 0.01);
+        assert!((metrics.sortino - 2.5).abs() < 1e-6);
+        assert!((metrics.omega - 4.0).abs() < 1e-6);
     }
 
     #[test]
@@ -9177,9 +12288,9 @@ mod tests {
         let max_dd = 0.20f64;
         let ulcer = 0.05f64;
         let row = vec![
-            pnl as f32,
+            pnl.ln_1p() as f32,
             7.0f32,
-            max_dd as f32,
+            (-(1.0 - max_dd).ln()) as f32,
             0.06f32,
             0.03f32,
             0.40f32,
@@ -9189,11 +12300,16 @@ mod tests {
             4.0f32,
         ];
 
-        let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT);
+        let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT, 0.0);
         assert!((metrics.pnl - pnl).abs() < 1e-6);
         assert!((metrics.max_dd - max_dd).abs() < 1e-6);
         assert!((metrics.omega - 4.0).abs() < 1e-6);
         assert!((metrics.martin_ratio - 3.0).abs() < 1e-6);
+        assert_eq!(metrics.downside_frequency, 0.0);
+        assert_eq!(metrics.downside_severity, 0.0);
+        assert_eq!(metrics.long_mean_return, 0.0);
+        assert_eq!(metrics.short_mean_return, 0.0);
+        assert_eq!(metrics.kappa_tau, 0.0);
     }
 
     #[test]
@@ -9280,6 +12396,7 @@ mod tests {
             &strategy,
             &handle,
             0,
+            PRODUCT_REDUCED_METRICS_COUNT,
         )
         .expect("run gpu dynamic backtest");
         assert_eq!(gpu_metrics.len(), 1);
@@ -9451,11 +12568,17 @@ mod tests {
         .expect("upload dynamic batch");
 
         let first = super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
-            &uploaded, &strategy, &handle,
+            &uploaded,
+            &strategy,
+            &handle,
+            PRODUCT_REDUCED_METRICS_COUNT,
         )
         .expect("first launch");
         let second = super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
-            &uploaded, &strategy, &handle,
+            &uploaded,
+            &strategy,
+            &handle,
+            PRODUCT_REDUCED_METRICS_COUNT,
         )
         .expect("second launch");
         assert_eq!(first.len(), second.len());
@@ -9466,3 +12589,9 @@ mod tests {
         }
     }
 }
+
+
+
+
+
+

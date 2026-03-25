@@ -490,8 +490,11 @@ pub fn simulate_iterative_from_signals(
         sharpe,
         sortino,
         downside_deviation: downside_dev,
+        downside_frequency: 0.0,
+        downside_severity: 0.0,
         calmar,
         omega,
+        kappa_tau: 0.0,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -499,6 +502,15 @@ pub fn simulate_iterative_from_signals(
         trades,
         exposure,
         net_exposure,
+        long_mean_return: 0.0,
+        short_mean_return: 0.0,
+        closed_trades: 0,
+        winning_trades: 0,
+        losing_trades: 0,
+        gross_profit: 0.0,
+        gross_loss: 0.0,
+        underwater_fraction: 0.0,
+        max_underwater_duration_bars: 0,
     }
 }
 
@@ -584,3 +596,4 @@ mod tests {
         assert!(m_stop.trades > m_base.trades);
     }
 }
+

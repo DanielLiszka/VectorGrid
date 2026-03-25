@@ -5,7 +5,9 @@ use rand::Rng;
 use ta_optimizer::{ObjectiveKind, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
-use crate::double_ma::{estimate_pairs_fast_lt_slow, objective_score, BackendUsed, VdpsTelemetry};
+use crate::double_ma::{
+    effective_score, estimate_pairs_fast_lt_slow, BackendUsed, DoubleMaScoreMode, VdpsTelemetry,
+};
 
 #[inline]
 pub(crate) fn vdps_target_pairs(total_pairs: usize, rung_fraction: f64) -> usize {
@@ -54,6 +56,7 @@ pub(crate) fn vdps_period_window_slice(periods: &[u16], center: u16, window: u16
 pub(crate) fn vdps_rank_candidates(
     mut rows: Vec<(DoubleMaParams, Metrics)>,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
     limit: usize,
 ) -> Vec<(DoubleMaParams, Metrics)> {
     if rows.is_empty() || limit == 0 {
@@ -61,7 +64,7 @@ pub(crate) fn vdps_rank_candidates(
     }
     rows.sort_by(|(pa, ma), (pb, mb)| {
         let sa = {
-            let v = objective_score(ma, objective);
+            let v = effective_score(ma, objective, score_mode);
             if v.is_finite() {
                 v
             } else {
@@ -69,7 +72,7 @@ pub(crate) fn vdps_rank_candidates(
             }
         };
         let sb = {
-            let v = objective_score(mb, objective);
+            let v = effective_score(mb, objective, score_mode);
             if v.is_finite() {
                 v
             } else {
@@ -170,7 +173,7 @@ pub(crate) fn vdps_merge_partial_results(
         ranked_input.extend(res.top);
     }
 
-    let ranked = vdps_rank_candidates(ranked_input, objective, top_k.max(1));
+    let ranked = vdps_rank_candidates(ranked_input, objective, None, top_k.max(1));
     let (best_params, best_metrics) = ranked.first().cloned()?;
     let top = if top_k > 0 { ranked } else { Vec::new() };
     Some(OptimizationResult {

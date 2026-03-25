@@ -786,6 +786,14 @@ fn main() -> Result<(), String> {
         strategy: strategy.clone(),
         halftrend_filter: None,
         objective,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(cli.optimize_top_k),
         include_all: Some(false),
@@ -795,6 +803,9 @@ fn main() -> Result<(), String> {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     };
 
     println!("Running optimization baseline...");
@@ -1138,3 +1149,7 @@ fn main() -> Result<(), String> {
 
     Ok(())
 }
+
+
+
+

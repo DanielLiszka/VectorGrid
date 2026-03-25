@@ -758,15 +758,23 @@ fn try_optimize_base_composite_gpu_kernel(
         )),
         strategy,
         objective,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         top_k,
         include_all,
-        crate::gpu_backtest_kernel::KernelConfig {
-            device_id,
-            fast_alma_offset,
-            fast_alma_sigma,
-            slow_alma_offset,
-            slow_alma_sigma,
-        },
+            crate::gpu_backtest_kernel::KernelConfig {
+                device_id,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
+                include_trade_metrics: false,
+            },
         Some(&fast_precomputed),
         Some(&slow_precomputed),
         None,
@@ -1397,6 +1405,7 @@ fn run_asr_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -1665,6 +1674,7 @@ fn run_asr_optimization_cpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -2100,6 +2110,7 @@ fn run_vcc_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -2342,6 +2353,7 @@ fn run_vcc_optimization_cpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -2850,6 +2862,7 @@ fn run_vemr_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -3116,6 +3129,7 @@ fn run_vemr_optimization_impl(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -4602,6 +4616,7 @@ fn run_rocb_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -4862,6 +4877,7 @@ fn run_rocb_optimization_impl(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -5254,6 +5270,7 @@ fn run_vcet_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -5517,6 +5534,7 @@ fn run_vcet_optimization_impl(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -5916,6 +5934,7 @@ fn run_mkcs_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -6324,6 +6343,7 @@ fn run_kqsr_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -6511,6 +6531,7 @@ fn run_kqsr_optimization_cpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -6910,6 +6931,7 @@ fn run_carm_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -7098,6 +7120,7 @@ fn run_carm_optimization_cpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -7543,6 +7566,7 @@ fn run_kvdf_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -7731,6 +7755,7 @@ fn run_kvdf_optimization_cpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -8188,6 +8213,7 @@ fn run_cdmc_optimization_gpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -8396,6 +8422,7 @@ fn run_cdmc_optimization_cpu(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -8676,6 +8703,7 @@ fn run_mkcs_optimization_impl(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -8891,6 +8919,14 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             strategy: strategy.clone(),
             halftrend_filter: None,
             objective,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
             mode: prescan_mode,
             top_k: Some(prescan_top_k),
             include_all: Some(false),
@@ -8900,6 +8936,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
+            include_trade_metrics: false,
+            hurdle_tau: None,
         };
 
         let dm_res = run_double_ma_optimization_blocking_with_candles(
@@ -9250,6 +9288,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
+        shortlist_slice_diagnostics: None,
     })
 }
 
@@ -14044,3 +14083,6 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
+
+
+

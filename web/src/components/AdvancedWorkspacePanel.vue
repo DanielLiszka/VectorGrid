@@ -18,6 +18,16 @@ const {
   maSourceOptions,
   objective,
   objectiveOptions,
+  scoreMode,
+  hurdleTau,
+  includeTradeMetrics,
+  extraShortlistObjectives,
+  shortlistConfidenceMode,
+  shortlistUnionMode,
+  shortlistSliceMode,
+  shortlistSliceBenchmark,
+  shortlistNeighborhoodRadius,
+  shortlistNeighborhoodStep,
   mode,
   vdpsVisible,
   vdpsTelemetryHint,
@@ -42,6 +52,16 @@ const compatObservers: MutationObserver[] = []
 
 const maSourceDraft = ref('close')
 const objectiveDraft = ref('Sharpe')
+const scoreModeDraft = ref('')
+const hurdleTauDraft = ref('')
+const includeTradeMetricsDraft = ref(false)
+const extraShortlistObjectivesDraft = ref('')
+const shortlistConfidenceModeDraft = ref('')
+const shortlistUnionModeDraft = ref('')
+const shortlistSliceModeDraft = ref('')
+const shortlistSliceBenchmarkDraft = ref('')
+const shortlistNeighborhoodRadiusDraft = ref('')
+const shortlistNeighborhoodStepDraft = ref('')
 const modeDraft = ref('Grid')
 const heatmapBinsDraft = ref('128')
 const topKDraft = ref('20')
@@ -62,6 +82,206 @@ const showHeatmapControl = computed(() => strategyCapabilities.value.supportsHea
 const showTopKControl = computed(() => strategyCapabilities.value.supportsTopK)
 const showIncludeAllControl = computed(() => strategyCapabilities.value.supportsIncludeAll)
 const showExportControl = computed(() => strategyCapabilities.value.supportsExportAll)
+const showScoreModeControl = computed(() => [
+  'DoubleMa',
+  'DynamicDoubleMa',
+  'Pit',
+  'Set',
+  'Mts',
+  'Orc',
+  'Marrt',
+  'Vfct',
+  'CompositeTrend',
+  'RegimeHybrid',
+  'BreakoutMomentum',
+].includes(String(strategyCapabilities.value.kind || '').trim()))
+const extraShortlistKindSupported = computed(() => [
+  'DoubleMa',
+  'Pit',
+  'Set',
+  'Mts',
+  'Orc',
+  'Marrt',
+  'Vfct',
+  'CompositeTrend',
+  'RegimeHybrid',
+  'BreakoutMomentum',
+].includes(String(strategyCapabilities.value.kind || '').trim()))
+const tradeMetricsKindSupported = computed(() => extraShortlistKindSupported.value)
+const shortlistConfidenceKindSupported = computed(() => extraShortlistKindSupported.value)
+const shortlistUnionKindSupported = computed(() => extraShortlistKindSupported.value)
+const shortlistSliceKindSupported = computed(() => extraShortlistKindSupported.value)
+const showExtraShortlistObjectivesControl = computed(() =>
+  extraShortlistKindSupported.value || extraShortlistObjectivesDraft.value.trim().length > 0,
+)
+const showIncludeTradeMetricsControl = computed(() =>
+  tradeMetricsKindSupported.value || includeTradeMetricsDraft.value,
+)
+const showShortlistConfidenceModeControl = computed(() =>
+  shortlistConfidenceKindSupported.value || shortlistConfidenceModeDraft.value.trim().length > 0,
+)
+const showShortlistUnionModeControl = computed(() =>
+  shortlistUnionKindSupported.value || shortlistUnionModeDraft.value.trim().length > 0,
+)
+const showShortlistSliceModeControl = computed(() =>
+  shortlistSliceKindSupported.value || shortlistSliceModeDraft.value.trim().length > 0,
+)
+const showShortlistSliceBenchmarkControl = computed(() =>
+  shortlistSliceKindSupported.value || shortlistSliceBenchmarkDraft.value.trim().length > 0,
+)
+const showShortlistNeighborhoodControls = computed(() =>
+  shortlistSliceKindSupported.value
+  || shortlistNeighborhoodRadiusDraft.value.trim().length > 0
+  || shortlistNeighborhoodStepDraft.value.trim().length > 0,
+)
+const extraShortlistObjectivesStateNote = computed(() => {
+  const hasValue = extraShortlistObjectivesDraft.value.trim().length > 0
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'DynamicDoubleMa does not yet support extra shortlist objectives. Clear this field or switch strategy/backends.'
+      : 'Not available for DynamicDoubleMa.'
+  }
+  if (!extraShortlistKindSupported.value) {
+    return hasValue
+      ? 'This strategy does not currently support extra shortlist objectives. Clear this field to avoid request rejection.'
+      : 'Available on the Double MA GPU-kernel family only.'
+  }
+  if (scoreModeDraft.value.trim().length > 0) {
+    return 'Requires objective-only ranking. Clear Score mode to enable an exact union shortlist.'
+  }
+  if (String(includeAllDraft.value || '').trim() === 'true') {
+    return 'Requires include all = false.'
+  }
+  if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+    return 'Requires top K greater than 0.'
+  }
+  if (exportPathDraft.value.trim().length > 0) {
+    return 'Requires export-all CSV path to be empty.'
+  }
+  return 'Additional exact shortlist heads. Comma-separated objectives such as Pnl, Omega. Current primary objective is always included automatically.'
+})
+const includeTradeMetricsStateNote = computed(() => {
+  const hasValue = includeTradeMetricsDraft.value
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'DynamicDoubleMa does not yet support trade metrics. Turn this off or switch strategy/backends.'
+      : 'Not available for DynamicDoubleMa.'
+  }
+  if (!tradeMetricsKindSupported.value) {
+    return hasValue
+      ? 'This strategy does not currently support trade metrics. Turn this off to avoid request rejection.'
+      : 'Available on the Double MA GPU-kernel family only.'
+  }
+  return hasValue
+    ? 'Adds trade-summary metrics to the one-pass optimization request. This currently requires the exact GpuKernel route; hybrid and CPU fallback routes will reject it.'
+    : 'Optional trade-summary metrics. Leaving this off preserves the current default request surface.'
+})
+const shortlistConfidenceModeStateNote = computed(() => {
+  const hasValue = shortlistConfidenceModeDraft.value.trim().length > 0
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'DynamicDoubleMa does not yet support shortlist confidence mode. Clear this field or switch strategy/backends.'
+      : 'Not available for DynamicDoubleMa.'
+  }
+  if (!shortlistConfidenceKindSupported.value) {
+    return hasValue
+      ? 'This strategy does not currently support shortlist confidence mode. Clear this field to avoid request rejection.'
+      : 'Available on the Double MA GPU-kernel family only.'
+  }
+  if (scoreModeDraft.value.trim().length > 0) {
+    return 'Requires objective-only ranking. Clear Score mode to rerank the exact shortlist by PSR or DSR.'
+  }
+  if (String(includeAllDraft.value || '').trim() === 'true') {
+    return 'Requires include all = false.'
+  }
+  if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+    return 'Requires top K greater than 0.'
+  }
+  if (exportPathDraft.value.trim().length > 0) {
+    return 'Requires export-all CSV path to be empty.'
+  }
+  return hasValue
+    ? 'Reranks the exact returned shortlist using validation-aligned PSR or DSR confidence. Works with the primary top-K or the union shortlist.'
+    : 'Optional PSR / DSR rerank over the exact returned shortlist. Leaving this off preserves the current ranking order.'
+})
+const shortlistUnionModeStateNote = computed(() => {
+  const hasValue = shortlistUnionModeDraft.value.trim().length > 0
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'DynamicDoubleMa does not yet support shortlist union mode. Clear this field or switch strategy/backends.'
+      : 'Not available for DynamicDoubleMa.'
+  }
+  if (!shortlistUnionKindSupported.value) {
+    return hasValue
+      ? 'This strategy does not currently support shortlist union mode. Clear this field to avoid request rejection.'
+      : 'Available on the Double MA GPU-kernel family only.'
+  }
+  if (extraShortlistObjectivesDraft.value.trim().length === 0) {
+    return 'Requires Extra shortlist objectives to define additional exact shortlist heads.'
+  }
+  if (scoreModeDraft.value.trim().length > 0) {
+    return 'Requires objective-only ranking. Clear Score mode to enable exact union reranking.'
+  }
+  if (String(includeAllDraft.value || '').trim() === 'true') {
+    return 'Requires include all = false.'
+  }
+  if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+    return 'Requires top K greater than 0.'
+  }
+  if (exportPathDraft.value.trim().length > 0) {
+    return 'Requires export-all CSV path to be empty.'
+  }
+  return hasValue
+    ? 'Reranks the exact union shortlist using lexicographic, Pareto-front, or epsilon-front semantics before any optional confidence or slice reranks.'
+    : 'Optional exact rerank over the union shortlist. Leaving this off preserves primary-objective ordering.'
+})
+const shortlistSliceModeStateNote = computed(() => {
+  const hasValue = shortlistSliceModeDraft.value.trim().length > 0
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'DynamicDoubleMa does not yet support shortlist slice mode. Clear this field or switch strategy/backends.'
+      : 'Not available for DynamicDoubleMa.'
+  }
+  if (!shortlistSliceKindSupported.value) {
+    return hasValue
+      ? 'This strategy does not currently support shortlist slice mode. Clear this field to avoid request rejection.'
+      : 'Available on the Double MA GPU-kernel family only.'
+  }
+  if (String(includeAllDraft.value || '').trim() === 'true') {
+    return 'Requires include all = false.'
+  }
+  if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+    return 'Requires top K greater than 0.'
+  }
+  if (exportPathDraft.value.trim().length > 0) {
+    return 'Requires export-all CSV path to be empty.'
+  }
+  return hasValue
+    ? 'Adds exact half-split or quartile shortlist diagnostics and optional benchmark-relative summaries for the returned shortlist.'
+    : 'Optional exact slice diagnostics over the returned shortlist. Leaving this off preserves the current result surface.'
+})
+const shortlistSliceBenchmarkStateNote = computed(() => {
+  if (shortlistSliceModeDraft.value.trim().length === 0) {
+    return 'Requires shortlist slice mode.'
+  }
+  return shortlistSliceBenchmarkDraft.value.trim().length > 0
+    ? 'Compares each slice against the chosen benchmark without replacing downstream SPA.'
+    : 'Optional benchmark-relative slice summaries such as beat rate and worst-slice excess return.'
+})
+const shortlistNeighborhoodStateNote = computed(() => {
+  if (shortlistSliceModeDraft.value.trim().length === 0) {
+    return 'Requires shortlist slice mode.'
+  }
+  if (shortlistNeighborhoodRadiusDraft.value.trim().length === 0) {
+    return 'Optional local plateau / neighborhood robustness summary around the best shortlist candidate.'
+  }
+  return 'Exact local neighborhood robustness summary. Radius is required; step defaults to 1 when left blank.'
+})
+const hurdleTauStateNote = computed(() =>
+  hurdleTauDraft.value.trim().length > 0
+    ? 'Optional hurdle threshold applied to Sortino, Omega, and downside-family metrics. Leaving it blank preserves the current zero-threshold semantics.'
+    : 'Optional hurdle threshold. Blank or 0 preserves the current metric semantics.',
+)
 
 const stamp = computed(() => {
   const ms = Number(updatedAtUnixMs.value || 0)
@@ -78,6 +298,34 @@ function resolvedOptions(options: AdvancedOption[], fallbackValue: string, fallb
 
 const maSourceOptionItems = computed(() => resolvedOptions(maSourceOptions.value, maSource.value, maSource.value || 'close'))
 const objectiveOptionItems = computed(() => resolvedOptions(objectiveOptions.value, objective.value, objective.value || 'Sharpe'))
+const scoreModeOptionItems = computed(() => [
+  { value: '', label: 'Objective only (default)', disabled: false },
+  { value: 'balanced_risk_adjusted_10', label: 'Balanced Risk-Adjusted 10', disabled: false },
+  { value: 'adversarial_envelope_10', label: 'Adversarial Envelope 10', disabled: false },
+  { value: 'support_shrunk_10', label: 'Support-Shrunk 10', disabled: false },
+  { value: 'active_sortino_10', label: 'Active Sortino 10', disabled: false },
+])
+const shortlistConfidenceModeOptionItems = computed(() => [
+  { value: '', label: 'Off (default)', disabled: false },
+  { value: 'psr', label: 'PSR rerank', disabled: false },
+  { value: 'dsr', label: 'DSR rerank', disabled: false },
+])
+const shortlistUnionModeOptionItems = computed(() => [
+  { value: '', label: 'Primary objective order (default)', disabled: false },
+  { value: 'lexicographic', label: 'Lexicographic union', disabled: false },
+  { value: 'pareto', label: 'Pareto-front union', disabled: false },
+  { value: 'epsilon_front', label: 'Epsilon-front union', disabled: false },
+])
+const shortlistSliceModeOptionItems = computed(() => [
+  { value: '', label: 'Off (default)', disabled: false },
+  { value: 'halves', label: 'Halves', disabled: false },
+  { value: 'quartiles', label: 'Quartiles', disabled: false },
+])
+const shortlistSliceBenchmarkOptionItems = computed(() => [
+  { value: '', label: 'Off (default)', disabled: false },
+  { value: 'flat', label: 'Flat benchmark', disabled: false },
+  { value: 'buy_and_hold', label: 'Buy and Hold', disabled: false },
+])
 const modeOptionItems = computed(() => [{ value: 'Grid', label: 'Grid', disabled: false }])
 const includeAllOptionItems = computed(() => resolvedOptions(includeAllOptions.value, includeAll.value, includeAll.value || 'false'))
 
@@ -85,6 +333,16 @@ watch(
   () => [
     String(maSource.value || 'close'),
     String(objective.value || 'Sharpe'),
+    String(scoreMode.value || ''),
+    String(hurdleTau.value || ''),
+    Boolean(includeTradeMetrics.value),
+    String(extraShortlistObjectives.value || ''),
+    String(shortlistConfidenceMode.value || ''),
+    String(shortlistUnionMode.value || ''),
+    String(shortlistSliceMode.value || ''),
+    String(shortlistSliceBenchmark.value || ''),
+    String(shortlistNeighborhoodRadius.value || ''),
+    String(shortlistNeighborhoodStep.value || ''),
     String(mode.value || 'Grid'),
     String(heatmapBins.value || '128'),
     String(topK.value || '20'),
@@ -94,6 +352,16 @@ watch(
   ([
     nextMaSource,
     nextObjective,
+    nextScoreMode,
+    nextHurdleTau,
+    nextIncludeTradeMetrics,
+    nextExtraShortlistObjectives,
+    nextShortlistConfidenceMode,
+    nextShortlistUnionMode,
+    nextShortlistSliceMode,
+    nextShortlistSliceBenchmark,
+    nextShortlistNeighborhoodRadius,
+    nextShortlistNeighborhoodStep,
     nextMode,
     nextHeatmapBins,
     nextTopK,
@@ -102,6 +370,32 @@ watch(
   ]) => {
     if (maSourceDraft.value !== nextMaSource) maSourceDraft.value = nextMaSource
     if (objectiveDraft.value !== nextObjective) objectiveDraft.value = nextObjective
+    if (scoreModeDraft.value !== nextScoreMode) scoreModeDraft.value = nextScoreMode
+    if (hurdleTauDraft.value !== nextHurdleTau) hurdleTauDraft.value = nextHurdleTau
+    if (includeTradeMetricsDraft.value !== nextIncludeTradeMetrics) {
+      includeTradeMetricsDraft.value = nextIncludeTradeMetrics
+    }
+    if (extraShortlistObjectivesDraft.value !== nextExtraShortlistObjectives) {
+      extraShortlistObjectivesDraft.value = nextExtraShortlistObjectives
+    }
+    if (shortlistConfidenceModeDraft.value !== nextShortlistConfidenceMode) {
+      shortlistConfidenceModeDraft.value = nextShortlistConfidenceMode
+    }
+    if (shortlistUnionModeDraft.value !== nextShortlistUnionMode) {
+      shortlistUnionModeDraft.value = nextShortlistUnionMode
+    }
+    if (shortlistSliceModeDraft.value !== nextShortlistSliceMode) {
+      shortlistSliceModeDraft.value = nextShortlistSliceMode
+    }
+    if (shortlistSliceBenchmarkDraft.value !== nextShortlistSliceBenchmark) {
+      shortlistSliceBenchmarkDraft.value = nextShortlistSliceBenchmark
+    }
+    if (shortlistNeighborhoodRadiusDraft.value !== nextShortlistNeighborhoodRadius) {
+      shortlistNeighborhoodRadiusDraft.value = nextShortlistNeighborhoodRadius
+    }
+    if (shortlistNeighborhoodStepDraft.value !== nextShortlistNeighborhoodStep) {
+      shortlistNeighborhoodStepDraft.value = nextShortlistNeighborhoodStep
+    }
     if (modeDraft.value !== nextMode) modeDraft.value = nextMode
     if (heatmapBinsDraft.value !== nextHeatmapBins) heatmapBinsDraft.value = nextHeatmapBins
     if (topKDraft.value !== nextTopK) topKDraft.value = nextTopK
@@ -518,6 +812,188 @@ onBeforeUnmount(() => {
             </template>
           </div>
         </div>
+        <div v-if="showScoreModeControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueScoreMode">Score mode</label>
+            <select
+              id="vueScoreMode"
+              :value="scoreModeDraft"
+              @change="scoreModeDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('scoreMode', scoreModeDraft)"
+            >
+              <option
+                v-for="option in scoreModeOptionItems"
+                :key="`score_mode_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label for="vueHurdleTau">Hurdle tau</label>
+            <input
+              id="vueHurdleTau"
+              type="text"
+              :value="hurdleTauDraft"
+              placeholder="0.0"
+              @input="hurdleTauDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('hurdleTau', hurdleTauDraft)"
+              @change="commitInputValue('hurdleTau', hurdleTauDraft)"
+            />
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            Composite score modes are additive opt-ins over the existing metric row. Leaving Score mode at the default preserves objective-only ranking.
+            {{ ` ${hurdleTauStateNote}` }}
+          </div>
+        </div>
+        <div v-if="showIncludeTradeMetricsControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueIncludeTradeMetrics">Trade metrics</label>
+            <label class="checkboxRow" for="vueIncludeTradeMetrics">
+              <input
+                id="vueIncludeTradeMetrics"
+                type="checkbox"
+                :checked="includeTradeMetricsDraft"
+                @change="includeTradeMetricsDraft = ($event.target as HTMLInputElement).checked; advancedStore.setCheckboxField('includeTradeMetrics', includeTradeMetricsDraft)"
+              />
+              <span>Include trade summary metrics in the optimization result</span>
+            </label>
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            {{ includeTradeMetricsStateNote }}
+          </div>
+        </div>
+        <div v-if="showExtraShortlistObjectivesControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueExtraShortlistObjectives">Extra shortlist objectives</label>
+            <input
+              id="vueExtraShortlistObjectives"
+              type="text"
+              :value="extraShortlistObjectivesDraft"
+              placeholder="Pnl, Omega"
+              @input="extraShortlistObjectivesDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('extraShortlistObjectives', extraShortlistObjectivesDraft)"
+              @change="commitInputValue('extraShortlistObjectives', extraShortlistObjectivesDraft)"
+            />
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            {{ extraShortlistObjectivesStateNote }}
+          </div>
+        </div>
+        <div v-if="showShortlistConfidenceModeControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueShortlistConfidenceMode">Shortlist confidence mode</label>
+            <select
+              id="vueShortlistConfidenceMode"
+              :value="shortlistConfidenceModeDraft"
+              @change="shortlistConfidenceModeDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('shortlistConfidenceMode', shortlistConfidenceModeDraft)"
+            >
+              <option
+                v-for="option in shortlistConfidenceModeOptionItems"
+                :key="`shortlist_confidence_mode_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            {{ shortlistConfidenceModeStateNote }}
+          </div>
+        </div>
+        <div v-if="showShortlistUnionModeControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueShortlistUnionMode">Shortlist union mode</label>
+            <select
+              id="vueShortlistUnionMode"
+              :value="shortlistUnionModeDraft"
+              @change="shortlistUnionModeDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('shortlistUnionMode', shortlistUnionModeDraft)"
+            >
+              <option
+                v-for="option in shortlistUnionModeOptionItems"
+                :key="`shortlist_union_mode_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            {{ shortlistUnionModeStateNote }}
+          </div>
+        </div>
+        <div v-if="showShortlistSliceModeControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueShortlistSliceMode">Shortlist slice mode</label>
+            <select
+              id="vueShortlistSliceMode"
+              :value="shortlistSliceModeDraft"
+              @change="shortlistSliceModeDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('shortlistSliceMode', shortlistSliceModeDraft)"
+            >
+              <option
+                v-for="option in shortlistSliceModeOptionItems"
+                :key="`shortlist_slice_mode_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            {{ shortlistSliceModeStateNote }}
+          </div>
+        </div>
+        <div v-if="showShortlistSliceBenchmarkControl" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueShortlistSliceBenchmark">Shortlist slice benchmark</label>
+            <select
+              id="vueShortlistSliceBenchmark"
+              :value="shortlistSliceBenchmarkDraft"
+              @change="shortlistSliceBenchmarkDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('shortlistSliceBenchmark', shortlistSliceBenchmarkDraft)"
+            >
+              <option
+                v-for="option in shortlistSliceBenchmarkOptionItems"
+                :key="`shortlist_slice_benchmark_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div class="muted" style="grid-column: span 2;">
+            {{ shortlistSliceBenchmarkStateNote }}
+          </div>
+        </div>
+        <div v-if="showShortlistNeighborhoodControls" class="gridThree" style="margin-top: 0.75rem;">
+          <div>
+            <label for="vueShortlistNeighborhoodRadius">Neighborhood radius</label>
+            <input
+              id="vueShortlistNeighborhoodRadius"
+              type="text"
+              :value="shortlistNeighborhoodRadiusDraft"
+              placeholder="1"
+              @input="shortlistNeighborhoodRadiusDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('shortlistNeighborhoodRadius', shortlistNeighborhoodRadiusDraft)"
+              @change="commitInputValue('shortlistNeighborhoodRadius', shortlistNeighborhoodRadiusDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueShortlistNeighborhoodStep">Neighborhood step</label>
+            <input
+              id="vueShortlistNeighborhoodStep"
+              type="text"
+              :value="shortlistNeighborhoodStepDraft"
+              placeholder="1"
+              @input="shortlistNeighborhoodStepDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('shortlistNeighborhoodStep', shortlistNeighborhoodStepDraft)"
+              @change="commitInputValue('shortlistNeighborhoodStep', shortlistNeighborhoodStepDraft)"
+            />
+          </div>
+          <div class="muted">
+            {{ shortlistNeighborhoodStateNote }}
+          </div>
+        </div>
       </section>
 
       <section class="pane">
@@ -651,6 +1127,13 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.45rem;
+}
+
+.checkboxRow {
+  margin-top: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
 }
 
 .metaLine {

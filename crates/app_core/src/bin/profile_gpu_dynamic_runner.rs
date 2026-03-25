@@ -313,6 +313,14 @@ fn main() {
         strategy,
         halftrend_filter: None,
         objective: ObjectiveKind::Sharpe,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(50),
         include_all: Some(false),
@@ -322,6 +330,9 @@ fn main() {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     };
 
     for i in 0..iterations {
@@ -363,3 +374,7 @@ fn main() {
         }
     }
 }
+
+
+
+

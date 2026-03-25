@@ -2,8 +2,8 @@ use ta_optimizer::ObjectiveKind;
 use ta_strategies::double_ma::StrategyConfig;
 
 use crate::double_ma::{
-    kernel_regime_filters_enabled, Backend, GpuExecutionPolicy, IndicatorRouteDecisionSummary,
-    IndicatorRoutePlanSummary,
+    kernel_regime_filters_enabled, Backend, DoubleMaScoreMode, GpuExecutionPolicy,
+    IndicatorRouteDecisionSummary, IndicatorRoutePlanSummary,
 };
 use crate::strategy_gpu_runtime::StrategyCapabilityReport;
 
@@ -42,7 +42,7 @@ pub(crate) fn gpu_kernel_blockers_for_request(
     slow_ma: &str,
     strategy: &StrategyConfig,
     regime_filter_present: bool,
-    objective: ObjectiveKind,
+    _objective: ObjectiveKind,
     top_k: usize,
     include_all: bool,
 ) -> Vec<String> {
@@ -59,11 +59,6 @@ pub(crate) fn gpu_kernel_blockers_for_request(
     if regime_filter_present && !kernel_regime_filters_enabled() {
         blockers
             .push("regime filter provided while kernel regime filters are disabled".to_string());
-    }
-    if matches!(objective, ObjectiveKind::Sortino | ObjectiveKind::Omega) {
-        blockers.push(format!(
-            "objective {objective:?} is not supported by GPU kernel path"
-        ));
     }
     if !gpu_kernel_topk_supported(top_k, include_all) {
         blockers.push(
@@ -90,6 +85,7 @@ pub(crate) fn build_strategy_capability_report_for_request(
     strategy: &StrategyConfig,
     regime_filter_present: bool,
     objective: ObjectiveKind,
+    _score_mode: Option<DoubleMaScoreMode>,
     top_k: usize,
     include_all: bool,
 ) -> StrategyCapabilityReport {
@@ -224,6 +220,7 @@ mod tests {
             &StrategyConfig::default(),
             false,
             ObjectiveKind::Sharpe,
+            None,
             50,
             false,
         );
@@ -234,20 +231,21 @@ mod tests {
     }
 
     #[test]
-    fn capability_report_keeps_cpu_dynamic_when_gpu_is_blocked() {
+    fn capability_report_allows_omega_for_kernel_capable_request() {
         let report = build_strategy_capability_report_for_request(
             "alma",
             "alma",
             &StrategyConfig::default(),
             false,
             ObjectiveKind::Omega,
+            None,
             50,
             false,
         );
-        assert!(!report.gpu_static_supported);
-        assert!(!report.gpu_dynamic_supported);
+        assert!(report.gpu_static_supported);
+        assert!(report.gpu_dynamic_supported);
         assert!(report.cpu_dynamic_supported);
-        assert!(!report.reasons.is_empty());
+        assert!(report.reasons.is_empty());
     }
 
     #[test]
@@ -261,6 +259,7 @@ mod tests {
             &strategy,
             false,
             ObjectiveKind::Sharpe,
+            None,
             50,
             false,
         );
@@ -285,6 +284,7 @@ mod tests {
             &strategy,
             false,
             ObjectiveKind::Sharpe,
+            None,
             50,
             false,
         );

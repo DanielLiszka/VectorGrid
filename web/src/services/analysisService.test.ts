@@ -330,6 +330,263 @@ describe('analysis service', () => {
     expect((document.querySelector('#paretoWrapVue') as HTMLElement | null)?.style.display).toBe('block')
   })
 
+  it('surfaces derived diagnostics when a DoubleMa score mode is active', () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: 'DoubleMa',
+        objective: 'Sharpe',
+        score_mode: 'active_sortino_10',
+        top_k: 5,
+      },
+      res: {
+        top: [
+          [
+            { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+            {
+              pnl: 0.18,
+              sharpe: 1.2,
+              sortino: 1.9,
+              downside_deviation: 0.1,
+              calmar: 0.95,
+              omega: 1.55,
+              volatility: 0.16,
+              ulcer_index: 0.05,
+              martin_ratio: 2.1,
+              max_dd: 0.11,
+              trades: 22,
+              exposure: 0.4,
+              net_exposure: 0.03,
+            },
+          ],
+        ],
+        best_params: { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+        best_metrics: {
+          pnl: 0.18,
+          sharpe: 1.2,
+          sortino: 1.9,
+          downside_deviation: 0.1,
+          calmar: 0.95,
+          omega: 1.55,
+          volatility: 0.16,
+          ulcer_index: 0.05,
+          martin_ratio: 2.1,
+          max_dd: 0.11,
+          trades: 22,
+          exposure: 0.4,
+          net_exposure: 0.03,
+        },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    const labels = Array.isArray(store.topColumns)
+      ? store.topColumns.map((col) => String((col as { label?: unknown }).label || ''))
+      : []
+    expect(labels).toContain('ActMean')
+    expect(labels).toContain('ActSort')
+    expect(labels).toContain('Chron')
+    expect(labels).toContain('DnShare')
+    expect(String(store.bestSummary || '')).toContain('active_sortino=')
+    expect(String(store.bestSummary || '')).toContain('drawdown_chronicity=')
+  })
+
+  it('surfaces shortlist confidence mode in the best meta and summary', () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: 'DoubleMa',
+        objective: 'Sharpe',
+        shortlist_confidence_mode: 'psr',
+        top_k: 5,
+      },
+      res: {
+        best_params: { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+        best_metrics: {
+          pnl: 0.18,
+          sharpe: 1.2,
+          sortino: 1.9,
+          downside_deviation: 0.1,
+          calmar: 0.95,
+          omega: 1.55,
+          volatility: 0.16,
+          ulcer_index: 0.05,
+          martin_ratio: 2.1,
+          max_dd: 0.11,
+          trades: 22,
+          exposure: 0.4,
+          net_exposure: 0.03,
+        },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(String(store.bestMeta || '')).toContain('shortlist_confidence=psr')
+    expect(String(store.bestSummary || '')).toContain('shortlist_confidence_mode=psr')
+  })
+
+  it('surfaces hurdle tau in the best meta and summary', () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: 'DoubleMa',
+        objective: 'Sortino',
+        hurdle_tau: 0.01,
+        top_k: 5,
+      },
+      res: {
+        best_params: { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+        best_metrics: {
+          pnl: 0.18,
+          sharpe: 1.2,
+          sortino: 1.9,
+          downside_deviation: 0.1,
+          calmar: 0.95,
+          omega: 1.55,
+          volatility: 0.16,
+          ulcer_index: 0.05,
+          martin_ratio: 2.1,
+          max_dd: 0.11,
+          trades: 22,
+          exposure: 0.4,
+          net_exposure: 0.03,
+        },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(String(store.bestMeta || '')).toContain('hurdle_tau=0.01')
+    expect(String(store.bestSummary || '')).toContain('hurdle_tau=0.01')
+  })
+
+  it('surfaces nonzero kappa tau in the best stats and summary', () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: 'DoubleMa',
+        objective: 'Sortino',
+        hurdle_tau: 0.01,
+        top_k: 5,
+      },
+      res: {
+        best_params: { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+        best_metrics: {
+          pnl: 0.18,
+          sharpe: 1.2,
+          sortino: 1.9,
+          downside_deviation: 0.1,
+          calmar: 0.95,
+          omega: 1.55,
+          kappa_tau: 1.42,
+          volatility: 0.16,
+          ulcer_index: 0.05,
+          martin_ratio: 2.1,
+          max_dd: 0.11,
+          trades: 22,
+          exposure: 0.4,
+          net_exposure: 0.03,
+        },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(Array.isArray(store.bestStats)).toBe(true)
+    expect(
+      (store.bestStats as Array<{ label?: string; value?: string }>).some(
+        (entry) => entry.label === 'Kappaτ' && String(entry.value || '').includes('1.420000'),
+      ),
+    ).toBe(true)
+    expect(String(store.bestSummary || '')).toContain('kappa_tau=1.420000')
+  })
+
+  it('surfaces shortlist union mode in the best meta and summary', () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: 'DoubleMa',
+        objective: 'Sharpe',
+        extra_shortlist_objectives: ['Pnl', 'Omega'],
+        shortlist_union_mode: 'pareto',
+        top_k: 5,
+      },
+      res: {
+        best_params: { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+        best_metrics: {
+          pnl: 0.18,
+          sharpe: 1.2,
+          sortino: 1.9,
+          downside_deviation: 0.1,
+          calmar: 0.95,
+          omega: 1.55,
+          volatility: 0.16,
+          ulcer_index: 0.05,
+          martin_ratio: 2.1,
+          max_dd: 0.11,
+          trades: 22,
+          exposure: 0.4,
+          net_exposure: 0.03,
+        },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(String(store.bestMeta || '')).toContain('shortlist_union=pareto')
+    expect(String(store.bestSummary || '')).toContain('shortlist_union_mode=pareto')
+  })
+
+  it('surfaces shortlist slice diagnostics settings in the best meta and summary', () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: 'DoubleMa',
+        objective: 'Sharpe',
+        extra_shortlist_objectives: ['Pnl', 'Omega'],
+        shortlist_slice_mode: 'halves',
+        shortlist_slice_benchmark: 'buy_and_hold',
+        shortlist_neighborhood_radius: 1,
+        shortlist_neighborhood_step: 2,
+        top_k: 5,
+      },
+      res: {
+        best_params: { fast_ma_type: 'sma', fast_len: 5, slow_ma_type: 'ema', slow_len: 20 },
+        best_metrics: {
+          pnl: 0.18,
+          sharpe: 1.2,
+          sortino: 1.9,
+          downside_deviation: 0.1,
+          calmar: 0.95,
+          omega: 1.55,
+          volatility: 0.16,
+          ulcer_index: 0.05,
+          martin_ratio: 2.1,
+          max_dd: 0.11,
+          trades: 22,
+          exposure: 0.4,
+          net_exposure: 0.03,
+        },
+      },
+    })
+    const store = useAnalysisStore()
+
+    const ok = refreshAnalysisFromWorkflowRun()
+
+    expect(ok).toBe(true)
+    expect(String(store.bestMeta || '')).toContain('shortlist_slice=halves')
+    expect(String(store.bestMeta || '')).toContain('slice_neighborhood=1x2')
+    expect(String(store.bestSummary || '')).toContain('shortlist_slice_mode=halves')
+    expect(String(store.bestSummary || '')).toContain('shortlist_slice_benchmark=buy_and_hold')
+    expect(String(store.bestSummary || '')).toContain('shortlist_neighborhood=1x2')
+  })
+
   it('sets and clears baseline from Vue stores when run context is available', async () => {
     seedWorkflowRun({
       ts: '2026-02-26T12:01:00.000Z',

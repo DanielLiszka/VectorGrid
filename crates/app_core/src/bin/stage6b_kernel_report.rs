@@ -207,6 +207,14 @@ fn make_request(backend: Backend, strategy: StrategyConfig) -> DoubleMaRequest {
         strategy,
         halftrend_filter: None,
         objective: ObjectiveKind::Sharpe,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(TOP_K),
         include_all: Some(false),
@@ -216,6 +224,9 @@ fn make_request(backend: Backend, strategy: StrategyConfig) -> DoubleMaRequest {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     }
 }
 
@@ -400,3 +411,7 @@ fn main() {
         println!("{}", json);
     }
 }
+
+
+
+

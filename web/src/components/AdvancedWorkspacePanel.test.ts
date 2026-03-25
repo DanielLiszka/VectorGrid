@@ -99,4 +99,163 @@ describe('AdvancedWorkspacePanel', () => {
 
     wrapper.unmount()
   })
+
+  it('shows shortlist confidence control for Double MA', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('PSR / DSR rerank')
+
+    wrapper.unmount()
+  })
+
+  it('keeps shortlist confidence control visible with a stale DynamicDoubleMa value so it can be cleared', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DynamicDoubleMa'
+    advanced.shortlistConfidenceMode = 'psr'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('DynamicDoubleMa does not yet support shortlist confidence mode')
+
+    wrapper.unmount()
+  })
+
+  it('shows shortlist union control for Double MA', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    advanced.extraShortlistObjectives = 'Pnl,Omega'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('union shortlist')
+
+    wrapper.unmount()
+  })
+
+  it('shows hurdle tau control for Double MA and reflects the stored value', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    advanced.hurdleTau = '0.01'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const input = document.querySelector('#vueHurdleTau') as HTMLInputElement | null
+    expect(input).not.toBeNull()
+    expect(input?.value).toBe('0.01')
+    expect(document.body.textContent || '').toContain('Hurdle tau')
+
+    wrapper.unmount()
+  })
+
+  it('keeps shortlist union control visible with a stale DynamicDoubleMa value so it can be cleared', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DynamicDoubleMa'
+    advanced.shortlistUnionMode = 'pareto'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('DynamicDoubleMa does not yet support shortlist union mode')
+
+    wrapper.unmount()
+  })
+
+  it('shows shortlist slice controls for Double MA', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    advanced.extraShortlistObjectives = 'Pnl,Omega'
+    advanced.shortlistSliceMode = 'halves'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistSliceBenchmark')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistNeighborhoodRadius')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistNeighborhoodStep')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('Shortlist slice mode')
+
+    wrapper.unmount()
+  })
+
+  it('keeps shortlist slice controls visible with a stale DynamicDoubleMa value so they can be cleared', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DynamicDoubleMa'
+    advanced.shortlistSliceMode = 'halves'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('DynamicDoubleMa does not yet support shortlist slice mode')
+
+    wrapper.unmount()
+  })
 })

@@ -331,6 +331,7 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
         &ir.execution.strategy,
         regime_filter_present,
         objective,
+        None,
         top_k,
         include_all,
     );
@@ -2055,8 +2056,11 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
             sharpe: 0.0,
             sortino: 0.0,
             downside_deviation: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
             calmar,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index,
             martin_ratio,
@@ -2064,6 +2068,15 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
             trades,
             exposure,
             net_exposure,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
         });
     }
 
@@ -2121,8 +2134,11 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         sharpe,
         sortino,
         downside_deviation: downside_dev,
+        downside_frequency: 0.0,
+        downside_severity: 0.0,
         calmar,
         omega,
+        kappa_tau: 0.0,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -2130,6 +2146,15 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         trades,
         exposure,
         net_exposure,
+        long_mean_return: 0.0,
+        short_mean_return: 0.0,
+        closed_trades: 0,
+        winning_trades: 0,
+        losing_trades: 0,
+        gross_profit: 0.0,
+        gross_loss: 0.0,
+        underwater_fraction: 0.0,
+        max_underwater_duration_bars: 0,
     })
 }
 
@@ -2352,6 +2377,14 @@ mod tests {
             strategy: strategy.clone(),
             halftrend_filter: None,
             objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
             mode: OptimizationMode::Grid,
             top_k: Some(5),
             include_all: Some(false),
@@ -2362,6 +2395,9 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
+           include_trade_metrics: false,
+            
+            hurdle_tau: None,
         };
 
         let plan = compile_dynamic_plan_for_double_ma_config(
@@ -2888,6 +2924,14 @@ mod tests {
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
             mode: OptimizationMode::Grid,
             top_k: Some(5),
             include_all: Some(false),
@@ -2898,6 +2942,9 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
+           include_trade_metrics: false,
+            
+            hurdle_tau: None,
         };
         let plan = compile_dynamic_plan_for_double_ma_config(
             &req.ma_source,
@@ -2934,6 +2981,14 @@ mod tests {
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
             mode: OptimizationMode::Grid,
             top_k: Some(5),
             include_all: Some(false),
@@ -2944,6 +2999,9 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
+           include_trade_metrics: false,
+            
+            hurdle_tau: None,
         };
         let plan = compile_dynamic_plan_for_double_ma_config(
             &req.ma_source,
@@ -3342,3 +3400,8 @@ mod tests {
         );
     }
 }
+
+
+
+
+

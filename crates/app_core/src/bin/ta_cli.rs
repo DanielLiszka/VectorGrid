@@ -276,6 +276,14 @@ fn main() -> Result<(), String> {
         strategy,
         halftrend_filter,
         objective,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(cli.top_k),
         include_all: Some(cli.include_all),
@@ -285,6 +293,9 @@ fn main() -> Result<(), String> {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     };
 
     let cancel = AtomicBool::new(false);
@@ -298,3 +309,7 @@ fn main() -> Result<(), String> {
     );
     Ok(())
 }
+
+
+
+

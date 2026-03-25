@@ -936,6 +936,14 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         strategy: req.base_strategy.clone(),
                         halftrend_filter: None,
                         objective,
+                        score_mode: None,
+                        extra_shortlist_objectives: None,
+                        shortlist_confidence_mode: None,
+                        shortlist_union_mode: None,
+                        shortlist_slice_mode: None,
+                        shortlist_slice_benchmark: None,
+                        shortlist_neighborhood_radius: None,
+                        shortlist_neighborhood_step: None,
                         mode: cfg.mode,
                         top_k: Some(cfg.top_k),
                         include_all: Some(false),
@@ -945,6 +953,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         dynamic_strategy_ir: None,
                         gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                         persist_followup_cache: false,
+                        include_trade_metrics: false,
+                        hurdle_tau: None,
                     };
 
                     let dm_res = run_double_ma_optimization_blocking_with_candles(
@@ -2965,3 +2975,6 @@ mod tests {
         assert!(!res.pareto.is_empty());
     }
 }
+
+
+

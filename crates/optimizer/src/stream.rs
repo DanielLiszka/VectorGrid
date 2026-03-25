@@ -36,6 +36,8 @@ struct HeatmapAgg {
     slow_min: u16,
     slow_max: u16,
     values: Vec<f64>,
+    sum_values: Vec<f64>,
+    count_values: Vec<u32>,
 }
 
 impl HeatmapAgg {
@@ -58,6 +60,8 @@ impl HeatmapAgg {
             slow_min,
             slow_max,
             values: vec![f64::NEG_INFINITY; len],
+            sum_values: vec![0.0; len],
+            count_values: vec![0; len],
         }
     }
 
@@ -89,6 +93,12 @@ impl HeatmapAgg {
                 *cell = score;
             }
         }
+        if let Some(sum) = self.sum_values.get_mut(idx) {
+            *sum += score;
+        }
+        if let Some(count) = self.count_values.get_mut(idx) {
+            *count = count.saturating_add(1);
+        }
     }
 
     fn finalize(self) -> OptimizationHeatmap {
@@ -103,6 +113,18 @@ impl HeatmapAgg {
                 }
             })
             .collect();
+        let mean_values: Vec<Option<f64>> = self
+            .sum_values
+            .into_iter()
+            .zip(self.count_values.iter().copied())
+            .map(|(sum, count)| {
+                if count > 0 {
+                    Some(sum / count as f64)
+                } else {
+                    None
+                }
+            })
+            .collect();
         OptimizationHeatmap {
             bins_fast: self.bins_fast,
             bins_slow: self.bins_slow,
@@ -111,6 +133,8 @@ impl HeatmapAgg {
             slow_min: self.slow_min,
             slow_max: self.slow_max,
             values,
+            mean_values: Some(mean_values),
+            sample_counts: Some(self.count_values),
         }
     }
 }
@@ -137,6 +161,7 @@ impl Ord for ScoredCombo {
 
 pub struct StreamAggregator {
     objective: ObjectiveKind,
+    score_fn: Option<fn(&Metrics) -> f64>,
     top_k: usize,
     num_candles: usize,
 
@@ -156,6 +181,7 @@ impl StreamAggregator {
     ) -> Self {
         Self {
             objective,
+            score_fn: None,
             top_k,
             num_candles,
             num_combos: 0,
@@ -163,6 +189,25 @@ impl StreamAggregator {
             heap: BinaryHeap::new(),
             all: if include_all { Some(Vec::new()) } else { None },
             heatmap: None,
+        }
+    }
+
+    pub fn with_score_fn(mut self, score_fn: fn(&Metrics) -> f64) -> Self {
+        self.score_fn = Some(score_fn);
+        self
+    }
+
+    #[inline]
+    fn score_value(&self, metrics: &Metrics) -> f64 {
+        let score = if let Some(score_fn) = self.score_fn {
+            score_fn(metrics)
+        } else {
+            score(metrics, self.objective)
+        };
+        if score.is_finite() {
+            score
+        } else {
+            f64::NEG_INFINITY
         }
     }
 
@@ -183,7 +228,7 @@ impl StreamAggregator {
 
     pub fn push(&mut self, params: DoubleMaParams, metrics: Metrics) {
         self.num_combos = self.num_combos.saturating_add(1);
-        let s = score(&metrics, self.objective);
+        let s = self.score_value(&metrics);
 
         if let Some(all) = self.all.as_mut() {
             all.push((params.clone(), metrics.clone()));
@@ -242,6 +287,12 @@ impl StreamAggregator {
             return;
         }
 
+        let self_score_fn = self.score_fn.map(|f| f as usize);
+        let other_score_fn = other.score_fn.map(|f| f as usize);
+        if self_score_fn != other_score_fn {
+            return;
+        }
+
         if self.top_k != other.top_k {
             return;
         }
@@ -293,6 +344,12 @@ impl StreamAggregator {
                         *dst = src;
                     }
                 }
+                for (dst, src) in a.sum_values.iter_mut().zip(b.sum_values.into_iter()) {
+                    *dst += src;
+                }
+                for (dst, src) in a.count_values.iter_mut().zip(b.count_values.into_iter()) {
+                    *dst = dst.saturating_add(src);
+                }
             }
             (None, Some(b)) => {
                 self.heatmap = Some(b);
@@ -317,5 +374,56 @@ impl StreamAggregator {
             num_combos: self.num_combos,
             num_candles: self.num_candles,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metrics_with_sharpe(sharpe: f64) -> Metrics {
+        Metrics {
+            sharpe,
+            ..Metrics::default()
+        }
+    }
+
+    fn params(fast: u16, slow: u16) -> DoubleMaParams {
+        DoubleMaParams {
+            fast_len: fast,
+            slow_len: slow,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        }
+    }
+
+    #[test]
+    fn heatmap_finalize_includes_mean_and_counts() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100)
+            .with_heatmap(2, 2, 5, 15, 20, 30);
+        agg.push(params(5, 20), metrics_with_sharpe(1.0));
+        agg.push(params(5, 20), metrics_with_sharpe(3.0));
+
+        let heatmap = agg.finalize().expect("result").heatmap.expect("heatmap");
+        assert_eq!(heatmap.values[0], Some(3.0));
+        assert_eq!(heatmap.mean_values.as_ref().expect("means")[0], Some(2.0));
+        assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[0], 2);
+    }
+
+    #[test]
+    fn heatmap_merge_preserves_mean_and_counts() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100)
+            .with_heatmap(2, 2, 5, 15, 20, 30);
+        left.push(params(5, 20), metrics_with_sharpe(1.0));
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100)
+            .with_heatmap(2, 2, 5, 15, 20, 30);
+        right.push(params(5, 20), metrics_with_sharpe(3.0));
+
+        left.merge(right);
+        let heatmap = left.finalize().expect("result").heatmap.expect("heatmap");
+        assert_eq!(heatmap.values[0], Some(3.0));
+        assert_eq!(heatmap.mean_values.as_ref().expect("means")[0], Some(2.0));
+        assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[0], 2);
     }
 }

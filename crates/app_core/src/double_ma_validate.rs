@@ -6,9 +6,10 @@ use crate::composite_validate::{
 };
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
-    compute_combined_regime_filter, compute_log_returns_f64, first_finite_idx,
-    ma_matrix_cpu_f32_staging, ma_matrix_cpu_f64, resolve_alma_params_for_side, validate_ma_kind,
-    validate_strategy_cfg, Backend, BackendUsed, GpuExecutionPolicy, HalfTrendRegimeFilter,
+    compute_combined_regime_filter, compute_log_returns_f64, exact_fee_stress_pnl,
+    first_finite_idx, ma_matrix_cpu_f32_staging, ma_matrix_cpu_f64, resolve_alma_params_for_side,
+    validate_ma_kind, validate_strategy_cfg, validation_fee_stress_fee_bps, Backend, BackendUsed,
+    GpuExecutionPolicy, HalfTrendRegimeFilter,
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
@@ -208,6 +209,8 @@ fn gpu_exact_combo_metrics_for_ranges(
                 fast_alma_sigma: plan.fast_alma_sigma,
                 slow_alma_offset: plan.slow_alma_offset,
                 slow_alma_sigma: plan.slow_alma_sigma,
+                hurdle_tau: 0.0,
+                include_trade_metrics: false,
             },
             &plan.first_strategy,
             ranges,
@@ -219,6 +222,10 @@ fn gpu_exact_combo_metrics_for_ranges(
 pub struct ValidationAuxWorkMask {
     pub regime_slice_robustness: bool,
     pub friction_stress: bool,
+    pub entry_margin_fragility: bool,
+    pub underwater_duration: bool,
+    pub checkpoint_robustness: bool,
+    pub benchmark_slice_summary: bool,
 }
 
 impl ValidationAuxWorkMask {
@@ -226,6 +233,10 @@ impl ValidationAuxWorkMask {
         Self {
             regime_slice_robustness: true,
             friction_stress: true,
+            entry_margin_fragility: true,
+            underwater_duration: true,
+            checkpoint_robustness: true,
+            benchmark_slice_summary: true,
         }
     }
 
@@ -233,6 +244,10 @@ impl ValidationAuxWorkMask {
         Self {
             regime_slice_robustness: false,
             friction_stress: false,
+            entry_margin_fragility: false,
+            underwater_duration: false,
+            checkpoint_robustness: false,
+            benchmark_slice_summary: false,
         }
     }
 }
@@ -1592,6 +1607,14 @@ pub struct DoubleMaValidationCandidateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub friction_stress: Option<FrictionStressStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_margin_fragility: Option<EntryMarginFragilityStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underwater_duration: Option<UnderwaterDurationStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_robustness: Option<CheckpointRobustnessStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub benchmark_slice_summary: Option<BenchmarkSliceSummaryStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker: Option<CrossTickerStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker_pareto: Option<bool>,
@@ -1743,6 +1766,8 @@ pub struct FrictionStressStats {
     pub pass_count: usize,
     pub pass_frac: f64,
     pub worst_scenario_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_fee_stress_pnl: Option<f64>,
     pub worst_pnl: f64,
     pub worst_sharpe: f64,
     pub worst_downside_deviation: f64,
@@ -1751,6 +1776,80 @@ pub struct FrictionStressStats {
     pub worst_max_dd: f64,
     pub mean_rank: f64,
     pub max_rank_drift: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EntryMarginFragilityStats {
+    pub entry_count: usize,
+    pub mean_entry_margin: f64,
+    pub min_entry_margin: f64,
+    pub harmonic_entry_margin: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_mean_margin: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct UnderwaterDurationStats {
+    pub evaluated_bars: usize,
+    pub underwater_bars: usize,
+    pub underwater_fraction: f64,
+    pub max_underwater_duration_bars: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CheckpointSliceStats {
+    pub label: String,
+    pub start_bar: usize,
+    pub end_bar: usize,
+    pub stats: RegimeBucketStats,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CheckpointOmissionStats {
+    pub omitted_label: String,
+    pub stats: RegimeBucketStats,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CheckpointRobustnessStats {
+    pub half_slices: Vec<CheckpointSliceStats>,
+    pub quartile_slices: Vec<CheckpointSliceStats>,
+    pub worst_half_label: String,
+    pub worst_half_sharpe: f64,
+    pub positive_half_frac: f64,
+    pub worst_quartile_label: String,
+    pub worst_quartile_sharpe: f64,
+    pub positive_quartile_frac: f64,
+    pub best_quartile_omission: CheckpointOmissionStats,
+    pub worst_quartile_omission: CheckpointOmissionStats,
+    pub omission_sharpe_spread: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BenchmarkSliceOmissionStats {
+    pub omitted_label: String,
+    pub mean_excess_return: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BenchmarkSliceModeSummaryStats {
+    pub slice_count: usize,
+    pub beat_rate: f64,
+    pub mean_excess_return: f64,
+    pub worst_excess_return: f64,
+    pub best_excess_return: f64,
+    pub worst_slice_label: String,
+    pub best_slice_label: String,
+    pub best_omission: BenchmarkSliceOmissionStats,
+    pub worst_omission: BenchmarkSliceOmissionStats,
+    pub omission_mean_excess_spread: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BenchmarkSliceSummaryStats {
+    pub benchmark: SpaBenchmarkKind,
+    pub halves: BenchmarkSliceModeSummaryStats,
+    pub quartiles: BenchmarkSliceModeSummaryStats,
 }
 
 fn emit_progress(
@@ -2064,7 +2163,10 @@ fn slice_return_sums_for_series(
 const DEFAULT_REGIME_SLICE_VOL_WINDOW: usize = 48;
 const DEFAULT_REGIME_SLICE_FINALISTS: usize = 5;
 const DEFAULT_FRICTION_STRESS_FINALISTS: usize = 4;
-const DEFAULT_FRICTION_FEE_FLOOR_BPS: f64 = 2.0;
+const DEFAULT_ENTRY_MARGIN_FRAGILITY_FINALISTS: usize = 5;
+const DEFAULT_UNDERWATER_DURATION_FINALISTS: usize = 5;
+const DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS: usize = 5;
+const DEFAULT_BENCHMARK_SLICE_FINALISTS: usize = 5;
 const DEFAULT_FRICTION_SPREAD_FLOOR_BPS: f64 = 4.0;
 const DEFAULT_FRICTION_SLIPPAGE_FLOOR_BPS: f64 = 2.0;
 
@@ -2136,6 +2238,405 @@ fn compute_step_returns_for_series(
     }
 
     (step_returns, active_flags, trade_entries, spread_ratio)
+}
+
+fn compute_entry_margin_fragility_from_arrays(
+    active_flags: &[bool],
+    trade_entries: &[bool],
+    spread_ratio: &[f64],
+    start_t: usize,
+) -> Option<EntryMarginFragilityStats> {
+    let n = active_flags
+        .len()
+        .min(trade_entries.len())
+        .min(spread_ratio.len());
+    if start_t >= n {
+        return None;
+    }
+
+    let mut entry_count = 0usize;
+    let mut sum_entry_margin = 0.0f64;
+    let mut sum_inv_entry_margin = 0.0f64;
+    let mut min_entry_margin = f64::INFINITY;
+    let mut active_sum_margin = 0.0f64;
+    let mut active_count = 0usize;
+
+    for t in start_t..n {
+        let margin = spread_ratio[t];
+        if !margin.is_finite() || margin <= 0.0 {
+            continue;
+        }
+        if active_flags[t] {
+            active_sum_margin += margin;
+            active_count += 1;
+        }
+        if trade_entries[t] {
+            entry_count += 1;
+            sum_entry_margin += margin;
+            sum_inv_entry_margin += 1.0 / margin.max(1.0e-12);
+            min_entry_margin = min_entry_margin.min(margin);
+        }
+    }
+
+    if entry_count == 0 {
+        return None;
+    }
+
+    Some(EntryMarginFragilityStats {
+        entry_count,
+        mean_entry_margin: sum_entry_margin / entry_count as f64,
+        min_entry_margin,
+        harmonic_entry_margin: entry_count as f64 / sum_inv_entry_margin.max(1.0e-12),
+        active_mean_margin: (active_count > 0).then_some(active_sum_margin / active_count as f64),
+    })
+}
+
+fn compute_underwater_duration_from_step_returns(
+    step_returns: &[f64],
+    start_t: usize,
+) -> Option<UnderwaterDurationStats> {
+    if start_t >= step_returns.len() {
+        return None;
+    }
+
+    let mut log_eq = 0.0f64;
+    let mut log_peak = 0.0f64;
+    let mut underwater_bars = 0usize;
+    let mut underwater_run = 0usize;
+    let mut max_underwater_duration_bars = 0usize;
+    let mut evaluated_bars = 0usize;
+
+    for &step_return in &step_returns[start_t..] {
+        evaluated_bars += 1;
+        let growth = (1.0 + step_return).max(1.0e-300);
+        log_eq += growth.ln();
+        if log_eq >= log_peak - 1.0e-12 {
+            if log_eq > log_peak {
+                log_peak = log_eq;
+            }
+            underwater_run = 0;
+            continue;
+        }
+
+        underwater_bars += 1;
+        underwater_run += 1;
+        max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+    }
+
+    Some(UnderwaterDurationStats {
+        evaluated_bars,
+        underwater_bars,
+        underwater_fraction: if evaluated_bars > 0 {
+            underwater_bars as f64 / evaluated_bars as f64
+        } else {
+            0.0
+        },
+        max_underwater_duration_bars,
+    })
+}
+
+fn compute_entry_margin_fragility_stats(
+    series: &CandidateSeries<'_>,
+) -> Option<EntryMarginFragilityStats> {
+    let (_, active_flags, trade_entries, spread_ratio) = compute_step_returns_for_series(series);
+    compute_entry_margin_fragility_from_arrays(
+        &active_flags,
+        &trade_entries,
+        &spread_ratio,
+        series.start_t,
+    )
+}
+
+fn compute_underwater_duration_stats(
+    series: &CandidateSeries<'_>,
+) -> Option<UnderwaterDurationStats> {
+    let (step_returns, _, _, _) = compute_step_returns_for_series(series);
+    compute_underwater_duration_from_step_returns(&step_returns, series.start_t)
+}
+
+fn checkpoint_ranges(
+    start_t: usize,
+    end_t: usize,
+    parts: usize,
+    label_prefix: &str,
+) -> Vec<(String, usize, usize)> {
+    if parts == 0 || end_t <= start_t {
+        return Vec::new();
+    }
+    let len = end_t - start_t;
+    if len < parts {
+        return Vec::new();
+    }
+    let base = len / parts;
+    let rem = len % parts;
+    let mut out = Vec::with_capacity(parts);
+    let mut cursor = start_t;
+    for idx in 0..parts {
+        let seg_len = base + usize::from(idx < rem);
+        let next = cursor.saturating_add(seg_len).min(end_t);
+        out.push((format!("{label_prefix}{}", idx + 1), cursor, next));
+        cursor = next;
+    }
+    out
+}
+
+fn checkpoint_slice_stats_from_bucket(
+    label: String,
+    start_bar: usize,
+    end_bar: usize,
+    stats: RegimeBucketStats,
+) -> CheckpointSliceStats {
+    CheckpointSliceStats {
+        label,
+        start_bar,
+        end_bar,
+        stats,
+    }
+}
+
+fn checkpoint_omission_stats_from_bucket(
+    omitted_label: String,
+    stats: RegimeBucketStats,
+) -> CheckpointOmissionStats {
+    CheckpointOmissionStats {
+        omitted_label,
+        stats,
+    }
+}
+
+fn compute_checkpoint_robustness_from_arrays(
+    step_returns: &[f64],
+    active_flags: &[bool],
+    trade_entries: &[bool],
+    start_t: usize,
+) -> Option<CheckpointRobustnessStats> {
+    let n = step_returns
+        .len()
+        .min(active_flags.len())
+        .min(trade_entries.len());
+    if n <= start_t.saturating_add(1) {
+        return None;
+    }
+
+    let half_ranges = checkpoint_ranges(start_t, n, 2, "half_");
+    let quartile_ranges = checkpoint_ranges(start_t, n, 4, "q");
+    if half_ranges.len() < 2 || quartile_ranges.len() < 4 {
+        return None;
+    }
+
+    let summarize_ranges = |ranges: &[(String, usize, usize)]| -> Vec<CheckpointSliceStats> {
+        ranges
+            .iter()
+            .map(|(label, range_start, range_end)| {
+                let mut membership = vec![false; n];
+                membership[*range_start..*range_end].fill(true);
+                checkpoint_slice_stats_from_bucket(
+                    label.clone(),
+                    *range_start,
+                    *range_end,
+                    summarize_regime_bucket(step_returns, active_flags, trade_entries, &membership),
+                )
+            })
+            .collect()
+    };
+
+    let half_slices = summarize_ranges(&half_ranges);
+    let quartile_slices = summarize_ranges(&quartile_ranges);
+
+    let worst_half = half_slices
+        .iter()
+        .min_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let worst_quartile = quartile_slices
+        .iter()
+        .min_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let positive_half_frac =
+        half_slices.iter().filter(|s| s.stats.pnl > 0.0).count() as f64 / half_slices.len() as f64;
+    let positive_quartile_frac = quartile_slices.iter().filter(|s| s.stats.pnl > 0.0).count()
+        as f64
+        / quartile_slices.len() as f64;
+
+    let omission_stats: Vec<CheckpointOmissionStats> = quartile_ranges
+        .iter()
+        .map(|(label, omit_start, omit_end)| {
+            let mut membership = vec![true; n];
+            membership[..start_t].fill(false);
+            membership[*omit_start..*omit_end].fill(false);
+            checkpoint_omission_stats_from_bucket(
+                label.clone(),
+                summarize_regime_bucket(step_returns, active_flags, trade_entries, &membership),
+            )
+        })
+        .collect();
+    let best_quartile_omission = omission_stats
+        .iter()
+        .max_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let worst_quartile_omission = omission_stats
+        .iter()
+        .min_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let omission_sharpe_spread =
+        best_quartile_omission.stats.sharpe - worst_quartile_omission.stats.sharpe;
+
+    Some(CheckpointRobustnessStats {
+        half_slices,
+        quartile_slices,
+        worst_half_label: worst_half.label,
+        worst_half_sharpe: worst_half.stats.sharpe,
+        positive_half_frac,
+        worst_quartile_label: worst_quartile.label,
+        worst_quartile_sharpe: worst_quartile.stats.sharpe,
+        positive_quartile_frac,
+        best_quartile_omission,
+        worst_quartile_omission,
+        omission_sharpe_spread,
+    })
+}
+
+fn compute_checkpoint_robustness_stats(
+    series: &CandidateSeries<'_>,
+) -> Option<CheckpointRobustnessStats> {
+    let (step_returns, active_flags, trade_entries, _) = compute_step_returns_for_series(series);
+    compute_checkpoint_robustness_from_arrays(
+        &step_returns,
+        &active_flags,
+        &trade_entries,
+        series.start_t,
+    )
+}
+
+fn benchmark_step_return(lr: f64, benchmark: &SpaBenchmarkKind) -> f64 {
+    match benchmark {
+        SpaBenchmarkKind::Flat => 0.0,
+        SpaBenchmarkKind::BuyAndHold => lr.exp_m1(),
+    }
+}
+
+fn compute_benchmark_slice_mode_summary(
+    step_returns: &[f64],
+    lr: &[f64],
+    start_t: usize,
+    benchmark: &SpaBenchmarkKind,
+    parts: usize,
+    label_prefix: &str,
+) -> Option<BenchmarkSliceModeSummaryStats> {
+    let n = step_returns.len().min(lr.len());
+    let ranges = checkpoint_ranges(start_t, n, parts, label_prefix);
+    if ranges.len() < parts || parts < 2 {
+        return None;
+    }
+
+    let mut labeled_excess: Vec<(String, f64)> = Vec::with_capacity(ranges.len());
+    for (label, range_start, range_end) in ranges {
+        let candidate_sum = step_returns[range_start..range_end]
+            .iter()
+            .copied()
+            .sum::<f64>();
+        let benchmark_sum = lr[range_start..range_end]
+            .iter()
+            .copied()
+            .map(|value| benchmark_step_return(value, benchmark))
+            .sum::<f64>();
+        labeled_excess.push((label, candidate_sum - benchmark_sum));
+    }
+    if labeled_excess.is_empty() {
+        return None;
+    }
+
+    let slice_count = labeled_excess.len();
+    let total_excess = labeled_excess.iter().map(|(_, value)| *value).sum::<f64>();
+    let beat_rate = labeled_excess
+        .iter()
+        .filter(|(_, value)| *value > 1.0e-12)
+        .count() as f64
+        / slice_count as f64;
+    let mean_excess_return = total_excess / slice_count as f64;
+    let (best_slice_label, best_excess_return) = labeled_excess
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .cloned()?;
+    let (worst_slice_label, worst_excess_return) = labeled_excess
+        .iter()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .cloned()?;
+
+    let omission_stats: Vec<BenchmarkSliceOmissionStats> = labeled_excess
+        .iter()
+        .map(|(label, excess)| BenchmarkSliceOmissionStats {
+            omitted_label: label.clone(),
+            mean_excess_return: (total_excess - *excess) / (slice_count - 1) as f64,
+        })
+        .collect();
+    let best_omission = omission_stats
+        .iter()
+        .max_by(|a, b| a.mean_excess_return.total_cmp(&b.mean_excess_return))
+        .cloned()?;
+    let worst_omission = omission_stats
+        .iter()
+        .min_by(|a, b| a.mean_excess_return.total_cmp(&b.mean_excess_return))
+        .cloned()?;
+
+    Some(BenchmarkSliceModeSummaryStats {
+        slice_count,
+        beat_rate,
+        mean_excess_return,
+        worst_excess_return,
+        best_excess_return,
+        worst_slice_label,
+        best_slice_label,
+        best_omission: best_omission.clone(),
+        worst_omission: worst_omission.clone(),
+        omission_mean_excess_spread: best_omission.mean_excess_return
+            - worst_omission.mean_excess_return,
+    })
+}
+
+fn compute_benchmark_slice_summary_stats(
+    series: &CandidateSeries<'_>,
+    benchmark: &SpaBenchmarkKind,
+) -> Option<BenchmarkSliceSummaryStats> {
+    let (step_returns, _, _, _) = compute_step_returns_for_series(series);
+    Some(BenchmarkSliceSummaryStats {
+        benchmark: benchmark.clone(),
+        halves: compute_benchmark_slice_mode_summary(
+            &step_returns,
+            series.lr,
+            series.start_t,
+            benchmark,
+            2,
+            "half_",
+        )?,
+        quartiles: compute_benchmark_slice_mode_summary(
+            &step_returns,
+            series.lr,
+            series.start_t,
+            benchmark,
+            4,
+            "q",
+        )?,
+    })
 }
 
 fn rolling_volatility_tertiles(lr: &[f64], start_t: usize, window: usize) -> Vec<u8> {
@@ -2304,17 +2805,19 @@ fn derive_regime_support_label(
     }
 }
 
-fn compute_regime_slice_robustness_stats(
+fn compute_regime_slice_robustness_stats_with_vol_states(
     series: &CandidateSeries<'_>,
+    vol_states: &[u8],
 ) -> Option<RegimeSliceRobustnessStats> {
     if series.n.saturating_sub(series.start_t) < DEFAULT_REGIME_SLICE_VOL_WINDOW.max(24) {
+        return None;
+    }
+    if vol_states.len() != series.n {
         return None;
     }
 
     let (step_returns, active_flags, trade_entries, spread_ratio) =
         compute_step_returns_for_series(series);
-    let vol_states =
-        rolling_volatility_tertiles(series.lr, series.start_t, DEFAULT_REGIME_SLICE_VOL_WINDOW);
 
     let mut spreads: Vec<f64> = spread_ratio[series.start_t..]
         .iter()
@@ -2421,6 +2924,15 @@ fn compute_regime_slice_robustness_stats(
     })
 }
 
+#[cfg(test)]
+fn compute_regime_slice_robustness_stats(
+    series: &CandidateSeries<'_>,
+) -> Option<RegimeSliceRobustnessStats> {
+    let vol_states =
+        rolling_volatility_tertiles(series.lr, series.start_t, DEFAULT_REGIME_SLICE_VOL_WINDOW);
+    compute_regime_slice_robustness_stats_with_vol_states(series, &vol_states)
+}
+
 #[derive(Clone, Copy)]
 struct FrictionScenarioSpec {
     label: &'static str,
@@ -2430,9 +2942,7 @@ struct FrictionScenarioSpec {
 }
 
 fn friction_stress_scenarios(base: &StrategyConfig) -> [FrictionScenarioSpec; 4] {
-    let fee_stress = (base.fee_bps * 2.0)
-        .max(base.fee_bps + 1.0)
-        .max(DEFAULT_FRICTION_FEE_FLOOR_BPS);
+    let fee_stress = validation_fee_stress_fee_bps(base);
     let spread_stress = (base.spread_bps * 2.0)
         .max(base.spread_bps + 2.0)
         .max(DEFAULT_FRICTION_SPREAD_FLOOR_BPS);
@@ -2485,6 +2995,7 @@ fn compute_friction_stress_summaries(
         friction_stress_scenarios(&StrategyConfig::default()).map(|scenario| scenario.label);
     let scenario_count = scenario_labels.len();
     let mut base_ranks = vec![0usize; finalists.len()];
+    let mut base_metrics_by_finalist: Vec<Option<Metrics>> = vec![None; finalists.len()];
     let mut scenario_ranks: Vec<Vec<usize>> = vec![vec![0; finalists.len()]; scenario_count];
     let mut scenario_metrics: Vec<Vec<Metrics>> =
         vec![Vec::with_capacity(finalists.len()); scenario_count];
@@ -2516,6 +3027,7 @@ fn compute_friction_stress_summaries(
             &owned_series
         };
         let metrics = eval_metrics_window(&series, series.start_t, series.n);
+        base_metrics_by_finalist[idx] = Some(metrics.clone());
         let score = double_ma_validation_robust_score(&metrics, None);
         base_scored.push((idx, metrics, score));
     }
@@ -2566,6 +3078,13 @@ fn compute_friction_stress_summaries(
 
     let mut out = Vec::with_capacity(finalists.len());
     for finalist_idx in 0..finalists.len() {
+        let base_metrics = base_metrics_by_finalist[finalist_idx]
+            .as_ref()
+            .expect("base metrics for each finalist");
+        let exact_fee_stress_pnl = Some(exact_fee_stress_pnl(
+            base_metrics,
+            &finalists[finalist_idx].strategy,
+        ));
         let mut pass_count = 0usize;
         let mut worst_label = String::new();
         let mut worst_score = f64::INFINITY;
@@ -2605,6 +3124,7 @@ fn compute_friction_stress_summaries(
             pass_count,
             pass_frac: pass_count as f64 / scenario_count as f64,
             worst_scenario_label: worst_label,
+            exact_fee_stress_pnl,
             worst_pnl,
             worst_sharpe,
             worst_downside_deviation,
@@ -3105,6 +3625,10 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                         trade_bootstrap,
                         regime_slice_robustness: None,
                         friction_stress: None,
+                        entry_margin_fragility: None,
+                        underwater_duration: None,
+                        checkpoint_robustness: None,
+                        benchmark_slice_summary: None,
                         cross_ticker: None,
                         cross_ticker_pareto: None,
                         cscv_pbo: None,
@@ -3209,6 +3733,10 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                     trade_bootstrap,
                     regime_slice_robustness: None,
                     friction_stress: None,
+                    entry_margin_fragility: None,
+                    underwater_duration: None,
+                    checkpoint_robustness: None,
+                    benchmark_slice_summary: None,
                     cross_ticker: None,
                     cross_ticker_pareto: None,
                     cscv_pbo: None,
@@ -3259,7 +3787,32 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     } else {
         0
     };
-    let finalist_cache_count = regime_eval_count.max(friction_eval_count);
+    let entry_margin_eval_count = if aux_work_mask.entry_margin_fragility {
+        DEFAULT_ENTRY_MARGIN_FRAGILITY_FINALISTS.min(out.len())
+    } else {
+        0
+    };
+    let underwater_eval_count = if aux_work_mask.underwater_duration {
+        DEFAULT_UNDERWATER_DURATION_FINALISTS.min(out.len())
+    } else {
+        0
+    };
+    let checkpoint_eval_count = if aux_work_mask.checkpoint_robustness {
+        DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS.min(out.len())
+    } else {
+        0
+    };
+    let benchmark_slice_eval_count = if aux_work_mask.benchmark_slice_summary && req.spa.is_some() {
+        DEFAULT_BENCHMARK_SLICE_FINALISTS.min(out.len())
+    } else {
+        0
+    };
+    let finalist_cache_count = regime_eval_count
+        .max(friction_eval_count)
+        .max(entry_margin_eval_count)
+        .max(underwater_eval_count)
+        .max(checkpoint_eval_count)
+        .max(benchmark_slice_eval_count);
     let finalist_series_cache = if finalist_cache_count > 0 {
         Some(
             out.iter()
@@ -3282,12 +3835,58 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     };
 
     if let Some(cache) = finalist_series_cache.as_ref() {
+        let mut regime_vol_states_by_start_t: HashMap<usize, Vec<u8>> = HashMap::new();
         for (cand, series) in out
             .iter_mut()
             .take(regime_eval_count)
             .zip(cache.iter().take(regime_eval_count))
         {
-            cand.regime_slice_robustness = compute_regime_slice_robustness_stats(series);
+            let vol_states = regime_vol_states_by_start_t
+                .entry(series.start_t)
+                .or_insert_with(|| {
+                    rolling_volatility_tertiles(
+                        series.lr,
+                        series.start_t,
+                        DEFAULT_REGIME_SLICE_VOL_WINDOW,
+                    )
+                });
+            cand.regime_slice_robustness =
+                compute_regime_slice_robustness_stats_with_vol_states(series, vol_states);
+        }
+
+        for (cand, series) in out
+            .iter_mut()
+            .take(entry_margin_eval_count)
+            .zip(cache.iter().take(entry_margin_eval_count))
+        {
+            cand.entry_margin_fragility = compute_entry_margin_fragility_stats(series);
+        }
+
+        for (cand, series) in out
+            .iter_mut()
+            .take(underwater_eval_count)
+            .zip(cache.iter().take(underwater_eval_count))
+        {
+            cand.underwater_duration = compute_underwater_duration_stats(series);
+        }
+
+        for (cand, series) in out
+            .iter_mut()
+            .take(checkpoint_eval_count)
+            .zip(cache.iter().take(checkpoint_eval_count))
+        {
+            cand.checkpoint_robustness = compute_checkpoint_robustness_stats(series);
+        }
+
+        if let Some(spa_cfg) = req.spa.as_ref() {
+            for (cand, series) in out
+                .iter_mut()
+                .take(benchmark_slice_eval_count)
+                .zip(cache.iter().take(benchmark_slice_eval_count))
+            {
+                cand.benchmark_slice_summary =
+                    compute_benchmark_slice_summary_stats(series, &spa_cfg.benchmark);
+            }
         }
     }
 
@@ -3702,6 +4301,138 @@ mod tests {
     }
 
     #[test]
+    fn entry_margin_fragility_stats_match_synthetic_entries() {
+        let active_flags = vec![false, true, true, true, true];
+        let trade_entries = vec![false, true, false, true, false];
+        let spread_ratio = vec![f64::NAN, 0.04, 0.03, 0.02, 0.01];
+
+        let stats = compute_entry_margin_fragility_from_arrays(
+            &active_flags,
+            &trade_entries,
+            &spread_ratio,
+            1,
+        )
+        .expect("synthetic entry fragility stats");
+
+        assert_eq!(stats.entry_count, 2);
+        assert!((stats.mean_entry_margin - 0.03).abs() <= 1e-12);
+        assert!((stats.min_entry_margin - 0.02).abs() <= 1e-12);
+        assert!((stats.harmonic_entry_margin - (2.0 / 75.0)).abs() <= 1e-12);
+        assert!((stats.active_mean_margin.expect("active mean margin") - 0.025).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn underwater_duration_stats_match_synthetic_path() {
+        let step_returns = vec![0.10, -0.05, -0.02, 0.08, -0.01];
+        let stats = compute_underwater_duration_from_step_returns(&step_returns, 0)
+            .expect("synthetic underwater stats");
+
+        assert_eq!(stats.evaluated_bars, 5);
+        assert_eq!(stats.underwater_bars, 3);
+        assert!((stats.underwater_fraction - 0.6).abs() <= 1e-12);
+        assert_eq!(stats.max_underwater_duration_bars, 2);
+    }
+
+    #[test]
+    fn checkpoint_robustness_stats_match_synthetic_slices() {
+        let step_returns = vec![0.05, 0.04, 0.02, 0.01, -0.03, -0.04, 0.01, -0.01];
+        let active_flags = vec![true; step_returns.len()];
+        let trade_entries = vec![true, false, false, false, true, false, false, false];
+        let stats = compute_checkpoint_robustness_from_arrays(
+            &step_returns,
+            &active_flags,
+            &trade_entries,
+            0,
+        )
+        .expect("checkpoint robustness");
+
+        assert_eq!(stats.half_slices.len(), 2);
+        assert_eq!(stats.quartile_slices.len(), 4);
+        assert_eq!(stats.worst_half_label, "half_2");
+        assert_eq!(stats.worst_quartile_label, "q3");
+        assert!((stats.positive_half_frac - 0.5).abs() <= 1e-12);
+        assert!((stats.positive_quartile_frac - 0.5).abs() <= 1e-12);
+        assert_eq!(stats.best_quartile_omission.omitted_label, "q3");
+        assert!(stats.omission_sharpe_spread >= 0.0);
+    }
+
+    #[test]
+    fn benchmark_slice_summary_stats_match_synthetic_slices() {
+        let step_returns = vec![0.03, 0.03, 0.01, 0.01, -0.01, -0.01, -0.02, -0.02];
+        let lr = vec![0.01f64.ln_1p(); step_returns.len()];
+        let stats = compute_benchmark_slice_mode_summary(
+            &step_returns,
+            &lr,
+            0,
+            &SpaBenchmarkKind::BuyAndHold,
+            4,
+            "q",
+        )
+        .expect("benchmark slice summary");
+
+        assert_eq!(stats.slice_count, 4);
+        assert!((stats.beat_rate - 0.25).abs() <= 1e-12);
+        assert_eq!(stats.best_slice_label, "q1");
+        assert_eq!(stats.worst_slice_label, "q4");
+        assert!(stats.best_excess_return > 0.0);
+        assert!(stats.worst_excess_return < 0.0);
+        assert_eq!(stats.best_omission.omitted_label, "q4");
+        assert_eq!(stats.worst_omission.omitted_label, "q1");
+        assert!(stats.omission_mean_excess_spread >= 0.0);
+    }
+
+    #[test]
+    fn regime_slice_robustness_reuses_precomputed_volatility_states() {
+        let candles = make_choppy_candles(4096);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = compute_log_returns_f64(close);
+        let base_first_valid =
+            first_finite_idx(close).expect("close should contain a finite starting point");
+        let params = DoubleMaValidationParams {
+            fast_ma_type: "alma".to_string(),
+            slow_ma_type: "alma".to_string(),
+            fast_len: 9,
+            slow_len: 30,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+        };
+        let series = build_candidate_series(
+            &candles,
+            &lr,
+            base_first_valid,
+            "close",
+            None,
+            None,
+            &params,
+        )
+        .expect("candidate series");
+
+        let direct = compute_regime_slice_robustness_stats(&series).expect("direct robustness");
+        let vol_states =
+            rolling_volatility_tertiles(series.lr, series.start_t, DEFAULT_REGIME_SLICE_VOL_WINDOW);
+        let reused = compute_regime_slice_robustness_stats_with_vol_states(&series, &vol_states)
+            .expect("reused robustness");
+
+        assert_eq!(reused.vol_window, direct.vol_window);
+        assert_eq!(reused.worst_bucket_label, direct.worst_bucket_label);
+        assert_eq!(reused.stable_bucket_count, direct.stable_bucket_count);
+        assert_eq!(reused.support_label, direct.support_label);
+        assert!((reused.worst_sharpe - direct.worst_sharpe).abs() <= 1e-12);
+        assert!((reused.worst_ulcer_index - direct.worst_ulcer_index).abs() <= 1e-12);
+        assert!((reused.worst_martin_ratio - direct.worst_martin_ratio).abs() <= 1e-12);
+        assert!((reused.worst_max_dd - direct.worst_max_dd).abs() <= 1e-12);
+        assert!((reused.stable_bucket_frac - direct.stable_bucket_frac).abs() <= 1e-12);
+        assert!((reused.low_vol.pnl - direct.low_vol.pnl).abs() <= 1e-12);
+        assert!((reused.mid_vol.sharpe - direct.mid_vol.sharpe).abs() <= 1e-12);
+        assert!((reused.high_vol.ulcer_index - direct.high_vol.ulcer_index).abs() <= 1e-12);
+        assert_eq!(reused.low_vol.trades, direct.low_vol.trades);
+        assert_eq!(reused.mid_vol.bars, direct.mid_vol.bars);
+        assert_eq!(reused.high_vol.bars, direct.high_vol.bars);
+    }
+
+    #[test]
     fn double_ma_validation_populates_regime_slice_robustness_for_top_finalists() {
         let candles = make_choppy_candles(5000);
         let cancel = AtomicBool::new(false);
@@ -3780,6 +4511,153 @@ mod tests {
     }
 
     #[test]
+    fn double_ma_validation_populates_checkpoint_robustness_for_top_finalists() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "checkpoint-robustness".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 9,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 12,
+                    slow_len: 42,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 19,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        for cand in &res.candidates {
+            let checkpoint = cand
+                .checkpoint_robustness
+                .as_ref()
+                .expect("top finalists should have checkpoint robustness stats");
+            assert_eq!(checkpoint.half_slices.len(), 2);
+            assert_eq!(checkpoint.quartile_slices.len(), 4);
+            assert!(!checkpoint.worst_half_label.is_empty());
+            assert!(!checkpoint.worst_quartile_label.is_empty());
+            assert!((0.0..=1.0).contains(&checkpoint.positive_half_frac));
+            assert!((0.0..=1.0).contains(&checkpoint.positive_quartile_frac));
+            assert!(!checkpoint.best_quartile_omission.omitted_label.is_empty());
+            assert!(!checkpoint.worst_quartile_omission.omitted_label.is_empty());
+            assert!(checkpoint.omission_sharpe_spread.is_finite());
+        }
+    }
+
+    #[test]
+    fn double_ma_validation_populates_benchmark_slice_summary_for_top_finalists() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "benchmark-slice-summary".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 9,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 12,
+                    slow_len: 42,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 8,
+                bootstrap_samples: 128,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 23,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        for cand in &res.candidates {
+            let summary = cand
+                .benchmark_slice_summary
+                .as_ref()
+                .expect("top finalists should have benchmark slice summary");
+            assert!(matches!(summary.benchmark, SpaBenchmarkKind::BuyAndHold));
+            assert_eq!(summary.halves.slice_count, 2);
+            assert_eq!(summary.quartiles.slice_count, 4);
+            assert!((0.0..=1.0).contains(&summary.halves.beat_rate));
+            assert!((0.0..=1.0).contains(&summary.quartiles.beat_rate));
+            assert!(!summary.halves.best_slice_label.is_empty());
+            assert!(!summary.quartiles.worst_slice_label.is_empty());
+            assert!(summary.halves.omission_mean_excess_spread.is_finite());
+            assert!(summary.quartiles.omission_mean_excess_spread.is_finite());
+        }
+    }
+
+    #[test]
     fn double_ma_validation_populates_friction_stress_for_top_finalists() {
         let candles = make_choppy_candles(5000);
         let cancel = AtomicBool::new(false);
@@ -3841,12 +4719,165 @@ mod tests {
             assert_eq!(friction.scenario_count, 4);
             assert!(friction.pass_frac.is_finite());
             assert!(!friction.worst_scenario_label.is_empty());
+            assert!(friction.exact_fee_stress_pnl.is_some());
             assert!(friction.worst_sharpe.is_finite());
             assert!(friction.worst_downside_deviation.is_finite());
             assert!(friction.worst_ulcer_index.is_finite());
             assert!(friction.worst_martin_ratio.is_finite());
             assert!(friction.worst_max_dd.is_finite());
         }
+    }
+
+    #[test]
+    fn double_ma_validation_populates_entry_margin_and_underwater_for_top_finalists() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "entry-margin-underwater".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 9,
+                    slow_len: 30,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+                DoubleMaValidationParams {
+                    fast_ma_type: "alma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_len: 12,
+                    slow_len: 42,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                },
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 13,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        for cand in &res.candidates {
+            let entry_margin = cand
+                .entry_margin_fragility
+                .as_ref()
+                .expect("top finalists should have entry-margin fragility stats");
+            assert!(entry_margin.entry_count > 0);
+            assert!(entry_margin.mean_entry_margin.is_finite());
+            assert!(entry_margin.min_entry_margin.is_finite());
+            assert!(entry_margin.harmonic_entry_margin.is_finite());
+            assert!(entry_margin
+                .active_mean_margin
+                .expect("active mean margin")
+                .is_finite());
+
+            let underwater = cand
+                .underwater_duration
+                .as_ref()
+                .expect("top finalists should have underwater duration stats");
+            assert!(underwater.evaluated_bars > 0);
+            assert!(underwater.underwater_bars <= underwater.evaluated_bars);
+            assert!((0.0..=1.0).contains(&underwater.underwater_fraction));
+            assert!(underwater.max_underwater_duration_bars <= underwater.evaluated_bars);
+        }
+    }
+
+    #[test]
+    fn double_ma_validation_exact_fee_stress_pnl_matches_replay() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = DoubleMaValidationRequest {
+            data_id: "friction-stress-exact-fee-pnl".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_len: 9,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 13,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        let cand = res
+            .candidates
+            .first()
+            .expect("one candidate should be returned");
+        let friction = cand
+            .friction_stress
+            .as_ref()
+            .expect("friction stress should be populated");
+        let exact = friction
+            .exact_fee_stress_pnl
+            .expect("exact fee stress pnl should be populated");
+
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let series = build_candidate_series(&candles, &lr, 0, "close", None, None, &cand.params)
+            .expect("candidate series");
+        let fee_scenario = friction_stress_scenarios(&cand.params.strategy)[0];
+        let mut stressed = cand.params.clone();
+        stressed.strategy.fee_bps = fee_scenario.fee_bps;
+        stressed.strategy.spread_bps = fee_scenario.spread_bps;
+        stressed.strategy.slippage_bps = fee_scenario.slippage_bps;
+        let replay =
+            eval_metrics_window_with_cfg(&series, series.start_t, series.n, &stressed.strategy);
+
+        assert!(
+            (exact - replay.pnl).abs() <= 1e-12,
+            "exact fee-stress pnl mismatch exact={exact} replay={}",
+            replay.pnl
+        );
     }
 
     #[test]
@@ -3912,6 +4943,212 @@ mod tests {
                 .as_deref()
                 .unwrap_or_default()
                 .contains("requires cuda"));
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_aux_diagnostics_match_cpu_plain() {
+        let candles = make_choppy_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![
+            DoubleMaValidationParams {
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_len: 10,
+                slow_len: 32,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+            DoubleMaValidationParams {
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_len: 14,
+                slow_len: 45,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            },
+        ];
+
+        let mk_req = |backend| DoubleMaValidationRequest {
+            data_id: "aux-diagnostics-parity".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: candidates.clone(),
+            walk_forward: None,
+            reopt_walk_forward: None,
+            spa: Some(SpaConfigOptional {
+                slices: 8,
+                bootstrap_samples: 128,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_double_ma_validation_blocking_with_candles(
+            mk_req(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu validation");
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            mk_req(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu validation");
+
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            let cpu_entry = cpu
+                .entry_margin_fragility
+                .as_ref()
+                .expect("cpu entry fragility");
+            let gpu_entry = gpu
+                .entry_margin_fragility
+                .as_ref()
+                .expect("gpu entry fragility");
+            assert_eq!(cpu_entry.entry_count, gpu_entry.entry_count);
+            assert!((cpu_entry.mean_entry_margin - gpu_entry.mean_entry_margin).abs() <= 1e-12);
+            assert!((cpu_entry.min_entry_margin - gpu_entry.min_entry_margin).abs() <= 1e-12);
+            assert!(
+                (cpu_entry.harmonic_entry_margin - gpu_entry.harmonic_entry_margin).abs() <= 1e-12
+            );
+            assert!(
+                (cpu_entry.active_mean_margin.unwrap_or(0.0)
+                    - gpu_entry.active_mean_margin.unwrap_or(0.0))
+                .abs()
+                    <= 1e-12
+            );
+
+            let cpu_underwater = cpu.underwater_duration.as_ref().expect("cpu underwater");
+            let gpu_underwater = gpu.underwater_duration.as_ref().expect("gpu underwater");
+            assert_eq!(cpu_underwater.evaluated_bars, gpu_underwater.evaluated_bars);
+            assert_eq!(
+                cpu_underwater.underwater_bars,
+                gpu_underwater.underwater_bars
+            );
+            assert_eq!(
+                cpu_underwater.max_underwater_duration_bars,
+                gpu_underwater.max_underwater_duration_bars
+            );
+            assert!(
+                (cpu_underwater.underwater_fraction - gpu_underwater.underwater_fraction).abs()
+                    <= 1e-12
+            );
+
+            let cpu_checkpoint = cpu
+                .checkpoint_robustness
+                .as_ref()
+                .expect("cpu checkpoint robustness");
+            let gpu_checkpoint = gpu
+                .checkpoint_robustness
+                .as_ref()
+                .expect("gpu checkpoint robustness");
+            assert_eq!(
+                cpu_checkpoint.half_slices.len(),
+                gpu_checkpoint.half_slices.len()
+            );
+            assert_eq!(
+                cpu_checkpoint.quartile_slices.len(),
+                gpu_checkpoint.quartile_slices.len()
+            );
+            assert_eq!(
+                cpu_checkpoint.worst_half_label,
+                gpu_checkpoint.worst_half_label
+            );
+            assert_eq!(
+                cpu_checkpoint.worst_quartile_label,
+                gpu_checkpoint.worst_quartile_label
+            );
+            assert!(
+                (cpu_checkpoint.positive_half_frac - gpu_checkpoint.positive_half_frac).abs()
+                    <= 1e-12
+            );
+            assert!(
+                (cpu_checkpoint.positive_quartile_frac - gpu_checkpoint.positive_quartile_frac)
+                    .abs()
+                    <= 1e-12
+            );
+            assert_eq!(
+                cpu_checkpoint.best_quartile_omission.omitted_label,
+                gpu_checkpoint.best_quartile_omission.omitted_label
+            );
+            assert_eq!(
+                cpu_checkpoint.worst_quartile_omission.omitted_label,
+                gpu_checkpoint.worst_quartile_omission.omitted_label
+            );
+            assert!(
+                (cpu_checkpoint.omission_sharpe_spread - gpu_checkpoint.omission_sharpe_spread)
+                    .abs()
+                    <= 1e-12
+            );
+
+            let cpu_benchmark = cpu
+                .benchmark_slice_summary
+                .as_ref()
+                .expect("cpu benchmark slice summary");
+            let gpu_benchmark = gpu
+                .benchmark_slice_summary
+                .as_ref()
+                .expect("gpu benchmark slice summary");
+            assert_eq!(
+                cpu_benchmark.halves.slice_count,
+                gpu_benchmark.halves.slice_count
+            );
+            assert_eq!(
+                cpu_benchmark.quartiles.slice_count,
+                gpu_benchmark.quartiles.slice_count
+            );
+            assert_eq!(
+                cpu_benchmark.halves.best_slice_label,
+                gpu_benchmark.halves.best_slice_label
+            );
+            assert_eq!(
+                cpu_benchmark.quartiles.worst_slice_label,
+                gpu_benchmark.quartiles.worst_slice_label
+            );
+            assert!(
+                (cpu_benchmark.halves.beat_rate - gpu_benchmark.halves.beat_rate).abs() <= 1e-12
+            );
+            assert!(
+                (cpu_benchmark.quartiles.beat_rate - gpu_benchmark.quartiles.beat_rate).abs()
+                    <= 1e-12
+            );
+            assert!(
+                (cpu_benchmark.halves.omission_mean_excess_spread
+                    - gpu_benchmark.halves.omission_mean_excess_spread)
+                    .abs()
+                    <= 1e-12
+            );
+            assert!(
+                (cpu_benchmark.quartiles.omission_mean_excess_spread
+                    - gpu_benchmark.quartiles.omission_mean_excess_spread)
+                    .abs()
+                    <= 1e-12
+            );
         }
     }
 
@@ -5559,6 +6796,7 @@ mod tests {
             regime.as_deref(),
             &strategy,
             ta_optimizer::ObjectiveKind::Sharpe,
+            None,
             1,
             true,
             crate::gpu_backtest_kernel::KernelConfig {
@@ -5567,6 +6805,8 @@ mod tests {
                 fast_alma_sigma: 6.0,
                 slow_alma_offset: 0.85,
                 slow_alma_sigma: 6.0,
+                hurdle_tau: 0.0,
+                include_trade_metrics: false,
             },
             None,
             None,
@@ -5623,6 +6863,14 @@ mod tests {
                 strategy: strategy.clone(),
                 halftrend_filter: None,
                 objective: ObjectiveKind::Sharpe,
+                score_mode: None,
+                extra_shortlist_objectives: None,
+                shortlist_confidence_mode: None,
+                shortlist_union_mode: None,
+                shortlist_slice_mode: None,
+                shortlist_slice_benchmark: None,
+                shortlist_neighborhood_radius: None,
+                shortlist_neighborhood_step: None,
                 mode: OptimizationMode::Grid,
                 top_k: Some(1),
                 include_all: Some(false),
@@ -5632,6 +6880,8 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
+               include_trade_metrics: false,
+                hurdle_tau: None,
             },
             &candles,
             &cancel,
@@ -5698,6 +6948,7 @@ mod tests {
             regime.as_deref(),
             &strategy,
             ta_optimizer::ObjectiveKind::Sharpe,
+            None,
             1,
             true,
             crate::gpu_backtest_kernel::KernelConfig {
@@ -5706,6 +6957,8 @@ mod tests {
                 fast_alma_sigma: 6.0,
                 slow_alma_offset: 0.85,
                 slow_alma_sigma: 6.0,
+                hurdle_tau: 0.0,
+                include_trade_metrics: false,
             },
             None,
             None,
@@ -5810,6 +7063,7 @@ mod tests {
             regime.as_deref(),
             &strategy,
             ta_optimizer::ObjectiveKind::Pnl,
+            None,
             1,
             true,
             crate::gpu_backtest_kernel::KernelConfig {
@@ -5818,6 +7072,8 @@ mod tests {
                 fast_alma_sigma: 6.0,
                 slow_alma_offset: 0.85,
                 slow_alma_sigma: 6.0,
+                hurdle_tau: 0.0,
+                include_trade_metrics: false,
             },
             None,
             None,
@@ -7127,6 +8383,14 @@ mod tests {
                 strategy: strategy.clone(),
                 halftrend_filter: halftrend_filter.clone(),
                 objective: ObjectiveKind::Sharpe,
+                score_mode: None,
+                extra_shortlist_objectives: None,
+                shortlist_confidence_mode: None,
+                shortlist_union_mode: None,
+                shortlist_slice_mode: None,
+                shortlist_slice_benchmark: None,
+                shortlist_neighborhood_radius: None,
+                shortlist_neighborhood_step: None,
                 mode: OptimizationMode::Grid,
                 top_k: Some(6),
                 include_all: Some(false),
@@ -7136,6 +8400,8 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
+               include_trade_metrics: false,
+                hurdle_tau: None,
             };
 
             let opt =
@@ -7546,6 +8812,14 @@ mod tests {
                 strategy: strategy.clone(),
                 halftrend_filter: None,
                 objective: ObjectiveKind::Sharpe,
+                score_mode: None,
+                extra_shortlist_objectives: None,
+                shortlist_confidence_mode: None,
+                shortlist_union_mode: None,
+                shortlist_slice_mode: None,
+                shortlist_slice_benchmark: None,
+                shortlist_neighborhood_radius: None,
+                shortlist_neighborhood_step: None,
                 mode: OptimizationMode::Grid,
                 top_k: Some(16),
                 include_all: Some(false),
@@ -7555,6 +8829,8 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
+               include_trade_metrics: false,
+                hurdle_tau: None,
             };
 
             let opt =
@@ -7667,3 +8943,6 @@ mod tests {
         assert!(meta.groups[0].meta_score.is_finite());
     }
 }
+
+
+

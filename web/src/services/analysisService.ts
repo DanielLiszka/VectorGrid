@@ -283,7 +283,136 @@ function requestedHeatmapBins(req: Record<string, unknown>): number {
   return Math.max(0, Math.floor(num(req.heatmap_bins ?? req.heatmapBins, 0)));
 }
 
-function objectiveScoreKey(objective: string): string {
+const SCORE_CLAMP_MAX = 1e6;
+const SCORE_EPS = 1e-12;
+const SCORE_CLIP = 4.0;
+
+function scoreModeOf(req: Record<string, unknown>): string {
+  const raw = text(req.score_mode ?? req.scoreMode).toLowerCase();
+  if (
+    raw === "balanced_risk_adjusted_10" ||
+    raw === "balancedriskadjusted10" ||
+    raw === "balanced-risk-adjusted-10"
+  ) {
+    return "balanced_risk_adjusted_10";
+  }
+  if (
+    raw === "adversarial_envelope_10" ||
+    raw === "adversarialenvelope10" ||
+    raw === "adversarial-envelope-10" ||
+    raw === "adversarial_weight_envelope_10" ||
+    raw === "adversarialweightenvelope10" ||
+    raw === "adversarial-weight-envelope-10"
+  ) {
+    return "adversarial_envelope_10";
+  }
+  if (
+    raw === "support_shrunk_10" ||
+    raw === "supportshrunk10" ||
+    raw === "support-shrunk-10" ||
+    raw === "effective_support_10" ||
+    raw === "effectivesupport10" ||
+    raw === "effective-support-10"
+  ) {
+    return "support_shrunk_10";
+  }
+  if (
+    raw === "active_sortino_10" ||
+    raw === "activesortino10" ||
+    raw === "active-sortino-10" ||
+    raw === "activesortino"
+  ) {
+    return "active_sortino_10";
+  }
+  return "";
+}
+
+function scoreLabelOf(req: Record<string, unknown>): string {
+  const scoreMode = scoreModeOf(req);
+  if (scoreMode === "balanced_risk_adjusted_10") {
+    return "Balanced Risk-Adjusted 10";
+  }
+  if (scoreMode === "adversarial_envelope_10") {
+    return "Adversarial Envelope 10";
+  }
+  if (scoreMode === "support_shrunk_10") {
+    return "Support-Shrunk 10";
+  }
+  if (scoreMode === "active_sortino_10") {
+    return "Active Sortino 10";
+  }
+  return objectiveOf(req);
+}
+
+function extraShortlistObjectivesOf(req: Record<string, unknown>): string[] {
+  const raw = req.extra_shortlist_objectives ?? req.extraShortlistObjectives;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((value) => text(value))
+    .filter((value, index, arr) => value.length > 0 && arr.indexOf(value) === index);
+}
+
+function hurdleTauOf(req: Record<string, unknown>): string {
+  return text(req.hurdle_tau ?? req.hurdleTau)
+}
+
+function shortlistConfidenceModeOf(req: Record<string, unknown>): string {
+  const raw = text(
+    req.shortlist_confidence_mode ?? req.shortlistConfidenceMode,
+  ).toLowerCase();
+  if (raw === "psr") return "psr";
+  if (raw === "dsr") return "dsr";
+  return "";
+}
+
+function shortlistUnionModeOf(req: Record<string, unknown>): string {
+  const raw = text(
+    req.shortlist_union_mode ?? req.shortlistUnionMode,
+  ).toLowerCase();
+  if (raw === "lexicographic") return "lexicographic";
+  if (raw === "pareto") return "pareto";
+  if (raw === "epsilon_front") return "epsilon_front";
+  return "";
+}
+
+function shortlistSliceModeOf(req: Record<string, unknown>): string {
+  const raw = text(
+    req.shortlist_slice_mode ?? req.shortlistSliceMode,
+  ).toLowerCase();
+  if (raw === "halves") return "halves";
+  if (raw === "quartiles") return "quartiles";
+  return "";
+}
+
+function shortlistSliceBenchmarkOf(req: Record<string, unknown>): string {
+  const raw = text(
+    req.shortlist_slice_benchmark ?? req.shortlistSliceBenchmark,
+  ).toLowerCase();
+  if (raw === "flat") return "flat";
+  if (raw === "buy_and_hold") return "buy_and_hold";
+  return "";
+}
+
+function shortlistNeighborhoodSummaryOf(req: Record<string, unknown>): string {
+  const radius = text(
+    req.shortlist_neighborhood_radius ?? req.shortlistNeighborhoodRadius,
+  );
+  if (!radius) return "";
+  const step = text(
+    req.shortlist_neighborhood_step ?? req.shortlistNeighborhoodStep,
+  ) || "1";
+  return `${radius}x${step}`;
+}
+
+function objectiveScoreKey(objective: string, scoreMode = ""): string {
+  if (
+    scoreMode === "balanced_risk_adjusted_10" ||
+    scoreMode === "adversarial_envelope_10" ||
+    scoreMode === "support_shrunk_10" ||
+    scoreMode === "active_sortino_10"
+  ) {
+    return "score";
+  }
   const obj = text(objective || "Sharpe");
   if (obj === "Pnl") return "pnl";
   if (obj === "Sharpe") return "sharpe";
@@ -293,6 +422,228 @@ function objectiveScoreKey(objective: string): string {
   if (obj === "Volatility") return "volatility";
   if (obj === "MaxDrawdown") return "max_dd";
   return "sharpe";
+}
+
+function scoreClipSigned(value: number): number {
+  return Math.max(-SCORE_CLIP, Math.min(SCORE_CLIP, value));
+}
+
+function scoreClipPenalty(value: number): number {
+  return Math.max(0, Math.min(SCORE_CLIP, value));
+}
+
+function scoreAsinhScaled(value: number, scale: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(scale) || scale <= 0) {
+    return 0;
+  }
+  return scoreClipSigned(Math.asinh(value / scale));
+}
+
+function scoreLogRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return scoreClipSigned(Math.log(Math.max(SCORE_EPS, value)));
+}
+
+function scoreLog1pPenalty(value: number, scale: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(scale) || scale <= 0) {
+    return 0;
+  }
+  return scoreClipPenalty(Math.log1p(Math.max(0, value) / scale));
+}
+
+function scoreTradeUtility(trades: number, target: number): number {
+  if (!Number.isFinite(target) || target <= 0) return 0;
+  return Math.max(
+    0,
+    Math.min(1, Math.log1p(Math.max(0, trades)) / Math.log1p(target)),
+  );
+}
+
+function derivedMean(metrics: Record<string, unknown>): number {
+  return num(metrics.sharpe, 0) * num(metrics.volatility, 0);
+}
+
+function derivedActiveMean(metrics: Record<string, unknown>): number {
+  const exposure = Math.max(num(metrics.exposure, 0), SCORE_EPS);
+  if (!Number.isFinite(exposure) || exposure <= SCORE_EPS) return 0;
+  return derivedMean(metrics) / exposure;
+}
+
+function derivedActiveSortino(metrics: Record<string, unknown>): number {
+  const exposure = Math.max(num(metrics.exposure, 0), SCORE_EPS);
+  if (!Number.isFinite(exposure) || exposure <= SCORE_EPS) return 0;
+  const mean = derivedMean(metrics);
+  const denom = num(metrics.downside_deviation, 0) * Math.sqrt(exposure);
+  if (denom > SCORE_EPS) return mean / denom;
+  if (mean > 0) return SCORE_CLAMP_MAX;
+  if (mean < 0) return -SCORE_CLAMP_MAX;
+  return 0;
+}
+
+function derivedDrawdownChronicity(metrics: Record<string, unknown>): number {
+  const maxDd = num(metrics.max_dd, 0);
+  if (maxDd > SCORE_EPS) {
+    return Math.max(
+      0,
+      Math.min(SCORE_CLIP, num(metrics.ulcer_index, 0) / maxDd),
+    );
+  }
+  return 0;
+}
+
+function derivedDownsideShare(metrics: Record<string, unknown>): number {
+  const volatility = num(metrics.volatility, 0);
+  if (volatility > SCORE_EPS) {
+    return Math.max(
+      0,
+      Math.min(SCORE_CLIP, num(metrics.downside_deviation, 0) / volatility),
+    );
+  }
+  return 0;
+}
+
+function scoreExposurePenalty(metrics: Record<string, unknown>): number {
+  const exposure = Math.max(0, Math.abs(num(metrics.exposure, 0)));
+  const net = Math.max(0, Math.abs(num(metrics.net_exposure, 0)));
+  const penalty =
+    Math.max(0, 0.1 - exposure) / 0.1 +
+    Math.max(0, exposure - 0.95) / 0.1 +
+    Math.max(0, net - 0.35) / 0.2;
+  return scoreClipPenalty(penalty);
+}
+
+function scoreDownsideShapePenalty(metrics: Record<string, unknown>): number {
+  const downsideShare = derivedDownsideShare(metrics);
+  return scoreClipPenalty(Math.max(0, downsideShare - 0.75) / 0.25);
+}
+
+function scoreSupportProxyUnits(metrics: Record<string, unknown>): number {
+  const trades = Math.max(0, num(metrics.trades, 0));
+  const exposure = Math.max(0, Math.min(1, num(metrics.exposure, 0)));
+  return 1 + trades + 80 * exposure;
+}
+
+function showDerivedScoreColumns(scoreMode = ""): boolean {
+  return !!text(scoreMode);
+}
+
+function balancedRiskAdjusted10Score(metrics: Record<string, unknown>): number {
+  const sharpeU = scoreAsinhScaled(num(metrics.sharpe, 0), 1);
+  const activeSortinoU = scoreAsinhScaled(derivedActiveSortino(metrics), 1.25);
+  const omegaU = scoreLogRatio(num(metrics.omega, 0));
+  const calmarU = scoreAsinhScaled(num(metrics.calmar, 0), 1);
+  const tradeU = scoreTradeUtility(num(metrics.trades, 0), 40);
+  const maxDdP = scoreLog1pPenalty(num(metrics.max_dd, 0), 0.1);
+  const ulcerP = scoreLog1pPenalty(num(metrics.ulcer_index, 0), 0.05);
+  const chronicityP = Math.max(
+    0,
+    Math.min(1, derivedDrawdownChronicity(metrics)),
+  );
+  const exposureP = scoreExposurePenalty(metrics);
+  const downsideP = scoreDownsideShapePenalty(metrics);
+
+  return (
+    0.42 * sharpeU +
+    0.2 * activeSortinoU +
+    0.12 * omegaU +
+    0.08 * calmarU +
+    0.08 * tradeU -
+    0.16 * maxDdP -
+    0.1 * ulcerP -
+    0.08 * chronicityP -
+    0.06 * exposureP -
+    0.04 * downsideP
+  );
+}
+
+function adversarialEnvelope10Score(metrics: Record<string, unknown>): number {
+  const sharpeU = scoreAsinhScaled(num(metrics.sharpe, 0), 1);
+  const activeMeanU = scoreAsinhScaled(derivedActiveMean(metrics), 0.12);
+  const activeSortinoU = scoreAsinhScaled(derivedActiveSortino(metrics), 1.25);
+  const omegaU = scoreLogRatio(num(metrics.omega, 0));
+  const calmarU = scoreAsinhScaled(num(metrics.calmar, 0), 1);
+  const tradeU = scoreTradeUtility(num(metrics.trades, 0), 40);
+  const maxDdP = scoreLog1pPenalty(num(metrics.max_dd, 0), 0.1);
+  const ulcerP = scoreLog1pPenalty(num(metrics.ulcer_index, 0), 0.05);
+  const chronicityP = Math.max(
+    0,
+    Math.min(1, derivedDrawdownChronicity(metrics)),
+  );
+  const exposureP = scoreExposurePenalty(metrics);
+  const downsideP = scoreDownsideShapePenalty(metrics);
+
+  const balanced =
+    0.34 * sharpeU +
+    0.15 * activeMeanU +
+    0.15 * activeSortinoU +
+    0.11 * omegaU +
+    0.09 * calmarU +
+    0.06 * tradeU -
+    0.15 * maxDdP -
+    0.1 * ulcerP -
+    0.07 * chronicityP -
+    0.05 * exposureP -
+    0.03 * downsideP;
+  const pathGuard =
+    0.28 * sharpeU +
+    0.1 * activeMeanU +
+    0.12 * activeSortinoU +
+    0.11 * omegaU +
+    0.18 * calmarU +
+    0.04 * tradeU -
+    0.22 * maxDdP -
+    0.15 * ulcerP -
+    0.12 * chronicityP -
+    0.05 * exposureP -
+    0.04 * downsideP;
+  const fragilityGuard =
+    0.3 * sharpeU +
+    0.12 * activeMeanU +
+    0.18 * activeSortinoU +
+    0.15 * omegaU +
+    0.1 * calmarU +
+    0.05 * tradeU -
+    0.16 * maxDdP -
+    0.12 * ulcerP -
+    0.08 * chronicityP -
+    0.05 * exposureP -
+    0.11 * downsideP;
+
+  return Math.min(balanced, pathGuard, fragilityGuard);
+}
+
+function supportShrunk10Score(metrics: Record<string, unknown>): number {
+  const base = balancedRiskAdjusted10Score(metrics);
+  const supportUnits = Math.max(1, scoreSupportProxyUnits(metrics));
+  const shrinkPenalty = 1.2 / Math.sqrt(supportUnits);
+  const chronicityPenalty =
+    0.1 * Math.max(0, Math.min(1, derivedDrawdownChronicity(metrics)));
+  const downsidePenalty = 0.12 * scoreDownsideShapePenalty(metrics);
+  return base - shrinkPenalty - chronicityPenalty - downsidePenalty;
+}
+
+function activeSortino10Score(metrics: Record<string, unknown>): number {
+  const activeSortinoU = scoreAsinhScaled(derivedActiveSortino(metrics), 1.25);
+  const omegaU = scoreLogRatio(num(metrics.omega, 0));
+  const calmarU = scoreAsinhScaled(num(metrics.calmar, 0), 1);
+  const tradeU = scoreTradeUtility(num(metrics.trades, 0), 36);
+  const maxDdP = scoreLog1pPenalty(num(metrics.max_dd, 0), 0.1);
+  const ulcerP = scoreLog1pPenalty(num(metrics.ulcer_index, 0), 0.05);
+  const chronicityP =
+    0.18 * Math.max(0, Math.min(1, derivedDrawdownChronicity(metrics)));
+  const exposureP = 0.12 * scoreExposurePenalty(metrics);
+  const downsideP = 0.12 * scoreDownsideShapePenalty(metrics);
+  return (
+    0.58 * activeSortinoU +
+    0.12 * omegaU +
+    0.08 * calmarU +
+    0.06 * tradeU -
+    0.18 * maxDdP -
+    0.1 * ulcerP -
+    chronicityP -
+    exposureP -
+    downsideP
+  );
 }
 
 function formatDrillMetricsSummary(
@@ -440,7 +791,23 @@ function defaultSortDir(key: string): SortDir {
   return ASC_KEYS.has(text(key)) ? "asc" : "desc";
 }
 
-function scoreOf(metrics: Record<string, unknown>, objective: string): number {
+function scoreOf(
+  metrics: Record<string, unknown>,
+  objective: string,
+  scoreMode = "",
+): number {
+  if (scoreMode === "balanced_risk_adjusted_10") {
+    return balancedRiskAdjusted10Score(metrics);
+  }
+  if (scoreMode === "adversarial_envelope_10") {
+    return adversarialEnvelope10Score(metrics);
+  }
+  if (scoreMode === "support_shrunk_10") {
+    return supportShrunk10Score(metrics);
+  }
+  if (scoreMode === "active_sortino_10") {
+    return activeSortino10Score(metrics);
+  }
   const obj = String(objective || "Sharpe");
   if (obj === "Pnl") return num(metrics.pnl, 0);
   if (obj === "Sharpe") return num(metrics.sharpe, 0);
@@ -622,6 +989,7 @@ function sortRows(
   key: string,
   dir: SortDir,
   objective: string,
+  scoreMode = "",
 ): TopRowModel[] {
   const d = dir === "desc" ? -1 : 1;
   const cmp = (a: number | string, b: number | string): number =>
@@ -654,6 +1022,14 @@ function sortRows(
     if (k === "trades") return d * cmp(num(ma.trades, 0), num(mb.trades, 0));
     if (k === "exposure")
       return d * cmp(num(ma.exposure, 0), num(mb.exposure, 0));
+    if (k === "active_mean")
+      return d * cmp(derivedActiveMean(ma), derivedActiveMean(mb));
+    if (k === "active_sortino")
+      return d * cmp(derivedActiveSortino(ma), derivedActiveSortino(mb));
+    if (k === "drawdown_chronicity")
+      return d * cmp(derivedDrawdownChronicity(ma), derivedDrawdownChronicity(mb));
+    if (k === "downside_share")
+      return d * cmp(derivedDownsideShare(ma), derivedDownsideShare(mb));
     if (k === "maximize_value")
       return (
         d *
@@ -673,7 +1049,7 @@ function sortRows(
     if (k === "violation")
       return d * cmp(num(moa.violation, 0), num(mob.violation, 0));
     if (k === "score")
-      return d * cmp(scoreOf(ma, objective), scoreOf(mb, objective));
+      return d * cmp(scoreOf(ma, objective, scoreMode), scoreOf(mb, objective, scoreMode));
     return d * cmp(ra.rank, rb.rank);
   });
 }
@@ -684,6 +1060,17 @@ function topColumnsFor(
   sort: { key: string; dir: SortDir },
 ): TopColumn[] {
   const objectives = asRecord(req.objectives);
+  const scoreMode = scoreModeOf(req);
+  const scoreLabel =
+    scoreMode === "balanced_risk_adjusted_10"
+      ? "Score (BRA10)"
+      : scoreMode === "adversarial_envelope_10"
+        ? "Score (AE10)"
+        : scoreMode === "support_shrunk_10"
+          ? "Score (SS10)"
+          : scoreMode === "active_sortino_10"
+            ? "Score (AS10)"
+        : "Score";
   const columns: TopColumn[] = isMo(req, res)
     ? [
         { key: "rank", label: "#", sort: "", alignLeft: true },
@@ -719,7 +1106,15 @@ function topColumnsFor(
         { key: "max_dd", label: "MaxDD", sort: "", alignLeft: false },
         { key: "trades", label: "Trades", sort: "", alignLeft: false },
         { key: "exposure", label: "Expo", sort: "", alignLeft: false },
-        { key: "score", label: "Score", sort: "", alignLeft: false },
+        ...(showDerivedScoreColumns(scoreMode)
+          ? [
+              { key: "active_mean", label: "ActMean", sort: "", alignLeft: false },
+              { key: "active_sortino", label: "ActSort", sort: "", alignLeft: false },
+              { key: "drawdown_chronicity", label: "Chron", sort: "", alignLeft: false },
+              { key: "downside_share", label: "DnShare", sort: "", alignLeft: false },
+            ]
+          : []),
+        { key: "score", label: scoreLabel, sort: "", alignLeft: false },
       ];
   for (const col of columns)
     if (text(col.key) === sort.key) col.sort = sort.dir;
@@ -748,11 +1143,12 @@ function buildTopRowModelsForCurrentFilters(
   res: Record<string, unknown>,
 ): TopRowModel[] {
   const objective = objectiveOf(req);
+  const scoreMode = scoreModeOf(req);
   const sort = readSortState(store);
   const collected = collectTopRows(res, {
     allowBestFallback: requestedTopK(req) !== 0,
   });
-  const sorted = sortRows(collected, sort.key, sort.dir, objective);
+  const sorted = sortRows(collected, sort.key, sort.dir, objective, scoreMode);
   const filters = readFilters(store);
   return applyTopFilters(sorted, filters);
 }
@@ -1142,10 +1538,11 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   refreshOverviewFromWorkflowRunStore(store, req, res);
 
   const objective = objectiveOf(req);
+  const scoreMode = scoreModeOf(req);
   const sort = readSortState(store);
   const topK = requestedTopK(req);
   const collected = collectTopRows(res, { allowBestFallback: topK !== 0 });
-  const sorted = sortRows(collected, sort.key, sort.dir, objective);
+  const sorted = sortRows(collected, sort.key, sort.dir, objective, scoreMode);
   const filters = readFilters(store);
   const filtered = buildTopRowModelsForCurrentFilters(store, req, res);
   topRowsModelCache = filtered;
@@ -1195,17 +1592,41 @@ export function refreshTopTableFromWorkflowRun(): boolean {
             title: fmt(m.max_dd, 6),
           },
           { text: String(num(m.trades, 0)), className: "mono", title: "" },
-          {
-            text: fmtDisplay(m.exposure, 4),
-            className: "mono",
-            title: fmt(m.exposure, 4),
-          },
+        {
+          text: fmtDisplay(m.exposure, 4),
+          className: "mono",
+          title: fmt(m.exposure, 4),
+        },
+        ...(showDerivedScoreColumns(scoreMode)
+          ? [
+              {
+                text: fmtDisplay(derivedActiveMean(m), 4),
+                className: "mono",
+                title: fmt(derivedActiveMean(m), 6),
+              },
+              {
+                text: fmtDisplay(derivedActiveSortino(m), 4),
+                className: "mono",
+                title: fmt(derivedActiveSortino(m), 6),
+              },
+              {
+                text: fmtDisplay(derivedDrawdownChronicity(m), 4),
+                className: "mono",
+                title: fmt(derivedDrawdownChronicity(m), 6),
+              },
+              {
+                text: fmtDisplay(derivedDownsideShare(m), 4),
+                className: "mono",
+                title: fmt(derivedDownsideShare(m), 6),
+              },
+            ]
+          : []),
         ];
         if (!mo)
           cells.push({
-            text: fmtDisplay(scoreOf(m, objective), 4),
+            text: fmtDisplay(scoreOf(m, objective, scoreMode), 4),
             className: "mono",
-            title: fmt(scoreOf(m, objective), 6),
+            title: fmt(scoreOf(m, objective, scoreMode), 6),
           });
         else {
           cells.push({
@@ -1329,8 +1750,9 @@ function formatBestTitle(params: Record<string, unknown>): string {
 
 function buildBestStats(
   metrics: Record<string, unknown>,
+  scoreMode = "",
 ): Array<{ label: string; value: string; tone: string }> {
-  return [
+  const rows = [
     { label: "PnL", value: fmt(metrics.pnl, 6), tone: "positive" },
     { label: "Return", value: fmtPct(metrics.pnl, 2), tone: "neutral" },
     { label: "Sharpe", value: fmt(metrics.sharpe, 6), tone: "positive" },
@@ -1344,7 +1766,20 @@ function buildBestStats(
     { label: "Martin", value: fmt(metrics.martin_ratio, 6), tone: "positive" },
     { label: "Trades", value: String(num(metrics.trades, 0)), tone: "neutral" },
     { label: "Exposure", value: fmt(metrics.exposure, 4), tone: "neutral" },
-  ].filter((entry) => entry.value && entry.value !== "-");
+  ];
+  const kappaTau = num(metrics.kappa_tau, Number.NaN);
+  if (Number.isFinite(kappaTau) && Math.abs(kappaTau) > 1e-12) {
+    rows.push({ label: "Kappaτ", value: fmt(kappaTau, 6), tone: "positive" });
+  }
+  if (showDerivedScoreColumns(scoreMode)) {
+    rows.push(
+      { label: "Act Mean", value: fmt(derivedActiveMean(metrics), 6), tone: "neutral" },
+      { label: "Act Sort", value: fmt(derivedActiveSortino(metrics), 6), tone: "positive" },
+      { label: "Chronicity", value: fmt(derivedDrawdownChronicity(metrics), 6), tone: "danger" },
+      { label: "Dn Share", value: fmt(derivedDownsideShare(metrics), 6), tone: "neutral" },
+    );
+  }
+  return rows.filter((entry) => entry.value && entry.value !== "-");
 }
 
 function refreshOverviewFromWorkflowRunStore(
@@ -1358,11 +1793,38 @@ function refreshOverviewFromWorkflowRunStore(
   const strategyKind =
     text(req.strategy_kind ?? req.strategyKind) || "DoubleMa";
   const objective = objectiveOf(req);
+  const scoreMode = scoreModeOf(req);
+  const extraShortlistObjectives = extraShortlistObjectivesOf(req);
+  const shortlistConfidenceMode = shortlistConfidenceModeOf(req);
+  const shortlistUnionMode = shortlistUnionModeOf(req);
+  const shortlistSliceMode = shortlistSliceModeOf(req);
+  const shortlistSliceBenchmark = shortlistSliceBenchmarkOf(req);
+  const shortlistNeighborhood = shortlistNeighborhoodSummaryOf(req);
+  const hurdleTau = hurdleTauOf(req);
   const comboCount = combosOf(res);
   const runtimeMs = runtimeMsOf(res);
   const metaParts = [
     `strategy=${strategyKind}`,
     objective ? `objective=${objective}` : "",
+    extraShortlistObjectives.length > 0
+      ? `extra_shortlist=${extraShortlistObjectives.join(",")}`
+      : "",
+    shortlistConfidenceMode
+      ? `shortlist_confidence=${shortlistConfidenceMode}`
+      : "",
+    shortlistUnionMode
+      ? `shortlist_union=${shortlistUnionMode}`
+      : "",
+    shortlistSliceMode
+      ? `shortlist_slice=${shortlistSliceMode}`
+      : "",
+    shortlistSliceBenchmark
+      ? `slice_benchmark=${shortlistSliceBenchmark}`
+      : "",
+    shortlistNeighborhood
+      ? `slice_neighborhood=${shortlistNeighborhood}`
+      : "",
+    hurdleTau ? `hurdle_tau=${hurdleTau}` : "",
     comboCount > 0 ? `combos=${comboCount}` : "",
     runtimeMs > 0 ? `runtime=${runtimeMs}ms` : "",
   ].filter((part) => part.length > 0);
@@ -1370,11 +1832,31 @@ function refreshOverviewFromWorkflowRunStore(
   store.bestKicker = isMo(req, res) ? "Pareto leader" : "Best candidate";
   store.bestTitle = formatBestTitle(params);
   store.bestMeta = metaParts.join(" · ") || "Optimization result loaded.";
-  store.bestStats = markRawEntity(buildBestStats(metrics));
-  store.bestSummary = [
+  store.bestStats = markRawEntity(buildBestStats(metrics, scoreMode));
+  const summaryParts = [
     `strategy=${strategyKind}`,
     `title=${formatBestTitle(params)}`,
     objective ? `objective=${objective}` : "",
+    scoreMode ? `score_mode=${scoreMode}` : "",
+    extraShortlistObjectives.length > 0
+      ? `extra_shortlist_objectives=${extraShortlistObjectives.join(",")}`
+      : "",
+    shortlistConfidenceMode
+      ? `shortlist_confidence_mode=${shortlistConfidenceMode}`
+      : "",
+    shortlistUnionMode
+      ? `shortlist_union_mode=${shortlistUnionMode}`
+      : "",
+    shortlistSliceMode
+      ? `shortlist_slice_mode=${shortlistSliceMode}`
+      : "",
+    shortlistSliceBenchmark
+      ? `shortlist_slice_benchmark=${shortlistSliceBenchmark}`
+      : "",
+    shortlistNeighborhood
+      ? `shortlist_neighborhood=${shortlistNeighborhood}`
+      : "",
+    hurdleTau ? `hurdle_tau=${hurdleTau}` : "",
     `pnl=${fmt(metrics.pnl, 6)}`,
     `return=${fmtPct(metrics.pnl, 2)}`,
     `sharpe=${fmt(metrics.sharpe, 6)}`,
@@ -1386,7 +1868,20 @@ function refreshOverviewFromWorkflowRunStore(
     `exposure=${fmt(metrics.exposure, 4)}`,
     comboCount > 0 ? `combos=${comboCount}` : "",
     runtimeMs > 0 ? `runtime_ms=${runtimeMs}` : "",
-  ]
+  ];
+  const kappaTau = num(metrics.kappa_tau, Number.NaN);
+  if (Number.isFinite(kappaTau) && Math.abs(kappaTau) > 1e-12) {
+    summaryParts.push(`kappa_tau=${fmt(kappaTau, 6)}`);
+  }
+  if (showDerivedScoreColumns(scoreMode)) {
+    summaryParts.push(
+      `active_mean=${fmt(derivedActiveMean(metrics), 6)}`,
+      `active_sortino=${fmt(derivedActiveSortino(metrics), 6)}`,
+      `drawdown_chronicity=${fmt(derivedDrawdownChronicity(metrics), 6)}`,
+      `downside_share=${fmt(derivedDownsideShare(metrics), 6)}`,
+    );
+  }
+  store.bestSummary = summaryParts
     .filter((part) => part.length > 0)
     .join("\n");
 }
@@ -1444,7 +1939,9 @@ function paretoAxisValue(
   if (key === "maximize_value") return num(row.mo?.maximize_value, Number.NaN);
   if (key === "minimize_value") return num(row.mo?.minimize_value, Number.NaN);
   if (key === "violation") return num(row.mo?.violation, Number.NaN);
-  if (key === "score") return scoreOf(row.metrics || {}, objectiveOf(req));
+  if (key === "score") {
+    return scoreOf(row.metrics || {}, objectiveOf(req), scoreModeOf(req));
+  }
   return num((row.metrics || {})[key], Number.NaN);
 }
 
@@ -2007,7 +2504,7 @@ function renderHeatmapCanvas(
     tooltip.style.display = "block";
     tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`;
     tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`;
-    tooltip.textContent = `${text(Array.isArray(req.fast_ma_types) ? req.fast_ma_types[0] : req.fast_ma_type).toUpperCase() || "FAST"} ${fast} · ${text(Array.isArray(req.slow_ma_types) ? req.slow_ma_types[0] : req.slow_ma_type).toUpperCase() || "SLOW"} ${slow} · ${objectiveOf(req)} ${fmtDisplay(value, 4)}`;
+    tooltip.textContent = `${text(Array.isArray(req.fast_ma_types) ? req.fast_ma_types[0] : req.fast_ma_type).toUpperCase() || "FAST"} ${fast} · ${text(Array.isArray(req.slow_ma_types) ? req.slow_ma_types[0] : req.slow_ma_type).toUpperCase() || "SLOW"} ${slow} · ${scoreLabelOf(req)} ${fmtDisplay(value, 4)}`;
     paintOverlay();
   };
 
@@ -2033,8 +2530,9 @@ function renderHeatmapCanvas(
     if (typeof value !== "number" || !Number.isFinite(value)) return;
     const params = buildHeatmapCellParams(req, model, col, logicalRow);
     const objective = objectiveOf(req);
+    const scoreMode = scoreModeOf(req);
     const metrics: Record<string, unknown> = {
-      [objectiveScoreKey(objective)]: value,
+      [objectiveScoreKey(objective, scoreMode)]: value,
     };
     const pinia = getActivePinia();
     if (pinia) {
@@ -2049,7 +2547,7 @@ function renderHeatmapCanvas(
   renderHeatmapLegend(range.min, range.max, palette);
   store.heatmapWrapVisible = true;
   store.canHeatmapExportPng = true;
-  store.heatmapMeta = `${objectiveOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label}`;
+  store.heatmapMeta = `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label}`;
   store.heatmapStatusLine =
     topK === 0
       ? "Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only."
@@ -2098,7 +2596,7 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
   } else if (model) {
     store.heatmapWrapVisible = true;
     store.canHeatmapExportPng = true;
-    store.heatmapMeta = `${objectiveOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax}`;
+    store.heatmapMeta = `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax}`;
     store.heatmapStatusLine = "Heatmap available.";
   } else {
     store.heatmapWrapVisible = false;
@@ -2242,8 +2740,8 @@ function buildCompareSummary(
   const bp = bBest.params || {};
   const cObj = objectiveOf(cReq);
   const bObj = objectiveOf(bReq);
-  const cScore = scoreOf(cm, cObj);
-  const bScore = scoreOf(bm, bObj);
+  const cScore = scoreOf(cm, cObj, scoreModeOf(cReq));
+  const bScore = scoreOf(bm, bObj, scoreModeOf(bReq));
   const cRt = runtimeMsOf(cRes);
   const bRt = runtimeMsOf(bRes);
   const ratio = cRt > 0 && bRt > 0 ? bRt / cRt : 0;
@@ -3542,6 +4040,7 @@ export async function exportTopCsv(): Promise<void> {
     return;
   }
   const objective = objectiveOf(req);
+  const scoreMode = scoreModeOf(req);
   const sort = store
     ? readSortState(store)
     : { key: "rank", dir: "asc" as const };
@@ -3551,18 +4050,23 @@ export async function exportTopCsv(): Promise<void> {
       sort.key,
       sort.dir,
       objective,
+      scoreMode,
     ),
     store ? readFilters(store) : {},
   );
   const seed = startEq(req);
   const lines = [
-    "rank,fast_ma,fast_len,slow_ma,slow_len,pnl,pnl_pct,final_equity,sharpe,max_dd,trades,exposure,net_exposure,score,params_json",
+    "rank,fast_ma,fast_len,slow_ma,slow_len,pnl,pnl_pct,final_equity,sharpe,max_dd,trades,exposure,net_exposure,active_mean,active_sortino,drawdown_chronicity,downside_share,score,params_json",
   ];
   for (const row of rows) {
     const p = row.params || {};
     const m = row.metrics || {};
     const pnl = num(m.pnl, 0);
-    const score = scoreOf(m, objective);
+    const score = scoreOf(m, objective, scoreMode);
+    const activeMean = derivedActiveMean(m);
+    const activeSortino = derivedActiveSortino(m);
+    const chronicity = derivedDrawdownChronicity(m);
+    const downsideShare = derivedDownsideShare(m);
     const paramsJson = (() => {
       try {
         return JSON.stringify(p);
@@ -3585,6 +4089,10 @@ export async function exportTopCsv(): Promise<void> {
         num(m.trades, 0),
         num(m.exposure, 0),
         num(m.net_exposure, 0),
+        num(activeMean, 0),
+        num(activeSortino, 0),
+        num(chronicity, 0),
+        num(downsideShare, 0),
         num(score, 0),
         csvEscape(paramsJson),
       ].join(","),

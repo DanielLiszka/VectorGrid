@@ -2511,8 +2511,11 @@ fn simulate_from_desired(
         sharpe,
         sortino,
         downside_deviation: downside_dev,
+        downside_frequency: 0.0,
+        downside_severity: 0.0,
         calmar,
         omega,
+        kappa_tau: 0.0,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -2520,6 +2523,15 @@ fn simulate_from_desired(
         trades: trades_count,
         exposure,
         net_exposure,
+        long_mean_return: 0.0,
+        short_mean_return: 0.0,
+        closed_trades: 0,
+        winning_trades: 0,
+        losing_trades: 0,
+        gross_profit: 0.0,
+        gross_loss: 0.0,
+        underwater_fraction: 0.0,
+        max_underwater_duration_bars: 0,
     };
 
     let curves = if with_curves {
@@ -2646,3 +2658,4 @@ pub fn eval_asr_curves_from_desired(
         indicator_bars: Vec::new(),
     })
 }
+

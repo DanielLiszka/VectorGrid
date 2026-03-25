@@ -3389,6 +3389,27 @@ void build_orc_regime_f32(const float* __restrict__ rsi,
 
 
 
+static __device__ __forceinline__ void record_closed_trade_summary_f32(
+    bool enabled,
+    float trade_log_ret,
+    int* closed_trades,
+    int* winning_trades,
+    int* losing_trades,
+    float* gross_profit,
+    float* gross_loss)
+{
+    if (!enabled) return;
+    *closed_trades += 1;
+    const float trade_ret = expf(trade_log_ret) - 1.0f;
+    if (trade_ret > 0.0f) {
+        *winning_trades += 1;
+        *gross_profit += trade_ret;
+    } else if (trade_ret < 0.0f) {
+        *losing_trades += 1;
+        *gross_loss += -trade_ret;
+    }
+}
+
 template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
@@ -3417,6 +3438,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -3437,6 +3459,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const int need_downside_dev = FULL_M7 ? 1 : (M > 7);
     const int need_ulcer = FULL_M7 ? 1 : (M > 8);
     const int need_omega = FULL_M7 ? 1 : (M > 9);
+    const int need_kappa_tau = FULL_M7 ? (metrics_stride > 14) : (M > 14);
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk_runtime = use_stop || use_take;
@@ -3480,6 +3503,18 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (M > 7) metrics_out[base + 7] = 0.0f;
             if (M > 8) metrics_out[base + 8] = 0.0f;
             if (M > 9) metrics_out[base + 9] = 0.0f;
+            if (M > 10) metrics_out[base + 10] = 0.0f;
+            if (M > 11) metrics_out[base + 11] = 0.0f;
+            if (M > 12) metrics_out[base + 12] = 0.0f;
+            if (M > 13) metrics_out[base + 13] = 0.0f;
+            if (M > 14) metrics_out[base + 14] = 0.0f;
+            if (M > 15) metrics_out[base + 15] = 0.0f;
+            if (M > 16) metrics_out[base + 16] = 0.0f;
+            if (M > 17) metrics_out[base + 17] = 0.0f;
+            if (M > 18) metrics_out[base + 18] = 0.0f;
+            if (M > 19) metrics_out[base + 19] = 0.0f;
+            if (M > 20) metrics_out[base + 20] = 0.0f;
+            if (M > 21) metrics_out[base + 21] = 0.0f;
             continue;
         }
 
@@ -3500,6 +3535,18 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (M > 7) metrics_out[base + 7] = 0.0f;
             if (M > 8) metrics_out[base + 8] = 0.0f;
             if (M > 9) metrics_out[base + 9] = 0.0f;
+            if (M > 10) metrics_out[base + 10] = 0.0f;
+            if (M > 11) metrics_out[base + 11] = 0.0f;
+            if (M > 12) metrics_out[base + 12] = 0.0f;
+            if (M > 13) metrics_out[base + 13] = 0.0f;
+            if (M > 14) metrics_out[base + 14] = 0.0f;
+            if (M > 15) metrics_out[base + 15] = 0.0f;
+            if (M > 16) metrics_out[base + 16] = 0.0f;
+            if (M > 17) metrics_out[base + 17] = 0.0f;
+            if (M > 18) metrics_out[base + 18] = 0.0f;
+            if (M > 19) metrics_out[base + 19] = 0.0f;
+            if (M > 20) metrics_out[base + 20] = 0.0f;
+            if (M > 21) metrics_out[base + 21] = 0.0f;
             continue;
         }
 
@@ -3514,11 +3561,29 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         int n = 0;
         int obs = 0;
         float sum_neg_sq = 0.0f;
+        float sum_neg_cu = 0.0f;
         float ulcer_sum_sq = 0.0f;
         float sum_pos_r = 0.0f;
         float sum_neg_abs_r = 0.0f;
+        int count_neg = 0;
+        const bool need_side_means = FULL_M7 ? (metrics_stride > 12) : (M > 12);
+        const bool need_underwater = FULL_M7 ? (metrics_stride > 16) : (M > 16);
+        const bool need_trade_metrics = FULL_M7 ? (metrics_stride > 21) : (M > 21);
+        int long_obs = 0;
+        int short_obs = 0;
+        float long_sum_r = 0.0f;
+        float short_sum_r = 0.0f;
+        int underwater_bars = 0;
+        int underwater_run = 0;
+        int max_underwater_duration_bars = 0;
+        int closed_trades = 0;
+        int winning_trades = 0;
+        int losing_trades = 0;
+        float gross_profit = 0.0f;
+        float gross_loss = 0.0f;
 
         if (!use_risk) {
+            float trade_log_ret = 0.0f;
             const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
             for (int t = loop_start; t < end_t; ++t) {
                 if constexpr (LOCKSTEP_TIME) {
@@ -3547,42 +3612,90 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
                 if (sign != pos) {
                     if (pos == 0 || sign == 0) {
-                        if (commission > 0.0f) log_eq += log_comm;
+                        if (commission > 0.0f) {
+                            log_eq += log_comm;
+                            if (pos != 0 && need_trade_metrics) trade_log_ret += log_comm;
+                        }
                         if (need_trades) trades += 1;
+                        if (pos != 0) {
+                            record_closed_trade_summary_f32(
+                                need_trade_metrics,
+                                trade_log_ret,
+                                &closed_trades,
+                                &winning_trades,
+                                &losing_trades,
+                                &gross_profit,
+                                &gross_loss);
+                        }
                         pos = (sign == 0) ? 0 : sign;
+                        trade_log_ret = (pos != 0 && commission > 0.0f) ? log_comm : 0.0f;
                     } else {
                         if (flags & STRAT_NO_FLIP) {
-                            if (commission > 0.0f) log_eq += log_comm;
+                            if (commission > 0.0f) {
+                                log_eq += log_comm;
+                                if (need_trade_metrics) trade_log_ret += log_comm;
+                            }
                             if (need_trades) trades += 1;
+                            record_closed_trade_summary_f32(
+                                need_trade_metrics,
+                                trade_log_ret,
+                                &closed_trades,
+                                &winning_trades,
+                                &losing_trades,
+                                &gross_profit,
+                                &gross_loss);
                             pos = 0;
+                            trade_log_ret = 0.0f;
                         } else {
-                            if (commission > 0.0f) log_eq += 2.0f * log_comm;
+                            if (commission > 0.0f) {
+                                log_eq += 2.0f * log_comm;
+                                if (need_trade_metrics) trade_log_ret += log_comm;
+                            }
                             if (need_trades) trades += 2;
+                            record_closed_trade_summary_f32(
+                                need_trade_metrics,
+                                trade_log_ret,
+                                &closed_trades,
+                                &winning_trades,
+                                &losing_trades,
+                                &gross_profit,
+                                &gross_loss);
                             pos = sign;
+                            trade_log_ret = (commission > 0.0f) ? log_comm : 0.0f;
                         }
                     }
                 }
 
                 const float lr_t = lr[t];
-                log_eq += (float)pos * lr_t;
+                const float step_log = (float)pos * lr_t;
+                log_eq += step_log;
+                if (pos != 0 && need_trade_metrics) {
+                    trade_log_ret += step_log;
+                }
                 obs += 1;
 
-                if (need_max_dd) {
+                if (need_max_dd || need_ulcer || need_underwater) {
                     if (log_eq > log_peak) log_peak = log_eq;
                     const float dd_log = log_peak - log_eq;
-                    if (dd_log > max_log_dd) max_log_dd = dd_log;
+                    if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;
+                    if (need_underwater) {
+                        if (dd_log > 0.0f) {
+                            underwater_bars += 1;
+                            underwater_run += 1;
+                            if (underwater_run > max_underwater_duration_bars) {
+                                max_underwater_duration_bars = underwater_run;
+                            }
+                        } else {
+                            underwater_run = 0;
+                        }
+                    }
                     if (need_ulcer) {
                         const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
                         ulcer_sum_sq += dd * dd;
                     }
-                } else if (need_ulcer) {
-                    if (log_eq > log_peak) log_peak = log_eq;
-                    const float dd_log = log_peak - log_eq;
-                    const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
-                    ulcer_sum_sq += dd * dd;
                 }
 
-                if (need_stats || need_downside_dev || need_omega) {
+                if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
                     const float step_r = (pos == 0) ? 0.0f : (float)pos * ret1[t];
                     if (need_stats) {
                         n += 1;
@@ -3590,20 +3703,37 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         mean += delta / (float)n;
                         m2   += delta * (step_r - mean);
                     }
-                    if (need_downside_dev && step_r < 0.0f) {
-                        sum_neg_sq += step_r * step_r;
+                    const float excess_r = step_r - hurdle_tau;
+                    if ((need_downside_dev || need_kappa_tau) && excess_r < 0.0f) {
+                        count_neg += 1;
+                        if (need_downside_dev) {
+                            sum_neg_sq += excess_r * excess_r;
+                        }
+                        if (need_kappa_tau) {
+                            const float neg_mag = -excess_r;
+                            sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                        }
                     }
                     if (need_omega) {
-                        if (step_r > 0.0f) {
-                            sum_pos_r += step_r;
-                        } else if (step_r < 0.0f) {
-                            sum_neg_abs_r -= step_r;
+                        if (excess_r > 0.0f) {
+                            sum_pos_r += excess_r;
+                        } else if (excess_r < 0.0f) {
+                            sum_neg_abs_r -= excess_r;
                         }
                     }
 
                     if (need_expo) {
                         sum_abs_pos += abs(pos);
                         sum_pos     += pos;
+                    }
+                    if (need_side_means) {
+                        if (pos > 0) {
+                            long_obs += 1;
+                            long_sum_r += step_r;
+                        } else if (pos < 0) {
+                            short_obs += 1;
+                            short_sum_r += step_r;
+                        }
                     }
                 }
             }
@@ -3643,6 +3773,16 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                             if (pos != 0) trade_log_ret += log_comm;
                         }
                         if (need_trades) trades += 1;
+                        if (pos != 0) {
+                            record_closed_trade_summary_f32(
+                                need_trade_metrics,
+                                trade_log_ret,
+                                &closed_trades,
+                                &winning_trades,
+                                &losing_trades,
+                                &gross_profit,
+                                &gross_loss);
+                        }
                         pos = (sign == 0) ? 0 : sign;
                         trade_log_ret = (pos != 0 && commission > 0.0f) ? log_comm : 0.0f;
                     } else {
@@ -3652,6 +3792,14 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                                 trade_log_ret += log_comm;
                             }
                             if (need_trades) trades += 1;
+                            record_closed_trade_summary_f32(
+                                need_trade_metrics,
+                                trade_log_ret,
+                                &closed_trades,
+                                &winning_trades,
+                                &losing_trades,
+                                &gross_profit,
+                                &gross_loss);
                             pos = 0;
                             trade_log_ret = 0.0f;
                         } else {
@@ -3660,6 +3808,14 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                                 trade_log_ret += log_comm;
                             }
                             if (need_trades) trades += 2;
+                            record_closed_trade_summary_f32(
+                                need_trade_metrics,
+                                trade_log_ret,
+                                &closed_trades,
+                                &winning_trades,
+                                &losing_trades,
+                                &gross_profit,
+                                &gross_loss);
                             pos = sign;
                             trade_log_ret = (commission > 0.0f) ? log_comm : 0.0f;
                         }
@@ -3677,29 +3833,46 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     const bool hit_stop = use_stop && (trade_log_ret <= stop_log);
                     const bool hit_take = use_take && (trade_log_ret >= take_log);
                     if (hit_stop || hit_take) {
-                        if (commission > 0.0f) log_eq += log_comm;
+                        if (commission > 0.0f) {
+                            log_eq += log_comm;
+                            trade_log_ret += log_comm;
+                        }
                         if (need_trades) trades += 1;
+                        record_closed_trade_summary_f32(
+                            need_trade_metrics,
+                            trade_log_ret,
+                            &closed_trades,
+                            &winning_trades,
+                            &losing_trades,
+                            &gross_profit,
+                            &gross_loss);
                         pos = 0;
                         trade_log_ret = 0.0f;
                     }
                 }
 
-                if (need_max_dd) {
+                if (need_max_dd || need_ulcer || need_underwater) {
                     if (log_eq > log_peak) log_peak = log_eq;
                     const float dd_log = log_peak - log_eq;
-                    if (dd_log > max_log_dd) max_log_dd = dd_log;
+                    if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;
+                    if (need_underwater) {
+                        if (dd_log > 0.0f) {
+                            underwater_bars += 1;
+                            underwater_run += 1;
+                            if (underwater_run > max_underwater_duration_bars) {
+                                max_underwater_duration_bars = underwater_run;
+                            }
+                        } else {
+                            underwater_run = 0;
+                        }
+                    }
                     if (need_ulcer) {
                         const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
                         ulcer_sum_sq += dd * dd;
                     }
-                } else if (need_ulcer) {
-                    if (log_eq > log_peak) log_peak = log_eq;
-                    const float dd_log = log_peak - log_eq;
-                    const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
-                    ulcer_sum_sq += dd * dd;
                 }
 
-                if (need_stats || need_downside_dev || need_omega) {
+                if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
                     const float step_r = (pos_bar == 0) ? 0.0f : (float)pos_bar * ret1[t];
                     if (need_stats) {
                         n += 1;
@@ -3707,20 +3880,37 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         mean += delta / (float)n;
                         m2 += delta * (step_r - mean);
                     }
-                    if (need_downside_dev && step_r < 0.0f) {
-                        sum_neg_sq += step_r * step_r;
+                    const float excess_r = step_r - hurdle_tau;
+                    if ((need_downside_dev || need_kappa_tau) && excess_r < 0.0f) {
+                        count_neg += 1;
+                        if (need_downside_dev) {
+                            sum_neg_sq += excess_r * excess_r;
+                        }
+                        if (need_kappa_tau) {
+                            const float neg_mag = -excess_r;
+                            sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                        }
                     }
                     if (need_omega) {
-                        if (step_r > 0.0f) {
-                            sum_pos_r += step_r;
-                        } else if (step_r < 0.0f) {
-                            sum_neg_abs_r -= step_r;
+                        if (excess_r > 0.0f) {
+                            sum_pos_r += excess_r;
+                        } else if (excess_r < 0.0f) {
+                            sum_neg_abs_r -= excess_r;
                         }
                     }
 
                     if (need_expo) {
                         sum_abs_pos += abs(pos_bar);
                         sum_pos += pos_bar;
+                    }
+                    if (need_side_means) {
+                        if (pos_bar > 0) {
+                            long_obs += 1;
+                            long_sum_r += step_r;
+                        } else if (pos_bar < 0) {
+                            short_obs += 1;
+                            short_sum_r += step_r;
+                        }
                     }
                 }
             }
@@ -3743,12 +3933,36 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             const float omega_raw = (sum_pos_r + eps) / (sum_neg_abs_r + eps);
             omega = fminf(clamp_max, fmaxf(0.0f, omega_raw));
         }
+        float kappa_tau = 0.0f;
+        if (need_kappa_tau) {
+            const float mean_excess = mean - hurdle_tau;
+            const float kappa_denom =
+                (obs > 0) ? cbrtf(fmaxf(sum_neg_cu / (float)obs, 0.0f)) : 0.0f;
+            if (kappa_denom > 0.0f) {
+                kappa_tau = mean_excess / kappa_denom;
+            } else if (mean_excess > 0.0f) {
+                kappa_tau = clamp_max;
+            } else if (mean_excess < 0.0f) {
+                kappa_tau = -clamp_max;
+            }
+            kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+        }
+        const float downside_frequency =
+            (obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)obs)) : 0.0f;
+        const float downside_severity =
+            (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+        const float underwater_fraction =
+            (need_underwater && obs > 0) ? ((float)underwater_bars / (float)obs) : 0.0f;
+        const float long_mean_return =
+            (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+        const float short_mean_return =
+            (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
 
         if constexpr (FULL_M7) {
             // Preserve the existing reduced-row contract even for the M7-specialized kernels:
-            // when M < 10, slots 0 and 2 are emitted in log-space (log_eq/max_log_dd) and the
+            // when M < 17, slots 0 and 2 are emitted in log-space (log_eq/max_log_dd) and the
             // host decode restores arithmetic pnl/max_dd.
-            const bool search_row = M < 10;
+            const bool search_row = M < 17;
             metrics_out[base + 0] = search_row ? log_eq : pnl;
             metrics_out[base + 1] = (float)trades;
             metrics_out[base + 2] = search_row ? max_log_dd : max_dd;
@@ -3759,8 +3973,20 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (metrics_stride > 7) metrics_out[base + 7] = downside_dev;
             if (metrics_stride > 8) metrics_out[base + 8] = ulcer_index;
             if (metrics_stride > 9) metrics_out[base + 9] = omega;
+            if (metrics_stride > 10) metrics_out[base + 10] = downside_frequency;
+            if (metrics_stride > 11) metrics_out[base + 11] = downside_severity;
+            if (metrics_stride > 12) metrics_out[base + 12] = long_mean_return;
+            if (metrics_stride > 13) metrics_out[base + 13] = short_mean_return;
+            if (metrics_stride > 14) metrics_out[base + 14] = kappa_tau;
+            if (metrics_stride > 15) metrics_out[base + 15] = underwater_fraction;
+            if (metrics_stride > 16) metrics_out[base + 16] = (float)max_underwater_duration_bars;
+            if (metrics_stride > 17) metrics_out[base + 17] = (float)closed_trades;
+            if (metrics_stride > 18) metrics_out[base + 18] = (float)winning_trades;
+            if (metrics_stride > 19) metrics_out[base + 19] = (float)losing_trades;
+            if (metrics_stride > 20) metrics_out[base + 20] = gross_profit;
+            if (metrics_stride > 21) metrics_out[base + 21] = gross_loss;
         } else {
-            const bool search_row = M < 10;
+            const bool search_row = M < 17;
             if (M > 0) metrics_out[base + 0] = search_row ? log_eq : pnl;
             if (M > 1) metrics_out[base + 1] = (float)trades;
             if (M > 2) metrics_out[base + 2] = search_row ? max_log_dd : max_dd;
@@ -3771,6 +3997,18 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (M > 7) metrics_out[base + 7] = downside_dev;
             if (M > 8) metrics_out[base + 8] = ulcer_index;
             if (M > 9) metrics_out[base + 9] = omega;
+            if (M > 10) metrics_out[base + 10] = downside_frequency;
+            if (M > 11) metrics_out[base + 11] = downside_severity;
+            if (M > 12) metrics_out[base + 12] = long_mean_return;
+            if (M > 13) metrics_out[base + 13] = short_mean_return;
+            if (M > 14) metrics_out[base + 14] = kappa_tau;
+            if (M > 15) metrics_out[base + 15] = underwater_fraction;
+            if (M > 16) metrics_out[base + 16] = (float)max_underwater_duration_bars;
+            if (M > 17) metrics_out[base + 17] = (float)closed_trades;
+            if (M > 18) metrics_out[base + 18] = (float)winning_trades;
+            if (M > 19) metrics_out[base + 19] = (float)losing_trades;
+            if (M > 20) metrics_out[base + 20] = gross_profit;
+            if (M > 21) metrics_out[base + 21] = gross_loss;
         }
     }
 }
@@ -3800,6 +4038,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -3817,7 +4056,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         0, T,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -3843,6 +4082,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -3859,7 +4099,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -3887,6 +4127,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
     int eval_end,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -3904,7 +4145,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -3930,6 +4171,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -3946,7 +4188,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -3972,6 +4214,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time(
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -3988,7 +4231,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4014,6 +4257,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m7(
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4030,7 +4274,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m7(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4056,6 +4300,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4072,7 +4317,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4098,6 +4343,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4114,7 +4360,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4140,6 +4386,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4156,7 +4403,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4182,6 +4429,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4198,7 +4446,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4224,6 +4472,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4240,7 +4489,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4266,6 +4515,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4282,7 +4532,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4308,6 +4558,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4324,7 +4575,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4350,6 +4601,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4366,7 +4618,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4392,6 +4644,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int regime_first_valid,
     float commission,
     float eps_rel,
+    float hurdle_tau,
     float stop_log,
     float take_log,
     unsigned int flags,
@@ -4408,15 +4661,23 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
     );
 }
 
 
 
 
-static __device__ __forceinline__ float objective_score_f32(const float* __restrict__ metrics, size_t base, int M, int objective) {
-    // objective: 0 = pnl, 1 = sharpe, 2 = -max_dd, 3 = calmar, 4 = -volatility
+static __device__ __forceinline__ float objective_score_f32(
+    const float* __restrict__ metrics,
+    size_t base,
+    int M,
+    int objective,
+    float hurdle_tau
+) {
+    // objective: 0 = pnl, 1 = sharpe, 2 = -max_dd, 3 = calmar, 4 = -volatility,
+    // 5 = sortino, 6 = omega
+    const float clamp_max = 1.0e6f;
     if (objective == 0) {
         return (M > 0) ? metrics[base + 0] : NEG_INF_F;
     }
@@ -4431,11 +4692,10 @@ static __device__ __forceinline__ float objective_score_f32(const float* __restr
     }
     if (objective == 3) {
         if (M <= 2) return NEG_INF_F;
-        const bool search_row = M < 10;
+        const bool search_row = M < 15;
         const float pnl = search_row ? expm1f(metrics[base + 0]) : metrics[base + 0];
         const float max_dd = search_row ? -expm1f(-metrics[base + 2]) : metrics[base + 2];
         const float eps = 1e-12f;
-        const float clamp_max = 1.0e6f;
         float raw = 0.0f;
         if (max_dd > eps) {
             raw = pnl / max_dd;
@@ -4452,6 +4712,19 @@ static __device__ __forceinline__ float objective_score_f32(const float* __restr
         if (M <= 4) return NEG_INF_F;
         const float std = metrics[base + 4];
         return -std;
+    }
+    if (objective == 5) {
+        if (M <= 7) return NEG_INF_F;
+        const float mean = metrics[base + 3];
+        const float downside = metrics[base + 7];
+        const float mean_excess = mean - hurdle_tau;
+        if (downside > 0.0f) return mean_excess / downside;
+        if (mean_excess > 0.0f) return clamp_max;
+        if (mean_excess < 0.0f) return -clamp_max;
+        return 0.0f;
+    }
+    if (objective == 6) {
+        return (M > 9) ? metrics[base + 9] : NEG_INF_F;
     }
     return NEG_INF_F;
 }
@@ -4492,18 +4765,81 @@ static __device__ __forceinline__ bool passes_constraints_f32(
     const float* __restrict__ metrics,
     size_t base,
     int M,
+    float hurdle_tau,
     int use_min_trades,
     float min_trades,
     int use_max_dd,
-    float max_dd
+    float max_dd,
+    int use_min_sharpe,
+    float min_sharpe,
+    int use_min_calmar,
+    float min_calmar,
+    int use_max_volatility,
+    float max_volatility,
+    int use_min_exposure,
+    float min_exposure,
+    int use_max_exposure,
+    float max_exposure,
+    int use_max_abs_net_exposure,
+    float max_abs_net_exposure,
+    int use_min_omega,
+    float min_omega,
+    int use_max_ulcer,
+    float max_ulcer,
+    int use_max_downside_deviation,
+    float max_downside_deviation
 ) {
-    if (use_min_trades && M > 1) {
+    if (use_min_trades) {
+        if (M <= 1) return false;
         const float trades = metrics[base + 1];
         if (!(trades >= min_trades)) return false;
     }
-    if (use_max_dd && M > 2) {
+    if (use_max_dd) {
+        if (M <= 2) return false;
         const float dd = metrics[base + 2];
         if (!(dd <= max_dd)) return false;
+    }
+    if (use_min_sharpe) {
+        const float sharpe = objective_score_f32(metrics, base, M, 1, hurdle_tau);
+        if (!(sharpe >= min_sharpe)) return false;
+    }
+    if (use_min_calmar) {
+        const float calmar = objective_score_f32(metrics, base, M, 3, hurdle_tau);
+        if (!(calmar >= min_calmar)) return false;
+    }
+    if (use_max_volatility) {
+        if (M <= 4) return false;
+        const float volatility = metrics[base + 4];
+        if (!(volatility <= max_volatility)) return false;
+    }
+    if (use_min_exposure) {
+        if (M <= 5) return false;
+        const float exposure = metrics[base + 5];
+        if (!(exposure >= min_exposure)) return false;
+    }
+    if (use_max_exposure) {
+        if (M <= 5) return false;
+        const float exposure = metrics[base + 5];
+        if (!(exposure <= max_exposure)) return false;
+    }
+    if (use_max_abs_net_exposure) {
+        if (M <= 6) return false;
+        const float net_exposure = fabsf(metrics[base + 6]);
+        if (!(net_exposure <= max_abs_net_exposure)) return false;
+    }
+    if (use_min_omega) {
+        const float omega = objective_score_f32(metrics, base, M, 6, hurdle_tau);
+        if (!(omega >= min_omega)) return false;
+    }
+    if (use_max_ulcer) {
+        if (M <= 8) return false;
+        const float ulcer = metrics[base + 8];
+        if (!(ulcer <= max_ulcer)) return false;
+    }
+    if (use_max_downside_deviation) {
+        if (M <= 7) return false;
+        const float downside = metrics[base + 7];
+        if (!(downside <= max_downside_deviation)) return false;
     }
     return true;
 }
@@ -4549,6 +4885,13 @@ void fill_f32(float* __restrict__ out, int N, float value) {
 }
 
 extern "C" __global__
+void fill_i32(int* __restrict__ out, int N, int value) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
+        out[i] = value;
+    }
+}
+
+extern "C" __global__
 void heatmap_update_scores_tm_f32(
     const float* __restrict__ metrics,
     int pairs,
@@ -4559,6 +4902,7 @@ void heatmap_update_scores_tm_f32(
     const int* __restrict__ fast_periods,
     const int* __restrict__ slow_periods,
     int objective,
+    float hurdle_tau,
     int bins_fast,
     int bins_slow,
     int fast_min,
@@ -4570,7 +4914,9 @@ void heatmap_update_scores_tm_f32(
     const int* __restrict__ compact_slow_rows,
     int pair_count,
     int compact_output,
-    float* __restrict__ heatmap_out
+    float* __restrict__ heatmap_out,
+    float* __restrict__ heatmap_sum_out,
+    int* __restrict__ heatmap_count_out
 ) {
     const int dense_pairs = pairs;
     const int total_pairs = (pair_count > 0) ? pair_count : pairs;
@@ -4599,13 +4945,19 @@ void heatmap_update_scores_tm_f32(
         if (f >= s) continue;
 
         const size_t base = row_idx * (size_t)metrics_stride;
-        const float score = objective_score_f32(metrics, base, M, objective);
+        const float score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
         if (!isfinite(score)) continue;
 
         const int fb = bin_period_i32(f, fast_min, fast_max, bins_fast);
         const int sb = bin_period_i32(s, slow_min, slow_max, bins_slow);
         const int idx = fb * bins_slow + sb;
         atomicMaxFloat(&heatmap_out[idx], score);
+        if (heatmap_sum_out != nullptr) {
+            atomicAdd(&heatmap_sum_out[idx], score);
+        }
+        if (heatmap_count_out != nullptr) {
+            atomicAdd(&heatmap_count_out[idx], 1);
+        }
     }
 }
 
@@ -4624,6 +4976,7 @@ void select_topk_from_pairs_tm_f32(
     const int* __restrict__ fast_periods,
     const int* __restrict__ slow_periods,
     int objective,
+    float hurdle_tau,
     int topk,
     const int* __restrict__ pair_index_map,
     int pair_count,
@@ -4644,7 +4997,7 @@ void select_topk_from_pairs_tm_f32(
         if (compact_idx < total_pairs) {
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
-                score = objective_score_f32(metrics, base, M, objective);
+                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                 if (!isfinite(score)) score = NEG_INF_F;
                 val = compact_idx;
             } else {
@@ -4659,7 +5012,7 @@ void select_topk_from_pairs_tm_f32(
                             const size_t row_idx =
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            score = objective_score_f32(metrics, base, M, objective);
+                            score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                             if (!isfinite(score)) score = NEG_INF_F;
                             val = compact_output ? compact_idx : pair;
                         }
@@ -4695,6 +5048,7 @@ void select_topk_from_candidates_tm_f32(
     const int* __restrict__ fast_periods,
     const int* __restrict__ slow_periods,
     int objective,
+    float hurdle_tau,
     int topk,
     const int* __restrict__ in_pair_idx,
     int in_len,
@@ -4720,7 +5074,7 @@ void select_topk_from_candidates_tm_f32(
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 if (row >= 0 && row < total_rows) {
                     const size_t base = (size_t)row * (size_t)metrics_stride;
-                    score = objective_score_f32(metrics, base, M, objective);
+                    score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                     if (!isfinite(score)) score = NEG_INF_F;
                 }
             } else {
@@ -4738,7 +5092,7 @@ void select_topk_from_candidates_tm_f32(
                         if (f < s) {
                             const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            score = objective_score_f32(metrics, base, M, objective);
+                            score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                             if (!isfinite(score)) score = NEG_INF_F;
                         }
                     }
@@ -4773,11 +5127,30 @@ void select_topk_from_pairs_tm_f32_v2(
     const int* __restrict__ fast_periods,
     const int* __restrict__ slow_periods,
     int objective,
+    float hurdle_tau,
     int topk,
     int use_min_trades,
     float min_trades,
     int use_max_dd,
     float max_dd,
+    int use_min_sharpe,
+    float min_sharpe,
+    int use_min_calmar,
+    float min_calmar,
+    int use_max_volatility,
+    float max_volatility,
+    int use_min_exposure,
+    float min_exposure,
+    int use_max_exposure,
+    float max_exposure,
+    int use_max_abs_net_exposure,
+    float max_abs_net_exposure,
+    int use_min_omega,
+    float min_omega,
+    int use_max_ulcer,
+    float max_ulcer,
+    int use_max_downside_deviation,
+    float max_downside_deviation,
     const int* __restrict__ pair_index_map,
     int pair_count,
     int compact_output,
@@ -4797,8 +5170,8 @@ void select_topk_from_pairs_tm_f32_v2(
         if (compact_idx < total_pairs) {
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
-                if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                    score = objective_score_f32(metrics, base, M, objective);
+                if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                    score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                     if (!isfinite(score)) score = NEG_INF_F;
                     val = compact_idx;
                 }
@@ -4814,8 +5187,8 @@ void select_topk_from_pairs_tm_f32_v2(
                             const size_t row_idx =
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                                score = objective_score_f32(metrics, base, M, objective);
+                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                                 if (!isfinite(score)) score = NEG_INF_F;
                                 val = compact_output ? compact_idx : pair;
                             }
@@ -4852,6 +5225,7 @@ void select_topk_from_candidates_tm_f32_v2(
     const int* __restrict__ fast_periods,
     const int* __restrict__ slow_periods,
     int objective,
+    float hurdle_tau,
     int topk,
     const int* __restrict__ in_pair_idx,
     int in_len,
@@ -4859,6 +5233,24 @@ void select_topk_from_candidates_tm_f32_v2(
     float min_trades,
     int use_max_dd,
     float max_dd,
+    int use_min_sharpe,
+    float min_sharpe,
+    int use_min_calmar,
+    float min_calmar,
+    int use_max_volatility,
+    float max_volatility,
+    int use_min_exposure,
+    float min_exposure,
+    int use_max_exposure,
+    float max_exposure,
+    int use_max_abs_net_exposure,
+    float max_abs_net_exposure,
+    int use_min_omega,
+    float min_omega,
+    int use_max_ulcer,
+    float max_ulcer,
+    int use_max_downside_deviation,
+    float max_downside_deviation,
     const int* __restrict__ pair_index_map,
     int pair_count,
     int compact_output,
@@ -4881,8 +5273,8 @@ void select_topk_from_candidates_tm_f32_v2(
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 if (row >= 0 && row < total_rows) {
                     const size_t base = (size_t)row * (size_t)metrics_stride;
-                    if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                        score = objective_score_f32(metrics, base, M, objective);
+                    if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                        score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                         if (!isfinite(score)) score = NEG_INF_F;
                     }
                 }
@@ -4901,8 +5293,8 @@ void select_topk_from_candidates_tm_f32_v2(
                         if (f < s) {
                             const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            if (passes_constraints_f32(metrics, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                                score = objective_score_f32(metrics, base, M, objective);
+                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                                 if (!isfinite(score)) score = NEG_INF_F;
                             }
                         }
@@ -4999,6 +5391,7 @@ void select_topk_metric_rows_f32(
     int rows,
     int M,
     int objective,
+    float hurdle_tau,
     int topk,
     int* __restrict__ out_row_idx
 ) {
@@ -5013,7 +5406,7 @@ void select_topk_metric_rows_f32(
         int val = -1;
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)M;
-            score = objective_score_f32(metrics_rows, base, M, objective);
+            score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
             if (!isfinite(score)) score = NEG_INF_F;
             val = idx;
         }
@@ -5040,6 +5433,7 @@ void select_topk_metric_rows_from_candidates_f32(
     int rows,
     int M,
     int objective,
+    float hurdle_tau,
     int topk,
     const int* __restrict__ in_row_idx,
     int in_len,
@@ -5058,7 +5452,7 @@ void select_topk_metric_rows_from_candidates_f32(
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)M;
-                score = objective_score_f32(metrics_rows, base, M, objective);
+                score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
                 if (!isfinite(score)) score = NEG_INF_F;
             }
         }
@@ -5085,11 +5479,30 @@ void select_topk_metric_rows_f32_v2(
     int rows,
     int M,
     int objective,
+    float hurdle_tau,
     int topk,
     int use_min_trades,
     float min_trades,
     int use_max_dd,
     float max_dd,
+    int use_min_sharpe,
+    float min_sharpe,
+    int use_min_calmar,
+    float min_calmar,
+    int use_max_volatility,
+    float max_volatility,
+    int use_min_exposure,
+    float min_exposure,
+    int use_max_exposure,
+    float max_exposure,
+    int use_max_abs_net_exposure,
+    float max_abs_net_exposure,
+    int use_min_omega,
+    float min_omega,
+    int use_max_ulcer,
+    float max_ulcer,
+    int use_max_downside_deviation,
+    float max_downside_deviation,
     int* __restrict__ out_row_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
@@ -5103,8 +5516,8 @@ void select_topk_metric_rows_f32_v2(
         int val = -1;
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)M;
-            if (passes_constraints_f32(metrics_rows, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                score = objective_score_f32(metrics_rows, base, M, objective);
+            if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
                 if (!isfinite(score)) score = NEG_INF_F;
             }
             val = idx;
@@ -5132,6 +5545,7 @@ void select_topk_metric_rows_from_candidates_f32_v2(
     int rows,
     int M,
     int objective,
+    float hurdle_tau,
     int topk,
     const int* __restrict__ in_row_idx,
     int in_len,
@@ -5139,6 +5553,24 @@ void select_topk_metric_rows_from_candidates_f32_v2(
     float min_trades,
     int use_max_dd,
     float max_dd,
+    int use_min_sharpe,
+    float min_sharpe,
+    int use_min_calmar,
+    float min_calmar,
+    int use_max_volatility,
+    float max_volatility,
+    int use_min_exposure,
+    float min_exposure,
+    int use_max_exposure,
+    float max_exposure,
+    int use_max_abs_net_exposure,
+    float max_abs_net_exposure,
+    int use_min_omega,
+    float min_omega,
+    int use_max_ulcer,
+    float max_ulcer,
+    int use_max_downside_deviation,
+    float max_downside_deviation,
     int* __restrict__ out_row_idx
 ) {
     const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
@@ -5154,8 +5586,8 @@ void select_topk_metric_rows_from_candidates_f32_v2(
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)M;
-                if (passes_constraints_f32(metrics_rows, base, M, use_min_trades, min_trades, use_max_dd, max_dd)) {
-                    score = objective_score_f32(metrics_rows, base, M, objective);
+                if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                    score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
                     if (!isfinite(score)) score = NEG_INF_F;
                 }
             }
@@ -6550,6 +6982,9 @@ void vemr_backtest_metrics_f32(
         out_metrics[base + 11] = ulcer_index;
     }
 }
+
+
+
 
 
 

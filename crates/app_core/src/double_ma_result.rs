@@ -5,7 +5,10 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 use crate::double_ma::{
     BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuResidencySummary,
-    HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved, VdpsTelemetry,
+    HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved,
+    ShortlistSliceCandidateDiagnosticsResolved, ShortlistSliceDiagnostics,
+    ShortlistSliceDiagnosticsResolved, ShortlistSliceModeDiagnosticsResolved,
+    ShortlistSliceSnapshotResolved, VdpsTelemetry,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 
@@ -28,6 +31,7 @@ pub(crate) struct BackendResultContext<'a> {
     pub indicator_route_plan: Option<IndicatorRoutePlanSummary>,
     pub residency: Option<GpuResidencySummary>,
     pub followup_cache_key: Option<String>,
+    pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnostics>,
 }
 
 fn resolve_params(
@@ -146,6 +150,73 @@ pub(crate) fn build_backend_optimization_result(
         &best_params,
         &top,
     );
+    let shortlist_slice_diagnostics = ctx.shortlist_slice_diagnostics.map(|diag| {
+        let candidates = diag
+            .candidates
+            .into_iter()
+            .map(|candidate| ShortlistSliceCandidateDiagnosticsResolved {
+                params: resolve_params(
+                    &candidate.params,
+                    ctx.fast_ma_label,
+                    ctx.slow_ma_label,
+                    ctx.fast_param_variants,
+                    ctx.slow_param_variants,
+                ),
+                full_metrics: candidate.full_metrics,
+                halves: ShortlistSliceModeDiagnosticsResolved {
+                    worst_slice_score: candidate.halves.worst_slice_score,
+                    positive_slice_frac: candidate.halves.positive_slice_frac,
+                    mean_slice_score: candidate.halves.mean_slice_score,
+                    best_omission_label: candidate.halves.best_omission_label,
+                    best_omission_score: candidate.halves.best_omission_score,
+                    worst_omission_label: candidate.halves.worst_omission_label,
+                    worst_omission_score: candidate.halves.worst_omission_score,
+                    omission_score_spread: candidate.halves.omission_score_spread,
+                    benchmark_relative: candidate.halves.benchmark_relative,
+                    slices: candidate
+                        .halves
+                        .slices
+                        .into_iter()
+                        .map(|slice| ShortlistSliceSnapshotResolved {
+                            label: slice.label,
+                            start_bar: slice.start_bar,
+                            end_bar: slice.end_bar,
+                            score: slice.score,
+                            metrics: slice.metrics,
+                        })
+                        .collect(),
+                },
+                quartiles: ShortlistSliceModeDiagnosticsResolved {
+                    worst_slice_score: candidate.quartiles.worst_slice_score,
+                    positive_slice_frac: candidate.quartiles.positive_slice_frac,
+                    mean_slice_score: candidate.quartiles.mean_slice_score,
+                    best_omission_label: candidate.quartiles.best_omission_label,
+                    best_omission_score: candidate.quartiles.best_omission_score,
+                    worst_omission_label: candidate.quartiles.worst_omission_label,
+                    worst_omission_score: candidate.quartiles.worst_omission_score,
+                    omission_score_spread: candidate.quartiles.omission_score_spread,
+                    benchmark_relative: candidate.quartiles.benchmark_relative,
+                    slices: candidate
+                        .quartiles
+                        .slices
+                        .into_iter()
+                        .map(|slice| ShortlistSliceSnapshotResolved {
+                            label: slice.label,
+                            start_bar: slice.start_bar,
+                            end_bar: slice.end_bar,
+                            score: slice.score,
+                            metrics: slice.metrics,
+                        })
+                        .collect(),
+                },
+            })
+            .collect();
+        ShortlistSliceDiagnosticsResolved {
+            ranking_mode: diag.ranking_mode,
+            neighborhood_robustness: diag.neighborhood_robustness,
+            candidates,
+        }
+    });
 
     BackendOptimizationResult {
         best_params,
@@ -168,5 +239,6 @@ pub(crate) fn build_backend_optimization_result(
         indicator_route_plan: ctx.indicator_route_plan,
         residency: ctx.residency,
         followup_cache_key: ctx.followup_cache_key,
+        shortlist_slice_diagnostics,
     }
 }

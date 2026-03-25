@@ -501,6 +501,14 @@ fn build_request(
         strategy: strategy_case.strategy.clone(),
         halftrend_filter: None,
         objective,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: if vdps.is_some() {
             ta_optimizer::OptimizationMode::GpuVdps
         } else {
@@ -514,6 +522,8 @@ fn build_request(
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+        hurdle_tau: None,
+        include_trade_metrics: false,
     }
 }
 
@@ -904,3 +914,7 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
     }
     total
 }
+
+
+
+

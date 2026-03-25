@@ -39,18 +39,31 @@ impl Default for DoubleMaBatchRange {
 pub struct Metrics {
     pub pnl: f64,
     pub sharpe: f64,
-    /// Sortino ratio (0-threshold), computed on per-bar strategy returns.
+    /// Sortino ratio, computed on per-bar strategy returns relative to the configured hurdle
+    /// threshold (0 by default).
     #[serde(default)]
     pub sortino: f64,
-    /// Downside deviation (0-threshold), computed on per-bar strategy returns.
+    /// Downside deviation, computed on per-bar strategy returns relative to the configured hurdle
+    /// threshold (0 by default).
     #[serde(default)]
     pub downside_deviation: f64,
+    /// Fraction of observed bars with negative strategy return.
+    #[serde(default)]
+    pub downside_frequency: f64,
+    /// Mean absolute negative return across negative-return bars only.
+    #[serde(default)]
+    pub downside_severity: f64,
     /// Calmar ratio, computed as pnl / max_dd (epsilon-guarded).
     #[serde(default)]
     pub calmar: f64,
-    /// Omega ratio (0-threshold), computed on per-bar strategy returns.
+    /// Omega ratio, computed on per-bar strategy returns relative to the configured hurdle
+    /// threshold (0 by default).
     #[serde(default)]
     pub omega: f64,
+    /// Kappa-3 ratio, computed from the third lower partial moment of per-bar strategy returns
+    /// relative to the configured hurdle threshold (0 by default).
+    #[serde(default)]
+    pub kappa_tau: f64,
     /// Volatility (std dev) of per-bar strategy returns.
     #[serde(default)]
     pub volatility: f64,
@@ -64,6 +77,33 @@ pub struct Metrics {
     pub trades: u32,
     pub exposure: f64,
     pub net_exposure: f64,
+    /// Mean per-bar strategy return while long.
+    #[serde(default)]
+    pub long_mean_return: f64,
+    /// Mean per-bar strategy return while short.
+    #[serde(default)]
+    pub short_mean_return: f64,
+    /// Count of closed trades used for exact trade-distribution summaries.
+    #[serde(default)]
+    pub closed_trades: u32,
+    /// Count of winning closed trades.
+    #[serde(default)]
+    pub winning_trades: u32,
+    /// Count of losing closed trades.
+    #[serde(default)]
+    pub losing_trades: u32,
+    /// Sum of positive closed-trade returns.
+    #[serde(default)]
+    pub gross_profit: f64,
+    /// Sum of absolute negative closed-trade returns.
+    #[serde(default)]
+    pub gross_loss: f64,
+    /// Fraction of evaluated bars spent below the running equity peak.
+    #[serde(default)]
+    pub underwater_fraction: f64,
+    /// Longest contiguous underwater run in evaluated bars.
+    #[serde(default)]
+    pub max_underwater_duration_bars: u32,
 }
 
 impl Default for Metrics {
@@ -73,8 +113,11 @@ impl Default for Metrics {
             sharpe: 0.0,
             sortino: 0.0,
             downside_deviation: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -82,6 +125,15 @@ impl Default for Metrics {
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
         }
     }
 }
@@ -92,19 +144,56 @@ fn finalize_risk_metrics(
     compute_drawdown_risk: bool,
     count: u64,
     obs: u64,
+    hurdle_tau: f64,
     mean: f64,
     m2: f64,
     sum_neg_sq: f64,
+    sum_neg_cu: f64,
+    count_neg: u64,
     sum_pos_r: f64,
     sum_neg_abs_r: f64,
+    long_obs: u64,
+    short_obs: u64,
+    long_sum_r: f64,
+    short_sum_r: f64,
     ulcer_sum_sq: f64,
     max_log_dd: f64,
     log_eq: f64,
-) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    underwater_bars: u64,
+    max_underwater_duration_bars: u64,
+) -> (
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    u32,
+) {
     const EPS_DENOM: f64 = 1e-12;
     const CLAMP_MAX: f64 = 1e6;
 
-    let (sharpe, volatility, sortino, downside_deviation, omega) = if compute_return_stats {
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        downside_frequency,
+        downside_severity,
+        omega,
+        kappa_tau,
+        long_mean_return,
+        short_mean_return,
+    ) = if compute_return_stats {
         let variance = if count > 1 {
             m2 / (count as f64 - 1.0)
         } else {
@@ -114,11 +203,12 @@ fn finalize_risk_metrics(
         let sharpe = if std > 0.0 { mean / std } else { 0.0 };
         let denom = (count as f64).max(1.0);
         let downside_deviation = (sum_neg_sq / denom).sqrt();
+        let mean_excess = mean - hurdle_tau;
         let sortino_raw = if downside_deviation > 0.0 {
-            mean / downside_deviation
-        } else if mean > 0.0 {
+            mean_excess / downside_deviation
+        } else if mean_excess > 0.0 {
             CLAMP_MAX
-        } else if mean < 0.0 {
+        } else if mean_excess < 0.0 {
             -CLAMP_MAX
         } else {
             0.0
@@ -126,9 +216,47 @@ fn finalize_risk_metrics(
         let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
         let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
         let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-        (sharpe, std, sortino, downside_deviation, omega)
+        let kappa_denom = (sum_neg_cu / denom).cbrt();
+        let kappa_raw = if kappa_denom > 0.0 {
+            mean_excess / kappa_denom
+        } else if mean_excess > 0.0 {
+            CLAMP_MAX
+        } else if mean_excess < 0.0 {
+            -CLAMP_MAX
+        } else {
+            0.0
+        };
+        let kappa_tau = kappa_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+        let downside_frequency = count_neg as f64 / (obs as f64).max(1.0);
+        let downside_severity = if count_neg > 0 {
+            sum_neg_abs_r / count_neg as f64
+        } else {
+            0.0
+        };
+        let long_mean_return = if long_obs > 0 {
+            long_sum_r / long_obs as f64
+        } else {
+            0.0
+        };
+        let short_mean_return = if short_obs > 0 {
+            short_sum_r / short_obs as f64
+        } else {
+            0.0
+        };
+        (
+            sharpe,
+            std,
+            sortino,
+            downside_deviation,
+            downside_frequency,
+            downside_severity,
+            omega,
+            kappa_tau,
+            long_mean_return,
+            short_mean_return,
+        )
     } else {
-        (0.0, 0.0, 0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     };
 
     let max_dd = if max_log_dd > 0.0 {
@@ -163,17 +291,34 @@ fn finalize_risk_metrics(
         0.0
     };
     let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+    let underwater_fraction = if compute_drawdown_risk && obs > 0 {
+        underwater_bars as f64 / obs as f64
+    } else {
+        0.0
+    };
+    let max_underwater_duration_bars = if compute_drawdown_risk {
+        max_underwater_duration_bars.min(u32::MAX as u64) as u32
+    } else {
+        0
+    };
 
     (
         sharpe,
         volatility,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         omega,
+        kappa_tau,
         max_dd,
         ulcer_index,
         martin_ratio,
         calmar,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
     )
 }
 
@@ -629,6 +774,8 @@ pub struct StrategyConfig {
     /// Compatibility fallback. When positive, this takes precedence over bps fields.
     pub commission: f64,
     pub eps_rel: f64,
+    #[serde(default)]
+    pub hurdle_tau: Option<f64>,
 }
 
 impl Default for StrategyConfig {
@@ -712,6 +859,7 @@ impl Default for StrategyConfig {
             signal_persistence_bars: 1,
             commission: 0.0,
             eps_rel: 0.0,
+            hurdle_tau: None,
         }
     }
 }
@@ -2093,6 +2241,7 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2100,6 +2249,11 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2143,6 +2297,7 @@ pub fn eval_double_ma_one_with_types(
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2150,6 +2305,11 @@ pub fn eval_double_ma_one_with_types(
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2167,6 +2327,7 @@ pub fn eval_double_ma_one_with_types(
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2174,6 +2335,11 @@ pub fn eval_double_ma_one_with_types(
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     };
 
@@ -2215,6 +2381,7 @@ pub fn double_ma_batch_cpu(
                 downside_deviation: 0.0,
                 calmar: 0.0,
                 omega: 0.0,
+                kappa_tau: 0.0,
                 volatility: 0.0,
                 ulcer_index: 0.0,
                 martin_ratio: 0.0,
@@ -2222,6 +2389,11 @@ pub fn double_ma_batch_cpu(
                 trades: 0,
                 exposure: 0.0,
                 net_exposure: 0.0,
+                downside_frequency: 0.0,
+                downside_severity: 0.0,
+                long_mean_return: 0.0,
+                short_mean_return: 0.0,
+                ..Metrics::default()
             })
             .collect();
     }
@@ -2253,6 +2425,7 @@ pub fn double_ma_batch_cpu(
                     downside_deviation: 0.0,
                     calmar: 0.0,
                     omega: 0.0,
+                    kappa_tau: 0.0,
                     volatility: 0.0,
                     ulcer_index: 0.0,
                     martin_ratio: 0.0,
@@ -2260,6 +2433,11 @@ pub fn double_ma_batch_cpu(
                     trades: 0,
                     exposure: 0.0,
                     net_exposure: 0.0,
+                    downside_frequency: 0.0,
+                    downside_severity: 0.0,
+                    long_mean_return: 0.0,
+                    short_mean_return: 0.0,
+                    ..Metrics::default()
                 };
             };
 
@@ -2320,6 +2498,7 @@ pub fn eval_double_ma_from_series_cfg(
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2327,6 +2506,11 @@ pub fn eval_double_ma_from_series_cfg(
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
     let lr = compute_log_returns(prices);
@@ -2444,6 +2628,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2451,6 +2636,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2462,6 +2652,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2469,6 +2660,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2481,6 +2677,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2488,6 +2685,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2513,14 +2715,23 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
     let mut ulcer_sum_sq = 0.0_f64;
+    let mut underwater_bars: u32 = 0;
+    let mut underwater_run: u32 = 0;
+    let mut max_underwater_duration_bars: u32 = 0;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
     let mut sum_neg_sq = 0.0_f64;
+    let mut sum_neg_cu = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
@@ -2611,6 +2822,13 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if dd_log > 0.0 {
+            underwater_bars = underwater_bars.saturating_add(1);
+            underwater_run = underwater_run.saturating_add(1);
+            max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+        } else {
+            underwater_run = 0;
+        }
         if COMPUTE_DRAWDOWN_RISK {
             let dd = if dd_log > 0.0 {
                 -(-dd_log).exp_m1()
@@ -2632,11 +2850,22 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
             let delta2 = step_r - mean;
             m2 += delta * delta2;
 
-            if step_r < 0.0 {
-                sum_neg_sq += step_r * step_r;
-                sum_neg_abs_r += -step_r;
+            let excess_r = step_r - cfg.hurdle_tau.unwrap_or(0.0);
+            if excess_r < 0.0 {
+                count_neg += 1;
+                sum_neg_sq += excess_r * excess_r;
+                let neg_mag = -excess_r;
+                sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                sum_neg_abs_r += neg_mag;
             } else {
-                sum_pos_r += step_r;
+                sum_pos_r += excess_r;
+            }
+            if pos_bar > 0 {
+                long_obs += 1;
+                long_sum_r += step_r;
+            } else if pos_bar < 0 {
+                short_obs += 1;
+                short_sum_r += step_r;
             }
         }
 
@@ -2649,24 +2878,40 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
         volatility,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         omega,
+        kappa_tau,
         max_dd,
         ulcer_index,
         martin_ratio,
         calmar,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
     ) = finalize_risk_metrics(
         COMPUTE_SHARPE,
         COMPUTE_DRAWDOWN_RISK,
         count,
         obs,
+        cfg.hurdle_tau.unwrap_or(0.0),
         mean,
         m2,
         sum_neg_sq,
+        sum_neg_cu,
+        count_neg,
         sum_pos_r,
         sum_neg_abs_r,
+        long_obs,
+        short_obs,
+        long_sum_r,
+        short_sum_r,
         ulcer_sum_sq,
         max_log_dd,
         log_eq,
+        underwater_bars as u64,
+        max_underwater_duration_bars as u64,
     );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
@@ -2686,8 +2931,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
         sharpe,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
+        kappa_tau,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -2695,6 +2943,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_impl<
         trades,
         exposure,
         net_exposure,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
+        ..Metrics::default()
     }
 }
 
@@ -2722,6 +2975,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2729,6 +2983,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2740,6 +2999,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2747,6 +3007,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2759,6 +3024,7 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -2766,6 +3032,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -2791,14 +3062,23 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
     let mut ulcer_sum_sq = 0.0_f64;
+    let mut underwater_bars: u32 = 0;
+    let mut underwater_run: u32 = 0;
+    let mut max_underwater_duration_bars: u32 = 0;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
     let mut sum_neg_sq = 0.0_f64;
+    let mut sum_neg_cu = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
@@ -2898,6 +3178,13 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if dd_log > 0.0 {
+            underwater_bars = underwater_bars.saturating_add(1);
+            underwater_run = underwater_run.saturating_add(1);
+            max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+        } else {
+            underwater_run = 0;
+        }
         let dd = if dd_log > 0.0 {
             -(-dd_log).exp_m1()
         } else {
@@ -2917,11 +3204,22 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
             let delta2 = step_r - mean;
             m2 += delta * delta2;
 
-            if step_r < 0.0 {
-                sum_neg_sq += step_r * step_r;
-                sum_neg_abs_r += -step_r;
+            let excess_r = step_r - cfg.hurdle_tau.unwrap_or(0.0);
+            if excess_r < 0.0 {
+                count_neg += 1;
+                sum_neg_sq += excess_r * excess_r;
+                let neg_mag = -excess_r;
+                sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                sum_neg_abs_r += neg_mag;
             } else {
-                sum_pos_r += step_r;
+                sum_pos_r += excess_r;
+            }
+            if pos_bar > 0 {
+                long_obs += 1;
+                long_sum_r += step_r;
+            } else if pos_bar < 0 {
+                short_obs += 1;
+                short_sum_r += step_r;
             }
         }
 
@@ -2934,24 +3232,40 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         volatility,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         omega,
+        kappa_tau,
         max_dd,
         ulcer_index,
         martin_ratio,
         calmar,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
     ) = finalize_risk_metrics(
         COMPUTE_SHARPE,
         COMPUTE_DRAWDOWN_RISK,
         count,
         obs,
+        cfg.hurdle_tau.unwrap_or(0.0),
         mean,
         m2,
         sum_neg_sq,
+        sum_neg_cu,
+        count_neg,
         sum_pos_r,
         sum_neg_abs_r,
+        long_obs,
+        short_obs,
+        long_sum_r,
+        short_sum_r,
         ulcer_sum_sq,
         max_log_dd,
         log_eq,
+        underwater_bars as u64,
+        max_underwater_duration_bars as u64,
     );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
@@ -2971,8 +3285,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         sharpe,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
+        kappa_tau,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -2980,6 +3297,11 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         trades,
         exposure,
         net_exposure,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
+        ..Metrics::default()
     }
 }
 
@@ -3086,6 +3408,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -3093,6 +3416,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -3104,6 +3432,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -3111,6 +3440,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -3123,6 +3457,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -3130,6 +3465,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -3155,14 +3495,23 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
     let mut ulcer_sum_sq = 0.0_f64;
+    let mut underwater_bars: u32 = 0;
+    let mut underwater_run: u32 = 0;
+    let mut max_underwater_duration_bars: u32 = 0;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
     let mut sum_neg_sq = 0.0_f64;
+    let mut sum_neg_cu = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
@@ -3253,6 +3602,13 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if dd_log > 0.0 {
+            underwater_bars = underwater_bars.saturating_add(1);
+            underwater_run = underwater_run.saturating_add(1);
+            max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+        } else {
+            underwater_run = 0;
+        }
         if COMPUTE_DRAWDOWN_RISK {
             let dd = if dd_log > 0.0 {
                 -(-dd_log).exp_m1()
@@ -3274,11 +3630,22 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
             let delta2 = step_r - mean;
             m2 += delta * delta2;
 
-            if step_r < 0.0 {
-                sum_neg_sq += step_r * step_r;
-                sum_neg_abs_r += -step_r;
+            let excess_r = step_r - cfg.hurdle_tau.unwrap_or(0.0);
+            if excess_r < 0.0 {
+                count_neg += 1;
+                sum_neg_sq += excess_r * excess_r;
+                let neg_mag = -excess_r;
+                sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                sum_neg_abs_r += neg_mag;
             } else {
-                sum_pos_r += step_r;
+                sum_pos_r += excess_r;
+            }
+            if pos_bar > 0 {
+                long_obs += 1;
+                long_sum_r += step_r;
+            } else if pos_bar < 0 {
+                short_obs += 1;
+                short_sum_r += step_r;
             }
         }
 
@@ -3291,24 +3658,40 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
         volatility,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         omega,
+        kappa_tau,
         max_dd,
         ulcer_index,
         martin_ratio,
         calmar,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
     ) = finalize_risk_metrics(
         COMPUTE_SHARPE,
         COMPUTE_DRAWDOWN_RISK,
         count,
         obs,
+        cfg.hurdle_tau.unwrap_or(0.0),
         mean,
         m2,
         sum_neg_sq,
+        sum_neg_cu,
+        count_neg,
         sum_pos_r,
         sum_neg_abs_r,
+        long_obs,
+        short_obs,
+        long_sum_r,
+        short_sum_r,
         ulcer_sum_sq,
         max_log_dd,
         log_eq,
+        underwater_bars as u64,
+        max_underwater_duration_bars as u64,
     );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
@@ -3328,8 +3711,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
         sharpe,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
+        kappa_tau,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -3337,6 +3723,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_impl<
         trades,
         exposure,
         net_exposure,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
+        ..Metrics::default()
     }
 }
 
@@ -3364,6 +3755,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -3371,6 +3763,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -3382,6 +3779,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -3389,6 +3787,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -3401,6 +3804,7 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -3408,6 +3812,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -3433,14 +3842,23 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
     let mut log_peak = 0.0_f64;
     let mut max_log_dd = 0.0_f64;
     let mut ulcer_sum_sq = 0.0_f64;
+    let mut underwater_bars: u32 = 0;
+    let mut underwater_run: u32 = 0;
+    let mut max_underwater_duration_bars: u32 = 0;
     let mut trades: u32 = 0;
 
     let mut count: u64 = 0;
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
     let mut sum_neg_sq = 0.0_f64;
+    let mut sum_neg_cu = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
@@ -3540,6 +3958,13 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if dd_log > 0.0 {
+            underwater_bars = underwater_bars.saturating_add(1);
+            underwater_run = underwater_run.saturating_add(1);
+            max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+        } else {
+            underwater_run = 0;
+        }
         if COMPUTE_DRAWDOWN_RISK {
             let dd = if dd_log > 0.0 {
                 -(-dd_log).exp_m1()
@@ -3561,11 +3986,22 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
             let delta2 = step_r - mean;
             m2 += delta * delta2;
 
-            if step_r < 0.0 {
-                sum_neg_sq += step_r * step_r;
-                sum_neg_abs_r += -step_r;
+            let excess_r = step_r - cfg.hurdle_tau.unwrap_or(0.0);
+            if excess_r < 0.0 {
+                count_neg += 1;
+                sum_neg_sq += excess_r * excess_r;
+                let neg_mag = -excess_r;
+                sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                sum_neg_abs_r += neg_mag;
             } else {
-                sum_pos_r += step_r;
+                sum_pos_r += excess_r;
+            }
+            if pos_bar > 0 {
+                long_obs += 1;
+                long_sum_r += step_r;
+            } else if pos_bar < 0 {
+                short_obs += 1;
+                short_sum_r += step_r;
             }
         }
 
@@ -3578,24 +4014,40 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         volatility,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         omega,
+        kappa_tau,
         max_dd,
         ulcer_index,
         martin_ratio,
         calmar,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
     ) = finalize_risk_metrics(
         COMPUTE_SHARPE,
         COMPUTE_DRAWDOWN_RISK,
         count,
         obs,
+        cfg.hurdle_tau.unwrap_or(0.0),
         mean,
         m2,
         sum_neg_sq,
+        sum_neg_cu,
+        count_neg,
         sum_pos_r,
         sum_neg_abs_r,
+        long_obs,
+        short_obs,
+        long_sum_r,
+        short_sum_r,
         ulcer_sum_sq,
         max_log_dd,
         log_eq,
+        underwater_bars as u64,
+        max_underwater_duration_bars as u64,
     );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
@@ -3615,8 +4067,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         sharpe,
         sortino,
         downside_deviation,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
+        kappa_tau,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -3624,6 +4079,11 @@ fn eval_double_ma_from_log_returns_and_mas_f32_with_halftrend_filter_impl<
         trades,
         exposure,
         net_exposure,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
+        ..Metrics::default()
     }
 }
 
@@ -3887,9 +4347,18 @@ mod tests {
 
         assert!(metrics.downside_deviation.is_finite());
         assert!(metrics.downside_deviation >= 0.0);
+        assert!(metrics.downside_frequency.is_finite());
+        assert!((0.0..=1.0).contains(&metrics.downside_frequency));
+        assert!(metrics.downside_severity.is_finite());
+        assert!(metrics.downside_severity >= 0.0);
         assert!(metrics.ulcer_index.is_finite());
         assert!(metrics.ulcer_index >= 0.0);
         assert!(metrics.martin_ratio.is_finite());
+        assert!(metrics.kappa_tau.is_finite());
+        assert!(metrics.long_mean_return.is_finite());
+        assert!(metrics.short_mean_return.is_finite());
+        assert!((0.0..=1.0).contains(&metrics.underwater_fraction));
+        assert!(metrics.max_underwater_duration_bars <= 200);
     }
 
     #[test]
@@ -3952,3 +4421,8 @@ mod tests {
         assert!(closed > 0);
     }
 }
+
+
+
+
+

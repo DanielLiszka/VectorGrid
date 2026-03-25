@@ -154,6 +154,14 @@ mod tests {
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
             mode: OptimizationMode::Auto,
             top_k: Some(20),
             include_all: Some(false),
@@ -163,6 +171,9 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: Default::default(),
             persist_followup_cache: false,
+           include_trade_metrics: false,
+            
+            hurdle_tau: None,
         }
     }
 
@@ -258,3 +269,7 @@ pub async fn run_composite_mo_optimization(
     .await
     .map_err(|e| e.to_string())?
 }
+
+
+
+

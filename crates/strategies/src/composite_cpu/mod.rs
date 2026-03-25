@@ -403,6 +403,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -410,6 +411,11 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -421,6 +427,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -428,6 +435,11 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -440,6 +452,7 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             downside_deviation: 0.0,
             calmar: 0.0,
             omega: 0.0,
+            kappa_tau: 0.0,
             volatility: 0.0,
             ulcer_index: 0.0,
             martin_ratio: 0.0,
@@ -447,6 +460,11 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             trades: 0,
             exposure: 0.0,
             net_exposure: 0.0,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            ..Metrics::default()
         };
     }
 
@@ -672,8 +690,11 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         sharpe,
         sortino,
         downside_deviation,
+        downside_frequency: 0.0,
+        downside_severity: 0.0,
         calmar,
         omega,
+        kappa_tau: 0.0,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -681,6 +702,9 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         trades,
         exposure,
         net_exposure,
+        long_mean_return: 0.0,
+        short_mean_return: 0.0,
+        ..Metrics::default()
     }
 }
 
@@ -1346,3 +1370,4 @@ mod tests {
         assert!(closed > 0);
     }
 }
+

@@ -50,8 +50,11 @@ pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
         sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
         sortino: if sortino.is_finite() { sortino } else { 0.0 },
         downside_deviation: clamp_non_negative(downside_deviation),
+        downside_frequency: 0.0,
+        downside_severity: 0.0,
         calmar: if calmar.is_finite() { calmar } else { 0.0 },
         omega: if omega.is_finite() { omega } else { 0.0 },
+        kappa_tau: 0.0,
         volatility: clamp_non_negative(volatility),
         ulcer_index,
         martin_ratio: derive_martin_ratio(pnl, ulcer_index),
@@ -67,5 +70,15 @@ pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
         } else {
             0.0
         },
+        long_mean_return: 0.0,
+        short_mean_return: 0.0,
+        closed_trades: 0,
+        winning_trades: 0,
+        losing_trades: 0,
+        gross_profit: 0.0,
+        gross_loss: 0.0,
+        underwater_fraction: 0.0,
+        max_underwater_duration_bars: 0,
     }
 }
+

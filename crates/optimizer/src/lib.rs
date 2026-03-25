@@ -72,4 +72,8 @@ pub struct OptimizationHeatmap {
     pub slow_min: u16,
     pub slow_max: u16,
     pub values: Vec<Option<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mean_values: Option<Vec<Option<f64>>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sample_counts: Option<Vec<u32>>,
 }

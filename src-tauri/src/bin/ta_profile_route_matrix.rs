@@ -201,6 +201,14 @@ fn run_case(spec: &CaseSpec, candles: &Candles) -> Result<RouteMatrixCase, Strin
         strategy: spec.strategy.clone(),
         halftrend_filter: None,
         objective: ObjectiveKind::Sharpe,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
         top_k: Some(20),
         include_all: Some(false),
@@ -210,6 +218,9 @@ fn run_case(spec: &CaseSpec, candles: &Candles) -> Result<RouteMatrixCase, Strin
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
+       include_trade_metrics: false,
+        
+        hurdle_tau: None,
     };
 
     let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -273,3 +284,7 @@ fn main() -> Result<(), String> {
     );
     Ok(())
 }
+
+
+
+

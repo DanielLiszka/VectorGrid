@@ -12,6 +12,12 @@ Instructions for AI coding agents working in this repository.
   - `crates/optimizer/` (`ta_optimizer`)
 - Generated artifacts: `dist/`, `target/` (avoid editing unless required)
 
+## Repo navigation
+
+- Start with `REPO_MAP.md` before broad repo search. It is the canonical high-level routing document for current workspace structure, task entry points, strategy coverage, runtime ownership, and verification surfaces.
+- Use `REPO_MAP.md` to narrow the search to the relevant backend/frontend/runtime area, then open the specific files for the task.
+- Keep `AGENTS.md` focused on agent policy, invariants, and workflow constraints; keep `REPO_MAP.md` focused on project structure and task-oriented navigation.
+
 ## Common commands (PowerShell)
 
 - Unit tests (recommended): `cargo test --workspace`

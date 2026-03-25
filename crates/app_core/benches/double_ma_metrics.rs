@@ -156,6 +156,14 @@ fn bench_gpu_kernel_pnl_full_metrics(c: &mut Criterion) {
             strategy: StrategyConfig::default(),
             halftrend_filter: None,
             objective: ObjectiveKind::Pnl,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
             mode: OptimizationMode::Grid,
             top_k: Some(50),
             include_all: Some(false),
@@ -165,6 +173,9 @@ fn bench_gpu_kernel_pnl_full_metrics(c: &mut Criterion) {
             dynamic_strategy_ir: None,
             gpu_execution: Default::default(),
             persist_followup_cache: false,
+           include_trade_metrics: false,
+            
+            hurdle_tau: None,
         };
 
         let name = format!("{case_label}/{pairs}pairs");
@@ -192,3 +203,7 @@ fn bench_gpu_kernel_pnl_full_metrics(_c: &mut Criterion) {}
 
 criterion_group!(benches, bench_gpu_kernel_pnl_full_metrics);
 criterion_main!(benches);
+
+
+
+
