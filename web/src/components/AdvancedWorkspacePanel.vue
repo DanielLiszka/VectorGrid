@@ -95,22 +95,21 @@ const showScoreModeControl = computed(() => [
   'RegimeHybrid',
   'BreakoutMomentum',
 ].includes(String(strategyCapabilities.value.kind || '').trim()))
-const extraShortlistKindSupported = computed(() => [
-  'DoubleMa',
-  'Pit',
-  'Set',
-  'Mts',
-  'Orc',
-  'Marrt',
-  'Vfct',
-  'CompositeTrend',
-  'RegimeHybrid',
-  'BreakoutMomentum',
-].includes(String(strategyCapabilities.value.kind || '').trim()))
-const tradeMetricsKindSupported = computed(() => extraShortlistKindSupported.value)
-const shortlistConfidenceKindSupported = computed(() => extraShortlistKindSupported.value)
-const shortlistUnionKindSupported = computed(() => extraShortlistKindSupported.value)
-const shortlistSliceKindSupported = computed(() => extraShortlistKindSupported.value)
+const extraShortlistKindSupported = computed(
+  () => strategyCapabilities.value.supportsExtraShortlistObjectives,
+)
+const tradeMetricsKindSupported = computed(
+  () => strategyCapabilities.value.supportsTradeMetrics,
+)
+const shortlistConfidenceKindSupported = computed(
+  () => strategyCapabilities.value.supportsShortlistConfidenceMode,
+)
+const shortlistUnionKindSupported = computed(
+  () => strategyCapabilities.value.supportsShortlistUnionMode,
+)
+const shortlistSliceKindSupported = computed(
+  () => strategyCapabilities.value.supportsAdvancedExactKernelControls,
+)
 const showExtraShortlistObjectivesControl = computed(() =>
   extraShortlistKindSupported.value || extraShortlistObjectivesDraft.value.trim().length > 0,
 )
@@ -136,15 +135,10 @@ const showShortlistNeighborhoodControls = computed(() =>
 )
 const extraShortlistObjectivesStateNote = computed(() => {
   const hasValue = extraShortlistObjectivesDraft.value.trim().length > 0
-  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
-    return hasValue
-      ? 'DynamicDoubleMa does not yet support extra shortlist objectives. Clear this field or switch strategy/backends.'
-      : 'Not available for DynamicDoubleMa.'
-  }
   if (!extraShortlistKindSupported.value) {
     return hasValue
-      ? 'This strategy does not currently support extra shortlist objectives. Clear this field to avoid request rejection.'
-      : 'Available on the Double MA GPU-kernel family only.'
+      ? 'The current route does not support extra shortlist objectives. Clear this field or switch to the exact GpuKernel route.'
+      : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to enable an exact union shortlist.'
@@ -158,19 +152,22 @@ const extraShortlistObjectivesStateNote = computed(() => {
   if (exportPathDraft.value.trim().length > 0) {
     return 'Requires export-all CSV path to be empty.'
   }
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return 'Additional exact shortlist heads for exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+  }
   return 'Additional exact shortlist heads. Comma-separated objectives such as Pnl, Omega. Current primary objective is always included automatically.'
 })
 const includeTradeMetricsStateNote = computed(() => {
   const hasValue = includeTradeMetricsDraft.value
-  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
-    return hasValue
-      ? 'DynamicDoubleMa does not yet support trade metrics. Turn this off or switch strategy/backends.'
-      : 'Not available for DynamicDoubleMa.'
-  }
   if (!tradeMetricsKindSupported.value) {
     return hasValue
-      ? 'This strategy does not currently support trade metrics. Turn this off to avoid request rejection.'
-      : 'Available on the Double MA GPU-kernel family only.'
+      ? 'The current route does not support trade metrics. Turn this off or switch to the exact GpuKernel route.'
+      : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+  }
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'Adds trade-summary metrics to exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) requests. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional trade-summary metrics for exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) requests.'
   }
   return hasValue
     ? 'Adds trade-summary metrics to the one-pass optimization request. This currently requires the exact GpuKernel route; hybrid and CPU fallback routes will reject it.'
@@ -178,15 +175,10 @@ const includeTradeMetricsStateNote = computed(() => {
 })
 const shortlistConfidenceModeStateNote = computed(() => {
   const hasValue = shortlistConfidenceModeDraft.value.trim().length > 0
-  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
-    return hasValue
-      ? 'DynamicDoubleMa does not yet support shortlist confidence mode. Clear this field or switch strategy/backends.'
-      : 'Not available for DynamicDoubleMa.'
-  }
   if (!shortlistConfidenceKindSupported.value) {
     return hasValue
-      ? 'This strategy does not currently support shortlist confidence mode. Clear this field to avoid request rejection.'
-      : 'Available on the Double MA GPU-kernel family only.'
+      ? 'The current route does not support shortlist confidence mode. Clear this field or switch to the exact GpuKernel route.'
+      : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to rerank the exact shortlist by PSR or DSR.'
@@ -200,21 +192,21 @@ const shortlistConfidenceModeStateNote = computed(() => {
   if (exportPathDraft.value.trim().length > 0) {
     return 'Requires export-all CSV path to be empty.'
   }
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'Reranks the exact DynamicDoubleMa shortlist by PSR or DSR for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional PSR / DSR rerank over the DynamicDoubleMa shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+  }
   return hasValue
     ? 'Reranks the exact returned shortlist using validation-aligned PSR or DSR confidence. Works with the primary top-K or the union shortlist.'
     : 'Optional PSR / DSR rerank over the exact returned shortlist. Leaving this off preserves the current ranking order.'
 })
 const shortlistUnionModeStateNote = computed(() => {
   const hasValue = shortlistUnionModeDraft.value.trim().length > 0
-  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
-    return hasValue
-      ? 'DynamicDoubleMa does not yet support shortlist union mode. Clear this field or switch strategy/backends.'
-      : 'Not available for DynamicDoubleMa.'
-  }
   if (!shortlistUnionKindSupported.value) {
     return hasValue
-      ? 'This strategy does not currently support shortlist union mode. Clear this field to avoid request rejection.'
-      : 'Available on the Double MA GPU-kernel family only.'
+      ? 'The current route does not support shortlist union mode. Clear this field or switch to the exact GpuKernel route.'
+      : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   if (extraShortlistObjectivesDraft.value.trim().length === 0) {
     return 'Requires Extra shortlist objectives to define additional exact shortlist heads.'
@@ -231,21 +223,21 @@ const shortlistUnionModeStateNote = computed(() => {
   if (exportPathDraft.value.trim().length > 0) {
     return 'Requires export-all CSV path to be empty.'
   }
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'Reranks the exact DynamicDoubleMa union shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional exact rerank over the DynamicDoubleMa union shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+  }
   return hasValue
     ? 'Reranks the exact union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics before any optional confidence or slice reranks.'
     : 'Optional exact rerank over the union shortlist. Leaving this off preserves primary-objective ordering.'
 })
 const shortlistSliceModeStateNote = computed(() => {
   const hasValue = shortlistSliceModeDraft.value.trim().length > 0
-  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
-    return hasValue
-      ? 'DynamicDoubleMa does not yet support shortlist slice mode. Clear this field or switch strategy/backends.'
-      : 'Not available for DynamicDoubleMa.'
-  }
   if (!shortlistSliceKindSupported.value) {
     return hasValue
-      ? 'This strategy does not currently support shortlist slice mode. Clear this field to avoid request rejection.'
-      : 'Available on the Double MA GPU-kernel family only.'
+      ? 'The current route does not support shortlist slice mode. Clear this field or switch to the exact GpuKernel route.'
+      : 'Available on the exact Double MA GPU-kernel route only.'
   }
   if (String(includeAllDraft.value || '').trim() === 'true') {
     return 'Requires include all = false.'
@@ -255,6 +247,11 @@ const shortlistSliceModeStateNote = computed(() => {
   }
   if (exportPathDraft.value.trim().length > 0) {
     return 'Requires export-all CSV path to be empty.'
+  }
+  if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
+    return hasValue
+      ? 'Adds exact slice diagnostics to DynamicDoubleMa for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional exact slice diagnostics over the DynamicDoubleMa shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   return hasValue
     ? 'Adds exact half-split or quartile shortlist diagnostics and optional benchmark-relative summaries for the returned shortlist.'

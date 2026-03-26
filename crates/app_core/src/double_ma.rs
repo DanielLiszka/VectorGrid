@@ -1703,7 +1703,10 @@ fn spearman_rank_corr(xs: &[f64], ys: &[f64]) -> f64 {
 
 fn dense_desc_rank(values: &[f64], idx: usize) -> usize {
     let value = values.get(idx).copied().unwrap_or(f64::NEG_INFINITY);
-    1 + values.iter().filter(|other| other.total_cmp(&value).is_gt()).count()
+    1 + values
+        .iter()
+        .filter(|other| other.total_cmp(&value).is_gt())
+        .count()
 }
 
 fn normalized_score_axis(values: &[f64]) -> Vec<f64> {
@@ -2049,6 +2052,72 @@ fn merge_hybrid_timing(target: &mut Option<HybridTimingMs>, incoming: Option<Hyb
     } else {
         *target = Some(inc);
     }
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+fn build_exact_extra_shortlist_rows(
+    rows: &[(DoubleMaParams, Metrics)],
+    primary_objective: ObjectiveKind,
+    extra_objectives: &[ObjectiveKind],
+    top_k: usize,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    if rows.is_empty() || top_k == 0 {
+        return Vec::new();
+    }
+
+    let mut objectives = Vec::with_capacity(extra_objectives.len().saturating_add(1));
+    objectives.push(primary_objective);
+    for &objective in extra_objectives {
+        if objective != primary_objective && !objectives.contains(&objective) {
+            objectives.push(objective);
+        }
+    }
+
+    let mut union_rows: Vec<(DoubleMaParams, Metrics)> = Vec::new();
+    let mut seen: BTreeSet<(u16, u16, u16, u16)> = BTreeSet::new();
+    for head_objective in objectives {
+        let mut ranked = rows.to_vec();
+        ranked.sort_by(|a, b| {
+            let sa = objective_score(&a.1, head_objective);
+            let sb = objective_score(&b.1, head_objective);
+            sb.total_cmp(&sa).then_with(|| {
+                (a.0.fast_len, a.0.slow_len, a.0.fast_ma_id, a.0.slow_ma_id).cmp(&(
+                    b.0.fast_len,
+                    b.0.slow_len,
+                    b.0.fast_ma_id,
+                    b.0.slow_ma_id,
+                ))
+            })
+        });
+        for (params, metrics) in ranked.into_iter().take(top_k) {
+            let key = (
+                params.fast_len,
+                params.slow_len,
+                params.fast_ma_id,
+                params.slow_ma_id,
+            );
+            if seen.insert(key) {
+                union_rows.push((params, metrics));
+            }
+        }
+    }
+
+    union_rows.sort_by(|a, b| {
+        let sa = objective_score(&a.1, primary_objective);
+        let sb = objective_score(&b.1, primary_objective);
+        sb.total_cmp(&sa).then_with(|| {
+            (a.0.fast_len, a.0.slow_len, a.0.fast_ma_id, a.0.slow_ma_id).cmp(&(
+                b.0.fast_len,
+                b.0.slow_len,
+                b.0.fast_ma_id,
+                b.0.slow_ma_id,
+            ))
+        })
+    });
+    union_rows
 }
 
 #[inline]
@@ -4224,8 +4293,10 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
                 kaufman_stops.as_ref(),
                 true,
             );
-            let score = if matches!(req.score_mode, Some(DoubleMaScoreMode::EffectiveSampleLcb10))
-            {
+            let score = if matches!(
+                req.score_mode,
+                Some(DoubleMaScoreMode::EffectiveSampleLcb10)
+            ) {
                 effective_sample_lcb_10_score(&metrics, n.saturating_sub(start_t).max(2))
             } else {
                 effective_score(&metrics, objective, req.score_mode)
@@ -4905,6 +4976,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         requested_shortlist_slice_benchmark.clone(),
                         requested_shortlist_neighborhood_radius,
                         requested_shortlist_neighborhood_step,
+                        requested_trade_metrics,
                         top_k,
                         include_all,
                         fast_alma_offset,
@@ -6328,13 +6400,24 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     let multi_grid_offset_progress =
         matches!(mode_used, OptimizationModeResolved::Grid) && variant_pairs > 1;
-    if score_mode_needs_pair_observation_context(score_mode) && !matches!(backend, Backend::GpuKernel { .. }) {
+    let dynamic_exact_gpu_kernel_route = dynamic_runtime_plan.as_ref().is_some_and(|plan| {
+        matches!(backend, Backend::GpuKernel { .. })
+            && plan.preview.resolved_backend
+                == crate::strategy_plan::StrategyPlanBackend::GpuUnified
+            && plan.gpu_handle.is_some()
+    });
+    if score_mode_needs_pair_observation_context(score_mode)
+        && !matches!(backend, Backend::GpuKernel { .. })
+    {
         return Err(
             "effective_sample_lcb_10 currently requires the exact GpuKernel backend route"
                 .to_string(),
         );
     }
-    if score_mode_needs_pair_observation_context(score_mode) && dynamic_runtime_plan.is_some() {
+    if score_mode_needs_pair_observation_context(score_mode)
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+    {
         return Err("effective_sample_lcb_10 is not yet supported for DynamicDoubleMa".to_string());
     }
     if score_mode_needs_pair_observation_context(score_mode) && variant_pairs > 1 {
@@ -6346,15 +6429,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let extra_shortlist_requested = extra_shortlist_objectives
         .as_ref()
         .is_some_and(|values| !values.is_empty());
+    if extra_shortlist_requested
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+    {
+        return Err(
+            "extra_shortlist_objectives currently require an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+                .to_string(),
+        );
+    }
     if extra_shortlist_requested && !matches!(backend, Backend::GpuKernel { .. }) {
         return Err(
             "extra_shortlist_objectives currently require the exact GpuKernel backend route"
                 .to_string(),
-        );
-    }
-    if extra_shortlist_requested && dynamic_runtime_plan.is_some() {
-        return Err(
-            "extra_shortlist_objectives are not yet supported for DynamicDoubleMa".to_string(),
         );
     }
     if extra_shortlist_requested && variant_pairs > 1 {
@@ -6366,15 +6453,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let shortlist_confidence_mode =
         gpu_shortlist_confidence_mode_requested(requested_shortlist_confidence_mode)?;
     let shortlist_confidence_requested = shortlist_confidence_mode.is_some();
+    if shortlist_confidence_requested
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+    {
+        return Err(
+            "shortlist_confidence_mode currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+                .to_string(),
+        );
+    }
     if shortlist_confidence_requested && !matches!(backend, Backend::GpuKernel { .. }) {
         return Err(
             "shortlist_confidence_mode currently requires the exact GpuKernel backend route"
                 .to_string(),
-        );
-    }
-    if shortlist_confidence_requested && dynamic_runtime_plan.is_some() {
-        return Err(
-            "shortlist_confidence_mode is not yet supported for DynamicDoubleMa".to_string(),
         );
     }
     if shortlist_confidence_requested && variant_pairs > 1 {
@@ -6391,13 +6482,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 .to_string(),
         );
     }
+    if shortlist_union_requested
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+    {
+        return Err(
+            "shortlist_union_mode currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+                .to_string(),
+        );
+    }
     if shortlist_union_requested && !matches!(backend, Backend::GpuKernel { .. }) {
         return Err(
             "shortlist_union_mode currently requires the exact GpuKernel backend route".to_string(),
         );
-    }
-    if shortlist_union_requested && dynamic_runtime_plan.is_some() {
-        return Err("shortlist_union_mode is not yet supported for DynamicDoubleMa".to_string());
     }
     if shortlist_union_requested && variant_pairs > 1 {
         return Err(
@@ -6417,13 +6514,19 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     } else {
         None
     };
+    if shortlist_slice_requested
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+    {
+        return Err(
+            "shortlist_slice_mode currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+                .to_string(),
+        );
+    }
     if shortlist_slice_requested && !matches!(backend, Backend::GpuKernel { .. }) {
         return Err(
             "shortlist_slice_mode currently requires the exact GpuKernel backend route".to_string(),
         );
-    }
-    if shortlist_slice_requested && dynamic_runtime_plan.is_some() {
-        return Err("shortlist_slice_mode is not yet supported for DynamicDoubleMa".to_string());
     }
     if shortlist_slice_requested && variant_pairs > 1 {
         return Err(
@@ -6442,14 +6545,18 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             "shortlist_neighborhood_radius requires shortlist_slice_mode to be set".to_string(),
         );
     }
+    if requested_trade_metrics && dynamic_runtime_plan.is_some() && !dynamic_exact_gpu_kernel_route
+    {
+        return Err(
+            "include_trade_metrics currently require an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+                .to_string(),
+        );
+    }
     if requested_trade_metrics && !matches!(backend, Backend::GpuKernel { .. }) {
         return Err(
             "include_trade_metrics currently requires the exact GpuKernel backend route"
                 .to_string(),
         );
-    }
-    if requested_trade_metrics && dynamic_runtime_plan.is_some() {
-        return Err("include_trade_metrics is not yet supported for DynamicDoubleMa".to_string());
     }
     let mut run_idx: usize = 0;
     for (fi, fast_params_opt) in fast_param_variants.iter().enumerate() {
@@ -12473,8 +12580,9 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
     shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
     shortlist_slice_mode: Option<DoubleMaShortlistSliceMode>,
     shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
-    shortlist_neighborhood_radius: Option<u16>,
-    shortlist_neighborhood_step: Option<u16>,
+    _shortlist_neighborhood_radius: Option<u16>,
+    _shortlist_neighborhood_step: Option<u16>,
+    include_trade_metrics: bool,
     top_k: usize,
     include_all: bool,
     fast_alma_offset: f64,
@@ -12503,39 +12611,6 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
                 .to_string(),
         );
     }
-    if extra_shortlist_objectives.is_some_and(|values| !values.is_empty()) {
-        return Err(
-            "dynamic gpu kernel backend does not yet support extra_shortlist_objectives"
-                .to_string(),
-        );
-    }
-    if shortlist_confidence_mode.is_some() {
-        return Err(
-            "dynamic gpu kernel backend does not yet support shortlist_confidence_mode".to_string(),
-        );
-    }
-    if shortlist_union_mode.is_some() {
-        return Err(
-            "dynamic gpu kernel backend does not yet support shortlist_union_mode".to_string(),
-        );
-    }
-    if shortlist_slice_mode.is_some() {
-        return Err(
-            "dynamic gpu kernel backend does not yet support shortlist_slice_mode".to_string(),
-        );
-    }
-    if shortlist_slice_benchmark.is_some() {
-        return Err(
-            "dynamic gpu kernel backend does not yet support shortlist_slice_benchmark".to_string(),
-        );
-    }
-    if shortlist_neighborhood_radius.is_some() || shortlist_neighborhood_step.is_some() {
-        return Err(
-            "dynamic gpu kernel backend does not yet support shortlist neighborhood diagnostics"
-                .to_string(),
-        );
-    }
-
     let close = vector_ta::utilities::data_loader::source_type(candles, "close");
     let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
     if ma_prices.len() != close.len() {
@@ -12579,16 +12654,26 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
         first_valid,
         handle,
     )?;
-    let metrics_count = crate::gpu_backtest_kernel::search_metrics_count_for_optimization(
-        objective,
-        score_mode,
-        constraints,
-        include_all,
-        false,
-        false,
-        false,
-        false,
-    );
+    let metrics_count = std::iter::once(objective)
+        .chain(
+            extra_shortlist_objectives
+                .into_iter()
+                .flat_map(|values| values.iter().copied()),
+        )
+        .fold(0usize, |current, candidate_objective| {
+            current.max(
+                crate::gpu_backtest_kernel::search_metrics_count_for_optimization(
+                    candidate_objective,
+                    score_mode,
+                    constraints,
+                    include_all,
+                    false,
+                    false,
+                    false,
+                    include_trade_metrics,
+                ),
+            )
+        });
     let metrics = crate::gpu_backtest_kernel::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
         uploaded.as_ref(),
         strategy,
@@ -12603,26 +12688,212 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
         ));
     }
 
-    let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
-    if let Some(score_fn) = score_mode_score_fn(score_mode) {
-        agg = agg.with_score_fn(score_fn);
-    }
-    if heatmap_bins > 0 {
-        let f_min = *fast_periods.iter().min().unwrap_or(&0);
-        let f_max = *fast_periods.iter().max().unwrap_or(&0);
-        let s_min = *slow_periods.iter().min().unwrap_or(&0);
-        let s_max = *slow_periods.iter().max().unwrap_or(&0);
-        agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
-    }
-    for (combo, metric) in combos.into_iter().zip(metrics.into_iter()) {
-        if metrics_pass_constraints(&metric, constraints) {
+    let filtered_rows: Vec<(DoubleMaParams, Metrics)> = combos
+        .into_iter()
+        .zip(metrics.into_iter())
+        .filter(|(_, metric)| metrics_pass_constraints(metric, constraints))
+        .collect();
+
+    let finalize = || {
+        let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+        if score_mode_needs_pair_observation_context(score_mode) {
+            agg = agg.with_pair_score_fn(
+                crate::gpu_backtest_kernel::effective_sample_lcb_10_pair_score_for_host,
+            );
+        } else if let Some(score_fn) = score_mode_score_fn(score_mode) {
+            agg = agg.with_score_fn(score_fn);
+        }
+        if heatmap_bins > 0 {
+            let f_min = *fast_periods.iter().min().unwrap_or(&0);
+            let f_max = *fast_periods.iter().max().unwrap_or(&0);
+            let s_min = *slow_periods.iter().min().unwrap_or(&0);
+            let s_max = *slow_periods.iter().max().unwrap_or(&0);
+            agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
+        }
+        for (combo, metric) in filtered_rows.iter().cloned() {
             agg.push(combo, metric);
         }
+        emit_progress(progress, total_pairs, total_pairs, "gpu_dynamic");
+        agg.finalize().ok_or_else(|| {
+            "dynamic gpu optimization produced no valid parameter combinations".to_string()
+        })
+    };
+
+    let mut result = if score_mode_needs_pair_observation_context(score_mode) {
+        crate::gpu_backtest_kernel::with_effective_sample_score_context(
+            PairObservationScoreContextResolved {
+                first_valid: uploaded.first_valid(),
+                regime_first_valid: uploaded.first_valid(),
+                eval_start: 0,
+                eval_end: n,
+                total_bars: n,
+                trade_on_next_bar: strategy.trade_on_next_bar,
+            },
+            finalize,
+        )
+    } else {
+        finalize()
+    }?;
+
+    let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> = Vec::new();
+    if let Some(extra_objectives) = extra_shortlist_objectives.filter(|values| !values.is_empty()) {
+        let top_limit = result.top.len().max(1);
+        materialized_shortlist_rows = build_exact_extra_shortlist_rows(
+            filtered_rows.as_slice(),
+            objective,
+            extra_objectives,
+            top_limit,
+        );
+        let (best_params, best_metrics) =
+            materialized_shortlist_rows
+                .first()
+                .cloned()
+                .ok_or_else(|| {
+                    "dynamic gpu extra-shortlist request produced no shortlist rows".to_string()
+                })?;
+        result.best_params = best_params;
+        result.best_metrics = best_metrics;
+        result.best_score = Some(effective_score(&result.best_metrics, objective, score_mode));
+        result.top = materialized_shortlist_rows
+            .iter()
+            .take(top_limit)
+            .cloned()
+            .collect();
+        result.top_scores = Some(
+            result
+                .top
+                .iter()
+                .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
+                .collect(),
+        );
     }
-    emit_progress(progress, total_pairs, total_pairs, "gpu_dynamic");
-    agg.finalize().ok_or_else(|| {
-        "dynamic gpu optimization produced no valid parameter combinations".to_string()
-    })
+
+    if let Some(mode) = shortlist_union_mode {
+        if materialized_shortlist_rows.is_empty() {
+            return Err(
+                "dynamic gpu shortlist-union request produced no shortlist rows".to_string(),
+            );
+        }
+        let top_limit = result.top.len().max(1);
+        let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_union_mode(
+            materialized_shortlist_rows.as_slice(),
+            objective,
+            extra_shortlist_objectives.unwrap_or(&[]),
+            mode,
+        );
+        let (best_params, best_metrics) = reranked
+            .first()
+            .cloned()
+            .ok_or_else(|| "dynamic gpu shortlist-union rerank produced no result".to_string())?;
+        result.best_params = best_params;
+        result.best_metrics = best_metrics;
+        result.best_score = Some(effective_score(&result.best_metrics, objective, score_mode));
+        result.top = reranked.into_iter().take(top_limit).collect();
+        result.top_scores = Some(
+            result
+                .top
+                .iter()
+                .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
+                .collect(),
+        );
+    }
+
+    if let Some(mode) = shortlist_confidence_mode {
+        let top_limit = result.top.len().max(1);
+        let confidence_rows: Vec<(DoubleMaParams, Metrics)> =
+            if materialized_shortlist_rows.is_empty() {
+                result.top.clone()
+            } else {
+                materialized_shortlist_rows.clone()
+            };
+        let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_confidence_for_host(
+            confidence_rows.as_slice(),
+            mode,
+            PairObservationScoreContextResolved {
+                first_valid: uploaded.first_valid(),
+                regime_first_valid: uploaded.first_valid(),
+                eval_start: 0,
+                eval_end: n,
+                total_bars: n,
+                trade_on_next_bar: strategy.trade_on_next_bar,
+            },
+            strategy,
+            objective,
+            score_mode,
+        );
+        let (best_params, best_metrics) = reranked.first().cloned().ok_or_else(|| {
+            "dynamic gpu shortlist-confidence rerank produced no result".to_string()
+        })?;
+        result.best_params = best_params;
+        result.best_metrics = best_metrics;
+        result.best_score = Some(effective_score(&result.best_metrics, objective, score_mode));
+        result.top = reranked.into_iter().take(top_limit).collect();
+        result.top_scores = Some(
+            result
+                .top
+                .iter()
+                .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
+                .collect(),
+        );
+    }
+
+    if let Some(mode) = shortlist_slice_mode {
+        let top_limit = result.top.len().max(1);
+        let slice_rows: Vec<(DoubleMaParams, Metrics)> = if materialized_shortlist_rows.is_empty() {
+            result.top.clone()
+        } else {
+            materialized_shortlist_rows.clone()
+        };
+        let (reranked, diagnostics) =
+            crate::gpu_backtest_kernel::rerank_shortlist_by_slice_robustness_for_host(
+                device_id,
+                candles,
+                slice_rows.as_slice(),
+                mode,
+                fast_ma_type,
+                slow_ma_type,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                strategy,
+                objective,
+                score_mode,
+                shortlist_slice_benchmark.as_ref(),
+                uploaded.first_valid(),
+                0,
+                n,
+                fast_alma_offset,
+                fast_alma_sigma,
+                slow_alma_offset,
+                slow_alma_sigma,
+                strategy.hurdle_tau.unwrap_or(0.0),
+                include_trade_metrics,
+            )?;
+        crate::gpu_backtest_kernel::record_last_shortlist_slice_diagnostics(
+            ShortlistSliceDiagnostics {
+                ranking_mode: diagnostics.ranking_mode.clone(),
+                neighborhood_robustness: diagnostics.neighborhood_robustness.clone(),
+                candidates: diagnostics.candidates.into_iter().take(top_limit).collect(),
+            },
+        );
+        let (best_params, best_metrics) = reranked
+            .first()
+            .cloned()
+            .ok_or_else(|| "dynamic gpu shortlist-slice rerank produced no result".to_string())?;
+        result.best_params = best_params;
+        result.best_metrics = best_metrics;
+        result.best_score = Some(effective_score(&result.best_metrics, objective, score_mode));
+        result.top = reranked.into_iter().take(top_limit).collect();
+        result.top_scores = Some(
+            result
+                .top
+                .iter()
+                .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
+                .collect(),
+        );
+    }
+
+    Ok(result)
 }
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -12647,6 +12918,7 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
     _shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     _shortlist_neighborhood_radius: Option<u16>,
     _shortlist_neighborhood_step: Option<u16>,
+    _include_trade_metrics: bool,
     _top_k: usize,
     _include_all: bool,
     _fast_alma_offset: f64,
@@ -12926,9 +13198,9 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
 #[cfg(test)]
 mod tests {
     use super::double_ma_test_support::{
-        double_like_kernel_strategy_cases, marrt_strategy_for_kernel, mts_strategy_for_kernel,
-        orc_strategy_for_kernel, pit_strategy_for_kernel, set_strategy_for_kernel,
-        vfct_strategy_for_kernel,
+        breakout_strategy_for_kernel, double_like_kernel_strategy_cases, marrt_strategy_for_kernel,
+        mts_strategy_for_kernel, orc_strategy_for_kernel, pit_strategy_for_kernel,
+        set_strategy_for_kernel, trend_quality_strategy_for_kernel, vfct_strategy_for_kernel,
     };
     use super::*;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
@@ -15191,6 +15463,547 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_effective_sample_lcb_score_mode() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.score_mode = Some(DoubleMaScoreMode::EffectiveSampleLcb10);
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("request-backed dynamic gpu effective-sample run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(
+            res.backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            res.backend_route
+        );
+        assert!(res.best_score.is_some(), "expected a finite best score");
+        assert!(
+            res.score_observation_context.is_some(),
+            "expected score observation context to be exposed"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_extra_shortlist_objectives() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let top_k = 5usize;
+        let mut req_all =
+            make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir.clone()));
+        req_all.fast_range = (5, 24, 1);
+        req_all.slow_range = (15, 80, 1);
+        req_all.top_k = Some(top_k);
+        req_all.include_all = Some(true);
+
+        let mut req_union = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req_union.fast_range = req_all.fast_range;
+        req_union.slow_range = req_all.slow_range;
+        req_union.top_k = Some(top_k);
+        req_union.include_all = Some(false);
+        req_union.extra_shortlist_objectives = Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]);
+
+        let exhaustive =
+            run_double_ma_optimization_blocking_with_candles(req_all, &candles, &cancel, None)
+                .expect("dynamic exhaustive gpu run");
+        let union_result =
+            run_double_ma_optimization_blocking_with_candles(req_union, &candles, &cancel, None)
+                .expect("dynamic extra-shortlist gpu run");
+
+        assert!(matches!(union_result.backend_used, BackendUsed::Gpu));
+        assert!(
+            union_result
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            union_result.backend_route
+        );
+        assert!(
+            union_result.backend_fallback_reason.is_none(),
+            "unexpected fallback note: {:?}",
+            union_result.backend_fallback_reason
+        );
+
+        let all_rows = exhaustive
+            .all
+            .clone()
+            .expect("include_all=true should retain the full candidate set");
+        let mut expected_union: Vec<(DoubleMaParamsResolved, Metrics)> = Vec::new();
+        let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+        for head_objective in [
+            ObjectiveKind::Sharpe,
+            ObjectiveKind::Pnl,
+            ObjectiveKind::Omega,
+        ] {
+            let mut ranked = all_rows.clone();
+            ranked.sort_by(|a, b| {
+                let sa = objective_score(&a.1, head_objective);
+                let sb = objective_score(&b.1, head_objective);
+                sb.total_cmp(&sa)
+            });
+            for (params, metrics) in ranked.into_iter().take(top_k) {
+                let key = (params.fast_len, params.slow_len);
+                if seen.insert(key) {
+                    expected_union.push((params, metrics));
+                }
+            }
+        }
+        expected_union.sort_by(|a, b| {
+            let sa = objective_score(&a.1, ObjectiveKind::Sharpe);
+            let sb = objective_score(&b.1, ObjectiveKind::Sharpe);
+            sb.total_cmp(&sa)
+        });
+        let expected_keys: Vec<(u16, u16)> = expected_union
+            .iter()
+            .take(top_k)
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let actual_keys: Vec<(u16, u16)> = union_result
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(
+            actual_keys, expected_keys,
+            "dynamic extra-shortlist top-k should match the exhaustive host union rerank"
+        );
+        assert_eq!(
+            (
+                union_result.best_params.fast_len,
+                union_result.best_params.slow_len,
+            ),
+            expected_keys
+                .first()
+                .copied()
+                .expect("expected at least one shortlisted pair")
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_shortlist_union_mode() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let top_k = 5usize;
+        let mut req_all =
+            make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir.clone()));
+        req_all.fast_range = (5, 24, 1);
+        req_all.slow_range = (15, 80, 1);
+        req_all.top_k = Some(top_k);
+        req_all.include_all = Some(true);
+
+        let mut req_union = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req_union.fast_range = req_all.fast_range;
+        req_union.slow_range = req_all.slow_range;
+        req_union.top_k = Some(top_k);
+        req_union.include_all = Some(false);
+        req_union.extra_shortlist_objectives = Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]);
+        req_union.shortlist_union_mode = Some(DoubleMaShortlistUnionMode::WeightedRank);
+
+        let exhaustive =
+            run_double_ma_optimization_blocking_with_candles(req_all, &candles, &cancel, None)
+                .expect("dynamic exhaustive gpu run");
+        let union_result =
+            run_double_ma_optimization_blocking_with_candles(req_union, &candles, &cancel, None)
+                .expect("dynamic shortlist-union gpu run");
+
+        let raw_all_rows: Vec<(DoubleMaParams, Metrics)> = exhaustive
+            .all
+            .clone()
+            .expect("include_all=true should retain the full candidate set")
+            .into_iter()
+            .map(|(params, metrics)| {
+                (
+                    DoubleMaParams {
+                        fast_len: params.fast_len,
+                        slow_len: params.slow_len,
+                        fast_ma_id: 0,
+                        slow_ma_id: 0,
+                    },
+                    metrics,
+                )
+            })
+            .collect();
+        let materialized_rows = build_exact_extra_shortlist_rows(
+            raw_all_rows.as_slice(),
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            top_k,
+        );
+        let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_union_mode(
+            materialized_rows.as_slice(),
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            DoubleMaShortlistUnionMode::WeightedRank,
+        );
+        let expected_keys: Vec<(u16, u16)> = reranked
+            .iter()
+            .take(top_k)
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let actual_keys: Vec<(u16, u16)> = union_result
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert!(matches!(union_result.backend_used, BackendUsed::Gpu));
+        assert!(
+            union_result
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            union_result.backend_route
+        );
+        assert!(
+            union_result.backend_fallback_reason.is_none(),
+            "unexpected fallback note: {:?}",
+            union_result.backend_fallback_reason
+        );
+        assert_eq!(
+            actual_keys, expected_keys,
+            "dynamic shortlist-union top-k should match the exhaustive host weighted-rank rerank"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_shortlist_confidence_mode() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig::default();
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                strategy.clone(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let top_k = 5usize;
+        let mut req_conf = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req_conf.fast_range = (5, 24, 1);
+        req_conf.slow_range = (15, 80, 1);
+        req_conf.top_k = Some(top_k);
+        req_conf.include_all = Some(false);
+        req_conf.shortlist_confidence_mode = Some(DoubleMaShortlistConfidenceMode::Psr);
+        let req_base = DoubleMaRequest {
+            shortlist_confidence_mode: None,
+            ..req_conf.clone()
+        };
+        let base_result =
+            run_double_ma_optimization_blocking_with_candles(req_base, &candles, &cancel, None)
+                .expect("dynamic baseline gpu run");
+        let conf_result =
+            run_double_ma_optimization_blocking_with_candles(req_conf, &candles, &cancel, None)
+                .expect("dynamic shortlist-confidence gpu run");
+
+        let shortlist_rows: Vec<(DoubleMaParams, Metrics)> = base_result
+            .top
+            .clone()
+            .into_iter()
+            .map(|(params, metrics)| {
+                (
+                    DoubleMaParams {
+                        fast_len: params.fast_len,
+                        slow_len: params.slow_len,
+                        fast_ma_id: 0,
+                        slow_ma_id: 0,
+                    },
+                    metrics,
+                )
+            })
+            .collect();
+        let first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
+            &candles, "close",
+        ))
+        .unwrap_or(0);
+        let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_confidence_for_host(
+            shortlist_rows.as_slice(),
+            DoubleMaShortlistConfidenceMode::Psr,
+            PairObservationScoreContextResolved {
+                first_valid,
+                regime_first_valid: first_valid,
+                eval_start: 0,
+                eval_end: candles.close.len(),
+                total_bars: candles.close.len(),
+                trade_on_next_bar: strategy.trade_on_next_bar,
+            },
+            &strategy,
+            ObjectiveKind::Sharpe,
+            None,
+        );
+        let expected_keys: Vec<(u16, u16)> = reranked
+            .iter()
+            .take(top_k)
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let actual_keys: Vec<(u16, u16)> = conf_result
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert!(matches!(conf_result.backend_used, BackendUsed::Gpu));
+        assert!(
+            conf_result
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            conf_result.backend_route
+        );
+        assert_eq!(
+            actual_keys, expected_keys,
+            "dynamic shortlist-confidence top-k should match the exhaustive host PSR rerank"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_trade_metrics() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_choppy_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.include_trade_metrics = true;
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("dynamic trade-metrics gpu run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(
+            res.backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            res.backend_route
+        );
+        assert!(
+            res.best_metrics.closed_trades
+                >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
+            "trade metrics should be populated coherently"
+        );
+        assert!(
+            res.best_metrics.closed_trades > 0 || res.best_metrics.trades > 0,
+            "expected dynamic trade-metrics run to produce non-trivial trade activity"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_shortlist_slice_mode() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig::default();
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                strategy.clone(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let top_k = 5usize;
+        let mut req_base = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req_base.fast_range = (5, 24, 1);
+        req_base.slow_range = (15, 80, 1);
+        req_base.top_k = Some(top_k);
+        req_base.include_all = Some(false);
+        let mut req_slice = req_base.clone();
+        req_slice.shortlist_slice_mode = Some(DoubleMaShortlistSliceMode::Halves);
+        req_slice.shortlist_slice_benchmark = Some(SpaBenchmarkKind::BuyAndHold);
+        req_slice.shortlist_neighborhood_radius = Some(1);
+        req_slice.shortlist_neighborhood_step = Some(1);
+
+        let base_result =
+            run_double_ma_optimization_blocking_with_candles(req_base, &candles, &cancel, None)
+                .expect("dynamic baseline gpu run");
+        let slice_result =
+            run_double_ma_optimization_blocking_with_candles(req_slice, &candles, &cancel, None)
+                .expect("dynamic shortlist-slice gpu run");
+
+        let shortlist_rows: Vec<(DoubleMaParams, Metrics)> = base_result
+            .top
+            .clone()
+            .into_iter()
+            .map(|(params, metrics)| {
+                (
+                    DoubleMaParams {
+                        fast_len: params.fast_len,
+                        slow_len: params.slow_len,
+                        fast_ma_id: 0,
+                        slow_ma_id: 0,
+                    },
+                    metrics,
+                )
+            })
+            .collect();
+        let first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
+            &candles, "close",
+        ))
+        .unwrap_or(0);
+        let (reranked, _) =
+            crate::gpu_backtest_kernel::rerank_shortlist_by_slice_robustness_for_host(
+                0,
+                &candles,
+                shortlist_rows.as_slice(),
+                DoubleMaShortlistSliceMode::Halves,
+                "sma",
+                "sma",
+                "close",
+                None,
+                None,
+                &strategy,
+                ObjectiveKind::Sharpe,
+                None,
+                Some(&SpaBenchmarkKind::BuyAndHold),
+                first_valid,
+                0,
+                candles.close.len(),
+                0.85,
+                6.0,
+                0.85,
+                6.0,
+                strategy.hurdle_tau.unwrap_or(0.0),
+                false,
+            )
+            .expect("host slice rerank");
+        let expected_keys: Vec<(u16, u16)> = reranked
+            .iter()
+            .take(top_k)
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let actual_keys: Vec<(u16, u16)> = slice_result
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert!(matches!(slice_result.backend_used, BackendUsed::Gpu));
+        assert!(
+            slice_result
+                .backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            slice_result.backend_route
+        );
+        assert_eq!(
+            actual_keys, expected_keys,
+            "dynamic shortlist-slice top-k should match the exhaustive host slice rerank"
+        );
+        let diag = slice_result
+            .shortlist_slice_diagnostics
+            .as_ref()
+            .expect("shortlist slice diagnostics");
+        assert_eq!(diag.ranking_mode, "halves");
+        assert!(
+            diag.neighborhood_robustness.is_some(),
+            "expected neighborhood robustness summary when radius is requested"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn request_dynamic_strategy_ir_gpu_unsupported_shape_falls_back_to_cpu() {
         if !cuda_available() {
             return;
@@ -15236,6 +16049,166 @@ mod tests {
                 .contains("halftrend"),
             "expected halftrend fallback reason, got {:?}",
             res.backend_fallback_reason
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_unsupported_shape_rejects_extra_shortlist_objectives() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                Some(HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 14,
+                }),
+            ),
+        )
+        .expect("halftrend static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.extra_shortlist_objectives = Some(vec![ObjectiveKind::Pnl]);
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("unsupported dynamic shape should reject extra shortlist");
+
+        assert!(
+            err.contains(
+                "extra_shortlist_objectives currently require an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_unsupported_shape_rejects_shortlist_confidence_mode() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                Some(HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 14,
+                }),
+            ),
+        )
+        .expect("halftrend static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.shortlist_confidence_mode = Some(DoubleMaShortlistConfidenceMode::Psr);
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("unsupported dynamic shape should reject shortlist confidence");
+
+        assert!(
+            err.contains(
+                "shortlist_confidence_mode currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_unsupported_shape_rejects_trade_metrics() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                Some(HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 14,
+                }),
+            ),
+        )
+        .expect("halftrend static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.include_trade_metrics = true;
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("unsupported dynamic shape should reject trade metrics");
+
+        assert!(
+            err.contains(
+                "include_trade_metrics currently require an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_unsupported_shape_rejects_shortlist_slice_mode() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                Some(HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 14,
+                }),
+            ),
+        )
+        .expect("halftrend static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.shortlist_slice_mode = Some(DoubleMaShortlistSliceMode::Halves);
+
+        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("unsupported dynamic shape should reject shortlist slice mode");
+
+        assert!(
+            err.contains(
+                "shortlist_slice_mode currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+            ),
+            "unexpected error: {err}"
         );
     }
 
@@ -20435,6 +21408,108 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn composite_adx_off_gpu_kernel_routes_accept_advanced_exact_controls() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let cancel = AtomicBool::new(false);
+
+        let run_case = |label: &str,
+                        candles: vector_ta::utilities::data_loader::Candles,
+                        strategy: StrategyConfig| {
+            let res = run_double_ma_optimization_blocking_with_candles(
+                DoubleMaRequest {
+                    backend: Backend::GpuKernel { device_id: 0 },
+                    data_id: format!("composite-{label}"),
+                    fast_range: (5, 18, 1),
+                    slow_range: (20, 48, 2),
+                    fast_ma_types: vec!["sma".to_string()],
+                    slow_ma_types: vec!["sma".to_string()],
+                    ma_source: "close".to_string(),
+                    export_all_csv_path: None,
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    fast_ma_param_sweeps: None,
+                    slow_ma_param_sweeps: None,
+                    strategy,
+                    halftrend_filter: None,
+                    objective: ObjectiveKind::Sharpe,
+                    score_mode: None,
+                    extra_shortlist_objectives: Some(vec![
+                        ObjectiveKind::Pnl,
+                        ObjectiveKind::Omega,
+                    ]),
+                    shortlist_confidence_mode: Some(DoubleMaShortlistConfidenceMode::Psr),
+                    shortlist_union_mode: Some(DoubleMaShortlistUnionMode::Pareto),
+                    shortlist_slice_mode: None,
+                    shortlist_slice_benchmark: None,
+                    shortlist_neighborhood_radius: None,
+                    shortlist_neighborhood_step: None,
+                    mode: OptimizationMode::Grid,
+                    top_k: Some(5),
+                    include_all: Some(false),
+                    heatmap_bins: Some(0),
+                    constraints: None,
+                    vdps: None,
+                    dynamic_strategy_ir: None,
+                    gpu_execution: GpuExecutionPolicy::BestEffort,
+                    persist_followup_cache: false,
+                    include_trade_metrics: true,
+                    hurdle_tau: None,
+                },
+                &candles,
+                &cancel,
+                None,
+            )
+            .unwrap_or_else(|err| {
+                panic!("expected ADX-off composite exact-kernel run for {label}: {err}")
+            });
+
+            assert!(
+                matches!(res.backend_used, BackendUsed::Gpu),
+                "expected GPU backend_used for {label}, got {:?}",
+                res.backend_used
+            );
+            assert!(
+                !res.top.is_empty(),
+                "expected non-empty top rows for {label}"
+            );
+            assert!(
+                res.backend_fallback_reason.is_none(),
+                "unexpected fallback note for {label}: {:?}",
+                res.backend_fallback_reason
+            );
+            assert!(
+                !res.backend_route
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("Hybrid"),
+                "expected exact GpuKernel route for {label}, got {:?}",
+                res.backend_route
+            );
+            assert!(
+                res.best_metrics.closed_trades
+                    >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
+                "trade metrics should be populated coherently for {label}"
+            );
+        };
+
+        run_case(
+            "composite_trend_adx_off",
+            make_trending_candles(6_000),
+            super::double_ma_test_support::trend_quality_strategy_for_kernel(),
+        );
+        run_case(
+            "breakout_momentum_adx_off",
+            make_breakout_candles(6_000),
+            super::double_ma_test_support::breakout_strategy_for_kernel(),
+        );
+    }
+
     #[test]
     fn extra_shortlist_request_requires_exact_gpu_kernel_backend_route() {
         let candles = make_choppy_candles(512);
@@ -20743,6 +21818,158 @@ mod tests {
             expected_keys[0],
             "best params should match the best Sharpe candidate from the request union shortlist"
         );
+
+        match prev_global_topk {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_force_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn composite_adx_off_gpu_kernel_extra_shortlist_request_matches_exhaustive_host_union() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_global_topk = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_force_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+
+        let cancel = AtomicBool::new(false);
+        let top_k = 5usize;
+        let cases = vec![
+            (
+                "composite_trend",
+                make_trending_candles(6_000),
+                trend_quality_strategy_for_kernel(),
+            ),
+            (
+                "breakout_momentum",
+                make_breakout_candles(6_000),
+                breakout_strategy_for_kernel(),
+            ),
+        ];
+
+        for (label, candles, strategy) in cases {
+            let req_all = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: format!("{label}-all"),
+                fast_range: (5, 24, 1),
+                slow_range: (15, 80, 1),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                score_mode: None,
+                extra_shortlist_objectives: None,
+                shortlist_confidence_mode: None,
+                shortlist_union_mode: None,
+                shortlist_slice_mode: None,
+                shortlist_slice_benchmark: None,
+                shortlist_neighborhood_radius: None,
+                shortlist_neighborhood_step: None,
+                mode: OptimizationMode::Grid,
+                top_k: Some(top_k),
+                include_all: Some(true),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+                dynamic_strategy_ir: None,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
+                include_trade_metrics: false,
+                hurdle_tau: None,
+            };
+            let req_union = DoubleMaRequest {
+                include_all: Some(false),
+                extra_shortlist_objectives: Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]),
+                data_id: format!("{label}-union"),
+                ..req_all.clone()
+            };
+
+            let exhaustive =
+                run_double_ma_optimization_blocking_with_candles(req_all, &candles, &cancel, None)
+                    .unwrap_or_else(|e| panic!("{label} exhaustive gpu-kernel run failed: {e}"));
+            let union_result = run_double_ma_optimization_blocking_with_candles(
+                req_union, &candles, &cancel, None,
+            )
+            .unwrap_or_else(|e| panic!("{label} extra-shortlist gpu-kernel run failed: {e}"));
+
+            assert!(matches!(union_result.backend_used, BackendUsed::Gpu));
+            assert_eq!(union_result.backend_route.as_deref(), Some("GpuKernel"));
+            assert!(
+                union_result.backend_fallback_reason.is_none(),
+                "{label} should stay on the exact GpuKernel route, got fallback {:?}",
+                union_result.backend_fallback_reason
+            );
+
+            let all_rows = exhaustive
+                .all
+                .clone()
+                .expect("include_all=true should retain the full candidate set");
+            let mut expected_union: Vec<(DoubleMaParamsResolved, Metrics)> = Vec::new();
+            let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+            for head_objective in [
+                ObjectiveKind::Sharpe,
+                ObjectiveKind::Pnl,
+                ObjectiveKind::Omega,
+            ] {
+                let mut ranked = all_rows.clone();
+                ranked.sort_by(|a, b| {
+                    let sa = objective_score(&a.1, head_objective);
+                    let sb = objective_score(&b.1, head_objective);
+                    sb.total_cmp(&sa)
+                });
+                for (params, metrics) in ranked.into_iter().take(top_k) {
+                    let key = (params.fast_len, params.slow_len);
+                    if seen.insert(key) {
+                        expected_union.push((params, metrics));
+                    }
+                }
+            }
+            expected_union.sort_by(|a, b| {
+                let sa = objective_score(&a.1, ObjectiveKind::Sharpe);
+                let sb = objective_score(&b.1, ObjectiveKind::Sharpe);
+                sb.total_cmp(&sa)
+            });
+            let expected_keys: Vec<(u16, u16)> = expected_union
+                .iter()
+                .take(top_k)
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            let actual_keys: Vec<(u16, u16)> = union_result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+
+            assert_eq!(
+                actual_keys, expected_keys,
+                "{label} extra-shortlist top-k should match the exhaustive host union rerank"
+            );
+            assert_eq!(
+                (
+                    union_result.best_params.fast_len,
+                    union_result.best_params.slow_len
+                ),
+                expected_keys[0],
+                "{label} best params should match the best Sharpe candidate from the union shortlist"
+            );
+        }
 
         match prev_global_topk {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
@@ -21763,6 +22990,128 @@ mod tests {
             explanation.dominance_label,
             expected_explanation.dominance_label
         );
+
+        match prev_global_topk {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_force_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn composite_adx_off_gpu_kernel_shortlist_slice_diagnostics_are_exposed_on_backend_result() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_global_topk = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_force_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+
+        let cancel = AtomicBool::new(false);
+        let cases = vec![
+            (
+                "composite_trend",
+                make_trending_candles(6_000),
+                trend_quality_strategy_for_kernel(),
+            ),
+            (
+                "breakout_momentum",
+                make_breakout_candles(6_000),
+                breakout_strategy_for_kernel(),
+            ),
+        ];
+
+        for (label, candles, strategy) in cases {
+            let req = DoubleMaRequest {
+                backend: Backend::GpuKernel { device_id: 0 },
+                data_id: label.to_string(),
+                fast_range: (5, 24, 1),
+                slow_range: (15, 80, 1),
+                fast_ma_types: vec!["sma".to_string()],
+                slow_ma_types: vec!["sma".to_string()],
+                ma_source: "close".to_string(),
+                export_all_csv_path: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                fast_ma_param_sweeps: None,
+                slow_ma_param_sweeps: None,
+                strategy,
+                halftrend_filter: None,
+                objective: ObjectiveKind::Sharpe,
+                score_mode: None,
+                extra_shortlist_objectives: Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]),
+                shortlist_confidence_mode: None,
+                shortlist_union_mode: None,
+                shortlist_slice_mode: Some(DoubleMaShortlistSliceMode::Halves),
+                shortlist_slice_benchmark: Some(SpaBenchmarkKind::BuyAndHold),
+                shortlist_neighborhood_radius: Some(1),
+                shortlist_neighborhood_step: Some(1),
+                mode: OptimizationMode::Grid,
+                top_k: Some(5),
+                include_all: Some(false),
+                heatmap_bins: Some(0),
+                constraints: None,
+                vdps: None,
+                dynamic_strategy_ir: None,
+                gpu_execution: GpuExecutionPolicy::BestEffort,
+                persist_followup_cache: false,
+                include_trade_metrics: false,
+                hurdle_tau: None,
+            };
+
+            let res =
+                run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                    .unwrap_or_else(|e| {
+                        panic!("{label} shortlist slice diagnostics run failed: {e}")
+                    });
+
+            assert!(matches!(res.backend_used, BackendUsed::Gpu));
+            assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+            assert!(
+                res.backend_fallback_reason.is_none(),
+                "{label} should stay on the exact GpuKernel route, got fallback {:?}",
+                res.backend_fallback_reason
+            );
+
+            let diagnostics = res
+                .shortlist_slice_diagnostics
+                .as_ref()
+                .expect("shortlist slice diagnostics");
+            assert_eq!(diagnostics.ranking_mode, "halves");
+            assert_eq!(diagnostics.candidates.len(), res.top.len());
+            let first = diagnostics
+                .candidates
+                .first()
+                .expect("first diagnostic candidate");
+            let first_top = res.top.first().expect("first top row");
+            assert_eq!(first.params.fast_len, first_top.0.fast_len);
+            assert_eq!(first.params.slow_len, first_top.0.slow_len);
+            assert_eq!(first.halves.slices.len(), 2);
+            assert_eq!(first.quartiles.slices.len(), 4);
+            assert!(
+                first.halves.benchmark_relative.is_some(),
+                "{label} should expose benchmark-relative slice summaries"
+            );
+            let neighborhood = diagnostics
+                .neighborhood_robustness
+                .as_ref()
+                .expect("neighborhood robustness");
+            assert!(neighborhood.plateau_score.is_finite());
+            assert!(neighborhood.point_count >= 1);
+            assert_eq!(
+                neighborhood.neighbor_count,
+                neighborhood.point_count.saturating_sub(1)
+            );
+            assert!(neighborhood.score_agreement.is_some());
+            assert!(neighborhood.explanation.is_some());
+        }
 
         match prev_global_topk {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),

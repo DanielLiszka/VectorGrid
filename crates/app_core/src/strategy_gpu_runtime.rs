@@ -4,6 +4,7 @@ use crate::strategy_gpu_program::{
 };
 use crate::strategy_plan::{CompiledStrategyPlan, StrategyPlanBackend};
 use serde::{Deserialize, Serialize};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -171,6 +172,41 @@ pub fn gpu_strategy_executable_cache_stats() -> StrategyExecutableCacheStats {
     }
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn ensure_uploaded_gpu_strategy_executable_for_current_thread(
+    key: &GpuStrategyExecutableCacheKey,
+    device_id: u32,
+    handle: &StrategyHandle,
+) -> Result<(), String> {
+    let abi = handle
+        .gpu_program_abi
+        .as_ref()
+        .ok_or_else(|| "strategy handle missing GPU program ABI for upload".to_string())?;
+    let key_for_upload = key.clone();
+    GPU_STRATEGY_EXECUTABLE_UPLOAD_CACHE.with(|cell| -> Result<(), String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&key_for_upload) {
+            let uploaded =
+                crate::gpu_backtest_kernel::upload_gpu_strategy_program_abi(device_id, abi)?;
+            let probe = crate::gpu_backtest_kernel::probe_uploaded_gpu_strategy_program(&uploaded)?;
+            if probe[0] != uploaded.abi_version
+                || probe[1] != uploaded.d_indicator_slots.len() as u32
+                || probe[2] != uploaded.d_conditions.len() as u32
+            {
+                return Err(
+                    "uploaded gpu strategy program probe returned inconsistent metadata"
+                        .to_string(),
+                );
+            }
+            map.insert(
+                key_for_upload,
+                Rc::new(UploadedGpuStrategyExecutableEntry { uploaded }),
+            );
+        }
+        Ok(())
+    })
+}
+
 pub fn get_or_build_gpu_strategy_executable(
     handle: &StrategyHandle,
     device_id: u32,
@@ -183,6 +219,8 @@ pub fn get_or_build_gpu_strategy_executable(
             .lock()
             .map_err(|_| "gpu strategy executable cache lock poisoned".to_string())?;
         if let Some(existing) = guard.get(&key) {
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            ensure_uploaded_gpu_strategy_executable_for_current_thread(&key, device_id, handle)?;
             GPU_STRATEGY_EXECUTABLE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(existing.clone());
         }
@@ -191,34 +229,7 @@ pub fn get_or_build_gpu_strategy_executable(
     let exec = GpuStrategyExecutable::from_handle(handle, device_id)?;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
-        let abi = handle
-            .gpu_program_abi
-            .as_ref()
-            .ok_or_else(|| "strategy handle missing GPU program ABI for upload".to_string())?;
-        let key_for_upload = key.clone();
-        GPU_STRATEGY_EXECUTABLE_UPLOAD_CACHE.with(|cell| -> Result<(), String> {
-            let mut map = cell.borrow_mut();
-            if !map.contains_key(&key_for_upload) {
-                let uploaded =
-                    crate::gpu_backtest_kernel::upload_gpu_strategy_program_abi(device_id, abi)?;
-                let probe =
-                    crate::gpu_backtest_kernel::probe_uploaded_gpu_strategy_program(&uploaded)?;
-                if probe[0] != uploaded.abi_version
-                    || probe[1] != uploaded.d_indicator_slots.len() as u32
-                    || probe[2] != uploaded.d_conditions.len() as u32
-                {
-                    return Err(
-                        "uploaded gpu strategy program probe returned inconsistent metadata"
-                            .to_string(),
-                    );
-                }
-                map.insert(
-                    key_for_upload,
-                    Rc::new(UploadedGpuStrategyExecutableEntry { uploaded }),
-                );
-            }
-            Ok(())
-        })?;
+        ensure_uploaded_gpu_strategy_executable_for_current_thread(&key, device_id, handle)?;
     }
     let mut guard = cache
         .lock()

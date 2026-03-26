@@ -1387,7 +1387,7 @@ fn run_asr_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -1397,7 +1397,7 @@ fn run_asr_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -1660,7 +1660,7 @@ fn run_asr_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -1670,7 +1670,7 @@ fn run_asr_optimization_cpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -2100,7 +2100,7 @@ fn run_vcc_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -2110,7 +2110,7 @@ fn run_vcc_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -2347,7 +2347,7 @@ fn run_vcc_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -2357,7 +2357,7 @@ fn run_vcc_optimization_cpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -2750,87 +2750,112 @@ fn run_vemr_optimization_gpu(
             slow_ma_params: req.slow_ma_params.clone(),
         }
     };
-    let (best_params, best_metrics, top, all, heatmap, num_combos) = match gpu_eval {
-        VemrGpuEvalResult::Full(metrics) => {
-            if metrics.len() != combo_params.len() {
-                return Err("VEMR GPU kernel output length mismatch".to_string());
-            }
-
-            let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
-            if heatmap_bins > 0 {
-                agg = agg.with_heatmap(
-                    heatmap_bins,
-                    heatmap_bins,
-                    *fast_periods.iter().min().unwrap_or(&0),
-                    *fast_periods.iter().max().unwrap_or(&0),
-                    *slow_periods.iter().min().unwrap_or(&0),
-                    *slow_periods.iter().max().unwrap_or(&0),
-                );
-            }
-            for (i, (params, m)) in combo_params
-                .into_iter()
-                .zip(metrics.into_iter())
-                .enumerate()
-            {
-                agg.push(params, m);
-                if (i & 0x03ff) == 0 {
-                    emit_progress(progress, i + 1, total_pairs, "vemr_optimize");
+    let (best_params, best_metrics, best_score, top, top_scores, all, heatmap, num_combos) =
+        match gpu_eval {
+            VemrGpuEvalResult::Full(metrics) => {
+                if metrics.len() != combo_params.len() {
+                    return Err("VEMR GPU kernel output length mismatch".to_string());
                 }
-            }
-            emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
 
-            let result = agg
-                .finalize()
-                .ok_or_else(|| "VEMR grid search produced no result".to_string())?;
-            let best_params = resolve_params(&result.best_params);
-            let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
-                .top
-                .iter()
-                .map(|(p, m)| (resolve_params(p), m.clone()))
-                .collect();
-            let all = result.all.as_ref().map(|rows| {
-                rows.iter()
+                let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
+                if heatmap_bins > 0 {
+                    agg = agg.with_heatmap(
+                        heatmap_bins,
+                        heatmap_bins,
+                        *fast_periods.iter().min().unwrap_or(&0),
+                        *fast_periods.iter().max().unwrap_or(&0),
+                        *slow_periods.iter().min().unwrap_or(&0),
+                        *slow_periods.iter().max().unwrap_or(&0),
+                    );
+                }
+                for (i, (params, m)) in combo_params
+                    .into_iter()
+                    .zip(metrics.into_iter())
+                    .enumerate()
+                {
+                    agg.push(params, m);
+                    if (i & 0x03ff) == 0 {
+                        emit_progress(progress, i + 1, total_pairs, "vemr_optimize");
+                    }
+                }
+                emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
+
+                let result = agg
+                    .finalize()
+                    .ok_or_else(|| "VEMR grid search produced no result".to_string())?;
+                let best_params = resolve_params(&result.best_params);
+                let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
+                    .top
+                    .iter()
                     .map(|(p, m)| (resolve_params(p), m.clone()))
-                    .collect::<Vec<_>>()
-            });
-            (
-                best_params,
-                result.best_metrics,
-                top,
-                all,
-                result.heatmap.clone(),
-                result.num_combos,
-            )
-        }
-        VemrGpuEvalResult::TopK(mut top_rows) => {
-            if top_rows.is_empty() {
-                return Err("VEMR GPU top-k reduction produced no rows".to_string());
+                    .collect();
+                let all = result.all.as_ref().map(|rows| {
+                    rows.iter()
+                        .map(|(p, m)| (resolve_params(p), m.clone()))
+                        .collect::<Vec<_>>()
+                });
+                (
+                    best_params,
+                    result.best_metrics,
+                    result.best_score,
+                    top,
+                    result.top_scores.clone(),
+                    all,
+                    result.heatmap.clone(),
+                    result.num_combos,
+                )
             }
-            top_rows.sort_by(|a, b| {
-                objective_score(&b.metrics, objective)
-                    .total_cmp(&objective_score(&a.metrics, objective))
-            });
-
-            let best_combo = combo_params
-                .get(top_rows[0].combo_index)
-                .ok_or_else(|| "VEMR GPU best combo index out of range".to_string())?;
-            let best_params = resolve_params(best_combo);
-            let best_metrics = top_rows[0].metrics.clone();
-
-            let mut top: Vec<(DoubleMaParamsResolved, Metrics)> = Vec::with_capacity(top_k);
-            if top_k > 0 {
-                for row in top_rows.into_iter().take(top_k) {
-                    let params = combo_params
-                        .get(row.combo_index)
-                        .ok_or_else(|| "VEMR GPU top combo index out of range".to_string())?;
-                    top.push((resolve_params(params), row.metrics));
+            VemrGpuEvalResult::TopK(mut top_rows) => {
+                if top_rows.is_empty() {
+                    return Err("VEMR GPU top-k reduction produced no rows".to_string());
                 }
-            }
-            emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
+                top_rows.sort_by(|a, b| {
+                    objective_score(&b.metrics, objective)
+                        .total_cmp(&objective_score(&a.metrics, objective))
+                });
 
-            (best_params, best_metrics, top, None, None, num_combos_total)
-        }
-    };
+                let best_combo = combo_params
+                    .get(top_rows[0].combo_index)
+                    .ok_or_else(|| "VEMR GPU best combo index out of range".to_string())?;
+                let best_params = resolve_params(best_combo);
+                let best_metrics = top_rows[0].metrics.clone();
+
+                let mut top: Vec<(DoubleMaParamsResolved, Metrics)> = Vec::with_capacity(top_k);
+                if top_k > 0 {
+                    for row in top_rows.into_iter().take(top_k) {
+                        let params = combo_params
+                            .get(row.combo_index)
+                            .ok_or_else(|| "VEMR GPU top combo index out of range".to_string())?;
+                        top.push((resolve_params(params), row.metrics));
+                    }
+                }
+                emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
+
+                let best_score = top
+                    .first()
+                    .map(|(_, metrics)| objective_score(metrics, objective));
+                let top_scores = if top.is_empty() {
+                    None
+                } else {
+                    Some(
+                        top.iter()
+                            .map(|(_, metrics)| objective_score(metrics, objective))
+                            .collect(),
+                    )
+                };
+
+                (
+                    best_params,
+                    best_metrics,
+                    best_score,
+                    top,
+                    top_scores,
+                    None,
+                    None,
+                    num_combos_total,
+                )
+            }
+        };
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let (matrix_index, best_col, top_cols) =
@@ -2868,9 +2893,9 @@ fn run_vemr_optimization_gpu(
         num_combos,
         num_candles: n,
         runtime_ms,
-        best_score: None,
+        best_score,
         top,
-        top_scores: None,
+        top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -3131,7 +3156,7 @@ fn run_vemr_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used,
         matrix_index,
@@ -3141,7 +3166,7 @@ fn run_vemr_optimization_impl(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -4630,9 +4655,9 @@ fn run_rocb_optimization_gpu(
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
-        best_score: None,
+        best_score: result.best_score,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -4887,7 +4912,7 @@ fn run_rocb_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used,
         matrix_index,
@@ -4897,7 +4922,7 @@ fn run_rocb_optimization_impl(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -5292,9 +5317,9 @@ fn run_vcet_optimization_gpu(
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
-        best_score: None,
+        best_score: result.best_score,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -5552,7 +5577,7 @@ fn run_vcet_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used,
         matrix_index,
@@ -5562,7 +5587,7 @@ fn run_vcet_optimization_impl(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -5964,9 +5989,9 @@ fn run_mkcs_optimization_gpu(
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
-        best_score: None,
+        best_score: result.best_score,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -6369,7 +6394,7 @@ fn run_kqsr_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -6379,7 +6404,7 @@ fn run_kqsr_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -6561,7 +6586,7 @@ fn run_kqsr_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -6571,7 +6596,7 @@ fn run_kqsr_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -6965,7 +6990,7 @@ fn run_carm_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -6975,7 +7000,7 @@ fn run_carm_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -7158,7 +7183,7 @@ fn run_carm_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -7168,7 +7193,7 @@ fn run_carm_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -7608,7 +7633,7 @@ fn run_kvdf_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -7618,7 +7643,7 @@ fn run_kvdf_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -7801,7 +7826,7 @@ fn run_kvdf_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -7811,7 +7836,7 @@ fn run_kvdf_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -8263,7 +8288,7 @@ fn run_cdmc_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -8273,7 +8298,7 @@ fn run_cdmc_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap: result.heatmap.clone(),
@@ -8476,7 +8501,7 @@ fn run_cdmc_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -8486,7 +8511,7 @@ fn run_cdmc_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -8761,7 +8786,7 @@ fn run_mkcs_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used,
         matrix_index,
@@ -8771,7 +8796,7 @@ fn run_mkcs_optimization_impl(
         num_candles: n,
         runtime_ms: 0,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -9350,7 +9375,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
-        best_score: None,
+        best_score: result.best_score,
         mode_used,
         backend_used,
         matrix_index,
@@ -9360,7 +9385,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         num_candles: n,
         runtime_ms,
         top,
-        top_scores: None,
+        top_scores: result.top_scores,
         all,
         all_scores: None,
         heatmap,
@@ -11378,6 +11403,16 @@ mod tests {
             gpu_res.backend_used
         );
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert_eq!(cpu_res.best_score.is_some(), gpu_res.best_score.is_some());
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert!(gpu_res
+            .top_scores
+            .as_ref()
+            .is_some_and(|scores| !scores.is_empty()));
 
         let cpu_all = cpu_res
             .all
@@ -12122,6 +12157,16 @@ mod tests {
             gpu_res.backend_used
         );
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert_eq!(cpu_res.best_score.is_some(), gpu_res.best_score.is_some());
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert!(gpu_res
+            .top_scores
+            .as_ref()
+            .is_some_and(|scores| !scores.is_empty()));
 
         let cpu_all = cpu_res
             .all
@@ -13956,6 +14001,16 @@ mod tests {
             gpu_res.backend_used
         );
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert_eq!(cpu_res.best_score.is_some(), gpu_res.best_score.is_some());
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert!(gpu_res
+            .top_scores
+            .as_ref()
+            .is_some_and(|scores| !scores.is_empty()));
 
         let cpu_all = cpu_res
             .all
@@ -14167,5 +14222,3 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
-
-

@@ -32,10 +32,9 @@ use crate::double_ma::{
     derived_directional_bias, derived_downside_share, derived_drawdown_chronicity,
     derived_long_exposure, derived_mean, derived_short_exposure, effective_sample_lcb_10_score,
     effective_score, exact_fee_stress_pnl, metrics_pass_constraints, objective_score,
-    PairObservationScoreContextResolved,
-    score_mode_metrics_count_floor, score_mode_needs_pair_observation_context,
-    score_mode_score_fn, DoubleMaConstraints, DoubleMaScoreMode,
-    DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
+    score_mode_metrics_count_floor, score_mode_needs_pair_observation_context, score_mode_score_fn,
+    DoubleMaConstraints, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
+    DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode, PairObservationScoreContextResolved,
     ShortlistSliceBenchmarkRelativeSummary, ShortlistSliceCandidateDiagnostics,
     ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics, ShortlistSliceSnapshot,
 };
@@ -1510,7 +1509,7 @@ fn clear_last_score_observation_context() {
     });
 }
 
-fn record_last_shortlist_slice_diagnostics(diag: ShortlistSliceDiagnostics) {
+pub(crate) fn record_last_shortlist_slice_diagnostics(diag: ShortlistSliceDiagnostics) {
     LAST_SHORTLIST_SLICE_DIAGNOSTICS.with(|cell| {
         *cell.borrow_mut() = Some(diag);
     });
@@ -1528,6 +1527,30 @@ fn record_last_score_observation_context(ctx: PairObservationScoreContextResolve
 
 pub(crate) fn take_last_score_observation_context() -> Option<PairObservationScoreContextResolved> {
     LAST_SCORE_OBSERVATION_CONTEXT.with(|cell| cell.borrow_mut().take())
+}
+
+pub(crate) fn with_effective_sample_score_context<T>(
+    ctx: PairObservationScoreContextResolved,
+    f: impl FnOnce() -> T,
+) -> T {
+    record_last_score_observation_context(ctx);
+    let _guard = install_effective_sample_score_context(EffectiveSampleScoreContext {
+        first_valid: ctx.first_valid,
+        regime_first_valid: ctx.regime_first_valid,
+        eval_start: ctx.eval_start,
+        eval_end: ctx.eval_end,
+        total_bars: ctx.total_bars,
+        trade_on_next_bar: ctx.trade_on_next_bar,
+    });
+    f()
+}
+
+#[inline]
+pub(crate) fn effective_sample_lcb_10_pair_score_for_host(
+    params: &DoubleMaParams,
+    metrics: &Metrics,
+) -> f64 {
+    effective_sample_lcb_10_pair_score(params, metrics)
 }
 
 fn emit_progress(
@@ -1632,6 +1655,76 @@ impl DeviceRegimeFilter {
     fn device_id(&self) -> u32 {
         self.device_id
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rerank_shortlist_by_slice_robustness_for_host(
+    device_id: u32,
+    candles: &Candles,
+    rows: &[(DoubleMaParams, Metrics)],
+    mode: DoubleMaShortlistSliceMode,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    benchmark: Option<&SpaBenchmarkKind>,
+    first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    hurdle_tau: f64,
+    include_trade_metrics: bool,
+) -> Result<(Vec<(DoubleMaParams, Metrics)>, ShortlistSliceDiagnostics), String> {
+    let mode = kernel_shortlist_slice_mode(Some(mode))?
+        .ok_or_else(|| "shortlist_slice_mode is required".to_string())?;
+    CUDA_KERNEL_RUNTIME.with(
+        |cell| -> Result<(Vec<(DoubleMaParams, Metrics)>, ShortlistSliceDiagnostics), String> {
+            let mut map = cell.borrow_mut();
+            if !map.contains_key(&device_id) {
+                map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+            }
+            let rt = map.get_mut(&device_id).expect("just inserted");
+            rt.set_current()?;
+            rerank_shortlist_by_slice_robustness(
+                rt,
+                candles,
+                rows,
+                mode,
+                fast_ma_type,
+                slow_ma_type,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                None,
+                KernelConfig {
+                    device_id,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                    hurdle_tau,
+                    include_trade_metrics,
+                },
+                None,
+                None,
+                strategy,
+                objective,
+                score_mode,
+                benchmark,
+                first_valid,
+                first_valid,
+                eval_start,
+                eval_end,
+            )
+        },
+    )
 }
 
 pub(crate) fn upload_device_series_f32(
@@ -1841,6 +1934,10 @@ pub struct UploadedDoubleMaDynamicProgramBatch {
 impl UploadedDoubleMaDynamicProgramBatch {
     pub fn combo_count(&self) -> usize {
         self.combo_count
+    }
+
+    pub(crate) fn first_valid(&self) -> usize {
+        self.first_valid
     }
 }
 
@@ -2066,7 +2163,7 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                 rt.launch_caps,
                 launch_caps,
             );
-            let out_stride = metrics_count.clamp(1, METRICS_COUNT);
+            let out_stride = metrics_count.clamp(1, TRADE_METRICS_COUNT);
             let out_len = uploaded_batch
                 .fast_tm_stride
                 .checked_mul(uploaded_batch.slow_tm_stride)
@@ -4075,6 +4172,32 @@ fn rerank_shortlist_by_confidence(
         .into_iter()
         .map(|(params, metrics, _)| (params, metrics))
         .collect()
+}
+
+pub(crate) fn rerank_shortlist_by_confidence_for_host(
+    rows: &[(DoubleMaParams, Metrics)],
+    mode: DoubleMaShortlistConfidenceMode,
+    ctx: PairObservationScoreContextResolved,
+    strategy: &StrategyConfig,
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    let mode = match mode {
+        DoubleMaShortlistConfidenceMode::Psr => ShortlistConfidenceMode::Psr,
+        DoubleMaShortlistConfidenceMode::Dsr => ShortlistConfidenceMode::Dsr,
+    };
+    rerank_shortlist_by_confidence(
+        rows,
+        mode,
+        ctx.first_valid,
+        ctx.regime_first_valid,
+        ctx.eval_start,
+        ctx.eval_end,
+        ctx.total_bars,
+        strategy,
+        objective,
+        score_mode,
+    )
 }
 
 fn shortlist_union_objectives(
@@ -8525,8 +8648,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             total_bars: n,
             trade_on_next_bar: strategy.trade_on_next_bar,
         });
-    let _effective_sample_score_guard = effective_sample_score_context
-        .map(install_effective_sample_score_context);
+    let _effective_sample_score_guard =
+        effective_sample_score_context.map(install_effective_sample_score_context);
     if let Some(ctx) = effective_sample_score_context {
         record_last_score_observation_context(PairObservationScoreContextResolved {
             first_valid: ctx.first_valid,
@@ -10010,10 +10133,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                             if let Some(w) = export_writer.as_mut() {
                                 let score = kernel_effective_score_for_pair(
-                                    &params,
-                                    &metrics,
-                                    objective,
-                                    score_mode,
+                                    &params, &metrics, objective, score_mode,
                                 );
                                 let active_mean = derived_active_mean(&metrics);
                                 let active_downside_deviation =
@@ -10648,10 +10768,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     slow_ma_id: 0,
                                 };
                                 let score = kernel_effective_score_for_pair(
-                                    &params,
-                                    &metrics,
-                                    objective,
-                                    score_mode,
+                                    &params, &metrics, objective, score_mode,
                                 );
                                 let active_mean = derived_active_mean(&metrics);
                                 let active_downside_deviation =
@@ -11160,24 +11277,22 @@ mod tests {
         compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
         effective_sample_lcb_10_pair_score, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
         install_effective_sample_score_context, kernel_async_alloc_enabled,
-        kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
-        kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled,
-        kernel_shortlist_confidence_mode, kernel_shortlist_slice_benchmark,
-        kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
+        kernel_effective_pair_bars, kernel_extra_shortlist_objectives, kernel_pinned_d2h_enabled,
+        kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
+        kernel_shortlist_slice_benchmark, kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
         rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
         shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
         upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
-        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT,
-        PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
+        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
+        TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
-        DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode,
-        DoubleMaShortlistUnionMode,
+        DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
     };
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,

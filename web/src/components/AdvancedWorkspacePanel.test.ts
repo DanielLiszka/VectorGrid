@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AdvancedWorkspacePanel from './AdvancedWorkspacePanel.vue'
 import { useAdvancedStore } from '../stores/advancedStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useStrategyStore } from '../stores/strategyStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 function installAdvancedPanelMountShell(): void {
@@ -108,6 +109,7 @@ describe('AdvancedWorkspacePanel', () => {
     useAdvancedStore(pinia)
     workflow.selectControlsTab('advanced', { persist: false })
     optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'GpuKernel'
 
     const wrapper = mount(AdvancedWorkspacePanel, {
       global: { plugins: [pinia] },
@@ -121,15 +123,121 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
-  it('keeps shortlist confidence control visible with a stale DynamicDoubleMa value so it can be cleared', async () => {
+  it('hides exact-kernel-only controls for Double MA when the requested backend is not GpuKernel', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflow = useWorkflowStore(pinia)
     const optimize = useOptimizeStore(pinia)
-    const advanced = useAdvancedStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'CpuOnly'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueIncludeTradeMetrics')).toBeNull()
+    expect(document.querySelector('#vueExtraShortlistObjectives')).toBeNull()
+    expect(document.querySelector('#vueShortlistConfidenceMode')).toBeNull()
+    expect(document.querySelector('#vueShortlistUnionMode')).toBeNull()
+    expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('shows exact-kernel-only controls for CompositeTrend when ADX is off on the exact route', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const strategy = useStrategyStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'CompositeTrend'
+    optimize.backend = 'GpuKernel'
+    strategy.trendUseAdx = false
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueIncludeTradeMetrics')).not.toBeNull()
+    expect(document.querySelector('#vueExtraShortlistObjectives')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('hides exact-kernel-only controls for CompositeTrend when ADX promotes the route to hybrid', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const strategy = useStrategyStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'CompositeTrend'
+    optimize.backend = 'GpuKernel'
+    strategy.trendUseAdx = true
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueIncludeTradeMetrics')).toBeNull()
+    expect(document.querySelector('#vueExtraShortlistObjectives')).toBeNull()
+    expect(document.querySelector('#vueShortlistConfidenceMode')).toBeNull()
+    expect(document.querySelector('#vueShortlistUnionMode')).toBeNull()
+    expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
+    expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score/trade-metric controls are disabled')
+
+    wrapper.unmount()
+  })
+
+  it('shows the current dynamic exact-route controls for DynamicDoubleMa on the requested GpuKernel route', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    useAdvancedStore(pinia)
     workflow.selectControlsTab('advanced', { persist: false })
     optimize.strategyKind = 'DynamicDoubleMa'
-    advanced.shortlistConfidenceMode = 'psr'
+    optimize.backend = 'GpuKernel'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueExtraShortlistObjectives')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+    expect(document.querySelector('#vueIncludeTradeMetrics')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistSliceBenchmark')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistNeighborhoodRadius')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) shapes')
+
+    wrapper.unmount()
+  })
+
+  it('shows shortlist confidence control for DynamicDoubleMa on the requested GpuKernel route', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DynamicDoubleMa'
+    optimize.backend = 'GpuKernel'
 
     const wrapper = mount(AdvancedWorkspacePanel, {
       global: { plugins: [pinia] },
@@ -138,7 +246,7 @@ describe('AdvancedWorkspacePanel', () => {
     await flushPanelTimers()
 
     expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('DynamicDoubleMa does not yet support shortlist confidence mode')
+    expect(document.body.textContent || '').toContain('DynamicDoubleMa shortlist')
 
     wrapper.unmount()
   })
@@ -151,6 +259,7 @@ describe('AdvancedWorkspacePanel', () => {
     const advanced = useAdvancedStore(pinia)
     workflow.selectControlsTab('advanced', { persist: false })
     optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'GpuKernel'
     advanced.extraShortlistObjectives = 'Pnl,Omega'
 
     const wrapper = mount(AdvancedWorkspacePanel, {
@@ -189,7 +298,7 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
-  it('keeps shortlist union control visible with a stale DynamicDoubleMa value so it can be cleared', async () => {
+  it('shows shortlist union control for DynamicDoubleMa when extra shortlist heads are requested on the GpuKernel route', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflow = useWorkflowStore(pinia)
@@ -197,7 +306,8 @@ describe('AdvancedWorkspacePanel', () => {
     const advanced = useAdvancedStore(pinia)
     workflow.selectControlsTab('advanced', { persist: false })
     optimize.strategyKind = 'DynamicDoubleMa'
-    advanced.shortlistUnionMode = 'pareto'
+    optimize.backend = 'GpuKernel'
+    advanced.extraShortlistObjectives = 'Pnl,Omega'
 
     const wrapper = mount(AdvancedWorkspacePanel, {
       global: { plugins: [pinia] },
@@ -206,7 +316,9 @@ describe('AdvancedWorkspacePanel', () => {
     await flushPanelTimers()
 
     expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('DynamicDoubleMa does not yet support shortlist union mode')
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('DynamicDoubleMa union shortlist')
 
     wrapper.unmount()
   })
@@ -219,6 +331,7 @@ describe('AdvancedWorkspacePanel', () => {
     const advanced = useAdvancedStore(pinia)
     workflow.selectControlsTab('advanced', { persist: false })
     optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'GpuKernel'
     advanced.extraShortlistObjectives = 'Pnl,Omega'
     advanced.shortlistSliceMode = 'halves'
 
@@ -254,7 +367,7 @@ describe('AdvancedWorkspacePanel', () => {
     await flushPanelTimers()
 
     expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('DynamicDoubleMa does not yet support shortlist slice mode')
+    expect(document.body.textContent || '').toContain('The current route does not support shortlist slice mode')
 
     wrapper.unmount()
   })

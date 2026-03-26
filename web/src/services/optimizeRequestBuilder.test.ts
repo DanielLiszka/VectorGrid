@@ -532,41 +532,39 @@ describe("optimizeRequestBuilder", () => {
     });
   });
 
-  it("rejects include_trade_metrics for DynamicDoubleMa", () => {
-    expect(() =>
-      buildDoubleMaOptimizationRequest({
-        context: {
-          strategy_kind: "DynamicDoubleMa",
-          data_id: "data-trade-metrics-dynamic",
-          current_data_meta: { has_close: true },
-        },
-        backend: "GpuKernel",
-        fastStart: "5",
-        fastEnd: "15",
-        fastStep: "5",
-        slowStart: "20",
-        slowEnd: "40",
-        slowStep: "10",
-        fastMaType: "sma",
-        slowMaType: "ema",
-        maSource: "close",
-        objective: "Sharpe",
-        includeTradeMetrics: true,
-        mode: "Grid",
-        topK: "20",
-        includeAll: "false",
-        heatmapBins: "0",
-        startingEquity: "10000",
-        costPreset: "custom",
-        feeBps: "0",
-        spreadBps: "0",
-        slippageBps: "0",
-        epsRel: "0",
-        dynamicStrategyIr: { profile: "double_ma" },
-      }),
-    ).toThrow(
-      /include_trade_metrics is not yet supported for DynamicDoubleMa/i,
-    );
+  it("allows include_trade_metrics for DynamicDoubleMa on the requested GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-trade-metrics-dynamic",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      includeTradeMetrics: true,
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
+    });
+
+    expect((req as Record<string, unknown>).include_trade_metrics).toBe(true);
   });
 
   it("rejects extra shortlist objectives when score mode is enabled", () => {
@@ -638,15 +636,53 @@ describe("optimizeRequestBuilder", () => {
     ).toThrow(/includeAll=false/i);
   });
 
-  it("rejects extra shortlist objectives for DynamicDoubleMa", () => {
+  it("allows extra shortlist objectives for DynamicDoubleMa on the requested GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-extra-shortlist-dynamic",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      extraShortlistObjectives: "Pnl,Omega",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
+    });
+    expect(req).toBeTruthy();
+    expect((req as Record<string, unknown>).extra_shortlist_objectives).toEqual([
+      "Pnl",
+      "Omega",
+    ]);
+  });
+
+  it("still rejects extra shortlist objectives for DynamicDoubleMa off the GpuKernel route", () => {
     expect(() =>
       buildDoubleMaOptimizationRequest({
         context: {
           strategy_kind: "DynamicDoubleMa",
-          data_id: "data-extra-shortlist-dynamic",
+          data_id: "data-extra-shortlist-dynamic-cpu",
           current_data_meta: { has_close: true },
         },
-        backend: "GpuKernel",
+        backend: "CpuOnly",
         fastStart: "5",
         fastEnd: "15",
         fastStep: "5",
@@ -670,9 +706,7 @@ describe("optimizeRequestBuilder", () => {
         epsRel: "0",
         dynamicStrategyIr: { profile: "double_ma" },
       }),
-    ).toThrow(
-      /DynamicDoubleMa does not yet support extra shortlist objectives/i,
-    );
+    ).toThrow(/supported only for the GPU kernel route/i);
   });
 
   it("normalizes shortlist confidence mode into the runtime request", () => {
@@ -781,40 +815,40 @@ describe("optimizeRequestBuilder", () => {
     ).toThrow(/includeAll=false/i);
   });
 
-  it("rejects shortlist confidence mode for DynamicDoubleMa", () => {
-    expect(() =>
-      buildDoubleMaOptimizationRequest({
-        context: {
-          strategy_kind: "DynamicDoubleMa",
-          data_id: "data-shortlist-confidence-dynamic",
-          current_data_meta: { has_close: true },
-        },
-        backend: "GpuKernel",
-        fastStart: "5",
-        fastEnd: "15",
-        fastStep: "5",
-        slowStart: "20",
-        slowEnd: "40",
-        slowStep: "10",
-        fastMaType: "sma",
-        slowMaType: "ema",
-        maSource: "close",
-        objective: "Sharpe",
-        shortlistConfidenceMode: "psr",
-        mode: "Grid",
-        topK: "20",
-        includeAll: "false",
-        heatmapBins: "0",
-        startingEquity: "10000",
-        costPreset: "custom",
-        feeBps: "0",
-        spreadBps: "0",
-        slippageBps: "0",
-        epsRel: "0",
-        dynamicStrategyIr: { profile: "double_ma" },
-      }),
-    ).toThrow(
-      /DynamicDoubleMa does not yet support shortlist confidence mode/i,
+  it("allows shortlist confidence mode for DynamicDoubleMa on the requested GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-shortlist-confidence-dynamic",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      shortlistConfidenceMode: "psr",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
+    });
+    expect(req).toBeTruthy();
+    expect((req as Record<string, unknown>).shortlist_confidence_mode).toBe(
+      "psr",
     );
   });
 
@@ -928,41 +962,84 @@ describe("optimizeRequestBuilder", () => {
     ).toThrow(/requires extra shortlist objectives/i);
   });
 
-  it("rejects shortlist union mode for DynamicDoubleMa", () => {
-    expect(() =>
-      buildDoubleMaOptimizationRequest({
-        context: {
-          strategy_kind: "DynamicDoubleMa",
-          data_id: "data-shortlist-union-dynamic",
-          current_data_meta: { has_close: true },
-        },
-        backend: "GpuKernel",
-        fastStart: "5",
-        fastEnd: "15",
-        fastStep: "5",
-        slowStart: "20",
-        slowEnd: "40",
-        slowStep: "10",
-        fastMaType: "sma",
-        slowMaType: "ema",
-        maSource: "close",
-        objective: "Sharpe",
-        extraShortlistObjectives: "Pnl",
-        shortlistUnionMode: "epsilon_front",
-        mode: "Grid",
-        topK: "20",
-        includeAll: "false",
-        heatmapBins: "0",
-        startingEquity: "10000",
-        costPreset: "custom",
-        feeBps: "0",
-        spreadBps: "0",
-        slippageBps: "0",
-        epsRel: "0",
-        dynamicStrategyIr: { profile: "double_ma" },
-      }),
-    ).toThrow(
-      /DynamicDoubleMa does not yet support extra shortlist objectives/i,
+  it("allows shortlist union mode for DynamicDoubleMa on the requested GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-shortlist-union-dynamic",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      extraShortlistObjectives: "Pnl",
+      shortlistUnionMode: "epsilon_front",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
+    });
+    expect(req).toBeTruthy();
+    expect((req as Record<string, unknown>).shortlist_union_mode).toBe(
+      "epsilon_front",
+    );
+  });
+
+  it("allows shortlist slice mode for DynamicDoubleMa on the requested GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-shortlist-slice-dynamic",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      shortlistSliceMode: "Halves",
+      shortlistSliceBenchmark: "BuyAndHold",
+      shortlistNeighborhoodRadius: "1",
+      shortlistNeighborhoodStep: "2",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
+    });
+
+    expect((req as Record<string, unknown>).shortlist_slice_mode).toBe(
+      "halves",
+    );
+    expect((req as Record<string, unknown>).shortlist_slice_benchmark).toBe(
+      "buy_and_hold",
+    );
+    expect(
+      (req as Record<string, unknown>).shortlist_neighborhood_radius,
+    ).toBe(1);
+    expect((req as Record<string, unknown>).shortlist_neighborhood_step).toBe(
+      2,
     );
   });
 
@@ -1126,6 +1203,66 @@ describe("optimizeRequestBuilder", () => {
       strategy_kind: "DynamicDoubleMa",
       dynamic_strategy_ir: dynamicStrategyIr,
     });
+  });
+
+  it("allows effective_sample_lcb_10 for DynamicDoubleMa on the exact GpuKernel request surface", () => {
+    const dynamicStrategyIr = {
+      schema_version: 2,
+      profile: "DoubleMa",
+      ma_source: "close",
+      fast_ma: { ma_type: "sma", params: {} },
+      slow_ma: { ma_type: "ema", params: {} },
+      program: {
+        indicators: [],
+        conditions: [],
+        groups: [],
+        signals: {
+          long_entry_group: null,
+          long_exit_group: null,
+          short_entry_group: null,
+          short_exit_group: null,
+        },
+      },
+      execution: {
+        strategy: {
+          long_only: true,
+          allow_flip: false,
+          trade_on_next_bar: true,
+          exit_mode: "cross",
+        },
+      },
+    };
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-dyn-score",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "effective_sample_lcb_10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      dynamicStrategyIr,
+    });
+    expect(req).toBeTruthy();
+    expect((req as Record<string, unknown>).score_mode).toBe(
+      "effective_sample_lcb_10",
+    );
+    expect((req as Record<string, unknown>).dynamic_strategy_ir).toEqual(
+      dynamicStrategyIr,
+    );
   });
 
   it("normalizes removed approximate-mode aliases back to exact Grid mode", () => {
@@ -2306,6 +2443,67 @@ describe("optimizeRequestBuilder", () => {
     expect(kernelReq).toThrow(/topK <= 256/);
     expect(hybridReq).toBeTruthy();
     expect(cpuReq).toBeTruthy();
+  });
+
+  it("allows advanced exact-kernel shortlist and trade-metric controls on ADX-off composite kernel routes", () => {
+    const trendReq = buildCompositeDoubleMaRequest("CompositeTrend", {
+      trendUseAdx: false,
+      extraShortlistObjectives: "Pnl,Omega",
+      includeTradeMetrics: true,
+      heatmapBins: "0",
+    });
+    const breakoutReq = buildCompositeDoubleMaRequest("BreakoutMomentum", {
+      breakoutUseAdx: false,
+      extraShortlistObjectives: "Pnl,Omega",
+      includeTradeMetrics: true,
+      heatmapBins: "0",
+    });
+
+    expect((trendReq as Record<string, unknown>).backend).toEqual({
+      backend: "GpuKernel",
+      device_id: 0,
+    });
+    expect((trendReq as Record<string, unknown>).extra_shortlist_objectives).toEqual([
+      "Pnl",
+      "Omega",
+    ]);
+    expect((trendReq as Record<string, unknown>).include_trade_metrics).toBe(
+      true,
+    );
+
+    expect((breakoutReq as Record<string, unknown>).backend).toEqual({
+      backend: "GpuKernel",
+      device_id: 0,
+    });
+    expect(
+      (breakoutReq as Record<string, unknown>).extra_shortlist_objectives,
+    ).toEqual(["Pnl", "Omega"]);
+    expect((breakoutReq as Record<string, unknown>).include_trade_metrics).toBe(
+      true,
+    );
+  });
+
+  it("rejects advanced exact-kernel controls on composite routes once ADX promotes them to hybrid", () => {
+    expect(() =>
+      buildCompositeDoubleMaRequest("CompositeTrend", {
+        trendUseAdx: true,
+        extraShortlistObjectives: "Pnl",
+      }),
+    ).toThrow(/supported only for the GPU kernel route/i);
+
+    expect(() =>
+      buildCompositeDoubleMaRequest("BreakoutMomentum", {
+        breakoutUseAdx: true,
+        shortlistSliceMode: "Halves",
+      }),
+    ).toThrow(/supported only for the GPU kernel route/i);
+
+    expect(() =>
+      buildCompositeDoubleMaRequest("CompositeTrend", {
+        trendUseAdx: true,
+        includeTradeMetrics: true,
+      }),
+    ).toThrow(/exact GpuKernel backend route/i);
   });
 
   it("accepts canonicalized MA support keys without cloning the whole support map", () => {

@@ -2109,11 +2109,6 @@ export function buildDoubleMaOptimizationRequest(
   }
 
   if (extraShortlistObjectives) {
-    if (kind === "DynamicDoubleMa") {
-      throw new Error(
-        "DynamicDoubleMa does not yet support extra shortlist objectives.",
-      );
-    }
     if (!kernelRoute) {
       throw new Error(
         "Extra shortlist objectives are currently supported only for the GPU kernel route.",
@@ -2132,11 +2127,6 @@ export function buildDoubleMaOptimizationRequest(
     }
   }
   if (shortlistConfidenceMode) {
-    if (kind === "DynamicDoubleMa") {
-      throw new Error(
-        "DynamicDoubleMa does not yet support shortlist confidence mode.",
-      );
-    }
     if (!kernelRoute) {
       throw new Error(
         "Shortlist confidence mode is currently supported only for the GPU kernel route.",
@@ -2155,11 +2145,6 @@ export function buildDoubleMaOptimizationRequest(
     }
   }
   if (shortlistUnionMode) {
-    if (kind === "DynamicDoubleMa") {
-      throw new Error(
-        "DynamicDoubleMa does not yet support shortlist union mode.",
-      );
-    }
     if (!kernelRoute) {
       throw new Error(
         "Shortlist union mode is currently supported only for the GPU kernel route.",
@@ -2183,11 +2168,6 @@ export function buildDoubleMaOptimizationRequest(
     }
   }
   if (shortlistSliceMode) {
-    if (kind === "DynamicDoubleMa") {
-      throw new Error(
-        "DynamicDoubleMa does not yet support shortlist slice mode.",
-      );
-    }
     if (!kernelRoute) {
       throw new Error(
         "Shortlist slice mode is currently supported only for the GPU kernel route.",
@@ -2217,11 +2197,6 @@ export function buildDoubleMaOptimizationRequest(
     );
   }
   if (includeTradeMetrics) {
-    if (kind === "DynamicDoubleMa") {
-      throw new Error(
-        "include_trade_metrics is not yet supported for DynamicDoubleMa",
-      );
-    }
     if (!kernelRoute) {
       throw new Error(
         "include_trade_metrics currently requires the exact GpuKernel backend route",

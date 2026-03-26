@@ -41,6 +41,11 @@ export interface StrategyOptimizationCapabilities {
   supportsExportAll: boolean
   supportsTopK: boolean
   supportsIncludeAll: boolean
+  supportsExtraShortlistObjectives: boolean
+  supportsTradeMetrics: boolean
+  supportsShortlistConfidenceMode: boolean
+  supportsShortlistUnionMode: boolean
+  supportsAdvancedExactKernelControls: boolean
   executionSummary: string
   modeSummary: string
   outputSummary: string
@@ -99,6 +104,10 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
   }
 }
 
+function requestedGlobalBackendIsGpuKernel(value: unknown): boolean {
+  return String(value ?? '').trim() === 'GpuKernel'
+}
+
 function describeCompositeExecutionSummary(
   kind: CompositeProfileKind,
   inputs: StrategyOptimizationCapabilityInputs,
@@ -124,7 +133,15 @@ function describeCompositeExecutionSummary(
 function describeCompositeOutputSummary(
   kind: CompositeProfileKind,
   inputs: StrategyOptimizationCapabilityInputs,
-): { supportsExportAll: boolean, outputSummary: string } {
+): {
+  supportsExportAll: boolean
+  supportsExtraShortlistObjectives: boolean
+  supportsTradeMetrics: boolean
+  supportsShortlistConfidenceMode: boolean
+  supportsShortlistUnionMode: boolean
+  supportsAdvancedExactKernelControls: boolean
+  outputSummary: string
+} {
   const route = resolveCompositeProfileRoute(
     kind,
     normalizeCompositeRequestedBackend(inputs.requestedBackend),
@@ -137,17 +154,45 @@ function describeCompositeOutputSummary(
   if (route.supportsExportAll) {
     return {
       supportsExportAll: true,
-      outputSummary: `Top-K, heatmap, include-all, and export controls apply to ${kind} through the current kernel-targeted double-MA route.`,
+      supportsExtraShortlistObjectives: true,
+      supportsTradeMetrics: true,
+      supportsShortlistConfidenceMode: true,
+      supportsShortlistUnionMode: true,
+      supportsAdvancedExactKernelControls: true,
+      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/trade-metric controls apply to ${kind} through the current kernel-targeted double-MA route.`,
     }
   }
 
   return {
     supportsExportAll: false,
+    supportsExtraShortlistObjectives: false,
+    supportsTradeMetrics: false,
+    supportsShortlistConfidenceMode: false,
+    supportsShortlistUnionMode: false,
+    supportsAdvancedExactKernelControls: false,
     outputSummary:
       route.targetBackend === 'CpuOnly'
-        ? `Top-K, heatmap, and include-all controls apply to ${kind} through the current CPU double-MA route. Export-all is disabled on this route.`
-        : `Top-K, heatmap, and include-all controls apply to ${kind} through the current hybrid double-MA route. Export-all is disabled on this route.`,
+        ? `Top-K, heatmap, and include-all controls apply to ${kind} through the current CPU double-MA route. Export-all and advanced exact-kernel shortlist/score/trade-metric controls are disabled on this route.`
+        : `Top-K, heatmap, and include-all controls apply to ${kind} through the current hybrid double-MA route. Export-all and advanced exact-kernel shortlist/score/trade-metric controls are disabled on this route.`,
   }
+}
+
+function supportsRequestedExactKernelControls(
+  kind: StrategyOptimizationKind,
+  inputs: StrategyOptimizationCapabilityInputs,
+): boolean {
+  if (kind === 'DynamicDoubleMa') return false
+  if (isCompositeProfileKind(kind)) {
+    return resolveCompositeProfileRoute(
+      kind,
+      normalizeCompositeRequestedBackend(inputs.requestedBackend),
+      {
+        trendUseAdx: !!inputs.trendUseAdx,
+        breakoutUseAdx: !!inputs.breakoutUseAdx,
+      },
+    ).supportsExportAll
+  }
+  return requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
 }
 
 export function describeStrategyOptimizationCapabilities(
@@ -160,9 +205,33 @@ export function describeStrategyOptimizationCapabilities(
       ? describeCompositeOutputSummary(kind, inputs)
       : {
           supportsExportAll: true,
+          supportsExtraShortlistObjectives:
+            kind === 'DynamicDoubleMa'
+              ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
+              : supportsRequestedExactKernelControls(kind, inputs),
+          supportsTradeMetrics:
+            kind === 'DynamicDoubleMa'
+              ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
+              : supportsRequestedExactKernelControls(kind, inputs),
+          supportsShortlistConfidenceMode:
+            kind === 'DynamicDoubleMa'
+              ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
+              : supportsRequestedExactKernelControls(kind, inputs),
+          supportsShortlistUnionMode:
+            kind === 'DynamicDoubleMa'
+              ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
+              : supportsRequestedExactKernelControls(kind, inputs),
+          supportsAdvancedExactKernelControls:
+            kind === 'DynamicDoubleMa'
+              ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
+              : supportsRequestedExactKernelControls(kind, inputs),
           outputSummary:
             kind === 'DynamicDoubleMa'
-              ? 'DynamicDoubleMa builds constrained strategy_ir payloads, previews the resolved backend, and runs through the normal optimizer path after validation.'
+              ? 'DynamicDoubleMa builds constrained strategy_ir payloads, previews the resolved backend, and runs through the normal optimizer path after validation. Include-all stays available broadly; extra shortlist objectives are requestable on the GpuKernel preview path for exact-compatible dynamic_strategy_v1 shapes.'
+                + ' Trade metrics follow that same exact-compatible dynamic GpuKernel path.'
+                + ' Shortlist confidence mode follows that same exact-compatible dynamic GpuKernel path.'
+                + ' Shortlist union mode follows that same exact-compatible dynamic GpuKernel path once extra shortlist heads are present.'
+                + ' Shortlist slice and neighborhood diagnostics follow that same exact-compatible dynamic GpuKernel path.'
               : kind === 'Vfct'
                 ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend.'
                 : kind === 'DoubleMa'
@@ -178,6 +247,14 @@ export function describeStrategyOptimizationCapabilities(
       supportsExportAll: compositeOutput.supportsExportAll,
       supportsTopK: true,
       supportsIncludeAll: true,
+      supportsExtraShortlistObjectives:
+        compositeOutput.supportsExtraShortlistObjectives,
+      supportsTradeMetrics: compositeOutput.supportsTradeMetrics,
+      supportsShortlistConfidenceMode:
+        compositeOutput.supportsShortlistConfidenceMode,
+      supportsShortlistUnionMode: compositeOutput.supportsShortlistUnionMode,
+      supportsAdvancedExactKernelControls:
+        compositeOutput.supportsAdvancedExactKernelControls,
       executionSummary:
         kind === 'DynamicDoubleMa'
           ? 'DynamicDoubleMa is the constrained Double-MA builder path. It validates a previewed strategy_ir, previews GPU-unified eligibility and explicit CPU fallback reasons, and then runs through the normal optimizer path.'
@@ -208,6 +285,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsExportAll: false,
       supportsTopK: false,
       supportsIncludeAll: false,
+      supportsExtraShortlistObjectives: false,
+      supportsTradeMetrics: false,
+      supportsShortlistConfidenceMode: false,
+      supportsShortlistUnionMode: false,
+      supportsAdvancedExactKernelControls: false,
       executionSummary:
         'ML Signal uses a dedicated CPU research path: export features, import external scores, and validate signal policies against the existing simulator.',
       modeSummary:
@@ -236,6 +318,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsExportAll: false,
       supportsTopK: true,
       supportsIncludeAll: true,
+      supportsExtraShortlistObjectives: false,
+      supportsTradeMetrics: false,
+      supportsShortlistConfidenceMode: false,
+      supportsShortlistUnionMode: false,
+      supportsAdvancedExactKernelControls: false,
       executionSummary:
         kind === 'Mkcs'
           ? 'MKCS can use CPU or unified GPU execution, with fast/slow ranges mapped into compression and breakout periods.'
@@ -251,7 +338,7 @@ export function describeStrategyOptimizationCapabilities(
                     ? 'CDMC can use CPU or unified GPU execution, with GPU scoring fed by staged cycle, MAMA/FAMA, and decycler signal matrices.'
                     : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
-      outputSummary: `${kind} returns best/top rows, but does not emit the Double MA heatmap or per-pair CSV export.`,
+      outputSummary: `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export.`,
     }
   }
   if (kind === 'CompositeCpu') {
@@ -263,10 +350,15 @@ export function describeStrategyOptimizationCapabilities(
       supportsExportAll: false,
       supportsTopK: true,
       supportsIncludeAll: true,
+      supportsExtraShortlistObjectives: false,
+      supportsTradeMetrics: false,
+      supportsShortlistConfidenceMode: false,
+      supportsShortlistUnionMode: false,
+      supportsAdvancedExactKernelControls: false,
       executionSummary:
         'CompositeCpu uses the composite CPU optimization path.',
       modeSummary: `${kind} always runs in Grid mode.`,
-      outputSummary: `${kind} returns ranked results, but does not emit the Double MA heatmap or CSV export.`,
+      outputSummary: `${kind} supports ranked Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or CSV export.`,
     }
   }
   if (kind === 'CompositeMo') {
@@ -278,6 +370,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsExportAll: false,
       supportsTopK: false,
       supportsIncludeAll: false,
+      supportsExtraShortlistObjectives: false,
+      supportsTradeMetrics: false,
+      supportsShortlistConfidenceMode: false,
+      supportsShortlistUnionMode: false,
+      supportsAdvancedExactKernelControls: false,
       executionSummary:
         'Composite MO manages execution through its own sampler and optional GPU prescan settings.',
       modeSummary:
@@ -294,6 +391,11 @@ export function describeStrategyOptimizationCapabilities(
     supportsExportAll: false,
     supportsTopK: true,
     supportsIncludeAll: true,
+    supportsExtraShortlistObjectives: false,
+    supportsTradeMetrics: false,
+    supportsShortlistConfidenceMode: false,
+    supportsShortlistUnionMode: false,
+    supportsAdvancedExactKernelControls: false,
     executionSummary: 'This strategy uses a fixed execution path.',
     modeSummary: 'This strategy does not expose the global mode selector.',
     outputSummary: 'Only strategy-supported result shaping controls are shown.',
