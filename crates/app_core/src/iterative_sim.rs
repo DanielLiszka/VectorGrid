@@ -596,4 +596,3 @@ mod tests {
         assert!(m_stop.trades > m_base.trades);
     }
 }
-

@@ -171,8 +171,8 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: Default::default(),
             persist_followup_cache: false,
-           include_trade_metrics: false,
-            
+            include_trade_metrics: false,
+
             hurdle_tau: None,
         }
     }
@@ -269,7 +269,3 @@ pub async fn run_composite_mo_optimization(
     .await
     .map_err(|e| e.to_string())?
 }
-
-
-
-

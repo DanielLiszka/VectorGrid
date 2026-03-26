@@ -112,6 +112,7 @@ export interface DoubleMaOptimizationBuildInputs {
   dmConstraintMinTrades?: unknown;
   dmConstraintMaxDd?: unknown;
   dmConstraintMinSharpe?: unknown;
+  dmConstraintMinSortino?: unknown;
   dmConstraintMinCalmar?: unknown;
   dmConstraintMaxVolatility?: unknown;
   dmConstraintMinExposure?: unknown;
@@ -445,8 +446,37 @@ function normalizeDoubleMaScoreMode(value: unknown): string | null {
   ) {
     return "active_sortino_10";
   }
+  if (
+    normalized === "effective_sample_lcb_10" ||
+    normalized === "effectivesamplelcb10" ||
+    normalized === "effective-sample-lcb-10" ||
+    normalized === "obs_lcb_10" ||
+    normalized === "obslcb10" ||
+    normalized === "obs-lcb-10"
+  ) {
+    return "effective_sample_lcb_10";
+  }
+  if (
+    normalized === "omega_vs_sharpe_10" ||
+    normalized === "omegavssharpe10" ||
+    normalized === "omega-vs-sharpe-10" ||
+    normalized === "omega_vs_sharpe" ||
+    normalized === "omegavssharpe"
+  ) {
+    return "omega_vs_sharpe_10";
+  }
+  if (
+    normalized === "robust_margin_10" ||
+    normalized === "robustmargin10" ||
+    normalized === "robust-margin-10" ||
+    normalized === "hurdle_slack_10" ||
+    normalized === "hurdleslack10" ||
+    normalized === "hurdle-slack-10"
+  ) {
+    return "robust_margin_10";
+  }
   throw new Error(
-    "Unsupported score mode. Supported values: balanced_risk_adjusted_10, adversarial_envelope_10, support_shrunk_10, active_sortino_10.",
+    "Unsupported score mode. Supported values: balanced_risk_adjusted_10, adversarial_envelope_10, support_shrunk_10, active_sortino_10, effective_sample_lcb_10, omega_vs_sharpe_10, robust_margin_10.",
   );
 }
 
@@ -519,8 +549,9 @@ function normalizeShortlistUnionMode(value: unknown): string | null {
   if (normalized === "lexicographic") return "lexicographic";
   if (normalized === "pareto") return "pareto";
   if (normalized === "epsilon_front") return "epsilon_front";
+  if (normalized === "weighted_rank") return "weighted_rank";
   throw new Error(
-    "Unsupported shortlist union mode. Supported values: lexicographic, pareto, epsilon_front.",
+    "Unsupported shortlist union mode. Supported values: lexicographic, pareto, epsilon_front, weighted_rank.",
   );
 }
 
@@ -2092,9 +2123,7 @@ export function buildDoubleMaOptimizationRequest(
       throw new Error("Extra shortlist objectives require topK > 0.");
     }
     if (includeAll) {
-      throw new Error(
-        "Extra shortlist objectives require includeAll=false.",
-      );
+      throw new Error("Extra shortlist objectives require includeAll=false.");
     }
     if (scoreMode) {
       throw new Error(
@@ -2117,9 +2146,7 @@ export function buildDoubleMaOptimizationRequest(
       throw new Error("Shortlist confidence mode requires topK > 0.");
     }
     if (includeAll) {
-      throw new Error(
-        "Shortlist confidence mode requires includeAll=false.",
-      );
+      throw new Error("Shortlist confidence mode requires includeAll=false.");
     }
     if (scoreMode) {
       throw new Error(
@@ -2147,9 +2174,7 @@ export function buildDoubleMaOptimizationRequest(
       throw new Error("Shortlist union mode requires topK > 0.");
     }
     if (includeAll) {
-      throw new Error(
-        "Shortlist union mode requires includeAll=false.",
-      );
+      throw new Error("Shortlist union mode requires includeAll=false.");
     }
     if (scoreMode) {
       throw new Error(
@@ -2172,22 +2197,21 @@ export function buildDoubleMaOptimizationRequest(
       throw new Error("Shortlist slice mode requires topK > 0.");
     }
     if (includeAll) {
-      throw new Error(
-        "Shortlist slice mode requires includeAll=false.",
-      );
+      throw new Error("Shortlist slice mode requires includeAll=false.");
     }
   }
   if (shortlistSliceBenchmark && !shortlistSliceMode) {
-    throw new Error(
-      "Shortlist slice benchmark requires shortlist slice mode.",
-    );
+    throw new Error("Shortlist slice benchmark requires shortlist slice mode.");
   }
   if (shortlistNeighborhoodRadius != null && !shortlistSliceMode) {
     throw new Error(
       "Shortlist neighborhood radius requires shortlist slice mode.",
     );
   }
-  if (shortlistNeighborhoodStep != null && shortlistNeighborhoodRadius == null) {
+  if (
+    shortlistNeighborhoodStep != null &&
+    shortlistNeighborhoodRadius == null
+  ) {
     throw new Error(
       "Shortlist neighborhood step requires shortlist neighborhood radius.",
     );
@@ -2255,6 +2279,7 @@ export function buildDoubleMaOptimizationRequest(
     "Max drawdown constraint",
   );
   const minSharpe = parseOptionalFinite(inputs.dmConstraintMinSharpe);
+  const minSortino = parseOptionalFinite(inputs.dmConstraintMinSortino);
   const minCalmar = parseOptionalFinite(inputs.dmConstraintMinCalmar);
   const maxVolatility = parseOptionalNonNegativeNumber(
     inputs.dmConstraintMaxVolatility,
@@ -2299,6 +2324,7 @@ export function buildDoubleMaOptimizationRequest(
     minTrades != null ||
     maxDrawdown != null ||
     minSharpe != null ||
+    minSortino != null ||
     minCalmar != null ||
     maxVolatility != null ||
     minExposure != null ||
@@ -2312,6 +2338,7 @@ export function buildDoubleMaOptimizationRequest(
     if (minTrades != null) constraints.min_trades = minTrades;
     if (maxDrawdown != null) constraints.max_drawdown = maxDrawdown;
     if (minSharpe != null) constraints.min_sharpe = minSharpe;
+    if (minSortino != null) constraints.min_sortino = minSortino;
     if (minCalmar != null) constraints.min_calmar = minCalmar;
     if (maxVolatility != null) constraints.max_volatility = maxVolatility;
     if (minExposure != null) constraints.min_exposure = minExposure;
@@ -3196,4 +3223,3 @@ export function buildCompositeMoOptimizationRequest(
     mode: null,
   };
 }
-

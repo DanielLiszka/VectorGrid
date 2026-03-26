@@ -514,6 +514,10 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   dmConstraintMinTrades: { storeId: "strategy", key: "dmConstraintMinTrades" },
   dmConstraintMaxDd: { storeId: "strategy", key: "dmConstraintMaxDd" },
   dmConstraintMinSharpe: { storeId: "strategy", key: "dmConstraintMinSharpe" },
+  dmConstraintMinSortino: {
+    storeId: "strategy",
+    key: "dmConstraintMinSortino",
+  },
   dmConstraintMinCalmar: { storeId: "strategy", key: "dmConstraintMinCalmar" },
   dmConstraintMaxVolatility: {
     storeId: "strategy",
@@ -1621,29 +1625,29 @@ async function buildAutoDoubleMaRequest(
     scoreMode: overrides.scoreMode ?? readStoreTextInputValue("scoreMode"),
     hurdleTau: overrides.hurdleTau ?? readStoreTextInputValue("hurdleTau"),
     includeTradeMetrics:
-      overrides.includeTradeMetrics
-      ?? readStoreCheckboxValue("includeTradeMetrics"),
+      overrides.includeTradeMetrics ??
+      readStoreCheckboxValue("includeTradeMetrics"),
     extraShortlistObjectives:
-      overrides.extraShortlistObjectives
-      ?? readStoreTextInputValue("extraShortlistObjectives"),
+      overrides.extraShortlistObjectives ??
+      readStoreTextInputValue("extraShortlistObjectives"),
     shortlistConfidenceMode:
-      overrides.shortlistConfidenceMode
-      ?? readStoreTextInputValue("shortlistConfidenceMode"),
+      overrides.shortlistConfidenceMode ??
+      readStoreTextInputValue("shortlistConfidenceMode"),
     shortlistUnionMode:
-      overrides.shortlistUnionMode
-      ?? readStoreTextInputValue("shortlistUnionMode"),
+      overrides.shortlistUnionMode ??
+      readStoreTextInputValue("shortlistUnionMode"),
     shortlistSliceMode:
-      overrides.shortlistSliceMode
-      ?? readStoreTextInputValue("shortlistSliceMode"),
+      overrides.shortlistSliceMode ??
+      readStoreTextInputValue("shortlistSliceMode"),
     shortlistSliceBenchmark:
-      overrides.shortlistSliceBenchmark
-      ?? readStoreTextInputValue("shortlistSliceBenchmark"),
+      overrides.shortlistSliceBenchmark ??
+      readStoreTextInputValue("shortlistSliceBenchmark"),
     shortlistNeighborhoodRadius:
-      overrides.shortlistNeighborhoodRadius
-      ?? readStoreTextInputValue("shortlistNeighborhoodRadius"),
+      overrides.shortlistNeighborhoodRadius ??
+      readStoreTextInputValue("shortlistNeighborhoodRadius"),
     shortlistNeighborhoodStep:
-      overrides.shortlistNeighborhoodStep
-      ?? readStoreTextInputValue("shortlistNeighborhoodStep"),
+      overrides.shortlistNeighborhoodStep ??
+      readStoreTextInputValue("shortlistNeighborhoodStep"),
     mode: overrides.mode ?? readStoreTextInputValue("mode"),
     topK: overrides.topK ?? readStoreTextInputValue("topK"),
     includeAll: overrides.includeAll ?? readStoreTextInputValue("includeAll"),
@@ -1711,6 +1715,7 @@ async function buildAutoDoubleMaRequest(
     dmConstraintMinTrades: readStoreTextInputValue("dmConstraintMinTrades"),
     dmConstraintMaxDd: readStoreTextInputValue("dmConstraintMaxDd"),
     dmConstraintMinSharpe: readStoreTextInputValue("dmConstraintMinSharpe"),
+    dmConstraintMinSortino: readStoreTextInputValue("dmConstraintMinSortino"),
     dmConstraintMinCalmar: readStoreTextInputValue("dmConstraintMinCalmar"),
     dmConstraintMaxVolatility: readStoreTextInputValue(
       "dmConstraintMaxVolatility",
@@ -1808,12 +1813,8 @@ async function buildDynamicDoubleMaRuntimeRequest(
     extraShortlistObjectives: readStoreTextInputValue(
       "extraShortlistObjectives",
     ),
-    shortlistConfidenceMode: readStoreTextInputValue(
-      "shortlistConfidenceMode",
-    ),
-    shortlistUnionMode: readStoreTextInputValue(
-      "shortlistUnionMode",
-    ),
+    shortlistConfidenceMode: readStoreTextInputValue("shortlistConfidenceMode"),
+    shortlistUnionMode: readStoreTextInputValue("shortlistUnionMode"),
     mode: readStoreTextInputValue("mode"),
     topK: readStoreTextInputValue("topK"),
     includeAll: readStoreTextInputValue("includeAll"),
@@ -1878,6 +1879,7 @@ async function buildDynamicDoubleMaRuntimeRequest(
     dmConstraintMinTrades: readStoreTextInputValue("dmConstraintMinTrades"),
     dmConstraintMaxDd: readStoreTextInputValue("dmConstraintMaxDd"),
     dmConstraintMinSharpe: readStoreTextInputValue("dmConstraintMinSharpe"),
+    dmConstraintMinSortino: readStoreTextInputValue("dmConstraintMinSortino"),
     dmConstraintMinCalmar: readStoreTextInputValue("dmConstraintMinCalmar"),
     dmConstraintMaxVolatility: readStoreTextInputValue(
       "dmConstraintMaxVolatility",

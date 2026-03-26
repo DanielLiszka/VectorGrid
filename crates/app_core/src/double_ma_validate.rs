@@ -6880,7 +6880,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             },
             &candles,
@@ -8400,7 +8400,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
 
@@ -8829,7 +8829,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
 
@@ -8943,6 +8943,3 @@ mod tests {
         assert!(meta.groups[0].meta_score.is_finite());
     }
 }
-
-
-

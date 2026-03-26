@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use ta_app_core::double_ma::{DoubleMaShortlistUnionMode, VdpsConfig};
+use ta_app_core::double_ma::{DoubleMaScoreMode, DoubleMaShortlistUnionMode, VdpsConfig};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, marrt_strategy_for_kernel, mts_strategy_for_kernel,
@@ -222,6 +222,9 @@ fn bench_shortlist_union_mode_from_env() -> Option<DoubleMaShortlistUnionMode> {
         "lexicographic" => Some(DoubleMaShortlistUnionMode::Lexicographic),
         "pareto" => Some(DoubleMaShortlistUnionMode::Pareto),
         "epsilon_front" => Some(DoubleMaShortlistUnionMode::EpsilonFront),
+        "weighted_rank" | "weighted-rank" | "weightedrank" => {
+            Some(DoubleMaShortlistUnionMode::WeightedRank)
+        }
         other => panic!("unsupported bench shortlist union mode: {other}"),
     }
 }
@@ -240,6 +243,40 @@ fn bench_hurdle_tau_from_env() -> Option<f64> {
         panic!("unsupported bench hurdle_tau value: {trimmed}");
     }
     Some(parsed)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_score_mode_from_env() -> Option<DoubleMaScoreMode> {
+    let raw = std::env::var("VECTORBT_BENCH_SCORE_MODE").ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "balanced_risk_adjusted_10" | "balancedriskadjusted10" | "balanced-risk-adjusted-10" => {
+            Some(DoubleMaScoreMode::BalancedRiskAdjusted10)
+        }
+        "adversarial_envelope_10"
+        | "adversarialenvelope10"
+        | "adversarial-envelope-10"
+        | "adversarial_weight_envelope_10"
+        | "adversarial-weight-envelope-10" => Some(DoubleMaScoreMode::AdversarialEnvelope10),
+        "support_shrunk_10"
+        | "supportshrunk10"
+        | "support-shrunk-10"
+        | "effective_support_10"
+        | "effective-support-10" => Some(DoubleMaScoreMode::SupportShrunk10),
+        "active_sortino_10" | "activesortino10" | "active-sortino-10" => {
+            Some(DoubleMaScoreMode::ActiveSortino10)
+        }
+        "effective_sample_lcb_10"
+        | "effectivesamplelcb10"
+        | "effective-sample-lcb-10"
+        | "obslcb10" => Some(DoubleMaScoreMode::EffectiveSampleLcb10),
+        "omega_vs_sharpe_10" | "omegavssharpe10" | "omega-vs-sharpe-10" | "omega_vs_sharpe" => {
+            Some(DoubleMaScoreMode::OmegaVsSharpe10)
+        }
+        "robust_margin_10" | "robustmargin10" | "robust-margin-10" | "hurdle_slack_10"
+        | "hurdle-slack-10" => Some(DoubleMaScoreMode::RobustMargin10),
+        other => panic!("unsupported bench score mode: {other}"),
+    }
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -418,8 +455,8 @@ fn bench_double_ma_cpu(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
 
@@ -524,8 +561,8 @@ fn bench_double_ma_gpu_sweep(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
 
@@ -655,8 +692,8 @@ fn bench_double_ma_gpu_kernel(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
 
@@ -698,6 +735,7 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
     let bench_extra_shortlist_objectives = bench_extra_shortlist_objectives_from_env();
     let bench_shortlist_union_mode = bench_shortlist_union_mode_from_env();
     let bench_hurdle_tau = bench_hurdle_tau_from_env();
+    let bench_score_mode = bench_score_mode_from_env();
     let bench_include_trade_metrics = bench_include_trade_metrics_from_env();
     let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
     std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB");
@@ -718,7 +756,7 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
         strategy: StrategyConfig::default(),
         halftrend_filter: None,
         objective: ObjectiveKind::Sharpe,
-        score_mode: None,
+        score_mode: bench_score_mode,
         extra_shortlist_objectives: bench_extra_shortlist_objectives.clone(),
         shortlist_confidence_mode: None,
         shortlist_union_mode: bench_shortlist_union_mode,
@@ -937,8 +975,8 @@ fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
 
@@ -1119,8 +1157,8 @@ fn bench_double_ma_gpu_kernel_extra_ma(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
 
@@ -1247,8 +1285,8 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
                     dynamic_strategy_ir: None,
                     gpu_execution: Default::default(),
                     persist_followup_cache: false,
-                   include_trade_metrics: false,
-                    
+                    include_trade_metrics: false,
+
                     hurdle_tau: None,
                 };
 
@@ -1369,8 +1407,8 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
                     dynamic_strategy_ir: None,
                     gpu_execution: Default::default(),
                     persist_followup_cache: false,
-                   include_trade_metrics: false,
-                    
+                    include_trade_metrics: false,
+
                     hurdle_tau: None,
                 };
 
@@ -1450,8 +1488,8 @@ fn bench_double_ma_dynamic_contract_overhead(c: &mut Criterion) {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
-       include_trade_metrics: false,
-        
+        include_trade_metrics: false,
+
         hurdle_tau: None,
     };
 
@@ -1803,8 +1841,8 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
             group.bench_function(&grid_name, |b| {
@@ -1863,8 +1901,8 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
                 dynamic_strategy_ir: None,
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
-               include_trade_metrics: false,
-                
+                include_trade_metrics: false,
+
                 hurdle_tau: None,
             };
             group.bench_function(&vdps_name, |b| {
@@ -1904,7 +1942,3 @@ criterion_group!(
     bench_double_ma_gpu_kernel_vdps
 );
 criterion_main!(benches);
-
-
-
-

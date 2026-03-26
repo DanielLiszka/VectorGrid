@@ -977,6 +977,66 @@ describe("optimizeService", () => {
     expect(req.shortlist_union_mode).toBe("pareto");
   });
 
+  it("passes weighted-rank shortlist union mode from the advanced store into the runtime request", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DoubleMa",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "",
+      extraShortlistObjectives: "Pnl, Omega",
+      shortlistUnionMode: "weighted_rank",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      exportAllCsvPath: "",
+      vdpsDeterministic: true,
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      dmConstraintMinTrades: "",
+      dmConstraintMaxDd: "",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-shortlist-union-weighted-rank",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "200000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization({ switchTab: false });
+
+    const req = firstOptimizationRunRequest();
+    expect(req.shortlist_union_mode).toBe("weighted_rank");
+  });
+
   it("passes shortlist slice diagnostics fields from the advanced store into the runtime request", async () => {
     (pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: "DoubleMa",
@@ -2039,6 +2099,7 @@ describe("optimizeService", () => {
       dmConstraintMinTrades: "5",
       dmConstraintMaxDd: "0.25",
       dmConstraintMinSharpe: "1.2",
+      dmConstraintMinSortino: "1.6",
       dmConstraintMinCalmar: "0.8",
       dmConstraintMaxVolatility: "0.3",
       dmConstraintMinExposure: "0.25",
@@ -2063,6 +2124,7 @@ describe("optimizeService", () => {
       min_trades: 5,
       max_drawdown: 0.25,
       min_sharpe: 1.2,
+      min_sortino: 1.6,
       min_calmar: 0.8,
       max_volatility: 0.3,
       min_exposure: 0.25,
@@ -2304,6 +2366,180 @@ describe("optimizeService", () => {
     const req = firstOptimizationRunRequest();
     expect(req.objective).toBe("Sharpe");
     expect(req.score_mode).toBe("active_sortino_10");
+  });
+
+  it("passes effective-sample LCB DoubleMa score mode from Vue stores into the runtime request", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DoubleMa",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "effective_sample_lcb_10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      exportAllCsvPath: "",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      dmConstraintMinTrades: "",
+      dmConstraintMaxDd: "",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-score-mode-effective-sample-lcb",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "200000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization();
+
+    const req = firstOptimizationRunRequest();
+    expect(req.objective).toBe("Sharpe");
+    expect(req.score_mode).toBe("effective_sample_lcb_10");
+  });
+
+  it("passes omega-vs-sharpe DoubleMa score mode from Vue stores into the runtime request", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DoubleMa",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "omega_vs_sharpe_10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      exportAllCsvPath: "",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      dmConstraintMinTrades: "",
+      dmConstraintMaxDd: "",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-score-mode-omega-vs-sharpe",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "200000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization();
+
+    const req = firstOptimizationRunRequest();
+    expect(req.objective).toBe("Sharpe");
+    expect(req.score_mode).toBe("omega_vs_sharpe_10");
+  });
+
+  it("passes robust-margin DoubleMa score mode from Vue stores into the runtime request", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DoubleMa",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "robust_margin_10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      exportAllCsvPath: "",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      dmConstraintMinTrades: "",
+      dmConstraintMaxDd: "",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-score-mode-robust-margin",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "200000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization();
+
+    const req = firstOptimizationRunRequest();
+    expect(req.objective).toBe("Sharpe");
+    expect(req.score_mode).toBe("robust_margin_10");
   });
 
   it("passes hurdle tau from Vue stores into the runtime request", async () => {

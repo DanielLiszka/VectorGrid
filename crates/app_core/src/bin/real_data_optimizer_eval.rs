@@ -914,7 +914,3 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
     }
     total
 }
-
-
-
-

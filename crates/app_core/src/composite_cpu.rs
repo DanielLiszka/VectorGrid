@@ -766,15 +766,15 @@ fn try_optimize_base_composite_gpu_kernel(
         None,
         top_k,
         include_all,
-            crate::gpu_backtest_kernel::KernelConfig {
-                device_id,
-                fast_alma_offset,
-                fast_alma_sigma,
-                slow_alma_offset,
-                slow_alma_sigma,
-                hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
-                include_trade_metrics: false,
-            },
+        crate::gpu_backtest_kernel::KernelConfig {
+            device_id,
+            fast_alma_offset,
+            fast_alma_sigma,
+            slow_alma_offset,
+            slow_alma_sigma,
+            hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
+            include_trade_metrics: false,
+        },
         Some(&fast_precomputed),
         Some(&slow_precomputed),
         None,
@@ -1387,6 +1387,7 @@ fn run_asr_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -1396,7 +1397,9 @@ fn run_asr_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -1406,6 +1409,7 @@ fn run_asr_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -1656,6 +1660,7 @@ fn run_asr_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -1665,7 +1670,9 @@ fn run_asr_optimization_cpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -1675,6 +1682,7 @@ fn run_asr_optimization_cpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -2092,6 +2100,7 @@ fn run_vcc_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -2101,7 +2110,9 @@ fn run_vcc_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -2111,6 +2122,7 @@ fn run_vcc_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -2335,6 +2347,7 @@ fn run_vcc_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -2344,7 +2357,9 @@ fn run_vcc_optimization_cpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -2354,6 +2369,7 @@ fn run_vcc_optimization_cpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -2852,8 +2868,11 @@ fn run_vemr_optimization_gpu(
         num_combos,
         num_candles: n,
         runtime_ms,
+        best_score: None,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -2863,6 +2882,7 @@ fn run_vemr_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -3111,6 +3131,7 @@ fn run_vemr_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used,
         matrix_index,
@@ -3120,7 +3141,9 @@ fn run_vemr_optimization_impl(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -3130,6 +3153,7 @@ fn run_vemr_optimization_impl(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -4606,8 +4630,11 @@ fn run_rocb_optimization_gpu(
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
+        best_score: None,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -4617,6 +4644,7 @@ fn run_rocb_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -4859,6 +4887,7 @@ fn run_rocb_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used,
         matrix_index,
@@ -4868,7 +4897,9 @@ fn run_rocb_optimization_impl(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -4878,6 +4909,7 @@ fn run_rocb_optimization_impl(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -5260,8 +5292,11 @@ fn run_vcet_optimization_gpu(
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
+        best_score: None,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -5271,6 +5306,7 @@ fn run_vcet_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -5516,6 +5552,7 @@ fn run_vcet_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used,
         matrix_index,
@@ -5525,7 +5562,9 @@ fn run_vcet_optimization_impl(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -5535,6 +5574,7 @@ fn run_vcet_optimization_impl(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -5924,8 +5964,11 @@ fn run_mkcs_optimization_gpu(
         num_combos: result.num_combos,
         num_candles: n,
         runtime_ms,
+        best_score: None,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -5935,6 +5978,7 @@ fn run_mkcs_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -6325,6 +6369,7 @@ fn run_kqsr_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -6334,7 +6379,9 @@ fn run_kqsr_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -6344,6 +6391,7 @@ fn run_kqsr_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -6513,6 +6561,7 @@ fn run_kqsr_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -6522,7 +6571,9 @@ fn run_kqsr_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -6532,6 +6583,7 @@ fn run_kqsr_optimization_cpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -6913,6 +6965,7 @@ fn run_carm_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -6922,7 +6975,9 @@ fn run_carm_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -6932,6 +6987,7 @@ fn run_carm_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -7102,6 +7158,7 @@ fn run_carm_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -7111,7 +7168,9 @@ fn run_carm_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -7121,6 +7180,7 @@ fn run_carm_optimization_cpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -7548,6 +7608,7 @@ fn run_kvdf_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -7557,7 +7618,9 @@ fn run_kvdf_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -7567,6 +7630,7 @@ fn run_kvdf_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -7737,6 +7801,7 @@ fn run_kvdf_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -7746,7 +7811,9 @@ fn run_kvdf_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -7756,6 +7823,7 @@ fn run_kvdf_optimization_cpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -8195,6 +8263,7 @@ fn run_cdmc_optimization_gpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Gpu,
         matrix_index,
@@ -8204,7 +8273,9 @@ fn run_cdmc_optimization_gpu(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -8214,6 +8285,7 @@ fn run_cdmc_optimization_gpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -8404,6 +8476,7 @@ fn run_cdmc_optimization_cpu(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used: BackendUsed::Cpu,
         matrix_index,
@@ -8413,7 +8486,9 @@ fn run_cdmc_optimization_cpu(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -8423,6 +8498,7 @@ fn run_cdmc_optimization_cpu(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -8685,6 +8761,7 @@ fn run_mkcs_optimization_impl(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used,
         matrix_index,
@@ -8694,7 +8771,9 @@ fn run_mkcs_optimization_impl(
         num_candles: n,
         runtime_ms: 0,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -8704,6 +8783,7 @@ fn run_mkcs_optimization_impl(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -9270,6 +9350,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     Ok(BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: None,
         mode_used,
         backend_used,
         matrix_index,
@@ -9279,7 +9360,9 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         num_candles: n,
         runtime_ms,
         top,
+        top_scores: None,
         all,
+        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -9289,6 +9372,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         residency: None,
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
+        score_observation_context: None,
     })
 }
 
@@ -14083,6 +14167,5 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
-
 
 

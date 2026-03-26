@@ -173,8 +173,8 @@ fn bench_gpu_kernel_pnl_full_metrics(c: &mut Criterion) {
             dynamic_strategy_ir: None,
             gpu_execution: Default::default(),
             persist_followup_cache: false,
-           include_trade_metrics: false,
-            
+            include_trade_metrics: false,
+
             hurdle_tau: None,
         };
 
@@ -203,7 +203,3 @@ fn bench_gpu_kernel_pnl_full_metrics(_c: &mut Criterion) {}
 
 criterion_group!(benches, bench_gpu_kernel_pnl_full_metrics);
 criterion_main!(benches);
-
-
-
-

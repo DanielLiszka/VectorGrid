@@ -2658,4 +2658,3 @@ pub fn eval_asr_curves_from_desired(
         indicator_bars: Vec::new(),
     })
 }
-

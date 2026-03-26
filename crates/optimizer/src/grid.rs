@@ -58,18 +58,22 @@ pub fn grid_search<E: BacktestEngine>(
             .map(|i| (combos[i].clone(), metrics[i].clone()))
             .collect()
     };
-
     let all = if include_all {
         Some(combos.iter().cloned().zip(metrics.into_iter()).collect())
     } else {
         None
     };
 
+    let top_scores = top.iter().map(|(_, metrics)| score(metrics, objective)).collect();
+
     Some(OptimizationResult {
         best_params,
         best_metrics,
+        best_score: Some(best_score),
         top,
+        top_scores: Some(top_scores),
         all,
+        all_scores: None,
         heatmap: None,
         num_combos: combos.len(),
         num_candles,

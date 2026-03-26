@@ -232,7 +232,7 @@ const shortlistUnionModeStateNote = computed(() => {
     return 'Requires export-all CSV path to be empty.'
   }
   return hasValue
-    ? 'Reranks the exact union shortlist using lexicographic, Pareto-front, or epsilon-front semantics before any optional confidence or slice reranks.'
+    ? 'Reranks the exact union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics before any optional confidence or slice reranks.'
     : 'Optional exact rerank over the union shortlist. Leaving this off preserves primary-objective ordering.'
 })
 const shortlistSliceModeStateNote = computed(() => {
@@ -304,6 +304,9 @@ const scoreModeOptionItems = computed(() => [
   { value: 'adversarial_envelope_10', label: 'Adversarial Envelope 10', disabled: false },
   { value: 'support_shrunk_10', label: 'Support-Shrunk 10', disabled: false },
   { value: 'active_sortino_10', label: 'Active Sortino 10', disabled: false },
+  { value: 'effective_sample_lcb_10', label: 'Effective-Sample LCB 10', disabled: false },
+  { value: 'omega_vs_sharpe_10', label: 'Omega vs Sharpe 10', disabled: false },
+  { value: 'robust_margin_10', label: 'Robust Margin 10', disabled: false },
 ])
 const shortlistConfidenceModeOptionItems = computed(() => [
   { value: '', label: 'Off (default)', disabled: false },
@@ -313,6 +316,7 @@ const shortlistConfidenceModeOptionItems = computed(() => [
 const shortlistUnionModeOptionItems = computed(() => [
   { value: '', label: 'Primary objective order (default)', disabled: false },
   { value: 'lexicographic', label: 'Lexicographic union', disabled: false },
+  { value: 'weighted_rank', label: 'Weighted-rank union', disabled: false },
   { value: 'pareto', label: 'Pareto-front union', disabled: false },
   { value: 'epsilon_front', label: 'Epsilon-front union', disabled: false },
 ])

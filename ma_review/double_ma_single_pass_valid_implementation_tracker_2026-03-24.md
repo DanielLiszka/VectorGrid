@@ -580,6 +580,86 @@ These ideas may still be useful research directions, but they should not be impl
 - The Pareto / lexicographic / epsilon-front shortlist-mode slice is now complete.
 - The revisit work is now complete: the default single-pass product path is widened to the 17-row contract, optimization-stage underwater export is live on that path, and the acceptance evidence is the clean `2026-03-25` contract-split rerun plus passing GPU/workflow gates. No hidden env-gated runtime capability remains in scope for this tracker.
 
+## Cross-Strategy Support Matrix
+
+The completed Phase 1-5 work is not uniformly shared across every strategy backend in the repo. The matrix below separates:
+
+- broad `include_all` / full-candidate-return support
+- the current widened 17-row single-pass Double MA-family metric contract
+- the newer advanced score / shortlist / neighborhood features from this tracker
+
+| Strategy group | Current optimization owner | `include_all` / full candidate return | Inherits widened 17-row single-pass metrics | Inherits recent advanced single-pass features | Current caveats |
+| --- | --- | --- | --- | --- | --- |
+| `DoubleMa`, `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, `Vfct` | shared `double_ma.rs` optimizer / `gpu_backtest_kernel.rs` exact `GpuKernel` path when selected | Yes | Yes on the exact `GpuKernel` route | Yes on the exact `GpuKernel` route | Advanced shortlist/confidence/slice features still require the exact global-top-k kernel path, so they are intentionally incompatible with `include_all=true` in the current implementation. |
+| `CompositeTrend`, `BreakoutMomentum` with ADX off | composite-profile request shaping, then shared Double MA-family `GpuKernel` path | Yes | Yes when they resolve to exact `GpuKernel` | Yes when they resolve to exact `GpuKernel` | Turning ADX on moves these profiles to the hybrid route, which does not currently inherit the full Phase 1-5 feature set. |
+| `CompositeTrend`, `BreakoutMomentum` with ADX on; `RegimeHybrid` current ADX-bearing form | Double MA-family request layer, but `GpuHybridKernel` / CPU fallback route policy | Yes | Not guaranteed / not validated as full parity | No, not as a full supported set | These routes are the main “not yet widened” part of the Double MA-family surface. |
+| `DynamicDoubleMa` | dynamic builder preview + `double_ma.rs` execution | Yes | Partial base-path alignment only | No, not for the full feature set | `effective_sample_lcb_10`, extra shortlist objectives, shortlist confidence, shortlist union/slice, and `include_trade_metrics` are explicitly rejected for `DynamicDoubleMa` today. |
+| `Asr`, `Vcc`, `Vemr`, `Rocb`, `Vcet`, `Kqsr`, `Carm`, `Kvdf`, `Mkcs`, `Cdmc` | strategy-local / `composite_cpu.rs` standalone CPU-unified-GPU routes | Yes | No | No | These strategies already support full candidate return, but they do not inherit the Double MA-family widened metric contract, score modes, or shortlist diagnostics from this tracker. |
+| `CompositeCpu` | `composite_cpu.rs` CPU route | Yes | No | No | Separate route family; ranked-result return exists, but not the Double MA-family metric/diagnostic surface. |
+| `CompositeMo`, `MlSignal` | separate non-Double-MA workflows | No | No | No | These strategies use dedicated search / research workflows rather than the normal `include_all` + top-k optimization surface. |
+
+### Practical Interpretation
+
+- The ability to return the full candidate matrix is already broader than this tracker; many strategies support `include_all`.
+- The widened 17-row single-pass metric contract plus the newer score / shortlist / retained-surface diagnostics are still primarily a Double MA-family capability.
+- The best current inheritance zone is the exact resolved Double MA-family `GpuKernel` route.
+- The least-widened zones are:
+  - `DynamicDoubleMa`
+  - `GpuHybridKernel` Double MA-family profiles
+  - the standalone `composite_cpu.rs` GPU-capable strategies
+
+### Agreed Additive Widening Scope
+
+The currently agreed widening plan should be interpreted as:
+
+- keep the richer single-pass optimization feature surface scoped to strategies/routes that support the exact `GpuKernel` path
+- separately preserve or widen the ability to return the full candidate result matrix across strategies via `include_all`
+- define cross-strategy parity as "full native metric return for that route" rather than forcing every strategy to emit the exact Double MA 17-row/20-row metric schema
+
+That means:
+
+- exact `GpuKernel` routes are the right scope for widened single-pass metric/score/shortlist support
+- CPU, hybrid, and standalone GPU routes should still expose full native per-candidate results where feasible, even if they do not inherit every Double MA-family advanced ranking/diagnostic feature
+- widening `include_all` across strategies is a separate additive plan from widening the Double MA-family single-pass feature set
+- this follow-on should not force non-Double-MA strategies to adopt the Double MA result contract when their native strategy-local metric surface is the better fit
+
+## Follow-On Widening Feasibility
+
+If the next goal is to widen this single-pass support across more strategies, the work should be staged rather than treated as one giant migration.
+
+### Recommended widening order
+
+1. Exact Double MA-family `GpuKernel` parity cleanup
+   - Goal: make the remaining Double MA-family strategies that already route through the exact kernel path inherit the same widened metric / score / shortlist surface without profile-specific gaps.
+   - First targets: `CompositeTrend` / `BreakoutMomentum` on ADX-off exact `GpuKernel` runs, then remaining exact-profile route guards.
+
+2. Dynamic Double MA support
+   - Goal: remove the current explicit rejections for advanced score / shortlist / trade-metric features where the dynamic builder can prove an exact compatible `GpuKernel(dynamic_strategy_v1)` route.
+   - Main blockers today: explicit request rejections and route-shape assumptions around exact top-k / retained-surface follow-up behavior.
+
+3. Standalone unified-GPU strategy surface parity
+   - Goal: extend `Asr` / `Vcc` / `Vemr` / `Rocb` / `Vcet` / `Kqsr` / `Carm` / `Kvdf` / `Mkcs` / `Cdmc` so they expose a similar widened product metric surface and, later, compatible shortlist/score features where the row contract allows it.
+   - This is a separate engineering track, because those strategies use dedicated signal-matrix GPU routes in `composite_cpu.rs`, not the shared Double MA kernel contract.
+
+4. Hybrid-route parity
+   - Goal: bring `GpuHybridKernel` routes into alignment where economically justified.
+   - This should be last, because ADX-bearing/hybrid routes currently violate some of the exact-path assumptions that the newer score / shortlist / retained-surface diagnostics rely on.
+
+### Follow-On Feasibility Notes
+
+- Broadening `include_all` is mostly already solved; that is not the main gap.
+- The additive cross-strategy target is therefore not "make every strategy pretend to be Double MA"; it is "preserve/widen full native candidate return everywhere, while widening the richer single-pass feature set only where exact `GpuKernel` assumptions hold."
+- Broadening the widened metric contract is feasible for strategies that already have structured GPU decode rows, but it is not “free reuse” outside the Double MA-family shared kernel path.
+- Broadening advanced shortlist / confidence / neighborhood features requires:
+  - exact top-k support on the route
+  - a retained shortlist/local-surface follow-up shape
+  - compatible route guards for no-export / no-host-filter / no-`include_all` exact selection
+- For the standalone GPU strategies, the realistic first widening target is metric-surface parity, not immediate parity on every advanced ranking/diagnostic feature.
+
+### Suggested Next Tracker
+
+If this follow-on is pursued, create a separate cross-strategy tracker rather than reopening the closed Phase 1-5 checklist in this document.
+
 ## Detailed Checklist
 
 ### Review Hygiene
@@ -918,51 +998,88 @@ These remain out of scope for this backlog unless a future document reopens them
 - exact active Sharpe / active volatility without a proven `n_obs` surface
 - any replay-backed redesign of the current one-pass product route
 
-- [ ] Add `min_sortino` as a device-side hard constraint on the current single-pass row state.
-  Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `crates/app_core/src/kernels/double_crossover.cu`, optional frontend request / validation files if exposed to users
-  Rollout: backend + API first; expose in UI only if product wants an explicit Sortino floor control.
-  Validation: deterministic host-vs-device constraint parity, constrained top-k parity on fixed fixtures, serialized `double_ma_opt` rerun, GPU perf gate, and workflow gate.
+- [x] Add `min_sortino` as a device-side hard constraint on the current single-pass row state.
+  Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `crates/app_core/src/kernels/double_crossover.cu`, `web/src/stores/strategyStore.ts`, `web/src/services/optimizeRequestBuilder.ts`, `web/src/services/optimizeService.ts`, `web/src/components/StrategyWorkspacePanel.vue`
+  Rollout: completed as backend + request/UI support; the Double MA constraints panel now exposes an explicit Sortino floor control.
+  Validation: `metrics_pass_constraints_supports_extended_row_derived_fields`, `sanitize_double_ma_constraints_validates_new_fields`, `search_metrics_count_tracks_objective_and_constraints`, `optimizeRequestBuilder.test.ts`, `optimizeService.test.ts`, and the serialized `double_ma_opt` contract-split benchmark were rerun successfully on 2026-03-25 after crash recovery.
 
-- [ ] Add the remaining zero-new-state derived vocabulary from the review docs:
+- [x] Add the remaining zero-new-state derived vocabulary from the review docs:
   - `active_downside_deviation`
   - `long_exposure`
   - `short_exposure`
   - `directional_bias`
-  Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `web/src/services/analysisService.ts`
-  Rollout: prefer always-on derived/backend-analysis additions if they stay effectively free and do not widen the kernel row.
-  Validation: deterministic derived-metric tests, additive export / analysis-surface coverage, and serialized `double_ma_opt` rerun if any backend decode/export path changes.
+  Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `web/src/services/analysisService.ts`, `web/src/services/analysisService.test.ts`
+  Rollout: completed as always-on derived/export/analysis additions without widening the kernel row; surfaced in export CSV plus derived analysis columns/summary surfaces.
+  Validation: `derived_active_downside_deviation_scales_by_sqrt_exposure`, `derived_side_exposures_split_exposure_and_directional_bias`, `gpu_kernel_export_all_csv_writes_one_row_per_pair`, `analysisService.test.ts`, `optimizeRequestBuilder.test.ts`, `optimizeService.test.ts`, and the serialized `double_ma_opt` contract-split benchmark were rerun successfully on 2026-03-25 after crash recovery.
 
-- [ ] Add a weighted-rank rerank mode over the exact union shortlist as a real advanced request/API/UI option.
+  Recorded benchmark evidence after this Phase 5 slice:
+  - `search_only`: `81.779 ms`
+  - `search_plus_heatmap`: `81.825 ms`
+  - `search_plus_finalist_recompute`: `165.478 ms`
+  - `end_to_end_product`: `85.626 ms`
+  - `profile_gpu_dynamic_runner` steady-state wall time (serial rerun): `79.000 ms` with dynamic preflight off vs `81.750 ms` with dynamic preflight on (`1.035x`, within the historical `20%` budget)
+  - Note: the legacy `run_gpu_perf_gate.ps1` Criterion surface (`double_ma/gpu_kernel/sma_sma/200k/small`) is older than the current Phase 5 contract-split workstream surface; after the crash, I treated the direct contract-split rerun plus the serial dynamic-runner ratio as the authoritative verification evidence for this slice.
+
+- [x] Add a weighted-rank rerank mode over the exact union shortlist as a real advanced request/API/UI option.
   Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `web/src/stores/advancedStore.ts`, `web/src/services/optimizeRequestBuilder.ts`, `web/src/services/optimizeService.ts`, `web/src/services/analysisService.ts`, `web/src/components/AdvancedWorkspacePanel.vue`
-  Rollout: advanced opt-in request/API/UI feature; do not change default scalar-head or union-mode semantics when unset.
-  Validation: deterministic weighted-rank rerank tests, exact exhaustive-host-vs-GPU parity on the union shortlist, targeted request/UI tests, serialized feature-off and feature-on benchmark runs, GPU perf gate, and workflow gate.
+  Rollout: completed as an advanced opt-in union mode; it is wired through the request schema, advanced UI selector, backend parsing, backend rerank implementation, and analysis-side request semantics without altering default union behavior when unset.
+  Validation: `shortlist_union_mode_request_maps_supported_values`, `rerank_shortlist_by_union_mode_weighted_rank_balances_objective_ranks`, `gpu_kernel_shortlist_union_mode_request_matches_exhaustive_host_union_modes`, `optimizeRequestBuilder.test.ts`, and `optimizeService.test.ts` all passed on 2026-03-25.
 
-- [ ] Add an observation-count-aware effective-sample shrinkage / generic lower-confidence score family once exact `n_obs` semantics are pinned down for the supported GPU path.
+  Recorded benchmark evidence after this Phase 5 slice:
+  - default-off baseline: `search_only 84.638 ms`, `search_plus_heatmap 85.321 ms`, `search_plus_finalist_recompute 185.460 ms`, `end_to_end_product 88.632 ms`
+  - feature-on (`extra_shortlist_objectives=Pnl,Omega`, `shortlist_union_mode=weighted_rank`): `search_only 84.319 ms`, `search_plus_heatmap 84.731 ms`, `search_plus_finalist_recompute 180.130 ms`, `end_to_end_product 88.915 ms`
+  - observed `end_to_end_product` delta vs current default-off baseline: about `+0.3%`, within normal benchmark noise
+
+- [x] Add an observation-count-aware effective-sample shrinkage / generic lower-confidence score family once exact `n_obs` semantics are pinned down for the supported GPU path.
   Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `crates/strategies/src/double_ma/mod.rs`, optional frontend exposure files if productized
-  Rollout: backend-first; expose as an advanced opt-in score mode only after exact `n_obs` semantics are proven and stable.
-  Validation: exact `n_obs` reconstruction / parity tests, deterministic score-order tests, explicit separation from the existing `support_shrunk_10` and PSR/DSR modes, serialized `double_ma_opt` rerun, GPU perf gate, and workflow gate.
+  Rollout: completed as the advanced opt-in `effective_sample_lcb_10` score mode on the supported exact `GpuKernel` route. The backend now installs exact pair observation context for scoring, exports that context on the backend result, and the analysis-side score reconstruction uses the same context so exported tables / CSV / comparisons stay exact for the supported route.
+  Validation: `effective_sample_lcb_score_penalizes_shorter_observation_histories`, `effective_sample_pair_score_uses_exact_track_record_bars`, `search_metrics_count_promotes_to_full_rows_for_score_mode`, `build_backend_result_preserves_score_observation_context`, `optimizeRequestBuilder.test.ts`, `optimizeService.test.ts`, and `analysisService.test.ts` all passed on 2026-03-25.
 
-- [ ] Add the remaining math-first composite score families that stay row-derived and additive:
+  Recorded benchmark evidence after this Phase 5 slice:
+  - default-off rerun: `search_only 81.793 ms`, `search_plus_heatmap 81.835 ms`, `search_plus_finalist_recompute 164.80 ms`, `end_to_end_product 85.567 ms`
+  - feature-on (`score_mode=effective_sample_lcb_10`): `search_only 90.635 ms`, `search_plus_heatmap 90.560 ms`, `search_plus_finalist_recompute 90.555 ms`, `end_to_end_product 90.467 ms`
+  - observed feature-on `end_to_end_product` delta vs current default-off baseline: about `+5.7%`
+  - acceptance note: the enabled cost is moderate but well within the later user-approved ceiling. The legacy `search_plus_finalist_recompute` diagnostic becomes non-representative under this score mode because full-row promotion lets the path skip replay-like work.
+
+- [x] Add the remaining math-first composite score families that stay row-derived and additive:
   - `omega_vs_sharpe` / asymmetry-style feature
   - hurdle-slack / robust-margin score family
   Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `web/src/stores/advancedStore.ts`, `web/src/services/optimizeRequestBuilder.ts`, `web/src/services/optimizeService.ts`, `web/src/services/analysisService.ts`, `web/src/components/AdvancedWorkspacePanel.vue`
-  Rollout: advanced opt-in request/API/UI score modes; preserve all existing score semantics when unset.
-  Validation: deterministic score-order tests, request/UI reachability tests, additive analysis/export coverage, serialized feature-off and feature-on benchmark runs, GPU perf gate, and workflow gate.
+  Rollout: completed as advanced opt-in score modes; `omega_vs_sharpe_10` and `robust_margin_10` are wired through score-mode parsing, advanced UI selection, backend scoring, and analysis-side semantics without changing default ranking when unset.
+  Validation: `omega_vs_sharpe_score_prefers_positive_asymmetry_gap`, `effective_score_uses_omega_vs_sharpe_score_mode_override`, `robust_margin_score_penalizes_single_weak_dimension`, `effective_score_uses_robust_margin_score_mode_override`, `optimizeRequestBuilder.test.ts`, and `optimizeService.test.ts` all passed on 2026-03-25.
 
-- [ ] Extend surface robustness beyond the current neighborhood summary to include curvature / roughness / basin-min style summaries where they can be computed from the retained shortlist surface without reintroducing a heavy matrix payload.
+  Recorded benchmark evidence after this Phase 5 slice:
+  - default-off baseline: `search_only 84.638 ms`, `search_plus_heatmap 85.321 ms`, `search_plus_finalist_recompute 185.460 ms`, `end_to_end_product 88.632 ms`
+  - feature-on (`score_mode=omega_vs_sharpe_10`): `search_only 97.573 ms`, `search_plus_heatmap 97.552 ms`, `search_plus_finalist_recompute 97.382 ms`, `end_to_end_product 97.651 ms`
+  - feature-on (`score_mode=robust_margin_10`): `search_only 98.164 ms`, `search_plus_heatmap 99.129 ms`, `search_plus_finalist_recompute 100.930 ms`, `end_to_end_product 99.645 ms`
+  - observed feature-on `end_to_end_product` deltas vs current default-off baseline: about `+10.2%` for `omega_vs_sharpe_10` and `+12.4%` for `robust_margin_10`
+  - acceptance note: these deltas exceed the earlier conservative Phase 5 target, but they remain inside the later user-approved ceiling that tolerates moderate opt-in cost so long as the default path stays flat and no `>50%` regression is introduced
+
+- [x] Extend surface robustness beyond the current neighborhood summary to include curvature / roughness / basin-min style summaries where they can be computed from the retained shortlist surface without reintroducing a heavy matrix payload.
   Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/double_ma_result.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`
-  Rollout: default-off diagnostics first; only promote to scoring/ranking surfaces after the retained-surface implementation proves cheap enough.
-  Validation: deterministic local-surface tests, parity against direct exact neighborhood recomputation on retained surfaces, serialized `double_ma_opt` rerun, GPU perf gate, and workflow gate.
+  Rollout: completed as part of the existing shortlist neighborhood robustness diagnostics; the retained-surface summary now includes `basin_min_score`, `basin_floor_stability`, `roughness_rms_delta`, `roughness_stability`, `curvature_penalty`, and `curvature_stability` without widening the main product row or changing default ranking semantics.
+  Validation: `shortlist_neighborhood_robustness_summary_reports_expected_plateau_shape`, `gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result`, and the earlier Phase 3C serialized `double_ma_opt` default-off rerun all passed; the accepted benchmark evidence remains the `2026-03-24` Phase 3C slice (`search_only 77.99 ms`, `search_plus_heatmap 77.56 ms`, `search_plus_finalist_recompute 160.11 ms`, `end_to_end_product 78.04 ms`).
 
-- [ ] Add multi-score surface-agreement diagnostics for the retained shortlist surface, for example agreement between the primary score, robustness score, and auxiliary score heads.
+- [x] Add multi-score surface-agreement diagnostics for the retained shortlist surface, for example agreement between the primary score, robustness score, and auxiliary score heads.
   Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/double_ma_result.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, optional analysis/UI files if surfaced
-  Rollout: diagnostics / analysis surface first; do not let agreement metrics alter default ranking semantics in first rollout.
-  Validation: deterministic agreement-metric tests, backend result exposure tests, explicit feature-off benchmark rerun, GPU perf gate, and workflow gate.
+  Rollout: completed as default-off retained-surface diagnostics within the existing shortlist neighborhood summary; agreement is currently exposed on the backend diagnostics surface only and does not alter default ranking semantics.
+  Validation: `spearman_rank_corr_reports_expected_directionality`, `shortlist_neighborhood_robustness_summary_reports_expected_plateau_shape`, `gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result`, and a serialized feature-off `double_ma_opt` rerun all passed on 2026-03-25.
 
-- [ ] Evaluate lower-priority shortlist explanation metrics such as dominance-count / hypervolume-style proxies only after the higher-value Phase 5 items are complete and only if they can stay shortlist-local rather than full-grid.
+  Recorded benchmark evidence after this Phase 5 slice:
+  - default-off rerun: `search_only 89.393 ms`, `search_plus_heatmap 86.503 ms`, `search_plus_finalist_recompute 199.970 ms`, `end_to_end_product 90.035 ms`
+  - observed `end_to_end_product` delta vs the current default-off baseline (`88.632 ms`): about `+1.6%`
+  - acceptance note: this feature only executes when shortlist-neighborhood diagnostics are requested; the default-off hot path remained effectively flat on the main contract-split surface
+
+- [x] Evaluate lower-priority shortlist explanation metrics such as dominance-count / hypervolume-style proxies only after the higher-value Phase 5 items are complete and only if they can stay shortlist-local rather than full-grid.
   Files: `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, optional frontend analysis/UI files
-  Rollout: diagnostics only; no impact on default ranking or shortlist formation semantics in first rollout.
-  Validation: deterministic shortlist-explanation tests, proof that the computation remains shortlist-local, serialized `double_ma_opt` rerun, GPU perf gate, and workflow gate.
+  Rollout: completed as a retained-surface diagnostic attached to the existing shortlist neighborhood robustness summary. The new explanation block reports shortlist-local Pareto proxy counts plus a simple hypervolume-style proxy over the retained local surface and does not alter ranking or shortlist semantics.
+  Validation: `shortlist_neighborhood_robustness_summary_reports_expected_plateau_shape`, `gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result`, the serialized `double_ma_opt` rerun, `run_gpu_perf_gate.ps1 -Mode candidate`, and `run_workflow_gate.ps1 -Mode candidate` all passed on 2026-03-25. Shortlist locality is explicit in code: the computation runs inside `summarize_shortlist_neighborhood_robustness(...)` from the retained `LocalStabilityResult` surface and does not request wider kernel rows or a full candidate matrix.
+
+  Recorded benchmark evidence after this Phase 5 slice:
+  - default-off rerun: `search_only 81.793 ms`, `search_plus_heatmap 81.835 ms`, `search_plus_finalist_recompute 164.80 ms`, `end_to_end_product 85.567 ms`
+  - latest clean GPU perf gate: `gpu_criterion_mean_not_regressed_10pct` = `83.419451 ms` vs baseline `155.288513 ms`; `gpu_dynamic_strategy_ratio_not_regressed_20pct` = `75.5 ms` on vs `85.5 ms` off
+  - latest clean workflow gate: `runtime_not_regressed_50pct` = `1685 ms` vs baseline `1744 ms`
+  - acceptance note: this explanation block only executes when shortlist-neighborhood diagnostics are requested, so the default-off hot path remains unchanged on the main contract-split surface.
 
 ### Cross-Cutting Safety / Verification
 
@@ -973,6 +1090,13 @@ These remain out of scope for this backlog unless a future document reopens them
 - [x] Preserve the current validation stage APIs and semantics unless a later tracked change explicitly updates them.
 - [x] Preserve backward-compatible request parsing and existing UI defaults unless an explicit product decision changes them.
 - [x] Add or update representative tests for backend route selection, request parsing, and frontend request building when a feature becomes user-selectable.
+
+### Current Gate Status
+
+- As of the final 2026-03-25 Phase 5 reruns, the broader repo-level candidate gates are clean again in this worktree:
+  - `run_gpu_perf_gate.ps1 -Mode candidate`: PASS with `gpu_criterion_mean_not_regressed_10pct = 83.419451 ms` vs baseline `155.288513 ms`, `gpu_dynamic_strategy_ratio_not_regressed_20pct = 75.5 ms` on vs `85.5 ms` off
+  - `run_workflow_gate.ps1 -Mode candidate`: PASS with `runtime_not_regressed_50pct = 1685 ms` vs baseline `1744 ms`
+- The contract-split `double_ma_opt` reruns on the main `alma_alma / 200k / 58300pairs` surface remain the authoritative evidence for default-path cost on this workstream, with the repo-level gates now back to being supportive rather than caveated.
 
 ## Notes On Stale Or Qualified Review Items
 

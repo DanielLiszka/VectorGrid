@@ -132,6 +132,7 @@ describe("optimizeRequestBuilder", () => {
       dmConstraintMinTrades: "5",
       dmConstraintMaxDd: "0.25",
       dmConstraintMinSharpe: "1.2",
+      dmConstraintMinSortino: "1.6",
       dmConstraintMinCalmar: "0.8",
       dmConstraintMaxVolatility: "0.3",
       dmConstraintMinExposure: "0.25",
@@ -148,6 +149,7 @@ describe("optimizeRequestBuilder", () => {
         min_trades: 5,
         max_drawdown: 0.25,
         min_sharpe: 1.2,
+        min_sortino: 1.6,
         min_calmar: 0.8,
         max_volatility: 0.3,
         min_exposure: 0.25,
@@ -308,6 +310,117 @@ describe("optimizeRequestBuilder", () => {
     });
   });
 
+  it("normalizes effective-sample LCB DoubleMa score modes into the runtime request", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-score-mode-effective-sample-lcb",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "ObsLcb10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      objective: "Sharpe",
+      score_mode: "effective_sample_lcb_10",
+    });
+  });
+
+  it("normalizes omega-vs-sharpe DoubleMa score modes into the runtime request", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-score-mode-omega-vs-sharpe",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "OmegaVsSharpe10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      objective: "Sharpe",
+      score_mode: "omega_vs_sharpe_10",
+    });
+  });
+
+  it("normalizes robust-margin DoubleMa score modes into the runtime request", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-score-mode-robust-margin",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      scoreMode: "RobustMargin10",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      objective: "Sharpe",
+      score_mode: "robust_margin_10",
+    });
+  });
+
   it("normalizes extra shortlist objectives into the runtime request", () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -451,7 +564,9 @@ describe("optimizeRequestBuilder", () => {
         epsRel: "0",
         dynamicStrategyIr: { profile: "double_ma" },
       }),
-    ).toThrow(/include_trade_metrics is not yet supported for DynamicDoubleMa/i);
+    ).toThrow(
+      /include_trade_metrics is not yet supported for DynamicDoubleMa/i,
+    );
   });
 
   it("rejects extra shortlist objectives when score mode is enabled", () => {
@@ -555,7 +670,9 @@ describe("optimizeRequestBuilder", () => {
         epsRel: "0",
         dynamicStrategyIr: { profile: "double_ma" },
       }),
-    ).toThrow(/DynamicDoubleMa does not yet support extra shortlist objectives/i);
+    ).toThrow(
+      /DynamicDoubleMa does not yet support extra shortlist objectives/i,
+    );
   });
 
   it("normalizes shortlist confidence mode into the runtime request", () => {
@@ -696,7 +813,9 @@ describe("optimizeRequestBuilder", () => {
         epsRel: "0",
         dynamicStrategyIr: { profile: "double_ma" },
       }),
-    ).toThrow(/DynamicDoubleMa does not yet support shortlist confidence mode/i);
+    ).toThrow(
+      /DynamicDoubleMa does not yet support shortlist confidence mode/i,
+    );
   });
 
   it("normalizes shortlist union mode into the runtime request", () => {
@@ -734,6 +853,44 @@ describe("optimizeRequestBuilder", () => {
     expect(req).toMatchObject({
       extra_shortlist_objectives: ["Pnl", "Omega"],
       shortlist_union_mode: "pareto",
+    });
+  });
+
+  it("normalizes weighted-rank shortlist union mode into the runtime request", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-shortlist-union-weighted-rank",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      extraShortlistObjectives: "Pnl,Omega",
+      shortlistUnionMode: "weighted-rank",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      extra_shortlist_objectives: ["Pnl", "Omega"],
+      shortlist_union_mode: "weighted_rank",
     });
   });
 
@@ -804,7 +961,9 @@ describe("optimizeRequestBuilder", () => {
         epsRel: "0",
         dynamicStrategyIr: { profile: "double_ma" },
       }),
-    ).toThrow(/DynamicDoubleMa does not yet support extra shortlist objectives/i);
+    ).toThrow(
+      /DynamicDoubleMa does not yet support extra shortlist objectives/i,
+    );
   });
 
   it("normalizes shortlist slice diagnostics fields into the runtime request", () => {
@@ -2784,4 +2943,3 @@ describe("optimizeRequestBuilder", () => {
     expect(req).toBeNull();
   });
 });
-

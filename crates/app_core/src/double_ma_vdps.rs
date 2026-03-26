@@ -6,7 +6,8 @@ use ta_optimizer::{ObjectiveKind, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 use crate::double_ma::{
-    effective_score, estimate_pairs_fast_lt_slow, BackendUsed, DoubleMaScoreMode, VdpsTelemetry,
+    effective_score, estimate_pairs_fast_lt_slow, objective_score, BackendUsed,
+    DoubleMaScoreMode, VdpsTelemetry,
 };
 
 #[inline]
@@ -176,11 +177,20 @@ pub(crate) fn vdps_merge_partial_results(
     let ranked = vdps_rank_candidates(ranked_input, objective, None, top_k.max(1));
     let (best_params, best_metrics) = ranked.first().cloned()?;
     let top = if top_k > 0 { ranked } else { Vec::new() };
+    let best_score = Some(effective_score(&best_metrics, objective, None));
+    let top_scores = Some(
+        top.iter()
+            .map(|(_, metrics)| effective_score(metrics, objective, None))
+            .collect(),
+    );
     Some(OptimizationResult {
         best_params,
         best_metrics,
+        best_score,
         top,
+        top_scores,
         all: None,
+        all_scores: None,
         heatmap: None,
         num_combos: total_num_combos,
         num_candles,

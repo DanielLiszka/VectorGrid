@@ -182,6 +182,8 @@ pub struct DoubleMaConstraints {
     #[serde(default)]
     pub min_sharpe: Option<f64>,
     #[serde(default)]
+    pub min_sortino: Option<f64>,
+    #[serde(default)]
     pub min_calmar: Option<f64>,
     #[serde(default)]
     pub max_volatility: Option<f64>,
@@ -206,6 +208,9 @@ pub enum DoubleMaScoreMode {
     AdversarialEnvelope10,
     SupportShrunk10,
     ActiveSortino10,
+    EffectiveSampleLcb10,
+    OmegaVsSharpe10,
+    RobustMargin10,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -221,6 +226,7 @@ pub enum DoubleMaShortlistUnionMode {
     Lexicographic,
     Pareto,
     EpsilonFront,
+    WeightedRank,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -420,6 +426,16 @@ pub struct LocalStabilitySummary {
     pub max: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairObservationScoreContextResolved {
+    pub first_valid: usize,
+    pub regime_first_valid: usize,
+    pub eval_start: usize,
+    pub eval_end: usize,
+    pub total_bars: usize,
+    pub trade_on_next_bar: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShortlistNeighborhoodRobustnessSummary {
     pub plateau_score: f64,
@@ -427,6 +443,10 @@ pub struct ShortlistNeighborhoodRobustnessSummary {
     pub objective: ObjectiveKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_mode: Option<DoubleMaScoreMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_agreement: Option<ShortlistNeighborhoodScoreAgreementSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<ShortlistNeighborhoodExplanationSummary>,
     pub radius: u16,
     pub step: u16,
     pub point_count: usize,
@@ -436,6 +456,41 @@ pub struct ShortlistNeighborhoodRobustnessSummary {
     pub min_score: f64,
     pub max_score: f64,
     pub peak_delta: f64,
+    pub basin_min_score: f64,
+    pub basin_floor_stability: f64,
+    pub roughness_rms_delta: f64,
+    pub roughness_stability: f64,
+    pub curvature_penalty: f64,
+    pub curvature_stability: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ShortlistNeighborhoodScoreAgreementSummary {
+    pub point_count: usize,
+    pub current_vs_objective_rank_corr: f64,
+    pub current_vs_balanced_rank_corr: f64,
+    pub current_vs_active_sortino_rank_corr: f64,
+    pub current_vs_omega_vs_sharpe_rank_corr: f64,
+    pub current_vs_robust_margin_rank_corr: f64,
+    pub agreement_floor: f64,
+    pub agreement_mean: f64,
+    pub agreement_label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ShortlistNeighborhoodExplanationSummary {
+    pub point_count: usize,
+    pub base_current_rank: usize,
+    pub base_objective_rank: usize,
+    pub pareto_nondominated_count: usize,
+    pub base_is_pareto_nondominated: bool,
+    pub base_dominates_neighbors: usize,
+    pub neighbors_dominate_base: usize,
+    pub dominance_margin: isize,
+    pub base_hypervolume_proxy: f64,
+    pub hypervolume_proxy_rank: usize,
+    pub hypervolume_proxy_share: f64,
+    pub dominance_label: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -453,6 +508,8 @@ pub struct LocalStabilityResult {
 pub struct BackendOptimizationResult {
     pub best_params: DoubleMaParamsResolved,
     pub best_metrics: ta_strategies::double_ma::Metrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_score: Option<f64>,
     pub mode_used: OptimizationModeResolved,
     pub backend_used: BackendUsed,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -466,7 +523,11 @@ pub struct BackendOptimizationResult {
     pub runtime_ms: u64,
     pub top: Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_scores: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub all: Option<Vec<(DoubleMaParamsResolved, ta_strategies::double_ma::Metrics)>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_scores: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heatmap: Option<OptimizationHeatmap>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -485,6 +546,8 @@ pub struct BackendOptimizationResult {
     pub followup_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnosticsResolved>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_observation_context: Option<PairObservationScoreContextResolved>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -754,12 +817,8 @@ pub(crate) fn derived_active_mean(metrics: &ta_strategies::double_ma::Metrics) -
 
 #[inline]
 pub(crate) fn derived_active_sortino(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
-    let exposure = metrics.exposure.max(SCORE_EPS);
-    if !exposure.is_finite() || exposure <= SCORE_EPS {
-        return 0.0;
-    }
-    let mean = derived_mean(metrics);
-    let denom = metrics.downside_deviation * exposure.sqrt();
+    let mean = derived_active_mean(metrics);
+    let denom = derived_active_downside_deviation(metrics);
     if denom > SCORE_EPS {
         mean / denom
     } else if mean > 0.0 {
@@ -769,6 +828,17 @@ pub(crate) fn derived_active_sortino(metrics: &ta_strategies::double_ma::Metrics
     } else {
         0.0
     }
+}
+
+#[inline]
+pub(crate) fn derived_active_downside_deviation(
+    metrics: &ta_strategies::double_ma::Metrics,
+) -> f64 {
+    let exposure = metrics.exposure.max(SCORE_EPS);
+    if !exposure.is_finite() || exposure <= SCORE_EPS {
+        return 0.0;
+    }
+    metrics.downside_deviation / exposure.sqrt()
 }
 
 #[inline]
@@ -787,6 +857,28 @@ pub(crate) fn derived_downside_share(metrics: &ta_strategies::double_ma::Metrics
     } else {
         0.0
     }
+}
+
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn derived_long_exposure(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
+    (0.5 * (metrics.exposure + metrics.net_exposure)).clamp(0.0, 1.0)
+}
+
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn derived_short_exposure(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
+    (0.5 * (metrics.exposure - metrics.net_exposure)).clamp(0.0, 1.0)
+}
+
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn derived_directional_bias(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
+    let exposure = metrics.exposure.max(SCORE_EPS);
+    if !exposure.is_finite() || exposure <= SCORE_EPS {
+        return 0.0;
+    }
+    (metrics.net_exposure.abs() / exposure).clamp(0.0, 1.0)
 }
 
 #[inline]
@@ -852,6 +944,45 @@ fn score_support_proxy_units(metrics: &ta_strategies::double_ma::Metrics) -> f64
     let trades = (metrics.trades as f64).max(0.0);
     let exposure = metrics.exposure.clamp(0.0, 1.0);
     1.0 + trades + 80.0 * exposure
+}
+
+#[inline]
+fn score_margin_at_least(value: f64, threshold: f64, scale: f64) -> f64 {
+    if !value.is_finite() || !threshold.is_finite() || !scale.is_finite() || scale <= 0.0 {
+        return 0.0;
+    }
+    score_clip_signed((value - threshold) / scale)
+}
+
+#[inline]
+fn score_margin_at_most(value: f64, threshold: f64, scale: f64) -> f64 {
+    if !value.is_finite() || !threshold.is_finite() || !scale.is_finite() || scale <= 0.0 {
+        return 0.0;
+    }
+    score_clip_signed((threshold - value) / scale)
+}
+
+#[inline]
+fn score_softmin(values: &[f64], temperature: f64) -> f64 {
+    if values.is_empty() || !temperature.is_finite() || temperature <= 0.0 {
+        return 0.0;
+    }
+    let anchor = values
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, |cur, value| cur.min(value));
+    if !anchor.is_finite() {
+        return 0.0;
+    }
+    let sum_exp = values
+        .iter()
+        .copied()
+        .map(|value| (-(value - anchor) / temperature).exp())
+        .sum::<f64>();
+    if !sum_exp.is_finite() || sum_exp <= 0.0 {
+        return anchor;
+    }
+    score_clip_signed(anchor - temperature * sum_exp.ln())
 }
 
 pub(crate) fn balanced_risk_adjusted_10_score(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
@@ -953,18 +1084,82 @@ pub(crate) fn active_sortino_10_score(metrics: &ta_strategies::double_ma::Metric
         - downside_p
 }
 
+pub(crate) fn effective_sample_lcb_10_score(
+    metrics: &ta_strategies::double_ma::Metrics,
+    n_obs: usize,
+) -> f64 {
+    let base = balanced_risk_adjusted_10_score(metrics);
+    let effective_n = n_obs.max(2) as f64;
+    let lcb_penalty = 18.0 / effective_n.sqrt();
+    base - lcb_penalty
+}
+
+pub(crate) fn omega_vs_sharpe_10_score(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
+    let sharpe_u = score_asinh_scaled(metrics.sharpe, 1.0);
+    let omega_u = score_log_ratio(metrics.omega);
+    let asymmetry_gap = score_clip_signed(omega_u - 0.65 * sharpe_u);
+    let active_sortino_u = score_asinh_scaled(derived_active_sortino(metrics), 1.25);
+    let calmar_u = score_asinh_scaled(metrics.calmar, 1.0);
+    let trade_u = score_trade_utility(metrics.trades, 32.0);
+    let max_dd_p = score_log1p_penalty(metrics.max_dd, 0.10);
+    let ulcer_p = score_log1p_penalty(metrics.ulcer_index, 0.05);
+    let chronicity_p = 0.14 * derived_drawdown_chronicity(metrics).clamp(0.0, 1.0);
+    let downside_p = 0.10 * score_downside_shape_penalty(metrics);
+    let exposure_p = 0.08 * score_exposure_penalty(metrics);
+    let directional_p = 0.08 * derived_directional_bias(metrics).clamp(0.0, 1.0);
+
+    0.36 * asymmetry_gap
+        + 0.20 * active_sortino_u
+        + 0.14 * omega_u
+        + 0.10 * calmar_u
+        + 0.06 * trade_u
+        - 0.18 * max_dd_p
+        - 0.10 * ulcer_p
+        - chronicity_p
+        - downside_p
+        - exposure_p
+        - directional_p
+}
+
+pub(crate) fn robust_margin_10_score(metrics: &ta_strategies::double_ma::Metrics) -> f64 {
+    let margins = [
+        score_margin_at_least(metrics.sharpe, 0.90, 0.45),
+        score_margin_at_least(derived_active_sortino(metrics), 1.25, 0.70),
+        score_margin_at_least(metrics.omega, 1.05, 0.20),
+        score_margin_at_least(metrics.calmar, 0.65, 0.35),
+        score_margin_at_least(score_trade_utility(metrics.trades, 24.0), 0.35, 0.18),
+        score_margin_at_most(metrics.max_dd, 0.22, 0.08),
+        score_margin_at_most(metrics.ulcer_index, 0.10, 0.04),
+        score_margin_at_most(derived_drawdown_chronicity(metrics), 0.70, 0.20),
+        score_margin_at_most(score_downside_shape_penalty(metrics), 0.70, 0.35),
+        score_margin_at_most(score_exposure_penalty(metrics), 0.70, 0.35),
+    ];
+    let soft_margin = score_softmin(&margins, 0.55);
+    let mean_margin = margins.iter().copied().sum::<f64>() / margins.len() as f64;
+    0.72 * soft_margin + 0.28 * mean_margin
+}
+
 pub(crate) fn score_mode_metrics_count_floor(score_mode: Option<DoubleMaScoreMode>) -> usize {
     match score_mode {
         Some(DoubleMaScoreMode::BalancedRiskAdjusted10)
         | Some(DoubleMaScoreMode::AdversarialEnvelope10)
         | Some(DoubleMaScoreMode::SupportShrunk10)
-        | Some(DoubleMaScoreMode::ActiveSortino10) => 10,
+        | Some(DoubleMaScoreMode::ActiveSortino10)
+        | Some(DoubleMaScoreMode::EffectiveSampleLcb10)
+        | Some(DoubleMaScoreMode::OmegaVsSharpe10)
+        | Some(DoubleMaScoreMode::RobustMargin10) => 10,
         None => 0,
     }
 }
 
 pub(crate) fn score_mode_needs_rich_metrics(score_mode: Option<DoubleMaScoreMode>) -> bool {
     score_mode.is_some()
+}
+
+pub(crate) fn score_mode_needs_pair_observation_context(
+    score_mode: Option<DoubleMaScoreMode>,
+) -> bool {
+    matches!(score_mode, Some(DoubleMaScoreMode::EffectiveSampleLcb10))
 }
 
 pub(crate) fn score_mode_score_fn(
@@ -975,6 +1170,9 @@ pub(crate) fn score_mode_score_fn(
         Some(DoubleMaScoreMode::AdversarialEnvelope10) => Some(adversarial_envelope_10_score),
         Some(DoubleMaScoreMode::SupportShrunk10) => Some(support_shrunk_10_score),
         Some(DoubleMaScoreMode::ActiveSortino10) => Some(active_sortino_10_score),
+        Some(DoubleMaScoreMode::EffectiveSampleLcb10) => None,
+        Some(DoubleMaScoreMode::OmegaVsSharpe10) => Some(omega_vs_sharpe_10_score),
+        Some(DoubleMaScoreMode::RobustMargin10) => Some(robust_margin_10_score),
         None => None,
     }
 }
@@ -1422,6 +1620,250 @@ fn label_shortlist_plateau(score: f64, neighbor_count: usize) -> String {
     }
 }
 
+fn label_shortlist_surface_agreement(score: f64, point_count: usize) -> String {
+    if point_count < 3 {
+        "Thin".to_string()
+    } else if score >= 0.85 {
+        "Aligned".to_string()
+    } else if score >= 0.60 {
+        "Mixed".to_string()
+    } else {
+        "Divergent".to_string()
+    }
+}
+
+fn label_shortlist_explanation(
+    base_is_pareto_nondominated: bool,
+    neighbors_dominate_base: usize,
+    base_dominates_neighbors: usize,
+    hypervolume_proxy_rank: usize,
+) -> String {
+    if base_is_pareto_nondominated
+        && neighbors_dominate_base == 0
+        && base_dominates_neighbors > 0
+        && hypervolume_proxy_rank <= 1
+    {
+        "Front".to_string()
+    } else if base_is_pareto_nondominated && neighbors_dominate_base == 0 {
+        "Competitive".to_string()
+    } else {
+        "Fragile".to_string()
+    }
+}
+
+fn descending_average_ranks(values: &[f64]) -> Vec<f64> {
+    let mut ordered: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    ordered.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut ranks = vec![0.0; values.len()];
+    let mut start = 0usize;
+    while start < ordered.len() {
+        let mut end = start + 1;
+        while end < ordered.len()
+            && ordered[end].1.total_cmp(&ordered[start].1) == std::cmp::Ordering::Equal
+        {
+            end += 1;
+        }
+        let avg_rank = (start + 1 + end) as f64 * 0.5;
+        for &(idx, _) in &ordered[start..end] {
+            ranks[idx] = avg_rank;
+        }
+        start = end;
+    }
+    ranks
+}
+
+fn pearson_corr(xs: &[f64], ys: &[f64]) -> f64 {
+    let n = xs.len().min(ys.len());
+    if n < 2 {
+        return 1.0;
+    }
+    let mean_x = xs.iter().take(n).copied().sum::<f64>() / n as f64;
+    let mean_y = ys.iter().take(n).copied().sum::<f64>() / n as f64;
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for idx in 0..n {
+        let dx = xs[idx] - mean_x;
+        let dy = ys[idx] - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    if var_x <= 1.0e-18 || var_y <= 1.0e-18 {
+        return 1.0;
+    }
+    (cov / (var_x.sqrt() * var_y.sqrt())).clamp(-1.0, 1.0)
+}
+
+fn spearman_rank_corr(xs: &[f64], ys: &[f64]) -> f64 {
+    let rank_x = descending_average_ranks(xs);
+    let rank_y = descending_average_ranks(ys);
+    pearson_corr(&rank_x, &rank_y)
+}
+
+fn dense_desc_rank(values: &[f64], idx: usize) -> usize {
+    let value = values.get(idx).copied().unwrap_or(f64::NEG_INFINITY);
+    1 + values.iter().filter(|other| other.total_cmp(&value).is_gt()).count()
+}
+
+fn normalized_score_axis(values: &[f64]) -> Vec<f64> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let min_v = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_v = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = (max_v - min_v).abs();
+    if span <= 1.0e-18 {
+        return vec![1.0; values.len()];
+    }
+    values
+        .iter()
+        .map(|value| ((value - min_v) / span).clamp(0.0, 1.0))
+        .collect()
+}
+
+fn summarize_shortlist_surface_explanation(
+    local: &LocalStabilityResult,
+    _score_mode: Option<DoubleMaScoreMode>,
+) -> Option<ShortlistNeighborhoodExplanationSummary> {
+    if local.points.is_empty() {
+        return None;
+    }
+    let base_idx = local.points.iter().position(|point| {
+        point.fast_len == local.base.fast_len && point.slow_len == local.base.slow_len
+    })?;
+    let current_scores: Vec<f64> = local.points.iter().map(|point| point.score).collect();
+    let objective_scores: Vec<f64> = local
+        .points
+        .iter()
+        .map(|point| objective_score(&point.metrics, local.objective))
+        .collect();
+    let current_axis = normalized_score_axis(&current_scores);
+    let objective_axis = normalized_score_axis(&objective_scores);
+    let dominates = |a_idx: usize, b_idx: usize| -> bool {
+        let a_cur = current_axis[a_idx];
+        let a_obj = objective_axis[a_idx];
+        let b_cur = current_axis[b_idx];
+        let b_obj = objective_axis[b_idx];
+        (a_cur >= b_cur && a_obj >= b_obj) && (a_cur > b_cur || a_obj > b_obj)
+    };
+    let base_dominates_neighbors = (0..local.points.len())
+        .filter(|&idx| idx != base_idx && dominates(base_idx, idx))
+        .count();
+    let neighbors_dominate_base = (0..local.points.len())
+        .filter(|&idx| idx != base_idx && dominates(idx, base_idx))
+        .count();
+    let pareto_nondominated_count = (0..local.points.len())
+        .filter(|&idx| !(0..local.points.len()).any(|other| other != idx && dominates(other, idx)))
+        .count();
+    let base_is_pareto_nondominated = neighbors_dominate_base == 0;
+    let hypervolume_proxy: Vec<f64> = current_axis
+        .iter()
+        .zip(objective_axis.iter())
+        .map(|(cur, obj)| cur * obj)
+        .collect();
+    let hv_sum = hypervolume_proxy.iter().copied().sum::<f64>();
+    let base_hypervolume_proxy = hypervolume_proxy[base_idx];
+    let hypervolume_proxy_share = if hv_sum <= 1.0e-18 {
+        0.0
+    } else {
+        (base_hypervolume_proxy / hv_sum).clamp(0.0, 1.0)
+    };
+    let hypervolume_proxy_rank = dense_desc_rank(&hypervolume_proxy, base_idx);
+
+    Some(ShortlistNeighborhoodExplanationSummary {
+        point_count: local.points.len(),
+        base_current_rank: dense_desc_rank(&current_scores, base_idx),
+        base_objective_rank: dense_desc_rank(&objective_scores, base_idx),
+        pareto_nondominated_count,
+        base_is_pareto_nondominated,
+        base_dominates_neighbors,
+        neighbors_dominate_base,
+        dominance_margin: base_dominates_neighbors as isize - neighbors_dominate_base as isize,
+        base_hypervolume_proxy,
+        hypervolume_proxy_rank,
+        hypervolume_proxy_share,
+        dominance_label: label_shortlist_explanation(
+            base_is_pareto_nondominated,
+            neighbors_dominate_base,
+            base_dominates_neighbors,
+            hypervolume_proxy_rank,
+        ),
+    })
+}
+
+fn summarize_shortlist_surface_agreement(
+    local: &LocalStabilityResult,
+) -> Option<ShortlistNeighborhoodScoreAgreementSummary> {
+    if local.points.len() < 2 {
+        return None;
+    }
+    let current_scores: Vec<f64> = local.points.iter().map(|point| point.score).collect();
+    let objective_scores: Vec<f64> = local
+        .points
+        .iter()
+        .map(|point| objective_score(&point.metrics, local.objective))
+        .collect();
+    let balanced_scores: Vec<f64> = local
+        .points
+        .iter()
+        .map(|point| balanced_risk_adjusted_10_score(&point.metrics))
+        .collect();
+    let active_sortino_scores: Vec<f64> = local
+        .points
+        .iter()
+        .map(|point| active_sortino_10_score(&point.metrics))
+        .collect();
+    let omega_vs_sharpe_scores: Vec<f64> = local
+        .points
+        .iter()
+        .map(|point| omega_vs_sharpe_10_score(&point.metrics))
+        .collect();
+    let robust_margin_scores: Vec<f64> = local
+        .points
+        .iter()
+        .map(|point| robust_margin_10_score(&point.metrics))
+        .collect();
+
+    let current_vs_objective_rank_corr = spearman_rank_corr(&current_scores, &objective_scores);
+    let current_vs_balanced_rank_corr = spearman_rank_corr(&current_scores, &balanced_scores);
+    let current_vs_active_sortino_rank_corr =
+        spearman_rank_corr(&current_scores, &active_sortino_scores);
+    let current_vs_omega_vs_sharpe_rank_corr =
+        spearman_rank_corr(&current_scores, &omega_vs_sharpe_scores);
+    let current_vs_robust_margin_rank_corr =
+        spearman_rank_corr(&current_scores, &robust_margin_scores);
+
+    let agreement_values = [
+        current_vs_objective_rank_corr,
+        current_vs_balanced_rank_corr,
+        current_vs_active_sortino_rank_corr,
+        current_vs_omega_vs_sharpe_rank_corr,
+        current_vs_robust_margin_rank_corr,
+    ];
+    let agreement_floor = agreement_values
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let agreement_mean =
+        agreement_values.iter().copied().sum::<f64>() / agreement_values.len() as f64;
+
+    Some(ShortlistNeighborhoodScoreAgreementSummary {
+        point_count: local.points.len(),
+        current_vs_objective_rank_corr,
+        current_vs_balanced_rank_corr,
+        current_vs_active_sortino_rank_corr,
+        current_vs_omega_vs_sharpe_rank_corr,
+        current_vs_robust_margin_rank_corr,
+        agreement_floor,
+        agreement_mean,
+        agreement_label: label_shortlist_surface_agreement(
+            agreement_floor.max(agreement_mean),
+            local.points.len(),
+        ),
+    })
+}
+
 fn summarize_shortlist_neighborhood_robustness(
     local: &LocalStabilityResult,
     score_mode: Option<DoubleMaScoreMode>,
@@ -1443,6 +1885,80 @@ fn summarize_shortlist_neighborhood_robustness(
     let peak_stability = 1.0 / (1.0 + peak_delta / score_scale);
     let score_stability = 0.6 * median_stability + 0.4 * peak_stability;
     let support_strength = (neighbor_count.min(8) as f64) / 8.0;
+    let neighbor_points: Vec<&LocalStabilityPoint> = local
+        .points
+        .iter()
+        .filter(|point| {
+            !(point.fast_len == local.base.fast_len && point.slow_len == local.base.slow_len)
+        })
+        .collect();
+    let basin_min_score = neighbor_points
+        .iter()
+        .map(|point| point.score)
+        .fold(base_score, f64::min);
+    let basin_floor_gap = (base_score - basin_min_score).max(0.0);
+    let basin_floor_stability = 1.0 / (1.0 + basin_floor_gap / score_scale);
+    let roughness_rms_delta = if neighbor_points.is_empty() {
+        0.0
+    } else {
+        let mean_sq = neighbor_points
+            .iter()
+            .map(|point| {
+                let delta = point.score - base_score;
+                delta * delta
+            })
+            .sum::<f64>()
+            / (neighbor_points.len() as f64);
+        mean_sq.sqrt()
+    };
+    let roughness_stability = 1.0 / (1.0 + roughness_rms_delta / score_scale);
+    let axial_pair_curvature = |left: Option<f64>, right: Option<f64>| -> Option<f64> {
+        match (left, right) {
+            (Some(a), Some(b)) => Some((((a + b) * 0.5) - base_score).abs()),
+            _ => None,
+        }
+    };
+    let left_score = neighbor_points
+        .iter()
+        .find(|point| {
+            point.fast_len + local.step == local.base.fast_len
+                && point.slow_len == local.base.slow_len
+        })
+        .map(|point| point.score);
+    let right_score = neighbor_points
+        .iter()
+        .find(|point| {
+            point.fast_len == local.base.fast_len + local.step
+                && point.slow_len == local.base.slow_len
+        })
+        .map(|point| point.score);
+    let down_score = neighbor_points
+        .iter()
+        .find(|point| {
+            point.fast_len == local.base.fast_len
+                && point.slow_len + local.step == local.base.slow_len
+        })
+        .map(|point| point.score);
+    let up_score = neighbor_points
+        .iter()
+        .find(|point| {
+            point.fast_len == local.base.fast_len
+                && point.slow_len == local.base.slow_len + local.step
+        })
+        .map(|point| point.score);
+    let curvature_terms: Vec<f64> = [
+        axial_pair_curvature(left_score, right_score),
+        axial_pair_curvature(down_score, up_score),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let curvature_penalty = if curvature_terms.is_empty() {
+        0.0
+    } else {
+        curvature_terms.iter().copied().sum::<f64>() / (curvature_terms.len() as f64)
+    };
+    let curvature_stability = 1.0 / (1.0 + curvature_penalty / score_scale);
     let base_max_dd = local
         .points
         .iter()
@@ -1473,6 +1989,8 @@ fn summarize_shortlist_neighborhood_robustness(
         plateau_label: label_shortlist_plateau(plateau_score, neighbor_count),
         objective: local.objective,
         score_mode,
+        score_agreement: summarize_shortlist_surface_agreement(local),
+        explanation: summarize_shortlist_surface_explanation(local, score_mode),
         radius: local.radius,
         step: local.step,
         point_count,
@@ -1482,6 +2000,12 @@ fn summarize_shortlist_neighborhood_robustness(
         min_score,
         max_score,
         peak_delta,
+        basin_min_score,
+        basin_floor_stability,
+        roughness_rms_delta,
+        roughness_stability,
+        curvature_penalty,
+        curvature_stability,
     })
 }
 
@@ -1547,6 +2071,11 @@ pub(crate) fn metrics_pass_constraints(
     }
     if let Some(min_sharpe) = cfg.min_sharpe {
         if !(metrics.sharpe >= min_sharpe) {
+            return false;
+        }
+    }
+    if let Some(min_sortino) = cfg.min_sortino {
+        if !(metrics.sortino >= min_sortino) {
             return false;
         }
     }
@@ -3695,7 +4224,12 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
                 kaufman_stops.as_ref(),
                 true,
             );
-            let score = effective_score(&metrics, objective, req.score_mode);
+            let score = if matches!(req.score_mode, Some(DoubleMaScoreMode::EffectiveSampleLcb10))
+            {
+                effective_sample_lcb_10_score(&metrics, n.saturating_sub(start_t).max(2))
+            } else {
+                effective_score(&metrics, objective, req.score_mode)
+            };
             points.push(LocalStabilityPoint {
                 fast_len,
                 slow_len,
@@ -5794,6 +6328,21 @@ pub fn run_double_ma_optimization_blocking_with_candles(
 
     let multi_grid_offset_progress =
         matches!(mode_used, OptimizationModeResolved::Grid) && variant_pairs > 1;
+    if score_mode_needs_pair_observation_context(score_mode) && !matches!(backend, Backend::GpuKernel { .. }) {
+        return Err(
+            "effective_sample_lcb_10 currently requires the exact GpuKernel backend route"
+                .to_string(),
+        );
+    }
+    if score_mode_needs_pair_observation_context(score_mode) && dynamic_runtime_plan.is_some() {
+        return Err("effective_sample_lcb_10 is not yet supported for DynamicDoubleMa".to_string());
+    }
+    if score_mode_needs_pair_observation_context(score_mode) && variant_pairs > 1 {
+        return Err(
+            "effective_sample_lcb_10 currently requires a single expanded GPU kernel run (one MA-type / param grid slice)"
+                .to_string(),
+        );
+    }
     let extra_shortlist_requested = extra_shortlist_objectives
         .as_ref()
         .is_some_and(|values| !values.is_empty());
@@ -6067,12 +6616,25 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         rows.truncate(top_k);
         rows
     };
-
+    let best_score = Some(effective_score(&best_metrics, objective, score_mode));
+    let top_scores = Some(
+        top.iter()
+            .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
+            .collect(),
+    );
+    let all_scores = merged_all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
+            .collect()
+    });
     let result = OptimizationResult {
         best_params: best_params_raw,
         best_metrics,
+        best_score,
         top,
+        top_scores,
         all: merged_all,
+        all_scores,
         heatmap: merged_heatmap,
         num_combos: merged_num_combos,
         num_candles: n,
@@ -6165,8 +6727,16 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     } else {
         None
     };
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let score_observation_context = if matches!(backend_used, BackendUsed::Gpu) {
+        crate::gpu_backtest_kernel::take_last_score_observation_context()
+    } else {
+        None
+    };
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let mut shortlist_slice_diagnostics: Option<ShortlistSliceDiagnostics> = None;
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    let score_observation_context: Option<PairObservationScoreContextResolved> = None;
 
     if let (Some(cfg), Some(diag)) = (
         shortlist_neighborhood_cfg,
@@ -6223,6 +6793,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             residency,
             followup_cache_key,
             shortlist_slice_diagnostics,
+            score_observation_context,
         },
     );
     Ok(backend_result)
@@ -6372,17 +6943,30 @@ fn grid_search_double_ma_gpu_kernel(
             .collect()
     };
 
-    let all = if include_all {
+    let all: Option<Vec<(DoubleMaParams, Metrics)>> = if include_all {
         Some(combos.iter().cloned().zip(metrics.into_iter()).collect())
     } else {
         None
     };
-
+    let best_score = Some(score(&best_metrics, objective));
+    let top_scores = Some(
+        top.iter()
+            .map(|(_, metrics)| score(metrics, objective))
+            .collect(),
+    );
+    let all_scores: Option<Vec<f64>> = all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(_, metrics)| score(metrics, objective))
+            .collect()
+    });
     Ok(OptimizationResult {
         best_params,
         best_metrics,
+        best_score,
         top,
+        top_scores,
         all,
+        all_scores,
         heatmap: None,
         num_combos: combos.len(),
         num_candles,
@@ -6711,6 +7295,13 @@ fn sanitize_double_ma_constraints(
         }
         None => None,
     };
+    c.min_sortino = match c.min_sortino {
+        Some(v) if v.is_finite() => Some(v),
+        Some(_) => {
+            return Err("constraints.min_sortino must be finite".to_string());
+        }
+        None => None,
+    };
     c.min_calmar = match c.min_calmar {
         Some(v) if v.is_finite() => Some(v),
         Some(_) => {
@@ -6778,6 +7369,7 @@ fn sanitize_double_ma_constraints(
     if c.min_trades.is_none()
         && c.max_drawdown.is_none()
         && c.min_sharpe.is_none()
+        && c.min_sortino.is_none()
         && c.min_calmar.is_none()
         && c.max_volatility.is_none()
         && c.min_exposure.is_none()
@@ -12675,7 +13267,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: true,
+            include_trade_metrics: true,
             hurdle_tau: None,
         }
     }
@@ -12822,7 +13414,7 @@ mod tests {
             dynamic_strategy_ir,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         }
     }
@@ -12948,19 +13540,20 @@ mod tests {
             net_exposure: -0.18,
             long_mean_return: 0.0,
             short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
         };
 
         let pass = DoubleMaConstraints {
             min_trades: Some(10),
             max_drawdown: Some(0.25),
             min_sharpe: Some(1.3),
+            min_sortino: Some(1.8),
             min_calmar: Some(0.8),
             max_volatility: Some(0.3),
             min_exposure: Some(0.5),
@@ -12977,10 +13570,23 @@ mod tests {
             ..Default::default()
         };
         assert!(!metrics_pass_constraints(&metrics, Some(&fail)));
+
+        let fail_sortino = DoubleMaConstraints {
+            min_sortino: Some(2.0),
+            ..Default::default()
+        };
+        assert!(!metrics_pass_constraints(&metrics, Some(&fail_sortino)));
     }
 
     #[test]
     fn sanitize_double_ma_constraints_validates_new_fields() {
+        let err = sanitize_double_ma_constraints(Some(DoubleMaConstraints {
+            min_sortino: Some(f64::NAN),
+            ..Default::default()
+        }))
+        .expect_err("non-finite min_sortino should fail");
+        assert!(err.contains("min_sortino"));
+
         let err = sanitize_double_ma_constraints(Some(DoubleMaConstraints {
             min_exposure: Some(0.7),
             max_exposure: Some(0.6),
@@ -12998,6 +13604,7 @@ mod tests {
 
         let sanitized = sanitize_double_ma_constraints(Some(DoubleMaConstraints {
             min_sharpe: Some(-0.25),
+            min_sortino: Some(0.5),
             min_calmar: Some(0.4),
             max_volatility: Some(0.3),
             min_exposure: Some(0.2),
@@ -13011,6 +13618,7 @@ mod tests {
         .expect("valid extended constraints should sanitize");
         let sanitized = sanitized.expect("constraints should remain present");
         assert_eq!(sanitized.min_sharpe, Some(-0.25));
+        assert_eq!(sanitized.min_sortino, Some(0.5));
         assert_eq!(sanitized.min_omega, Some(1.1));
         assert_eq!(sanitized.max_ulcer, Some(0.2));
     }
@@ -13038,11 +13646,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
         let fragile = ta_strategies::double_ma::Metrics {
             pnl: 0.24,
@@ -13065,11 +13673,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let robust_score = balanced_risk_adjusted_10_score(&robust);
@@ -13107,11 +13715,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
         let fragile = ta_strategies::double_ma::Metrics {
             pnl: 0.24,
@@ -13134,11 +13742,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let balanced_score = adversarial_envelope_10_score(&balanced);
@@ -13176,11 +13784,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let objective_score = effective_score(&metrics, ObjectiveKind::Sharpe, None);
@@ -13217,11 +13825,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let objective_score = effective_score(&metrics, ObjectiveKind::Sharpe, None);
@@ -13258,11 +13866,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
         let sparse = ta_strategies::double_ma::Metrics {
             pnl: 0.21,
@@ -13285,11 +13893,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let dense_base = balanced_risk_adjusted_10_score(&dense);
@@ -13329,11 +13937,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let objective_score = effective_score(&metrics, ObjectiveKind::Sharpe, None);
@@ -13370,11 +13978,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
         let fragile = ta_strategies::double_ma::Metrics {
             pnl: 0.21,
@@ -13397,11 +14005,11 @@ mod tests {
             short_mean_return: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
         };
 
         let robust_score = active_sortino_10_score(&robust);
@@ -13437,13 +14045,13 @@ mod tests {
             net_exposure: 0.03,
             long_mean_return: 0.0,
             short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
             underwater_fraction: 0.0,
             max_underwater_duration_bars: 0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
         };
 
         let objective_score = effective_score(&metrics, ObjectiveKind::Sharpe, None);
@@ -13454,6 +14062,265 @@ mod tests {
         );
         assert_eq!(objective_score, metrics.sharpe);
         assert_eq!(derived_score, active_sortino_10_score(&metrics));
+        assert_ne!(objective_score, derived_score);
+    }
+
+    #[test]
+    fn effective_sample_lcb_score_penalizes_shorter_observation_histories() {
+        let metrics = ta_strategies::double_ma::Metrics {
+            pnl: 0.20,
+            sharpe: 1.42,
+            sortino: 1.88,
+            downside_deviation: 0.10,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 1.02,
+            omega: 1.74,
+            kappa_tau: 0.0,
+            volatility: 0.17,
+            ulcer_index: 0.05,
+            martin_ratio: 2.8,
+            max_dd: 0.10,
+            trades: 34,
+            exposure: 0.62,
+            net_exposure: 0.04,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+        };
+
+        let long_score = effective_sample_lcb_10_score(&metrics, 20_000);
+        let short_score = effective_sample_lcb_10_score(&metrics, 400);
+
+        assert!(
+            long_score > short_score,
+            "expected longer observation support to score higher: long={long_score} short={short_score}"
+        );
+    }
+
+    #[test]
+    fn omega_vs_sharpe_score_prefers_positive_asymmetry_gap() {
+        let asymmetric = ta_strategies::double_ma::Metrics {
+            pnl: 0.18,
+            sharpe: 1.11,
+            sortino: 1.94,
+            downside_deviation: 0.08,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.93,
+            omega: 1.96,
+            kappa_tau: 0.0,
+            volatility: 0.16,
+            ulcer_index: 0.05,
+            martin_ratio: 2.2,
+            max_dd: 0.11,
+            trades: 26,
+            exposure: 0.48,
+            net_exposure: 0.02,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+        };
+        let symmetric = ta_strategies::double_ma::Metrics {
+            pnl: 0.20,
+            sharpe: 1.43,
+            sortino: 1.56,
+            downside_deviation: 0.15,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.71,
+            omega: 1.18,
+            kappa_tau: 0.0,
+            volatility: 0.23,
+            ulcer_index: 0.09,
+            martin_ratio: 1.4,
+            max_dd: 0.17,
+            trades: 14,
+            exposure: 0.78,
+            net_exposure: 0.28,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+        };
+
+        let asym_score = omega_vs_sharpe_10_score(&asymmetric);
+        let sym_score = omega_vs_sharpe_10_score(&symmetric);
+        assert!(
+            asym_score > sym_score,
+            "expected omega-vs-sharpe score to prefer the stronger asymmetry profile: asymmetric={asym_score} symmetric={sym_score}"
+        );
+        assert!(
+            symmetric.sharpe > asymmetric.sharpe,
+            "fixture should preserve objective-only tension"
+        );
+    }
+
+    #[test]
+    fn effective_score_uses_omega_vs_sharpe_score_mode_override() {
+        let metrics = ta_strategies::double_ma::Metrics {
+            pnl: 0.18,
+            sharpe: 1.18,
+            sortino: 1.88,
+            downside_deviation: 0.09,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.92,
+            omega: 1.84,
+            kappa_tau: 0.0,
+            volatility: 0.17,
+            ulcer_index: 0.05,
+            martin_ratio: 2.1,
+            max_dd: 0.11,
+            trades: 25,
+            exposure: 0.46,
+            net_exposure: 0.03,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+        };
+
+        let objective_score = effective_score(&metrics, ObjectiveKind::Sharpe, None);
+        let derived_score = effective_score(
+            &metrics,
+            ObjectiveKind::Sharpe,
+            Some(DoubleMaScoreMode::OmegaVsSharpe10),
+        );
+        assert_eq!(objective_score, metrics.sharpe);
+        assert_eq!(derived_score, omega_vs_sharpe_10_score(&metrics));
+        assert_ne!(objective_score, derived_score);
+    }
+
+    #[test]
+    fn robust_margin_score_penalizes_single_weak_dimension() {
+        let balanced = ta_strategies::double_ma::Metrics {
+            pnl: 0.19,
+            sharpe: 1.20,
+            sortino: 1.78,
+            downside_deviation: 0.10,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.90,
+            omega: 1.46,
+            kappa_tau: 0.0,
+            volatility: 0.17,
+            ulcer_index: 0.05,
+            martin_ratio: 2.0,
+            max_dd: 0.12,
+            trades: 28,
+            exposure: 0.55,
+            net_exposure: 0.03,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+        };
+        let weak = ta_strategies::double_ma::Metrics {
+            pnl: 0.22,
+            sharpe: 1.37,
+            sortino: 1.73,
+            downside_deviation: 0.10,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.34,
+            omega: 1.08,
+            kappa_tau: 0.0,
+            volatility: 0.19,
+            ulcer_index: 0.18,
+            martin_ratio: 0.8,
+            max_dd: 0.31,
+            trades: 30,
+            exposure: 0.94,
+            net_exposure: 0.52,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+        };
+
+        let balanced_score = robust_margin_10_score(&balanced);
+        let weak_score = robust_margin_10_score(&weak);
+        assert!(
+            balanced_score > weak_score,
+            "expected robust-margin score to prefer the balanced profile: balanced={balanced_score} weak={weak_score}"
+        );
+        assert!(
+            weak.sharpe > balanced.sharpe,
+            "fixture should preserve objective-only tension"
+        );
+    }
+
+    #[test]
+    fn effective_score_uses_robust_margin_score_mode_override() {
+        let metrics = ta_strategies::double_ma::Metrics {
+            pnl: 0.19,
+            sharpe: 1.24,
+            sortino: 1.80,
+            downside_deviation: 0.10,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.91,
+            omega: 1.44,
+            kappa_tau: 0.0,
+            volatility: 0.17,
+            ulcer_index: 0.05,
+            martin_ratio: 2.0,
+            max_dd: 0.12,
+            trades: 29,
+            exposure: 0.54,
+            net_exposure: 0.03,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+        };
+
+        let objective_score = effective_score(&metrics, ObjectiveKind::Sharpe, None);
+        let derived_score = effective_score(
+            &metrics,
+            ObjectiveKind::Sharpe,
+            Some(DoubleMaScoreMode::RobustMargin10),
+        );
+        assert_eq!(objective_score, metrics.sharpe);
+        assert_eq!(derived_score, robust_margin_10_score(&metrics));
         assert_ne!(objective_score, derived_score);
     }
 
@@ -13497,6 +14364,43 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(derived_downside_share(&flat), 0.0);
+    }
+
+    #[test]
+    fn derived_active_downside_deviation_scales_by_sqrt_exposure() {
+        let metrics = ta_strategies::double_ma::Metrics {
+            downside_deviation: 0.12,
+            exposure: 0.25,
+            ..Default::default()
+        };
+        let active = derived_active_downside_deviation(&metrics);
+        assert!(
+            (active - 0.24).abs() <= 1e-12,
+            "unexpected active_downside_deviation={active}"
+        );
+
+        let flat = ta_strategies::double_ma::Metrics::default();
+        assert_eq!(derived_active_downside_deviation(&flat), 0.0);
+    }
+
+    #[test]
+    fn derived_side_exposures_split_exposure_and_directional_bias() {
+        let metrics = ta_strategies::double_ma::Metrics {
+            exposure: 0.60,
+            net_exposure: -0.20,
+            ..Default::default()
+        };
+
+        let long_exposure = derived_long_exposure(&metrics);
+        let short_exposure = derived_short_exposure(&metrics);
+        let directional_bias = derived_directional_bias(&metrics);
+
+        assert!((long_exposure - 0.20).abs() <= 1e-12);
+        assert!((short_exposure - 0.40).abs() <= 1e-12);
+        assert!((directional_bias - (1.0 / 3.0)).abs() <= 1e-12);
+
+        let flat = ta_strategies::double_ma::Metrics::default();
+        assert_eq!(derived_directional_bias(&flat), 0.0);
     }
 
     #[test]
@@ -13776,7 +14680,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: true,
+            include_trade_metrics: true,
             hurdle_tau: None,
         };
 
@@ -14031,7 +14935,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14111,7 +15015,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14188,7 +15092,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14492,7 +15396,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: true,
+            include_trade_metrics: true,
             hurdle_tau: None,
         };
 
@@ -14552,7 +15456,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14625,7 +15529,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14712,7 +15616,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14776,7 +15680,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14850,7 +15754,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -14930,7 +15834,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15129,7 +16033,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15215,7 +16119,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15288,7 +16192,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15361,7 +16265,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15456,7 +16360,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15548,7 +16452,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -15635,7 +16539,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let cpu_res = run_double_ma_optimization_blocking_with_candles(
@@ -15742,7 +16646,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -15811,7 +16715,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
             let hybrid_req = DoubleMaRequest {
@@ -15819,7 +16723,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
                 ..cpu_req.clone()
             };
@@ -15935,7 +16839,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -16004,7 +16908,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -16080,7 +16984,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -16161,7 +17065,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -16265,7 +17169,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
 
@@ -16364,7 +17268,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let req_gpu = DoubleMaRequest {
@@ -16427,14 +17331,14 @@ mod tests {
             - gpu.best_metrics.max_underwater_duration_bars as i64)
             .abs();
         let trades_delta = (cpu.best_metrics.trades as i64 - gpu.best_metrics.trades as i64).abs();
-        let closed_trades_delta =
-            (expected_trade_stats.closed_trades as i64 - gpu.best_metrics.closed_trades as i64).abs();
+        let closed_trades_delta = (expected_trade_stats.closed_trades as i64
+            - gpu.best_metrics.closed_trades as i64)
+            .abs();
         let winning_trades_delta =
             (expected_trade_stats.wins as i64 - gpu.best_metrics.winning_trades as i64).abs();
         let losing_trades_delta =
             (expected_trade_stats.losses as i64 - gpu.best_metrics.losing_trades as i64).abs();
-        let gross_profit_delta = (expected_trade_stats.avg_win
-            * expected_trade_stats.wins as f64
+        let gross_profit_delta = (expected_trade_stats.avg_win * expected_trade_stats.wins as f64
             - gpu.best_metrics.gross_profit)
             .abs();
         let gross_loss_delta = ((-expected_trade_stats.avg_loss)
@@ -16551,7 +17455,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
             let req_gpu = DoubleMaRequest {
@@ -16581,8 +17485,7 @@ mod tests {
             let gpu_score = objective_score(&gpu.best_metrics, objective);
             let score_delta = (cpu_score - gpu_score).abs();
             let underwater_fraction_delta =
-                (cpu.best_metrics.underwater_fraction - gpu.best_metrics.underwater_fraction)
-                    .abs();
+                (cpu.best_metrics.underwater_fraction - gpu.best_metrics.underwater_fraction).abs();
             let underwater_duration_delta = (cpu.best_metrics.max_underwater_duration_bars as i64
                 - gpu.best_metrics.max_underwater_duration_bars as i64)
                 .abs();
@@ -16654,7 +17557,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: Some(0.01),
             };
             let req_gpu = DoubleMaRequest {
@@ -16749,7 +17652,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -16829,7 +17732,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
 
@@ -16928,7 +17831,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17009,7 +17912,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17082,7 +17985,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -17152,7 +18055,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17207,6 +18110,7 @@ mod tests {
                 sharpe: 1.25,
                 ..Metrics::default()
             },
+            best_score: Some(1.25),
             top: vec![(
                 DoubleMaParams {
                     fast_len: 10,
@@ -17219,7 +18123,9 @@ mod tests {
                     ..Metrics::default()
                 },
             )],
+            top_scores: Some(vec![1.25]),
             all: None,
+            all_scores: None,
             heatmap: None,
             num_combos: 64,
             num_candles: 1000,
@@ -17235,6 +18141,7 @@ mod tests {
                 sharpe: 1.75,
                 ..Metrics::default()
             },
+            best_score: Some(1.75),
             top: vec![(
                 DoubleMaParams {
                     fast_len: 14,
@@ -17247,7 +18154,9 @@ mod tests {
                     ..Metrics::default()
                 },
             )],
+            top_scores: Some(vec![1.75]),
             all: None,
+            all_scores: None,
             heatmap: None,
             num_combos: 81,
             num_candles: 1000,
@@ -17354,7 +18263,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17410,7 +18319,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17460,7 +18369,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17510,7 +18419,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17560,7 +18469,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17610,7 +18519,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17660,7 +18569,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17710,7 +18619,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17766,7 +18675,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17822,7 +18731,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17878,7 +18787,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17934,7 +18843,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -17990,7 +18899,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -18046,7 +18955,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -18102,7 +19011,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -18691,7 +19600,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -18760,7 +19669,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -19093,8 +20002,53 @@ mod tests {
         assert!((summary.min_score - 0.98).abs() <= 1.0e-12);
         assert!((summary.max_score - 1.03).abs() <= 1.0e-12);
         assert!((summary.peak_delta - 0.03).abs() <= 1.0e-12);
+        assert!((summary.basin_min_score - 0.98).abs() <= 1.0e-12);
+        assert!((summary.basin_floor_stability - (1.0 / 1.02)).abs() <= 1.0e-12);
+        assert!((summary.roughness_rms_delta - 0.01949358868961793).abs() <= 1.0e-12);
+        assert!((summary.roughness_stability - 0.980879145385629).abs() <= 1.0e-12);
+        assert!((summary.curvature_penalty - 0.005).abs() <= 1.0e-12);
+        assert!((summary.curvature_stability - (1.0 / 1.005)).abs() <= 1.0e-12);
         assert!(summary.plateau_score >= 0.78);
         assert_eq!(summary.plateau_label, "Strong");
+        let agreement = summary
+            .score_agreement
+            .as_ref()
+            .expect("score agreement summary");
+        assert_eq!(agreement.point_count, 6);
+        assert!(agreement.current_vs_objective_rank_corr.is_finite());
+        assert!(agreement.current_vs_balanced_rank_corr.is_finite());
+        assert!(agreement.current_vs_active_sortino_rank_corr.is_finite());
+        assert!(agreement.current_vs_omega_vs_sharpe_rank_corr.is_finite());
+        assert!(agreement.current_vs_robust_margin_rank_corr.is_finite());
+        assert!(agreement.agreement_floor.is_finite());
+        assert!(agreement.agreement_mean.is_finite());
+        let explanation = summary
+            .explanation
+            .as_ref()
+            .expect("shortlist explanation summary");
+        assert_eq!(explanation.point_count, 6);
+        assert_eq!(explanation.base_current_rank, 4);
+        assert_eq!(explanation.base_objective_rank, 1);
+        assert_eq!(explanation.pareto_nondominated_count, 1);
+        assert!(!explanation.base_is_pareto_nondominated);
+        assert_eq!(explanation.base_dominates_neighbors, 2);
+        assert_eq!(explanation.neighbors_dominate_base, 3);
+        assert_eq!(explanation.dominance_margin, -1);
+        assert!((explanation.base_hypervolume_proxy - 0.4).abs() <= 1.0e-12);
+        assert_eq!(explanation.hypervolume_proxy_rank, 4);
+        assert!((explanation.hypervolume_proxy_share - (2.0 / 15.0)).abs() <= 1.0e-12);
+        assert_eq!(explanation.dominance_label, "Fragile");
+    }
+
+    #[test]
+    fn spearman_rank_corr_reports_expected_directionality() {
+        let aligned = spearman_rank_corr(&[3.0, 2.0, 1.0], &[30.0, 20.0, 10.0]);
+        let inverted = spearman_rank_corr(&[3.0, 2.0, 1.0], &[10.0, 20.0, 30.0]);
+        let tied = spearman_rank_corr(&[3.0, 3.0, 1.0], &[2.0, 2.0, 0.0]);
+
+        assert!((aligned - 1.0).abs() <= 1.0e-12);
+        assert!((inverted + 1.0).abs() <= 1.0e-12);
+        assert!((tied - 1.0).abs() <= 1.0e-12);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -19137,7 +20091,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -19201,7 +20155,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
 
@@ -19265,7 +20219,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -19303,7 +20257,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -19371,7 +20325,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -19407,7 +20361,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -19519,7 +20473,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             },
             &candles,
@@ -19572,7 +20526,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             },
             &candles,
@@ -19625,7 +20579,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             },
             &candles,
@@ -19690,7 +20644,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -19726,7 +20680,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -19851,7 +20805,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -19887,7 +20841,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -20074,7 +21028,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -20126,6 +21080,7 @@ mod tests {
             DoubleMaShortlistUnionMode::Lexicographic,
             DoubleMaShortlistUnionMode::Pareto,
             DoubleMaShortlistUnionMode::EpsilonFront,
+            DoubleMaShortlistUnionMode::WeightedRank,
         ] {
             let req_union = DoubleMaRequest {
                 backend: Backend::GpuKernel { device_id: 0 },
@@ -20160,7 +21115,7 @@ mod tests {
                 dynamic_strategy_ir: None,
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
-               include_trade_metrics: false,
+                include_trade_metrics: false,
                 hurdle_tau: None,
             };
 
@@ -20261,7 +21216,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -20297,7 +21252,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -20569,7 +21524,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -20633,6 +21588,29 @@ mod tests {
             neighborhood.neighbor_count,
             neighborhood.point_count.saturating_sub(1)
         );
+        let agreement = neighborhood
+            .score_agreement
+            .as_ref()
+            .expect("score agreement summary");
+        assert_eq!(agreement.point_count, neighborhood.point_count);
+        assert!(agreement.current_vs_objective_rank_corr.is_finite());
+        assert!(agreement.current_vs_balanced_rank_corr.is_finite());
+        assert!(agreement.current_vs_active_sortino_rank_corr.is_finite());
+        assert!(agreement.current_vs_omega_vs_sharpe_rank_corr.is_finite());
+        assert!(agreement.current_vs_robust_margin_rank_corr.is_finite());
+        assert!(agreement.agreement_floor.is_finite());
+        assert!(agreement.agreement_mean.is_finite());
+        let explanation = neighborhood
+            .explanation
+            .as_ref()
+            .expect("shortlist explanation summary");
+        assert_eq!(explanation.point_count, neighborhood.point_count);
+        assert!(explanation.base_current_rank >= 1);
+        assert!(explanation.base_objective_rank >= 1);
+        assert!(explanation.pareto_nondominated_count >= 1);
+        assert!(explanation.base_hypervolume_proxy.is_finite());
+        assert!(explanation.hypervolume_proxy_share.is_finite());
+        assert!(explanation.hypervolume_proxy_rank >= 1);
 
         let expected_local = compute_double_ma_local_stability_blocking_with_candles(
             DoubleMaLocalStabilityRequest {
@@ -20671,6 +21649,120 @@ mod tests {
         assert!((neighborhood.min_score - expected_neighborhood.min_score).abs() <= 1.0e-9);
         assert!((neighborhood.max_score - expected_neighborhood.max_score).abs() <= 1.0e-9);
         assert!((neighborhood.peak_delta - expected_neighborhood.peak_delta).abs() <= 1.0e-9);
+        assert!(
+            (neighborhood.basin_min_score - expected_neighborhood.basin_min_score).abs() <= 1.0e-9
+        );
+        assert!(
+            (neighborhood.basin_floor_stability - expected_neighborhood.basin_floor_stability)
+                .abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (neighborhood.roughness_rms_delta - expected_neighborhood.roughness_rms_delta).abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (neighborhood.roughness_stability - expected_neighborhood.roughness_stability).abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (neighborhood.curvature_penalty - expected_neighborhood.curvature_penalty).abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (neighborhood.curvature_stability - expected_neighborhood.curvature_stability).abs()
+                <= 1.0e-9
+        );
+        let expected_agreement = expected_neighborhood
+            .score_agreement
+            .as_ref()
+            .expect("expected agreement summary");
+        assert!(
+            (agreement.current_vs_objective_rank_corr
+                - expected_agreement.current_vs_objective_rank_corr)
+                .abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (agreement.current_vs_balanced_rank_corr
+                - expected_agreement.current_vs_balanced_rank_corr)
+                .abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (agreement.current_vs_active_sortino_rank_corr
+                - expected_agreement.current_vs_active_sortino_rank_corr)
+                .abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (agreement.current_vs_omega_vs_sharpe_rank_corr
+                - expected_agreement.current_vs_omega_vs_sharpe_rank_corr)
+                .abs()
+                <= 1.0e-9
+        );
+        assert!(
+            (agreement.current_vs_robust_margin_rank_corr
+                - expected_agreement.current_vs_robust_margin_rank_corr)
+                .abs()
+                <= 1.0e-9
+        );
+        assert!((agreement.agreement_floor - expected_agreement.agreement_floor).abs() <= 1.0e-9);
+        assert!((agreement.agreement_mean - expected_agreement.agreement_mean).abs() <= 1.0e-9);
+        assert_eq!(
+            agreement.agreement_label,
+            expected_agreement.agreement_label
+        );
+        let expected_explanation = expected_neighborhood
+            .explanation
+            .as_ref()
+            .expect("expected explanation summary");
+        assert_eq!(
+            explanation.base_current_rank,
+            expected_explanation.base_current_rank
+        );
+        assert_eq!(
+            explanation.base_objective_rank,
+            expected_explanation.base_objective_rank
+        );
+        assert_eq!(
+            explanation.pareto_nondominated_count,
+            expected_explanation.pareto_nondominated_count
+        );
+        assert_eq!(
+            explanation.base_is_pareto_nondominated,
+            expected_explanation.base_is_pareto_nondominated
+        );
+        assert_eq!(
+            explanation.base_dominates_neighbors,
+            expected_explanation.base_dominates_neighbors
+        );
+        assert_eq!(
+            explanation.neighbors_dominate_base,
+            expected_explanation.neighbors_dominate_base
+        );
+        assert_eq!(
+            explanation.dominance_margin,
+            expected_explanation.dominance_margin
+        );
+        assert!(
+            (explanation.base_hypervolume_proxy - expected_explanation.base_hypervolume_proxy)
+                .abs()
+                <= 1.0e-9
+        );
+        assert_eq!(
+            explanation.hypervolume_proxy_rank,
+            expected_explanation.hypervolume_proxy_rank
+        );
+        assert!(
+            (explanation.hypervolume_proxy_share - expected_explanation.hypervolume_proxy_share)
+                .abs()
+                <= 1.0e-9
+        );
+        assert_eq!(
+            explanation.dominance_label,
+            expected_explanation.dominance_label
+        );
 
         match prev_global_topk {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
@@ -20734,7 +21826,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
         let constraints = req.constraints.clone();
@@ -20833,7 +21925,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -20938,13 +22030,13 @@ mod tests {
         assert!(!lines.is_empty(), "expected non-empty csv");
         assert_eq!(
             lines[0],
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,downside_frequency,downside_severity,ulcer_index,omega,kappa_tau,martin_ratio,trades,exposure,net_exposure,long_mean_return,short_mean_return,underwater_fraction,max_underwater_duration_bars,closed_trades,winning_trades,losing_trades,gross_profit,gross_loss,win_rate,avg_win,avg_loss,profit_factor,expectancy,active_mean,active_sortino,drawdown_chronicity,downside_share,fee_stress_pnl,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,downside_frequency,downside_severity,ulcer_index,omega,kappa_tau,martin_ratio,trades,exposure,net_exposure,long_mean_return,short_mean_return,underwater_fraction,max_underwater_duration_bars,closed_trades,winning_trades,losing_trades,gross_profit,gross_loss,win_rate,avg_win,avg_loss,profit_factor,expectancy,active_mean,active_downside_deviation,active_sortino,drawdown_chronicity,downside_share,long_exposure,short_exposure,directional_bias,fee_stress_pnl,score"
         );
         assert_eq!(lines.len(), res.num_combos + 1);
         for (i, line) in lines.iter().enumerate().skip(1) {
             assert_eq!(
                 line.split(',').count(),
-                37,
+                41,
                 "bad csv column count on line {i}"
             );
         }
@@ -21004,7 +22096,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21166,7 +22258,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21236,7 +22328,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21304,7 +22396,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21374,7 +22466,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21444,7 +22536,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21518,7 +22610,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21591,7 +22683,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21661,7 +22753,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21731,7 +22823,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21801,7 +22893,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21871,7 +22963,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -21940,7 +23032,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22013,7 +23105,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22083,7 +23175,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22153,7 +23245,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22223,7 +23315,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22293,7 +23385,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22363,7 +23455,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22433,7 +23525,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22503,7 +23595,7 @@ mod tests {
             dynamic_strategy_ir: None,
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
-           include_trade_metrics: false,
+            include_trade_metrics: false,
             hurdle_tau: None,
         };
 
@@ -22527,11 +23619,3 @@ mod tests {
         assert_eq!(h1.values, h2.values);
     }
 }
-
-
-
-
-
-
-
-

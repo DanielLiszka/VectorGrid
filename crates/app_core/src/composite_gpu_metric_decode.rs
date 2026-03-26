@@ -81,4 +81,3 @@ pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
         max_underwater_duration_bars: 0,
     }
 }
-

@@ -28,13 +28,16 @@ use vector_ta::utilities::data_loader::{source_type, Candles};
 use crate::alloc_policy::{alloc_uninit_copy, alloc_uninit_f32, resize_uninit_f32};
 use crate::composite_validate::SpaBenchmarkKind;
 use crate::double_ma::{
-    derived_active_mean, derived_active_sortino, derived_downside_share,
-    derived_drawdown_chronicity, derived_mean, effective_score, exact_fee_stress_pnl,
-    metrics_pass_constraints, objective_score, score_mode_metrics_count_floor, score_mode_score_fn,
-    DoubleMaConstraints, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
-    DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode, ShortlistSliceBenchmarkRelativeSummary,
-    ShortlistSliceCandidateDiagnostics, ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics,
-    ShortlistSliceSnapshot,
+    derived_active_downside_deviation, derived_active_mean, derived_active_sortino,
+    derived_directional_bias, derived_downside_share, derived_drawdown_chronicity,
+    derived_long_exposure, derived_mean, derived_short_exposure, effective_sample_lcb_10_score,
+    effective_score, exact_fee_stress_pnl, metrics_pass_constraints, objective_score,
+    PairObservationScoreContextResolved,
+    score_mode_metrics_count_floor, score_mode_needs_pair_observation_context,
+    score_mode_score_fn, DoubleMaConstraints, DoubleMaScoreMode,
+    DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
+    ShortlistSliceBenchmarkRelativeSummary, ShortlistSliceCandidateDiagnostics,
+    ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics, ShortlistSliceSnapshot,
 };
 use crate::progress::ProgressSink;
 use crate::strategy_gpu_program::{
@@ -803,6 +806,8 @@ struct DeviceConstraintArgs {
     max_dd: f32,
     use_min_sharpe: i32,
     min_sharpe: f32,
+    use_min_sortino: i32,
+    min_sortino: f32,
     use_min_calmar: i32,
     min_calmar: f32,
     use_max_volatility: i32,
@@ -843,6 +848,9 @@ fn min_metrics_count_for_constraints(constraints: Option<&DoubleMaConstraints>) 
     if cfg.max_exposure.is_some() || cfg.max_abs_net_exposure.is_some() {
         metrics_count = metrics_count.max(7);
     }
+    if cfg.min_sortino.is_some() {
+        metrics_count = metrics_count.max(8);
+    }
     if cfg.max_downside_deviation.is_some() {
         metrics_count = metrics_count.max(8);
     }
@@ -874,6 +882,8 @@ fn build_device_constraint_args(
             .unwrap_or(f32::INFINITY),
         use_min_sharpe: i32::from(cfg.min_sharpe.is_some()),
         min_sharpe: cfg.min_sharpe.unwrap_or(f32::NEG_INFINITY as f64) as f32,
+        use_min_sortino: i32::from(cfg.min_sortino.is_some()),
+        min_sortino: cfg.min_sortino.unwrap_or(f32::NEG_INFINITY as f64) as f32,
         use_min_calmar: i32::from(cfg.min_calmar.is_some()),
         min_calmar: cfg.min_calmar.unwrap_or(f32::NEG_INFINITY as f64) as f32,
         use_max_volatility: i32::from(cfg.max_volatility.is_some()),
@@ -971,12 +981,11 @@ fn decode_tm_flex_metrics_row(
     } else {
         0.0
     };
-    let max_underwater_duration_bars =
-        if metrics_count > METRIC_IDX_MAX_UNDERWATER_DURATION_BARS {
-            metric_u32(METRIC_IDX_MAX_UNDERWATER_DURATION_BARS)
-        } else {
-            0
-        };
+    let max_underwater_duration_bars = if metrics_count > METRIC_IDX_MAX_UNDERWATER_DURATION_BARS {
+        metric_u32(METRIC_IDX_MAX_UNDERWATER_DURATION_BARS)
+    } else {
+        0
+    };
     let martin_ratio = if metrics_count > METRIC_IDX_ULCER_INDEX {
         martin_ratio_from_components(pnl, ulcer_index)
     } else {
@@ -1454,11 +1463,23 @@ fn device_compute_capability(device: Device) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EffectiveSampleScoreContext {
+    first_valid: usize,
+    regime_first_valid: usize,
+    eval_start: usize,
+    eval_end: usize,
+    total_bars: usize,
+    trade_on_next_bar: bool,
+}
+
 thread_local! {
     static CUDA_KERNEL_RUNTIME: RefCell<HashMap<u32, CudaKernelRuntime>> = RefCell::new(HashMap::new());
     static DYNAMIC_GPU_METRICS_SCRATCH: RefCell<HashMap<(u32, usize), DeviceBuffer<f32>>> = RefCell::new(HashMap::new());
     static LAST_KERNEL_EXECUTOR_TIMING: RefCell<Option<KernelExecutorTimingMs>> = RefCell::new(None);
     static LAST_SHORTLIST_SLICE_DIAGNOSTICS: RefCell<Option<ShortlistSliceDiagnostics>> = RefCell::new(None);
+    static LAST_SCORE_OBSERVATION_CONTEXT: RefCell<Option<PairObservationScoreContextResolved>> = RefCell::new(None);
+    static EFFECTIVE_SAMPLE_SCORE_CONTEXT: RefCell<Option<EffectiveSampleScoreContext>> = RefCell::new(None);
 }
 
 fn clear_last_kernel_executor_timing() {
@@ -1483,6 +1504,12 @@ fn clear_last_shortlist_slice_diagnostics() {
     });
 }
 
+fn clear_last_score_observation_context() {
+    LAST_SCORE_OBSERVATION_CONTEXT.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
 fn record_last_shortlist_slice_diagnostics(diag: ShortlistSliceDiagnostics) {
     LAST_SHORTLIST_SLICE_DIAGNOSTICS.with(|cell| {
         *cell.borrow_mut() = Some(diag);
@@ -1491,6 +1518,16 @@ fn record_last_shortlist_slice_diagnostics(diag: ShortlistSliceDiagnostics) {
 
 pub(crate) fn take_last_shortlist_slice_diagnostics() -> Option<ShortlistSliceDiagnostics> {
     LAST_SHORTLIST_SLICE_DIAGNOSTICS.with(|cell| cell.borrow_mut().take())
+}
+
+fn record_last_score_observation_context(ctx: PairObservationScoreContextResolved) {
+    LAST_SCORE_OBSERVATION_CONTEXT.with(|cell| {
+        *cell.borrow_mut() = Some(ctx);
+    });
+}
+
+pub(crate) fn take_last_score_observation_context() -> Option<PairObservationScoreContextResolved> {
+    LAST_SCORE_OBSERVATION_CONTEXT.with(|cell| cell.borrow_mut().take())
 }
 
 fn emit_progress(
@@ -3851,6 +3888,71 @@ fn shortlist_candidate_track_record_bars(
     end_t.saturating_sub(start_t).max(2)
 }
 
+struct EffectiveSampleScoreContextGuard {
+    prev: Option<EffectiveSampleScoreContext>,
+}
+
+impl Drop for EffectiveSampleScoreContextGuard {
+    fn drop(&mut self) {
+        EFFECTIVE_SAMPLE_SCORE_CONTEXT.with(|cell| {
+            *cell.borrow_mut() = self.prev.take();
+        });
+    }
+}
+
+fn install_effective_sample_score_context(
+    ctx: EffectiveSampleScoreContext,
+) -> EffectiveSampleScoreContextGuard {
+    let prev = EFFECTIVE_SAMPLE_SCORE_CONTEXT.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let prev = *slot;
+        *slot = Some(ctx);
+        prev
+    });
+    EffectiveSampleScoreContextGuard { prev }
+}
+
+fn effective_sample_lcb_10_pair_score(params: &DoubleMaParams, metrics: &Metrics) -> f64 {
+    EFFECTIVE_SAMPLE_SCORE_CONTEXT.with(|cell| {
+        let Some(ctx) = *cell.borrow() else {
+            debug_assert!(
+                false,
+                "effective_sample_lcb_10_pair_score requires installed observation context"
+            );
+            return effective_sample_lcb_10_score(metrics, 2);
+        };
+        let n_obs = shortlist_candidate_track_record_bars(
+            ctx.first_valid,
+            ctx.regime_first_valid,
+            ctx.eval_start,
+            ctx.eval_end,
+            ctx.total_bars,
+            params.fast_len,
+            params.slow_len,
+            ctx.trade_on_next_bar,
+        );
+        effective_sample_lcb_10_score(metrics, n_obs)
+    })
+}
+
+fn kernel_effective_score_for_pair(
+    params: &DoubleMaParams,
+    metrics: &Metrics,
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+) -> f64 {
+    if matches!(score_mode, Some(DoubleMaScoreMode::EffectiveSampleLcb10)) {
+        let score = effective_sample_lcb_10_pair_score(params, metrics);
+        if score.is_finite() {
+            score
+        } else {
+            f64::NEG_INFINITY
+        }
+    } else {
+        effective_score(metrics, objective, score_mode)
+    }
+}
+
 fn shortlist_slice_ranges(
     rows: &[(DoubleMaParams, Metrics)],
     mode: ShortlistSliceMode,
@@ -4090,6 +4192,57 @@ fn shortlist_union_front_ranks(score_rows: &[Vec<f64>], eps: &[f64]) -> Vec<usiz
     front_ranks
 }
 
+fn shortlist_union_rank_rows(score_rows: &[Vec<f64>]) -> Vec<Vec<usize>> {
+    if score_rows.is_empty() {
+        return Vec::new();
+    }
+    let height = score_rows.len();
+    let width = score_rows[0].len();
+    let mut ranks = vec![vec![0usize; width]; height];
+    for col in 0..width {
+        let mut ordered: Vec<(usize, f64)> = score_rows
+            .iter()
+            .enumerate()
+            .map(|(row_idx, scores)| (row_idx, scores.get(col).copied().unwrap_or(0.0)))
+            .collect();
+        ordered.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut current_rank = 0usize;
+        let mut previous_score: Option<f64> = None;
+        for (position, (row_idx, score)) in ordered.into_iter().enumerate() {
+            if let Some(previous) = previous_score {
+                if score.total_cmp(&previous) != std::cmp::Ordering::Equal {
+                    current_rank = position;
+                }
+            }
+            ranks[row_idx][col] = current_rank;
+            previous_score = Some(score);
+        }
+    }
+    ranks
+}
+
+fn shortlist_union_rank_weights(width: usize) -> Vec<f64> {
+    (0..width).map(|idx| 1.0 / (idx as f64 + 1.0)).collect()
+}
+
+fn shortlist_union_weighted_rank_penalties(score_rows: &[Vec<f64>]) -> Vec<f64> {
+    if score_rows.is_empty() {
+        return Vec::new();
+    }
+    let rank_rows = shortlist_union_rank_rows(score_rows);
+    let weights = shortlist_union_rank_weights(score_rows[0].len());
+    rank_rows
+        .into_iter()
+        .map(|row_ranks| {
+            row_ranks
+                .iter()
+                .zip(weights.iter())
+                .map(|(&rank, &weight)| rank as f64 * weight)
+                .sum::<f64>()
+        })
+        .collect()
+}
+
 pub(crate) fn rerank_shortlist_by_union_mode(
     rows: &[(DoubleMaParams, Metrics)],
     primary_objective: ObjectiveKind,
@@ -4119,16 +4272,32 @@ pub(crate) fn rerank_shortlist_by_union_mode(
     } else {
         vec![0usize; rows.len()]
     };
+    let weighted_rank_penalties = if matches!(mode, DoubleMaShortlistUnionMode::WeightedRank) {
+        shortlist_union_weighted_rank_penalties(&score_rows)
+    } else {
+        vec![0.0; rows.len()]
+    };
 
-    let mut ranked: Vec<(DoubleMaParams, Metrics, Vec<f64>, usize)> = rows
+    let mut ranked: Vec<(DoubleMaParams, Metrics, Vec<f64>, usize, f64)> = rows
         .iter()
         .cloned()
         .zip(score_rows)
         .zip(front_ranks)
-        .map(|(((params, metrics), scores), front_rank)| (params, metrics, scores, front_rank))
+        .zip(weighted_rank_penalties)
+        .map(
+            |((((params, metrics), scores), front_rank), weighted_rank_penalty)| {
+                (params, metrics, scores, front_rank, weighted_rank_penalty)
+            },
+        )
         .collect();
 
     ranked.sort_by(|a, b| {
+        if matches!(mode, DoubleMaShortlistUnionMode::WeightedRank) {
+            let weighted_rank_cmp = a.4.total_cmp(&b.4);
+            if weighted_rank_cmp != std::cmp::Ordering::Equal {
+                return weighted_rank_cmp;
+            }
+        }
         if !matches!(mode, DoubleMaShortlistUnionMode::Lexicographic) {
             let front_cmp = a.3.cmp(&b.3);
             if front_cmp != std::cmp::Ordering::Equal {
@@ -4146,7 +4315,7 @@ pub(crate) fn rerank_shortlist_by_union_mode(
 
     ranked
         .into_iter()
-        .map(|(params, metrics, _, _)| (params, metrics))
+        .map(|(params, metrics, _, _, _)| (params, metrics))
         .collect()
 }
 
@@ -5237,6 +5406,8 @@ fn reduce_metric_rows_topk_on_device(
             let mut max_dd = constraint_args.max_dd;
             let mut use_min_sharpe = constraint_args.use_min_sharpe;
             let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_sortino = constraint_args.use_min_sortino;
+            let mut min_sortino = constraint_args.min_sortino;
             let mut use_min_calmar = constraint_args.use_min_calmar;
             let mut min_calmar = constraint_args.min_calmar;
             let mut use_max_volatility = constraint_args.use_max_volatility;
@@ -5266,6 +5437,8 @@ fn reduce_metric_rows_topk_on_device(
                 &mut max_dd as *mut _ as *mut c_void,
                 &mut use_min_sharpe as *mut _ as *mut c_void,
                 &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_sortino as *mut _ as *mut c_void,
+                &mut min_sortino as *mut _ as *mut c_void,
                 &mut use_min_calmar as *mut _ as *mut c_void,
                 &mut min_calmar as *mut _ as *mut c_void,
                 &mut use_max_volatility as *mut _ as *mut c_void,
@@ -5321,7 +5494,7 @@ fn reduce_metric_rows_topk_on_device(
             let mut rows_i = rows_len as i32;
             let mut m_i = metrics_count as i32;
             let mut obj_i = objective_i;
-        let mut hurdle_tau_i = hurdle_tau;
+            let mut hurdle_tau_i = hurdle_tau;
             let mut topk_i = topk_select as i32;
             let mut in_ptr = if in_is_a {
                 scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
@@ -5344,6 +5517,8 @@ fn reduce_metric_rows_topk_on_device(
                 let mut max_dd = constraint_args.max_dd;
                 let mut use_min_sharpe = constraint_args.use_min_sharpe;
                 let mut min_sharpe = constraint_args.min_sharpe;
+                let mut use_min_sortino = constraint_args.use_min_sortino;
+                let mut min_sortino = constraint_args.min_sortino;
                 let mut use_min_calmar = constraint_args.use_min_calmar;
                 let mut min_calmar = constraint_args.min_calmar;
                 let mut use_max_volatility = constraint_args.use_max_volatility;
@@ -5365,7 +5540,7 @@ fn reduce_metric_rows_topk_on_device(
                     &mut rows_i as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                    &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut in_len_i as *mut _ as *mut c_void,
@@ -5375,6 +5550,8 @@ fn reduce_metric_rows_topk_on_device(
                     &mut max_dd as *mut _ as *mut c_void,
                     &mut use_min_sharpe as *mut _ as *mut c_void,
                     &mut min_sharpe as *mut _ as *mut c_void,
+                    &mut use_min_sortino as *mut _ as *mut c_void,
+                    &mut min_sortino as *mut _ as *mut c_void,
                     &mut use_min_calmar as *mut _ as *mut c_void,
                     &mut min_calmar as *mut _ as *mut c_void,
                     &mut use_max_volatility as *mut _ as *mut c_void,
@@ -5410,7 +5587,7 @@ fn reduce_metric_rows_topk_on_device(
                     &mut rows_i as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                    &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut in_len_i as *mut _ as *mut c_void,
@@ -5727,6 +5904,8 @@ fn select_tile_topk_rows_for_objective(
             let mut max_dd = constraint_args.max_dd;
             let mut use_min_sharpe = constraint_args.use_min_sharpe;
             let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_sortino = constraint_args.use_min_sortino;
+            let mut min_sortino = constraint_args.min_sortino;
             let mut use_min_calmar = constraint_args.use_min_calmar;
             let mut min_calmar = constraint_args.min_calmar;
             let mut use_max_volatility = constraint_args.use_max_volatility;
@@ -5761,6 +5940,8 @@ fn select_tile_topk_rows_for_objective(
                 &mut max_dd as *mut _ as *mut c_void,
                 &mut use_min_sharpe as *mut _ as *mut c_void,
                 &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_sortino as *mut _ as *mut c_void,
+                &mut min_sortino as *mut _ as *mut c_void,
                 &mut use_min_calmar as *mut _ as *mut c_void,
                 &mut min_calmar as *mut _ as *mut c_void,
                 &mut use_max_volatility as *mut _ as *mut c_void,
@@ -5838,7 +6019,7 @@ fn select_tile_topk_rows_for_objective(
             let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
             let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
             let mut obj_i = objective_i;
-        let mut hurdle_tau_i = hurdle_tau;
+            let mut hurdle_tau_i = hurdle_tau;
             let mut topk_i = topk_select as i32;
             let mut in_ptr = if in_is_a {
                 cand_a.as_device_ptr().as_raw()
@@ -5868,6 +6049,8 @@ fn select_tile_topk_rows_for_objective(
                 let mut max_dd = constraint_args.max_dd;
                 let mut use_min_sharpe = constraint_args.use_min_sharpe;
                 let mut min_sharpe = constraint_args.min_sharpe;
+                let mut use_min_sortino = constraint_args.use_min_sortino;
+                let mut min_sortino = constraint_args.min_sortino;
                 let mut use_min_calmar = constraint_args.use_min_calmar;
                 let mut min_calmar = constraint_args.min_calmar;
                 let mut use_max_volatility = constraint_args.use_max_volatility;
@@ -5894,7 +6077,7 @@ fn select_tile_topk_rows_for_objective(
                     &mut f_per as *mut _ as *mut c_void,
                     &mut s_per as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                    &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut in_len_i as *mut _ as *mut c_void,
@@ -5904,6 +6087,8 @@ fn select_tile_topk_rows_for_objective(
                     &mut max_dd as *mut _ as *mut c_void,
                     &mut use_min_sharpe as *mut _ as *mut c_void,
                     &mut min_sharpe as *mut _ as *mut c_void,
+                    &mut use_min_sortino as *mut _ as *mut c_void,
+                    &mut min_sortino as *mut _ as *mut c_void,
                     &mut use_min_calmar as *mut _ as *mut c_void,
                     &mut min_calmar as *mut _ as *mut c_void,
                     &mut use_max_volatility as *mut _ as *mut c_void,
@@ -5947,7 +6132,7 @@ fn select_tile_topk_rows_for_objective(
                     &mut f_per as *mut _ as *mut c_void,
                     &mut s_per as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                    &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
                     &mut in_ptr as *mut _ as *mut c_void,
                     &mut in_len_i as *mut _ as *mut c_void,
@@ -7069,7 +7254,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             }
             for (range_idx, &(eval_start_t, eval_end_t_raw)) in ranges.iter().enumerate() {
                 let eval_end_t = eval_end_t_raw.min(n);
-
                 if launch_pairs > 0 {
                     let backtest_t0 = replay_profile.as_ref().map(|_| Instant::now());
                     unsafe {
@@ -7377,7 +7561,12 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     {
                         let src_base = row_idx * tile_metrics_stride;
                         out_metrics[range_idx * combo_count + combo_idx] =
-                            decode_tm_flex_metrics_row(host_metrics, src_base, tile_metrics_stride, cfg.hurdle_tau);
+                            decode_tm_flex_metrics_row(
+                                host_metrics,
+                                src_base,
+                                tile_metrics_stride,
+                                cfg.hurdle_tau,
+                            );
                     }
                 }
                 if let (Some(t0), Some(p)) = (d2h_t0, replay_profile.as_mut()) {
@@ -7909,6 +8098,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     let device_id = cfg.device_id;
     clear_last_kernel_executor_timing();
     clear_last_shortlist_slice_diagnostics();
+    clear_last_score_observation_context();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
         let mut map = cell.borrow_mut();
         if !map.contains_key(&device_id) {
@@ -8120,7 +8310,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         let mut w = BufWriter::new(f);
         writeln!(
             w,
-            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,downside_frequency,downside_severity,ulcer_index,omega,kappa_tau,martin_ratio,trades,exposure,net_exposure,long_mean_return,short_mean_return,underwater_fraction,max_underwater_duration_bars,closed_trades,winning_trades,losing_trades,gross_profit,gross_loss,win_rate,avg_win,avg_loss,profit_factor,expectancy,active_mean,active_sortino,drawdown_chronicity,downside_share,fee_stress_pnl,score"
+            "fast_ma,slow_ma,fast_len,slow_len,pnl,sharpe,max_dd,downside_deviation,downside_frequency,downside_severity,ulcer_index,omega,kappa_tau,martin_ratio,trades,exposure,net_exposure,long_mean_return,short_mean_return,underwater_fraction,max_underwater_duration_bars,closed_trades,winning_trades,losing_trades,gross_profit,gross_loss,win_rate,avg_win,avg_loss,profit_factor,expectancy,active_mean,active_downside_deviation,active_sortino,drawdown_chronicity,downside_share,long_exposure,short_exposure,directional_bias,fee_stress_pnl,score"
         )
         .map_err(|e| e.to_string())?;
         Some(w)
@@ -8326,6 +8516,28 @@ fn optimize_double_ma_gpu_kernel_impl(
         ));
     }
 
+    let effective_sample_score_context = score_mode_needs_pair_observation_context(score_mode)
+        .then_some(EffectiveSampleScoreContext {
+            first_valid,
+            regime_first_valid,
+            eval_start: eval_start_t,
+            eval_end: eval_end_t,
+            total_bars: n,
+            trade_on_next_bar: strategy.trade_on_next_bar,
+        });
+    let _effective_sample_score_guard = effective_sample_score_context
+        .map(install_effective_sample_score_context);
+    if let Some(ctx) = effective_sample_score_context {
+        record_last_score_observation_context(PairObservationScoreContextResolved {
+            first_valid: ctx.first_valid,
+            regime_first_valid: ctx.regime_first_valid,
+            eval_start: ctx.eval_start,
+            eval_end: ctx.eval_end,
+            total_bars: ctx.total_bars,
+            trade_on_next_bar: ctx.trade_on_next_bar,
+        });
+    }
+
     let heatmap_cfg = if heatmap_bins > 0 {
         Some((
             *fast_periods.iter().min().unwrap_or(&0),
@@ -8338,7 +8550,9 @@ fn optimize_double_ma_gpu_kernel_impl(
     };
 
     let mut agg = StreamAggregator::new(objective, top_k, include_all, n);
-    if let Some(score_fn) = score_mode_score_fn(score_mode) {
+    if score_mode_needs_pair_observation_context(score_mode) {
+        agg = agg.with_pair_score_fn(effective_sample_lcb_10_pair_score);
+    } else if let Some(score_fn) = score_mode_score_fn(score_mode) {
         agg = agg.with_score_fn(score_fn);
     }
     if device_include_all {
@@ -9582,7 +9796,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut obj_i = objective_i;
-        let mut hurdle_tau_i = hurdle_tau;
+                        let mut hurdle_tau_i = hurdle_tau;
                         let mut bins_f = heatmap_bins as i32;
                         let mut bins_s = heatmap_bins as i32;
                         let mut f_min_i = f_min as i32;
@@ -9624,7 +9838,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_per as *mut _ as *mut c_void,
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                            &mut hurdle_tau_i as *mut _ as *mut c_void,
                             &mut bins_f as *mut _ as *mut c_void,
                             &mut bins_s as *mut _ as *mut c_void,
                             &mut f_min_i as *mut _ as *mut c_void,
@@ -9727,8 +9941,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                         if src_base + metrics_count > tile_host_buf.len() {
                             return Ok(());
                         }
-                        let metrics =
-                            decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count, cfg.hurdle_tau);
+                        let metrics = decode_tm_flex_metrics_row(
+                            &tile_host_buf,
+                            src_base,
+                            metrics_count,
+                            cfg.hurdle_tau,
+                        );
                         if metrics_pass_constraints(&metrics, constraints) {
                             let params = DoubleMaParams {
                                 fast_len,
@@ -9772,8 +9990,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                             if src_base + metrics_count > tile_host_buf.len() {
                                 return Ok(());
                             }
-                            let metrics =
-                                decode_tm_flex_metrics_row(&tile_host_buf, src_base, metrics_count, cfg.hurdle_tau);
+                            let metrics = decode_tm_flex_metrics_row(
+                                &tile_host_buf,
+                                src_base,
+                                metrics_count,
+                                cfg.hurdle_tau,
+                            );
                             if !metrics_pass_constraints(&metrics, constraints) {
                                 return Ok(());
                             }
@@ -9784,18 +10006,27 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 fast_ma_id: 0,
                                 slow_ma_id: 0,
                             };
-                            agg.push(params, metrics.clone());
+                            agg.push(params.clone(), metrics.clone());
 
                             if let Some(w) = export_writer.as_mut() {
-                                let score = effective_score(&metrics, objective, score_mode);
+                                let score = kernel_effective_score_for_pair(
+                                    &params,
+                                    &metrics,
+                                    objective,
+                                    score_mode,
+                                );
                                 let active_mean = derived_active_mean(&metrics);
+                                let active_downside_deviation =
+                                    derived_active_downside_deviation(&metrics);
                                 let active_sortino = derived_active_sortino(&metrics);
                                 let drawdown_chronicity = derived_drawdown_chronicity(&metrics);
                                 let downside_share = derived_downside_share(&metrics);
+                                let long_exposure = derived_long_exposure(&metrics);
+                                let short_exposure = derived_short_exposure(&metrics);
+                                let directional_bias = derived_directional_bias(&metrics);
                                 let fee_stress_pnl = exact_fee_stress_pnl(&metrics, strategy);
-                                let denom = metrics
-                                    .winning_trades
-                                    .saturating_add(metrics.losing_trades);
+                                let denom =
+                                    metrics.winning_trades.saturating_add(metrics.losing_trades);
                                 let win_rate = if denom > 0 {
                                     metrics.winning_trades as f64 / denom as f64
                                 } else {
@@ -9826,7 +10057,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 };
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
@@ -9859,9 +10090,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     profit_factor,
                                     expectancy,
                                     active_mean,
+                                    active_downside_deviation,
                                     active_sortino,
                                     drawdown_chronicity,
                                     downside_share,
+                                    long_exposure,
+                                    short_exposure,
+                                    directional_bias,
                                     fee_stress_pnl,
                                     score
                                 )
@@ -9920,7 +10155,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                     let mut obj_i = objective_i;
-        let mut hurdle_tau_i = hurdle_tau;
+                    let mut hurdle_tau_i = hurdle_tau;
                     let mut topk_i = topk_select as i32;
                     let mut pair_map_ptr = pair_index_map_ptr;
                     let mut pair_count_i = launch_pairs as i32;
@@ -9940,6 +10175,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut max_dd = constraint_args.max_dd;
                         let mut use_min_sharpe = constraint_args.use_min_sharpe;
                         let mut min_sharpe = constraint_args.min_sharpe;
+                        let mut use_min_sortino = constraint_args.use_min_sortino;
+                        let mut min_sortino = constraint_args.min_sortino;
                         let mut use_min_calmar = constraint_args.use_min_calmar;
                         let mut min_calmar = constraint_args.min_calmar;
                         let mut use_max_volatility = constraint_args.use_max_volatility;
@@ -9967,7 +10204,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_per as *mut _ as *mut c_void,
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                            &mut hurdle_tau_i as *mut _ as *mut c_void,
                             &mut topk_i as *mut _ as *mut c_void,
                             &mut use_min_trades as *mut _ as *mut c_void,
                             &mut min_trades as *mut _ as *mut c_void,
@@ -9975,6 +10212,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut max_dd as *mut _ as *mut c_void,
                             &mut use_min_sharpe as *mut _ as *mut c_void,
                             &mut min_sharpe as *mut _ as *mut c_void,
+                            &mut use_min_sortino as *mut _ as *mut c_void,
+                            &mut min_sortino as *mut _ as *mut c_void,
                             &mut use_min_calmar as *mut _ as *mut c_void,
                             &mut min_calmar as *mut _ as *mut c_void,
                             &mut use_max_volatility as *mut _ as *mut c_void,
@@ -10018,7 +10257,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut f_per as *mut _ as *mut c_void,
                             &mut s_per as *mut _ as *mut c_void,
                             &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                            &mut hurdle_tau_i as *mut _ as *mut c_void,
                             &mut topk_i as *mut _ as *mut c_void,
                             &mut pair_map_ptr as *mut _ as *mut c_void,
                             &mut pair_count_i as *mut _ as *mut c_void,
@@ -10054,7 +10293,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut obj_i = objective_i;
-        let mut hurdle_tau_i = hurdle_tau;
+                        let mut hurdle_tau_i = hurdle_tau;
                         let mut topk_i = topk_select as i32;
                         let mut in_ptr = if in_is_a {
                             cand_a.as_device_ptr().as_raw()
@@ -10084,6 +10323,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             let mut max_dd = constraint_args.max_dd;
                             let mut use_min_sharpe = constraint_args.use_min_sharpe;
                             let mut min_sharpe = constraint_args.min_sharpe;
+                            let mut use_min_sortino = constraint_args.use_min_sortino;
+                            let mut min_sortino = constraint_args.min_sortino;
                             let mut use_min_calmar = constraint_args.use_min_calmar;
                             let mut min_calmar = constraint_args.min_calmar;
                             let mut use_max_volatility = constraint_args.use_max_volatility;
@@ -10112,7 +10353,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut f_per as *mut _ as *mut c_void,
                                 &mut s_per as *mut _ as *mut c_void,
                                 &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                                &mut hurdle_tau_i as *mut _ as *mut c_void,
                                 &mut topk_i as *mut _ as *mut c_void,
                                 &mut in_ptr as *mut _ as *mut c_void,
                                 &mut in_len_i as *mut _ as *mut c_void,
@@ -10122,6 +10363,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut max_dd as *mut _ as *mut c_void,
                                 &mut use_min_sharpe as *mut _ as *mut c_void,
                                 &mut min_sharpe as *mut _ as *mut c_void,
+                                &mut use_min_sortino as *mut _ as *mut c_void,
+                                &mut min_sortino as *mut _ as *mut c_void,
                                 &mut use_min_calmar as *mut _ as *mut c_void,
                                 &mut min_calmar as *mut _ as *mut c_void,
                                 &mut use_max_volatility as *mut _ as *mut c_void,
@@ -10165,7 +10408,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut f_per as *mut _ as *mut c_void,
                                 &mut s_per as *mut _ as *mut c_void,
                                 &mut obj_i as *mut _ as *mut c_void,
-                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                                &mut hurdle_tau_i as *mut _ as *mut c_void,
                                 &mut topk_i as *mut _ as *mut c_void,
                                 &mut in_ptr as *mut _ as *mut c_void,
                                 &mut in_len_i as *mut _ as *mut c_void,
@@ -10398,15 +10641,30 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     cfg.hurdle_tau,
                                 );
 
-                                let score = effective_score(&metrics, objective, score_mode);
+                                let params = DoubleMaParams {
+                                    fast_len,
+                                    slow_len,
+                                    fast_ma_id: 0,
+                                    slow_ma_id: 0,
+                                };
+                                let score = kernel_effective_score_for_pair(
+                                    &params,
+                                    &metrics,
+                                    objective,
+                                    score_mode,
+                                );
                                 let active_mean = derived_active_mean(&metrics);
+                                let active_downside_deviation =
+                                    derived_active_downside_deviation(&metrics);
                                 let active_sortino = derived_active_sortino(&metrics);
                                 let drawdown_chronicity = derived_drawdown_chronicity(&metrics);
                                 let downside_share = derived_downside_share(&metrics);
+                                let long_exposure = derived_long_exposure(&metrics);
+                                let short_exposure = derived_short_exposure(&metrics);
+                                let directional_bias = derived_directional_bias(&metrics);
                                 let fee_stress_pnl = exact_fee_stress_pnl(&metrics, strategy);
-                                let denom = metrics
-                                    .winning_trades
-                                    .saturating_add(metrics.losing_trades);
+                                let denom =
+                                    metrics.winning_trades.saturating_add(metrics.losing_trades);
                                 let win_rate = if denom > 0 {
                                     metrics.winning_trades as f64 / denom as f64
                                 } else {
@@ -10438,7 +10696,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
                                 writeln!(
                                     w,
-                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                                     fast_ma.as_str(),
                                     slow_ma.as_str(),
                                     fast_len,
@@ -10471,9 +10729,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     profit_factor,
                                     expectancy,
                                     active_mean,
+                                    active_downside_deviation,
                                     active_sortino,
                                     drawdown_chronicity,
                                     downside_share,
+                                    long_exposure,
+                                    short_exposure,
+                                    directional_bias,
                                     fee_stress_pnl,
                                     score
                                 )
@@ -10516,9 +10778,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                     )?;
 
                     for r in 0..topk_select {
-                        let Some((fast_len, slow_len, metrics)) =
-                            decode_packed_topk_metric_row(&top_packed_host, r, metrics_count, cfg.hurdle_tau)
-                        else {
+                        let Some((fast_len, slow_len, metrics)) = decode_packed_topk_metric_row(
+                            &top_packed_host,
+                            r,
+                            metrics_count,
+                            cfg.hurdle_tau,
+                        ) else {
                             continue;
                         };
                         if metrics_pass_constraints(&metrics, constraints) {
@@ -10600,9 +10865,12 @@ fn optimize_double_ma_gpu_kernel_impl(
             )?;
 
             for r in 0..topk_select {
-                let Some((fast_len, slow_len, metrics)) =
-                    decode_packed_topk_metric_row(&top_packed_host, r, metrics_count, cfg.hurdle_tau)
-                else {
+                let Some((fast_len, slow_len, metrics)) = decode_packed_topk_metric_row(
+                    &top_packed_host,
+                    r,
+                    metrics_count,
+                    cfg.hurdle_tau,
+                ) else {
                     continue;
                 };
                 if !metrics_pass_constraints(&metrics, constraints) {
@@ -10890,22 +11158,26 @@ mod tests {
     use super::{
         can_decode_current_gpu_product_metrics_without_recompute,
         compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
-        eval_double_ma_dynamic_program_precomputed_gpu_kernel, kernel_async_alloc_enabled,
-        kernel_effective_pair_bars, kernel_extra_shortlist_objectives, kernel_pinned_d2h_enabled,
-        kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
-        kernel_shortlist_slice_benchmark, kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
+        effective_sample_lcb_10_pair_score, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
+        install_effective_sample_score_context, kernel_async_alloc_enabled,
+        kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
+        kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled,
+        kernel_shortlist_confidence_mode, kernel_shortlist_slice_benchmark,
+        kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
         rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
         shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
-        upload_double_ma_dynamic_program_batch, ShortlistConfidenceMode, ShortlistSliceMode,
-        METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
+        upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
+        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT,
+        PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
-        objective_score, DoubleMaConstraints, DoubleMaShortlistConfidenceMode,
-        DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
+        effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
+        DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode,
+        DoubleMaShortlistUnionMode,
     };
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
@@ -11083,6 +11355,11 @@ mod tests {
             Some(DoubleMaShortlistUnionMode::EpsilonFront)
         );
         assert_eq!(
+            kernel_shortlist_union_mode(Some(DoubleMaShortlistUnionMode::WeightedRank))
+                .expect("map weighted rank"),
+            Some(DoubleMaShortlistUnionMode::WeightedRank)
+        );
+        assert_eq!(
             kernel_shortlist_union_mode(None).expect("unset union mode"),
             None
         );
@@ -11227,6 +11504,28 @@ mod tests {
     }
 
     #[test]
+    fn rerank_shortlist_by_union_mode_weighted_rank_balances_objective_ranks() {
+        let rows = vec![
+            make_union_row(5, 20, 3.0, 1.0, 1.0, 0.20),
+            make_union_row(6, 21, 2.0, 3.0, 2.0, 0.10),
+            make_union_row(7, 22, 1.0, 2.0, 3.0, 0.05),
+        ];
+
+        let reranked = rerank_shortlist_by_union_mode(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            DoubleMaShortlistUnionMode::WeightedRank,
+        );
+        let actual_keys: Vec<(u16, u16)> = reranked
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(actual_keys, vec![(6, 21), (5, 20), (7, 22)]);
+    }
+
+    #[test]
     fn rerank_shortlist_by_union_mode_is_noop_without_distinct_extra_objectives() {
         let rows = vec![
             make_union_row(5, 20, 2.0, 1.0, 1.0, 0.20),
@@ -11307,6 +11606,57 @@ mod tests {
 
         let windowed_obs = shortlist_candidate_track_record_bars(3, 12, 10, 90, 100, 7, 25, true);
         assert_eq!(windowed_obs, 62);
+    }
+
+    #[test]
+    fn effective_sample_pair_score_uses_exact_track_record_bars() {
+        let params = DoubleMaParams {
+            fast_len: 9,
+            slow_len: 37,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        };
+        let metrics = Metrics {
+            pnl: 0.18,
+            sharpe: 1.24,
+            sortino: 1.91,
+            downside_deviation: 0.09,
+            calmar: 0.94,
+            omega: 1.52,
+            volatility: 0.17,
+            ulcer_index: 0.05,
+            martin_ratio: 2.2,
+            max_dd: 0.11,
+            trades: 28,
+            exposure: 0.46,
+            net_exposure: 0.02,
+            ..Metrics::default()
+        };
+        let ctx = EffectiveSampleScoreContext {
+            first_valid: 4,
+            regime_first_valid: 11,
+            eval_start: 20,
+            eval_end: 420,
+            total_bars: 500,
+            trade_on_next_bar: true,
+        };
+        let expected_n = shortlist_candidate_track_record_bars(
+            ctx.first_valid,
+            ctx.regime_first_valid,
+            ctx.eval_start,
+            ctx.eval_end,
+            ctx.total_bars,
+            params.fast_len,
+            params.slow_len,
+            ctx.trade_on_next_bar,
+        );
+        let expected = effective_sample_lcb_10_score(&metrics, expected_n);
+        let _guard = install_effective_sample_score_context(ctx);
+        let score = effective_sample_lcb_10_pair_score(&params, &metrics);
+        assert!(
+            (score - expected).abs() <= 1e-12,
+            "expected effective-sample score to use exact n_obs: expected={expected} got={score}"
+        );
     }
 
     #[test]
@@ -11717,6 +12067,9 @@ mod tests {
             super::DoubleMaScoreMode::AdversarialEnvelope10,
             super::DoubleMaScoreMode::SupportShrunk10,
             super::DoubleMaScoreMode::ActiveSortino10,
+            super::DoubleMaScoreMode::EffectiveSampleLcb10,
+            super::DoubleMaScoreMode::OmegaVsSharpe10,
+            super::DoubleMaScoreMode::RobustMargin10,
         ] {
             assert_eq!(
                 super::search_metrics_count_for_optimization(
@@ -11727,7 +12080,7 @@ mod tests {
                     false,
                     false,
                     false,
-                false,
+                    false,
                 ),
                 super::PRODUCT_REDUCED_METRICS_COUNT
             );
@@ -12017,6 +12370,24 @@ mod tests {
             7
         );
 
+        let sortino = DoubleMaConstraints {
+            min_sortino: Some(1.1),
+            ..Default::default()
+        };
+        assert_eq!(
+            search_metrics_count_for_optimization(
+                ObjectiveKind::Pnl,
+                None,
+                Some(&sortino),
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            8
+        );
+
         let omega = DoubleMaConstraints {
             min_omega: Some(1.2),
             ..Default::default()
@@ -12265,16 +12636,16 @@ mod tests {
     #[test]
     fn decode_full_metric_rows_apply_hurdle_tau_to_sortino() {
         let row = vec![
-            0.15f32,  // pnl
-            7.0f32,   // trades
-            0.20f32,  // max_dd
-            0.06f32,  // mean
-            0.03f32,  // std
-            0.40f32,  // exposure
-            0.10f32,  // net_exposure
-            0.02f32,  // downside_deviation (tau-adjusted)
-            0.05f32,  // ulcer_index
-            4.0f32,   // omega (tau-adjusted)
+            0.15f32, // pnl
+            7.0f32,  // trades
+            0.20f32, // max_dd
+            0.06f32, // mean
+            0.03f32, // std
+            0.40f32, // exposure
+            0.10f32, // net_exposure
+            0.02f32, // downside_deviation (tau-adjusted)
+            0.05f32, // ulcer_index
+            4.0f32,  // omega (tau-adjusted)
         ];
 
         let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT, 0.01);
@@ -12589,9 +12960,3 @@ mod tests {
         }
     }
 }
-
-
-
-
-
-

@@ -6,6 +6,7 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 use crate::double_ma::{
     BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuResidencySummary,
     HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved,
+    PairObservationScoreContextResolved,
     ShortlistSliceCandidateDiagnosticsResolved, ShortlistSliceDiagnostics,
     ShortlistSliceDiagnosticsResolved, ShortlistSliceModeDiagnosticsResolved,
     ShortlistSliceSnapshotResolved, VdpsTelemetry,
@@ -32,6 +33,7 @@ pub(crate) struct BackendResultContext<'a> {
     pub residency: Option<GpuResidencySummary>,
     pub followup_cache_key: Option<String>,
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnostics>,
+    pub score_observation_context: Option<PairObservationScoreContextResolved>,
 }
 
 fn resolve_params(
@@ -221,6 +223,7 @@ pub(crate) fn build_backend_optimization_result(
     BackendOptimizationResult {
         best_params,
         best_metrics: result.best_metrics,
+        best_score: result.best_score,
         mode_used,
         backend_used: ctx.backend_used,
         matrix_index,
@@ -230,7 +233,9 @@ pub(crate) fn build_backend_optimization_result(
         num_candles: ctx.num_candles,
         runtime_ms: ctx.runtime_ms,
         top,
+        top_scores: result.top_scores,
         all,
+        all_scores: result.all_scores,
         heatmap: result.heatmap,
         vdps: ctx.vdps,
         hybrid_timing_ms: ctx.hybrid_timing_ms,
@@ -240,5 +245,76 @@ pub(crate) fn build_backend_optimization_result(
         residency: ctx.residency,
         followup_cache_key: ctx.followup_cache_key,
         shortlist_slice_diagnostics,
+        score_observation_context: ctx.score_observation_context,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::double_ma::GpuExecutionPolicy;
+
+    #[test]
+    fn build_backend_result_preserves_score_observation_context() {
+        let result = OptimizationResult {
+            best_params: DoubleMaParams {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            best_metrics: Metrics::default(),
+            best_score: None,
+            top: Vec::new(),
+            top_scores: None,
+            all: None,
+            all_scores: None,
+            heatmap: None,
+            num_combos: 1,
+            num_candles: 200,
+        };
+        let expected = PairObservationScoreContextResolved {
+            first_valid: 3,
+            regime_first_valid: 7,
+            eval_start: 10,
+            eval_end: 200,
+            total_bars: 200,
+            trade_on_next_bar: true,
+        };
+        let built = build_backend_optimization_result(
+            result,
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::Grid,
+                backend_used: BackendUsed::Gpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                indicator_route_plan: None,
+                residency: Some(GpuResidencySummary {
+                    requested_policy: GpuExecutionPolicy::BestEffort,
+                    requested_backend: "gpu_kernel".to_string(),
+                    resolved_backend: "gpu_kernel".to_string(),
+                    fully_gpu_resident: true,
+                    cpu_staged_indicators: false,
+                    cpu_fallback_used: false,
+                    notes: Vec::new(),
+                }),
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: Some(expected),
+            },
+        );
+
+        assert_eq!(built.score_observation_context, Some(expected));
     }
 }

@@ -162,6 +162,7 @@ impl Ord for ScoredCombo {
 pub struct StreamAggregator {
     objective: ObjectiveKind,
     score_fn: Option<fn(&Metrics) -> f64>,
+    pair_score_fn: Option<fn(&DoubleMaParams, &Metrics) -> f64>,
     top_k: usize,
     num_candles: usize,
 
@@ -182,6 +183,7 @@ impl StreamAggregator {
         Self {
             objective,
             score_fn: None,
+            pair_score_fn: None,
             top_k,
             num_candles,
             num_combos: 0,
@@ -194,12 +196,24 @@ impl StreamAggregator {
 
     pub fn with_score_fn(mut self, score_fn: fn(&Metrics) -> f64) -> Self {
         self.score_fn = Some(score_fn);
+        self.pair_score_fn = None;
+        self
+    }
+
+    pub fn with_pair_score_fn(
+        mut self,
+        pair_score_fn: fn(&DoubleMaParams, &Metrics) -> f64,
+    ) -> Self {
+        self.pair_score_fn = Some(pair_score_fn);
+        self.score_fn = None;
         self
     }
 
     #[inline]
-    fn score_value(&self, metrics: &Metrics) -> f64 {
-        let score = if let Some(score_fn) = self.score_fn {
+    fn score_value(&self, params: &DoubleMaParams, metrics: &Metrics) -> f64 {
+        let score = if let Some(pair_score_fn) = self.pair_score_fn {
+            pair_score_fn(params, metrics)
+        } else if let Some(score_fn) = self.score_fn {
             score_fn(metrics)
         } else {
             score(metrics, self.objective)
@@ -228,7 +242,7 @@ impl StreamAggregator {
 
     pub fn push(&mut self, params: DoubleMaParams, metrics: Metrics) {
         self.num_combos = self.num_combos.saturating_add(1);
-        let s = self.score_value(&metrics);
+        let s = self.score_value(&params, &metrics);
 
         if let Some(all) = self.all.as_mut() {
             all.push((params.clone(), metrics.clone()));
@@ -290,6 +304,11 @@ impl StreamAggregator {
         let self_score_fn = self.score_fn.map(|f| f as usize);
         let other_score_fn = other.score_fn.map(|f| f as usize);
         if self_score_fn != other_score_fn {
+            return;
+        }
+        let self_pair_score_fn = self.pair_score_fn.map(|f| f as usize);
+        let other_pair_score_fn = other.pair_score_fn.map(|f| f as usize);
+        if self_pair_score_fn != other_pair_score_fn {
             return;
         }
 
@@ -363,13 +382,17 @@ impl StreamAggregator {
 
         let mut top: Vec<ScoredCombo> = self.heap.into_iter().map(|r| r.0).collect();
         top.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let top_scores = top.iter().map(|x| x.score).collect();
         let top = top.into_iter().map(|x| (x.params, x.metrics)).collect();
 
         Some(OptimizationResult {
             best_params: best.params,
             best_metrics: best.metrics,
+            best_score: Some(best.score),
             top,
+            top_scores: Some(top_scores),
             all: self.all,
+            all_scores: None,
             heatmap: self.heatmap.map(|h| h.finalize()),
             num_combos: self.num_combos,
             num_candles: self.num_candles,

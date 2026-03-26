@@ -224,8 +224,8 @@ fn make_request(backend: Backend, strategy: StrategyConfig) -> DoubleMaRequest {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
-       include_trade_metrics: false,
-        
+        include_trade_metrics: false,
+
         hurdle_tau: None,
     }
 }
@@ -411,7 +411,3 @@ fn main() {
         println!("{}", json);
     }
 }
-
-
-
-

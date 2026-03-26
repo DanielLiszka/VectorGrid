@@ -4772,6 +4772,8 @@ static __device__ __forceinline__ bool passes_constraints_f32(
     float max_dd,
     int use_min_sharpe,
     float min_sharpe,
+    int use_min_sortino,
+    float min_sortino,
     int use_min_calmar,
     float min_calmar,
     int use_max_volatility,
@@ -4802,6 +4804,10 @@ static __device__ __forceinline__ bool passes_constraints_f32(
     if (use_min_sharpe) {
         const float sharpe = objective_score_f32(metrics, base, M, 1, hurdle_tau);
         if (!(sharpe >= min_sharpe)) return false;
+    }
+    if (use_min_sortino) {
+        const float sortino = objective_score_f32(metrics, base, M, 5, hurdle_tau);
+        if (!(sortino >= min_sortino)) return false;
     }
     if (use_min_calmar) {
         const float calmar = objective_score_f32(metrics, base, M, 3, hurdle_tau);
@@ -5135,6 +5141,8 @@ void select_topk_from_pairs_tm_f32_v2(
     float max_dd,
     int use_min_sharpe,
     float min_sharpe,
+    int use_min_sortino,
+    float min_sortino,
     int use_min_calmar,
     float min_calmar,
     int use_max_volatility,
@@ -5170,7 +5178,7 @@ void select_topk_from_pairs_tm_f32_v2(
         if (compact_idx < total_pairs) {
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
-                if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
                     score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                     if (!isfinite(score)) score = NEG_INF_F;
                     val = compact_idx;
@@ -5187,7 +5195,7 @@ void select_topk_from_pairs_tm_f32_v2(
                             const size_t row_idx =
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
                                 score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                                 if (!isfinite(score)) score = NEG_INF_F;
                                 val = compact_output ? compact_idx : pair;
@@ -5235,6 +5243,8 @@ void select_topk_from_candidates_tm_f32_v2(
     float max_dd,
     int use_min_sharpe,
     float min_sharpe,
+    int use_min_sortino,
+    float min_sortino,
     int use_min_calmar,
     float min_calmar,
     int use_max_volatility,
@@ -5273,7 +5283,7 @@ void select_topk_from_candidates_tm_f32_v2(
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 if (row >= 0 && row < total_rows) {
                     const size_t base = (size_t)row * (size_t)metrics_stride;
-                    if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                    if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
                         score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                         if (!isfinite(score)) score = NEG_INF_F;
                     }
@@ -5293,7 +5303,7 @@ void select_topk_from_candidates_tm_f32_v2(
                         if (f < s) {
                             const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
                                 score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
                                 if (!isfinite(score)) score = NEG_INF_F;
                             }
@@ -5487,6 +5497,8 @@ void select_topk_metric_rows_f32_v2(
     float max_dd,
     int use_min_sharpe,
     float min_sharpe,
+    int use_min_sortino,
+    float min_sortino,
     int use_min_calmar,
     float min_calmar,
     int use_max_volatility,
@@ -5516,7 +5528,7 @@ void select_topk_metric_rows_f32_v2(
         int val = -1;
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)M;
-            if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+            if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
                 score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
                 if (!isfinite(score)) score = NEG_INF_F;
             }
@@ -5555,6 +5567,8 @@ void select_topk_metric_rows_from_candidates_f32_v2(
     float max_dd,
     int use_min_sharpe,
     float min_sharpe,
+    int use_min_sortino,
+    float min_sortino,
     int use_min_calmar,
     float min_calmar,
     int use_max_volatility,
@@ -5586,7 +5600,7 @@ void select_topk_metric_rows_from_candidates_f32_v2(
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)M;
-                if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
                     score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
                     if (!isfinite(score)) score = NEG_INF_F;
                 }

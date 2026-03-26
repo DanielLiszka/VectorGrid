@@ -54,9 +54,15 @@ impl<'a> BacktestEngine for CpuEngine<'a> {
 pub struct OptimizationResult {
     pub best_params: DoubleMaParams,
     pub best_metrics: Metrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_score: Option<f64>,
     pub top: Vec<(DoubleMaParams, Metrics)>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_scores: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub all: Option<Vec<(DoubleMaParams, Metrics)>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_scores: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heatmap: Option<OptimizationHeatmap>,
     pub num_combos: usize,

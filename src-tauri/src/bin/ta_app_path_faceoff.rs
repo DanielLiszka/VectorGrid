@@ -397,8 +397,8 @@ fn make_request(cli: &Cli, data_id: &str) -> DoubleMaRequest {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
-       include_trade_metrics: false,
-        
+        include_trade_metrics: false,
+
         hurdle_tau: None,
     }
 }
@@ -554,7 +554,3 @@ mod tests {
         assert_eq!(median_u64_as_f64(even_u64.as_mut_slice()), 5.0);
     }
 }
-
-
-
-

@@ -437,8 +437,8 @@ fn main() -> Result<(), String> {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
-       include_trade_metrics: false,
-        
+        include_trade_metrics: false,
+
         hurdle_tau: None,
     };
 
@@ -706,7 +706,3 @@ mod tests {
         );
     }
 }
-
-
-
-

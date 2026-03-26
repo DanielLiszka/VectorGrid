@@ -34,6 +34,7 @@ const {
   dmConstraintMinTrades,
   dmConstraintMaxDd,
   dmConstraintMinSharpe,
+  dmConstraintMinSortino,
   dmConstraintMinCalmar,
   dmConstraintMaxVolatility,
   dmConstraintMinExposure,
@@ -203,6 +204,7 @@ const persistenceDraft = ref("1");
 const minTradesDraft = ref("");
 const maxDdDraft = ref("");
 const minSharpeDraft = ref("");
+const minSortinoDraft = ref("");
 const minCalmarDraft = ref("");
 const maxVolatilityDraft = ref("");
 const minExposureDraft = ref("");
@@ -385,6 +387,7 @@ watch(
       String(dmConstraintMinTrades.value || ""),
       String(dmConstraintMaxDd.value || ""),
       String(dmConstraintMinSharpe.value || ""),
+      String(dmConstraintMinSortino.value || ""),
       String(dmConstraintMinCalmar.value || ""),
       String(dmConstraintMaxVolatility.value || ""),
       String(dmConstraintMinExposure.value || ""),
@@ -467,6 +470,7 @@ watch(
     nextDmConstraintMinTrades,
     nextDmConstraintMaxDd,
     nextDmConstraintMinSharpe,
+    nextDmConstraintMinSortino,
     nextDmConstraintMinCalmar,
     nextDmConstraintMaxVolatility,
     nextDmConstraintMinExposure,
@@ -556,6 +560,8 @@ watch(
       maxDdDraft.value = nextDmConstraintMaxDd;
     if (minSharpeDraft.value !== nextDmConstraintMinSharpe)
       minSharpeDraft.value = nextDmConstraintMinSharpe;
+    if (minSortinoDraft.value !== nextDmConstraintMinSortino)
+      minSortinoDraft.value = nextDmConstraintMinSortino;
     if (minCalmarDraft.value !== nextDmConstraintMinCalmar)
       minCalmarDraft.value = nextDmConstraintMinCalmar;
     if (maxVolatilityDraft.value !== nextDmConstraintMaxVolatility)
@@ -1293,6 +1299,24 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
+            <label for="vueDmMinSortino">Min Sortino (optional)</label>
+            <input
+              id="vueDmMinSortino"
+              type="number"
+              step="0.01"
+              :value="minSortinoDraft"
+              @input="
+                minSortinoDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('dmConstraintMinSortino', minSortinoDraft);
+              "
+              @change="
+                commitInputValue('dmConstraintMinSortino', minSortinoDraft)
+              "
+            />
+          </div>
+          <div>
             <label for="vueDmMinCalmar">Min Calmar (optional)</label>
             <input
               id="vueDmMinCalmar"
@@ -1310,6 +1334,9 @@ onBeforeUnmount(() => {
               "
             />
           </div>
+        </div>
+
+        <div class="rowThree" v-if="showDmConstraints">
           <div>
             <label for="vueDmMaxVolatility">Max volatility (optional)</label>
             <input
@@ -1335,9 +1362,6 @@ onBeforeUnmount(() => {
               "
             />
           </div>
-        </div>
-
-        <div class="rowThree" v-if="showDmConstraints">
           <div>
             <label for="vueDmMinExposure">Min exposure (optional)</label>
             <input
@@ -1378,6 +1402,9 @@ onBeforeUnmount(() => {
               "
             />
           </div>
+        </div>
+
+        <div class="rowThree" v-if="showDmConstraints">
           <div>
             <label for="vueDmMaxAbsNetExposure"
               >Max abs net exposure (optional)</label
@@ -1406,9 +1433,6 @@ onBeforeUnmount(() => {
               "
             />
           </div>
-        </div>
-
-        <div class="rowThree" v-if="showDmConstraints">
           <div>
             <label for="vueDmMinOmega">Min Omega (optional)</label>
             <input
@@ -1443,6 +1467,9 @@ onBeforeUnmount(() => {
               @change="commitInputValue('dmConstraintMaxUlcer', maxUlcerDraft)"
             />
           </div>
+        </div>
+
+        <div class="rowThree" v-if="showDmConstraints">
           <div>
             <label for="vueDmMaxDownsideDeviation"
               >Max downside deviation (optional)</label

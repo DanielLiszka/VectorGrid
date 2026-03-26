@@ -215,6 +215,7 @@ interface StrategyState {
   dmConstraintMinTrades: string;
   dmConstraintMaxDd: string;
   dmConstraintMinSharpe: string;
+  dmConstraintMinSortino: string;
   dmConstraintMinCalmar: string;
   dmConstraintMaxVolatility: string;
   dmConstraintMinExposure: string;
@@ -372,6 +373,7 @@ const STRATEGY_TEXT_FIELDS = [
   "dmConstraintMinTrades",
   "dmConstraintMaxDd",
   "dmConstraintMinSharpe",
+  "dmConstraintMinSortino",
   "dmConstraintMinCalmar",
   "dmConstraintMaxVolatility",
   "dmConstraintMinExposure",
@@ -571,6 +573,7 @@ export const useStrategyStore = defineStore("strategy", {
     dmConstraintMinTrades: "",
     dmConstraintMaxDd: "",
     dmConstraintMinSharpe: "",
+    dmConstraintMinSortino: "",
     dmConstraintMinCalmar: "",
     dmConstraintMaxVolatility: "",
     dmConstraintMinExposure: "",
@@ -964,6 +967,9 @@ export const useStrategyStore = defineStore("strategy", {
       ).trim();
       this.dmConstraintMinSharpe = String(
         snapshot.dmConstraintMinSharpe ?? this.dmConstraintMinSharpe ?? "",
+      ).trim();
+      this.dmConstraintMinSortino = String(
+        snapshot.dmConstraintMinSortino ?? this.dmConstraintMinSortino ?? "",
       ).trim();
       this.dmConstraintMinCalmar = String(
         snapshot.dmConstraintMinCalmar ?? this.dmConstraintMinCalmar ?? "",
