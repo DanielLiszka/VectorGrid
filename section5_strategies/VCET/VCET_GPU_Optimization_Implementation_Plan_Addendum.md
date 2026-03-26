@@ -11,6 +11,28 @@ It focuses on things that I would tighten, make more explicit, or add as optiona
 
 It stays aligned with the repo review posture in `gpt54_feature_review_map.md`: optimization-first, benchmark-first, parity-preserving, and copy-elision-aware.
 
+## Repo-state note
+
+This addendum should be interpreted against the current repo state.
+
+The standalone unified-GPU strategy routes in `composite_cpu.rs` now already support:
+
+- `all_scores` on `include_all=true`
+- host-side `extra_shortlist_objectives`
+- host-side `shortlist_union_mode`
+- host-side `shortlist_confidence_mode`
+
+when the user explicitly requests the standalone `GpuKernel` route.
+
+Those additions do **not** imply full Double-MA exact-kernel parity:
+
+- no slice / neighborhood / benchmark-shortlist diagnostics parity
+- no `score_observation_context`
+- no widened Double-MA metric-contract inheritance
+
+So the work below remains valid as a VCET-specific runtime/copy/reuse plan, but it should no
+longer be read as if the standalone route still lacks the newer host/result-layer extras.
+
 ---
 
 ## 1. What I would add or tighten from the first plan
@@ -217,6 +239,10 @@ The current `VcetCudaRuntime` stores only:
 - `stream`
 
 By comparison, the adjacent `gpu_backtest_kernel.rs` runtime now holds reusable scratch buffers, launch caps, resident-market data, and dataset-keyed returns reuse. VCET does not need all of that complexity, but it **does** need a minimal version of it.
+
+Also note the current repo already exposes the host/result-layer shortlist extras on supported
+standalone routes. That means the remaining shared-runtime gap for VCET is primarily about
+scratch/residency/warm-path reuse, not about the basic shortlist/result feature surface.
 
 ### Recommended code edit
 

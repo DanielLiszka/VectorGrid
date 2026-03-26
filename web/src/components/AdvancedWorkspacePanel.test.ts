@@ -101,6 +101,33 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
+  it('shows standalone unified-GPU shortlist controls on requested GpuKernel routes without exact-kernel-only extras', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'Vemr'
+    optimize.backend = 'GpuKernel'
+    advanced.includeAll = 'true'
+    advanced.extraShortlistObjectives = 'Pnl,Omega'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
+    expect(document.body.textContent || '').toContain('standalone unified-GPU')
+    expect(document.body.textContent || '').toContain('host-side')
+
+    wrapper.unmount()
+  })
+
   it('shows shortlist confidence control for Double MA', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

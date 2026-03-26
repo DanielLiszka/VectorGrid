@@ -215,6 +215,9 @@ export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuild
   mode?: unknown;
   topK?: unknown;
   includeAll?: unknown;
+  extraShortlistObjectives?: unknown;
+  shortlistConfidenceMode?: unknown;
+  shortlistUnionMode?: unknown;
   compositeSignalMode?: unknown;
   halfTrendAmplitude?: unknown;
   halfTrendAtrPeriod?: unknown;
@@ -2559,6 +2562,16 @@ export function buildCompositeCpuOptimizationRequest(
   const ott = { period: ottPeriod, percent: ottPercent, ma_type: ottMaType };
 
   const objective = normalizeText(inputs.objective || "Sharpe") || "Sharpe";
+  const extraShortlistObjectives = normalizeExtraShortlistObjectives(
+    inputs.extraShortlistObjectives,
+    objective,
+  );
+  const shortlistConfidenceMode = normalizeShortlistConfidenceMode(
+    inputs.shortlistConfidenceMode,
+  );
+  const shortlistUnionMode = normalizeShortlistUnionMode(
+    inputs.shortlistUnionMode,
+  );
   const topK = Math.max(0, Math.floor(num(inputs.topK, 0)));
   const includeAll = normalizeIncludeAll(inputs.includeAll);
   if (includeAll && pairs > MAX_INCLUDE_ALL_ROWS) {
@@ -2586,6 +2599,54 @@ export function buildCompositeCpuOptimizationRequest(
         ? { backend: "CpuOnly" }
         : { backend, device_id: 0 }
       : { backend: "CpuOnly" };
+  const standaloneGpuShortlistRoute =
+    kind !== "CompositeCpu" && backend === "GpuKernel";
+
+  if (extraShortlistObjectives) {
+    if (!standaloneGpuShortlistRoute) {
+      throw new Error(
+        "Extra shortlist objectives are currently supported only for standalone unified-GPU GpuKernel routes.",
+      );
+    }
+    if (topK <= 0) {
+      throw new Error("Extra shortlist objectives require topK > 0.");
+    }
+    if (!includeAll) {
+      throw new Error(
+        "Standalone extra shortlist objectives currently require includeAll=true.",
+      );
+    }
+  }
+  if (shortlistUnionMode) {
+    if (!standaloneGpuShortlistRoute) {
+      throw new Error(
+        "Shortlist union mode is currently supported only for standalone unified-GPU GpuKernel routes.",
+      );
+    }
+    if (!extraShortlistObjectives) {
+      throw new Error(
+        "Shortlist union mode requires extra shortlist objectives.",
+      );
+    }
+    if (topK <= 0) {
+      throw new Error("Shortlist union mode requires topK > 0.");
+    }
+    if (!includeAll) {
+      throw new Error(
+        "Standalone shortlist union mode currently requires includeAll=true.",
+      );
+    }
+  }
+  if (shortlistConfidenceMode) {
+    if (!standaloneGpuShortlistRoute) {
+      throw new Error(
+        "Shortlist confidence mode is currently supported only for standalone unified-GPU GpuKernel routes.",
+      );
+    }
+    if (topK <= 0) {
+      throw new Error("Shortlist confidence mode requires topK > 0.");
+    }
+  }
 
   const asr =
     kind === "Asr"
@@ -3022,6 +3083,9 @@ export function buildCompositeCpuOptimizationRequest(
     mkcs,
     cdmc,
     objective,
+    extra_shortlist_objectives: extraShortlistObjectives,
+    shortlist_confidence_mode: shortlistConfidenceMode,
+    shortlist_union_mode: shortlistUnionMode,
     mode: "Grid",
     top_k: topK,
     include_all: includeAll,

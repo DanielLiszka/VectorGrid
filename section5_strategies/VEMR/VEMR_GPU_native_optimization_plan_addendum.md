@@ -2,6 +2,30 @@
 
 This addendum captures improvements I would add to the main VEMR GPU-native optimization plan after a second audit of the attached files. It focuses on practical, parity-preserving additions that further reduce unnecessary copies, improve warm-path reuse, and tighten correctness guards.
 
+## Repo-state note
+
+This addendum should now be read against the current repo state, not the older
+Section 5 baseline.
+
+As of the current `composite_cpu.rs` standalone unified-GPU route:
+
+- `include_all=true` already returns `all_scores` alongside the full native candidate rows
+- the requested standalone `GpuKernel` route already supports host-side:
+  - `extra_shortlist_objectives`
+  - `shortlist_union_mode`
+  - `shortlist_confidence_mode`
+- those features are exposed in the frontend advanced controls for the supported standalone routes
+
+What still does **not** exist here is Double-MA exact-kernel parity:
+
+- no shortlist slice / benchmark / neighborhood diagnostics parity
+- no `score_observation_context`
+- no attempt to force VEMR into the Double-MA exact-kernel metric schema
+
+So the recommendations below should be read as **strategy-local runtime / residency /
+copy-elision improvements on top of that already-expanded product surface**, not as a plan to add
+the recently completed host/result-layer extras.
+
 ## 1. What I would explicitly add to the main plan
 
 ### 1.1 Strengthen `validate_inputs` with row-index and range validation
@@ -451,6 +475,11 @@ These are useful, but I would treat them as second-wave work after the main plan
 - dataset-keyed reusable `d_lr` / `d_ret1`
 - reusable host scratch / copy-elision helpers
 - promoted single-pass product-path policy in the shared Double-MA backend
+
+Separately, the repo now also exposes host/result-layer shortlist extras on the standalone
+unified-GPU routes themselves. That newer product surface does not remove the value of this
+runtime-alignment section; it just means the remaining gap is now more about residency, scratch,
+and transfer discipline than about basic shortlist/result capabilities.
 
 A longer-horizon improvement would be to make VEMR converge toward those conventions instead of growing a one-off local runtime design forever.
 

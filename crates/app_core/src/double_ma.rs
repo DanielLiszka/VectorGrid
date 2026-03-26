@@ -2058,7 +2058,7 @@ fn merge_hybrid_timing(target: &mut Option<HybridTimingMs>, incoming: Option<Hyb
     not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
     allow(dead_code)
 )]
-fn build_exact_extra_shortlist_rows(
+pub(crate) fn build_exact_extra_shortlist_rows(
     rows: &[(DoubleMaParams, Metrics)],
     primary_objective: ObjectiveKind,
     extra_objectives: &[ObjectiveKind],

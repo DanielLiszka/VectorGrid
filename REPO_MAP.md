@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 ## Purpose
 
@@ -151,6 +151,14 @@ These crates are smaller than `app_core`, but they are part of the real executio
     - `cuda` and `cuda-backtest-kernel` forward into `ta_app_core`
   - `crates/app_core/Cargo.toml`
     - `cuda` forwards into `vector-ta/cuda`
+- current VectorTA CUDA pointer model in this repo:
+  - `crates/app_core/src/gpu_backtest_kernel.rs`
+    - the Double-MA kernel path is the intended pure VRAM route: existing resident device price buffers feed `VramMaInputs`, and VectorTA MA kernels write into caller-owned device buffers via `compute_period_ma*_into`
+  - `crates/app_core/src/dynamic_indicator_adapter.rs`
+    - the generic indicator path uses VectorTA device-pointer input / device-pointer output dispatch through `compute_cuda_device(..., CudaOutputTarget::DeviceF32)`
+    - it currently prepares its own cached device uploads from `Candles` instead of borrowing the already-resident backtest runtime buffers
+  - if a downstream kernel consumes a `CudaDeviceSliceF32Ref` row derived from a returned `DeviceMatrixF32`, keep the owning `DeviceMatrixF32` alive for the whole downstream use site
+    - PIT already follows this keepalive pattern; other strategy-local device-regime builders should be checked against the same rule before assuming a pure pointer-out handoff
 
 ### Build / Dev / Release Workflow
 

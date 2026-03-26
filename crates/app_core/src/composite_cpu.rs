@@ -62,7 +62,8 @@ use crate::double_ma::{
     ma_matrix_cpu_f64, ma_matrix_with_backend_f64, resolve_alma_params_for_side,
     run_double_ma_optimization_blocking_with_candles, strategy_cfg_for_optimization,
     validate_ma_kind, validate_strategy_cfg_for_optimization, Backend, BackendOptimizationResult,
-    BackendUsed, DoubleMaParamsResolved, DoubleMaRequest, HalfTrendRegimeFilter,
+    BackendUsed, DoubleMaParamsResolved, DoubleMaRequest, DoubleMaShortlistConfidenceMode,
+    DoubleMaShortlistUnionMode, HalfTrendRegimeFilter,
     LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary, OptimizationModeResolved,
 };
 #[cfg(feature = "cuda")]
@@ -396,6 +397,12 @@ pub struct CompositeCpuRequest {
     /// the composite grid search.
     #[serde(default)]
     pub gpu_prescan: Option<CompositeGpuPrescanConfig>,
+    #[serde(default)]
+    pub extra_shortlist_objectives: Option<Vec<ObjectiveKind>>,
+    #[serde(default)]
+    pub shortlist_confidence_mode: Option<DoubleMaShortlistConfidenceMode>,
+    #[serde(default)]
+    pub shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
     pub top_k: Option<usize>,
     pub include_all: Option<bool>,
     pub heatmap_bins: Option<u16>,
@@ -538,6 +545,501 @@ fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
             | ObjectiveKind::Omega
             | ObjectiveKind::Volatility
     )
+}
+
+fn resolved_all_scores(
+    all: &Option<Vec<(DoubleMaParamsResolved, Metrics)>>,
+    objective: ObjectiveKind,
+) -> Option<Vec<f64>> {
+    all.as_ref().map(|rows| {
+        rows.iter()
+            .map(|(_, metrics)| objective_score(metrics, objective))
+            .collect()
+    })
+}
+
+fn standalone_unified_gpu_strategy_requested(req: &CompositeCpuRequest) -> bool {
+    req.asr.is_some()
+        || req.vcc.is_some()
+        || req.vemr.is_some()
+        || req.rocb.is_some()
+        || req.vcet.is_some()
+        || req.mkcs.is_some()
+        || req.kqsr.is_some()
+        || req.carm.is_some()
+        || req.kvdf.is_some()
+        || req.cdmc.is_some()
+}
+
+fn composite_easy_shortlist_features_requested(req: &CompositeCpuRequest) -> bool {
+    req.extra_shortlist_objectives
+        .as_ref()
+        .is_some_and(|values| !values.is_empty())
+        || req.shortlist_union_mode.is_some()
+        || req.shortlist_confidence_mode.is_some()
+}
+
+fn validate_standalone_easy_shortlist_request(req: &CompositeCpuRequest) -> Result<(), String> {
+    if !composite_easy_shortlist_features_requested(req) {
+        return Ok(());
+    }
+
+    if !standalone_unified_gpu_strategy_requested(req) {
+        return Err(
+            "Standalone shortlist extras are currently supported only for the standalone unified-GPU strategy routes."
+                .to_string(),
+        );
+    }
+
+    if !matches!(req.backend, Backend::GpuKernel { .. }) {
+        return Err(
+            "Standalone shortlist extras currently require the requested backend to be GpuKernel."
+                .to_string(),
+        );
+    }
+
+    let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+    let extra_requested = req
+        .extra_shortlist_objectives
+        .as_ref()
+        .is_some_and(|values| !values.is_empty());
+
+    if extra_requested {
+        if top_k == 0 {
+            return Err(
+                "Standalone extra_shortlist_objectives require top_k > 0.".to_string(),
+            );
+        }
+        if !include_all {
+            return Err(
+                "Standalone extra_shortlist_objectives currently require include_all=true."
+                    .to_string(),
+            );
+        }
+    }
+
+    if req.shortlist_union_mode.is_some() && !extra_requested {
+        return Err(
+            "Standalone shortlist_union_mode requires extra_shortlist_objectives.".to_string(),
+        );
+    }
+
+    if req.shortlist_confidence_mode.is_some() && top_k == 0 {
+        return Err(
+            "Standalone shortlist_confidence_mode requires top_k > 0.".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn standalone_shortlist_confidence_value_for_host(
+    metrics: &Metrics,
+    mode: DoubleMaShortlistConfidenceMode,
+    obs: usize,
+    peer_mean: f64,
+    peer_std: f64,
+    trials: usize,
+) -> f64 {
+    let (psr, dsr) = crate::validation_stats::compute_psr_dsr(
+        metrics.sharpe,
+        obs.max(2),
+        trials.max(1),
+        peer_mean,
+        peer_std,
+    );
+    match mode {
+        DoubleMaShortlistConfidenceMode::Psr => psr.unwrap_or(0.0),
+        DoubleMaShortlistConfidenceMode::Dsr => dsr.unwrap_or(0.0),
+    }
+}
+
+fn standalone_shortlist_union_objectives(
+    primary_objective: ObjectiveKind,
+    extra_objectives: &[ObjectiveKind],
+) -> Vec<ObjectiveKind> {
+    let mut objectives = Vec::with_capacity(extra_objectives.len().saturating_add(1));
+    objectives.push(primary_objective);
+    for &objective in extra_objectives {
+        if objective != primary_objective && !objectives.contains(&objective) {
+            objectives.push(objective);
+        }
+    }
+    objectives
+}
+
+fn standalone_shortlist_union_score_rows(
+    rows: &[(DoubleMaParams, Metrics)],
+    objectives: &[ObjectiveKind],
+) -> Vec<Vec<f64>> {
+    rows.iter()
+        .map(|(_, metrics)| {
+            objectives
+                .iter()
+                .map(|&objective| objective_score(metrics, objective))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn standalone_shortlist_union_epsilon(score_rows: &[Vec<f64>]) -> Vec<f64> {
+    if score_rows.is_empty() {
+        return Vec::new();
+    }
+    let width = score_rows[0].len();
+    let mut mins = vec![f64::INFINITY; width];
+    let mut maxs = vec![f64::NEG_INFINITY; width];
+    for scores in score_rows {
+        for (idx, &score) in scores.iter().enumerate() {
+            mins[idx] = mins[idx].min(score);
+            maxs[idx] = maxs[idx].max(score);
+        }
+    }
+    mins.iter()
+        .zip(maxs.iter())
+        .map(|(&min_score, &max_score)| {
+            let span = (max_score - min_score).abs();
+            let scale = min_score.abs().max(max_score.abs()).max(1.0);
+            span * 0.01 + scale * 1.0e-6
+        })
+        .collect()
+}
+
+fn standalone_shortlist_union_dominates(a: &[f64], b: &[f64], eps: &[f64]) -> bool {
+    let mut strictly_better = false;
+    for idx in 0..a.len().min(b.len()).min(eps.len()) {
+        if a[idx] + eps[idx] < b[idx] {
+            return false;
+        }
+        if a[idx] > b[idx] + eps[idx] {
+            strictly_better = true;
+        }
+    }
+    strictly_better
+}
+
+fn standalone_shortlist_union_front_ranks(score_rows: &[Vec<f64>], eps: &[f64]) -> Vec<usize> {
+    let n = score_rows.len();
+    let mut dominates: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut dominated_by_count: Vec<usize> = vec![0; n];
+    let mut front_ranks: Vec<usize> = vec![usize::MAX; n];
+    let mut current_front: Vec<usize> = Vec::new();
+
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            if standalone_shortlist_union_dominates(&score_rows[i], &score_rows[j], eps) {
+                dominates[i].push(j);
+            } else if standalone_shortlist_union_dominates(&score_rows[j], &score_rows[i], eps) {
+                dominated_by_count[i] = dominated_by_count[i].saturating_add(1);
+            }
+        }
+        if dominated_by_count[i] == 0 {
+            front_ranks[i] = 0;
+            current_front.push(i);
+        }
+    }
+
+    let mut depth = 0usize;
+    while !current_front.is_empty() {
+        let mut next_front: Vec<usize> = Vec::new();
+        for &idx in &current_front {
+            for &dominated_idx in &dominates[idx] {
+                dominated_by_count[dominated_idx] =
+                    dominated_by_count[dominated_idx].saturating_sub(1);
+                if dominated_by_count[dominated_idx] == 0
+                    && front_ranks[dominated_idx] == usize::MAX
+                {
+                    front_ranks[dominated_idx] = depth.saturating_add(1);
+                    next_front.push(dominated_idx);
+                }
+            }
+        }
+        depth = depth.saturating_add(1);
+        current_front = next_front;
+    }
+
+    for rank in &mut front_ranks {
+        if *rank == usize::MAX {
+            *rank = depth;
+        }
+    }
+    front_ranks
+}
+
+fn standalone_shortlist_union_rank_rows(score_rows: &[Vec<f64>]) -> Vec<Vec<usize>> {
+    if score_rows.is_empty() {
+        return Vec::new();
+    }
+    let height = score_rows.len();
+    let width = score_rows[0].len();
+    let mut ranks = vec![vec![0usize; width]; height];
+    for col in 0..width {
+        let mut ordered: Vec<(usize, f64)> = score_rows
+            .iter()
+            .enumerate()
+            .map(|(row_idx, scores)| (row_idx, scores.get(col).copied().unwrap_or(0.0)))
+            .collect();
+        ordered.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut current_rank = 0usize;
+        let mut previous_score: Option<f64> = None;
+        for (position, (row_idx, score)) in ordered.into_iter().enumerate() {
+            if let Some(previous) = previous_score {
+                if score.total_cmp(&previous) != std::cmp::Ordering::Equal {
+                    current_rank = position;
+                }
+            }
+            ranks[row_idx][col] = current_rank;
+            previous_score = Some(score);
+        }
+    }
+    ranks
+}
+
+fn standalone_shortlist_union_weighted_rank_penalties(score_rows: &[Vec<f64>]) -> Vec<f64> {
+    if score_rows.is_empty() {
+        return Vec::new();
+    }
+    let rank_rows = standalone_shortlist_union_rank_rows(score_rows);
+    rank_rows
+        .into_iter()
+        .map(|row_ranks| {
+            row_ranks
+                .iter()
+                .enumerate()
+                .map(|(idx, &rank)| rank as f64 / (idx as f64 + 1.0))
+                .sum::<f64>()
+        })
+        .collect()
+}
+
+fn standalone_rerank_shortlist_by_union_mode(
+    rows: &[(DoubleMaParams, Metrics)],
+    primary_objective: ObjectiveKind,
+    extra_objectives: &[ObjectiveKind],
+    mode: DoubleMaShortlistUnionMode,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let objectives = standalone_shortlist_union_objectives(primary_objective, extra_objectives);
+    if objectives.len() <= 1 {
+        return rows.to_vec();
+    }
+
+    let score_rows = standalone_shortlist_union_score_rows(rows, objectives.as_slice());
+    let eps = if matches!(mode, DoubleMaShortlistUnionMode::EpsilonFront) {
+        standalone_shortlist_union_epsilon(&score_rows)
+    } else {
+        vec![0.0; objectives.len()]
+    };
+    let front_ranks = if matches!(
+        mode,
+        DoubleMaShortlistUnionMode::Pareto | DoubleMaShortlistUnionMode::EpsilonFront
+    ) {
+        standalone_shortlist_union_front_ranks(&score_rows, &eps)
+    } else {
+        vec![0usize; rows.len()]
+    };
+    let weighted_rank_penalties = if matches!(mode, DoubleMaShortlistUnionMode::WeightedRank) {
+        standalone_shortlist_union_weighted_rank_penalties(&score_rows)
+    } else {
+        vec![0.0; rows.len()]
+    };
+
+    let mut ranked: Vec<(DoubleMaParams, Metrics, Vec<f64>, usize, f64)> = rows
+        .iter()
+        .cloned()
+        .zip(score_rows)
+        .zip(front_ranks)
+        .zip(weighted_rank_penalties)
+        .map(
+            |((((params, metrics), scores), front_rank), weighted_rank_penalty)| {
+                (params, metrics, scores, front_rank, weighted_rank_penalty)
+            },
+        )
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        if matches!(mode, DoubleMaShortlistUnionMode::WeightedRank) {
+            let weighted_rank_cmp = a.4.total_cmp(&b.4);
+            if weighted_rank_cmp != std::cmp::Ordering::Equal {
+                return weighted_rank_cmp;
+            }
+        }
+        if !matches!(mode, DoubleMaShortlistUnionMode::Lexicographic) {
+            let front_cmp = a.3.cmp(&b.3);
+            if front_cmp != std::cmp::Ordering::Equal {
+                return front_cmp;
+            }
+        }
+        for idx in 0..a.2.len().min(b.2.len()) {
+            let cmp = b.2[idx].total_cmp(&a.2[idx]);
+            if cmp != std::cmp::Ordering::Equal {
+                return cmp;
+            }
+        }
+        let primary_cmp = objective_score(&b.1, primary_objective)
+            .total_cmp(&objective_score(&a.1, primary_objective));
+        if primary_cmp != std::cmp::Ordering::Equal {
+            return primary_cmp;
+        }
+        a.1.max_dd.total_cmp(&b.1.max_dd)
+    });
+
+    ranked
+        .into_iter()
+        .map(|(params, metrics, _, _, _)| (params, metrics))
+        .collect()
+}
+
+fn apply_requested_standalone_union_shortlist(
+    result: &mut OptimizationResult,
+    req: &CompositeCpuRequest,
+    objective: ObjectiveKind,
+) -> Result<(), String> {
+    let extra_objectives = match req
+        .extra_shortlist_objectives
+        .as_deref()
+        .filter(|values| !values.is_empty())
+    {
+        Some(values) => values,
+        None => return Ok(()),
+    };
+
+    let top_limit = result.top.len().max(1);
+    let all_rows = result
+        .all
+        .as_ref()
+        .ok_or_else(|| {
+            "Standalone extra_shortlist_objectives currently require include_all=true."
+                .to_string()
+        })?;
+    let shortlist_rows = crate::double_ma::build_exact_extra_shortlist_rows(
+        all_rows.as_slice(),
+        objective,
+        extra_objectives,
+        top_limit,
+    );
+    if shortlist_rows.is_empty() {
+        return Err(
+            "standalone extra_shortlist_objectives produced no shortlist rows".to_string(),
+        );
+    }
+
+    let reranked = if let Some(mode) = req.shortlist_union_mode {
+        standalone_rerank_shortlist_by_union_mode(
+            shortlist_rows.as_slice(),
+            objective,
+            extra_objectives,
+            mode,
+        )
+    } else {
+        shortlist_rows
+    };
+
+    let (best_params, best_metrics) = reranked
+        .first()
+        .cloned()
+        .ok_or_else(|| "standalone shortlist rerank produced no result".to_string())?;
+    result.best_params = best_params;
+    result.best_metrics = best_metrics;
+    result.best_score = Some(objective_score(&result.best_metrics, objective));
+    result.top = reranked.into_iter().take(top_limit).collect();
+    result.top_scores = Some(
+        result
+            .top
+            .iter()
+            .map(|(_, metrics)| objective_score(metrics, objective))
+            .collect(),
+    );
+    Ok(())
+}
+
+fn finalize_standalone_optimization_result(
+    agg: StreamAggregator,
+    empty_err: &str,
+    req: &CompositeCpuRequest,
+    objective: ObjectiveKind,
+) -> Result<OptimizationResult, String> {
+    let mut result = agg
+        .finalize()
+        .ok_or_else(|| empty_err.to_string())?;
+    apply_requested_standalone_union_shortlist(&mut result, req, objective)?;
+    Ok(result)
+}
+
+fn apply_requested_standalone_confidence_rerank<F>(
+    result: &mut OptimizationResult,
+    req: &CompositeCpuRequest,
+    objective: ObjectiveKind,
+    mut obs_bars_for: F,
+) -> Result<(), String>
+where
+    F: FnMut(&DoubleMaParams) -> Result<usize, String>,
+{
+    let Some(mode) = req.shortlist_confidence_mode else {
+        return Ok(());
+    };
+    if result.top.is_empty() {
+        return Ok(());
+    }
+
+    let sharpe_peers: Vec<f64> = result
+        .top
+        .iter()
+        .map(|(_, metrics)| metrics.sharpe)
+        .filter(|value| value.is_finite())
+        .collect();
+    let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
+    let trials = sharpe_peers.len().max(1);
+
+    let mut ranked: Vec<(DoubleMaParams, Metrics, f64)> = Vec::with_capacity(result.top.len());
+    for (params, metrics) in result.top.iter().cloned() {
+        let obs = obs_bars_for(&params)?;
+        let confidence = standalone_shortlist_confidence_value_for_host(
+            &metrics,
+            mode,
+            obs,
+            peer_mean,
+            peer_std,
+            trials,
+        );
+        ranked.push((params, metrics, confidence));
+    }
+
+    ranked.sort_by(|a, b| {
+        b.2.total_cmp(&a.2)
+            .then_with(|| {
+                let sa = objective_score(&a.1, objective);
+                let sb = objective_score(&b.1, objective);
+                sb.total_cmp(&sa)
+            })
+            .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+    });
+
+    let (best_params, best_metrics) = ranked
+        .first()
+        .map(|(params, metrics, _)| (params.clone(), metrics.clone()))
+        .ok_or_else(|| "standalone shortlist-confidence rerank produced no result".to_string())?;
+    result.best_params = best_params;
+    result.best_metrics = best_metrics;
+    result.best_score = Some(objective_score(&result.best_metrics, objective));
+    result.top = ranked
+        .into_iter()
+        .map(|(params, metrics, _)| (params, metrics))
+        .collect();
+    result.top_scores = Some(
+        result
+            .top
+            .iter()
+            .map(|(_, metrics)| objective_score(metrics, objective))
+            .collect(),
+    );
+    Ok(())
 }
 
 fn resolve_composite_grid_mode(
@@ -1332,9 +1834,35 @@ fn run_asr_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "asr_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "ASR grid search produced no result".to_string())?;
+    let mut result =
+        finalize_standalone_optimization_result(agg, "ASR grid search produced no result", &req, objective)?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_asr_periods(&asr_cfg, params.fast_len, params.slow_len);
+        let fast_first_valid = *fast_first_valid_lookup
+            .get(&periods.squeeze)
+            .ok_or_else(|| "ASR fast first_valid lookup miss".to_string())?;
+        let slow_first_valid = *slow_first_valid_lookup
+            .get(&(periods.trend, periods.er, periods.z))
+            .ok_or_else(|| "ASR slow first_valid lookup miss".to_string())?;
+        let max_period = usize::from(
+            periods
+                .squeeze
+                .max(periods.trend)
+                .max(periods.er)
+                .max(periods.z),
+        )
+        .max(1);
+        let start_t = compute_asr_start_t(
+            fv_close,
+            fv_ma,
+            fast_first_valid,
+            slow_first_valid,
+            kaufman.first_valid,
+            max_period,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -1398,8 +1926,8 @@ fn run_asr_optimization_gpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -1605,9 +2133,35 @@ fn run_asr_optimization_cpu(
     }
     emit_progress(progress, processed, total_pairs, "asr_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "ASR grid search produced no result".to_string())?;
+    let mut result =
+        finalize_standalone_optimization_result(agg, "ASR grid search produced no result", &req, objective)?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_asr_periods(&asr_cfg, params.fast_len, params.slow_len);
+        let fast_signals = fast_cache
+            .get(&periods.squeeze)
+            .ok_or_else(|| "ASR fast signal cache miss".to_string())?;
+        let slow_signals = slow_cache
+            .get(&(periods.trend, periods.er, periods.z))
+            .ok_or_else(|| "ASR slow signal cache miss".to_string())?;
+        let max_period = usize::from(
+            periods
+                .squeeze
+                .max(periods.trend)
+                .max(periods.er)
+                .max(periods.z),
+        )
+        .max(1);
+        let start_t = compute_asr_start_t(
+            fv_close,
+            fv_ma,
+            fast_signals.first_valid,
+            slow_signals.first_valid,
+            kaufman.first_valid,
+            max_period,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -1671,8 +2225,8 @@ fn run_asr_optimization_cpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -2045,9 +2599,28 @@ fn run_vcc_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "vcc_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "VCC grid search produced no result".to_string())?;
+    let mut result =
+        finalize_standalone_optimization_result(agg, "VCC grid search produced no result", &req, objective)?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_vcc_periods(&vcc_cfg, params.fast_len, params.slow_len);
+        let fast_first_valid = *fast_first_valid_lookup
+            .get(&(periods.squeeze, periods.momentum))
+            .ok_or_else(|| "VCC fast first_valid lookup miss".to_string())?;
+        let trend_first_valid = *trend_first_valid_lookup
+            .get(&periods.trend)
+            .ok_or_else(|| "VCC trend first_valid lookup miss".to_string())?;
+        let max_period =
+            usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
+        let start_t = compute_vcc_start_t(
+            fv_close,
+            fv_ma,
+            fast_first_valid,
+            trend_first_valid,
+            max_period,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -2111,8 +2684,8 @@ fn run_vcc_optimization_gpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -2292,9 +2865,28 @@ fn run_vcc_optimization_cpu(
     }
     emit_progress(progress, processed, total_pairs, "vcc_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "VCC grid search produced no result".to_string())?;
+    let mut result =
+        finalize_standalone_optimization_result(agg, "VCC grid search produced no result", &req, objective)?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_vcc_periods(&vcc_cfg, params.fast_len, params.slow_len);
+        let fast_signals = fast_cache
+            .get(&(periods.squeeze, periods.momentum))
+            .ok_or_else(|| "VCC fast signal cache miss".to_string())?;
+        let trend_signals = trend_cache
+            .get(&periods.trend)
+            .ok_or_else(|| "VCC trend signal cache miss".to_string())?;
+        let max_period =
+            usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
+        let start_t = compute_vcc_start_t(
+            fv_close,
+            fv_ma,
+            fast_signals.first_valid,
+            trend_signals.first_valid,
+            max_period,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -2358,8 +2950,8 @@ fn run_vcc_optimization_cpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -2780,9 +3372,38 @@ fn run_vemr_optimization_gpu(
                 }
                 emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
 
-                let result = agg
-                    .finalize()
-                    .ok_or_else(|| "VEMR grid search produced no result".to_string())?;
+                let mut result = finalize_standalone_optimization_result(
+                    agg,
+                    "VEMR grid search produced no result",
+                    &req,
+                    objective,
+                )?;
+                apply_requested_standalone_confidence_rerank(
+                    &mut result,
+                    &req,
+                    objective,
+                    |params| {
+                        let periods =
+                            resolve_vemr_periods(&vemr_cfg, params.fast_len, params.slow_len);
+                        let fast_first_valid = *fast_first_valid_lookup
+                            .get(&(periods.z, periods.bb))
+                            .ok_or_else(|| "VEMR fast first_valid lookup miss".to_string())?;
+                        let risk_first_valid = *risk_first_valid_lookup
+                            .get(&periods.atr)
+                            .ok_or_else(|| "VEMR risk first_valid lookup miss".to_string())?;
+                        let max_period =
+                            usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
+                        let start_t = compute_vemr_start_t(
+                            fv_close,
+                            fv_ma,
+                            fast_first_valid,
+                            risk_first_valid,
+                            max_period,
+                            strategy.trade_on_next_bar,
+                        );
+                        Ok(n.saturating_sub(start_t).max(2))
+                    },
+                )?;
                 let best_params = resolve_params(&result.best_params);
                 let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
                     .top
@@ -2817,39 +3438,79 @@ fn run_vemr_optimization_gpu(
                 let best_combo = combo_params
                     .get(top_rows[0].combo_index)
                     .ok_or_else(|| "VEMR GPU best combo index out of range".to_string())?;
-                let best_params = resolve_params(best_combo);
                 let best_metrics = top_rows[0].metrics.clone();
 
-                let mut top: Vec<(DoubleMaParamsResolved, Metrics)> = Vec::with_capacity(top_k);
+                let mut temp_result = OptimizationResult {
+                    best_params: best_combo.clone(),
+                    best_metrics,
+                    best_score: Some(objective_score(&top_rows[0].metrics, objective)),
+                    top: Vec::with_capacity(top_k),
+                    top_scores: None,
+                    all: None,
+                    all_scores: None,
+                    heatmap: None,
+                    num_combos: num_combos_total,
+                    num_candles: n,
+                };
                 if top_k > 0 {
                     for row in top_rows.into_iter().take(top_k) {
                         let params = combo_params
                             .get(row.combo_index)
                             .ok_or_else(|| "VEMR GPU top combo index out of range".to_string())?;
-                        top.push((resolve_params(params), row.metrics));
+                        temp_result.top.push((params.clone(), row.metrics));
                     }
                 }
-                emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
-
-                let best_score = top
-                    .first()
-                    .map(|(_, metrics)| objective_score(metrics, objective));
-                let top_scores = if top.is_empty() {
+                temp_result.top_scores = if temp_result.top.is_empty() {
                     None
                 } else {
                     Some(
-                        top.iter()
+                        temp_result
+                            .top
+                            .iter()
                             .map(|(_, metrics)| objective_score(metrics, objective))
                             .collect(),
                     )
                 };
+                apply_requested_standalone_confidence_rerank(
+                    &mut temp_result,
+                    &req,
+                    objective,
+                    |params| {
+                        let periods = resolve_vemr_periods(&vemr_cfg, params.fast_len, params.slow_len);
+                        let fast_first_valid = *fast_first_valid_lookup
+                            .get(&(periods.z, periods.bb))
+                            .ok_or_else(|| "VEMR fast first_valid lookup miss".to_string())?;
+                        let risk_first_valid = *risk_first_valid_lookup
+                            .get(&periods.atr)
+                            .ok_or_else(|| "VEMR risk first_valid lookup miss".to_string())?;
+                        let max_period =
+                            usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
+                        let start_t = compute_vemr_start_t(
+                            fv_close,
+                            fv_ma,
+                            fast_first_valid,
+                            risk_first_valid,
+                            max_period,
+                            strategy.trade_on_next_bar,
+                        );
+                        Ok(n.saturating_sub(start_t).max(2))
+                    },
+                )?;
+                let best_params = resolve_params(&temp_result.best_params);
+                let best_metrics = temp_result.best_metrics.clone();
+                let top: Vec<(DoubleMaParamsResolved, Metrics)> = temp_result
+                    .top
+                    .iter()
+                    .map(|(params, metrics)| (resolve_params(params), metrics.clone()))
+                    .collect();
+                emit_progress(progress, total_pairs, total_pairs, "vemr_optimize");
 
                 (
                     best_params,
                     best_metrics,
-                    best_score,
+                    temp_result.best_score,
                     top,
-                    top_scores,
+                    temp_result.top_scores.clone(),
                     None,
                     None,
                     num_combos_total,
@@ -2896,8 +3557,8 @@ fn run_vemr_optimization_gpu(
         best_score,
         top,
         top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -3101,9 +3762,31 @@ fn run_vemr_optimization_impl(
     }
     emit_progress(progress, processed, total_pairs, "vemr_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "VEMR grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "VEMR grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_vemr_periods(&vemr_cfg, params.fast_len, params.slow_len);
+        let fast_signals = fast_cache
+            .get(&(periods.z, periods.bb))
+            .ok_or_else(|| "VEMR fast signal cache miss".to_string())?;
+        let risk_signals = risk_cache
+            .get(&periods.atr)
+            .ok_or_else(|| "VEMR risk signal cache miss".to_string())?;
+        let max_period = usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
+        let start_t = compute_vemr_start_t(
+            fv_close,
+            fv_ma,
+            fast_signals.first_valid,
+            risk_signals.first_valid,
+            max_period,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -3167,8 +3850,8 @@ fn run_vemr_optimization_impl(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -4603,9 +5286,30 @@ fn run_rocb_optimization_gpu(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "ROCB grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "ROCB grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_rocb_periods(&rocb_cfg, params.fast_len, params.slow_len);
+        let channel_first_valid = *channel_first_valid_lookup
+            .get(&periods.channel)
+            .ok_or_else(|| "ROCB channel first_valid lookup miss".to_string())?;
+        let atr_first_valid = *atr_first_valid_lookup
+            .get(&periods.atr)
+            .ok_or_else(|| "ROCB ATR first_valid lookup miss".to_string())?;
+        let start_t = compute_rocb_start_t(
+            fv_close,
+            fv_high,
+            fv_low,
+            channel_first_valid,
+            atr_first_valid,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let best_metrics = result.best_metrics.clone();
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
@@ -4658,8 +5362,8 @@ fn run_rocb_optimization_gpu(
         best_score: result.best_score,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -4870,9 +5574,30 @@ fn run_rocb_optimization_impl(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "ROCB grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "ROCB grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, req, objective, |params| {
+        let periods = resolve_rocb_periods(&rocb_cfg, params.fast_len, params.slow_len);
+        let breakout = breakout_cache
+            .get(&periods.channel)
+            .ok_or_else(|| "ROCB breakout cache miss".to_string())?;
+        let risk = risk_cache
+            .get(&periods.atr)
+            .ok_or_else(|| "ROCB risk cache miss".to_string())?;
+        let start_t = compute_rocb_start_t(
+            fv_close,
+            fv_high,
+            fv_low,
+            breakout.first_valid,
+            risk.first_valid,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -4923,8 +5648,8 @@ fn run_rocb_optimization_impl(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -5263,9 +5988,30 @@ fn run_vcet_optimization_gpu(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "VCET grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "VCET grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_vcet_periods(&vcet_cfg, params.fast_len, params.slow_len);
+        let (_, vidya_first_valid) = *vidya_lookup
+            .get(&(periods.vidya_short, periods.vidya_long))
+            .ok_or_else(|| "VCET GPU VIDYA first_valid lookup miss".to_string())?;
+        let (_, ce_first_valid) = *ce_lookup
+            .get(&periods.ce)
+            .ok_or_else(|| "VCET GPU chandelier first_valid lookup miss".to_string())?;
+        let start_t = compute_vcet_start_t(
+            fv_close,
+            fv_high,
+            fv_low,
+            vidya_first_valid,
+            ce_first_valid,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let best_metrics = result.best_metrics.clone();
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
@@ -5320,8 +6066,8 @@ fn run_vcet_optimization_gpu(
         best_score: result.best_score,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -5535,9 +6281,30 @@ fn run_vcet_optimization_impl(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "VCET grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "VCET grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, req, objective, |params| {
+        let periods = resolve_vcet_periods(&vcet_cfg, params.fast_len, params.slow_len);
+        let vidya = vidya_cache
+            .get(&(periods.vidya_short, periods.vidya_long))
+            .ok_or_else(|| "VCET vidya cache miss".to_string())?;
+        let ce = ce_cache
+            .get(&periods.ce)
+            .ok_or_else(|| "VCET chandelier cache miss".to_string())?;
+        let start_t = compute_vcet_start_t(
+            fv_close,
+            fv_high,
+            fv_low,
+            vidya.first_valid,
+            ce.first_valid,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -5588,8 +6355,8 @@ fn run_vcet_optimization_impl(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -5937,9 +6704,30 @@ fn run_mkcs_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "mkcs_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "MKCS grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "MKCS grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_mkcs_periods(&mkcs_cfg, params.fast_len, params.slow_len);
+        let stddev_first_valid = *stddev_first_valid_lookup
+            .get(&periods.stddev)
+            .ok_or_else(|| "MKCS stddev first_valid lookup miss".to_string())?;
+        let breakout_first_valid = *breakout_first_valid_lookup
+            .get(&periods.breakout)
+            .ok_or_else(|| "MKCS breakout first_valid lookup miss".to_string())?;
+        let start_t = compute_mkcs_start_t(
+            fv_close,
+            fv_high,
+            fv_low,
+            stddev_first_valid,
+            breakout_first_valid,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let best_metrics = result.best_metrics.clone();
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
@@ -5992,8 +6780,8 @@ fn run_mkcs_optimization_gpu(
         best_score: result.best_score,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -6351,9 +7139,32 @@ fn run_kqsr_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "kqsr_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "KQSR grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "KQSR grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_kqsr_periods(&kqsr_cfg, params.fast_len, params.slow_len);
+        let fast_idx = fast_periods
+            .iter()
+            .position(|&len| len == params.fast_len)
+            .ok_or_else(|| "KQSR fast period index miss".to_string())?;
+        let slow_idx = slow_periods
+            .iter()
+            .position(|&len| len == params.slow_len)
+            .ok_or_else(|| "KQSR slow period index miss".to_string())?;
+        let signals_first_valid = fast_first_valid
+            .get(fast_idx)
+            .copied()
+            .unwrap_or(n)
+            .max(slow_first_valid.get(slow_idx).copied().unwrap_or(n));
+        let _ = periods;
+        let start_t =
+            compute_kqsr_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -6405,8 +7216,8 @@ fn run_kqsr_optimization_gpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -6553,9 +7364,27 @@ fn run_kqsr_optimization_cpu(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "KQSR grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "KQSR grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_kqsr_periods(&kqsr_cfg, params.fast_len, params.slow_len);
+        let signals = compute_kqsr_signals(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            &kqsr_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs.as_ref(),
+        )?;
+        let start_t =
+            compute_kqsr_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -6597,8 +7426,8 @@ fn run_kqsr_optimization_cpu(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -6947,9 +7776,45 @@ fn run_carm_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "carm_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "CARM grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "CARM grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_carm_periods(&carm_cfg, params.fast_len, params.slow_len);
+        let fast_idx = fast_periods
+            .iter()
+            .position(|&len| len == params.fast_len)
+            .ok_or_else(|| "CARM fast period index miss".to_string())?;
+        let otto_key = (
+            periods.otto,
+            periods.coppock_short.max(2),
+            periods.ao_slow.max(periods.otto),
+        );
+        let otto_row = *otto_row_lookup
+            .get(&otto_key)
+            .ok_or_else(|| "CARM OTTO row lookup miss".to_string())?;
+        let otto_first_valid = otto_first_valid_by_row
+            .get(usize::try_from(otto_row).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or(n);
+        let mixed = compute_carm_mixed_signals_f32(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            Some(&prepared_cuda_inputs),
+        )?;
+        let signals_first_valid = mixed
+            .first_valid
+            .max(*rocr_first_valid.get(fast_idx).unwrap_or(&n))
+            .max(otto_first_valid);
+        let start_t =
+            compute_carm_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -7001,8 +7866,8 @@ fn run_carm_optimization_gpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -7149,9 +8014,27 @@ fn run_carm_optimization_cpu(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "CARM grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "CARM grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_carm_periods(&carm_cfg, params.fast_len, params.slow_len);
+        let signals = compute_carm_signals(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            &carm_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs.as_ref(),
+        )?;
+        let start_t =
+            compute_carm_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -7194,8 +8077,8 @@ fn run_carm_optimization_cpu(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -7590,9 +8473,39 @@ fn run_kvdf_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "kvdf_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "KVDF grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "KVDF grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_kvdf_periods(&kvdf_cfg, params.fast_len, params.slow_len);
+        let fast_idx = fast_periods
+            .iter()
+            .position(|&len| len == params.fast_len)
+            .ok_or_else(|| "KVDF fast period index miss".to_string())?;
+        let slow_idx = slow_periods
+            .iter()
+            .position(|&len| len == params.slow_len)
+            .ok_or_else(|| "KVDF slow period index miss".to_string())?;
+        let dti_key = (periods.dti_r, periods.dti_s, periods.dti_u);
+        let dti_row = *dti_row_lookup
+            .get(&dti_key)
+            .ok_or_else(|| "KVDF DTI row lookup miss".to_string())?;
+        let dti_first_valid = dti_first_valid_by_row
+            .get(usize::try_from(dti_row).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or(n);
+        let signals_first_valid = shared
+            .first_valid
+            .max(*fast_first_valid.get(fast_idx).unwrap_or(&n))
+            .max(*slow_first_valid.get(slow_idx).unwrap_or(&n))
+            .max(dti_first_valid);
+        let start_t =
+            compute_kvdf_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -7644,8 +8557,8 @@ fn run_kvdf_optimization_gpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -7792,9 +8705,27 @@ fn run_kvdf_optimization_cpu(
         }
     };
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "KVDF grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "KVDF grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_kvdf_periods(&kvdf_cfg, params.fast_len, params.slow_len);
+        let signals = compute_kvdf_signals(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            &kvdf_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs.as_ref(),
+        )?;
+        let start_t =
+            compute_kvdf_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -7837,8 +8768,8 @@ fn run_kvdf_optimization_cpu(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -8245,9 +9176,32 @@ fn run_cdmc_optimization_gpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "cdmc_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "CDMC grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "CDMC grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_cdmc_periods(&cdmc_cfg, params.fast_len, params.slow_len);
+        let dpo_first_valid = *dpo_first_valid_lookup
+            .get(&periods.dpo)
+            .ok_or_else(|| "CDMC DPO first_valid lookup miss".to_string())?;
+        let cycle_first_valid = *cycle_first_valid_lookup
+            .get(&periods.correlation_cycle)
+            .ok_or_else(|| "CDMC correlation-cycle first_valid lookup miss".to_string())?;
+        let decycler_first_valid = *decycler_first_valid_lookup
+            .get(&periods.decycler)
+            .ok_or_else(|| "CDMC decycler first_valid lookup miss".to_string())?;
+        let signals_first_valid = dpo_first_valid
+            .max(cycle_first_valid)
+            .max(mama_first_valid)
+            .max(fama_first_valid)
+            .max(decycler_first_valid);
+        let start_t =
+            compute_cdmc_start_t(fv_close, signals_first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = resolve_params(&result.best_params);
     let top: Vec<(DoubleMaParamsResolved, Metrics)> = result
         .top
@@ -8299,8 +9253,8 @@ fn run_cdmc_optimization_gpu(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
@@ -8436,9 +9390,27 @@ fn run_cdmc_optimization_cpu(
     }
     emit_progress(progress, total_pairs, total_pairs, "cdmc_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "CDMC grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "CDMC grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, &req, objective, |params| {
+        let periods = resolve_cdmc_periods(&cdmc_cfg, params.fast_len, params.slow_len);
+        let signals = compute_cdmc_signals(
+            candles,
+            &req.ma_source,
+            &req.backend,
+            periods,
+            &cdmc_cfg,
+            #[cfg(feature = "cuda")]
+            prepared_cuda_inputs.as_ref(),
+        )?;
+        let start_t =
+            compute_cdmc_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = DoubleMaParamsResolved {
         fast_len: result.best_params.fast_len,
         slow_len: result.best_params.slow_len,
@@ -8512,8 +9484,8 @@ fn run_cdmc_optimization_cpu(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -8722,9 +9694,30 @@ fn run_mkcs_optimization_impl(
     }
     emit_progress(progress, total_pairs, total_pairs, "mkcs_optimize");
 
-    let result = agg
-        .finalize()
-        .ok_or_else(|| "MKCS grid search produced no result".to_string())?;
+    let mut result = finalize_standalone_optimization_result(
+        agg,
+        "MKCS grid search produced no result",
+        &req,
+        objective,
+    )?;
+    apply_requested_standalone_confidence_rerank(&mut result, req, objective, |params| {
+        let periods = resolve_mkcs_periods(&mkcs_cfg, params.fast_len, params.slow_len);
+        let compression = compression_cache
+            .get(&periods.stddev)
+            .ok_or_else(|| "MKCS compression cache miss".to_string())?;
+        let breakout = breakout_cache
+            .get(&periods.breakout)
+            .ok_or_else(|| "MKCS breakout cache miss".to_string())?;
+        let start_t = compute_mkcs_start_t(
+            fv_close,
+            fv_high,
+            fv_low,
+            compression.first_valid,
+            breakout.first_valid,
+            strategy.trade_on_next_bar,
+        );
+        Ok(n.saturating_sub(start_t).max(2))
+    })?;
     let best_params = DoubleMaParamsResolved {
         fast_len: result.best_params.fast_len,
         slow_len: result.best_params.slow_len,
@@ -8797,8 +9790,8 @@ fn run_mkcs_optimization_impl(
         runtime_ms: 0,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -8833,6 +9826,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             "Select only one of ASR, VCC, VEMR, ROCB, VCET, MKCS, KQSR, CARM, KVDF, or CDMC strategy config.".to_string(),
         );
     }
+    validate_standalone_easy_shortlist_request(&req)?;
     if req.asr.is_some() {
         return run_asr_optimization(req, candles, cancel, progress);
     }
@@ -9386,8 +10380,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         runtime_ms,
         top,
         top_scores: result.top_scores,
+        all_scores: resolved_all_scores(&all, objective),
         all,
-        all_scores: None,
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
@@ -10815,6 +11809,7 @@ mod tests {
         req.include_all = Some(true);
         req.top_k = Some(128);
         req.heatmap_bins = Some(0);
+        let objective = req.objective;
 
         let mut cpu_req = req.clone();
         cpu_req.backend = Backend::CpuOnly;
@@ -10827,6 +11822,9 @@ mod tests {
         let gpu_res =
             run_composite_cpu_optimization_blocking_with_candles(gpu_req, candles, cancel, None)
                 .unwrap_or_else(|e| panic!("{label} gpu optimization failed: {e}"));
+
+        assert_include_all_scores_match_rows(&cpu_res, objective, &format!("{label} cpu"));
+        assert_include_all_scores_match_rows(&gpu_res, objective, &format!("{label} gpu"));
 
         assert!(
             matches!(gpu_res.backend_used, BackendUsed::Gpu),
@@ -10908,6 +11906,33 @@ mod tests {
         );
     }
 
+    fn assert_include_all_scores_match_rows(
+        res: &BackendOptimizationResult,
+        objective: ObjectiveKind,
+        label: &str,
+    ) {
+        let rows = res
+            .all
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label} include_all rows missing"));
+        let scores = res
+            .all_scores
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label} include_all scores missing"));
+        assert_eq!(
+            rows.len(),
+            scores.len(),
+            "{label} all_scores length should match all-row length"
+        );
+        for ((_, metrics), score) in rows.iter().zip(scores.iter()) {
+            let expected = objective_score(metrics, objective);
+            assert!(
+                expected.total_cmp(score) == std::cmp::Ordering::Equal,
+                "{label} score mismatch: expected={expected}, actual={score}"
+            );
+        }
+    }
+
     fn make_base_composite_req() -> CompositeCpuRequest {
         CompositeCpuRequest {
             backend: crate::double_ma::Backend::CpuOnly,
@@ -10941,6 +11966,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
@@ -11155,6 +12183,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -11198,6 +12229,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
@@ -11414,6 +12448,9 @@ mod tests {
             .as_ref()
             .is_some_and(|scores| !scores.is_empty()));
 
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "base cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "base gpu");
+
         let cpu_all = cpu_res
             .all
             .expect("cpu include_all result should contain full combo rows");
@@ -11424,6 +12461,34 @@ mod tests {
         assert_eq!(gpu_all.len(), gpu_res.num_combos);
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.best_params.fast_len < gpu_res.best_params.slow_len);
+    }
+
+    #[test]
+    fn standalone_unified_gpu_shortlist_extras_require_include_all() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let mut req = make_base_composite_req();
+        req.backend = Backend::GpuKernel { device_id: 0 };
+        req.vemr = Some(VemrStrategyParams::default());
+        req.fast_range = (5, 7, 1);
+        req.slow_range = (12, 16, 1);
+        req.top_k = Some(4);
+        req.include_all = Some(false);
+        req.heatmap_bins = Some(0);
+        req.extra_shortlist_objectives = Some(vec![ObjectiveKind::Pnl]);
+
+        let err = run_composite_cpu_optimization_blocking_with_candles(
+            req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect_err("standalone shortlist extras should require include_all=true");
+        assert!(
+            err.to_ascii_lowercase().contains("include_all=true"),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -11664,6 +12729,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
@@ -11729,6 +12797,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::GpuVdps,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -11780,6 +12851,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
@@ -11839,6 +12913,9 @@ mod tests {
                 ma_pairs: None,
                 mode: OptimizationMode::Auto,
             }),
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -11900,6 +12977,9 @@ mod tests {
                 ma_pairs: None,
                 mode: OptimizationMode::Auto,
             }),
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -12168,6 +13248,9 @@ mod tests {
             .as_ref()
             .is_some_and(|scores| !scores.is_empty()));
 
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "vcc cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "vcc gpu");
+
         let cpu_all = cpu_res
             .all
             .expect("cpu include_all result should contain full combo rows");
@@ -12311,6 +13394,72 @@ mod tests {
                 cpu_metrics.trades
             );
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_gpu_kernel_supports_standalone_shortlist_extras() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let mut req = make_base_composite_req();
+        req.backend = Backend::GpuKernel { device_id: 0 };
+        req.vemr = Some(VemrStrategyParams::default());
+        req.fast_range = (5, 7, 1);
+        req.slow_range = (12, 16, 1);
+        req.top_k = Some(4);
+        req.include_all = Some(true);
+        req.heatmap_bins = Some(0);
+        req.extra_shortlist_objectives = Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]);
+        req.shortlist_union_mode = Some(DoubleMaShortlistUnionMode::WeightedRank);
+        req.shortlist_confidence_mode = Some(DoubleMaShortlistConfidenceMode::Dsr);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("vemr gpu-kernel shortlist extras run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(res.best_score.is_some());
+        assert_eq!(res.top_scores.as_ref().map(|scores| scores.len()), Some(res.top.len()));
+        assert_include_all_scores_match_rows(&res, ObjectiveKind::Sharpe, "vemr shortlist extras");
+        assert!(res.all.as_ref().is_some_and(|rows| !rows.is_empty()));
+        assert!(res.shortlist_slice_diagnostics.is_none());
+        assert!(res.score_observation_context.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_gpu_kernel_supports_standalone_confidence_rerank_without_include_all() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let mut req = make_base_composite_req();
+        req.backend = Backend::GpuKernel { device_id: 0 };
+        req.vemr = Some(VemrStrategyParams::default());
+        req.fast_range = (5, 7, 1);
+        req.slow_range = (12, 16, 1);
+        req.top_k = Some(4);
+        req.include_all = Some(false);
+        req.heatmap_bins = Some(0);
+        req.shortlist_confidence_mode = Some(DoubleMaShortlistConfidenceMode::Dsr);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("vemr gpu-kernel confidence rerank run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(res.all.is_none());
+        assert!(res.best_score.is_some());
+        assert_eq!(res.top.len(), 4);
+        assert_eq!(res.top_scores.as_ref().map(|scores| scores.len()), Some(res.top.len()));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -12845,6 +13994,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
@@ -12894,6 +14046,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -12945,6 +14100,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13012,6 +14170,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13071,6 +14232,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13116,6 +14280,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13167,6 +14334,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13234,6 +14404,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13293,6 +14466,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13338,6 +14514,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13389,6 +14568,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13456,6 +14638,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13514,6 +14699,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13559,6 +14747,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13610,6 +14801,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13677,6 +14871,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13730,6 +14927,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13775,6 +14975,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13830,6 +15033,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13894,6 +15100,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
@@ -13953,6 +15162,9 @@ mod tests {
             objective: ObjectiveKind::Sharpe,
             mode: OptimizationMode::Grid,
             gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),

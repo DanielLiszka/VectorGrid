@@ -4200,6 +4200,27 @@ pub(crate) fn rerank_shortlist_by_confidence_for_host(
     )
 }
 
+pub(crate) fn shortlist_confidence_value_for_host(
+    metrics: &Metrics,
+    mode: DoubleMaShortlistConfidenceMode,
+    obs: usize,
+    peer_mean: f64,
+    peer_std: f64,
+    trials: usize,
+) -> f64 {
+    let (psr, dsr) = crate::validation_stats::compute_psr_dsr(
+        metrics.sharpe,
+        obs.max(2),
+        trials.max(1),
+        peer_mean,
+        peer_std,
+    );
+    match mode {
+        DoubleMaShortlistConfidenceMode::Psr => psr.unwrap_or(0.0),
+        DoubleMaShortlistConfidenceMode::Dsr => dsr.unwrap_or(0.0),
+    }
+}
+
 fn shortlist_union_objectives(
     primary_objective: ObjectiveKind,
     extra_objectives: &[ObjectiveKind],

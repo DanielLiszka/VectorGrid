@@ -11,6 +11,28 @@ It focuses on **what I would add or tighten** after a second pass through:
 
 The goal remains the same: **higher warm-path performance, less copy/allocation overhead, and stronger correctness guardrails without removing features or changing route semantics**.
 
+## Repo-state note
+
+This addendum should be interpreted against the current repo state.
+
+The standalone unified-GPU routes now already provide:
+
+- `all_scores` on `include_all=true`
+- host-side `extra_shortlist_objectives`
+- host-side `shortlist_union_mode`
+- host-side `shortlist_confidence_mode`
+
+on the requested standalone `GpuKernel` route.
+
+What is still absent is Double-MA exact-kernel parity:
+
+- no shortlist slice / neighborhood / benchmark-shortlist diagnostics parity
+- no `score_observation_context`
+- no attempt to force KVDF into the Double-MA exact-kernel metric schema
+
+So the recommendations below remain valid, but they are now clearly about KVDF-local runtime,
+scratch, residency, and transfer efficiency on top of a broader already-productized result surface.
+
 ---
 
 ## What I would add to the original plan
@@ -650,6 +672,10 @@ Rather than building a permanently bespoke KVDF cache, the cleaner direction is:
 3. if it works well, factor common pieces into shared helpers
 
 That avoids a premature broad refactor, but still gives you a migration path toward one coherent CUDA residency model.
+
+The current repo already uses a separate host/result-layer widening path for standalone shortlist
+extras, so this section should now be read as shared-runtime alignment for residency/scratch/copy
+behavior, not as a statement that KVDF still lacks broader result-surface support.
 
 ---
 

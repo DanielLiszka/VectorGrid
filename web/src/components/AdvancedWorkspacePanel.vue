@@ -77,6 +77,18 @@ const strategyCapabilities = computed(() => describeStrategyOptimizationCapabili
     breakoutUseAdx: strategyStore.breakoutUseAdx,
   },
 ))
+const standaloneUnifiedGpuShortlistKind = computed(() => [
+  'Asr',
+  'Vcc',
+  'Vemr',
+  'Rocb',
+  'Vcet',
+  'Kqsr',
+  'Carm',
+  'Kvdf',
+  'Mkcs',
+  'Cdmc',
+].includes(String(strategyCapabilities.value.kind || '').trim()))
 const showModeControl = computed(() => strategyCapabilities.value.usesGlobalMode)
 const showHeatmapControl = computed(() => strategyCapabilities.value.supportsHeatmap)
 const showTopKControl = computed(() => strategyCapabilities.value.supportsTopK)
@@ -140,6 +152,17 @@ const extraShortlistObjectivesStateNote = computed(() => {
       ? 'The current route does not support extra shortlist objectives. Clear this field or switch to the exact GpuKernel route.'
       : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
+  if (standaloneUnifiedGpuShortlistKind.value) {
+    if (String(includeAllDraft.value || '').trim() !== 'true') {
+      return 'Requires include all = true so the full standalone candidate set is available on the host.'
+    }
+    if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+      return 'Requires top K greater than 0.'
+    }
+    return hasValue
+      ? 'Builds additional host-side shortlist heads for the standalone unified-GPU route before any optional union or confidence rerank.'
+      : 'Optional host-side extra shortlist heads for the standalone unified-GPU route. This currently requires include all = true.'
+  }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to enable an exact union shortlist.'
   }
@@ -180,11 +203,16 @@ const shortlistConfidenceModeStateNote = computed(() => {
       ? 'The current route does not support shortlist confidence mode. Clear this field or switch to the exact GpuKernel route.'
       : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
+  if (standaloneUnifiedGpuShortlistKind.value) {
+    if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+      return 'Requires top K greater than 0.'
+    }
+    return hasValue
+      ? 'Reranks the returned standalone unified-GPU shortlist by PSR or DSR confidence without adding slice or neighborhood diagnostics.'
+      : 'Optional PSR / DSR rerank over the returned standalone unified-GPU shortlist.'
+  }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to rerank the exact shortlist by PSR or DSR.'
-  }
-  if (String(includeAllDraft.value || '').trim() === 'true') {
-    return 'Requires include all = false.'
   }
   if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
     return 'Requires top K greater than 0.'
@@ -210,6 +238,17 @@ const shortlistUnionModeStateNote = computed(() => {
   }
   if (extraShortlistObjectivesDraft.value.trim().length === 0) {
     return 'Requires Extra shortlist objectives to define additional exact shortlist heads.'
+  }
+  if (standaloneUnifiedGpuShortlistKind.value) {
+    if (String(includeAllDraft.value || '').trim() !== 'true') {
+      return 'Requires include all = true so the standalone union shortlist can be built from the full candidate set.'
+    }
+    if (Number.parseInt(String(topKDraft.value || '0'), 10) <= 0) {
+      return 'Requires top K greater than 0.'
+    }
+    return hasValue
+      ? 'Reranks the standalone host-side union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics.'
+      : 'Optional rerank over the standalone host-side union shortlist.'
   }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to enable exact union reranking.'

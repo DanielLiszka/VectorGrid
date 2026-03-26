@@ -153,4 +153,29 @@ describe('strategyOptimizationCapabilities', () => {
     expect(compositeCpuCaps.outputSummary).toContain('include-all')
     expect(compositeCpuCaps.outputSummary).toContain('native candidate returns')
   })
+
+  it('enables standalone shortlist extras only on requested standalone GpuKernel previews', () => {
+    for (const kind of ['Asr', 'Vcc', 'Vemr', 'Rocb', 'Vcet', 'Kqsr', 'Carm', 'Kvdf', 'Mkcs', 'Cdmc'] as const) {
+      const kernelCaps = describeStrategyOptimizationCapabilities(kind, {
+        requestedBackend: 'GpuKernel',
+      })
+      const cpuCaps = describeStrategyOptimizationCapabilities(kind, {
+        requestedBackend: 'CpuOnly',
+      })
+
+      expect(kernelCaps.supportsIncludeAll).toBe(true)
+      expect(kernelCaps.supportsExtraShortlistObjectives).toBe(true)
+      expect(kernelCaps.supportsShortlistConfidenceMode).toBe(true)
+      expect(kernelCaps.supportsShortlistUnionMode).toBe(true)
+      expect(kernelCaps.supportsAdvancedExactKernelControls).toBe(false)
+      expect(kernelCaps.outputSummary).toContain('host-side extra shortlist heads')
+      expect(kernelCaps.outputSummary).toContain('retained-shortlist confidence reranking')
+
+      expect(cpuCaps.supportsIncludeAll).toBe(true)
+      expect(cpuCaps.supportsExtraShortlistObjectives).toBe(false)
+      expect(cpuCaps.supportsShortlistConfidenceMode).toBe(false)
+      expect(cpuCaps.supportsShortlistUnionMode).toBe(false)
+      expect(cpuCaps.supportsAdvancedExactKernelControls).toBe(false)
+    }
+  })
 })

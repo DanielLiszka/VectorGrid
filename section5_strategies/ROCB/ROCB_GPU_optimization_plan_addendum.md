@@ -2,6 +2,28 @@
 
 This addendum patches a few gaps in the main ROCB plan and adds a small set of optional, higher-upside changes that still preserve correctness and existing features.
 
+## Repo-state note
+
+This document should now be read against the current repo state.
+
+For the standalone unified-GPU routes in `composite_cpu.rs`, the repo already supports:
+
+- `all_scores` on `include_all=true`
+- host-side `extra_shortlist_objectives`
+- host-side `shortlist_union_mode`
+- host-side `shortlist_confidence_mode`
+
+when the requested route stays on standalone `GpuKernel`.
+
+That does **not** mean ROCB has inherited the Double-MA exact-kernel diagnostics surface:
+
+- no shortlist slice / neighborhood diagnostics parity
+- no `score_observation_context`
+- no Double-MA metric-schema parity
+
+So the ROCB plan below is still valid, but it should be understood as a runtime/residency/copy
+optimization plan layered on top of an already-expanded standalone result surface.
+
 It is still scoped to the same ROCB review surface:
 
 - `rocb.rs`
@@ -629,6 +651,11 @@ These are not required to implement the base plan, but they are strong candidate
 This is likely the biggest optional win beyond the attached-file-only scope.
 
 The broader GPU runtime path already has resident-market machinery and dataset-keyed returns reuse in `gpu_backtest_kernel.rs`. If `PreparedCudaIndicatorInputs` or an adjacent resident-market cache already owns a device-resident close series, the best ROCB design is to consume that directly instead of uploading `close_f32` again.
+
+Separately, the repo now already exposes the host/result-layer shortlist extras on supported
+standalone routes. That newer product surface does not change this recommendation; it just narrows
+the remaining ROCB gap to the device-runtime/residency boundary rather than the shortlist/result
+surface.
 
 Practical shape:
 

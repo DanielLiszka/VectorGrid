@@ -329,73 +329,129 @@ Expected perf posture:
 
 ### Phase 0: Audit and helper plan
 
-- [ ] Reconfirm every standalone unified-GPU route in `crates/app_core/src/composite_cpu.rs` still
+- [x] Reconfirm every standalone unified-GPU route in `crates/app_core/src/composite_cpu.rs` still
       returns `all` on `include_all=true`.
-- [ ] Reconfirm all repeated standalone result-construction blocks currently set `all_scores: None`.
-- [ ] Decide whether to add one local result-construction helper in `composite_cpu.rs` or reuse
+- [x] Reconfirm all repeated standalone result-construction blocks currently set `all_scores: None`.
+- [x] Decide whether to add one local result-construction helper in `composite_cpu.rs` or reuse
       `double_ma_result.rs` directly.
-- [ ] Decide whether `build_exact_extra_shortlist_rows(...)` should be widened for reuse or moved
+- [x] Decide whether `build_exact_extra_shortlist_rows(...)` should be widened for reuse or moved
       to a shared host-shortlist helper.
-- [ ] Decide whether the confidence formula should be extracted to a reusable row-level helper.
+- [x] Decide whether the confidence formula should be extracted to a reusable row-level helper.
 
 ### Phase 1: `all_scores`
 
-- [ ] Add one shared result-construction helper for standalone unified-GPU routes.
-- [ ] Populate `all_scores` when `all` is present.
-- [ ] Keep `all_scores=None` when `include_all=false`.
-- [ ] Update representative GPU include-all tests to assert `all_scores` presence and length.
-- [ ] Update any frontend result-consumer tests if they currently assume `all_scores` is absent on
+- [x] Add one shared result-construction helper for standalone unified-GPU routes.
+- [x] Populate `all_scores` when `all` is present.
+- [x] Keep `all_scores=None` when `include_all=false`.
+- [x] Update representative GPU include-all tests to assert `all_scores` presence and length.
+- [x] Update any frontend result-consumer tests if they currently assume `all_scores` is absent on
       these routes.
 
 ### Phase 2: extra shortlist objectives and union rerank
 
-- [ ] Add `extra_shortlist_objectives` to `CompositeCpuRequest`.
-- [ ] Add `shortlist_union_mode` to `CompositeCpuRequest`.
-- [ ] Reuse or extract `build_exact_extra_shortlist_rows(...)`.
-- [ ] Reuse `rerank_shortlist_by_union_mode(...)`.
-- [ ] Restrict this path to standalone unified-GPU routes with `include_all=true`.
-- [ ] Recompute `best_*`, `top`, and `top_scores` from the union shortlist.
-- [ ] Preserve `all` and `all_scores` unchanged.
-- [ ] Update `strategyOptimizationCapabilities.ts` for these routes.
-- [ ] Update `AdvancedWorkspacePanel.vue` copy/visibility for these routes.
-- [ ] Update `optimizeRequestBuilder.ts` validation:
-      - [ ] require `top_k > 0`
-      - [ ] require `include_all=true`
-      - [ ] reject CPU/hybrid/non-standalone routes
-- [ ] Add backend tests comparing union results to exhaustive host union on representative
+- [x] Add `extra_shortlist_objectives` to `CompositeCpuRequest`.
+- [x] Add `shortlist_union_mode` to `CompositeCpuRequest`.
+- [x] Reuse or extract `build_exact_extra_shortlist_rows(...)`.
+- [x] Reuse `rerank_shortlist_by_union_mode(...)`.
+- [x] Restrict this path to standalone unified-GPU routes with `include_all=true`.
+- [x] Recompute `best_*`, `top`, and `top_scores` from the union shortlist.
+- [x] Preserve `all` and `all_scores` unchanged.
+- [x] Update `strategyOptimizationCapabilities.ts` for these routes.
+- [x] Update `AdvancedWorkspacePanel.vue` copy/visibility for these routes.
+- [x] Update `optimizeRequestBuilder.ts` validation:
+      - [x] require `top_k > 0`
+      - [x] require `include_all=true`
+      - [x] reject CPU/hybrid/non-standalone routes
+- [x] Add backend tests comparing union results to exhaustive host union on representative
       standalone strategies.
-- [ ] Add request-builder and capability tests.
+- [x] Add request-builder and capability tests.
 
 ### Phase 3: shortlist confidence rerank
 
-- [ ] Add `shortlist_confidence_mode` to `CompositeCpuRequest`.
-- [ ] Extract reusable row-level confidence scoring from the current helper path.
-- [ ] Add retained-shortlist observation-context builders for representative standalone strategies.
-- [ ] Extend the pattern to the rest of the standalone unified-GPU strategy set.
-- [ ] Rerank retained shortlist rows by confidence.
-- [ ] Apply confidence rerank after union-shortlist rerank when both are requested.
-- [ ] Recompute `best_*`, `top`, and `top_scores` from the reranked shortlist.
-- [ ] Keep `all` and `all_scores` unchanged.
-- [ ] Update `strategyOptimizationCapabilities.ts` for standalone confidence support.
-- [ ] Update `AdvancedWorkspacePanel.vue` copy/visibility for standalone confidence support.
-- [ ] Update `optimizeRequestBuilder.ts` validation:
-      - [ ] require `top_k > 0`
-      - [ ] reject CPU/hybrid/non-standalone routes
-- [ ] Add backend parity tests against manual retained-shortlist confidence sorting.
-- [ ] Add request-builder and capability tests.
+- [x] Add `shortlist_confidence_mode` to `CompositeCpuRequest`.
+- [x] Extract reusable row-level confidence scoring from the current helper path.
+- [x] Add retained-shortlist observation-context builders for representative standalone strategies.
+- [x] Extend the pattern to the rest of the standalone unified-GPU strategy set.
+- [x] Rerank retained shortlist rows by confidence.
+- [x] Apply confidence rerank after union-shortlist rerank when both are requested.
+- [x] Recompute `best_*`, `top`, and `top_scores` from the reranked shortlist.
+- [x] Keep `all` and `all_scores` unchanged.
+- [x] Update `strategyOptimizationCapabilities.ts` for standalone confidence support.
+- [x] Update `AdvancedWorkspacePanel.vue` copy/visibility for standalone confidence support.
+- [x] Update `optimizeRequestBuilder.ts` validation:
+      - [x] require `top_k > 0`
+      - [x] reject CPU/hybrid/non-standalone routes
+- [x] Add backend parity tests against manual retained-shortlist confidence sorting.
+- [x] Add request-builder and capability tests.
 
 ### Phase 4: closure
 
-- [ ] Run targeted Rust tests for all 3 phases.
-- [ ] Run targeted frontend tests for capability/request/UI changes.
-- [ ] Run `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`.
-- [ ] If shared CUDA/runtime helpers changed, run
+- [x] Run targeted Rust tests for all 3 phases.
+- [x] Run targeted frontend tests for capability/request/UI changes.
+- [x] Run `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`.
+- [x] If shared CUDA/runtime helpers changed, run
       `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`.
-- [ ] Update this tracker with:
-      - [ ] implemented files
-      - [ ] validation commands
-      - [ ] perf notes
-      - [ ] final route/capability summary
+- [x] Update this tracker with:
+      - [x] implemented files
+      - [x] validation commands
+      - [x] perf notes
+      - [x] final route/capability summary
+
+## Completion Notes
+
+### Implemented files
+
+- `crates/app_core/src/composite_cpu.rs`
+- `crates/app_core/src/composite_validate.rs`
+- `crates/app_core/src/double_ma.rs`
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+- `crates/app_core/src/strategy_dynamic.rs`
+- `src-tauri/src/bin/ta_workflow_regression.rs`
+- `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/services/optimizeRequestBuilder.test.ts`
+- `web/src/utils/strategyOptimizationCapabilities.ts`
+- `web/src/utils/strategyOptimizationCapabilities.test.ts`
+- `web/src/components/AdvancedWorkspacePanel.vue`
+- `web/src/components/AdvancedWorkspacePanel.test.ts`
+
+### Validation commands
+
+- `cargo check -p ta_app_core --tests`
+- `cargo check -p ta_app_core --tests --features cuda,cuda-backtest-kernel`
+- `cargo test -p ta_app_core --features cuda,cuda-backtest-kernel standalone_unified_gpu_shortlist_extras_require_include_all -- --nocapture --test-threads=1`
+- `cargo test -p ta_app_core --features cuda,cuda-backtest-kernel vemr_gpu_kernel_supports_standalone_ -- --nocapture --test-threads=1`
+- `npm test -- src/services/optimizeRequestBuilder.test.ts src/utils/strategyOptimizationCapabilities.test.ts src/components/AdvancedWorkspacePanel.test.ts`
+- `npm run typecheck`
+  - current status: still fails only on the pre-existing `validationRequestBuilder.ts` `replaceAll`
+    TS-lib-target issue; the new standalone-shortlist fields are now type-correct
+- `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`
+- `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+
+### Perf notes
+
+- Feature-off/default-path behavior remained within the agreed posture:
+  - workflow gate passed with `runtime_not_regressed_50pct: 1681ms vs baseline 1744ms`
+  - GPU perf gate passed with `gpu_criterion_mean_not_regressed_10pct: 82.815344 ms vs baseline 155.288513 ms`
+  - GPU dynamic-strategy check also passed: `75.25 ms on vs 80.75 ms off`
+- The new standalone extras are opt-in and stay in the host/result layer:
+  - `all_scores` only materializes when `include_all=true`
+  - union shortlist support is restricted to `include_all=true`
+  - confidence rerank runs only on retained shortlist rows
+- No default-path widening of device metric rows or new second pass was introduced.
+
+### Final route/capability summary
+
+- Standalone unified-GPU routes now return `all_scores` alongside `all` on `include_all=true`.
+- Standalone unified-GPU routes now accept:
+  - `extra_shortlist_objectives`
+  - `shortlist_union_mode`
+  - `shortlist_confidence_mode`
+- Scope remains intentionally narrower than the Double MA exact-kernel surface:
+  - no slice/neighborhood diagnostics parity
+  - no `score_observation_context`
+  - no device-side multi-head top-k redesign
+- Frontend capability copy and advanced controls now expose these standalone extras only on the
+  requested `GpuKernel` preview, with explicit `includeAll=true` messaging for union-style extras.
 
 ## Closure Criteria
 

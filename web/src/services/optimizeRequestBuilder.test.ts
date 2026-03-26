@@ -1999,6 +1999,60 @@ describe("optimizeRequestBuilder", () => {
     });
   }
 
+  function buildStandaloneCompositeGpuRequest(
+    strategyKind:
+      | "Asr"
+      | "Vcc"
+      | "Vemr"
+      | "Rocb"
+      | "Vcet"
+      | "Kqsr"
+      | "Carm"
+      | "Kvdf"
+      | "Mkcs"
+      | "Cdmc",
+    overrides: Record<string, unknown> = {},
+  ) {
+    return buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: strategyKind,
+        data_id: `data-${strategyKind.toLowerCase()}`,
+        current_data_meta: compositeDataMeta,
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      topK: "20",
+      includeAll: "false",
+      compositeSignalMode: "hard_gate",
+      halfTrendAmplitude: "2",
+      halfTrendAtrPeriod: "100",
+      halfTrendChannelDev: "2.0",
+      maczFastLength: "12",
+      maczSlowLength: "25",
+      maczSignalLength: "9",
+      maczLengthZ: "20",
+      maczLengthStdev: "25",
+      maczGamma: "0.02",
+      maczA: "1",
+      maczB: "1",
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: "2",
+      ottPercent: "1.4",
+      ottMaType: "VAR",
+      ...overrides,
+    });
+  }
+
   it("builds a CompositeTrend request through the double-MA builder path with GPU kernel when ADX is off", () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -3021,6 +3075,56 @@ describe("optimizeRequestBuilder", () => {
         row.expected,
       );
     }
+  });
+
+  it("accepts standalone unified-GPU shortlist extras on requested GpuKernel routes when includeAll=true", () => {
+    const req = buildStandaloneCompositeGpuRequest("Vemr", {
+      includeAll: "true",
+      extraShortlistObjectives: "Pnl,Omega",
+      shortlistUnionMode: "weighted-rank",
+      shortlistConfidenceMode: "DSR",
+    });
+
+    expect(req).toBeTruthy();
+    expect(req?.strategy_kind).toBe("Vemr");
+    expect(req?.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect((req as Record<string, unknown>).extra_shortlist_objectives).toEqual([
+      "Pnl",
+      "Omega",
+    ]);
+    expect((req as Record<string, unknown>).shortlist_union_mode).toBe(
+      "weighted_rank",
+    );
+    expect((req as Record<string, unknown>).shortlist_confidence_mode).toBe(
+      "dsr",
+    );
+    expect((req as Record<string, unknown>).include_all).toBe(true);
+  });
+
+  it("rejects standalone unified-GPU extra shortlist objectives without includeAll=true", () => {
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Asr", {
+        extraShortlistObjectives: "Pnl,Omega",
+        includeAll: "false",
+      }),
+    ).toThrow(/includeAll=true/i);
+  });
+
+  it("rejects standalone unified-GPU shortlist controls off the requested GpuKernel route", () => {
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Asr", {
+        backend: "CpuOnly",
+        includeAll: "true",
+        extraShortlistObjectives: "Pnl",
+      }),
+    ).toThrow(/standalone unified-GPU GpuKernel routes/i);
+
+    expect(() =>
+      buildStandaloneCompositeGpuRequest("Asr", {
+        backend: "CpuOnly",
+        shortlistConfidenceMode: "psr",
+      }),
+    ).toThrow(/standalone unified-GPU GpuKernel routes/i);
   });
 
   it("returns null for non-CompositeCpu strategy kind", () => {

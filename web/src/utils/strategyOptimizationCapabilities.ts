@@ -310,6 +310,7 @@ export function describeStrategyOptimizationCapabilities(
     || kind === 'Mkcs'
     || kind === 'Cdmc'
   ) {
+    const standaloneGpuKernelPreview = requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
     return {
       kind,
       usesGlobalBackend: true,
@@ -318,10 +319,10 @@ export function describeStrategyOptimizationCapabilities(
       supportsExportAll: false,
       supportsTopK: true,
       supportsIncludeAll: true,
-      supportsExtraShortlistObjectives: false,
+      supportsExtraShortlistObjectives: standaloneGpuKernelPreview,
       supportsTradeMetrics: false,
-      supportsShortlistConfidenceMode: false,
-      supportsShortlistUnionMode: false,
+      supportsShortlistConfidenceMode: standaloneGpuKernelPreview,
+      supportsShortlistUnionMode: standaloneGpuKernelPreview,
       supportsAdvancedExactKernelControls: false,
       executionSummary:
         kind === 'Mkcs'
@@ -338,7 +339,9 @@ export function describeStrategyOptimizationCapabilities(
                     ? 'CDMC can use CPU or unified GPU execution, with GPU scoring fed by staged cycle, MAMA/FAMA, and decycler signal matrices.'
                     : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
-      outputSummary: `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export.`,
+      outputSummary: standaloneGpuKernelPreview
+        ? `${kind} supports Top-K and include-all native candidate returns. On the requested standalone GpuKernel route it also supports host-side extra shortlist heads, union reranking, and retained-shortlist confidence reranking, but it does not emit the Double MA heatmap or per-pair CSV export.`
+        : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export.`,
     }
   }
   if (kind === 'CompositeCpu') {
