@@ -361,6 +361,32 @@ This section is the minimum operator checklist for turning the review into actio
 - [ ] If host finalize dominates, optimize result materialization before kernel work.
 - [ ] If kernel runtime still dominates after orchestration cleanup, switch to Nsight Compute work.
 
+### Current viable optimization checklist
+
+Use this checklist after the 2026-03-27 orchestration pass.
+
+Measured state for the current warm `xlarge` Double MA `GpuKernel` route:
+
+- `launch_submit_us` is only in the tens of microseconds
+- `cuLaunchKernel` is a tiny share of total CUDA API time
+- the dominant backtest kernel is the main GPU cost
+- the large `cuMemcpyDtoHAsync_v2` API bucket is the first host wait point, not a large physical D2H transfer
+
+That means further performance work should currently focus on the following paths, in this order:
+
+- [ ] Run Nsight Compute on the dominant backtest kernel, not on the full app shell.
+- [ ] Capture Launch Statistics, occupancy, memory workload, scheduler / warp-state, and source correlation for the dominant kernel.
+- [ ] Record whether the main bottleneck is register pressure, memory behavior, stall reasons, or wasted work in the kernel body.
+- [ ] If the main backtest kernel still accounts for more than 70 percent of warm engine runtime, treat kernel/runtime work as the primary optimization track.
+- [ ] Inspect the queued device-side tail around reduction, shortlist, top-k, and finalist work rather than treating the D2H API bucket as a copy-bandwidth problem.
+- [ ] Use pipeline profiling or Systems summaries to determine whether `tile_finalize` or `final_finalize` is materially extending the host wait at the D2H API site.
+- [ ] Prefer device-resident shortlist and finalist handling until the smallest practical host payload is ready.
+- [ ] Only treat copy tuning as a real target if `cuda_gpu_mem_time_sum` shows non-trivial physical H2D or D2H memop time.
+- [ ] If app-path cold-start or p95 latency matters, measure whether `spawn_blocking` plus thread-local `CudaKernelRuntime` reuse is unstable on the Tauri route.
+- [ ] If thread hopping causes repeated runtime construction, design a dedicated GPU worker thread per device before changing product-path code.
+- [ ] Compare any dedicated-worker design against the same cold and warm baseline before adopting it.
+- [ ] Keep NVTX visibility work as a tooling task, but do not block kernel/runtime optimization on it.
+
 ## Exact NVTX Insertion Checklist
 
 Use this checklist for the first instrumentation pass.
@@ -937,15 +963,19 @@ Definition of done:
 
 ## Optimizations That Should Be Considered Only After Measurement
 
-If host orchestration is proven meaningful, evaluate these in this order:
+The current measured `xlarge` Double MA state does not justify more launch-path micro-optimization.
 
-1. Stabilize runtime reuse.
+For this workload, evaluate follow-on optimization work in this order:
+
+1. Improve the dominant GPU kernel/runtime path.
+   - use Nsight Compute on the main backtest kernel first
+2. Reduce queued device-side tail work before host materialization.
+   - inspect reduction, shortlist, top-k, and finalist stages
+3. Stabilize runtime reuse only if the app path shows cold-path thread hopping.
    - avoid repeated cold init on different host threads
-2. Remove or reduce unnecessary syncs.
-3. Reuse scratch buffers and precomputed host/device state more aggressively.
-4. Enable CUDA Graph replay for stable repeated launch shapes.
-5. Reduce launch count if the timeline still shows many tiny submits.
-6. Consider pinned staging / async copy improvements only if copies are still visible after the structural fixes.
+4. Reuse scratch buffers and precomputed host/device state more aggressively if profiling shows they still matter.
+5. Revisit CUDA Graph replay only if a different smaller-launch workload shows real launch-bound behavior.
+6. Consider pinned staging / async copy improvements only if actual GPU memop time, not just host API wait time, becomes material.
 
 ## What Not To Do First
 
