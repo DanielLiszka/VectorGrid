@@ -135,6 +135,12 @@ struct TrialTimingArtifact {
     state_lookup_ms: f64,
     engine_wall_ms: f64,
     engine_runtime_ms: u64,
+    gpu_kernel_route_wall_ms: Option<u64>,
+    gpu_kernel_gpu_indicator_prep_ms: Option<u64>,
+    gpu_kernel_h2d_upload_ms: Option<u64>,
+    gpu_kernel_launch_submit_us: Option<u64>,
+    gpu_kernel_d2h_copy_ms: Option<u64>,
+    gpu_kernel_host_decode_ms: Option<u64>,
     hybrid_planner_ms: Option<u64>,
     hybrid_cpu_indicator_prep_ms: Option<u64>,
     hybrid_gpu_indicator_prep_ms: Option<u64>,
@@ -159,6 +165,24 @@ struct TrialTimingSummaryArtifact {
     engine_runtime_ms_min: u64,
     engine_runtime_ms_median: f64,
     engine_runtime_ms_max: u64,
+    gpu_kernel_route_wall_ms_min: Option<u64>,
+    gpu_kernel_route_wall_ms_median: Option<f64>,
+    gpu_kernel_route_wall_ms_max: Option<u64>,
+    gpu_kernel_gpu_indicator_prep_ms_min: Option<u64>,
+    gpu_kernel_gpu_indicator_prep_ms_median: Option<f64>,
+    gpu_kernel_gpu_indicator_prep_ms_max: Option<u64>,
+    gpu_kernel_h2d_upload_ms_min: Option<u64>,
+    gpu_kernel_h2d_upload_ms_median: Option<f64>,
+    gpu_kernel_h2d_upload_ms_max: Option<u64>,
+    gpu_kernel_launch_submit_us_min: Option<u64>,
+    gpu_kernel_launch_submit_us_median: Option<f64>,
+    gpu_kernel_launch_submit_us_max: Option<u64>,
+    gpu_kernel_d2h_copy_ms_min: Option<u64>,
+    gpu_kernel_d2h_copy_ms_median: Option<f64>,
+    gpu_kernel_d2h_copy_ms_max: Option<u64>,
+    gpu_kernel_host_decode_ms_min: Option<u64>,
+    gpu_kernel_host_decode_ms_median: Option<f64>,
+    gpu_kernel_host_decode_ms_max: Option<u64>,
     hybrid_planner_ms_min: Option<u64>,
     hybrid_planner_ms_median: Option<f64>,
     hybrid_planner_ms_max: Option<u64>,
@@ -269,6 +293,57 @@ fn summarize_trials(trials: &[TrialArtifact]) -> Option<TrialTimingSummaryArtifa
         .fold(f64::NEG_INFINITY, f64::max);
     let engine_runtime_ms_min = engine_runtime_ms.iter().copied().min().unwrap_or(0);
     let engine_runtime_ms_max = engine_runtime_ms.iter().copied().max().unwrap_or(0);
+    let (
+        gpu_kernel_route_wall_ms_min,
+        gpu_kernel_route_wall_ms_median,
+        gpu_kernel_route_wall_ms_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.gpu_kernel_route_wall_ms),
+    );
+    let (
+        gpu_kernel_gpu_indicator_prep_ms_min,
+        gpu_kernel_gpu_indicator_prep_ms_median,
+        gpu_kernel_gpu_indicator_prep_ms_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.gpu_kernel_gpu_indicator_prep_ms),
+    );
+    let (
+        gpu_kernel_h2d_upload_ms_min,
+        gpu_kernel_h2d_upload_ms_median,
+        gpu_kernel_h2d_upload_ms_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.gpu_kernel_h2d_upload_ms),
+    );
+    let (
+        gpu_kernel_launch_submit_us_min,
+        gpu_kernel_launch_submit_us_median,
+        gpu_kernel_launch_submit_us_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.gpu_kernel_launch_submit_us),
+    );
+    let (gpu_kernel_d2h_copy_ms_min, gpu_kernel_d2h_copy_ms_median, gpu_kernel_d2h_copy_ms_max) =
+        summarize_optional_u64(
+            trials
+                .iter()
+                .map(|trial| trial.timing.gpu_kernel_d2h_copy_ms),
+        );
+    let (
+        gpu_kernel_host_decode_ms_min,
+        gpu_kernel_host_decode_ms_median,
+        gpu_kernel_host_decode_ms_max,
+    ) = summarize_optional_u64(
+        trials
+            .iter()
+            .map(|trial| trial.timing.gpu_kernel_host_decode_ms),
+    );
     let (hybrid_planner_ms_min, hybrid_planner_ms_median, hybrid_planner_ms_max) =
         summarize_optional_u64(trials.iter().map(|trial| trial.timing.hybrid_planner_ms));
     let (
@@ -306,6 +381,24 @@ fn summarize_trials(trials: &[TrialArtifact]) -> Option<TrialTimingSummaryArtifa
         engine_runtime_ms_min,
         engine_runtime_ms_median: median_u64_as_f64(engine_runtime_ms.as_mut_slice()),
         engine_runtime_ms_max,
+        gpu_kernel_route_wall_ms_min,
+        gpu_kernel_route_wall_ms_median,
+        gpu_kernel_route_wall_ms_max,
+        gpu_kernel_gpu_indicator_prep_ms_min,
+        gpu_kernel_gpu_indicator_prep_ms_median,
+        gpu_kernel_gpu_indicator_prep_ms_max,
+        gpu_kernel_h2d_upload_ms_min,
+        gpu_kernel_h2d_upload_ms_median,
+        gpu_kernel_h2d_upload_ms_max,
+        gpu_kernel_launch_submit_us_min,
+        gpu_kernel_launch_submit_us_median,
+        gpu_kernel_launch_submit_us_max,
+        gpu_kernel_d2h_copy_ms_min,
+        gpu_kernel_d2h_copy_ms_median,
+        gpu_kernel_d2h_copy_ms_max,
+        gpu_kernel_host_decode_ms_min,
+        gpu_kernel_host_decode_ms_median,
+        gpu_kernel_host_decode_ms_max,
         hybrid_planner_ms_min,
         hybrid_planner_ms_median,
         hybrid_planner_ms_max,
@@ -429,6 +522,30 @@ fn run_trial(
         state_lookup_ms,
         engine_wall_ms,
         engine_runtime_ms: result.runtime_ms,
+        gpu_kernel_route_wall_ms: result
+            .gpu_kernel_timing_ms
+            .as_ref()
+            .map(|t| t.route_wall_ms),
+        gpu_kernel_gpu_indicator_prep_ms: result
+            .gpu_kernel_timing_ms
+            .as_ref()
+            .and_then(|t| t.gpu_indicator_prep_ms),
+        gpu_kernel_h2d_upload_ms: result
+            .gpu_kernel_timing_ms
+            .as_ref()
+            .and_then(|t| t.h2d_upload_ms),
+        gpu_kernel_launch_submit_us: result
+            .gpu_kernel_timing_ms
+            .as_ref()
+            .and_then(|t| t.launch_submit_us),
+        gpu_kernel_d2h_copy_ms: result
+            .gpu_kernel_timing_ms
+            .as_ref()
+            .and_then(|t| t.d2h_copy_ms),
+        gpu_kernel_host_decode_ms: result
+            .gpu_kernel_timing_ms
+            .as_ref()
+            .and_then(|t| t.host_decode_ms),
         hybrid_planner_ms: result.hybrid_timing_ms.as_ref().map(|t| t.planner_ms),
         hybrid_cpu_indicator_prep_ms: result
             .hybrid_timing_ms

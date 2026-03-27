@@ -1923,6 +1923,7 @@ fn run_asr_optimization_gpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -2226,6 +2227,7 @@ fn run_asr_optimization_cpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -2691,6 +2693,7 @@ fn run_vcc_optimization_gpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -2961,6 +2964,7 @@ fn run_vcc_optimization_cpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -3576,6 +3580,7 @@ fn run_vemr_optimization_gpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -3869,6 +3874,7 @@ fn run_vemr_optimization_impl(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -5368,6 +5374,7 @@ fn run_rocb_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -5662,6 +5669,7 @@ fn run_rocb_optimization_impl(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -6076,6 +6084,7 @@ fn run_vcet_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -6365,6 +6374,7 @@ fn run_vcet_optimization_impl(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -6790,6 +6800,7 @@ fn run_mkcs_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -7226,6 +7237,7 @@ fn run_kqsr_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -7436,6 +7448,7 @@ fn run_kqsr_optimization_cpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -7876,6 +7889,7 @@ fn run_carm_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -8087,6 +8101,7 @@ fn run_carm_optimization_cpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -8572,6 +8587,7 @@ fn run_kvdf_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -8783,6 +8799,7 @@ fn run_kvdf_optimization_cpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -9268,6 +9285,7 @@ fn run_cdmc_optimization_gpu(
         heatmap: result.heatmap.clone(),
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -9499,6 +9517,7 @@ fn run_cdmc_optimization_cpu(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -9805,6 +9824,7 @@ fn run_mkcs_optimization_impl(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
         indicator_route_plan: None,
@@ -10395,6 +10415,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         heatmap,
         vdps: None,
         hybrid_timing_ms: None,
+        gpu_kernel_timing_ms: None,
         backend_route,
         backend_fallback_reason,
         indicator_route_plan: None,
@@ -13747,13 +13768,9 @@ mod tests {
 
         let mut gpu_req = cpu_req;
         gpu_req.backend = Backend::GpuKernel { device_id: 0 };
-        let gpu_res = run_composite_cpu_optimization_blocking_with_candles(
-            gpu_req,
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("asr gpu ema optimization run");
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("asr gpu ema optimization run");
 
         assert!(
             matches!(gpu_res.backend_used, BackendUsed::Gpu),
@@ -13816,9 +13833,7 @@ mod tests {
             assert_eq!(
                 gpu_metrics.trades, cpu_metrics.trades,
                 "trades mismatch for {:?}: gpu={} cpu={}",
-                key,
-                gpu_metrics.trades,
-                cpu_metrics.trades
+                key, gpu_metrics.trades, cpu_metrics.trades
             );
         }
     }

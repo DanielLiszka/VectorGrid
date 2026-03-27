@@ -14,12 +14,17 @@ param(
   [ValidateSet("small", "medium", "large", "xlarge")]
   [string]$RunnerWorkload = "xlarge",
   [int]$RunnerIterations = 1,
+  [int]$RunnerWarmupIterations = 0,
+  [int]$RunnerHeatmapBins = 64,
+  [int]$RunnerDeviceId = 0,
   [string]$OutputPrefix = "target/nsight/gpu_kernel_small",
   [int]$LaunchCount = 200,
   [string]$KernelName = "regex:^double_cross_backtest_tm_flex_f32",
   [bool]$UseKernelNameFilter = $false,
   [ValidateSet("off", "on")]
-  [string]$DynamicStrategyMode = "off"
+  [string]$DynamicStrategyMode = "off",
+  [ValidateSet("inherit", "off", "on")]
+  [string]$CudaGraphsMode = "off"
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,7 +77,11 @@ $prevDynamic = [System.Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_ST
 $prevBenchOnly = [System.Environment]::GetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", "Process")
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", "1", "Process")
-[System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "0", "Process")
+switch ($CudaGraphsMode) {
+  "on" { [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "1", "Process") }
+  "off" { [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "0", "Process") }
+  default { [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", $prevGraphs, "Process") }
+}
 if ($DynamicStrategyMode -eq "on") {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "1", "Process")
 } else {
@@ -84,7 +93,11 @@ if ([string]::IsNullOrWhiteSpace($BenchStrategyOnly)) {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $BenchStrategyOnly, "Process")
 }
 
-Write-Host "Profiling with Nsight Compute (dynamic_strategy=$DynamicStrategyMode)..."
+if ($Target -eq "runner" -and $CudaGraphsMode -eq "on" -and $RunnerHeatmapBins -gt 0) {
+  Write-Warning "RunnerHeatmapBins=$RunnerHeatmapBins may keep the exact kernel path graph-ineligible; set -RunnerHeatmapBins 0 for a graph A/B."
+}
+
+Write-Host "Profiling with Nsight Compute (dynamic_strategy=$DynamicStrategyMode, cuda_graphs=$CudaGraphsMode)..."
 $ncuArgs = @(
   "--target-processes", "all",
   "--set", "full",
@@ -105,7 +118,11 @@ if ($Target -eq "runner") {
     "--adx-mode", $RunnerAdxMode,
     "--workload", $RunnerWorkload,
     "--iterations", "$RunnerIterations",
-    "--dynamic-mode", $DynamicStrategyMode
+    "--warmup-iterations", "$RunnerWarmupIterations",
+    "--heatmap-bins", "$RunnerHeatmapBins",
+    "--device-id", "$RunnerDeviceId",
+    "--dynamic-mode", $DynamicStrategyMode,
+    "--cuda-graphs", $CudaGraphsMode
   )
 } else {
   $ncuArgs += @(

@@ -357,8 +357,57 @@ impl PipelineTimingProfile {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct KernelExecutorTimingMs {
+    pub(crate) runtime_init_ms: u64,
+    pub(crate) set_current_ms: u64,
     pub(crate) gpu_indicator_prep_ms: u64,
     pub(crate) h2d_upload_ms: u64,
+    pub(crate) launch_submit_us: u64,
+    pub(crate) d2h_copy_ms: u64,
+    pub(crate) host_decode_ms: u64,
+    pub(crate) explicit_sync_ms: u64,
+    pub(crate) host_finalize_ms: u64,
+    pub(crate) graph_capture_ms: u64,
+    pub(crate) graph_replay_count: u64,
+}
+
+#[inline]
+fn sync_stream_timed(stream: &Stream, elapsed: &mut Duration) -> Result<(), String> {
+    let t0 = Instant::now();
+    stream.synchronize().map_err(|e| e.to_string())?;
+    *elapsed = elapsed.saturating_add(t0.elapsed());
+    Ok(())
+}
+
+#[inline]
+fn launch_kernel_timed(
+    stream: &Stream,
+    function: &Function,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    shared_mem_bytes: u32,
+    args: &mut [*mut c_void],
+    elapsed: &mut Duration,
+) -> Result<(), String> {
+    let t0 = Instant::now();
+    unsafe {
+        stream
+            .launch(function, grid, block, shared_mem_bytes, args)
+            .map_err(|e| e.to_string())?;
+    }
+    *elapsed = elapsed.saturating_add(t0.elapsed());
+    Ok(())
+}
+
+#[inline]
+fn graph_launch_timed(
+    exec: &CudaGraphExecHandle,
+    stream: &Stream,
+    elapsed: &mut Duration,
+) -> Result<(), String> {
+    let t0 = Instant::now();
+    exec.launch(stream)?;
+    *elapsed = elapsed.saturating_add(t0.elapsed());
+    Ok(())
 }
 
 #[inline]
@@ -1590,6 +1639,45 @@ fn fill_device_buffer_f32(
         stream
             .launch(fill_kernel, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
             .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn fill_device_buffer_f32_timed(
+    stream: &Stream,
+    fill_kernel: &Function,
+    device_launch_caps: DeviceLaunchCaps,
+    fill_launch_caps: KernelLaunchCaps,
+    buffer: &DeviceBuffer<f32>,
+    len: usize,
+    value: f32,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    if len == 0 {
+        return Ok(());
+    }
+
+    unsafe {
+        let mut out_ptr = buffer.as_device_ptr().as_raw();
+        let mut n_i = len as i32;
+        let mut v = value;
+        let launch = choose_launch_shape_1d(len, device_launch_caps, fill_launch_caps);
+        let block_x: u32 = launch.block_x;
+        let grid_x: u32 = launch.grid_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut out_ptr as *mut _ as *mut c_void,
+            &mut n_i as *mut _ as *mut c_void,
+            &mut v as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            stream,
+            fill_kernel,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
     }
     Ok(())
 }
@@ -4964,6 +5052,9 @@ fn pack_metric_rows_for_host_copy(
     rows: usize,
     metrics_count: usize,
     host_out: &mut Vec<f32>,
+    launch_submit_elapsed: &mut Duration,
+    d2h_copy_elapsed: &mut Duration,
+    sync_elapsed: &mut Duration,
 ) -> Result<(), String> {
     let packed_stride = metrics_count.saturating_add(2);
     let packed_len = rows.saturating_mul(packed_stride);
@@ -4991,11 +5082,18 @@ fn pack_metric_rows_for_host_copy(
                 &mut m_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
-            stream
-                .launch(pack_metric_rows, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                .map_err(|e| e.to_string())?;
+            launch_kernel_timed(
+                stream,
+                pack_metric_rows,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
         }
     }
+    let d2h_t0 = Instant::now();
     copy_device_prefix_to_host_f32(
         scratch
             .d_top_packed
@@ -5005,7 +5103,8 @@ fn pack_metric_rows_for_host_copy(
         packed_len,
         stream,
     )?;
-    stream.synchronize().map_err(|e| e.to_string())
+    *d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+    sync_stream_timed(stream, sync_elapsed)
 }
 
 #[inline]
@@ -5522,6 +5621,7 @@ fn reduce_metric_rows_topk_on_device(
     select_rows_v2: Option<&cust::function::Function<'_>>,
     select_rows_candidates_v2: Option<&cust::function::Function<'_>>,
     gather_rows: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
 ) -> Result<(), String> {
     if rows_len == 0 || topk_select == 0 {
         return Ok(());
@@ -5601,16 +5701,16 @@ fn reduce_metric_rows_topk_on_device(
                 &mut max_downside_deviation as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
-            bt_stream
-                .launch(
-                    select_rows_v2
-                        .ok_or_else(|| "missing select_topk_metric_rows_f32_v2".to_string())?,
-                    (grid_x, 1, 1),
-                    (block_x, 1, 1),
-                    0,
-                    args,
-                )
-                .map_err(|e| e.to_string())?;
+            launch_kernel_timed(
+                bt_stream,
+                select_rows_v2
+                    .ok_or_else(|| "missing select_topk_metric_rows_f32_v2".to_string())?,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
         } else {
             let args: &mut [*mut c_void] = &mut [
                 &mut metrics_ptr as *mut _ as *mut c_void,
@@ -5621,9 +5721,15 @@ fn reduce_metric_rows_topk_on_device(
                 &mut topk_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
-            bt_stream
-                .launch(select_rows_legacy, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                .map_err(|e| e.to_string())?;
+            launch_kernel_timed(
+                bt_stream,
+                select_rows_legacy,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
         }
     }
 
@@ -5714,17 +5820,17 @@ fn reduce_metric_rows_topk_on_device(
                     &mut max_downside_deviation as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
-                bt_stream
-                    .launch(
-                        select_rows_candidates_v2.ok_or_else(|| {
-                            "missing select_topk_metric_rows_from_candidates_f32_v2".to_string()
-                        })?,
-                        (grid_x, 1, 1),
-                        (block_x, 1, 1),
-                        0,
-                        args,
-                    )
-                    .map_err(|e| e.to_string())?;
+                launch_kernel_timed(
+                    bt_stream,
+                    select_rows_candidates_v2.ok_or_else(|| {
+                        "missing select_topk_metric_rows_from_candidates_f32_v2".to_string()
+                    })?,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                    launch_submit_elapsed,
+                )?;
             } else {
                 let args: &mut [*mut c_void] = &mut [
                     &mut metrics_ptr as *mut _ as *mut c_void,
@@ -5737,15 +5843,15 @@ fn reduce_metric_rows_topk_on_device(
                     &mut in_len_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
-                bt_stream
-                    .launch(
-                        select_rows_candidates_legacy,
-                        (grid_x, 1, 1),
-                        (block_x, 1, 1),
-                        0,
-                        args,
-                    )
-                    .map_err(|e| e.to_string())?;
+                launch_kernel_timed(
+                    bt_stream,
+                    select_rows_candidates_legacy,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                    launch_submit_elapsed,
+                )?;
             }
         }
         in_is_a = !in_is_a;
@@ -5798,9 +5904,15 @@ fn reduce_metric_rows_topk_on_device(
             &mut out_s as *mut _ as *mut c_void,
             &mut out_m as *mut _ as *mut c_void,
         ];
-        bt_stream
-            .launch(gather_rows, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-            .map_err(|e| e.to_string())?;
+        launch_kernel_timed(
+            bt_stream,
+            gather_rows,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
     }
 
     Ok(())
@@ -5826,6 +5938,7 @@ fn merge_current_topk_rows_into_global_head(
     select_topk_rows_v2: Option<&cust::function::Function<'_>>,
     select_topk_rows_candidates_v2: Option<&cust::function::Function<'_>>,
     gather_topk_rows: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
 ) -> Result<(), String> {
     let row_i32_bytes = topk_select
         .checked_mul(std::mem::size_of::<i32>())
@@ -5944,6 +6057,7 @@ fn merge_current_topk_rows_into_global_head(
         select_topk_rows_v2,
         select_topk_rows_candidates_v2,
         gather_topk_rows,
+        launch_submit_elapsed,
     )?;
     cu_memcpy_d2d_async(
         global_fast.as_device_ptr().as_raw(),
@@ -6007,6 +6121,7 @@ fn select_tile_topk_rows_for_objective(
     select_topk_pairs_v2: Option<&cust::function::Function<'_>>,
     select_topk_candidates_v2: Option<&cust::function::Function<'_>>,
     gather_topk: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
 ) -> Result<(), String> {
     let pair_stage_pairs = if pair_index_map_ptr != 0 && launch_pairs > 0 {
         launch_pairs
@@ -6107,16 +6222,16 @@ fn select_tile_topk_rows_for_objective(
                 &mut compact_output_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
-            bt_stream
-                .launch(
-                    select_topk_pairs_v2
-                        .ok_or_else(|| "missing select_topk_from_pairs_tm_f32_v2".to_string())?,
-                    (grid_x, 1, 1),
-                    (block_x, 1, 1),
-                    0,
-                    args,
-                )
-                .map_err(|e| e.to_string())?;
+            launch_kernel_timed(
+                bt_stream,
+                select_topk_pairs_v2
+                    .ok_or_else(|| "missing select_topk_from_pairs_tm_f32_v2".to_string())?,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
         } else {
             let args: &mut [*mut c_void] = &mut [
                 &mut metrics_ptr as *mut _ as *mut c_void,
@@ -6135,15 +6250,15 @@ fn select_tile_topk_rows_for_objective(
                 &mut compact_output_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
-            bt_stream
-                .launch(
-                    select_topk_pairs_legacy,
-                    (grid_x, 1, 1),
-                    (block_x, 1, 1),
-                    0,
-                    args,
-                )
-                .map_err(|e| e.to_string())?;
+            launch_kernel_timed(
+                bt_stream,
+                select_topk_pairs_legacy,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
         }
     }
 
@@ -6254,17 +6369,17 @@ fn select_tile_topk_rows_for_objective(
                     &mut compact_output_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
-                bt_stream
-                    .launch(
-                        select_topk_candidates_v2.ok_or_else(|| {
-                            "missing select_topk_from_candidates_tm_f32_v2".to_string()
-                        })?,
-                        (grid_x, 1, 1),
-                        (block_x, 1, 1),
-                        0,
-                        args,
-                    )
-                    .map_err(|e| e.to_string())?;
+                launch_kernel_timed(
+                    bt_stream,
+                    select_topk_candidates_v2.ok_or_else(|| {
+                        "missing select_topk_from_candidates_tm_f32_v2".to_string()
+                    })?,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                    launch_submit_elapsed,
+                )?;
             } else {
                 let args: &mut [*mut c_void] = &mut [
                     &mut metrics_ptr as *mut _ as *mut c_void,
@@ -6285,15 +6400,15 @@ fn select_tile_topk_rows_for_objective(
                     &mut compact_output_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
-                bt_stream
-                    .launch(
-                        select_topk_candidates_legacy,
-                        (grid_x, 1, 1),
-                        (block_x, 1, 1),
-                        0,
-                        args,
-                    )
-                    .map_err(|e| e.to_string())?;
+                launch_kernel_timed(
+                    bt_stream,
+                    select_topk_candidates_legacy,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                    launch_submit_elapsed,
+                )?;
             }
         }
         in_is_a = !in_is_a;
@@ -6366,9 +6481,15 @@ fn select_tile_topk_rows_for_objective(
             &mut out_s as *mut _ as *mut c_void,
             &mut out_m as *mut _ as *mut c_void,
         ];
-        bt_stream
-            .launch(gather_topk, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-            .map_err(|e| e.to_string())?;
+        launch_kernel_timed(
+            bt_stream,
+            gather_topk,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
     }
 
     Ok(())
@@ -8240,19 +8361,29 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     #[cfg(test)]
     let _gpu_guard = lock_gpu_test();
     let device_id = cfg.device_id;
+    let _nvtx_scope = crate::nvtx::scope("kernel", "kernel_executor_total");
     clear_last_kernel_executor_timing();
     clear_last_shortlist_slice_diagnostics();
     clear_last_score_observation_context();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
         let mut map = cell.borrow_mut();
+        let mut runtime_init_elapsed = Duration::ZERO;
         if !map.contains_key(&device_id) {
+            let _nvtx_scope = crate::nvtx::scope("kernel", "runtime_init");
+            let t0 = Instant::now();
             let rt = CudaKernelRuntime::new(device_id)?;
             map.insert(device_id, rt);
+            runtime_init_elapsed = t0.elapsed();
         }
         let rt = map.get_mut(&device_id).expect("just inserted");
-        rt.set_current()?;
+        let set_current_elapsed = {
+            let _nvtx_scope = crate::nvtx::scope("kernel", "set_current");
+            let set_current_t0 = Instant::now();
+            rt.set_current()?;
+            set_current_t0.elapsed()
+        };
 
-        let (result, timing) = optimize_double_ma_gpu_kernel_impl(
+        let (result, mut timing) = optimize_double_ma_gpu_kernel_impl(
             rt,
             candles,
             fast_periods,
@@ -8285,6 +8416,8 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
             cancel,
             progress,
         )?;
+        timing.runtime_init_ms = runtime_init_elapsed.as_millis() as u64;
+        timing.set_current_ms = set_current_elapsed.as_millis() as u64;
         record_last_kernel_executor_timing(timing);
         Ok(result)
     })
@@ -8326,6 +8459,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
+    let _executor_impl_scope = crate::nvtx::scope("kernel", "executor_impl");
     let extra_shortlist_objectives =
         kernel_extra_shortlist_objectives(objective, extra_shortlist_objectives)?;
     let extra_shortlist_enabled = !extra_shortlist_objectives.is_empty();
@@ -8423,6 +8557,13 @@ fn optimize_double_ma_gpu_kernel_impl(
     };
     let mut gpu_indicator_prep_elapsed = Duration::ZERO;
     let mut h2d_upload_elapsed = Duration::ZERO;
+    let mut launch_submit_elapsed = Duration::ZERO;
+    let mut d2h_copy_elapsed = Duration::ZERO;
+    let mut host_decode_elapsed = Duration::ZERO;
+    let mut explicit_sync_elapsed = Duration::ZERO;
+    let mut host_finalize_elapsed = Duration::ZERO;
+    let mut graph_capture_elapsed = Duration::ZERO;
+    let mut graph_replay_count = 0u64;
 
     let export_path = export_all_csv_path.map(str::trim).filter(|s| !s.is_empty());
     if export_path.is_some() && include_all {
@@ -8934,11 +9075,13 @@ fn optimize_double_ma_gpu_kernel_impl(
             slow_ma_params
         };
     if fast_ma == "sma" || slow_ma == "sma" {
+        let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
         let t0 = Instant::now();
         ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)?;
         gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
     }
     if fast_ma == "vwma" || slow_ma == "vwma" {
+        let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
         let t0 = Instant::now();
         ma.ensure_vwma_prefix_pv_vol_f64(
             d_ma_prices,
@@ -9194,9 +9337,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut n_i as *mut _ as *mut c_void,
                         &mut v as *mut _ as *mut c_void,
                     ];
-                    bt_stream
-                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    launch_kernel_timed(
+                        bt_stream,
+                        &fill_f32,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                        &mut launch_submit_elapsed,
+                    )?;
                 }
                 unsafe {
                     let mut out_ptr = scratch
@@ -9216,9 +9365,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut n_i as *mut _ as *mut c_void,
                         &mut v as *mut _ as *mut c_void,
                     ];
-                    bt_stream
-                        .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    launch_kernel_timed(
+                        bt_stream,
+                        &fill_f32,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                        &mut launch_submit_elapsed,
+                    )?;
                 }
                 unsafe {
                     let mut out_ptr = scratch
@@ -9241,9 +9396,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut n_i as *mut _ as *mut c_void,
                         &mut v as *mut _ as *mut c_void,
                     ];
-                    bt_stream
-                        .launch(&fill_i32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    launch_kernel_timed(
+                        bt_stream,
+                        &fill_i32,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                        &mut launch_submit_elapsed,
+                    )?;
                 }
             }
         }
@@ -9282,6 +9443,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut tile_graph_exec: Option<CudaGraphExecHandle> = None;
     let mut tile_graph_shape: Option<(usize, usize, usize, usize, bool, bool)> = None;
     let mut graph_capture_disabled = false;
+    let _backtest_core_scope = crate::nvtx::scope("kernel", "backtest_core");
 
     let mut f_start = 0usize;
     while f_start < f_total {
@@ -9303,12 +9465,15 @@ fn optimize_double_ma_gpu_kernel_impl(
         // Host period vectors are pageable and mutated per tile; keep this copy
         // synchronous to avoid host-data races with async H2D semantics.
         let h2d_t0 = Instant::now();
-        scratch
-            .d_fast_p
-            .as_mut()
-            .unwrap()
-            .copy_from(&host_p_fast)
-            .map_err(|e| e.to_string())?;
+        {
+            let _h2d_upload_scope = crate::nvtx::scope("kernel", "h2d_upload");
+            scratch
+                .d_fast_p
+                .as_mut()
+                .unwrap()
+                .copy_from(&host_p_fast)
+                .map_err(|e| e.to_string())?;
+        }
         h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
         if let Some(precomputed_fast) = fast_precomputed {
             pack_precomputed_rows_tm_with_padding(
@@ -9318,6 +9483,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 fast_tm_rows,
                 &mut fast_precomputed_host_tile,
             )?;
+            let _h2d_upload_scope = crate::nvtx::scope("kernel", "h2d_upload");
             let h2d_t0 = Instant::now();
             scratch
                 .d_fast_ma_tm
@@ -9329,6 +9495,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .map_err(|e| e.to_string())?;
             h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
         } else if use_fast_path {
+            let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
             let prep_t0 = Instant::now();
             ma.compute_period_ma_tm_into(
                 fast_ma.as_str(),
@@ -9344,7 +9511,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
         } else {
             if fast_ma == "nma" {
-                fill_device_buffer_f32(
+                fill_device_buffer_f32_timed(
                     bt_stream,
                     &fill_f32,
                     device_launch_caps,
@@ -9352,8 +9519,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                     scratch.d_fast_ma.as_ref().unwrap(),
                     pf.saturating_mul(n),
                     f32::NAN,
+                    &mut launch_submit_elapsed,
                 )?;
-                fill_device_buffer_f32(
+                fill_device_buffer_f32_timed(
                     bt_stream,
                     &fill_f32,
                     device_launch_caps,
@@ -9361,8 +9529,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                     scratch.d_fast_ma_tm.as_ref().unwrap(),
                     fast_tm_rows.saturating_mul(n),
                     f32::NAN,
+                    &mut launch_submit_elapsed,
                 )?;
             }
+            let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
             let prep_t0 = Instant::now();
             ma.compute_period_ma_into(
                 fast_ma.as_str(),
@@ -9398,9 +9568,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                     &mut out_rows as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
                 ];
-                bt_stream
-                    .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                    .map_err(|e| e.to_string())?;
+                launch_kernel_timed(
+                    bt_stream,
+                    &transpose,
+                    (grid_x, 1, 1),
+                    (block_x, 1, 1),
+                    0,
+                    args,
+                    &mut launch_submit_elapsed,
+                )?;
             }
             gpu_indicator_prep_elapsed =
                 gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
@@ -9435,12 +9611,15 @@ fn optimize_double_ma_gpu_kernel_impl(
             // Host period vectors are pageable and mutated per tile; keep this copy
             // synchronous to avoid host-data races with async H2D semantics.
             let h2d_t0 = Instant::now();
-            scratch
-                .d_slow_p
-                .as_mut()
-                .unwrap()
-                .copy_from(&host_p_slow)
-                .map_err(|e| e.to_string())?;
+            {
+                let _h2d_upload_scope = crate::nvtx::scope("kernel", "h2d_upload");
+                scratch
+                    .d_slow_p
+                    .as_mut()
+                    .unwrap()
+                    .copy_from(&host_p_slow)
+                    .map_err(|e| e.to_string())?;
+            }
             h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
             if let Some(precomputed_slow) = slow_precomputed {
                 pack_precomputed_rows_tm_with_padding(
@@ -9450,6 +9629,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     slow_tm_rows,
                     &mut slow_precomputed_host_tile,
                 )?;
+                let _h2d_upload_scope = crate::nvtx::scope("kernel", "h2d_upload");
                 let h2d_t0 = Instant::now();
                 scratch
                     .d_slow_ma_tm
@@ -9462,6 +9642,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     .map_err(|e| e.to_string())?;
                 h2d_upload_elapsed = h2d_upload_elapsed.saturating_add(h2d_t0.elapsed());
             } else if use_fast_path {
+                let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
                 let prep_t0 = Instant::now();
                 ma.compute_period_ma_tm_into(
                     slow_ma.as_str(),
@@ -9477,7 +9658,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
             } else {
                 if slow_ma == "nma" {
-                    fill_device_buffer_f32(
+                    fill_device_buffer_f32_timed(
                         bt_stream,
                         &fill_f32,
                         device_launch_caps,
@@ -9485,8 +9666,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                         scratch.d_slow_ma.as_ref().unwrap(),
                         ps.saturating_mul(n),
                         f32::NAN,
+                        &mut launch_submit_elapsed,
                     )?;
-                    fill_device_buffer_f32(
+                    fill_device_buffer_f32_timed(
                         bt_stream,
                         &fill_f32,
                         device_launch_caps,
@@ -9494,8 +9676,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                         scratch.d_slow_ma_tm.as_ref().unwrap(),
                         slow_tm_rows.saturating_mul(n),
                         f32::NAN,
+                        &mut launch_submit_elapsed,
                     )?;
                 }
+                let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
                 let prep_t0 = Instant::now();
                 ma.compute_period_ma_into(
                     slow_ma.as_str(),
@@ -9531,9 +9715,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut out_rows as *mut _ as *mut c_void,
                         &mut out_ptr as *mut _ as *mut c_void,
                     ];
-                    bt_stream
-                        .launch(&transpose, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    launch_kernel_timed(
+                        bt_stream,
+                        &transpose,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                        &mut launch_submit_elapsed,
+                    )?;
                 }
                 gpu_indicator_prep_elapsed =
                     gpu_indicator_prep_elapsed.saturating_add(prep_t0.elapsed());
@@ -9591,9 +9781,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut n_i as *mut _ as *mut c_void,
                             &mut v as *mut _ as *mut c_void,
                         ];
-                        bt_stream
-                            .launch(&fill_f32, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                            .map_err(|e| e.to_string())?;
+                        launch_kernel_timed(
+                            bt_stream,
+                            &fill_f32,
+                            (grid_x, 1, 1),
+                            (block_x, 1, 1),
+                            0,
+                            args,
+                            &mut launch_submit_elapsed,
+                        )?;
                     }
                 }
             }
@@ -9602,7 +9798,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 tile_prepare_elapsed = t0.elapsed();
             }
 
-            let launch_score_stage = || -> Result<(), String> {
+            let mut launch_score_stage = || -> Result<(), String> {
                 if launch_pairs > 0 {
                     let backtest_t0 = if pipeline_profile_enabled {
                         Some(Instant::now())
@@ -9866,9 +10062,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
-                            bt_stream
-                                .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                                .map_err(|e| e.to_string())?;
+                            launch_kernel_timed(
+                                bt_stream,
+                                backtest_fn,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                                &mut launch_submit_elapsed,
+                            )?;
                         } else {
                             let args: &mut [*mut c_void] = &mut [
                                 &mut f_ma_tm as *mut _ as *mut c_void,
@@ -9906,9 +10108,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
-                            bt_stream
-                                .launch(backtest_fn, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                                .map_err(|e| e.to_string())?;
+                            launch_kernel_timed(
+                                bt_stream,
+                                backtest_fn,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                                &mut launch_submit_elapsed,
+                            )?;
                         }
                     }
                     if let Some(t0) = backtest_t0 {
@@ -9998,9 +10206,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut sum_ptr as *mut _ as *mut c_void,
                             &mut count_ptr as *mut _ as *mut c_void,
                         ];
-                        bt_stream
-                            .launch(&heatmap_update, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                            .map_err(|e| e.to_string())?;
+                        launch_kernel_timed(
+                            bt_stream,
+                            &heatmap_update,
+                            (grid_x, 1, 1),
+                            (block_x, 1, 1),
+                            0,
+                            args,
+                            &mut launch_submit_elapsed,
+                        )?;
                     }
                     if let Some(t0) = heatmap_t0 {
                         bt_stream.synchronize().map_err(|e| e.to_string())?;
@@ -10034,23 +10248,34 @@ fn optimize_double_ma_gpu_kernel_impl(
                 if !reusable {
                     tile_graph_exec = None;
                     tile_graph_shape = None;
+                    let _nvtx_scope = crate::nvtx::scope("kernel", "graph_capture");
+                    let graph_capture_t0 = Instant::now();
                     match capture_graph_exec(bt_stream, || launch_score_stage()) {
                         Ok(exec) => {
+                            graph_capture_elapsed =
+                                graph_capture_elapsed.saturating_add(graph_capture_t0.elapsed());
                             tile_graph_shape = Some(shape);
                             tile_graph_exec = Some(exec);
                         }
                         Err(_e) => {
+                            graph_capture_elapsed =
+                                graph_capture_elapsed.saturating_add(graph_capture_t0.elapsed());
                             graph_capture_disabled = true;
+                            let _launch_submit_scope =
+                                crate::nvtx::scope("kernel", "launch_submit");
                             launch_score_stage()?;
                         }
                     }
                 }
                 if !graph_capture_disabled {
                     if let Some(exec) = tile_graph_exec.as_ref() {
-                        exec.launch(bt_stream)?;
+                        let _graph_replay_scope = crate::nvtx::scope("kernel", "graph_replay");
+                        graph_launch_timed(exec, bt_stream, &mut launch_submit_elapsed)?;
+                        graph_replay_count = graph_replay_count.saturating_add(1);
                     }
                 }
             } else {
+                let _launch_submit_scope = crate::nvtx::scope("kernel", "launch_submit");
                 launch_score_stage()?;
             }
             if let Some(t0) = tile_score_t0 {
@@ -10068,14 +10293,17 @@ fn optimize_double_ma_gpu_kernel_impl(
             };
 
             if device_include_all {
+                let d2h_t0 = Instant::now();
                 copy_device_prefix_to_host_f32(
                     scratch.d_tile.as_ref().unwrap(),
                     &mut tile_host_buf,
                     tile_row_count.saturating_mul(tile_metrics_stride),
                     bt_stream,
                 )?;
-                bt_stream.synchronize().map_err(|e| e.to_string())?;
+                d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+                sync_stream_timed(bt_stream, &mut explicit_sync_elapsed)?;
 
+                let decode_t0 = Instant::now();
                 for_each_tile_metric_row(
                     fast_chunk,
                     slow_chunk,
@@ -10107,6 +10335,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         Ok(())
                     },
                 )?;
+                host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
             } else {
                 let s_len = slow_chunk.len();
                 let mut tile_valid: usize = 0;
@@ -10116,15 +10345,18 @@ fn optimize_double_ma_gpu_kernel_impl(
                 }
 
                 if host_filter_mode {
+                    let d2h_t0 = Instant::now();
                     copy_device_prefix_to_host_f32(
                         scratch.d_tile.as_ref().unwrap(),
                         &mut tile_host_buf,
                         tile_row_count.saturating_mul(tile_metrics_stride),
                         bt_stream,
                     )?;
-                    bt_stream.synchronize().map_err(|e| e.to_string())?;
+                    d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+                    sync_stream_timed(bt_stream, &mut explicit_sync_elapsed)?;
 
                     let mut exported = 0usize;
+                    let decode_t0 = Instant::now();
                     for_each_tile_metric_row(
                         fast_chunk,
                         slow_chunk,
@@ -10250,6 +10482,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             Ok(())
                         },
                     )?;
+                    host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
 
                     processed = processed.saturating_add(tile_valid);
                     if cancel.load(Ordering::Relaxed) {
@@ -10376,17 +10609,17 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
-                        bt_stream
-                            .launch(
-                                select_topk_pairs_v2.as_ref().ok_or_else(|| {
-                                    "missing select_topk_from_pairs_tm_f32_v2".to_string()
-                                })?,
-                                (grid_x, 1, 1),
-                                (block_x, 1, 1),
-                                0,
-                                args,
-                            )
-                            .map_err(|e| e.to_string())?;
+                        launch_kernel_timed(
+                            bt_stream,
+                            select_topk_pairs_v2.as_ref().ok_or_else(|| {
+                                "missing select_topk_from_pairs_tm_f32_v2".to_string()
+                            })?,
+                            (grid_x, 1, 1),
+                            (block_x, 1, 1),
+                            0,
+                            args,
+                            &mut launch_submit_elapsed,
+                        )?;
                     } else {
                         let args: &mut [*mut c_void] = &mut [
                             &mut metrics_ptr as *mut _ as *mut c_void,
@@ -10405,15 +10638,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut compact_output_i as *mut _ as *mut c_void,
                             &mut out_ptr as *mut _ as *mut c_void,
                         ];
-                        bt_stream
-                            .launch(
-                                &select_topk_pairs_legacy,
-                                (grid_x, 1, 1),
-                                (block_x, 1, 1),
-                                0,
-                                args,
-                            )
-                            .map_err(|e| e.to_string())?;
+                        launch_kernel_timed(
+                            bt_stream,
+                            &select_topk_pairs_legacy,
+                            (grid_x, 1, 1),
+                            (block_x, 1, 1),
+                            0,
+                            args,
+                            &mut launch_submit_elapsed,
+                        )?;
                     }
                 }
 
@@ -10527,17 +10760,17 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
-                            bt_stream
-                                .launch(
-                                    select_topk_candidates_v2.as_ref().ok_or_else(|| {
-                                        "missing select_topk_from_candidates_tm_f32_v2".to_string()
-                                    })?,
-                                    (grid_x, 1, 1),
-                                    (block_x, 1, 1),
-                                    0,
-                                    args,
-                                )
-                                .map_err(|e| e.to_string())?;
+                            launch_kernel_timed(
+                                bt_stream,
+                                select_topk_candidates_v2.as_ref().ok_or_else(|| {
+                                    "missing select_topk_from_candidates_tm_f32_v2".to_string()
+                                })?,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                                &mut launch_submit_elapsed,
+                            )?;
                         } else {
                             let args: &mut [*mut c_void] = &mut [
                                 &mut metrics_ptr as *mut _ as *mut c_void,
@@ -10558,15 +10791,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
                             ];
-                            bt_stream
-                                .launch(
-                                    &select_topk_candidates_legacy,
-                                    (grid_x, 1, 1),
-                                    (block_x, 1, 1),
-                                    0,
-                                    args,
-                                )
-                                .map_err(|e| e.to_string())?;
+                            launch_kernel_timed(
+                                bt_stream,
+                                &select_topk_candidates_legacy,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                                &mut launch_submit_elapsed,
+                            )?;
                         }
                     }
                     in_is_a = !in_is_a;
@@ -10639,9 +10872,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                         &mut out_s as *mut _ as *mut c_void,
                         &mut out_m as *mut _ as *mut c_void,
                     ];
-                    bt_stream
-                        .launch(&gather_topk, (grid_x, 1, 1), (block_x, 1, 1), 0, args)
-                        .map_err(|e| e.to_string())?;
+                    launch_kernel_timed(
+                        bt_stream,
+                        &gather_topk,
+                        (grid_x, 1, 1),
+                        (block_x, 1, 1),
+                        0,
+                        args,
+                        &mut launch_submit_elapsed,
+                    )?;
                 }
 
                 if global_topk_mode {
@@ -10684,6 +10923,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         select_topk_rows_v2.as_ref(),
                         select_topk_rows_candidates_v2.as_ref(),
                         gather_rows,
+                        &mut launch_submit_elapsed,
                     )?;
 
                     for head in extra_shortlist_heads.iter_mut() {
@@ -10710,6 +10950,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             select_topk_pairs_v2.as_ref(),
                             select_topk_candidates_v2.as_ref(),
                             &gather_topk,
+                            &mut launch_submit_elapsed,
                         )?;
                         let head_global_fast = head.global_fast_rows.as_ref().ok_or_else(|| {
                             format!(
@@ -10751,21 +10992,25 @@ fn optimize_double_ma_gpu_kernel_impl(
                             select_topk_rows_v2.as_ref(),
                             select_topk_rows_candidates_v2.as_ref(),
                             gather_rows,
+                            &mut launch_submit_elapsed,
                         )?;
                     }
                 } else {
-                    bt_stream.synchronize().map_err(|e| e.to_string())?;
+                    sync_stream_timed(bt_stream, &mut explicit_sync_elapsed)?;
 
                     if let Some(w) = export_writer.as_mut() {
+                        let d2h_t0 = Instant::now();
                         copy_device_prefix_to_host_f32(
                             scratch.d_tile.as_ref().unwrap(),
                             &mut tile_host_buf,
                             tile_row_count.saturating_mul(tile_metrics_stride),
                             bt_stream,
                         )?;
-                        bt_stream.synchronize().map_err(|e| e.to_string())?;
+                        d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+                        sync_stream_timed(bt_stream, &mut explicit_sync_elapsed)?;
 
                         let mut exported = 0usize;
+                        let decode_t0 = Instant::now();
                         for_each_tile_metric_row(
                             fast_chunk,
                             slow_chunk,
@@ -10886,8 +11131,11 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 Ok(())
                             },
                         )?;
+                        host_decode_elapsed =
+                            host_decode_elapsed.saturating_add(decode_t0.elapsed());
                     }
 
+                    let _sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
                     pack_metric_rows_for_host_copy(
                         bt_stream,
                         scratch,
@@ -10913,8 +11161,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                         topk_select,
                         metrics_count,
                         &mut top_packed_host,
+                        &mut launch_submit_elapsed,
+                        &mut d2h_copy_elapsed,
+                        &mut explicit_sync_elapsed,
                     )?;
 
+                    let decode_t0 = Instant::now();
                     for r in 0..topk_select {
                         let Some((fast_len, slow_len, metrics)) = decode_packed_topk_metric_row(
                             &top_packed_host,
@@ -10934,6 +11186,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             agg.push(params, metrics);
                         }
                     }
+                    host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
                 }
 
                 processed = processed.saturating_add(tile_valid);
@@ -10965,11 +11218,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         f_start += pf;
     }
 
-    let final_finalize_t0 = if pipeline_profile_enabled {
-        Some(Instant::now())
-    } else {
-        None
-    };
+    let sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
     let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> = if shortlist_union_mode
         .is_some()
         || shortlist_confidence_mode.is_some()
@@ -10990,6 +11239,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                          rows_slow: &DeviceBuffer<i32>,
                                          rows_metrics: &DeviceBuffer<f32>|
          -> Result<(), String> {
+            let _sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
             pack_metric_rows_for_host_copy(
                 bt_stream,
                 scratch,
@@ -11000,8 +11250,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                 topk_select,
                 metrics_count,
                 &mut top_packed_host,
+                &mut launch_submit_elapsed,
+                &mut d2h_copy_elapsed,
+                &mut explicit_sync_elapsed,
             )?;
 
+            let decode_t0 = Instant::now();
             for r in 0..topk_select {
                 let Some((fast_len, slow_len, metrics)) = decode_packed_topk_metric_row(
                     &top_packed_host,
@@ -11031,6 +11285,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 }
                 agg.push(params, metrics);
             }
+            host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
             Ok(())
         };
 
@@ -11083,6 +11338,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 None
             } else {
                 let mut host: Vec<f32> = alloc_uninit_copy(heatmap_len);
+                let d2h_t0 = Instant::now();
                 h.copy_to(&mut host).map_err(|e| e.to_string())?;
                 let mut host_sum: Vec<f32> = alloc_uninit_copy(heatmap_len);
                 h_sum.copy_to(&mut host_sum).map_err(|e| e.to_string())?;
@@ -11090,6 +11346,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                 h_count
                     .copy_to(&mut host_count)
                     .map_err(|e| e.to_string())?;
+                d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+                let decode_t0 = Instant::now();
                 let values: Vec<Option<f64>> = host
                     .into_iter()
                     .map(|v| {
@@ -11115,6 +11373,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     .into_iter()
                     .map(|count| count.max(0) as u32)
                     .collect();
+                host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
                 Some(OptimizationHeatmap {
                     bins_fast: heatmap_bins,
                     bins_slow: heatmap_bins,
@@ -11134,6 +11393,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         None
     };
 
+    drop(sync_and_decode_scope);
+    let _host_finalize_scope = crate::nvtx::scope("kernel", "host_finalize");
+    let final_finalize_t0 = Instant::now();
     let mut result = agg
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
@@ -11271,8 +11533,10 @@ fn optimize_double_ma_gpu_kernel_impl(
         rt.host_exact_combo_scratch.last_pair_index_upload = None;
     }
 
-    if let (Some(t0), Some(p)) = (final_finalize_t0, pipeline_profile.as_mut()) {
-        p.final_finalize = p.final_finalize.saturating_add(t0.elapsed());
+    let final_finalize_elapsed = final_finalize_t0.elapsed();
+    host_finalize_elapsed = host_finalize_elapsed.saturating_add(final_finalize_elapsed);
+    if let Some(p) = pipeline_profile.as_mut() {
+        p.final_finalize = p.final_finalize.saturating_add(final_finalize_elapsed);
         p.emit(
             fast_ma.as_str(),
             slow_ma.as_str(),
@@ -11285,8 +11549,17 @@ fn optimize_double_ma_gpu_kernel_impl(
     Ok((
         result,
         KernelExecutorTimingMs {
+            runtime_init_ms: 0,
+            set_current_ms: 0,
             gpu_indicator_prep_ms: gpu_indicator_prep_elapsed.as_millis() as u64,
             h2d_upload_ms: h2d_upload_elapsed.as_millis() as u64,
+            launch_submit_us: launch_submit_elapsed.as_micros() as u64,
+            d2h_copy_ms: d2h_copy_elapsed.as_millis() as u64,
+            host_decode_ms: host_decode_elapsed.as_millis() as u64,
+            explicit_sync_ms: explicit_sync_elapsed.as_millis() as u64,
+            host_finalize_ms: host_finalize_elapsed.as_millis() as u64,
+            graph_capture_ms: graph_capture_elapsed.as_millis() as u64,
+            graph_replay_count,
         },
     ))
 }

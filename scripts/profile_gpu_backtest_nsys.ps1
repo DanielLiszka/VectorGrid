@@ -14,9 +14,20 @@ param(
   [ValidateSet("small", "medium", "large", "xlarge")]
   [string]$RunnerWorkload = "xlarge",
   [int]$RunnerIterations = 1,
+  [int]$RunnerWarmupIterations = 0,
+  [int]$RunnerHeatmapBins = 64,
+  [int]$RunnerDeviceId = 0,
+  [ValidateSet("off", "on")]
+  [string]$NvtxMode = "off",
+  [ValidateSet("none", "nvtx")]
+  [string]$CaptureMode = "none",
+  [string]$NvtxCapture = "double_ma_opt_total",
+  [string]$NvtxDomains = "default,engine,kernel",
   [string]$OutputPrefix = "target/nsight/gpu_kernel_small",
   [ValidateSet("off", "on")]
-  [string]$DynamicStrategyMode = "off"
+  [string]$DynamicStrategyMode = "off",
+  [ValidateSet("inherit", "off", "on")]
+  [string]$CudaGraphsMode = "off"
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,9 +84,14 @@ $prevFastPath = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_FA
 $prevGraphs = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "Process")
 $prevDynamic = [System.Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
 $prevBenchOnly = [System.Environment]::GetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", "Process")
+$prevNvtx = [System.Environment]::GetEnvironmentVariable("VECTORBT_ENABLE_NVTX", "Process")
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", "1", "Process")
-[System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "0", "Process")
+switch ($CudaGraphsMode) {
+  "on" { [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "1", "Process") }
+  "off" { [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", "0", "Process") }
+  default { [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", $prevGraphs, "Process") }
+}
 if ($DynamicStrategyMode -eq "on") {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "1", "Process")
 } else {
@@ -86,11 +102,19 @@ if ([string]::IsNullOrWhiteSpace($BenchStrategyOnly)) {
 } else {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $BenchStrategyOnly, "Process")
 }
+if ($NvtxMode -eq "on") {
+  [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", "1", "Process")
+} else {
+  [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $null, "Process")
+}
 
-Write-Host "Profiling with Nsight Systems (dynamic_strategy=$DynamicStrategyMode)..."
+if ($Target -eq "runner" -and $CudaGraphsMode -eq "on" -and $RunnerHeatmapBins -gt 0) {
+  Write-Warning "RunnerHeatmapBins=$RunnerHeatmapBins may keep the exact kernel path graph-ineligible; set -RunnerHeatmapBins 0 for a graph A/B."
+}
+
+Write-Host "Profiling with Nsight Systems (dynamic_strategy=$DynamicStrategyMode, cuda_graphs=$CudaGraphsMode)..."
 $nsysArgs = @(
   "profile",
-  "--trace=cuda",
   "--sample=none",
   "--cpuctxsw=none",
   "--wait=primary",
@@ -99,6 +123,21 @@ $nsysArgs = @(
   "--force-overwrite=true",
   "--output=$OutputPrefix"
 )
+if ($NvtxMode -eq "on") {
+  $nsysArgs += @(
+    "--trace=cuda,nvtx",
+    "--cuda-graph-trace=graph"
+  )
+  if ($CaptureMode -eq "nvtx") {
+    $nsysArgs += @(
+      "--capture-range=nvtx",
+      "--nvtx-capture=$NvtxCapture",
+      "--nvtx-domain-include=$NvtxDomains"
+    )
+  }
+} else {
+  $nsysArgs += @("--trace=cuda")
+}
 if ($Target -eq "runner") {
   $nsysArgs += @(
     $targetExe.FullName,
@@ -106,7 +145,12 @@ if ($Target -eq "runner") {
     "--adx-mode", $RunnerAdxMode,
     "--workload", $RunnerWorkload,
     "--iterations", "$RunnerIterations",
-    "--dynamic-mode", $DynamicStrategyMode
+    "--warmup-iterations", "$RunnerWarmupIterations",
+    "--heatmap-bins", "$RunnerHeatmapBins",
+    "--device-id", "$RunnerDeviceId",
+    "--nvtx", $NvtxMode,
+    "--dynamic-mode", $DynamicStrategyMode,
+    "--cuda-graphs", $CudaGraphsMode
   )
 } else {
   $nsysArgs += @(
@@ -125,6 +169,7 @@ $exitCode = $LASTEXITCODE
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", $prevGraphs, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", $prevDynamic, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $prevBenchOnly, "Process")
+[System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $prevNvtx, "Process")
 
 $reportPath = "$OutputPrefix.nsys-rep"
 if (!(Test-Path $reportPath)) {

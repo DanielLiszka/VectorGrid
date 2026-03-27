@@ -19,19 +19,21 @@ use crate::dynamic_indicator_adapter::{
     DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 #[cfg(feature = "cuda")]
-use vector_ta::cuda::{
-    er_wrapper::DeviceArrayF32Er, CudaEr, CudaKaufmanstop, CudaLinearregAngle,
-    CudaSqueezeMomentum, CudaTtmSqueeze, CudaZscore, DeviceArrayF32,
-};
-#[cfg(feature = "cuda")]
 use vector_ta::cuda::moving_averages::{CudaEma, CudaSma};
+#[cfg(feature = "cuda")]
+use vector_ta::cuda::{
+    er_wrapper::DeviceArrayF32Er, CudaEr, CudaKaufmanstop, CudaLinearregAngle, CudaSqueezeMomentum,
+    CudaTtmSqueeze, CudaZscore, DeviceArrayF32,
+};
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::{
-    er::ErBatchRange, linearreg_angle::Linearreg_angleBatchRange,
+    er::ErBatchRange,
+    linearreg_angle::Linearreg_angleBatchRange,
     moving_averages::{ema::EmaBatchRange, sma::SmaBatchRange},
-    squeeze_momentum::SqueezeMomentumBatchRange, ttm_squeeze::TtmSqueezeBatchRange,
+    squeeze_momentum::SqueezeMomentumBatchRange,
+    ttm_squeeze::TtmSqueezeBatchRange,
     zscore::ZscoreBatchRange,
 };
 
@@ -771,7 +773,11 @@ fn asr_zscore_direct_ma_type_supported(ma_type: &str) -> bool {
 
 #[cfg(feature = "cuda")]
 fn asr_period_sweep_rows(start: u16, end: u16, step: u16) -> usize {
-    usize::from(end.saturating_sub(start).saturating_div(step).saturating_add(1))
+    usize::from(
+        end.saturating_sub(start)
+            .saturating_div(step)
+            .saturating_add(1),
+    )
 }
 
 #[cfg(feature = "cuda")]
@@ -810,12 +816,20 @@ fn compute_asr_zscore_sweep_cuda_ema_composed(
 
     let ema_cuda = CudaEma::new(device_id as usize).map_err(|e| e.to_string())?;
     ema_cuda
-        .ema_batch_into_host_f32(prepared_inputs.source(), &ema_sweep, ema_host.as_mut_slice())
+        .ema_batch_into_host_f32(
+            prepared_inputs.source(),
+            &ema_sweep,
+            ema_host.as_mut_slice(),
+        )
         .map_err(|e| e.to_string())?;
 
     let sma_cuda = CudaSma::new(device_id as usize).map_err(|e| e.to_string())?;
     sma_cuda
-        .sma_batch_into_host_f32(prepared_inputs.source(), &sma_sweep, sma_host.as_mut_slice())
+        .sma_batch_into_host_f32(
+            prepared_inputs.source(),
+            &sma_sweep,
+            sma_host.as_mut_slice(),
+        )
         .map_err(|e| e.to_string())?;
 
     let squared_source = prepared_inputs

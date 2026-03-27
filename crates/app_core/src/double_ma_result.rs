@@ -4,8 +4,8 @@ use ta_optimizer::OptimizationResult;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 use crate::double_ma::{
-    BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuResidencySummary,
-    HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved,
+    BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuKernelTimingMs,
+    GpuResidencySummary, HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved,
     PairObservationScoreContextResolved, ShortlistSliceCandidateDiagnosticsResolved,
     ShortlistSliceDiagnostics, ShortlistSliceDiagnosticsResolved,
     ShortlistSliceModeDiagnosticsResolved, ShortlistSliceSnapshotResolved, VdpsTelemetry,
@@ -26,6 +26,7 @@ pub(crate) struct BackendResultContext<'a> {
     pub runtime_ms: u64,
     pub vdps: Option<VdpsTelemetry>,
     pub hybrid_timing_ms: Option<HybridTimingMs>,
+    pub gpu_kernel_timing_ms: Option<GpuKernelTimingMs>,
     pub backend_route: Option<String>,
     pub backend_fallback_reason: Option<String>,
     pub indicator_route_plan: Option<IndicatorRoutePlanSummary>,
@@ -238,6 +239,7 @@ pub(crate) fn build_backend_optimization_result(
         heatmap: result.heatmap,
         vdps: ctx.vdps,
         hybrid_timing_ms: ctx.hybrid_timing_ms,
+        gpu_kernel_timing_ms: ctx.gpu_kernel_timing_ms,
         backend_route: ctx.backend_route,
         backend_fallback_reason: ctx.backend_fallback_reason,
         indicator_route_plan: ctx.indicator_route_plan,
@@ -296,6 +298,7 @@ mod tests {
                 runtime_ms: 1,
                 vdps: None,
                 hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: None,
                 backend_route: Some("GpuKernel".to_string()),
                 backend_fallback_reason: None,
                 indicator_route_plan: None,
@@ -315,5 +318,60 @@ mod tests {
         );
 
         assert_eq!(built.score_observation_context, Some(expected));
+    }
+
+    #[test]
+    fn build_backend_result_preserves_gpu_kernel_timing() {
+        let result = OptimizationResult {
+            best_params: DoubleMaParams {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            best_metrics: Metrics::default(),
+            best_score: None,
+            top: Vec::new(),
+            top_scores: None,
+            all: None,
+            all_scores: None,
+            heatmap: None,
+            num_combos: 1,
+            num_candles: 200,
+        };
+        let expected = GpuKernelTimingMs {
+            route_wall_ms: 17,
+            gpu_indicator_prep_ms: Some(4),
+            h2d_upload_ms: Some(2),
+            ..Default::default()
+        };
+        let built = build_backend_optimization_result(
+            result,
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::Grid,
+                backend_used: BackendUsed::Gpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: Some(expected.clone()),
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                indicator_route_plan: None,
+                residency: None,
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: None,
+            },
+        );
+
+        assert_eq!(built.gpu_kernel_timing_ms, Some(expected));
     }
 }

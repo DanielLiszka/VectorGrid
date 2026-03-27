@@ -1,12 +1,59 @@
 # Double MA CUDA Orchestration Evaluation Plan
 
 Date: 2026-03-26
+Updated: 2026-03-27
 
 ## Goal
 
 Measure and, if justified by evidence, reduce the Rust-side orchestration cost involved in launching the Double MA CUDA optimization path.
 
 This document converts the generic CUDA profiling guidance into a repo-specific plan for the current Double MA runtime.
+
+## Implementation Status
+
+Completed on 2026-03-27:
+
+- Exact `GpuKernel` runs now surface an optional `gpu_kernel_timing_ms` payload in `BackendOptimizationResult`.
+- That payload currently exposes:
+  - `route_wall_ms`
+  - `runtime_init_ms` when available
+  - `set_current_ms` when available
+  - `gpu_indicator_prep_ms` when available
+  - `h2d_upload_ms` when available
+  - `launch_submit_us` when available
+  - `d2h_copy_ms` when available
+  - `host_decode_ms` when available
+  - `explicit_sync_ms` when available
+  - `host_finalize_ms` when available
+  - `graph_capture_ms` when available
+  - `graph_replay_count` when available
+- `launch_submit_us` is intentionally in microseconds because the measured submit path is much smaller than the millisecond-scale D2H/materialization buckets.
+- `launch_submit_us` is intended to capture the executor-visible CUDA launch API time in this route and its instrumented helper stack.
+- The exact-route finalize boundary was corrected so `host_finalize_ms` no longer double-counts the earlier D2H/materialization window.
+- A whole-process `xlarge` Nsight Systems pass now confirms that this workload is not launch-bound:
+  - `cuLaunchKernel` total API time is about 0.297 ms across 14 launches
+  - the main backtest kernel accounts for about 376.9 ms of GPU time
+  - the large `cuMemcpyDtoHAsync_v2` API bucket is where the host first blocks after that GPU work, not evidence of a large actual D2H payload
+- The direct profiling runner now exposes:
+  - warmup iterations
+  - measured iterations via `--measure-iterations` or `--iterations`
+  - heatmap bins
+  - device id
+  - CUDA graph mode via `--cuda-graphs` or `--graphs`
+  - NVTX mode via `--nvtx`
+  - JSON-line output via `--emit-json`
+- The Nsight helper scripts now expose the knobs needed for graph A/B and warmup control:
+  - warmup iterations
+  - heatmap bins
+  - device id
+  - CUDA graph mode
+  - NVTX capture-range mode
+- NVTX ranges now exist in app-core behind `VECTORBT_ENABLE_NVTX=1`, and the wrapper uses runtime-loaded NVTX symbols instead of static toolkit linkage.
+
+Still not implemented:
+
+- a profiler-visible NVTX capture-range workflow on the local Nsight Systems 2023.3.3 install
+- a first profiler-validated lean Nsight Systems capture using the new NVTX ranges
 
 ## Scope
 
@@ -83,20 +130,17 @@ Because the Tauri path uses a blocking thread pool, thread hopping can cause run
 
 ### 3. The repo already has partial internal timing
 
-The kernel runtime already records limited timing:
+The kernel runtime now records exact-route timing in `KernelExecutorTimingMs` and surfaces it through `gpu_kernel_timing_ms`.
 
-- `gpu_indicator_prep_ms`
-- `h2d_upload_ms`
+Current state:
 
-That data comes from `KernelExecutorTimingMs` in `gpu_backtest_kernel.rs`.
+- exact `GpuKernel` results expose a separate `gpu_kernel_timing_ms` payload
+- the payload now includes launch-submit, D2H API bucket, sync, and output-finalize splits
+- the hybrid path still uses `HybridTimingMs`
+- `launch_submit_us` is precise enough to answer the original orchestration question for this route
+- `d2h_copy_ms` must be interpreted carefully: on this workload it is primarily the first host blocking point after queued GPU work, not proof of a large physical D2H transfer
 
-Current limitation:
-
-- this timing is harvested into `HybridTimingMs`
-- it is surfaced mainly through the hybrid path
-- it does not currently provide a complete orchestration breakdown for the exact `GpuKernel` path
-
-So the repo already has useful timing hooks, but they are not yet sufficient to answer the orchestration question cleanly.
+So the repo now has timing hooks that are sufficient to bound Rust launch orchestration cost on the exact `GpuKernel` path.
 
 ### 4. CUDA Graphs exist in the runtime, but the current helpers do not measure them well
 
@@ -110,13 +154,13 @@ Graph use is currently gated by runtime conditions, including:
 - no host-filter mode
 - no heatmap
 
-Current profiling helpers work against this goal:
+Current profiling helper status:
 
-- `scripts/profile_gpu_backtest_nsys.ps1` forces `VECTORBT_KERNEL_USE_CUDA_GRAPHS=0`
-- `scripts/profile_gpu_backtest_ncu.ps1` forces `VECTORBT_KERNEL_USE_CUDA_GRAPHS=0`
-- `profile_gpu_dynamic_runner.rs` currently hardcodes `heatmap_bins=64`
+- the runner now exposes warmup, heatmap-bin, device-id, and CUDA-graph controls
+- the Nsight helper scripts now expose those runner controls and can run with graphs on, off, or inherited
+- the scripts still default to graphs off, which preserves prior behavior but means graph A/B remains an opt-in measurement step
 
-So a proper graph A/B experiment is not yet represented by the stock runner/script combination.
+So a proper graph A/B experiment is now possible with the stock runner/script combination, but only when the caller explicitly requests graph-friendly settings such as `heatmap_bins=0`.
 
 ## What Is Valid From The Generic Guide
 
@@ -173,16 +217,19 @@ cargo run -p ta_app_core --release --bin profile_gpu_dynamic_runner --features c
 
 Then ignore iteration 1 and treat iterations 2+ as the first steady-state approximation.
 
-### 4. Current scripts are acceptable for coarse capture, not for the final orchestration study
+### 4. Current scripts are acceptable for the first orchestration study, but not as the only interface
 
-The existing Nsight scripts are useful as a starting point, but they are currently missing key capabilities for this task:
+The existing Nsight script is now good enough for the first lean orchestration pass:
 
-- no NVTX capture range workflow
-- graphs forced off
-- runner shape not graph-eligible
-- no explicit warmup/steady-iteration separation
+- graphs can be forced on or off
+- runner warmup and steady-state iteration control are available
+- graph-eligible shapes are possible when `heatmap_bins=0`
+- whole-process direct-runner captures are stable on the local Nsight Systems install
 
-So they should be treated as baseline helpers, not the final profiling interface.
+Remaining limitation:
+
+- local Nsight Systems 2023.3.3 is still not recording NVTX data from the current Rust path, so NVTX-gated capture remains blocked for now
+- direct `nsys` CLI invocations are still the better interface when a capture needs uncommon backtrace or reporting options
 
 ## Canonical Cost Decomposition For This Review
 
@@ -283,10 +330,10 @@ This section is the minimum operator checklist for turning the review into actio
 
 ### Instrumentation checklist
 
-- [ ] Add or verify exact-path timing for the plain `GpuKernel` route.
-- [ ] Add NVTX ranges at engine and kernel-executor boundaries.
-- [ ] Add runner flags for warmup iterations, heatmap bins, graph mode, and JSON output.
-- [ ] Add script flags so Nsight helpers do not force graphs off when graph A/B is the target.
+- [x] Add or verify exact-path timing for the plain `GpuKernel` route.
+- [x] Add NVTX ranges at engine and kernel-executor boundaries.
+- [x] Add runner flags for warmup iterations, heatmap bins, graph mode, and JSON output.
+- [x] Add script flags so Nsight helpers do not force graphs off when graph A/B is the target.
 
 ### Nsight Systems checklist
 
@@ -323,30 +370,39 @@ Use this checklist for the first instrumentation pass.
 - [ ] `src-tauri/src/commands_optimize.rs`
   - [ ] range: `tauri_double_ma_request`
 - [ ] `crates/app_core/src/double_ma.rs`
-  - [ ] range: `double_ma_opt_total`
-  - [ ] range: `route_resolve`
-  - [ ] range: `result_finalize`
+  - [x] range: `double_ma_opt_total`
+  - [x] range: `route_resolve`
+  - [x] range: `gpu_kernel_dispatch`
+  - [x] range: `result_finalize`
+  - [x] range: `hybrid_plan`
+  - [x] range: `hybrid_prepare`
+  - [x] range: `hybrid_transfer`
+  - [x] range: `hybrid_kernel`
+  - [x] range: `hybrid_fallback_gpu_sweep`
+  - [x] range: `hybrid_fallback_cpu`
 
 ### Kernel-path boundaries
 
 - [ ] `crates/app_core/src/double_ma.rs`
-  - [ ] range: `gpu_kernel_dispatch`
-  - [ ] range: `hybrid_phase1` when applicable
+  - [x] range: `gpu_kernel_dispatch`
+  - [x] range: `hybrid_*` phase ranges when applicable
 - [ ] `crates/app_core/src/gpu_backtest_kernel.rs`
-  - [ ] range: `kernel_executor_total`
-  - [ ] range: `runtime_init`
-  - [ ] range: `set_current`
-  - [ ] range: `gpu_indicator_prep`
-  - [ ] range: `h2d_upload`
-  - [ ] range: `graph_capture`
-  - [ ] range: `graph_replay`
-  - [ ] range: `launch_submit`
-  - [ ] range: `sync_and_decode`
-  - [ ] range: `host_finalize`
+  - [x] range: `kernel_executor_total`
+  - [x] range: `executor_impl`
+  - [x] range: `runtime_init`
+  - [x] range: `set_current`
+  - [x] range: `backtest_core`
+  - [x] range: `graph_capture`
+  - [x] range: `gpu_indicator_prep`
+  - [x] range: `h2d_upload`
+  - [x] range: `graph_replay`
+  - [x] range: `launch_submit`
+  - [x] range: `sync_and_decode`
+  - [x] range: `host_finalize`
 
 ### Instrumentation acceptance checks
 
-- [ ] NVTX can be disabled by env flag for low-friction benchmarking.
+- [x] NVTX can be disabled by env flag (`VECTORBT_ENABLE_NVTX`) for low-friction benchmarking.
 - [ ] Range names are stable and short.
 - [ ] Range placement does not create one marker per tiny row-level operation.
 - [ ] Lean Nsight capture overhead stays acceptable after adding the ranges.
@@ -388,23 +444,23 @@ Use only for directional phase balance, not graph A/B truth.
 ### C. Works today: coarse Nsight Systems via existing helper
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_nsys.ps1 -Target runner -RunnerStrategy double_ma -RunnerWorkload xlarge -RunnerIterations 3 -DynamicStrategyMode off -OutputPrefix target/nsight/double_ma_orch_baseline
+powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_nsys.ps1 -Target runner -RunnerStrategy double_ma -RunnerWorkload xlarge -RunnerWarmupIterations 2 -RunnerIterations 1 -RunnerHeatmapBins 0 -NvtxMode on -CaptureMode none -DynamicStrategyMode off -CudaGraphsMode off -OutputPrefix target/nsight/double_ma_orch_baseline
 ```
 
 Current limitations:
 
-- no NVTX capture-range workflow
-- graphs forced off by script
-- runner heatmap makes the shape graph-ineligible anyway
+- still a coarse wrapper over the full `nsys` CLI surface
+- local NVTX trace visibility is unresolved, so `-CaptureMode nvtx` is still experimental on this machine
+- lean and host-backtrace captures should still be validated directly against the emitted `.nsys-rep`
 
-### D. Target command after NVTX + runner/script upgrades: lean Nsight Systems
+### D. Target command after NVTX visibility is resolved: lean Nsight Systems
 
 ```powershell
 nsys profile `
   --trace=cuda,nvtx,osrt `
   --capture-range=nvtx `
   --nvtx-capture "double_ma_opt_total@engine" `
-  --nvtx-domain-include engine,gpu_kernel `
+  --nvtx-domain-include engine,kernel `
   --sample=none `
   --cpuctxsw=none `
   --cuda-graph-trace=graph `
@@ -415,19 +471,20 @@ nsys profile `
   --warmup-iterations 2 `
   --measure-iterations 1 `
   --heatmap-bins 0 `
+  --nvtx on `
   --graphs off `
   --dynamic-mode off `
   --adx-mode off
 ```
 
-### E. Target command after NVTX + runner/script upgrades: host-backtrace Nsight Systems
+### E. Target command after NVTX visibility is resolved: host-backtrace Nsight Systems
 
 ```powershell
 nsys profile `
   --trace=cuda,nvtx,osrt `
   --capture-range=nvtx `
   --nvtx-capture "double_ma_opt_total@engine" `
-  --nvtx-domain-include engine,gpu_kernel `
+  --nvtx-domain-include engine,kernel `
   --sample=process-tree `
   --backtrace=fp `
   --cudabacktrace=kernel:5000,memory:5000,sync:5000 `
@@ -439,6 +496,7 @@ nsys profile `
   --warmup-iterations 2 `
   --measure-iterations 1 `
   --heatmap-bins 0 `
+  --nvtx on `
   --graphs off `
   --dynamic-mode off `
   --adx-mode off
@@ -534,7 +592,7 @@ Every run in this review should fill in a table like this.
 
 ### Internal timing summary
 
-| Run ID | runtime_init_ms | route_resolve_ms | cpu_indicator_prep_ms | gpu_indicator_prep_ms | h2d_upload_ms | launch_submit_ms | sync_decode_ms | host_finalize_ms |
+| Run ID | runtime_init_ms | route_resolve_ms | cpu_indicator_prep_ms | gpu_indicator_prep_ms | h2d_upload_ms | launch_submit_us | sync_decode_ms | host_finalize_ms |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | fill me |  |  |  |  |  |  |  |  |
 
@@ -623,7 +681,7 @@ Add NVTX domains and ranges around these phases:
   - `cpu_indicator_precompute`
   - `gpu_kernel_dispatch`
   - `result_finalize`
-- domain: `gpu_kernel`
+- domain: `kernel`
   - `kernel_executor_total`
   - `runtime_init`
   - `set_current`
@@ -793,30 +851,32 @@ Current issue:
 
 Add a dedicated timing payload for the exact `GpuKernel` path so the normal Double MA route reports:
 
+- route wall ms
 - runtime init ms
 - set-current ms
 - gpu-indicator-prep ms
 - H2D upload ms
+- launch-submit us
 - graph capture ms
 - graph replay count
-- launch submit ms
+- D2H copy ms
+- host decode ms
 - explicit sync ms
-- D2H decode / materialize ms
 - host finalize ms
 
 This is the fastest path to a precise answer without starting inside Nsight every time.
 
 Definition of done:
 
-- [ ] `GpuKernel` result surfaces a timing payload
-- [ ] cold-init and warm executor costs are distinguishable
-- [ ] timings are available in the direct runner output
+- [x] `GpuKernel` result surfaces a timing payload
+- [x] cold-init and warm executor costs are distinguishable
+- [x] timings are available in the direct runner output
 
 ### Task 2. Add NVTX domains/ranges in app-core
 
 Without NVTX, Nsight Systems can still show CUDA APIs, but it will not map cleanly onto the engine phases we care about.
 
-NVTX is the most useful missing implementation step for this specific review.
+NVTX is now in place in the code. The remaining work for this task is to make those ranges profiler-visible on the local Nsight Systems install, then validate whether the current range set is sufficient.
 
 Definition of done:
 
@@ -836,10 +896,10 @@ Minimum changes:
 
 Definition of done:
 
-- [ ] runner can produce a graph-eligible shape
-- [ ] script can choose graphs on or off
-- [ ] script can choose warmup and measurement counts
-- [ ] runner can emit machine-readable output
+- [x] runner can produce a graph-eligible shape
+- [x] script can choose graphs on or off
+- [x] script can choose warmup and measurement counts
+- [x] runner can emit machine-readable output
 
 ### Task 4. Separate cold-init and warm steady-state in reporting
 

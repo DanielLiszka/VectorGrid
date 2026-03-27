@@ -535,6 +535,8 @@ pub struct BackendOptimizationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hybrid_timing_ms: Option<HybridTimingMs>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_kernel_timing_ms: Option<GpuKernelTimingMs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_route: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
@@ -646,6 +648,33 @@ pub struct HybridTimingMs {
     pub gpu_indicator_prep_ms: u64,
     pub h2d_upload_ms: u64,
     pub kernel_eval_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GpuKernelTimingMs {
+    pub route_wall_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_init_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_current_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_indicator_prep_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h2d_upload_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_submit_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub d2h_copy_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_decode_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explicit_sync_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_capture_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_replay_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2051,6 +2080,95 @@ fn merge_hybrid_timing(target: &mut Option<HybridTimingMs>, incoming: Option<Hyb
         cur.kernel_eval_ms = cur.kernel_eval_ms.saturating_add(inc.kernel_eval_ms);
     } else {
         *target = Some(inc);
+    }
+}
+
+fn merge_optional_u64(target: &mut Option<u64>, incoming: Option<u64>) {
+    let Some(inc) = incoming else {
+        return;
+    };
+    if let Some(current) = target.as_mut() {
+        *current = current.saturating_add(inc);
+    } else {
+        *target = Some(inc);
+    }
+}
+
+fn merge_gpu_kernel_timing(
+    target: &mut Option<GpuKernelTimingMs>,
+    incoming: Option<GpuKernelTimingMs>,
+) {
+    let Some(inc) = incoming else {
+        return;
+    };
+    if let Some(cur) = target.as_mut() {
+        cur.route_wall_ms = cur.route_wall_ms.saturating_add(inc.route_wall_ms);
+        merge_optional_u64(&mut cur.runtime_init_ms, inc.runtime_init_ms);
+        merge_optional_u64(&mut cur.set_current_ms, inc.set_current_ms);
+        merge_optional_u64(&mut cur.gpu_indicator_prep_ms, inc.gpu_indicator_prep_ms);
+        merge_optional_u64(&mut cur.h2d_upload_ms, inc.h2d_upload_ms);
+        merge_optional_u64(&mut cur.launch_submit_us, inc.launch_submit_us);
+        merge_optional_u64(&mut cur.d2h_copy_ms, inc.d2h_copy_ms);
+        merge_optional_u64(&mut cur.host_decode_ms, inc.host_decode_ms);
+        merge_optional_u64(&mut cur.explicit_sync_ms, inc.explicit_sync_ms);
+        merge_optional_u64(&mut cur.host_finalize_ms, inc.host_finalize_ms);
+        merge_optional_u64(&mut cur.graph_capture_ms, inc.graph_capture_ms);
+        merge_optional_u64(&mut cur.graph_replay_count, inc.graph_replay_count);
+    } else {
+        *target = Some(inc);
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
+    if let Some(timing) = crate::gpu_backtest_kernel::take_last_kernel_executor_timing() {
+        GpuKernelTimingMs {
+            route_wall_ms,
+            runtime_init_ms: Some(timing.runtime_init_ms),
+            set_current_ms: Some(timing.set_current_ms),
+            gpu_indicator_prep_ms: Some(timing.gpu_indicator_prep_ms),
+            h2d_upload_ms: Some(timing.h2d_upload_ms),
+            launch_submit_us: Some(timing.launch_submit_us),
+            d2h_copy_ms: Some(timing.d2h_copy_ms),
+            host_decode_ms: Some(timing.host_decode_ms),
+            explicit_sync_ms: Some(timing.explicit_sync_ms),
+            host_finalize_ms: Some(timing.host_finalize_ms),
+            graph_capture_ms: Some(timing.graph_capture_ms),
+            graph_replay_count: Some(timing.graph_replay_count),
+        }
+    } else {
+        GpuKernelTimingMs {
+            route_wall_ms,
+            runtime_init_ms: None,
+            set_current_ms: None,
+            gpu_indicator_prep_ms: None,
+            h2d_upload_ms: None,
+            launch_submit_us: None,
+            d2h_copy_ms: None,
+            host_decode_ms: None,
+            explicit_sync_ms: None,
+            host_finalize_ms: None,
+            graph_capture_ms: None,
+            graph_replay_count: None,
+        }
+    }
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
+    GpuKernelTimingMs {
+        route_wall_ms,
+        runtime_init_ms: None,
+        set_current_ms: None,
+        gpu_indicator_prep_ms: None,
+        h2d_upload_ms: None,
+        launch_submit_us: None,
+        d2h_copy_ms: None,
+        host_decode_ms: None,
+        explicit_sync_ms: None,
+        host_finalize_ms: None,
+        graph_capture_ms: None,
+        graph_replay_count: None,
     }
 }
 
@@ -4358,6 +4476,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
+    let _nvtx_scope = crate::nvtx::scope("engine", "double_ma_opt_total");
+    let route_resolve_scope = crate::nvtx::scope("engine", "route_resolve");
 
     let requested_backend = req.backend.clone();
     let normalized_backend = requested_backend.clone().with_preferred_cuda_device()?;
@@ -4856,6 +4976,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         &mode_used,
         &backend,
     );
+    drop(route_resolve_scope);
 
     struct OffsetProgress<'a> {
         inner: &'a dyn ProgressSink,
@@ -4895,6 +5016,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             OptimizationResult,
             BackendUsed,
             Option<HybridTimingMs>,
+            Option<GpuKernelTimingMs>,
             Option<String>,
             Option<String>,
         ),
@@ -4950,9 +5072,11 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     cancel,
                     progress,
                 )?;
-                Ok((result, BackendUsed::Gpu, None, None, None))
+                Ok((result, BackendUsed::Gpu, None, None, None, None))
             }
             GpuGridDispatch::GpuKernel { device_id } => {
+                let _nvtx_scope = crate::nvtx::scope("engine", "gpu_kernel_dispatch");
+                let kernel_t0 = std::time::Instant::now();
                 let result = if let DynamicGpuExecutionSelection::Supported(handle) =
                     dynamic_gpu_execution
                 {
@@ -5267,6 +5391,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         progress,
                     )?
                 };
+                let gpu_kernel_timing_ms = Some(build_gpu_kernel_timing(
+                    kernel_t0.elapsed().as_millis() as u64,
+                ));
                 let route_note = match dynamic_gpu_execution {
                     DynamicGpuExecutionSelection::Supported(_) => {
                         Some("GpuKernel(dynamic_strategy_v1)".to_string())
@@ -5274,7 +5401,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     DynamicGpuExecutionSelection::CpuFallback { .. }
                     | DynamicGpuExecutionSelection::Disabled => None,
                 };
-                Ok((result, BackendUsed::Gpu, None, route_note, None))
+                Ok((
+                    result,
+                    BackendUsed::Gpu,
+                    None,
+                    gpu_kernel_timing_ms,
+                    route_note,
+                    None,
+                ))
             }
             GpuGridDispatch::GpuHybridKernel { device_id } => {
                 let regime_filter = ensure_combined_regime_filter_cached(
@@ -5320,6 +5454,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     result,
                     backend_used,
                     Some(timing),
+                    None,
                     route_note,
                     fallback_reason,
                 ))
@@ -5365,7 +5500,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     cancel,
                     progress,
                 )?;
-                Ok((result, BackendUsed::Cpu, None, None, None))
+                Ok((result, BackendUsed::Cpu, None, None, None, None))
             }
             Backend::GpuOnly { device_id } => run_gpu_grid(GpuGridDispatch::GpuOnly {
                 device_id: *device_id,
@@ -5411,6 +5546,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         result,
                         BackendUsed::Cpu,
                         None,
+                        None,
                         Some("GpuKernel->CpuOnly(dynamic_strategy_v1)".to_string()),
                         Some(reason.clone()),
                     ))
@@ -5436,6 +5572,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         backend_used: BackendUsed,
         vdps: Option<VdpsTelemetry>,
         hybrid_timing_ms: Option<HybridTimingMs>,
+        gpu_kernel_timing_ms: Option<GpuKernelTimingMs>,
         route_note: Option<String>,
         fallback_reason: Option<String>,
     }
@@ -5452,7 +5589,14 @@ pub fn run_double_ma_optimization_blocking_with_candles(
      -> Result<ModeRunResult, String> {
         match mode_used {
             OptimizationModeResolved::Grid => {
-                let (res, backend_used, hybrid_timing_ms, route_note, fallback_reason) = run_grid(
+                let (
+                    res,
+                    backend_used,
+                    hybrid_timing_ms,
+                    gpu_kernel_timing_ms,
+                    route_note,
+                    fallback_reason,
+                ) = run_grid(
                     &fast_periods,
                     &slow_periods,
                     top_k,
@@ -5475,6 +5619,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     backend_used,
                     vdps: None,
                     hybrid_timing_ms,
+                    gpu_kernel_timing_ms,
                     route_note,
                     fallback_reason,
                 })
@@ -5489,30 +5634,37 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 }
 
                 if factor <= 1 {
-                    let (res, backend_used, hybrid_timing_ms, route_note, fallback_reason) =
-                        run_grid(
-                            &fast_periods,
-                            &slow_periods,
-                            top_k,
-                            include_all,
-                            heatmap_bins,
-                            export_all_csv_path.as_deref(),
-                            total_pairs,
-                            fast_ma_params,
-                            slow_ma_params,
-                            fast_alma_offset,
-                            fast_alma_sigma,
-                            slow_alma_offset,
-                            slow_alma_sigma,
-                            constraints,
-                            progress,
-                            dynamic_gpu_execution,
-                        )?;
+                    let (
+                        res,
+                        backend_used,
+                        hybrid_timing_ms,
+                        gpu_kernel_timing_ms,
+                        route_note,
+                        fallback_reason,
+                    ) = run_grid(
+                        &fast_periods,
+                        &slow_periods,
+                        top_k,
+                        include_all,
+                        heatmap_bins,
+                        export_all_csv_path.as_deref(),
+                        total_pairs,
+                        fast_ma_params,
+                        slow_ma_params,
+                        fast_alma_offset,
+                        fast_alma_sigma,
+                        slow_alma_offset,
+                        slow_alma_sigma,
+                        constraints,
+                        progress,
+                        dynamic_gpu_execution,
+                    )?;
                     Ok(ModeRunResult {
                         res,
                         backend_used,
                         vdps: None,
                         hybrid_timing_ms,
+                        gpu_kernel_timing_ms,
                         route_note,
                         fallback_reason,
                     })
@@ -5549,6 +5701,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         coarse_res,
                         coarse_backend,
                         coarse_hybrid_timing_ms,
+                        coarse_gpu_kernel_timing_ms,
                         coarse_route_note,
                         coarse_fallback_reason,
                     ) = run_grid(
@@ -5614,6 +5767,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         mut fine_res,
                         fine_backend,
                         fine_hybrid_timing_ms,
+                        fine_gpu_kernel_timing_ms,
                         fine_route_note,
                         fine_fallback_reason,
                     ) = run_grid(
@@ -5646,6 +5800,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     let mut hybrid_timing_ms: Option<HybridTimingMs> = None;
                     merge_hybrid_timing(&mut hybrid_timing_ms, coarse_hybrid_timing_ms);
                     merge_hybrid_timing(&mut hybrid_timing_ms, fine_hybrid_timing_ms);
+                    let mut gpu_kernel_timing_ms: Option<GpuKernelTimingMs> = None;
+                    merge_gpu_kernel_timing(&mut gpu_kernel_timing_ms, coarse_gpu_kernel_timing_ms);
+                    merge_gpu_kernel_timing(&mut gpu_kernel_timing_ms, fine_gpu_kernel_timing_ms);
                     let mut route_note: Option<String> = None;
                     merge_optional_note(&mut route_note, coarse_route_note);
                     merge_optional_note(&mut route_note, fine_route_note);
@@ -5658,6 +5815,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         backend_used,
                         vdps: None,
                         hybrid_timing_ms,
+                        gpu_kernel_timing_ms,
                         route_note,
                         fallback_reason,
                     })
@@ -5678,6 +5836,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 let mut last_res: Option<OptimizationResult> = None;
                 let mut rung_stats: Vec<VdpsRungTelemetry> = Vec::with_capacity(rung_plan.len());
                 let mut hybrid_timing_ms_acc: Option<HybridTimingMs> = None;
+                let mut gpu_kernel_timing_ms_acc: Option<GpuKernelTimingMs> = None;
                 let mut route_note_acc: Option<String> = None;
                 let mut fallback_reason_acc: Option<String> = None;
 
@@ -5887,6 +6046,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                                 local_res,
                                 local_backend,
                                 local_hybrid_timing_ms,
+                                local_gpu_kernel_timing_ms,
                                 local_route_note,
                                 local_fallback_reason,
                             ) = run_grid(
@@ -5908,6 +6068,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                                 dynamic_gpu_execution,
                             )?;
                             merge_hybrid_timing(&mut hybrid_timing_ms_acc, local_hybrid_timing_ms);
+                            merge_gpu_kernel_timing(
+                                &mut gpu_kernel_timing_ms_acc,
+                                local_gpu_kernel_timing_ms,
+                            );
                             merge_optional_note(&mut route_note_acc, local_route_note);
                             merge_optional_note(&mut fallback_reason_acc, local_fallback_reason);
                             if matches!(local_backend, BackendUsed::Gpu) {
@@ -5931,6 +6095,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             rung_res,
                             single_rung_backend,
                             rung_hybrid_timing_ms,
+                            rung_gpu_kernel_timing_ms,
                             rung_route_note,
                             rung_fallback_reason,
                         ) = run_grid(
@@ -5952,6 +6117,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             dynamic_gpu_execution,
                         )?;
                         merge_hybrid_timing(&mut hybrid_timing_ms_acc, rung_hybrid_timing_ms);
+                        merge_gpu_kernel_timing(
+                            &mut gpu_kernel_timing_ms_acc,
+                            rung_gpu_kernel_timing_ms,
+                        );
                         merge_optional_note(&mut route_note_acc, rung_route_note);
                         merge_optional_note(&mut fallback_reason_acc, rung_fallback_reason);
 
@@ -6178,6 +6347,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         baseline_res,
                         baseline_backend,
                         baseline_hybrid_timing_ms,
+                        baseline_gpu_kernel_timing_ms,
                         baseline_route_note,
                         baseline_fallback_reason,
                     )) = run_grid(
@@ -6199,6 +6369,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         dynamic_gpu_execution,
                     ) {
                         merge_hybrid_timing(&mut hybrid_timing_ms_acc, baseline_hybrid_timing_ms);
+                        merge_gpu_kernel_timing(
+                            &mut gpu_kernel_timing_ms_acc,
+                            baseline_gpu_kernel_timing_ms,
+                        );
                         merge_optional_note(&mut route_note_acc, baseline_route_note);
                         merge_optional_note(&mut fallback_reason_acc, baseline_fallback_reason);
                         quality_check_baseline_runtime_ms =
@@ -6298,6 +6472,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                     backend_used,
                     vdps: Some(vdps),
                     hybrid_timing_ms: hybrid_timing_ms_acc,
+                    gpu_kernel_timing_ms: gpu_kernel_timing_ms_acc,
                     route_note: route_note_acc,
                     fallback_reason: fallback_reason_acc,
                 })
@@ -6390,6 +6565,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let mut merged_num_combos: usize = 0;
     let mut merged_vdps: Option<VdpsTelemetry> = None;
     let mut merged_hybrid_timing_ms: Option<HybridTimingMs> = None;
+    let mut merged_gpu_kernel_timing_ms: Option<GpuKernelTimingMs> = None;
     let mut merged_backend_route: Option<String> = None;
     let mut merged_backend_fallback_reason: Option<String> = None;
     merge_optional_note(&mut merged_backend_route, backend_route.take());
@@ -6661,6 +6837,10 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 &mut merged_hybrid_timing_ms,
                 mode_out.hybrid_timing_ms.take(),
             );
+            merge_gpu_kernel_timing(
+                &mut merged_gpu_kernel_timing_ms,
+                mode_out.gpu_kernel_timing_ms.take(),
+            );
             merge_optional_note(&mut merged_backend_route, mode_out.route_note.take());
             merge_optional_note(
                 &mut merged_backend_fallback_reason,
@@ -6878,31 +7058,35 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             summarize_shortlist_neighborhood_robustness(&local, score_mode);
     }
 
-    let backend_result = build_backend_optimization_result(
-        result,
-        BackendResultContext {
-            mode_used,
-            backend_used,
-            fast_periods: &fast_periods,
-            slow_periods: &slow_periods,
-            fast_ma_label: &fast_ma_label,
-            slow_ma_label: &slow_ma_label,
-            fast_param_variants: &fast_param_variants,
-            slow_param_variants: &slow_param_variants,
-            num_combos: work_items,
-            num_candles: n,
-            runtime_ms,
-            vdps: merged_vdps,
-            hybrid_timing_ms: merged_hybrid_timing_ms,
-            backend_route: merged_backend_route,
-            backend_fallback_reason: merged_backend_fallback_reason,
-            indicator_route_plan: Some(indicator_route_plan_summary),
-            residency,
-            followup_cache_key,
-            shortlist_slice_diagnostics,
-            score_observation_context,
-        },
-    );
+    let backend_result = {
+        let _nvtx_scope = crate::nvtx::scope("engine", "result_finalize");
+        build_backend_optimization_result(
+            result,
+            BackendResultContext {
+                mode_used,
+                backend_used,
+                fast_periods: &fast_periods,
+                slow_periods: &slow_periods,
+                fast_ma_label: &fast_ma_label,
+                slow_ma_label: &slow_ma_label,
+                fast_param_variants: &fast_param_variants,
+                slow_param_variants: &slow_param_variants,
+                num_combos: work_items,
+                num_candles: n,
+                runtime_ms,
+                vdps: merged_vdps,
+                hybrid_timing_ms: merged_hybrid_timing_ms,
+                gpu_kernel_timing_ms: merged_gpu_kernel_timing_ms,
+                backend_route: merged_backend_route,
+                backend_fallback_reason: merged_backend_fallback_reason,
+                indicator_route_plan: Some(indicator_route_plan_summary),
+                residency,
+                followup_cache_key,
+                shortlist_slice_diagnostics,
+                score_observation_context,
+            },
+        )
+    };
     Ok(backend_result)
 }
 
@@ -11543,7 +11727,10 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
 
     emit_progress(progress, 0, 1, "hybrid_plan");
     let planner_t0 = std::time::Instant::now();
-    let route_plan = crate::ma_policy::plan_double_ma_hybrid_route(fast_ma_type, slow_ma_type);
+    let route_plan = {
+        let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_plan");
+        crate::ma_policy::plan_double_ma_hybrid_route(fast_ma_type, slow_ma_type)
+    };
     let planner_ms = planner_t0.elapsed().as_millis() as u64;
 
     if !route_plan.is_fully_supported() {
@@ -11603,39 +11790,42 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     let mut slow_precomputed_host: Option<Vec<f32>> = None;
     let mut fast_precomputed_cols: Option<usize> = None;
     let mut slow_precomputed_cols: Option<usize> = None;
-    let cpu_indicator_prep_ms = if kernel_blockers.is_empty()
-        && (fast_requires_cpu_precompute || slow_requires_cpu_precompute)
-    {
-        let t0 = std::time::Instant::now();
-        if fast_requires_cpu_precompute {
-            let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
-                candles,
-                fast_ma_type,
-                ma_source,
-                fast_periods,
-                fast_ma_params,
-                fast_alma_offset,
-                fast_alma_sigma,
-            )?;
-            fast_precomputed_host = Some(mat_f32);
-            fast_precomputed_cols = Some(cols);
+    let cpu_indicator_prep_ms = {
+        let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_prepare");
+        if kernel_blockers.is_empty()
+            && (fast_requires_cpu_precompute || slow_requires_cpu_precompute)
+        {
+            let t0 = std::time::Instant::now();
+            if fast_requires_cpu_precompute {
+                let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
+                    candles,
+                    fast_ma_type,
+                    ma_source,
+                    fast_periods,
+                    fast_ma_params,
+                    fast_alma_offset,
+                    fast_alma_sigma,
+                )?;
+                fast_precomputed_host = Some(mat_f32);
+                fast_precomputed_cols = Some(cols);
+            }
+            if slow_requires_cpu_precompute {
+                let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
+                    candles,
+                    slow_ma_type,
+                    ma_source,
+                    slow_periods,
+                    slow_ma_params,
+                    slow_alma_offset,
+                    slow_alma_sigma,
+                )?;
+                slow_precomputed_host = Some(mat_f32);
+                slow_precomputed_cols = Some(cols);
+            }
+            t0.elapsed().as_millis() as u64
+        } else {
+            0
         }
-        if slow_requires_cpu_precompute {
-            let (mat_f32, cols) = ma_matrix_cpu_f32_staging(
-                candles,
-                slow_ma_type,
-                ma_source,
-                slow_periods,
-                slow_ma_params,
-                slow_alma_offset,
-                slow_alma_sigma,
-            )?;
-            slow_precomputed_host = Some(mat_f32);
-            slow_precomputed_cols = Some(cols);
-        }
-        t0.elapsed().as_millis() as u64
-    } else {
-        0
     };
     #[allow(unused_mut)]
     let mut gpu_indicator_prep_ms = 0u64;
@@ -11647,7 +11837,10 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     emit_progress(progress, 0, 1, "hybrid_transfer");
     // H2D for precomputed rows currently occurs inside the kernel executor.
     #[allow(unused_mut)]
-    let mut h2d_upload_ms = 0u64;
+    let mut h2d_upload_ms = {
+        let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_transfer");
+        0u64
+    };
 
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
@@ -11672,6 +11865,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     let (result, backend_used, kernel_eval_ms) = if kernel_blockers.is_empty() {
         emit_progress(progress, 0, 1, "hybrid_kernel");
         let kernel_t0 = std::time::Instant::now();
+        let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_kernel");
         let res = if strategy.uses_pressure_impulse_trend_filter() {
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
             {
@@ -11958,6 +12152,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
         }
         emit_progress(progress, 0, 1, "hybrid_fallback_gpu_sweep");
         let sweep_t0 = std::time::Instant::now();
+        let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_fallback_gpu_sweep");
         let res = optimize_double_ma_gpu_sweep_tiled(
             candles,
             device_id,
@@ -12007,6 +12202,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
         }
         emit_progress(progress, 0, 1, "hybrid_fallback_cpu");
         let cpu_t0 = std::time::Instant::now();
+        let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_fallback_cpu");
         let res = optimize_double_ma_cpu_tiled(
             candles,
             fast_periods,

@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use serde_json::json;
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     trend_quality_strategy_for_kernel,
@@ -30,6 +31,13 @@ enum WorkloadKind {
 
 #[derive(Clone, Copy)]
 enum AdxMode {
+    Off,
+    On,
+}
+
+#[derive(Clone, Copy)]
+enum ToggleMode {
+    Inherit,
     Off,
     On,
 }
@@ -71,7 +79,9 @@ fn parse_workload_kind() -> Result<WorkloadKind, String> {
 }
 
 fn parse_iterations() -> Result<usize, String> {
-    let raw = parse_arg_value("--iterations").unwrap_or_else(|| "1".to_string());
+    let raw = parse_arg_value("--measure-iterations")
+        .or_else(|| parse_arg_value("--iterations"))
+        .unwrap_or_else(|| "1".to_string());
     let v = raw
         .trim()
         .parse::<usize>()
@@ -80,6 +90,20 @@ fn parse_iterations() -> Result<usize, String> {
         return Err("--iterations must be >= 1".to_string());
     }
     Ok(v)
+}
+
+fn parse_warmup_iterations() -> Result<usize, String> {
+    let raw = parse_arg_value("--warmup-iterations").unwrap_or_else(|| "0".to_string());
+    raw.trim()
+        .parse::<usize>()
+        .map_err(|e| format!("invalid --warmup-iterations '{}': {e}", raw.trim()))
+}
+
+fn parse_heatmap_bins() -> Result<u16, String> {
+    let raw = parse_arg_value("--heatmap-bins").unwrap_or_else(|| "64".to_string());
+    raw.trim()
+        .parse::<u16>()
+        .map_err(|e| format!("invalid --heatmap-bins '{}': {e}", raw.trim()))
 }
 
 fn parse_dynamic_mode() -> Result<bool, String> {
@@ -91,6 +115,40 @@ fn parse_dynamic_mode() -> Result<bool, String> {
             "unsupported --dynamic-mode '{other}' (expected: on|off)"
         )),
     }
+}
+
+fn parse_toggle_mode(flag: &str, default: &str) -> Result<ToggleMode, String> {
+    let raw = parse_arg_value(flag).unwrap_or_else(|| default.to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Ok(ToggleMode::Inherit),
+        "off" => Ok(ToggleMode::Off),
+        "on" => Ok(ToggleMode::On),
+        other => Err(format!(
+            "unsupported {flag} '{other}' (expected: inherit|off|on)"
+        )),
+    }
+}
+
+fn parse_toggle_mode_alias(
+    primary: &str,
+    secondary: &str,
+    default: &str,
+) -> Result<ToggleMode, String> {
+    let raw = parse_arg_value(primary)
+        .or_else(|| parse_arg_value(secondary))
+        .unwrap_or_else(|| default.to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Ok(ToggleMode::Inherit),
+        "off" => Ok(ToggleMode::Off),
+        "on" => Ok(ToggleMode::On),
+        other => Err(format!(
+            "unsupported {primary}/{secondary} '{other}' (expected: inherit|off|on)"
+        )),
+    }
+}
+
+fn parse_emit_json() -> bool {
+    std::env::args().skip(1).any(|arg| arg == "--emit-json")
 }
 
 fn parse_device_id() -> Result<u32, String> {
@@ -109,6 +167,30 @@ fn parse_adx_mode() -> Result<AdxMode, String> {
             "unsupported --adx-mode '{other}' (expected: on|off)"
         )),
     }
+}
+
+fn apply_env_toggle(var_name: &str, mode: ToggleMode) {
+    match mode {
+        ToggleMode::Inherit => {}
+        ToggleMode::Off => std::env::set_var(var_name, "0"),
+        ToggleMode::On => std::env::set_var(var_name, "1"),
+    }
+}
+
+fn apply_nvtx_phase(mode: ToggleMode, is_warmup: bool) {
+    match mode {
+        ToggleMode::Inherit => {}
+        ToggleMode::Off => std::env::set_var("VECTORBT_ENABLE_NVTX", "0"),
+        ToggleMode::On => {
+            std::env::set_var("VECTORBT_ENABLE_NVTX", if is_warmup { "0" } else { "1" })
+        }
+    }
+}
+
+fn format_optional_ms(value: Option<u64>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn make_trending_candles(len: usize) -> Candles {
@@ -268,7 +350,24 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let warmup_iterations = parse_warmup_iterations().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let heatmap_bins = parse_heatmap_bins().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
     let dynamic_enabled = parse_dynamic_mode().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let cuda_graphs_mode = parse_toggle_mode_alias("--cuda-graphs", "--graphs", "inherit")
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
+    let nvtx_mode = parse_toggle_mode("--nvtx", "inherit").unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });
@@ -280,6 +379,7 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let emit_json = parse_emit_json();
 
     if !cuda_available() {
         eprintln!("CUDA device not available");
@@ -291,6 +391,8 @@ fn main() {
     } else {
         std::env::remove_var("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL");
     }
+    apply_env_toggle("VECTORBT_KERNEL_USE_CUDA_GRAPHS", cuda_graphs_mode);
+    apply_nvtx_phase(nvtx_mode, warmup_iterations > 0);
 
     let strategy = strategy_config(strategy_kind, adx_mode);
     let candles = candles_for_strategy(strategy_kind, 200_000);
@@ -324,7 +426,7 @@ fn main() {
         mode: OptimizationMode::Grid,
         top_k: Some(50),
         include_all: Some(false),
-        heatmap_bins: Some(64),
+        heatmap_bins: Some(heatmap_bins),
         constraints: None,
         vdps: None,
         dynamic_strategy_ir: None,
@@ -335,7 +437,14 @@ fn main() {
         hurdle_tau: None,
     };
 
-    for i in 0..iterations {
+    for i in 0..(warmup_iterations + iterations) {
+        let is_warmup = i < warmup_iterations;
+        let iter_index = if is_warmup {
+            i + 1
+        } else {
+            i + 1 - warmup_iterations
+        };
+        apply_nvtx_phase(nvtx_mode, is_warmup);
         let t0 = Instant::now();
         let res =
             run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
@@ -351,18 +460,92 @@ fn main() {
             std::process::exit(1);
         }
         let wall_ms = t0.elapsed().as_millis() as u64;
+        if emit_json {
+            let payload = json!({
+                "phase": if is_warmup { "warmup" } else { "measure" },
+                "iter": iter_index,
+                "backend_used": format!("{:?}", res.backend_used),
+                "backend_route": &res.backend_route,
+                "runtime_ms": res.runtime_ms,
+                "wall_ms": wall_ms,
+                "heatmap_bins": heatmap_bins,
+                "cuda_graphs": match cuda_graphs_mode {
+                    ToggleMode::Inherit => "inherit",
+                    ToggleMode::Off => "off",
+                    ToggleMode::On => "on",
+                },
+                "nvtx": match nvtx_mode {
+                    ToggleMode::Inherit => "inherit",
+                    ToggleMode::Off => "off",
+                    ToggleMode::On => if is_warmup { "warmup_off" } else { "measure_on" },
+                },
+                "best_params": {
+                    "fast_len": res.best_params.fast_len,
+                    "slow_len": res.best_params.slow_len,
+                },
+                "best_metrics": {
+                    "sharpe": res.best_metrics.sharpe,
+                    "pnl": res.best_metrics.pnl,
+                },
+                "gpu_kernel_timing_ms": &res.gpu_kernel_timing_ms,
+                "hybrid_timing_ms": &res.hybrid_timing_ms,
+                "indicator_route_plan": &res.indicator_route_plan,
+                "backend_fallback_reason": res.backend_fallback_reason.as_deref(),
+            });
+            println!(
+                "{}",
+                serde_json::to_string(&payload).expect("serialize runner payload")
+            );
+            continue;
+        }
         println!(
-            "iter={} backend={:?} route={} runtime_ms={} wall_ms={} best=({}, {}) sharpe={:.6} pnl={:.6}",
-            i + 1,
+            "phase={} iter={} backend={:?} route={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            if is_warmup { "warmup" } else { "measure" },
+            iter_index,
             res.backend_used,
             res.backend_route.as_deref().unwrap_or("<none>"),
             res.runtime_ms,
             wall_ms,
+            heatmap_bins,
+            match cuda_graphs_mode {
+                ToggleMode::Inherit => "inherit",
+                ToggleMode::Off => "off",
+                ToggleMode::On => "on",
+            },
             res.best_params.fast_len,
             res.best_params.slow_len,
             res.best_metrics.sharpe,
             res.best_metrics.pnl
         );
+        if let Some(timing) = res.gpu_kernel_timing_ms.as_ref() {
+            println!(
+                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_finalize:{} graph_capture:{} graph_replay_count:{}",
+                timing.route_wall_ms,
+                format_optional_ms(timing.runtime_init_ms),
+                format_optional_ms(timing.set_current_ms),
+                format_optional_ms(timing.gpu_indicator_prep_ms),
+                format_optional_ms(timing.h2d_upload_ms),
+                timing.launch_submit_us
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                format_optional_ms(timing.d2h_copy_ms),
+                format_optional_ms(timing.host_decode_ms),
+                format_optional_ms(timing.explicit_sync_ms),
+                format_optional_ms(timing.host_finalize_ms),
+                format_optional_ms(timing.graph_capture_ms),
+                timing.graph_replay_count.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+            );
+        }
+        if let Some(timing) = res.hybrid_timing_ms.as_ref() {
+            println!(
+                "hybrid_timing_ms=planner:{} cpu_indicator_prep:{} gpu_indicator_prep:{} h2d_upload:{} kernel_eval:{}",
+                timing.planner_ms,
+                timing.cpu_indicator_prep_ms,
+                timing.gpu_indicator_prep_ms,
+                timing.h2d_upload_ms,
+                timing.kernel_eval_ms
+            );
+        }
         if let Some(plan) = res.indicator_route_plan.as_ref() {
             println!(
                 "indicator_route_plan=fast:{}->{} slow:{}->{}",
