@@ -41,7 +41,6 @@ fn base_request(
     backend: Backend,
     gpu_execution: GpuExecutionPolicy,
     persist_followup_cache: bool,
-include_trade_metrics: false,
 ) -> DoubleMaRequest {
     DoubleMaRequest {
         backend,
@@ -77,6 +76,7 @@ include_trade_metrics: false,
         gpu_execution,
         persist_followup_cache,
         hurdle_tau: None,
+        include_trade_metrics: false,
     }
 }
 
@@ -108,6 +108,7 @@ fn followup_requests(
         strategy: StrategyConfig::default(),
         halftrend_filter: None,
         objective: ObjectiveKind::Sharpe,
+        score_mode: None,
         radius: Some(1),
         step: Some(1),
     };
@@ -197,4 +198,3 @@ fn bench_double_ma_followup_workflow(c: &mut Criterion) {
 
 criterion_group!(benches, bench_double_ma_followup_workflow);
 criterion_main!(benches);
-

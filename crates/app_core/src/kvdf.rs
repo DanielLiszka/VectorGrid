@@ -152,10 +152,15 @@ pub fn validate_kvdf_params(cfg: &KvdfStrategyParams) -> Result<(), String> {
     if cfg.dti_period == 0 {
         return Err("KVDF dti_period must be >= 1.".to_string());
     }
-    if !cfg.dti_threshold.is_finite() {
-        return Err("KVDF dti_threshold must be finite.".to_string());
+    if !cfg.dti_threshold.is_finite() || cfg.dti_threshold <= 0.0 {
+        return Err("KVDF dti_threshold must be finite and > 0.".to_string());
     }
     Ok(())
+}
+
+#[inline]
+pub fn normalized_kvdf_dti_threshold(cfg: &KvdfStrategyParams) -> f64 {
+    cfg.dti_threshold.abs()
 }
 
 pub fn normalize_kvdf_vwap_anchor(anchor: &str) -> String {
@@ -694,8 +699,9 @@ pub fn build_kvdf_desired_positions(
             && vwap_now.is_finite()
             && close_now < keltner_lower
             && close_now < vwap_now;
-        let dti_up = dti_now.is_finite() && dti_now >= cfg.dti_threshold;
-        let dti_down = dti_now.is_finite() && dti_now <= -cfg.dti_threshold;
+        let dti_threshold = normalized_kvdf_dti_threshold(cfg);
+        let dti_up = dti_now.is_finite() && dti_now >= dti_threshold;
+        let dti_down = dti_now.is_finite() && dti_now <= -dti_threshold;
         let long_stop_ok = !devstop_long.is_finite() || close_now > devstop_long;
         let short_stop_ok = !devstop_short.is_finite() || close_now < devstop_short;
         let long_fvg_ok = !fvg_lower_ts.is_finite() || close_now > fvg_lower_ts;
@@ -796,6 +802,14 @@ mod tests {
 
         let mut cfg = KvdfStrategyParams::default();
         cfg.vwap_anchor = " ".to_string();
+        assert!(validate_kvdf_params(&cfg).is_err());
+
+        let mut cfg = KvdfStrategyParams::default();
+        cfg.dti_threshold = 0.0;
+        assert!(validate_kvdf_params(&cfg).is_err());
+
+        let mut cfg = KvdfStrategyParams::default();
+        cfg.dti_threshold = -20.0;
         assert!(validate_kvdf_params(&cfg).is_err());
     }
 

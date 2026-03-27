@@ -1130,6 +1130,7 @@ void rocb_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
@@ -1229,21 +1230,24 @@ void rocb_backtest_metrics_f32(
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
+            else trade_delta = 2;
             trades += trade_delta;
         }
 
-        float step_r = 0.0f;
+        float step_log = 0.0f;
         if (t > 0 && t < T) {
-            step_r += (float)pos_prev * lr[t];
+            step_log += (float)desired_exec * lr[t];
         }
         if (trade_delta > 0) {
-            step_r += log_cost * (float)trade_delta;
+            step_log += log_cost * (float)trade_delta;
         }
-        log_eq += step_r;
+        log_eq += step_log;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
 
+        const float step_r = expm1f(step_log);
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
@@ -1271,6 +1275,7 @@ void rocb_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
         sortino = mean / downside_dev;
@@ -1313,6 +1318,10 @@ void rocb_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = downside_dev;
+            out_metrics[base + 11] = ulcer_index;
+        }
     }
 }
 

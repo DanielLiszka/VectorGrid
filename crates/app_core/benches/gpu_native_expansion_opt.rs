@@ -20,6 +20,7 @@ fn base_req(backend: Backend) -> CompositeCpuRequest {
         vcc: None,
         vemr: None,
         rocb: None,
+        vcet: None,
         mkcs: None,
         kqsr: None,
         carm: None,
@@ -45,6 +46,9 @@ fn base_req(backend: Backend) -> CompositeCpuRequest {
         objective: ObjectiveKind::Sharpe,
         mode: OptimizationMode::Grid,
         gpu_prescan: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
         top_k: Some(20),
         include_all: Some(false),
         heatmap_bins: Some(64),
@@ -293,6 +297,12 @@ fn bench_gpu_cases<F>(
         probe.backend_route,
         probe.backend_fallback_reason
     );
+    assert!(
+        probe.backend_fallback_reason.is_none(),
+        "expected no fallback reason for {} probe, got {:?}",
+        route_label,
+        probe.backend_fallback_reason
+    );
 
     let mut group = c.benchmark_group(group_name);
     group.measurement_time(Duration::from_secs(8));
@@ -315,6 +325,12 @@ fn bench_gpu_cases<F>(
                     route_label,
                     res.backend_used,
                     res.backend_route,
+                    res.backend_fallback_reason
+                );
+                assert!(
+                    res.backend_fallback_reason.is_none(),
+                    "expected no fallback reason for {}, got {:?}",
+                    route_label,
                     res.backend_fallback_reason
                 );
             })

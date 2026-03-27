@@ -41,15 +41,24 @@ fn make_vemr_req(
     backend: Backend,
     fast_range: (u32, u32, u32),
     slow_range: (u32, u32, u32),
+    vemr: VemrStrategyParams,
+    top_k: usize,
+    heatmap_bins: u16,
+    data_id: &str,
 ) -> CompositeCpuRequest {
     CompositeCpuRequest {
         backend,
         asr: None,
         vcc: None,
-        vemr: Some(VemrStrategyParams::default()),
+        vemr: Some(vemr),
         rocb: None,
+        vcet: None,
         mkcs: None,
-        data_id: "bench".to_string(),
+        kqsr: None,
+        carm: None,
+        kvdf: None,
+        cdmc: None,
+        data_id: data_id.to_string(),
         fast_range,
         slow_range,
         fast_ma_types: vec!["sma".to_string()],
@@ -69,9 +78,12 @@ fn make_vemr_req(
         objective: ObjectiveKind::Sharpe,
         mode: OptimizationMode::Grid,
         gpu_prescan: None,
-        top_k: Some(20),
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        top_k: Some(top_k),
         include_all: Some(false),
-        heatmap_bins: Some(64),
+        heatmap_bins: Some(heatmap_bins),
     }
 }
 
@@ -88,32 +100,76 @@ fn bench_vemr_gpu_kernel(c: &mut Criterion) {
         ("medium/2365pairs", (5, 30, 1), (30, 120, 1)),
         ("large/13385pairs", (5, 80, 1), (20, 220, 1)),
     ];
+    let mut zscore_alt = VemrStrategyParams::default();
+    zscore_alt.z_nbdev = 1.2;
+    zscore_alt.z_entry = 2.4;
+    zscore_alt.z_exit = 0.7;
 
-    let mut group = c.benchmark_group("vemr/gpu_kernel/200k");
-    group.measurement_time(Duration::from_secs(8));
-    group.sample_size(10);
+    let surfaces: &[(&str, &str, usize, u16, VemrStrategyParams)] = &[
+        (
+            "vemr/gpu_kernel/200k",
+            "heatmap/default_zscore",
+            20,
+            64,
+            VemrStrategyParams::default(),
+        ),
+        (
+            "vemr/gpu_kernel_device_topk/200k",
+            "device_topk/default_zscore",
+            8,
+            0,
+            VemrStrategyParams::default(),
+        ),
+        (
+            "vemr/gpu_kernel_device_topk_zscore_alt/200k",
+            "device_topk/zscore_alt",
+            8,
+            0,
+            zscore_alt,
+        ),
+    ];
 
-    for (label, fast_range, slow_range) in cases.iter().copied() {
-        let req = make_vemr_req(Backend::GpuKernel { device_id: 0 }, fast_range, slow_range);
-        group.bench_function(label, |b| {
-            b.iter(|| {
-                let req2 = req.clone();
-                let res = ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("vemr gpu-kernel run");
-                assert!(
-                    matches!(res.backend_used, BackendUsed::Gpu),
-                    "expected GPU backend for VEMR bench, got backend={:?}, route={:?}, fallback={:?}",
-                    res.backend_used,
-                    res.backend_route,
-                    res.backend_fallback_reason
-                );
-            })
-        });
+    for (group_name, surface_label, top_k, heatmap_bins, vemr) in surfaces.iter().cloned() {
+        let mut group = c.benchmark_group(group_name);
+        group.measurement_time(Duration::from_secs(8));
+        group.sample_size(10);
+
+        for (label, fast_range, slow_range) in cases.iter().copied() {
+            let req = make_vemr_req(
+                Backend::GpuKernel { device_id: 0 },
+                fast_range,
+                slow_range,
+                vemr.clone(),
+                top_k,
+                heatmap_bins,
+                surface_label,
+            );
+            group.bench_function(label, |b| {
+                b.iter(|| {
+                    let req2 = req.clone();
+                    let res = ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
+                        req2, &candles, &cancel, None,
+                    )
+                    .expect("vemr gpu-kernel run");
+                    assert!(
+                        matches!(res.backend_used, BackendUsed::Gpu),
+                        "expected GPU backend for VEMR bench, got backend={:?}, route={:?}, fallback={:?}",
+                        res.backend_used,
+                        res.backend_route,
+                        res.backend_fallback_reason
+                    );
+                    assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+                    assert!(
+                        res.backend_fallback_reason.is_none(),
+                        "expected no fallback reason for VEMR bench, got {:?}",
+                        res.backend_fallback_reason
+                    );
+                })
+            });
+        }
+
+        group.finish();
     }
-
-    group.finish();
 }
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]

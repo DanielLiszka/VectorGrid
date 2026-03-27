@@ -6,8 +6,8 @@ use ta_optimizer::{ObjectiveKind, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 use crate::double_ma::{
-    effective_score, estimate_pairs_fast_lt_slow, objective_score, BackendUsed,
-    DoubleMaScoreMode, VdpsTelemetry,
+    effective_score, estimate_pairs_fast_lt_slow, objective_score, BackendUsed, DoubleMaScoreMode,
+    VdpsTelemetry,
 };
 
 #[inline]

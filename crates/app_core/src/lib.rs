@@ -52,6 +52,8 @@ pub mod rocb;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub mod rocb_gpu_kernel;
 pub mod sharpe_stats;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) mod standalone_gpu_runtime;
 pub mod stats_common;
 pub mod strategy_dynamic;
 pub mod strategy_gpu_program;

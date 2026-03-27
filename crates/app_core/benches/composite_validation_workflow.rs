@@ -229,6 +229,42 @@ fn make_rocb_candidates(n: usize) -> Vec<CompositeParams> {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_vcet_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 8u16.saturating_add(i_u16 % 12);
+        let slow_len = fast_len.saturating_add(24);
+        out.push(CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            vcet: Some(ta_app_core::VcetStrategyParams::default()),
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_mkcs_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -629,6 +665,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     bench_cpu_profile("vcc", 50_000, make_vcc_candidates(8));
     bench_cpu_profile("vemr", 50_000, make_vemr_candidates(8));
     bench_cpu_profile("rocb", 50_000, make_rocb_candidates(8));
+    bench_cpu_profile("vcet", 50_000, make_vcet_candidates(8));
     bench_cpu_profile("mkcs", 50_000, make_mkcs_candidates(8));
     bench_cpu_profile("kqsr", 50_000, make_kqsr_candidates(8));
     bench_cpu_profile("carm", 50_000, make_carm_candidates(8));
@@ -696,6 +733,18 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
             .backend_fallback_reason
             .as_deref()
             .unwrap_or("<none>")
+    );
+    assert!(
+        matches!(route_probe.backend_used, ta_app_core::BackendUsed::Gpu),
+        "expected GPU backend for ASR validation bench, got backend={:?}, route={:?}, fallback={:?}",
+        route_probe.backend_used,
+        route_probe.backend_route,
+        route_probe.backend_fallback_reason
+    );
+    assert!(
+        route_probe.backend_fallback_reason.is_none(),
+        "expected no fallback reason for ASR validation bench, got {:?}",
+        route_probe.backend_fallback_reason
     );
 
     group.bench_function("wf_cscv", |b| {
@@ -802,6 +851,20 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
                 .as_deref()
                 .unwrap_or("<none>")
         );
+        assert!(
+            matches!(route_probe.backend_used, ta_app_core::BackendUsed::Gpu),
+            "expected GPU backend for {} validation bench, got backend={:?}, route={:?}, fallback={:?}",
+            name,
+            route_probe.backend_used,
+            route_probe.backend_route,
+            route_probe.backend_fallback_reason
+        );
+        assert!(
+            route_probe.backend_fallback_reason.is_none(),
+            "expected no fallback reason for {} validation bench, got {:?}",
+            name,
+            route_probe.backend_fallback_reason
+        );
 
         group.bench_function("wf_reopt_cscv_spa", |b| {
             b.iter(|| {
@@ -823,11 +886,16 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
     bench_profile("vcc", 50_000, make_vcc_candidates(8));
     bench_profile("vemr", 50_000, make_vemr_candidates(8));
     bench_profile("rocb", 50_000, make_rocb_candidates(8));
+    bench_profile("vcet", 50_000, make_vcet_candidates(8));
     bench_profile("mkcs", 50_000, make_mkcs_candidates(8));
     bench_profile("kqsr", 50_000, make_kqsr_candidates(8));
     bench_profile("carm", 50_000, make_carm_candidates(8));
     bench_profile("kvdf", 50_000, make_kvdf_candidates(8));
     bench_profile("cdmc", 50_000, make_cdmc_candidates(8));
+    bench_profile("vemr", 100_000, make_vemr_candidates(64));
+    bench_profile("rocb", 100_000, make_rocb_candidates(64));
+    bench_profile("vcet", 100_000, make_vcet_candidates(64));
+    bench_profile("kvdf", 100_000, make_kvdf_candidates(64));
     bench_profile("carm", 100_000, make_carm_candidates(32));
     bench_profile("cdmc", 100_000, make_cdmc_candidates(32));
 }

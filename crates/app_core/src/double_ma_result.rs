@@ -6,10 +6,9 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 use crate::double_ma::{
     BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuResidencySummary,
     HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved,
-    PairObservationScoreContextResolved,
-    ShortlistSliceCandidateDiagnosticsResolved, ShortlistSliceDiagnostics,
-    ShortlistSliceDiagnosticsResolved, ShortlistSliceModeDiagnosticsResolved,
-    ShortlistSliceSnapshotResolved, VdpsTelemetry,
+    PairObservationScoreContextResolved, ShortlistSliceCandidateDiagnosticsResolved,
+    ShortlistSliceDiagnostics, ShortlistSliceDiagnosticsResolved,
+    ShortlistSliceModeDiagnosticsResolved, ShortlistSliceSnapshotResolved, VdpsTelemetry,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 

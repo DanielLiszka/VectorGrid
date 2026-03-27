@@ -50,7 +50,12 @@ fn make_rocb_req(
         vcc: None,
         vemr: None,
         rocb: Some(RocbStrategyParams::default()),
+        vcet: None,
         mkcs: None,
+        kqsr: None,
+        carm: None,
+        kvdf: None,
+        cdmc: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,
@@ -71,6 +76,9 @@ fn make_rocb_req(
         objective: ObjectiveKind::Sharpe,
         mode: OptimizationMode::Grid,
         gpu_prescan: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
         top_k: Some(20),
         include_all: Some(false),
         heatmap_bins: Some(64),
@@ -139,6 +147,12 @@ fn bench_rocb_gpu_kernel(c: &mut Criterion) {
                     "expected GPU backend for ROCB bench, got backend={:?}, route={:?}, fallback={:?}",
                     res.backend_used,
                     res.backend_route,
+                    res.backend_fallback_reason
+                );
+                assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+                assert!(
+                    res.backend_fallback_reason.is_none(),
+                    "expected no fallback reason for ROCB bench, got {:?}",
                     res.backend_fallback_reason
                 );
             })

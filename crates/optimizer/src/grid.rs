@@ -64,7 +64,10 @@ pub fn grid_search<E: BacktestEngine>(
         None
     };
 
-    let top_scores = top.iter().map(|(_, metrics)| score(metrics, objective)).collect();
+    let top_scores = top
+        .iter()
+        .map(|(_, metrics)| score(metrics, objective))
+        .collect();
 
     Some(OptimizationResult {
         best_params,

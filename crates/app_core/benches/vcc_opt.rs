@@ -48,7 +48,12 @@ fn make_vcc_req(
         vcc: Some(VccStrategyParams::default()),
         vemr: None,
         rocb: None,
+        vcet: None,
         mkcs: None,
+        kqsr: None,
+        carm: None,
+        kvdf: None,
+        cdmc: None,
         data_id: "bench".to_string(),
         fast_range,
         slow_range,
@@ -69,6 +74,9 @@ fn make_vcc_req(
         objective: ObjectiveKind::Sharpe,
         mode: OptimizationMode::Grid,
         gpu_prescan: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
         top_k: Some(20),
         include_all: Some(false),
         heatmap_bins: Some(64),
@@ -107,6 +115,11 @@ fn bench_vcc_gpu_kernel(c: &mut Criterion) {
                     "expected GPU backend for VCC bench, got backend={:?}, route={:?}, fallback={:?}",
                     res.backend_used,
                     res.backend_route,
+                    res.backend_fallback_reason
+                );
+                assert!(
+                    res.backend_fallback_reason.is_none(),
+                    "expected no fallback reason for VCC bench, got {:?}",
                     res.backend_fallback_reason
                 );
             })

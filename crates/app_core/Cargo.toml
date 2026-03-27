@@ -56,6 +56,10 @@ name = "vemr_opt"
 harness = false
 
 [[bench]]
+name = "vcet_opt"
+harness = false
+
+[[bench]]
 name = "rocb_opt"
 harness = false
 

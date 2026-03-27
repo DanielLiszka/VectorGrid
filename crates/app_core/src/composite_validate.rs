@@ -136,6 +136,7 @@ use crate::vcet::{
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet_gpu_kernel::{
     eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices,
+    VcetGpuOwnedSignalTables,
 };
 use crate::vemr::{
     build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
@@ -2182,6 +2183,11 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
 
     let signals = RocbGpuDeviceSignalMatrices {
         close_f32: &close_f32,
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         upper_row_major_ptr: upper_sweep.matrix.device_ptr,
         lower_row_major_ptr: lower_sweep.matrix.device_ptr,
@@ -3106,6 +3112,11 @@ fn compute_rocb_gpu_walk_forward_stats_for_candidate(
 
     let signals = RocbGpuDeviceSignalMatrices {
         close_f32: &close_f32,
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         upper_row_major_ptr: upper_sweep.matrix.device_ptr,
         lower_row_major_ptr: lower_sweep.matrix.device_ptr,
@@ -3339,6 +3350,11 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = RocbGpuDeviceSignalMatrices {
         close_f32: &close_f32,
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         upper_row_major_ptr: upper_sweep.matrix.device_ptr,
         lower_row_major_ptr: lower_sweep.matrix.device_ptr,
@@ -3668,9 +3684,6 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
     let mut vidya_lookup: HashMap<(u16, u16), (i32, usize)> =
         HashMap::with_capacity(vidya_keys.len());
     let mut ce_lookup: HashMap<u16, (i32, usize)> = HashMap::with_capacity(ce_keys.len());
-    let mut vidya_rows: Vec<u64> = Vec::with_capacity(vidya_keys.len());
-    let mut ce_long_rows: Vec<u64> = Vec::with_capacity(ce_keys.len());
-    let mut ce_short_rows: Vec<u64> = Vec::with_capacity(ce_keys.len());
     let mut vidya_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(vidya_keys.len());
     let mut ce_long_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(ce_keys.len());
     let mut ce_short_keepalive: Vec<VcetOwnedDeviceMatrix> = Vec::with_capacity(ce_keys.len());
@@ -3688,13 +3701,12 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         if matrix.rows != 1 || matrix.cols != n {
             return Err("VCET GPU VIDYA matrix shape mismatch".to_string());
         }
-        let idx = i32::try_from(vidya_rows.len())
+        let idx = i32::try_from(vidya_keepalive.len())
             .map_err(|_| "VCET GPU VIDYA row index exceeds i32 range".to_string())?;
         vidya_lookup.insert(
             (vidya_short, vidya_long),
             (idx, usize::from(vidya_long.saturating_sub(1))),
         );
-        vidya_rows.push(matrix.device_ptr());
         vidya_keepalive.push(matrix);
     }
 
@@ -3712,11 +3724,9 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         {
             return Err("VCET GPU chandelier matrix shape mismatch".to_string());
         }
-        let idx = i32::try_from(ce_long_rows.len())
+        let idx = i32::try_from(ce_long_keepalive.len())
             .map_err(|_| "VCET GPU chandelier row index exceeds i32 range".to_string())?;
         ce_lookup.insert(ce_period, (idx, usize::from(ce_period.saturating_sub(1))));
-        ce_long_rows.push(long_matrix.device_ptr());
-        ce_short_rows.push(short_matrix.device_ptr());
         ce_long_keepalive.push(long_matrix);
         ce_short_keepalive.push(short_matrix);
     }
@@ -3753,15 +3763,20 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         start_ts.push(start_t);
     }
 
-    let signals = VcetGpuDeviceSignalMatrices {
-        close_f32: &close_f32,
-        cols: n,
-        vidya_rows_ptr: &vidya_rows,
-        ce_long_rows_ptr: &ce_long_rows,
-        ce_short_rows_ptr: &ce_short_rows,
-        vidya_rows: vidya_rows.len(),
-        ce_rows: ce_long_rows.len(),
-    };
+    let signal_tables = VcetGpuOwnedSignalTables::from_owned_rows(
+        n,
+        vidya_keepalive,
+        ce_long_keepalive,
+        ce_short_keepalive,
+    )?;
+    let signals = signal_tables.as_signal_matrices(
+        &close_f32,
+        prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
+    );
     let combo_end_t = vec![
         i32::try_from(n)
             .map_err(|_| "VCET GPU end_t exceeds i32 range".to_string())?;
@@ -3823,8 +3838,6 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
         Backend::Auto { .. } => Some("Auto->GpuKernel".to_string()),
         _ => Some(validation_backend_label(&req.backend).to_string()),
     };
-
-    let _ = (&vidya_keepalive, &ce_long_keepalive, &ce_short_keepalive);
 
     Ok(GpuCompositeFixedCandidateValidationEval {
         metrics,
@@ -4025,6 +4038,11 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
 
     let signals = VemrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         zscore_row_major_ptr: z_sweep.matrix.device_ptr,
         zscore_rows: z_sweep.matrix.rows,
@@ -4267,6 +4285,11 @@ fn compute_vemr_gpu_walk_forward_stats_for_candidate(
 
     let signals = VemrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         zscore_row_major_ptr: z_sweep.matrix.device_ptr,
         zscore_rows: z_sweep.matrix.rows,
@@ -4556,6 +4579,11 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = VemrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         zscore_row_major_ptr: z_sweep.matrix.device_ptr,
         zscore_rows: z_sweep.matrix.rows,
@@ -8139,6 +8167,11 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = KvdfGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         dti_rows: dti_first_valid_by_row.len(),
         dti_stride: n,
@@ -8522,6 +8555,11 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
 
     let signals = KvdfGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         dti_rows: dti_first_valid_by_row.len(),
         dti_stride: n,
@@ -13843,6 +13881,27 @@ mod tests {
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
     }
 
+    fn make_strong_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64;
+            open.push(base);
+            high.push(base + 1.0);
+            low.push(base - 1.0);
+            close.push(base + 0.5);
+            vol.push(1_000.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
     fn mkcs_validation_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "sma".to_string(),
@@ -18414,6 +18473,7 @@ mod tests {
 
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
 
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
@@ -18449,6 +18509,618 @@ mod tests {
             );
             assert_close_metric_scaled(
                 "rocb in_sample",
+                "martin_ratio",
+                cpu.in_sample.martin_ratio,
+                gpu.in_sample.martin_ratio,
+                1e-4,
+                1e-4,
+            );
+            assert_eq!(
+                cpu.in_sample.trades, gpu.in_sample.trades,
+                "trades cpu={} gpu={}",
+                cpu.in_sample.trades, gpu.in_sample.trades
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn rocb_validation_gpu_kernel_matches_cpu_metrics_short_periods() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "rocb-gpu-validate-short".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                CompositeParams {
+                    fast_ma_type: "ema".to_string(),
+                    slow_ma_type: "ema".to_string(),
+                    fast_len: 5,
+                    slow_len: 12,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: Some(RocbStrategyParams::default()),
+                    mkcs: None,
+                    kqsr: None,
+                    carm: None,
+                    kvdf: None,
+                    cdmc: None,
+                    vcet: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+                CompositeParams {
+                    fast_ma_type: "ema".to_string(),
+                    slow_ma_type: "ema".to_string(),
+                    fast_len: 5,
+                    slow_len: 16,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: Some(RocbStrategyParams::default()),
+                    mkcs: None,
+                    kqsr: None,
+                    carm: None,
+                    kvdf: None,
+                    cdmc: None,
+                    vcet: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+                CompositeParams {
+                    fast_ma_type: "ema".to_string(),
+                    slow_ma_type: "ema".to_string(),
+                    fast_len: 7,
+                    slow_len: 12,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: Some(RocbStrategyParams::default()),
+                    mkcs: None,
+                    kqsr: None,
+                    carm: None,
+                    kvdf: None,
+                    cdmc: None,
+                    vcet: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+                CompositeParams {
+                    fast_ma_type: "ema".to_string(),
+                    slow_ma_type: "ema".to_string(),
+                    fast_len: 7,
+                    slow_len: 16,
+                    halftrend: HalfTrendRegimeFilter {
+                        amplitude: 2,
+                        channel_deviation: 2.0,
+                        atr_period: 100,
+                    },
+                    asr: None,
+                    vcc: None,
+                    vemr: None,
+                    rocb: Some(RocbStrategyParams::default()),
+                    mkcs: None,
+                    kqsr: None,
+                    carm: None,
+                    kvdf: None,
+                    cdmc: None,
+                    vcet: None,
+                    macz: MaczGateParams::default(),
+                    ott: OttGateParams::default(),
+                    signal_mode: CompositeSignalMode::HardGate,
+                    strategy: StrategyConfig::default(),
+                },
+            ],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu rocb validation short periods");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu rocb validation short periods");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!(
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4,
+                "pnl cpu={} gpu={}",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl
+            );
+            assert!(
+                (cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 1e-4,
+                "sharpe cpu={} gpu={}",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe
+            );
+            assert!(
+                (cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-4,
+                "max_dd cpu={} gpu={}",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd
+            );
+            assert!(
+                (cpu.in_sample.downside_deviation - gpu.in_sample.downside_deviation).abs() < 1e-4,
+                "downside_deviation cpu={} gpu={}",
+                cpu.in_sample.downside_deviation,
+                gpu.in_sample.downside_deviation
+            );
+            assert!(
+                (cpu.in_sample.ulcer_index - gpu.in_sample.ulcer_index).abs() < 1e-4,
+                "ulcer_index cpu={} gpu={}",
+                cpu.in_sample.ulcer_index,
+                gpu.in_sample.ulcer_index
+            );
+            assert_close_metric_scaled(
+                "rocb short in_sample",
+                "martin_ratio",
+                cpu.in_sample.martin_ratio,
+                gpu.in_sample.martin_ratio,
+                1e-4,
+                1e-4,
+            );
+            assert_eq!(
+                cpu.in_sample.trades, gpu.in_sample.trades,
+                "trades cpu={} gpu={}",
+                cpu.in_sample.trades, gpu.in_sample.trades
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn rocb_validation_gpu_kernel_matches_cpu_metrics_small_grid() {
+        let candles = make_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "rocb-gpu-validate-grid".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: {
+                let mut out = Vec::new();
+                for fast_len in 5..=7 {
+                    for slow_len in 12..=16 {
+                        if fast_len >= slow_len {
+                            continue;
+                        }
+                        out.push(CompositeParams {
+                            fast_ma_type: "ema".to_string(),
+                            slow_ma_type: "ema".to_string(),
+                            fast_len,
+                            slow_len,
+                            halftrend: HalfTrendRegimeFilter {
+                                amplitude: 2,
+                                channel_deviation: 2.0,
+                                atr_period: 100,
+                            },
+                            asr: None,
+                            vcc: None,
+                            vemr: None,
+                            rocb: Some(RocbStrategyParams::default()),
+                            mkcs: None,
+                            kqsr: None,
+                            carm: None,
+                            kvdf: None,
+                            cdmc: None,
+                            vcet: None,
+                            macz: MaczGateParams::default(),
+                            ott: OttGateParams::default(),
+                            signal_mode: CompositeSignalMode::HardGate,
+                            strategy: StrategyConfig::default(),
+                        });
+                    }
+                }
+                out
+            },
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 32,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu rocb validation small grid");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu rocb validation small grid");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!(
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4,
+                "pnl cpu={} gpu={}",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl
+            );
+            assert!(
+                (cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 1e-4,
+                "sharpe cpu={} gpu={}",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe
+            );
+            assert!(
+                (cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-4,
+                "max_dd cpu={} gpu={}",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd
+            );
+            assert!(
+                (cpu.in_sample.downside_deviation - gpu.in_sample.downside_deviation).abs() < 1e-4,
+                "downside_deviation cpu={} gpu={}",
+                cpu.in_sample.downside_deviation,
+                gpu.in_sample.downside_deviation
+            );
+            assert!(
+                (cpu.in_sample.ulcer_index - gpu.in_sample.ulcer_index).abs() < 1e-4,
+                "ulcer_index cpu={} gpu={}",
+                cpu.in_sample.ulcer_index,
+                gpu.in_sample.ulcer_index
+            );
+            assert_close_metric_scaled(
+                "rocb grid in_sample",
+                "martin_ratio",
+                cpu.in_sample.martin_ratio,
+                gpu.in_sample.martin_ratio,
+                1e-4,
+                1e-4,
+            );
+            assert_eq!(
+                cpu.in_sample.trades, gpu.in_sample.trades,
+                "trades cpu={} gpu={}",
+                cpu.in_sample.trades, gpu.in_sample.trades
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn rocb_validation_gpu_kernel_matches_cpu_metrics_small_grid_3000_bars() {
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "rocb-gpu-validate-grid-3000".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: {
+                let mut out = Vec::new();
+                for fast_len in 5..=7 {
+                    for slow_len in 12..=16 {
+                        if fast_len >= slow_len {
+                            continue;
+                        }
+                        out.push(CompositeParams {
+                            fast_ma_type: "ema".to_string(),
+                            slow_ma_type: "ema".to_string(),
+                            fast_len,
+                            slow_len,
+                            halftrend: HalfTrendRegimeFilter {
+                                amplitude: 2,
+                                channel_deviation: 2.0,
+                                atr_period: 100,
+                            },
+                            asr: None,
+                            vcc: None,
+                            vemr: None,
+                            rocb: Some(RocbStrategyParams::default()),
+                            mkcs: None,
+                            kqsr: None,
+                            carm: None,
+                            kvdf: None,
+                            cdmc: None,
+                            vcet: None,
+                            macz: MaczGateParams::default(),
+                            ott: OttGateParams::default(),
+                            signal_mode: CompositeSignalMode::HardGate,
+                            strategy: StrategyConfig::default(),
+                        });
+                    }
+                }
+                out
+            },
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 32,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu rocb validation small grid 3000");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu rocb validation small grid 3000");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert!(
+                (cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4,
+                "pnl cpu={} gpu={}",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl
+            );
+            assert!(
+                (cpu.in_sample.sharpe - gpu.in_sample.sharpe).abs() < 1e-4,
+                "sharpe cpu={} gpu={}",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe
+            );
+            assert!(
+                (cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-4,
+                "max_dd cpu={} gpu={}",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd
+            );
+            assert!(
+                (cpu.in_sample.downside_deviation - gpu.in_sample.downside_deviation).abs() < 1e-4,
+                "downside_deviation cpu={} gpu={}",
+                cpu.in_sample.downside_deviation,
+                gpu.in_sample.downside_deviation
+            );
+            assert!(
+                (cpu.in_sample.ulcer_index - gpu.in_sample.ulcer_index).abs() < 1e-4,
+                "ulcer_index cpu={} gpu={}",
+                cpu.in_sample.ulcer_index,
+                gpu.in_sample.ulcer_index
+            );
+            assert_close_metric_scaled(
+                "rocb grid 3000 in_sample",
+                "martin_ratio",
+                cpu.in_sample.martin_ratio,
+                gpu.in_sample.martin_ratio,
+                1e-4,
+                1e-4,
+            );
+            assert_eq!(
+                cpu.in_sample.trades, gpu.in_sample.trades,
+                "trades cpu={} gpu={}",
+                cpu.in_sample.trades, gpu.in_sample.trades
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn rocb_validation_gpu_kernel_matches_cpu_metrics_small_grid_strong_trend_3000_bars() {
+        let candles = make_strong_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "rocb-gpu-validate-grid-strong-3000".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: {
+                let mut out = Vec::new();
+                for fast_len in 5..=7 {
+                    for slow_len in 12..=16 {
+                        if fast_len >= slow_len {
+                            continue;
+                        }
+                        out.push(CompositeParams {
+                            fast_ma_type: "ema".to_string(),
+                            slow_ma_type: "ema".to_string(),
+                            fast_len,
+                            slow_len,
+                            halftrend: HalfTrendRegimeFilter {
+                                amplitude: 2,
+                                channel_deviation: 2.0,
+                                atr_period: 100,
+                            },
+                            asr: None,
+                            vcc: None,
+                            vemr: None,
+                            rocb: Some(RocbStrategyParams::default()),
+                            mkcs: None,
+                            kqsr: None,
+                            carm: None,
+                            kvdf: None,
+                            cdmc: None,
+                            vcet: None,
+                            macz: MaczGateParams::default(),
+                            ott: OttGateParams::default(),
+                            signal_mode: CompositeSignalMode::HardGate,
+                            strategy: StrategyConfig::default(),
+                        });
+                    }
+                }
+                out
+            },
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 32,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu rocb validation strong grid 3000");
+        let gpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu rocb validation strong grid 3000");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
+
+        for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
+            assert_close_metric_scaled(
+                "rocb grid strong 3000 in_sample",
+                "pnl",
+                cpu.in_sample.pnl,
+                gpu.in_sample.pnl,
+                1e-4,
+                1e-5,
+            );
+            assert_close_metric_scaled(
+                "rocb grid strong 3000 in_sample",
+                "sharpe",
+                cpu.in_sample.sharpe,
+                gpu.in_sample.sharpe,
+                1e-4,
+                1e-5,
+            );
+            assert_close_metric_scaled(
+                "rocb grid strong 3000 in_sample",
+                "max_dd",
+                cpu.in_sample.max_dd,
+                gpu.in_sample.max_dd,
+                1e-4,
+                1e-5,
+            );
+            assert_close_metric_scaled(
+                "rocb grid strong 3000 in_sample",
+                "downside_deviation",
+                cpu.in_sample.downside_deviation,
+                gpu.in_sample.downside_deviation,
+                1e-4,
+                1e-5,
+            );
+            assert_close_metric_scaled(
+                "rocb grid strong 3000 in_sample",
+                "ulcer_index",
+                cpu.in_sample.ulcer_index,
+                gpu.in_sample.ulcer_index,
+                1e-4,
+                1e-5,
+            );
+            assert_close_metric_scaled(
+                "rocb grid strong 3000 in_sample",
                 "martin_ratio",
                 cpu.in_sample.martin_ratio,
                 gpu.in_sample.martin_ratio,

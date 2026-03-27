@@ -50,6 +50,7 @@ fn make_mkcs_req(
         vcc: None,
         vemr: None,
         rocb: None,
+        vcet: None,
         mkcs: Some(MkcsStrategyParams::default()),
         kqsr: None,
         carm: None,
@@ -75,6 +76,9 @@ fn make_mkcs_req(
         objective: ObjectiveKind::Sharpe,
         mode: OptimizationMode::Grid,
         gpu_prescan: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
         top_k: Some(20),
         include_all: Some(false),
         heatmap_bins: Some(64),
@@ -151,6 +155,11 @@ fn bench_mkcs_gpu_kernel(c: &mut Criterion) {
         route_probe.backend_route,
         route_probe.backend_fallback_reason
     );
+    assert!(
+        route_probe.backend_fallback_reason.is_none(),
+        "expected no fallback reason for MKCS route probe, got {:?}",
+        route_probe.backend_fallback_reason
+    );
 
     for (label, fast_range, slow_range) in cases.iter().copied() {
         let req = make_mkcs_req(Backend::GpuKernel { device_id: 0 }, fast_range, slow_range);
@@ -166,6 +175,11 @@ fn bench_mkcs_gpu_kernel(c: &mut Criterion) {
                     "expected GPU backend for MKCS bench, got backend={:?}, route={:?}, fallback={:?}",
                     res.backend_used,
                     res.backend_route,
+                    res.backend_fallback_reason
+                );
+                assert!(
+                    res.backend_fallback_reason.is_none(),
+                    "expected no fallback reason for MKCS bench, got {:?}",
                     res.backend_fallback_reason
                 );
             })

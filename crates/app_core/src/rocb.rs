@@ -136,7 +136,7 @@ impl RocbPeriodSweepDevice {
     }
 
     pub fn first_valid_for_period(&self, period: u16) -> usize {
-        usize::from(period.saturating_sub(1))
+        first_valid_from_period(period)
     }
 }
 
@@ -175,8 +175,41 @@ pub fn resolve_rocb_periods(
     }
 }
 
+fn first_valid_from_period(period: u16) -> usize {
+    usize::from(period.saturating_sub(1))
+}
+
 fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
+}
+
+fn first_finite_idx_expected_or_scan(values: &[f64], expected: usize) -> Option<usize> {
+    if values
+        .get(expected)
+        .copied()
+        .unwrap_or(f64::NAN)
+        .is_finite()
+    {
+        Some(expected)
+    } else {
+        first_finite_idx_local(values)
+    }
+}
+
+fn first_joint_finite_idx_expected_or_scan(
+    lhs: &[f64],
+    rhs: &[f64],
+    expected: usize,
+) -> Option<usize> {
+    if lhs.get(expected).copied().unwrap_or(f64::NAN).is_finite()
+        && rhs.get(expected).copied().unwrap_or(f64::NAN).is_finite()
+    {
+        Some(expected)
+    } else {
+        first_finite_idx_local(lhs)
+            .zip(first_finite_idx_local(rhs))
+            .map(|(a, b)| a.max(b))
+    }
 }
 
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
@@ -461,7 +494,7 @@ pub fn compute_rocb_breakout_signals(
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<RocbBreakoutSignals, String> {
     let period_key = resolve_param_key("donchian", &["period", "length", "timeperiod"])?;
-    let params = vec![IndicatorParamKV {
+    let params = [IndicatorParamKV {
         key: period_key,
         value: IndicatorParamValue::Int(i64::from(channel_period)),
     }];
@@ -493,10 +526,12 @@ pub fn compute_rocb_breakout_signals(
         return Err("ROCB donchian output length mismatch".to_string());
     }
 
-    let first_valid = first_finite_idx_local(&upper)
-        .zip(first_finite_idx_local(&lower))
-        .map(|(a, b)| a.max(b))
-        .ok_or_else(|| "ROCB donchian outputs are all non-finite".to_string())?;
+    let first_valid = first_joint_finite_idx_expected_or_scan(
+        &upper,
+        &lower,
+        first_valid_from_period(channel_period),
+    )
+    .ok_or_else(|| "ROCB donchian outputs are all non-finite".to_string())?;
 
     Ok(RocbBreakoutSignals {
         upper,
@@ -513,7 +548,7 @@ pub fn compute_rocb_risk_signals(
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<RocbRiskSignals, String> {
     let period_key = resolve_param_key("atr", &["period", "length", "timeperiod"])?;
-    let params = vec![IndicatorParamKV {
+    let params = [IndicatorParamKV {
         key: period_key,
         value: IndicatorParamValue::Int(i64::from(atr_period)),
     }];
@@ -528,7 +563,7 @@ pub fn compute_rocb_risk_signals(
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
-    let first_valid = first_finite_idx_local(&atr)
+    let first_valid = first_finite_idx_expected_or_scan(&atr, first_valid_from_period(atr_period))
         .ok_or_else(|| "ROCB ATR output is all non-finite".to_string())?;
     Ok(RocbRiskSignals { atr, first_valid })
 }
@@ -554,18 +589,23 @@ pub fn compute_rocb_start_t(
     }
 }
 
-pub fn build_rocb_desired_positions(
+pub fn build_rocb_desired_positions_into(
+    desired: &mut Vec<i32>,
     close: &[f64],
     breakout: &RocbBreakoutSignals,
     risk: &RocbRiskSignals,
     start_t: usize,
     strategy: &StrategyConfig,
     cfg: &RocbStrategyParams,
-) -> Vec<i32> {
+) {
     let n = close.len();
-    let mut desired = vec![0i32; n];
+    desired.clear();
+    if desired.capacity() < n {
+        desired.reserve(n - desired.capacity());
+    }
+    desired.resize(start_t.min(n), 0);
     if start_t >= n {
-        return desired;
+        return;
     }
 
     let trade_offset = if strategy.trade_on_next_bar {
@@ -623,7 +663,7 @@ pub fn build_rocb_desired_positions(
                     pos = -1;
                     bars_in_trade = 1;
                     entry_price = close_now;
-                    desired[t] = pos;
+                    desired.push(pos);
                     continue;
                 }
                 exit_now = true;
@@ -655,7 +695,7 @@ pub fn build_rocb_desired_positions(
                     pos = 1;
                     bars_in_trade = 1;
                     entry_price = close_now;
-                    desired[t] = pos;
+                    desired.push(pos);
                     continue;
                 }
                 exit_now = true;
@@ -670,9 +710,20 @@ pub fn build_rocb_desired_positions(
             }
         }
 
-        desired[t] = pos;
+        desired.push(pos);
     }
+}
 
+pub fn build_rocb_desired_positions(
+    close: &[f64],
+    breakout: &RocbBreakoutSignals,
+    risk: &RocbRiskSignals,
+    start_t: usize,
+    strategy: &StrategyConfig,
+    cfg: &RocbStrategyParams,
+) -> Vec<i32> {
+    let mut desired = Vec::with_capacity(close.len());
+    build_rocb_desired_positions_into(&mut desired, close, breakout, risk, start_t, strategy, cfg);
     desired
 }
 
@@ -713,5 +764,47 @@ mod tests {
         );
         assert_eq!(desired[2], 1);
         assert_eq!(desired[4], 0);
+    }
+
+    #[test]
+    fn rocb_desired_positions_into_reuses_buffer_with_zero_prefix() {
+        let close = vec![100.0, 101.0, 103.0, 104.0, 101.0, 99.0];
+        let breakout = RocbBreakoutSignals {
+            upper: vec![f64::NAN, 100.5, 102.0, 103.0, 102.5, 101.0],
+            lower: vec![f64::NAN, 99.5, 99.0, 100.0, 100.5, 98.0],
+            first_valid: 1,
+        };
+        let risk = RocbRiskSignals {
+            atr: vec![f64::NAN, 1.0, 1.0, 1.0, 1.0, 1.0],
+            first_valid: 1,
+        };
+        let mut strategy = StrategyConfig::default();
+        strategy.trade_on_next_bar = false;
+        let mut desired = vec![7, 7, 7];
+
+        build_rocb_desired_positions_into(
+            &mut desired,
+            close.as_slice(),
+            &breakout,
+            &risk,
+            2,
+            &strategy,
+            &RocbStrategyParams::default(),
+        );
+
+        assert_eq!(desired.len(), close.len());
+        assert_eq!(&desired[..2], &[0, 0]);
+        assert_eq!(desired[2], 1);
+        assert_eq!(desired[4], 0);
+    }
+
+    #[test]
+    fn rocb_first_valid_fast_path_preserves_short_series_none() {
+        let values = vec![f64::NAN; 3];
+        assert_eq!(first_finite_idx_expected_or_scan(&values, 5), None);
+        assert_eq!(
+            first_joint_finite_idx_expected_or_scan(&values, &values, 5),
+            None
+        );
     }
 }

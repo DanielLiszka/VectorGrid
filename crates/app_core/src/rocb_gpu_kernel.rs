@@ -5,12 +5,17 @@ use crate::composite_gpu_metric_decode::{
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
+    load_double_crossover_module, DeviceLaunchCaps, KernelLaunchCaps,
 };
 use crate::rocb::RocbStrategyParams;
+use crate::standalone_gpu_runtime::{
+    checked_i32, ensure_device_buffer_len, ensure_host_f32_len, slice_signature, CloseSeriesKey,
+    ResidentCloseReturns, UploadSignature,
+};
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
+use cust::function::Function;
 use cust::memory::CopyDestination;
-use cust::module::ModuleJitOption;
 use cust::stream::{Stream, StreamFlags};
 use cust::{memory::DeviceBuffer, module::Module, CudaFlags};
 use std::cell::RefCell;
@@ -23,6 +28,7 @@ const ROCB_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
 
 pub struct RocbGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
+    pub close_device_ptr: u64,
     pub cols: usize,
     pub upper_row_major_ptr: u64,
     pub lower_row_major_ptr: u64,
@@ -40,41 +46,87 @@ pub struct RocbGpuComboBatch<'a> {
     pub end_t: &'a [i32],
 }
 
+#[derive(Default)]
+struct RocbKernelScratch {
+    d_combo_channel: Option<DeviceBuffer<i32>>,
+    d_combo_atr: Option<DeviceBuffer<i32>>,
+    d_combo_start: Option<DeviceBuffer<i32>>,
+    d_combo_end: Option<DeviceBuffer<i32>>,
+    d_out: Option<DeviceBuffer<f32>>,
+    host_metrics: Vec<f32>,
+    channel_sig: Option<UploadSignature>,
+    atr_sig: Option<UploadSignature>,
+}
+
+impl RocbKernelScratch {
+    fn ensure_len_i32(
+        slot: &mut Option<DeviceBuffer<i32>>,
+        required: usize,
+        stream: &Stream,
+    ) -> Result<(), String> {
+        ensure_device_buffer_len(slot, required, stream)
+    }
+
+    fn ensure_len_f32(
+        slot: &mut Option<DeviceBuffer<f32>>,
+        required: usize,
+        stream: &Stream,
+    ) -> Result<(), String> {
+        ensure_device_buffer_len(slot, required, stream)
+    }
+
+    fn ensure_host_metrics(&mut self, required: usize) {
+        ensure_host_f32_len(&mut self.host_metrics, required);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RocbKernelKey {
+    ComputeReturns,
+    Backtest,
+}
+
 struct RocbCudaRuntime {
     context: Arc<Context>,
     module: Module,
     stream: Stream,
+    launch_caps: DeviceLaunchCaps,
+    resident_series: Option<ResidentCloseReturns>,
+    scratch: RocbKernelScratch,
+    kernel_caps: RefCell<HashMap<RocbKernelKey, KernelLaunchCaps>>,
 }
 
 impl RocbCudaRuntime {
     fn new(device_id: u32) -> Result<Self, String> {
         cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
+        let launch_caps = detect_device_launch_caps(device);
         let context = Arc::new(Context::new(device).map_err(|e| e.to_string())?);
-
-        let ptx: &str = include_str!(concat!(env!("OUT_DIR"), "/double_crossover.ptx"));
-        let jit_opts = &[
-            ModuleJitOption::DetermineTargetFromContext,
-            ModuleJitOption::OptLevel(cust::module::OptLevel::O2),
-        ];
-        let module = match Module::from_ptx(ptx, jit_opts) {
-            Ok(m) => m,
-            Err(_) => Module::from_ptx(ptx, &[ModuleJitOption::DetermineTargetFromContext])
-                .or_else(|_| Module::from_ptx(ptx, &[]))
-                .map_err(|e| e.to_string())?,
-        };
-
+        let module = load_double_crossover_module(device)?;
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
 
         Ok(Self {
             context,
             module,
             stream,
+            launch_caps,
+            resident_series: None,
+            scratch: RocbKernelScratch::default(),
+            kernel_caps: RefCell::new(HashMap::new()),
         })
     }
 
     fn set_current(&self) -> Result<(), String> {
         CurrentContext::set_current(self.context.as_ref()).map_err(|e| e.to_string())
+    }
+
+    fn launch_caps_for(&self, key: RocbKernelKey, func: &Function) -> KernelLaunchCaps {
+        if let Some(cached) = self.kernel_caps.borrow().get(&key) {
+            return *cached;
+        }
+        let caps = detect_kernel_launch_caps(func, self.launch_caps);
+        self.kernel_caps.borrow_mut().insert(key, caps);
+        caps
     }
 }
 
@@ -90,6 +142,7 @@ fn validate_inputs(
     if n == 0 {
         return Err("ROCB GPU kernel requires non-empty series".to_string());
     }
+    let n_i32 = checked_i32("ROCB GPU cols", n)?;
     if signals.close_f32.len() != n {
         return Err("ROCB GPU close length mismatch".to_string());
     }
@@ -106,21 +159,63 @@ fn validate_inputs(
     {
         return Err("ROCB GPU signal matrix shape is invalid".to_string());
     }
+    checked_i32("ROCB GPU channel row count", signals.channel_rows)?;
+    checked_i32("ROCB GPU channel stride", signals.channel_stride)?;
+    checked_i32("ROCB GPU ATR row count", signals.atr_rows)?;
+    checked_i32("ROCB GPU ATR stride", signals.atr_stride)?;
+    if signals.channel_stride < n || signals.atr_stride < n {
+        return Err("ROCB GPU signal stride is smaller than series length".to_string());
+    }
 
     let combos_len = combos.channel_row_index.len();
+    checked_i32("ROCB GPU combo count", combos_len)?;
     if combos.atr_row_index.len() != combos_len
         || combos.start_t.len() != combos_len
         || combos.end_t.len() != combos_len
     {
         return Err("ROCB GPU combo vector length mismatch".to_string());
     }
+
+    for (idx, ((&channel_row, &atr_row), (&start_t, &end_t))) in combos
+        .channel_row_index
+        .iter()
+        .zip(combos.atr_row_index.iter())
+        .zip(combos.start_t.iter().zip(combos.end_t.iter()))
+        .enumerate()
+    {
+        if channel_row < 0 || channel_row >= signals.channel_rows as i32 {
+            return Err(format!(
+                "ROCB GPU channel_row_index[{idx}] out of bounds: {channel_row} not in [0, {})",
+                signals.channel_rows
+            ));
+        }
+        if atr_row < 0 || atr_row >= signals.atr_rows as i32 {
+            return Err(format!(
+                "ROCB GPU atr_row_index[{idx}] out of bounds: {atr_row} not in [0, {})",
+                signals.atr_rows
+            ));
+        }
+        if start_t < 0 || end_t < 0 {
+            return Err(format!("ROCB GPU time window[{idx}] must be non-negative"));
+        }
+        if start_t >= end_t {
+            return Err(format!(
+                "ROCB GPU time window[{idx}] requires start_t < end_t but got {start_t} >= {end_t}"
+            ));
+        }
+        if end_t > n_i32 {
+            return Err(format!(
+                "ROCB GPU time window[{idx}] end_t {end_t} exceeds cols {n_i32}"
+            ));
+        }
+    }
+
     Ok(())
 }
 
 fn launch_compute_log_returns_f32(
     rt: &mut RocbCudaRuntime,
-    device_id: u32,
-    d_close: &DeviceBuffer<f32>,
+    close_ptr: u64,
     d_lr: &mut DeviceBuffer<f32>,
     len: usize,
 ) -> Result<(), String> {
@@ -132,18 +227,15 @@ fn launch_compute_log_returns_f32(
         .module
         .get_function("compute_log_returns_f32")
         .map_err(|e| e.to_string())?;
-    let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
-    let device_caps = detect_device_launch_caps(device);
     let launch = choose_launch_shape_1d_from_candidates(
         len,
-        device_caps,
-        detect_kernel_launch_caps(&kernel, device_caps),
+        rt.launch_caps,
+        rt.launch_caps_for(RocbKernelKey::ComputeReturns, &kernel),
         &[64u32, 128, 256, 512],
     );
 
-    let mut close_ptr = d_close.as_device_ptr().as_raw();
-    let mut len_i =
-        i32::try_from(len).map_err(|_| "ROCB GPU close length exceeds i32 range".to_string())?;
+    let mut close_ptr = close_ptr;
+    let mut len_i = checked_i32("ROCB GPU close length", len)?;
     let mut lr_ptr = d_lr.as_device_ptr().as_raw();
 
     unsafe {
@@ -164,6 +256,40 @@ fn launch_compute_log_returns_f32(
     }
 
     Ok(())
+}
+
+fn ensure_resident_close_lr<'a>(
+    rt: &'a mut RocbCudaRuntime,
+    signals: &RocbGpuDeviceSignalMatrices<'_>,
+) -> Result<&'a ResidentCloseReturns, String> {
+    let key = CloseSeriesKey::from_host_and_device(signals.close_f32, signals.close_device_ptr);
+    let needs_refresh = rt
+        .resident_series
+        .as_ref()
+        .map(|resident| resident.key != key)
+        .unwrap_or(true);
+    if needs_refresh {
+        let (close_ptr, d_close_owner) = if signals.close_device_ptr != 0 {
+            (signals.close_device_ptr, None)
+        } else {
+            let d_close = DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
+            let close_ptr = d_close.as_device_ptr().as_raw();
+            (close_ptr, Some(d_close))
+        };
+        let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(signals.cols) }
+            .map_err(|e| e.to_string())?;
+        launch_compute_log_returns_f32(rt, close_ptr, &mut d_lr, signals.cols)?;
+        rt.resident_series = Some(ResidentCloseReturns {
+            key,
+            close_ptr,
+            d_close_owner,
+            d_lr,
+        });
+    }
+
+    rt.resident_series
+        .as_ref()
+        .ok_or_else(|| "ROCB resident close/lr cache missing".to_string())
 }
 
 fn decode_metrics_row(row: &[f32]) -> Metrics {
@@ -206,30 +332,78 @@ pub fn eval_rocb_metrics_gpu_kernel_device_rows(
             .ok_or_else(|| "ROCB GPU runtime missing".to_string())?;
         rt.set_current()?;
 
-        let d_close = DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
-        let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(signals.cols) }
-            .map_err(|e| e.to_string())?;
-        launch_compute_log_returns_f32(rt, device_id, &d_close, &mut d_lr, signals.cols)?;
+        let (close_ptr_raw, lr_ptr_raw) = {
+            let resident = ensure_resident_close_lr(rt, signals)?;
+            let _keepalive = resident.d_close_owner.as_ref();
+            (resident.close_ptr, resident.d_lr.as_device_ptr().as_raw())
+        };
 
-        let d_combo_channel =
-            DeviceBuffer::from_slice(combos.channel_row_index).map_err(|e| e.to_string())?;
-        let d_combo_atr =
-            DeviceBuffer::from_slice(combos.atr_row_index).map_err(|e| e.to_string())?;
-        let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
-        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
-        let d_out =
-            unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
+        RocbKernelScratch::ensure_len_i32(
+            &mut rt.scratch.d_combo_channel,
+            combo_count,
+            &rt.stream,
+        )?;
+        RocbKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_atr, combo_count, &rt.stream)?;
+        RocbKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_start, combo_count, &rt.stream)?;
+        RocbKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_end, combo_count, &rt.stream)?;
+        RocbKernelScratch::ensure_len_f32(&mut rt.scratch.d_out, out_len, &rt.stream)?;
+
+        let channel_sig = slice_signature(combos.channel_row_index);
+        if rt.scratch.channel_sig != Some(channel_sig) {
+            let mut combo_channel_slice = rt
+                .scratch
+                .d_combo_channel
+                .as_mut()
+                .ok_or_else(|| "ROCB combo channel scratch missing".to_string())?
+                .index(..combo_count);
+            combo_channel_slice
+                .copy_from(combos.channel_row_index)
+                .map_err(|e| e.to_string())?;
+            rt.scratch.channel_sig = Some(channel_sig);
+        }
+
+        let atr_sig = slice_signature(combos.atr_row_index);
+        if rt.scratch.atr_sig != Some(atr_sig) {
+            let mut combo_atr_slice = rt
+                .scratch
+                .d_combo_atr
+                .as_mut()
+                .ok_or_else(|| "ROCB combo ATR scratch missing".to_string())?
+                .index(..combo_count);
+            combo_atr_slice
+                .copy_from(combos.atr_row_index)
+                .map_err(|e| e.to_string())?;
+            rt.scratch.atr_sig = Some(atr_sig);
+        }
+
+        let mut combo_start_slice = rt
+            .scratch
+            .d_combo_start
+            .as_mut()
+            .ok_or_else(|| "ROCB combo start scratch missing".to_string())?
+            .index(..combo_count);
+        combo_start_slice
+            .copy_from(combos.start_t)
+            .map_err(|e| e.to_string())?;
+
+        let mut combo_end_slice = rt
+            .scratch
+            .d_combo_end
+            .as_mut()
+            .ok_or_else(|| "ROCB combo end scratch missing".to_string())?
+            .index(..combo_count);
+        combo_end_slice
+            .copy_from(combos.end_t)
+            .map_err(|e| e.to_string())?;
 
         let kernel = rt
             .module
             .get_function("rocb_backtest_metrics_f32")
             .map_err(|e| e.to_string())?;
-        let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
-        let device_caps = detect_device_launch_caps(device);
         let launch = choose_launch_shape_1d_from_candidates(
             combo_count,
-            device_caps,
-            detect_kernel_launch_caps(&kernel, device_caps),
+            rt.launch_caps,
+            rt.launch_caps_for(RocbKernelKey::Backtest, &kernel),
             &[32u32, 64, 128, 256],
         );
 
@@ -247,27 +421,57 @@ pub fn eval_rocb_metrics_gpu_kernel_device_rows(
 
         let commission = strategy.effective_commission().clamp(0.0, 0.95) as f32;
 
-        let mut close_ptr = d_close.as_device_ptr().as_raw();
-        let mut lr_ptr = d_lr.as_device_ptr().as_raw();
+        let mut close_ptr = close_ptr_raw;
+        let mut lr_ptr = lr_ptr_raw;
         let mut upper_ptr = signals.upper_row_major_ptr;
         let mut lower_ptr = signals.lower_row_major_ptr;
-        let mut channel_rows_i = signals.channel_rows as i32;
-        let mut channel_stride_i = signals.channel_stride as i32;
+        let mut channel_rows_i = checked_i32("ROCB GPU channel row count", signals.channel_rows)?;
+        let mut channel_stride_i = checked_i32("ROCB GPU channel stride", signals.channel_stride)?;
         let mut atr_ptr = signals.atr_row_major_ptr;
-        let mut atr_rows_i = signals.atr_rows as i32;
-        let mut atr_stride_i = signals.atr_stride as i32;
-        let mut combo_channel_ptr = d_combo_channel.as_device_ptr().as_raw();
-        let mut combo_atr_ptr = d_combo_atr.as_device_ptr().as_raw();
-        let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
-        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
-        let mut combo_count_i = combo_count as i32;
-        let mut t_i = signals.cols as i32;
+        let mut atr_rows_i = checked_i32("ROCB GPU ATR row count", signals.atr_rows)?;
+        let mut atr_stride_i = checked_i32("ROCB GPU ATR stride", signals.atr_stride)?;
+        let mut combo_channel_ptr = rt
+            .scratch
+            .d_combo_channel
+            .as_ref()
+            .ok_or_else(|| "ROCB combo channel scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_atr_ptr = rt
+            .scratch
+            .d_combo_atr
+            .as_ref()
+            .ok_or_else(|| "ROCB combo ATR scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_start_ptr = rt
+            .scratch
+            .d_combo_start
+            .as_ref()
+            .ok_or_else(|| "ROCB combo start scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_end_ptr = rt
+            .scratch
+            .d_combo_end
+            .as_ref()
+            .ok_or_else(|| "ROCB combo end scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_count_i = checked_i32("ROCB GPU combo count", combo_count)?;
+        let mut t_i = checked_i32("ROCB GPU cols", signals.cols)?;
         let mut flags_u = flags;
         let mut commission_f = commission;
         let mut atr_stop_mult_f = rocb.atr_stop_mult as f32;
         let mut max_trade_bars_i = i32::from(rocb.max_trade_bars.max(1));
-        let mut out_stride_i = ROCB_METRICS_STRIDE as i32;
-        let mut out_ptr = d_out.as_device_ptr().as_raw();
+        let mut out_stride_i = checked_i32("ROCB GPU metrics stride", ROCB_METRICS_STRIDE)?;
+        let mut out_ptr = rt
+            .scratch
+            .d_out
+            .as_ref()
+            .ok_or_else(|| "ROCB output scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
 
         unsafe {
             let args: &mut [*mut c_void] = &mut [
@@ -305,15 +509,104 @@ pub fn eval_rocb_metrics_gpu_kernel_device_rows(
         }
 
         rt.stream.synchronize().map_err(|e| e.to_string())?;
-        let mut host_metrics = vec![0.0f32; out_len];
-        d_out
-            .copy_to(host_metrics.as_mut_slice())
+        rt.scratch.ensure_host_metrics(out_len);
+        let d_out_prefix = rt
+            .scratch
+            .d_out
+            .as_ref()
+            .ok_or_else(|| "ROCB output scratch missing".to_string())?
+            .index(..out_len);
+        d_out_prefix
+            .copy_to(rt.scratch.host_metrics.as_mut_slice())
             .map_err(|e| e.to_string())?;
 
         let mut out: Vec<Metrics> = Vec::with_capacity(combo_count);
-        for row in host_metrics.chunks_exact(ROCB_METRICS_STRIDE) {
+        for row in rt.scratch.host_metrics[..out_len].chunks_exact(ROCB_METRICS_STRIDE) {
             out.push(decode_metrics_row(row));
         }
         Ok(out)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_inputs, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices};
+
+    #[test]
+    fn validate_inputs_rejects_negative_start_t() {
+        let close = vec![1.0f32; 8];
+        let signals = RocbGpuDeviceSignalMatrices {
+            close_f32: &close,
+            close_device_ptr: 5,
+            cols: close.len(),
+            upper_row_major_ptr: 11,
+            lower_row_major_ptr: 12,
+            channel_rows: 2,
+            channel_stride: close.len(),
+            atr_row_major_ptr: 13,
+            atr_rows: 2,
+            atr_stride: close.len(),
+        };
+        let combos = RocbGpuComboBatch {
+            channel_row_index: &[0],
+            atr_row_index: &[0],
+            start_t: &[-1],
+            end_t: &[6],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("negative start_t");
+        assert!(err.contains("non-negative"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_row_index_out_of_bounds() {
+        let close = vec![1.0f32; 8];
+        let signals = RocbGpuDeviceSignalMatrices {
+            close_f32: &close,
+            close_device_ptr: 5,
+            cols: close.len(),
+            upper_row_major_ptr: 11,
+            lower_row_major_ptr: 12,
+            channel_rows: 2,
+            channel_stride: close.len(),
+            atr_row_major_ptr: 13,
+            atr_rows: 2,
+            atr_stride: close.len(),
+        };
+        let combos = RocbGpuComboBatch {
+            channel_row_index: &[2],
+            atr_row_index: &[0],
+            start_t: &[1],
+            end_t: &[6],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("row index out of bounds");
+        assert!(err.contains("channel_row_index"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_end_t_past_series() {
+        let close = vec![1.0f32; 8];
+        let signals = RocbGpuDeviceSignalMatrices {
+            close_f32: &close,
+            close_device_ptr: 5,
+            cols: close.len(),
+            upper_row_major_ptr: 11,
+            lower_row_major_ptr: 12,
+            channel_rows: 2,
+            channel_stride: close.len(),
+            atr_row_major_ptr: 13,
+            atr_rows: 2,
+            atr_stride: close.len(),
+        };
+        let combos = RocbGpuComboBatch {
+            channel_row_index: &[0],
+            atr_row_index: &[0],
+            start_t: &[1],
+            end_t: &[9],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("end_t too large");
+        assert!(err.contains("end_t"));
+    }
 }
