@@ -86,11 +86,23 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
+    make_asr_candidates_with_zscore_mode(n, "sma", 0)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_asr_candidates_with_zscore_mode(
+    n: usize,
+    z_ma_type: &str,
+    z_devtype: u8,
+) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let i_u16 = i as u16;
         let fast_len = 8u16.saturating_add(i_u16 % 12);
         let slow_len = fast_len.saturating_add(24);
+        let mut asr = ta_app_core::AsrStrategyParams::default();
+        asr.z_ma_type = z_ma_type.to_string();
+        asr.z_devtype = z_devtype;
         out.push(CompositeParams {
             fast_ma_type: "ema".to_string(),
             slow_ma_type: "ema".to_string(),
@@ -101,7 +113,7 @@ fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
                 channel_deviation: 2.0,
                 atr_period: 100,
             },
-            asr: Some(ta_app_core::AsrStrategyParams::default()),
+            asr: Some(asr),
             vcc: None,
             vemr: None,
             rocb: None,
@@ -662,6 +674,11 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
 
     bench_cpu_profile("base_composite", 50_000, make_candidates(8));
     bench_cpu_profile("asr", 50_000, make_asr_candidates(8));
+    bench_cpu_profile(
+        "asr_ema",
+        50_000,
+        make_asr_candidates_with_zscore_mode(8, "ema", 0),
+    );
     bench_cpu_profile("vcc", 50_000, make_vcc_candidates(8));
     bench_cpu_profile("vemr", 50_000, make_vemr_candidates(8));
     bench_cpu_profile("rocb", 50_000, make_rocb_candidates(8));
@@ -745,6 +762,12 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
         route_probe.backend_fallback_reason.is_none(),
         "expected no fallback reason for ASR validation bench, got {:?}",
         route_probe.backend_fallback_reason
+    );
+    assert_eq!(
+        route_probe.backend_route.as_deref(),
+        Some("GpuKernel"),
+        "expected exact GpuKernel route for ASR validation bench, got route={:?}",
+        route_probe.backend_route
     );
 
     group.bench_function("wf_cscv", |b| {
@@ -865,6 +888,13 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
             name,
             route_probe.backend_fallback_reason
         );
+        assert_eq!(
+            route_probe.backend_route.as_deref(),
+            Some("GpuKernel"),
+            "expected exact GpuKernel route for {} validation bench, got route={:?}",
+            name,
+            route_probe.backend_route
+        );
 
         group.bench_function("wf_reopt_cscv_spa", |b| {
             b.iter(|| {
@@ -883,6 +913,11 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
 
     bench_profile("base_composite", 50_000, make_candidates(8));
     bench_profile("asr", 50_000, make_asr_candidates(8));
+    bench_profile(
+        "asr_ema",
+        50_000,
+        make_asr_candidates_with_zscore_mode(8, "ema", 0),
+    );
     bench_profile("vcc", 50_000, make_vcc_candidates(8));
     bench_profile("vemr", 50_000, make_vemr_candidates(8));
     bench_profile("rocb", 50_000, make_rocb_candidates(8));

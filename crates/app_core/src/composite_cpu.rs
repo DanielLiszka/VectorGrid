@@ -1765,6 +1765,11 @@ fn run_asr_optimization_gpu(
 
     let signals = AsrGpuDeviceSignalMatrices {
         close_f64: close,
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         fast_rows,
         slow_rows,
@@ -13710,6 +13715,141 @@ mod tests {
             res.backend_fallback_reason
         );
         assert!(res.best_params.fast_len < res.best_params.slow_len);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn asr_optimization_gpu_kernel_matches_cpu_small_grid_with_ema_zscore() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let mut cpu_req = make_base_composite_req();
+        cpu_req.backend = Backend::CpuOnly;
+        let mut asr = AsrStrategyParams::default();
+        asr.z_ma_type = "ema".to_string();
+        cpu_req.asr = Some(asr);
+        cpu_req.fast_range = (5, 7, 1);
+        cpu_req.slow_range = (20, 24, 2);
+        cpu_req.top_k = Some(64);
+        cpu_req.include_all = Some(true);
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("asr cpu ema optimization run");
+
+        let mut gpu_req = cpu_req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            gpu_req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("asr gpu ema optimization run");
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "expected ASR GPU backend, got backend={:?}, route={:?}, fallback={:?}",
+            gpu_res.backend_used,
+            gpu_res.backend_route,
+            gpu_res.backend_fallback_reason
+        );
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "asr ema cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "asr ema gpu");
+
+        let cpu_all = cpu_res
+            .all
+            .expect("cpu include_all result should contain full combo rows");
+        let gpu_all = gpu_res
+            .all
+            .expect("gpu include_all result should contain full combo rows");
+        assert_eq!(cpu_all.len(), gpu_all.len());
+
+        let mut cpu_map: std::collections::HashMap<(u16, u16), Metrics> =
+            std::collections::HashMap::with_capacity(cpu_all.len());
+        for (params, metrics) in cpu_all {
+            cpu_map.insert((params.fast_len, params.slow_len), metrics);
+        }
+
+        let tol = 1.0e-2;
+        for (params, gpu_metrics) in gpu_all {
+            let key = (params.fast_len, params.slow_len);
+            let cpu_metrics = cpu_map
+                .get(&key)
+                .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
+            assert!(
+                (gpu_metrics.pnl - cpu_metrics.pnl).abs() <= tol,
+                "pnl mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.pnl,
+                cpu_metrics.pnl
+            );
+            assert!(
+                (gpu_metrics.sharpe - cpu_metrics.sharpe).abs() <= tol,
+                "sharpe mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.sharpe,
+                cpu_metrics.sharpe
+            );
+            assert!(
+                (gpu_metrics.max_dd - cpu_metrics.max_dd).abs() <= tol,
+                "max_dd mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_dd,
+                cpu_metrics.max_dd
+            );
+            assert_eq!(
+                gpu_metrics.trades, cpu_metrics.trades,
+                "trades mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.trades,
+                cpu_metrics.trades
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn asr_optimization_gpu_kernel_falls_back_to_cpu_for_nondefault_zscore_devtype() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+        req.backend = Backend::GpuKernel { device_id: 0 };
+        let mut asr = AsrStrategyParams::default();
+        asr.z_devtype = 1;
+        req.asr = Some(asr);
+        req.fast_range = (5, 9, 1);
+        req.slow_range = (20, 30, 2);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("asr gpu fallback optimization run");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unsupported devtype 1"));
     }
 
     #[test]

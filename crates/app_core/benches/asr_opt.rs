@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use ta_app_core::composite_cpu::{MaczGateParams, OttGateParams};
 use ta_app_core::double_ma::HalfTrendRegimeFilter;
-use ta_app_core::{AsrStrategyParams, Backend, CompositeCpuRequest, CompositeSignalMode};
+use ta_app_core::{
+    AsrStrategyParams, Backend, BackendUsed, CompositeCpuRequest, CompositeSignalMode,
+};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 
@@ -39,10 +41,13 @@ fn make_asr_req(
     backend: Backend,
     fast_range: (u32, u32, u32),
     slow_range: (u32, u32, u32),
+    strategy: StrategyConfig,
+    asr: AsrStrategyParams,
+    data_id: &str,
 ) -> CompositeCpuRequest {
     CompositeCpuRequest {
         backend,
-        asr: Some(AsrStrategyParams::default()),
+        asr: Some(asr),
         vcc: None,
         vemr: None,
         rocb: None,
@@ -52,7 +57,7 @@ fn make_asr_req(
         carm: None,
         kvdf: None,
         cdmc: None,
-        data_id: "bench".to_string(),
+        data_id: data_id.to_string(),
         fast_range,
         slow_range,
         fast_ma_types: vec!["sma".to_string()],
@@ -60,7 +65,7 @@ fn make_asr_req(
         ma_source: "close".to_string(),
         fast_ma_params: None,
         slow_ma_params: None,
-        strategy: StrategyConfig::default(),
+        strategy,
         halftrend: HalfTrendRegimeFilter {
             amplitude: 2,
             channel_deviation: 2.0,
@@ -95,7 +100,14 @@ fn bench_asr_cpu(c: &mut Criterion) {
     group.sample_size(10);
 
     for (label, fast_range, slow_range) in cases.iter().copied() {
-        let req = make_asr_req(Backend::CpuOnly, fast_range, slow_range);
+        let req = make_asr_req(
+            Backend::CpuOnly,
+            fast_range,
+            slow_range,
+            StrategyConfig::default(),
+            AsrStrategyParams::default(),
+            "cpu/default",
+        );
         group.bench_function(label, |b| {
             b.iter(|| {
                 let req2 = req.clone();
@@ -111,7 +123,7 @@ fn bench_asr_cpu(c: &mut Criterion) {
 }
 
 #[cfg(feature = "cuda")]
-fn bench_asr_gpu_route(c: &mut Criterion) {
+fn bench_asr_gpu_kernel(c: &mut Criterion) {
     if !vector_ta::cuda::cuda_available() {
         return;
     }
@@ -127,29 +139,77 @@ fn bench_asr_gpu_route(c: &mut Criterion) {
         ("ultra/124695pairs", (5, 260, 1), (20, 620, 1)),
     ];
 
-    let mut group = c.benchmark_group("asr/gpu_route/200k");
-    group.measurement_time(Duration::from_secs(8));
-    group.sample_size(10);
+    let mut trade_next_bar = StrategyConfig::default();
+    trade_next_bar.trade_on_next_bar = true;
+    let mut ema_zscore = AsrStrategyParams::default();
+    ema_zscore.z_ma_type = "ema".to_string();
 
-    for (label, fast_range, slow_range) in cases.iter().copied() {
-        let req = make_asr_req(Backend::Auto { device_id: 0 }, fast_range, slow_range);
-        group.bench_function(label, |b| {
-            b.iter(|| {
-                let req2 = req.clone();
-                let _ = ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("asr gpu-route run");
-            })
-        });
+    let surfaces: &[(&str, &str, StrategyConfig, AsrStrategyParams)] = &[
+        (
+            "asr/gpu_kernel/200k",
+            "default",
+            StrategyConfig::default(),
+            AsrStrategyParams::default(),
+        ),
+        (
+            "asr/gpu_kernel_trade_next_bar/200k",
+            "trade_next_bar",
+            trade_next_bar,
+            AsrStrategyParams::default(),
+        ),
+        (
+            "asr/gpu_kernel_ema_zscore/200k",
+            "ema_zscore",
+            StrategyConfig::default(),
+            ema_zscore,
+        ),
+    ];
+
+    for (group_name, surface_label, strategy, asr) in surfaces.iter().cloned() {
+        let mut group = c.benchmark_group(group_name);
+        group.measurement_time(Duration::from_secs(8));
+        group.sample_size(10);
+
+        for (label, fast_range, slow_range) in cases.iter().copied() {
+            let req = make_asr_req(
+                Backend::GpuKernel { device_id: 0 },
+                fast_range,
+                slow_range,
+                strategy.clone(),
+                asr.clone(),
+                surface_label,
+            );
+            group.bench_function(label, |b| {
+                b.iter(|| {
+                    let req2 = req.clone();
+                    let res = ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
+                        req2, &candles, &cancel, None,
+                    )
+                    .expect("asr gpu-kernel run");
+                    assert!(
+                        matches!(res.backend_used, BackendUsed::Gpu),
+                        "expected GPU backend for ASR bench, got backend={:?}, route={:?}, fallback={:?}",
+                        res.backend_used,
+                        res.backend_route,
+                        res.backend_fallback_reason
+                    );
+                    assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+                    assert!(
+                        res.backend_fallback_reason.is_none(),
+                        "expected no fallback reason for ASR bench, got {:?}",
+                        res.backend_fallback_reason
+                    );
+                })
+            });
+        }
+
+        group.finish();
     }
-
-    group.finish();
 }
 
 criterion_group!(asr_benches, bench_asr_cpu);
 #[cfg(feature = "cuda")]
-criterion_group!(asr_benches_cuda, bench_asr_gpu_route);
+criterion_group!(asr_benches_cuda, bench_asr_gpu_kernel);
 
 #[cfg(feature = "cuda")]
 criterion_main!(asr_benches, asr_benches_cuda);
