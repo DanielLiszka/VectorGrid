@@ -365,6 +365,90 @@ fn validate_inputs_device_rows(
     Ok(())
 }
 
+#[inline]
+fn should_compact_rows(used_rows: usize, total_rows: usize) -> bool {
+    total_rows > 0 && used_rows < total_rows && (used_rows as f64 / total_rows as f64) <= 0.85
+}
+
+fn collect_used_rows_sorted(
+    combo_rows: &[i32],
+    total_rows: usize,
+    used_rows: &mut Vec<usize>,
+) -> Result<(), String> {
+    used_rows.clear();
+    used_rows.reserve(combo_rows.len());
+    for &row in combo_rows {
+        if row < 0 || row as usize >= total_rows {
+            return Err(format!(
+                "ASR GPU combo row index out of bounds: {row} not in [0, {total_rows})"
+            ));
+        }
+        used_rows.push(row as usize);
+    }
+    used_rows.sort_unstable();
+    used_rows.dedup();
+    Ok(())
+}
+
+fn remap_compacted_combo_rows(
+    combo_rows: &[i32],
+    total_rows: usize,
+    used_rows: &[usize],
+    inverse_rows: &mut Vec<i32>,
+    remapped_combo_rows: &mut Vec<i32>,
+) -> Result<(), String> {
+    if inverse_rows.len() < total_rows {
+        inverse_rows.resize(total_rows, -1);
+    } else {
+        inverse_rows[..total_rows].fill(-1);
+    }
+
+    for (new_idx, &old_idx) in used_rows.iter().enumerate() {
+        inverse_rows[old_idx] = checked_i32("ASR GPU compact row index", new_idx)?;
+    }
+
+    remapped_combo_rows.clear();
+    remapped_combo_rows.reserve(combo_rows.len());
+    for &row in combo_rows {
+        remapped_combo_rows.push(inverse_rows[row as usize]);
+    }
+    Ok(())
+}
+
+fn gather_selected_row_ptrs(all_rows: &[u64], selected_rows: &[usize], out: &mut Vec<u64>) {
+    out.clear();
+    out.reserve(selected_rows.len());
+    for &row in selected_rows {
+        out.push(all_rows[row]);
+    }
+}
+
+fn prepare_compacted_row_plan<'a>(
+    combo_rows: &'a [i32],
+    total_rows: usize,
+    used_rows: &'a mut Vec<usize>,
+    inverse_rows: &mut Vec<i32>,
+    remapped_combo_rows: &'a mut Vec<i32>,
+) -> Result<(usize, Option<&'a [usize]>, &'a [i32]), String> {
+    collect_used_rows_sorted(combo_rows, total_rows, used_rows)?;
+    if should_compact_rows(used_rows.len(), total_rows) {
+        remap_compacted_combo_rows(
+            combo_rows,
+            total_rows,
+            used_rows.as_slice(),
+            inverse_rows,
+            remapped_combo_rows,
+        )?;
+        Ok((
+            used_rows.len(),
+            Some(used_rows.as_slice()),
+            remapped_combo_rows.as_slice(),
+        ))
+    } else {
+        Ok((total_rows, None, combo_rows))
+    }
+}
+
 fn launch_compute_log_returns_f32(
     rt: &mut AsrCudaRuntime,
     close_ptr: u64,
@@ -784,14 +868,6 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
     let out_len = combo_count
         .checked_mul(out_stride)
         .ok_or_else(|| "ASR GPU output length overflow".to_string())?;
-    let fast_mat_len = signals
-        .fast_rows
-        .checked_mul(signals.cols)
-        .ok_or_else(|| "ASR GPU fast matrix overflow".to_string())?;
-    let slow_mat_len = signals
-        .slow_rows
-        .checked_mul(signals.cols)
-        .ok_or_else(|| "ASR GPU slow matrix overflow".to_string())?;
 
     ASR_GPU_RUNTIME.with(|cell| -> Result<Vec<Metrics>, String> {
         let mut map = cell.borrow_mut();
@@ -809,29 +885,61 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
             (resident.close_ptr, resident.d_lr.as_device_ptr().as_raw())
         };
 
+        let mut fast_used_rows = Vec::new();
+        let mut fast_inverse_rows = Vec::new();
+        let mut fast_remapped_combo_rows = Vec::new();
+        let (fast_rows_used, fast_selected_rows, fast_combo_rows_upload) =
+            prepare_compacted_row_plan(
+                combos.fast_row_index,
+                signals.fast_rows,
+                &mut fast_used_rows,
+                &mut fast_inverse_rows,
+                &mut fast_remapped_combo_rows,
+            )?;
+        let fast_mat_len = fast_rows_used
+            .checked_mul(signals.cols)
+            .ok_or_else(|| "ASR GPU compact fast matrix overflow".to_string())?;
+
+        let mut slow_used_rows = Vec::new();
+        let mut slow_inverse_rows = Vec::new();
+        let mut slow_remapped_combo_rows = Vec::new();
+        let (slow_rows_used, slow_selected_rows, slow_combo_rows_upload) =
+            prepare_compacted_row_plan(
+                combos.slow_row_index,
+                signals.slow_rows,
+                &mut slow_used_rows,
+                &mut slow_inverse_rows,
+                &mut slow_remapped_combo_rows,
+            )?;
+        let slow_mat_len = slow_rows_used
+            .checked_mul(signals.cols)
+            .ok_or_else(|| "ASR GPU compact slow matrix overflow".to_string())?;
+
+        let mut selected_row_ptrs: Vec<u64> = Vec::new();
+
         AsrKernelScratch::ensure_len_u64(
             &mut rt.scratch.d_fast_sq_rows,
-            signals.fast_rows,
+            fast_rows_used,
             &rt.stream,
         )?;
         AsrKernelScratch::ensure_len_u64(
             &mut rt.scratch.d_fast_mom_rows,
-            signals.fast_rows,
+            fast_rows_used,
             &rt.stream,
         )?;
         AsrKernelScratch::ensure_len_u64(
             &mut rt.scratch.d_slow_ang_rows,
-            signals.slow_rows,
+            slow_rows_used,
             &rt.stream,
         )?;
         AsrKernelScratch::ensure_len_u64(
             &mut rt.scratch.d_slow_er_rows,
-            signals.slow_rows,
+            slow_rows_used,
             &rt.stream,
         )?;
         AsrKernelScratch::ensure_len_u64(
             &mut rt.scratch.d_slow_z_rows,
-            signals.slow_rows,
+            slow_rows_used,
             &rt.stream,
         )?;
         AsrKernelScratch::ensure_len_f32(
@@ -868,35 +976,80 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
         let fast_sq_rows_sig = ensure_uploaded_slice(
             &mut rt.scratch.d_fast_sq_rows,
             &mut rt.scratch.fast_sq_rows_sig,
-            signals.fast_squeeze_rows,
+            if let Some(selected_rows) = fast_selected_rows {
+                gather_selected_row_ptrs(
+                    signals.fast_squeeze_rows,
+                    selected_rows,
+                    &mut selected_row_ptrs,
+                );
+                selected_row_ptrs.as_slice()
+            } else {
+                signals.fast_squeeze_rows
+            },
             &rt.stream,
             "fast squeeze rows",
         )?;
         let fast_mom_rows_sig = ensure_uploaded_slice(
             &mut rt.scratch.d_fast_mom_rows,
             &mut rt.scratch.fast_mom_rows_sig,
-            signals.fast_momentum_rows,
+            if let Some(selected_rows) = fast_selected_rows {
+                gather_selected_row_ptrs(
+                    signals.fast_momentum_rows,
+                    selected_rows,
+                    &mut selected_row_ptrs,
+                );
+                selected_row_ptrs.as_slice()
+            } else {
+                signals.fast_momentum_rows
+            },
             &rt.stream,
             "fast momentum rows",
         )?;
         let slow_ang_rows_sig = ensure_uploaded_slice(
             &mut rt.scratch.d_slow_ang_rows,
             &mut rt.scratch.slow_ang_rows_sig,
-            signals.slow_angle_rows,
+            if let Some(selected_rows) = slow_selected_rows {
+                gather_selected_row_ptrs(
+                    signals.slow_angle_rows,
+                    selected_rows,
+                    &mut selected_row_ptrs,
+                );
+                selected_row_ptrs.as_slice()
+            } else {
+                signals.slow_angle_rows
+            },
             &rt.stream,
             "slow angle rows",
         )?;
         let slow_er_rows_sig = ensure_uploaded_slice(
             &mut rt.scratch.d_slow_er_rows,
             &mut rt.scratch.slow_er_rows_sig,
-            signals.slow_er_rows,
+            if let Some(selected_rows) = slow_selected_rows {
+                gather_selected_row_ptrs(
+                    signals.slow_er_rows,
+                    selected_rows,
+                    &mut selected_row_ptrs,
+                );
+                selected_row_ptrs.as_slice()
+            } else {
+                signals.slow_er_rows
+            },
             &rt.stream,
             "slow ER rows",
         )?;
         let slow_z_rows_sig = ensure_uploaded_slice(
             &mut rt.scratch.d_slow_z_rows,
             &mut rt.scratch.slow_z_rows_sig,
-            signals.slow_z_rows,
+            if let Some(selected_rows) = slow_selected_rows {
+                gather_selected_row_ptrs(
+                    signals.slow_z_rows,
+                    selected_rows,
+                    &mut selected_row_ptrs,
+                );
+                selected_row_ptrs.as_slice()
+            } else {
+                signals.slow_z_rows
+            },
             &rt.stream,
             "slow z-score rows",
         )?;
@@ -917,13 +1070,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 .ok_or_else(|| "ASR fast squeeze packed scratch missing".to_string())?
                 .as_device_ptr()
                 .as_raw();
-            launch_pack_rows_u64_ptr_f32(
-                rt,
-                row_ptrs_ptr,
-                signals.fast_rows,
-                signals.cols,
-                out_ptr,
-            )?;
+            launch_pack_rows_u64_ptr_f32(rt, row_ptrs_ptr, fast_rows_used, signals.cols, out_ptr)?;
             rt.scratch.fast_sq_packed_sig = Some(fast_sq_pack_sig);
         }
 
@@ -943,13 +1090,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 .ok_or_else(|| "ASR fast momentum packed scratch missing".to_string())?
                 .as_device_ptr()
                 .as_raw();
-            launch_pack_rows_u64_ptr_f32(
-                rt,
-                row_ptrs_ptr,
-                signals.fast_rows,
-                signals.cols,
-                out_ptr,
-            )?;
+            launch_pack_rows_u64_ptr_f32(rt, row_ptrs_ptr, fast_rows_used, signals.cols, out_ptr)?;
             rt.scratch.fast_mom_packed_sig = Some(fast_mom_pack_sig);
         }
 
@@ -969,13 +1110,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 .ok_or_else(|| "ASR slow angle packed scratch missing".to_string())?
                 .as_device_ptr()
                 .as_raw();
-            launch_pack_rows_u64_ptr_f32(
-                rt,
-                row_ptrs_ptr,
-                signals.slow_rows,
-                signals.cols,
-                out_ptr,
-            )?;
+            launch_pack_rows_u64_ptr_f32(rt, row_ptrs_ptr, slow_rows_used, signals.cols, out_ptr)?;
             rt.scratch.slow_ang_packed_sig = Some(slow_ang_pack_sig);
         }
 
@@ -995,13 +1130,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 .ok_or_else(|| "ASR slow ER packed scratch missing".to_string())?
                 .as_device_ptr()
                 .as_raw();
-            launch_pack_rows_u64_ptr_f32(
-                rt,
-                row_ptrs_ptr,
-                signals.slow_rows,
-                signals.cols,
-                out_ptr,
-            )?;
+            launch_pack_rows_u64_ptr_f32(rt, row_ptrs_ptr, slow_rows_used, signals.cols, out_ptr)?;
             rt.scratch.slow_er_packed_sig = Some(slow_er_pack_sig);
         }
 
@@ -1021,27 +1150,21 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 .ok_or_else(|| "ASR slow z-score packed scratch missing".to_string())?
                 .as_device_ptr()
                 .as_raw();
-            launch_pack_rows_u64_ptr_f32(
-                rt,
-                row_ptrs_ptr,
-                signals.slow_rows,
-                signals.cols,
-                out_ptr,
-            )?;
+            launch_pack_rows_u64_ptr_f32(rt, row_ptrs_ptr, slow_rows_used, signals.cols, out_ptr)?;
             rt.scratch.slow_z_packed_sig = Some(slow_z_pack_sig);
         }
 
         ensure_uploaded_slice(
             &mut rt.scratch.d_combo_fast,
             &mut rt.scratch.combo_fast_sig,
-            combos.fast_row_index,
+            fast_combo_rows_upload,
             &rt.stream,
             "combo fast",
         )?;
         ensure_uploaded_slice(
             &mut rt.scratch.d_combo_slow,
             &mut rt.scratch.combo_slow_sig,
-            combos.slow_row_index,
+            slow_combo_rows_upload,
             &rt.stream,
             "combo slow",
         )?;
@@ -1311,5 +1434,47 @@ mod tests {
     fn checked_i32_rejects_overflow() {
         let err = checked_i32("ASR GPU test value", usize::MAX).expect_err("overflow");
         assert!(err.contains("exceeds i32 range"));
+    }
+
+    #[test]
+    fn prepare_compacted_row_plan_remaps_sparse_rows() {
+        let mut used_rows = Vec::new();
+        let mut inverse_rows = Vec::new();
+        let mut remapped = Vec::new();
+        let combos = [7, 2, 7, 4];
+
+        let (row_count, selected_rows, combo_rows) = prepare_compacted_row_plan(
+            &combos,
+            10,
+            &mut used_rows,
+            &mut inverse_rows,
+            &mut remapped,
+        )
+        .expect("compact sparse rows");
+
+        assert_eq!(row_count, 3);
+        assert_eq!(selected_rows.expect("selected rows"), &[2, 4, 7]);
+        assert_eq!(combo_rows, &[2, 0, 2, 1]);
+    }
+
+    #[test]
+    fn prepare_compacted_row_plan_skips_near_full_coverage() {
+        let mut used_rows = Vec::new();
+        let mut inverse_rows = Vec::new();
+        let mut remapped = Vec::new();
+        let combos = [0, 1, 2, 3, 4, 5, 6];
+
+        let (row_count, selected_rows, combo_rows) = prepare_compacted_row_plan(
+            &combos,
+            8,
+            &mut used_rows,
+            &mut inverse_rows,
+            &mut remapped,
+        )
+        .expect("skip dense compaction");
+
+        assert_eq!(row_count, 8);
+        assert!(selected_rows.is_none());
+        assert_eq!(combo_rows, combos);
     }
 }

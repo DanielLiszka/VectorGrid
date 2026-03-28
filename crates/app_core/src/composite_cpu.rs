@@ -13714,6 +13714,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_optimization_gpu_kernel_smoke_runs_when_cuda_available() {
+        let _guard = lock_env();
         if !vector_ta::cuda::cuda_available() {
             return;
         }
@@ -13743,6 +13744,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_optimization_gpu_kernel_matches_cpu_small_grid_with_ema_zscore() {
+        let _guard = lock_env();
         if !vector_ta::cuda::cuda_available() {
             return;
         }
@@ -13843,6 +13845,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_optimization_gpu_kernel_falls_back_to_cpu_for_nondefault_zscore_devtype() {
+        let _guard = lock_env();
         if !vector_ta::cuda::cuda_available() {
             return;
         }

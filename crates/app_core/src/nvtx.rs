@@ -283,8 +283,7 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
         let Ok(lib) = Library::new(candidate) else {
             continue;
         };
-        let Some(range_push_a) = load_symbol::<NvtxRangePushAFn>(&lib, b"nvtxRangePushA\0")
-        else {
+        let Some(range_push_a) = load_symbol::<NvtxRangePushAFn>(&lib, b"nvtxRangePushA\0") else {
             continue;
         };
         let Some(range_push_ex) = load_symbol::<NvtxRangePushExFn>(&lib, b"nvtxRangePushEx\0")

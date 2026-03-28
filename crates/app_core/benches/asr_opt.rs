@@ -141,6 +141,10 @@ fn bench_asr_gpu_kernel(c: &mut Criterion) {
 
     let mut trade_next_bar = StrategyConfig::default();
     trade_next_bar.trade_on_next_bar = true;
+    let mut long_only = StrategyConfig::default();
+    long_only.long_only = true;
+    let mut no_flip = StrategyConfig::default();
+    no_flip.allow_flip = false;
     let mut ema_zscore = AsrStrategyParams::default();
     ema_zscore.z_ma_type = "ema".to_string();
 
@@ -149,6 +153,18 @@ fn bench_asr_gpu_kernel(c: &mut Criterion) {
             "asr/gpu_kernel/200k",
             "default",
             StrategyConfig::default(),
+            AsrStrategyParams::default(),
+        ),
+        (
+            "asr/gpu_kernel_long_only/200k",
+            "long_only",
+            long_only,
+            AsrStrategyParams::default(),
+        ),
+        (
+            "asr/gpu_kernel_no_flip/200k",
+            "no_flip",
+            no_flip,
             AsrStrategyParams::default(),
         ),
         (

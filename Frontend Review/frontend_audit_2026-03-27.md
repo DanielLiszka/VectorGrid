@@ -564,3 +564,29 @@ Use this as the implementation checklist for a full frontend remediation pass.
 7. chart/status accessibility
 8. panel architecture/perf cleanup
 9. design system/Figma formalization
+
+## Optional Follow-up Package / UX Backlog
+
+These items are intentionally outside the completed remediation checklist above. They are candidate upgrades for the next frontend phase.
+
+### Tooltip / Guided Help System
+
+- [ ] Introduce a restrained depth model only where it improves comprehension; do not force additional raised surfaces or faux-3D styling where the workflow does not benefit.
+- [ ] Add a delayed contextual tooltip/help system for dense controls and advanced parameters.
+- [ ] Default delayed help to a long-hover threshold in the `3` to `5` second range so routine hovering does not create noise.
+- [ ] Distinguish short explanatory tooltips from longer "how this works" tutorial callouts.
+- [ ] Add a global user-facing control to disable all non-essential tooltips/tutorial help at runtime.
+- [ ] Store the global tooltip/tutorial preference in frontend settings so it persists across sessions.
+- [ ] Ensure any global tooltip-disable path can be honored centrally rather than per-component.
+- [ ] Prefer `reka-ui` tooltip/hover-card primitives for accessibility and consistent delay behavior instead of inventing a second overlay system.
+
+### Package Adoption Candidates
+
+- [ ] Expand `reka-ui` usage across tabs, tooltips, comboboxes, roving-focus toolbars, and other headless accessibility primitives already aligned with the current custom shell.
+- [ ] Evaluate `@tanstack/vue-table` for Top Results, Validation, Meta, and Run Library surfaces that need richer sorting, filtering, column control, and selection state.
+- [ ] Evaluate `ag-grid-vue3` only as an alternative to `@tanstack/vue-table` if the product needs a full spreadsheet-grade datagrid rather than a headless table engine.
+- [ ] Evaluate `vee-validate` with `@vee-validate/zod` for Strategy, Advanced, Data, and Validation forms to improve schema-driven validation and field-state UX.
+- [ ] Evaluate `notivue` as the default async notification system for run lifecycle, save/export status, validation completion, and error reporting.
+- [ ] Keep `vue-sonner` as the lighter fallback if `notivue` feels too feature-heavy for the app's notification needs.
+- [ ] Evaluate `splitpanes` for resizable desktop controls/results layouts where users benefit from trading table width against chart or form width.
+- [ ] Evaluate `vue-echarts` plus `echarts` only as a complementary stack for non-price analytical charts such as heatmaps, Pareto/frontier views, and richer meta-analysis visuals while keeping `lightweight-charts` for its current price/timeline role.

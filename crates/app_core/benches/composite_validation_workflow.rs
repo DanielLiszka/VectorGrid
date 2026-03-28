@@ -86,7 +86,7 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
-    make_asr_candidates_with_zscore_mode(n, "sma", 0)
+    make_asr_candidates_with_config(n, "sma", 0, StrategyConfig::default())
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -94,6 +94,16 @@ fn make_asr_candidates_with_zscore_mode(
     n: usize,
     z_ma_type: &str,
     z_devtype: u8,
+) -> Vec<CompositeParams> {
+    make_asr_candidates_with_config(n, z_ma_type, z_devtype, StrategyConfig::default())
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn make_asr_candidates_with_config(
+    n: usize,
+    z_ma_type: &str,
+    z_devtype: u8,
+    strategy: StrategyConfig,
 ) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -126,7 +136,7 @@ fn make_asr_candidates_with_zscore_mode(
             macz: ta_app_core::composite_cpu::MaczGateParams::default(),
             ott: ta_app_core::composite_cpu::OttGateParams::default(),
             signal_mode: ta_app_core::CompositeSignalMode::HardGate,
-            strategy: StrategyConfig::default(),
+            strategy: strategy.clone(),
         });
     }
     out
@@ -674,6 +684,27 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
 
     bench_cpu_profile("base_composite", 50_000, make_candidates(8));
     bench_cpu_profile("asr", 50_000, make_asr_candidates(8));
+    let mut asr_long_only = StrategyConfig::default();
+    asr_long_only.long_only = true;
+    bench_cpu_profile(
+        "asr_long_only",
+        50_000,
+        make_asr_candidates_with_config(8, "sma", 0, asr_long_only),
+    );
+    let mut asr_no_flip = StrategyConfig::default();
+    asr_no_flip.allow_flip = false;
+    bench_cpu_profile(
+        "asr_no_flip",
+        50_000,
+        make_asr_candidates_with_config(8, "sma", 0, asr_no_flip),
+    );
+    let mut asr_trade_next_bar = StrategyConfig::default();
+    asr_trade_next_bar.trade_on_next_bar = true;
+    bench_cpu_profile(
+        "asr_trade_next_bar",
+        50_000,
+        make_asr_candidates_with_config(8, "sma", 0, asr_trade_next_bar),
+    );
     bench_cpu_profile(
         "asr_ema",
         50_000,
@@ -913,6 +944,27 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
 
     bench_profile("base_composite", 50_000, make_candidates(8));
     bench_profile("asr", 50_000, make_asr_candidates(8));
+    let mut asr_long_only = StrategyConfig::default();
+    asr_long_only.long_only = true;
+    bench_profile(
+        "asr_long_only",
+        50_000,
+        make_asr_candidates_with_config(8, "sma", 0, asr_long_only),
+    );
+    let mut asr_no_flip = StrategyConfig::default();
+    asr_no_flip.allow_flip = false;
+    bench_profile(
+        "asr_no_flip",
+        50_000,
+        make_asr_candidates_with_config(8, "sma", 0, asr_no_flip),
+    );
+    let mut asr_trade_next_bar = StrategyConfig::default();
+    asr_trade_next_bar.trade_on_next_bar = true;
+    bench_profile(
+        "asr_trade_next_bar",
+        50_000,
+        make_asr_candidates_with_config(8, "sma", 0, asr_trade_next_bar),
+    );
     bench_profile(
         "asr_ema",
         50_000,

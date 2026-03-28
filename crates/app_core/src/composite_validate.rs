@@ -13876,6 +13876,30 @@ mod tests {
     use ta_optimizer::mo::{ParamDef, ParamDomain, RandomMoConfig, SearchSpace};
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
 
+    struct TestEnvGuard {
+        _env: std::sync::MutexGuard<'static, ()>,
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+        _gpu: crate::gpu_backtest_kernel::GpuTestLockGuard,
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn lock_env() -> TestEnvGuard {
+        let env = crate::test_support::lock_test_env();
+        let gpu = crate::gpu_backtest_kernel::lock_gpu_test();
+        crate::gpu_backtest_kernel::reset_test_runtime();
+        crate::dynamic_indicator_adapter::reset_test_cuda_input_cache();
+        TestEnvGuard {
+            _env: env,
+            _gpu: gpu,
+        }
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    fn lock_env() -> TestEnvGuard {
+        let env = crate::test_support::lock_test_env();
+        TestEnvGuard { _env: env }
+    }
+
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);
@@ -17683,6 +17707,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_falls_back_to_cpu_for_nondefault_zscore_devtype() {
+        let _guard = lock_env();
         if !vector_ta::cuda::cuda_available() {
             return;
         }
@@ -17732,6 +17757,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_matches_cpu_metrics() {
+        let _guard = lock_env();
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 
@@ -17881,6 +17907,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_matches_cpu_metrics_with_ema_zscore() {
+        let _guard = lock_env();
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 
@@ -17966,6 +17993,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_walk_forward_matches_cpu_metrics() {
+        let _guard = lock_env();
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 
@@ -18050,6 +18078,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_cscv_matches_cpu() {
+        let _guard = lock_env();
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 
@@ -18179,6 +18208,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_spa_matches_cpu() {
+        let _guard = lock_env();
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 
@@ -18315,6 +18345,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_reopt_walk_forward_matches_cpu() {
+        let _guard = lock_env();
         let candles = make_trending_candles(8192);
         let cancel = AtomicBool::new(false);
 
@@ -18431,6 +18462,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_trade_bootstrap_matches_cpu() {
+        let _guard = lock_env();
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 
@@ -21786,6 +21818,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_advanced_routes_smoke() {
+        let _guard = lock_env();
         let candles = make_noisy_trending_candles(8192);
         let cancel = AtomicBool::new(false);
         let req = CompositeValidationRequest {
@@ -21848,6 +21881,7 @@ mod tests {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn asr_validation_gpu_kernel_advanced_routes_smoke_with_ema_zscore() {
+        let _guard = lock_env();
         let candles = make_noisy_trending_candles(8192);
         let cancel = AtomicBool::new(false);
         let candidates = {
