@@ -3,12 +3,15 @@ import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { useStorage } from "@vueuse/core";
 import { useShellMount } from "../composables/useShellMount";
+import { useTaskLifecycleSummary } from "../composables/useTaskLifecycleSummary";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useCommandActionStore } from "../stores/commandActionStore";
 import { useTaskStore } from "../stores/taskStore";
 import { useWorkflowStore } from "../stores/workflowStore";
-import { formatUiPercentFromFraction } from "../utils/uiFormat";
+import {
+  formatOverallProgressLabel,
+} from "../utils/statusPresentation";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
 const analysisStore = useAnalysisStore();
@@ -29,15 +32,14 @@ const {
 } = storeToRefs(optimizeStore);
 const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } =
   storeToRefs(analysisStore);
-const {
-  activeById,
-  activeOrder,
-  centerStatus,
-  history,
-  overallProgress,
-  toasts,
-} = storeToRefs(taskStore);
+const { overallProgress } = storeToRefs(taskStore);
 const { resultsTab, workspace } = storeToRefs(workflowStore);
+const {
+  activeTaskCount,
+  centerStatusLabel,
+  overallProgressLabel: sharedOverallProgressLabel,
+  taskHeadline,
+} = useTaskLifecycleSummary();
 
 const { mountReady } = useShellMount("#runFooterVueShellMount");
 const footerExpanded = useStorage<boolean>("VTA_RUN_FOOTER_EXPANDED_V1", false);
@@ -66,13 +68,7 @@ const footerSummary = computed(() => {
     "Ready to run once data and strategy inputs are configured."
   );
 });
-const activeTasks = computed(() =>
-  activeOrder.value
-    .map((id) => activeById.value[id])
-    .filter((task): task is NonNullable<typeof task> => !!task)
-    .slice(0, 2),
-);
-const runningCount = computed(() => activeTasks.value.length);
+const runningCount = computed(() => activeTaskCount.value);
 const analysisSummary = computed(() => {
   const title = String(bestTitle.value || "").trim();
   const meta = String(bestMeta.value || "").trim();
@@ -80,32 +76,11 @@ const analysisSummary = computed(() => {
     return `${title}${meta && meta !== "—" && meta !== "-" ? ` · ${meta}` : ""}`;
   return "No scored run yet.";
 });
-const taskSummary = computed(() => {
-  if (activeTasks.value.length > 0) {
-    const task = activeTasks.value[0];
-    if (!task) return "Task running.";
-    return task.message || task.phase || task.label || "Task running.";
-  }
-  const toast = toasts.value[0];
-  if (toast) return String(toast.message || "").trim() || "Recent task update.";
-  const latest = history.value[0];
-  if (latest) return `${latest.label} · ${latest.status}`;
-  return "No active commands.";
-});
+const taskSummary = computed(() => taskHeadline.value);
 const overallProgressLabel = computed(() => {
-  const overall = overallProgress.value;
-  if (!overall) return "—";
-  return `${formatUiPercentFromFraction(overall.pct)} · ${overall.label}`;
-});
-const taskStatusLabel = computed(() => {
-  const status = String(centerStatus.value || "idle").trim();
-  if (status === "running") return "Running";
-  if (status === "queued") return "Queued";
-  if (status === "cancelling") return "Cancelling";
-  if (status === "success") return "Done";
-  if (status === "failed") return "Failed";
-  if (status === "cancelled") return "Cancelled";
-  return "Idle";
+  const shared = String(sharedOverallProgressLabel.value || "").trim();
+  if (shared && shared !== "No active progress") return shared;
+  return formatOverallProgressLabel(overallProgress.value);
 });
 const primaryActionLabel = computed(() =>
   String(strategyKind.value || "").trim() === "MlSignal"
@@ -200,7 +175,7 @@ function toggleFooterDetails(): void {
         <section class="summaryCard">
           <div class="summaryLabel">Tasks</div>
           <div class="metaLine mono">
-            {{ taskStatusLabel }} · {{ runningCount }} active
+            {{ centerStatusLabel }} · {{ runningCount }} active
           </div>
           <div class="status mono">{{ overallProgressLabel }}</div>
           <div class="status mono">{{ taskSummary }}</div>

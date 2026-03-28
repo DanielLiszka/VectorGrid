@@ -10,6 +10,53 @@ Purpose:
 - record the keyboard-only regression evidence after the latest shell/palette refinements
 - classify desktop-native productization items without expanding the current implementation pass beyond frontend scope
 
+## Next Implementation Checklist
+
+This is the active open checklist for the next frontend wave. Unlike the completed remediation checklist in
+`frontend_audit_2026-03-27.md`, the items below are intentionally still open.
+
+### Phase 1: Lifecycle / Status Consistency
+
+- [ ] Audit remaining task-status, runtime-status, and alert-summary presentation across the major workflow panels.
+- [ ] Route any remaining duplicated task/runtime wording through the shared status-presentation helpers.
+- [ ] Standardize severity, tone, and status-detail rendering across:
+  - [ ] task center
+  - [ ] runtime banner
+  - [ ] run footer
+  - [ ] settings diagnostics
+  - [ ] any remaining workflow-local status strips
+- [ ] Define and document the user-facing lifecycle taxonomy for long-running operations so the same states are described consistently across the app.
+- [ ] Add focused regression coverage for any surfaces moved onto the shared lifecycle/status model.
+
+### Phase 2: Data-Dense Surface Consistency
+
+- [ ] Audit remaining manual table/list surfaces and classify them as:
+  - [ ] already acceptable as list-style UI
+  - [ ] candidates for the shared headless matrix-table path
+  - [ ] intentionally bespoke
+- [ ] Finish migrating any high-ROI leftover matrix-style tables onto the shared headless matrix-table pattern.
+- [ ] Standardize selection, sorting, and summary semantics across dense results/review surfaces where behavior still drifts.
+- [ ] Add targeted regression coverage for any migrated table/list surface.
+
+### Phase 3: Form-Architecture Evaluation
+
+- [ ] Inventory the densest configuration forms across Strategy, Advanced, Data, and Validation.
+- [ ] Identify the best pilot surface for a schema-driven form migration rather than attempting a broad rewrite.
+- [ ] Evaluate `vee-validate` with `@vee-validate/zod` against that pilot surface.
+- [ ] Record whether a form-state migration is justified now, later, or not at all.
+
+### Phase 4: Diagnostics / Real-Gap Follow-Through
+
+- [ ] Re-evaluate the current Settings diagnostics surface after the lifecycle/status pass and identify missing operator-facing context.
+- [ ] Decide whether the current diagnostics view should remain Settings-scoped or graduate into a more explicit diagnostics surface later.
+- [ ] Keep the current in-app diagnostics path frontend-only unless scope is explicitly expanded to Tauri/plugin work.
+
+### Phase 5: Deferred Desktop Productization Track
+
+- [ ] Reassess `@tauri-apps/plugin-window-state` once Tauri-scope work is allowed.
+- [ ] Reassess desktop-native notifications once background-operator workflows are clearly defined.
+- [ ] Reassess updater UX only after signing/release workflow exists.
+
 ## Keyboard-Only Regression Check
 
 Method:
@@ -65,13 +112,17 @@ Current conclusion:
 
 #### `@tanstack/vue-table`
 
-Decision: defer to the next real-gap phase; treat it as the highest-priority table migration candidate.
+Decision: partially adopted already; keep it as the shared matrix-table foundation instead of treating it as a future wholesale migration.
 
 Why:
 
 - the repo already uses [@tanstack/vue-virtual](C:\Rust Projects\ta_desktop_demo\web\package.json)
-- Top Results, Validation, Meta, and History still carry increasingly bespoke table logic
-- the migration is worthwhile only when the team is ready to standardize sorting, filtering, column state, and selection architecture across those panels
+- the repo already has a shared TanStack-backed headless matrix-table composable in [useHeadlessMatrixTable.ts](C:\Rust Projects\ta_desktop_demo\web\src\composables\useHeadlessMatrixTable.ts)
+- the main matrix views already consume that pattern:
+  - [TopWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TopWorkspacePanel.vue)
+  - [ValidationWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\ValidationWorkspacePanel.vue)
+  - [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue)
+- the immediate remaining value is to finish consistency on any still-manual data tables or list-heavy inspection surfaces, not to replace whole panels
 
 Refs:
 
@@ -79,11 +130,13 @@ Refs:
 - [ValidationWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\ValidationWorkspacePanel.vue)
 - [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue)
 - [HistoryWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\HistoryWorkspacePanel.vue)
+- [useHeadlessMatrixTable.ts](C:\Rust Projects\ta_desktop_demo\web\src\composables\useHeadlessMatrixTable.ts)
 - [useVirtualTableRows.ts](C:\Rust Projects\ta_desktop_demo\web\src\composables\useVirtualTableRows.ts)
 
 Policy:
 
-- if adopted later, keep `@tanstack/vue-virtual` and integrate the two instead of replacing virtualization
+- keep `@tanstack/vue-virtual` and the headless matrix-table pattern together
+- treat [web/package.json](C:\Rust Projects\ta_desktop_demo\web\package.json) as the explicit source of truth for the dependency instead of relying on transitive resolution
 
 #### `vee-validate` with `@vee-validate/zod`
 
@@ -250,23 +303,28 @@ Refs:
 - [src-tauri/Cargo.toml](C:\Rust Projects\ta_desktop_demo\src-tauri\Cargo.toml)
 - [src-tauri/tauri.conf.json](C:\Rust Projects\ta_desktop_demo\src-tauri\tauri.conf.json)
 
-### Real Gap For The Next Phase
+### Promoted Real Gap
 
 #### Diagnostics / logging surface
 
-Decision: this is the desktop-track item most worth promoting into the next frontend gap phase.
+Decision: promoted and implemented as the first real-gap pass inside the current frontend phase.
 
 Why:
 
-- the repo already has partial diagnostics surfaces, but not one coherent in-product place to inspect runtime issues
-- this can improve UX before any deeper native log plugin work lands
+- the repo already had partial diagnostics surfaces, but not one coherent in-product place to inspect runtime issues
+- this improved UX without waiting for deeper native log plugin work
 
-Existing fragments:
+Current refs:
 
 - [AppRuntimeBanner.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\AppRuntimeBanner.vue)
 - [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue)
 - [DebugWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\DebugWorkspacePanel.vue)
 - [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+- [SettingsWorkspacePanel.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.test.ts)
+
+Current implementation note:
+
+- Settings now surfaces runtime state, latest task posture, recent timeline entries, recent alerts, and a direct task-center open action from the existing frontend stores.
 
 Later implementation rule:
 

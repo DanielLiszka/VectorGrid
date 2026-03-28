@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@floating-ui/vue": "1.1.10",
+    "@tanstack/vue-table": "^8.21.3",
     "@tanstack/vue-virtual": "3.13.19",
     "@tauri-apps/api": "2.10.1",
     "@vueuse/core": "14.2.1",

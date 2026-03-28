@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { type Cell, type Header } from '@tanstack/vue-table'
+import {
+  useHeadlessMatrixTable,
+  type MatrixColumnMeta,
+} from '../composables/useHeadlessMatrixTable'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
@@ -58,6 +63,10 @@ const minExposureDraft = ref('')
 const visible = computed(() => String(resultsTab.value || '').trim() === 'top')
 const renderedColumns = computed<TopColumn[]>(() => topColumns.value as TopColumn[])
 const renderedRows = computed<TopRow[]>(() => topTableRows.value as TopRow[])
+const { headerGroups, rowModelRows } = useHeadlessMatrixTable(
+  renderedColumns,
+  renderedRows,
+)
 const hasTopResults = computed(() => Number(topRows.value || 0) > 0)
 const topDisabledForRun = computed(() => String(topFilterMeta.value || '').toLowerCase().includes('top k disabled'))
 const filtersActive = computed(() =>
@@ -92,7 +101,7 @@ const {
   topSpacerPx: virtualTopSpacerPx,
   bottomSpacerPx: virtualBottomSpacerPx,
   scrollToTop,
-} = useVirtualTableRows(renderedRows)
+} = useVirtualTableRows(rowModelRows)
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
@@ -167,6 +176,14 @@ function clickTopHeader(key: string): void {
   const sortKey = String(key || '').trim()
   if (!sortKey) return
   analysisStore.sortTopTable(sortKey)
+}
+
+function headerMeta(header: Header<TopRow, unknown>): MatrixColumnMeta {
+  return header.column.columnDef.meta as MatrixColumnMeta
+}
+
+function topCellPayload(cell: Cell<TopRow, unknown>): TopCell {
+  return cell.getValue() as TopCell
 }
 
 function sortStateToAria(sort: TopColumn['sort']): 'ascending' | 'descending' | 'none' {
@@ -363,24 +380,25 @@ onBeforeUnmount(() => {
           <table class="topTableVue" role="grid" aria-describedby="topSelectionStatus">
             <caption class="srOnly">Top optimization results ranked by the selected table sort order.</caption>
             <thead role="rowgroup">
-              <tr role="row">
+              <tr v-for="headerGroup in headerGroups" :key="headerGroup.id" role="row">
                 <th
-                  v-for="column in renderedColumns"
-                  :key="`top_col_${column.key}`"
-                  :class="{ left: column.alignLeft }"
-                  :aria-sort="sortStateToAria(column.sort)"
+                  v-for="header in headerGroup.headers"
+                  :key="header.id"
+                  :class="{ left: headerMeta(header).alignLeft }"
+                  :aria-sort="sortStateToAria(headerMeta(header).sort)"
                   scope="col"
                   role="columnheader"
                 >
                   <button
+                    v-if="!header.isPlaceholder"
                     type="button"
                     class="headerButton"
-                    :class="{ left: column.alignLeft }"
-                    @click="clickTopHeader(column.key)"
+                    :class="{ left: headerMeta(header).alignLeft }"
+                    @click="clickTopHeader(headerMeta(header).columnKey)"
                   >
-                    <span>{{ column.label }}</span>
-                    <span v-if="column.sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
-                    <span v-else-if="column.sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                    <span>{{ headerMeta(header).columnLabel }}</span>
+                    <span v-if="headerMeta(header).sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
+                    <span v-else-if="headerMeta(header).sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
                   </button>
                 </th>
               </tr>
@@ -391,23 +409,23 @@ onBeforeUnmount(() => {
               </tr>
               <tr
                 v-for="virtualRow in virtualRows"
-                :key="`top_row_${virtualRow.index}`"
-                :class="{ selected: virtualRow.row.selected }"
+                :key="virtualRow.row.id"
+                :class="{ selected: virtualRow.row.original.selected }"
                 data-top-row="1"
                 role="row"
-                :aria-selected="virtualRow.row.selected"
+                :aria-selected="virtualRow.row.original.selected"
                 tabindex="0"
-                @click="clickTopRow(virtualRow.index)"
-                @keydown="onTopRowKeydown(virtualRow.index, $event)"
+                @click="clickTopRow(virtualRow.row.index)"
+                @keydown="onTopRowKeydown(virtualRow.row.index, $event)"
               >
-                <template v-for="cell in virtualRow.row.cells" :key="`top_row_${virtualRow.index}_cell_${cell.text}_${cell.className}`">
+                <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                   <td
-                    :class="cell.className"
-                    :title="cell.title || undefined"
-                    :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    :class="topCellPayload(cell).className"
+                    :title="topCellPayload(cell).title || undefined"
+                    :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                     role="gridcell"
                   >
-                    {{ cell.text }}
+                    {{ topCellPayload(cell).text }}
                   </td>
                 </template>
               </tr>

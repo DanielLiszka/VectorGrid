@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { type Cell, type Header } from '@tanstack/vue-table'
+import {
+  useHeadlessMatrixTable,
+  type MatrixColumnMeta,
+} from '../composables/useHeadlessMatrixTable'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
@@ -223,6 +228,10 @@ const compareTabActive = computed(() => activeAggregateTab.value === 'compare')
 const showMetaTooling = computed(() => metaStage.value !== 'no_data')
 const renderedColumns = computed<MetaColumn[]>(() => metaTableColumns.value as MetaColumn[])
 const renderedRows = computed<MetaRow[]>(() => metaTableRows.value as MetaRow[])
+const { headerGroups, rowModelRows } = useHeadlessMatrixTable(
+  renderedColumns,
+  renderedRows,
+)
 const renderedBatchDatasets = computed<BatchDatasetItem[]>(() => batchDatasets.value as BatchDatasetItem[])
 const {
   scrollElementRef: tableScrollElementRef,
@@ -230,7 +239,7 @@ const {
   topSpacerPx: virtualTopSpacerPx,
   bottomSpacerPx: virtualBottomSpacerPx,
   scrollToTop,
-} = useVirtualTableRows(renderedRows)
+} = useVirtualTableRows(rowModelRows)
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
@@ -486,6 +495,14 @@ function aggregatePanelId(key: AggregateTabKey): string {
       : 'meta_aggregate_panel_compare_main'
   }
   return `meta_aggregate_panel_${key}`
+}
+
+function headerMeta(header: Header<MetaRow, unknown>): MatrixColumnMeta {
+  return header.column.columnDef.meta as MatrixColumnMeta
+}
+
+function metaCellPayload(cell: Cell<MetaRow, unknown>): MetaCell {
+  return cell.getValue() as MetaCell
 }
 
 function moveAggregateTabFocus(event: KeyboardEvent): void {
@@ -1447,14 +1464,14 @@ onBeforeUnmount(() => {
               Meta analysis selection results grouped by the configured strategy, holdout, and clustering rules.
             </caption>
             <thead>
-              <tr>
+              <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
                 <th
-                  v-for="(column, columnIndex) in renderedColumns"
-                  :key="`meta_col_${columnIndex}_${column.label}`"
-                  :class="{ left: column.alignLeft }"
+                  v-for="header in headerGroup.headers"
+                  :key="header.id"
+                  :class="{ left: headerMeta(header).alignLeft }"
                   scope="col"
                 >
-                  {{ column.label }}
+                  {{ headerMeta(header).columnLabel }}
                 </th>
               </tr>
             </thead>
@@ -1462,14 +1479,14 @@ onBeforeUnmount(() => {
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
                 <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
-              <tr v-for="virtualRow in virtualRows" :key="`meta_row_${virtualRow.index}`">
-                <template v-for="cell in virtualRow.row.cells" :key="`meta_row_${virtualRow.index}_${cell.text}_${cell.className}`">
+              <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
+                <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                   <td
-                    :class="cell.className"
-                    :title="cell.title || undefined"
-                    :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    :class="metaCellPayload(cell).className"
+                    :title="metaCellPayload(cell).title || undefined"
+                    :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
-                    {{ cell.text }}
+                    {{ metaCellPayload(cell).text }}
                   </td>
                 </template>
               </tr>

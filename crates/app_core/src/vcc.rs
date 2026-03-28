@@ -1554,6 +1554,8 @@ mod tests {
         let trend_row = tr_sweep.row_ptr_for_period(12).unwrap();
         let signals = VccGpuDeviceSignalMatrices {
             close_f64: close,
+            close_f32: prepared.close(),
+            close_device_ptr: prepared.close_device().device_ptr(),
             cols: close.len(),
             fast_rows: 1,
             trend_rows: 1,
@@ -1656,6 +1658,8 @@ mod tests {
 
         let signals = VccGpuDeviceSignalMatrices {
             close_f64: close,
+            close_f32: prepared.close(),
+            close_device_ptr: prepared.close_device().device_ptr(),
             cols: close.len(),
             fast_rows: fast_rows.len(),
             trend_rows: trend_rows.len(),
@@ -1747,6 +1751,8 @@ mod tests {
 
         let signals = VccGpuDeviceSignalMatrices {
             close_f64: close,
+            close_f32: prepared.close(),
+            close_device_ptr: prepared.close_device().device_ptr(),
             cols: close.len(),
             fast_rows: fast_squeeze_rows.len(),
             trend_rows: trend_rows_ptr.len(),
@@ -1867,6 +1873,8 @@ mod tests {
 
         let signals = VccGpuDeviceSignalMatrices {
             close_f64: close,
+            close_f32: prepared.close(),
+            close_device_ptr: prepared.close_device().device_ptr(),
             cols: close.len(),
             fast_rows: fast_squeeze_rows.len(),
             trend_rows: trend_rows_ptr.len(),
@@ -2063,6 +2071,8 @@ mod tests {
 
         let signals = VccGpuDeviceSignalMatrices {
             close_f64: close,
+            close_f32: prepared.close(),
+            close_device_ptr: prepared.close_device().device_ptr(),
             cols: close.len(),
             fast_rows: fast_rows.len(),
             trend_rows: trend_rows.len(),

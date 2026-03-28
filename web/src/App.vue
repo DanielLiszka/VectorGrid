@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
-import CommandPaletteOverlay from './components/CommandPaletteOverlay.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import RunFooterPanel from './components/RunFooterPanel.vue'
-import TaskCenterOverlay from './components/TaskCenterOverlay.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
-import WorkflowQuickSwitch from './components/WorkflowQuickSwitch.vue'
 import { useWorkflowStore } from './stores/workflowStore'
 
+const AppRuntimeBanner = defineAsyncComponent(() => import('./components/AppRuntimeBanner.vue'))
 const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/AdvancedWorkspacePanel.vue'))
 const AnalysisContextDock = defineAsyncComponent(() => import('./components/AnalysisContextDock.vue'))
+const CommandPaletteOverlay = defineAsyncComponent(() => import('./components/CommandPaletteOverlay.vue'))
 const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataWorkspacePanel.vue'))
 const DataContextDock = defineAsyncComponent(() => import('./components/DataContextDock.vue'))
 const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
@@ -29,9 +27,11 @@ const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/Par
 const SettingsContextDock = defineAsyncComponent(() => import('./components/SettingsContextDock.vue'))
 const SettingsWorkspacePanel = defineAsyncComponent(() => import('./components/SettingsWorkspacePanel.vue'))
 const StrategyWorkspacePanel = defineAsyncComponent(() => import('./components/StrategyWorkspacePanel.vue'))
+const TaskCenterOverlay = defineAsyncComponent(() => import('./components/TaskCenterOverlay.vue'))
 const TopWorkspacePanel = defineAsyncComponent(() => import('./components/TopWorkspacePanel.vue'))
 const ValidationContextDock = defineAsyncComponent(() => import('./components/ValidationContextDock.vue'))
 const ValidationWorkspacePanel = defineAsyncComponent(() => import('./components/ValidationWorkspacePanel.vue'))
+const WorkflowQuickSwitch = defineAsyncComponent(() => import('./components/WorkflowQuickSwitch.vue'))
 
 const workflowStore = useWorkflowStore()
 workflowStore.syncRuntimeState()

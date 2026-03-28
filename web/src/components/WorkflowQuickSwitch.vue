@@ -67,6 +67,48 @@ function clickWorkflowStep(key: string): void {
 function switchItemId(group: string, key: string): string {
   return `workflow_switch_${group}_${key}`
 }
+
+type SwitchItem = { key: string }
+
+function resolveFocusedKey(event: KeyboardEvent): string | null {
+  const target = event.target instanceof Element ? (event.target.closest('[data-switch-key]') as HTMLElement | null) : null
+  return String(target?.dataset.switchKey || '').trim() || null
+}
+
+function moveGroupSelection(
+  event: KeyboardEvent,
+  items: readonly SwitchItem[],
+  currentKey: string,
+  selectValue: (key: string) => void,
+): void {
+  if (items.length <= 1) return
+  const originKey = resolveFocusedKey(event) ?? currentKey
+  const currentIndex = items.findIndex((item) => item.key === originKey)
+  if (currentIndex < 0) return
+
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = items.length - 1
+  else return
+
+  const nextKey = items[nextIndex]?.key
+  if (!nextKey) return
+  selectValue(nextKey)
+}
+
+function onWorkspaceKeydown(event: KeyboardEvent): void {
+  moveGroupSelection(event, wsItems, currentWorkspace.value, clickWorkspace)
+}
+
+function onWorkflowKeydown(event: KeyboardEvent): void {
+  moveGroupSelection(event, wfItems, currentWorkflow.value, clickWorkflow)
+}
+
+function onStepKeydown(event: KeyboardEvent): void {
+  moveGroupSelection(event, stepItems, currentWorkflowStep.value, clickWorkflowStep)
+}
 </script>
 
 <template>
@@ -87,7 +129,14 @@ function switchItemId(group: string, key: string): string {
           <div class="subtitle mono">{{ subtitle }}</div>
           <nav class="groupBlock" aria-label="Workspace quick switch">
             <div class="groupLabel">Workspace</div>
-            <ToolbarRoot class="group" data-switch-group="workspace" as="div" aria-label="Workspace choices" :loop="true">
+            <ToolbarRoot
+              class="group"
+              data-switch-group="workspace"
+              as="div"
+              aria-label="Workspace choices"
+              :loop="true"
+              @keydown="onWorkspaceKeydown"
+            >
               <ToolbarButton
                 v-for="item in wsItems"
                 :key="`ws_${item.key}`"
@@ -106,7 +155,14 @@ function switchItemId(group: string, key: string): string {
           </nav>
           <nav class="groupBlock" aria-label="Workflow quick switch">
             <div class="groupLabel">Workflow</div>
-            <ToolbarRoot class="group" data-switch-group="workflow" as="div" aria-label="Workflow choices" :loop="true">
+            <ToolbarRoot
+              class="group"
+              data-switch-group="workflow"
+              as="div"
+              aria-label="Workflow choices"
+              :loop="true"
+              @keydown="onWorkflowKeydown"
+            >
               <ToolbarButton
                 v-for="item in wfItems"
                 :key="`wf_${item.key}`"
@@ -125,7 +181,14 @@ function switchItemId(group: string, key: string): string {
           </nav>
           <nav class="groupBlock" aria-label="Workflow step quick switch">
             <div class="groupLabel">Step</div>
-            <ToolbarRoot class="group" data-switch-group="step" as="div" aria-label="Workflow step choices" :loop="true">
+            <ToolbarRoot
+              class="group"
+              data-switch-group="step"
+              as="div"
+              aria-label="Workflow step choices"
+              :loop="true"
+              @keydown="onStepKeydown"
+            >
               <ToolbarButton
                 v-for="item in stepItems"
                 :key="`step_${item.key}`"

@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { type Cell, type Header } from '@tanstack/vue-table'
+import {
+  useHeadlessMatrixTable,
+  type MatrixColumnMeta,
+} from '../composables/useHeadlessMatrixTable'
 import { useShellMount } from '../composables/useShellMount'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
@@ -53,6 +59,21 @@ const { mountReady } = useShellMount('#executionVueShellMount', {
 
 type PendingExecutionAction = 'clearKeys' | 'startLive' | 'startRunner'
 
+interface ExecutionOrderColumn {
+  label: string
+  alignLeft: boolean
+}
+
+interface ExecutionOrderCell {
+  text: string
+  className: string
+  title: string
+}
+
+interface ExecutionOrderTableRow {
+  cells: ExecutionOrderCell[]
+}
+
 const symbolDraft = ref('')
 const qtyDraft = ref('')
 const riskSlDraft = ref('')
@@ -67,6 +88,36 @@ const pendingAction = ref<PendingExecutionAction | null>(null)
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
 const liveModeArmed = computed(() => String(mode.value || modeDraft.value || 'paper').trim() === 'live')
+const executionOrderColumns = computed<ExecutionOrderColumn[]>(() => [
+  { label: 'Time (UTC)', alignLeft: true },
+  { label: 'Side', alignLeft: true },
+  { label: 'Status', alignLeft: true },
+  { label: 'Qty', alignLeft: false },
+  { label: 'Filled', alignLeft: false },
+  { label: 'Avg Px', alignLeft: false },
+  { label: 'Order ID', alignLeft: true },
+])
+const executionOrderTableRows = computed<ExecutionOrderTableRow[]>(() =>
+  orderRows.value.map((row) => ({
+    cells: [
+      { text: row.cells[0] || '—', className: 'left mono', title: row.cells[0] || '' },
+      { text: row.cells[1] || '—', className: 'left', title: row.cells[1] || '' },
+      { text: row.cells[2] || '—', className: 'left', title: row.cells[2] || '' },
+      { text: row.cells[3] || '—', className: 'mono', title: row.cells[3] || '' },
+      { text: row.cells[4] || '—', className: 'mono', title: row.cells[4] || '' },
+      { text: row.cells[5] || '—', className: 'mono', title: row.cells[5] || '' },
+      { text: row.cells[6] || '—', className: 'left mono', title: row.cells[6] || '' },
+    ],
+  })),
+)
+const { headerGroups: orderHeaderGroups, rowModelRows: executionOrderRowModelRows } =
+  useHeadlessMatrixTable(executionOrderColumns, executionOrderTableRows)
+const {
+  scrollElementRef: orderTableScrollElementRef,
+  virtualRows: virtualOrderRows,
+  topSpacerPx: orderTableTopSpacerPx,
+  bottomSpacerPx: orderTableBottomSpacerPx,
+} = useVirtualTableRows(executionOrderRowModelRows, { rowHeightPx: 30, overscan: 8 })
 const modeBadgeLabel = computed(() => liveModeArmed.value ? 'Live mode armed' : 'Paper mode')
 const executionSummaryChips = computed(() => [
   modeBadgeLabel.value,
@@ -113,6 +164,14 @@ const canConfirmPendingAction = computed(() => {
 })
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+
+function headerMeta(header: Header<ExecutionOrderTableRow, unknown>): MatrixColumnMeta {
+  return header.column.columnDef.meta as MatrixColumnMeta
+}
+
+function executionOrderCellPayload(cell: Cell<ExecutionOrderTableRow, unknown>): ExecutionOrderCell {
+  return cell.getValue() as ExecutionOrderCell
+}
 
 watch(
   () => [
@@ -494,34 +553,47 @@ watch(visible, (isVisible) => {
 
         <section class="executionSubsection" aria-label="Broker order activity">
           <div class="executionSubsectionLabel panelMetricKey">Broker orders</div>
-          <div class="tableWrap" tabindex="0" aria-label="Broker order activity table">
+          <div
+            ref="orderTableScrollElementRef"
+            class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
+            tabindex="0"
+            aria-label="Broker order activity table"
+          >
             <table class="execOrdersTableVue">
               <caption class="srOnly">
                 Broker order activity for the current execution symbol, including side, status, filled quantity, average price, and order identifiers.
               </caption>
               <thead>
-                <tr>
-                  <th class="left">Time (UTC)</th>
-                  <th class="left">Side</th>
-                  <th class="left">Status</th>
-                  <th>Qty</th>
-                  <th>Filled</th>
-                  <th>Avg Px</th>
-                  <th class="left">Order ID</th>
+                <tr v-for="headerGroup in orderHeaderGroups" :key="headerGroup.id">
+                  <th
+                    v-for="header in headerGroup.headers"
+                    :key="header.id"
+                    :class="{ left: headerMeta(header).alignLeft }"
+                    scope="col"
+                  >
+                    {{ headerMeta(header).columnLabel }}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!orderRows.length">
+                <tr v-if="!virtualOrderRows.length">
                   <td class="left panelMuted" colspan="7">No broker orders for current symbol.</td>
                 </tr>
-                <tr v-for="(row, rowIndex) in orderRows" :key="`exec_order_${rowIndex}_${row.cells[6] || row.cells[0]}`">
-                  <td class="left mono">{{ row.cells[0] || '—' }}</td>
-                  <td class="left">{{ row.cells[1] || '—' }}</td>
-                  <td class="left">{{ row.cells[2] || '—' }}</td>
-                  <td class="mono">{{ row.cells[3] || '—' }}</td>
-                  <td class="mono">{{ row.cells[4] || '—' }}</td>
-                  <td class="mono">{{ row.cells[5] || '—' }}</td>
-                  <td class="left mono" :title="row.cells[6] || undefined">{{ row.cells[6] || '—' }}</td>
+                <tr v-if="orderTableTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                  <td colspan="7" :style="{ height: `${orderTableTopSpacerPx}px` }"></td>
+                </tr>
+                <tr v-for="virtualRow in virtualOrderRows" :key="virtualRow.row.id">
+                  <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
+                    <td
+                      :class="executionOrderCellPayload(cell).className"
+                      :title="executionOrderCellPayload(cell).title || undefined"
+                    >
+                      {{ executionOrderCellPayload(cell).text }}
+                    </td>
+                  </template>
+                </tr>
+                <tr v-if="orderTableBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                  <td colspan="7" :style="{ height: `${orderTableBottomSpacerPx}px` }"></td>
                 </tr>
               </tbody>
             </table>
@@ -732,6 +804,15 @@ watch(visible, (isVisible) => {
 .execOrdersTableVue th.left,
 .execOrdersTableVue td.left {
   text-align: left;
+}
+
+.execOrdersTableVue tbody tr.spacerRow {
+  pointer-events: none;
+}
+
+.execOrdersTableVue tbody tr.spacerRow td {
+  border-bottom: none;
+  padding: 0;
 }
 
 .output {

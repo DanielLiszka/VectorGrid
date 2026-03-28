@@ -35,7 +35,7 @@ The findings below capture the original audit snapshot. The codebase has moved m
 
 - frontend verification is green again:
   - `npm run typecheck` passed
-  - `npm run test` passed with 68 files and 480 tests
+  - `npm run test` passed with 69 files and 485 tests
   - `npm run build` passed
   - `npm run baseline:ui` passed
 - shell workspace and workflow-step navigation now use accessible tab semantics with keyboard support and an explicit live selection summary
@@ -79,8 +79,13 @@ The findings below capture the original audit snapshot. The codebase has moved m
 - the command palette now uses `fuse.js` ranking and grouped relevance instead of plain substring matching, and dev-only bundle analysis is available through `npm run analyze:bundle`
 - the workflow quick switch now uses `reka-ui` toolbar / roving-focus primitives instead of custom group-level keyboard glue
 - a keyboard-only regression pass was rerun after the latest shell/palette refinements; workspace tabs, workflow-step tabs, command-palette navigation, and Escape focus restoration all passed in Playwright interactive
+- Settings now includes a first-pass diagnostics surface for runtime state, recent task posture, timeline entries, and recent alerts, with a direct path to open the task center from the existing frontend stores
+- the app shell now async-loads non-blocking overlays such as the runtime banner, command palette, task center, and workflow quick switch, and the Vite build now splits framework/ui/utility vendor code out of the main entry chunk
 
-The remaining work is now optional follow-up rather than checklist debt: bundle-size reduction, any later Figma mirroring once connector access is restored, and future visual refinement beyond the current implementation target.
+The completed remediation checklist in this file is now historical. The active open next-phase checklist lives in
+`Frontend Review/frontend_followup_evaluation_2026-03-28.md`.
+
+The remaining work is now optional follow-up rather than checklist debt: deeper table/form architecture upgrades, any later Figma mirroring once connector access is restored, and future visual refinement beyond the current implementation target.
 
 ## Consolidated Findings
 
@@ -396,12 +401,14 @@ The shell rendered without console errors or page exceptions during that pass, b
 - `npm run typecheck`
   - passed
 - `npm run test`
-  - 68 test files passed
-  - 480 tests passed
+  - 69 test files passed
+  - 485 tests passed
   - repeated Pinia `activePinia` warnings were eliminated from the current service/store test path
 - `npm run build`
   - passed
-  - Vite still reports a large main-bundle chunk warning at roughly `706 kB`
+- `npm run analyze:bundle`
+  - passed
+  - the main entry chunk now builds at roughly `542 kB`, below the previous warning threshold
 - `npm run baseline:ui`
   - passed
   - baseline screenshots and metrics were refreshed under `scripts/baselines/ui_capture`

@@ -2550,6 +2550,8 @@ fn run_vcc_optimization_gpu(
 
     let signals = VccGpuDeviceSignalMatrices {
         close_f64: close,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         fast_rows,
         trend_rows,
@@ -13237,6 +13239,37 @@ mod tests {
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
         assert!(res.best_params.fast_len < res.best_params.slow_len);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_optimization_gpu_kernel_falls_back_to_cpu_with_stop_loss_overlay() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+        req.backend = Backend::GpuKernel { device_id: 0 };
+        req.vemr = Some(VemrStrategyParams::default());
+        req.fast_range = (5, 9, 1);
+        req.slow_range = (20, 30, 2);
+        req.strategy = StrategyConfig {
+            stop_loss_pct: Some(0.02),
+            ..StrategyConfig::default()
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("vemr gpu fallback optimization");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

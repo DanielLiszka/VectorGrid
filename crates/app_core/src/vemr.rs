@@ -8,9 +8,10 @@ use crate::dynamic_indicator_adapter::{
     DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::{
@@ -161,6 +162,23 @@ pub struct VemrFastSignals {
 pub struct VemrRiskSignals {
     pub atr: Vec<f64>,
     pub first_valid: usize,
+}
+
+struct VemrIndicatorIds {
+    zscore_period_key: String,
+    zscore_ma_type_key: String,
+    zscore_nbdev_key: String,
+    zscore_devtype_key: String,
+    zscore_output: String,
+    zscore_input_kind: IndicatorInputKind,
+    bollinger_period_key: String,
+    bollinger_devup_key: String,
+    bollinger_devdn_key: String,
+    bollinger_upper_output: String,
+    bollinger_middle_output: String,
+    bollinger_lower_output: String,
+    atr_period_key: String,
+    atr_output: String,
 }
 
 #[cfg(feature = "cuda")]
@@ -447,6 +465,58 @@ fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     ))
 }
 
+fn vemr_indicator_ids() -> Result<&'static VemrIndicatorIds, String> {
+    static IDS: OnceLock<Result<VemrIndicatorIds, String>> = OnceLock::new();
+
+    IDS.get_or_init(|| {
+        let zscore_descriptor = find_dynamic_indicator_descriptor("zscore").ok_or_else(|| {
+            "VEMR indicator 'zscore' is not registered for dynamic dispatch".to_string()
+        })?;
+        Ok(VemrIndicatorIds {
+            zscore_period_key: resolve_param_key("zscore", &["period", "length", "timeperiod"])?,
+            zscore_ma_type_key: resolve_param_key("zscore", &["ma_type", "matype", "ma"])?,
+            zscore_nbdev_key: resolve_param_key(
+                "zscore",
+                &["nbdev", "stddev", "stdev", "deviation"],
+            )?,
+            zscore_devtype_key: resolve_param_key(
+                "zscore",
+                &["devtype", "deviation_type", "dev_type"],
+            )?,
+            zscore_output: resolve_output_id("zscore", &["value", "zscore"])?,
+            zscore_input_kind: zscore_descriptor.input_kind,
+            bollinger_period_key: resolve_param_key(
+                "bollinger_bands",
+                &["period", "length", "timeperiod"],
+            )?,
+            bollinger_devup_key: resolve_param_key(
+                "bollinger_bands",
+                &["devup", "upper_mult", "upper"],
+            )?,
+            bollinger_devdn_key: resolve_param_key(
+                "bollinger_bands",
+                &["devdn", "lower_mult", "lower"],
+            )?,
+            bollinger_upper_output: resolve_output_id(
+                "bollinger_bands",
+                &["upper_band", "upper", "up"],
+            )?,
+            bollinger_middle_output: resolve_output_id(
+                "bollinger_bands",
+                &["middle_band", "middle", "mid", "basis"],
+            )?,
+            bollinger_lower_output: resolve_output_id(
+                "bollinger_bands",
+                &["lower_band", "lower", "down"],
+            )?,
+            atr_period_key: resolve_param_key("atr", &["period", "length", "timeperiod"])?,
+            atr_output: resolve_output_id("atr", &["value", "atr"])?,
+        })
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
 #[cfg(feature = "cuda")]
 fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
@@ -457,6 +527,7 @@ fn compute_indicator_period_sweep_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
     output_id: &str,
+    input_kind: IndicatorInputKind,
     period_key: &str,
     period_start: u16,
     period_end: u16,
@@ -482,14 +553,11 @@ fn compute_indicator_period_sweep_cuda_device(
         value: IndicatorParamValue::Int(i64::from(step)),
     });
 
-    let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
-        format!("VEMR indicator '{indicator_id}' is not registered for dynamic dispatch")
-    })?;
     let out = compute_dynamic_indicator_cuda_direct_with_inputs(
         prepared_inputs,
         indicator_id,
         Some(output_id),
-        descriptor.input_kind,
+        input_kind,
         params.as_slice(),
         Kernel::Auto,
         vector_ta::indicators::dispatch::CudaOutputTarget::DeviceF32,
@@ -652,6 +720,7 @@ pub fn compute_vemr_zscore_sweep_cuda_device(
     period_step: u16,
     device_id: u32,
 ) -> Result<VemrPeriodSweepDevice, String> {
+    let ids = vemr_indicator_ids()?;
     if cfg.z_devtype == 0 && cfg.z_ma_type.eq_ignore_ascii_case("sma") {
         return compute_vemr_zscore_sweep_cuda_direct(
             prepared_inputs,
@@ -663,23 +732,17 @@ pub fn compute_vemr_zscore_sweep_cuda_device(
         );
     }
 
-    let period_key = resolve_param_key("zscore", &["period", "length", "timeperiod"])?;
-    let ma_type_key = resolve_param_key("zscore", &["ma_type", "matype", "ma"])?;
-    let nbdev_key = resolve_param_key("zscore", &["nbdev", "stddev", "stdev", "deviation"])?;
-    let devtype_key = resolve_param_key("zscore", &["devtype", "deviation_type", "dev_type"])?;
-    let output_id = resolve_output_id("zscore", &["value", "zscore"])?;
-
     let base_params = vec![
         IndicatorParamKV {
-            key: ma_type_key,
+            key: ids.zscore_ma_type_key.clone(),
             value: IndicatorParamValue::EnumString(cfg.z_ma_type.clone()),
         },
         IndicatorParamKV {
-            key: nbdev_key,
+            key: ids.zscore_nbdev_key.clone(),
             value: IndicatorParamValue::Float(cfg.z_nbdev),
         },
         IndicatorParamKV {
-            key: devtype_key,
+            key: ids.zscore_devtype_key.clone(),
             value: IndicatorParamValue::Int(i64::from(cfg.z_devtype)),
         },
     ];
@@ -687,8 +750,9 @@ pub fn compute_vemr_zscore_sweep_cuda_device(
     compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "zscore",
-        output_id.as_str(),
-        period_key.as_str(),
+        ids.zscore_output.as_str(),
+        ids.zscore_input_kind,
+        ids.zscore_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -854,62 +918,47 @@ pub fn compute_vemr_fast_signals(
     bb_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<VemrFastSignals, String> {
-    let z_period_key = resolve_param_key("zscore", &["period", "length", "timeperiod"])?;
-    let z_ma_type_key = resolve_param_key("zscore", &["ma_type", "matype", "ma"])?;
-    let z_nbdev_key = resolve_param_key("zscore", &["nbdev", "stddev", "stdev", "deviation"])?;
-    let z_devtype_key = resolve_param_key("zscore", &["devtype", "deviation_type", "dev_type"])?;
-
-    let bb_period_key = resolve_param_key("bollinger_bands", &["period", "length", "timeperiod"])?;
-    let bb_devup_key = resolve_param_key("bollinger_bands", &["devup", "upper_mult", "upper"])?;
-    let bb_devdn_key = resolve_param_key("bollinger_bands", &["devdn", "lower_mult", "lower"])?;
+    let ids = vemr_indicator_ids()?;
 
     let z_params = vec![
         IndicatorParamKV {
-            key: z_period_key,
+            key: ids.zscore_period_key.clone(),
             value: IndicatorParamValue::Int(i64::from(z_period)),
         },
         IndicatorParamKV {
-            key: z_ma_type_key,
+            key: ids.zscore_ma_type_key.clone(),
             value: IndicatorParamValue::EnumString(cfg.z_ma_type.clone()),
         },
         IndicatorParamKV {
-            key: z_nbdev_key,
+            key: ids.zscore_nbdev_key.clone(),
             value: IndicatorParamValue::Float(cfg.z_nbdev),
         },
         IndicatorParamKV {
-            key: z_devtype_key,
+            key: ids.zscore_devtype_key.clone(),
             value: IndicatorParamValue::Int(i64::from(cfg.z_devtype)),
         },
     ];
     let bb_params = vec![
         IndicatorParamKV {
-            key: bb_period_key,
+            key: ids.bollinger_period_key.clone(),
             value: IndicatorParamValue::Int(i64::from(bb_period)),
         },
         IndicatorParamKV {
-            key: bb_devup_key,
+            key: ids.bollinger_devup_key.clone(),
             value: IndicatorParamValue::Float(cfg.bb_mult),
         },
         IndicatorParamKV {
-            key: bb_devdn_key,
+            key: ids.bollinger_devdn_key.clone(),
             value: IndicatorParamValue::Float(cfg.bb_mult),
         },
     ];
-
-    let z_output = resolve_output_id("zscore", &["value", "zscore"])?;
-    let bb_upper_output = resolve_output_id("bollinger_bands", &["upper_band", "upper", "up"])?;
-    let bb_middle_output = resolve_output_id(
-        "bollinger_bands",
-        &["middle_band", "middle", "mid", "basis"],
-    )?;
-    let bb_lower_output = resolve_output_id("bollinger_bands", &["lower_band", "lower", "down"])?;
 
     let zscore = compute_indicator_f64(
         candles,
         ma_source,
         backend,
         "zscore",
-        z_output.as_str(),
+        ids.zscore_output.as_str(),
         &z_params,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -919,7 +968,7 @@ pub fn compute_vemr_fast_signals(
         ma_source,
         backend,
         "bollinger_bands",
-        bb_upper_output.as_str(),
+        ids.bollinger_upper_output.as_str(),
         &bb_params,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -929,7 +978,7 @@ pub fn compute_vemr_fast_signals(
         ma_source,
         backend,
         "bollinger_bands",
-        bb_middle_output.as_str(),
+        ids.bollinger_middle_output.as_str(),
         &bb_params,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -939,7 +988,7 @@ pub fn compute_vemr_fast_signals(
         ma_source,
         backend,
         "bollinger_bands",
-        bb_lower_output.as_str(),
+        ids.bollinger_lower_output.as_str(),
         &bb_params,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -975,18 +1024,17 @@ pub fn compute_vemr_risk_signals(
     atr_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<VemrRiskSignals, String> {
-    let atr_period_key = resolve_param_key("atr", &["period", "length", "timeperiod"])?;
+    let ids = vemr_indicator_ids()?;
     let atr_params = vec![IndicatorParamKV {
-        key: atr_period_key,
+        key: ids.atr_period_key.clone(),
         value: IndicatorParamValue::Int(i64::from(atr_period)),
     }];
-    let atr_output = resolve_output_id("atr", &["value", "atr"])?;
     let atr = compute_indicator_f64(
         candles,
         ma_source,
         backend,
         "atr",
-        atr_output.as_str(),
+        ids.atr_output.as_str(),
         &atr_params,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,

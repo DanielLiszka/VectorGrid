@@ -5057,6 +5057,8 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
 
     let signals = VccGpuDeviceSignalMatrices {
         close_f64: close,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         fast_rows: fast_squeeze_rows.len(),
         trend_rows: trend_rows_ptr.len(),
@@ -5342,6 +5344,8 @@ fn compute_vcc_gpu_walk_forward_stats_for_candidate(
         fast_signals.momentum.iter().map(|v| *v as f32).collect();
     let signals = VccGpuDeviceSignalMatrices {
         close_f64: close,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         fast_rows: fast_squeeze_rows.len(),
         trend_rows: trend_rows_ptr.len(),
@@ -5650,6 +5654,8 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = VccGpuDeviceSignalMatrices {
         close_f64: close,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         fast_rows: fast_squeeze_rows.len(),
         trend_rows: trend_rows_ptr.len(),
@@ -19848,6 +19854,82 @@ mod tests {
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_validation_gpu_kernel_falls_back_to_cpu_with_stop_loss_overlay() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len: 8,
+            slow_len: 24,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: Some(VemrStrategyParams::default()),
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "vemr-gpu-fallback-test".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 11,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vemr gpu fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

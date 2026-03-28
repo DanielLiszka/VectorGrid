@@ -5,6 +5,11 @@ import { useStorage } from '@vueuse/core'
 import { invokeCommand } from '../tauri/invoke'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
 import { formatUiCompactDurationMs, formatUiPercentFromFraction } from '../utils/uiFormat'
+import {
+  describeTrackedTask,
+  taskLifecycleLabel,
+  taskLifecycleTone,
+} from '../utils/statusPresentation'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import {
   activeTasksCount,
@@ -70,14 +75,7 @@ const rootStyle = computed(() => {
 })
 const toggleDragging = computed(() => !!dragState.value?.dragging)
 const centerStatusLabel = computed(() => {
-  const s = String(centerStatus.value || 'idle')
-  if (s === 'running') return 'Running'
-  if (s === 'queued') return 'Queued'
-  if (s === 'cancelling') return 'Cancelling'
-  if (s === 'success') return 'Done'
-  if (s === 'failed') return 'Failed'
-  if (s === 'cancelled') return 'Cancelled'
-  return 'Idle'
+  return taskLifecycleLabel(centerStatus.value)
 })
 
 function toggleExpanded(): void {
@@ -266,30 +264,15 @@ watch(
 )
 
 function statusLabel(task: TrackedTask): string {
-  if (task.status === 'running') return 'Running'
-  if (task.status === 'queued') return 'Queued'
-  if (task.status === 'cancelling') return 'Cancelling'
-  if (task.status === 'success') return 'Done'
-  if (task.status === 'cancelled') return 'Cancelled'
-  return 'Failed'
+  return taskLifecycleLabel(task.status)
 }
 
 function statusClass(task: TrackedTask): string {
-  if (task.status === 'running') return 'running'
-  if (task.status === 'queued') return 'queued'
-  if (task.status === 'cancelling') return 'cancelling'
-  if (task.status === 'success') return 'success'
-  if (task.status === 'cancelled') return 'cancelled'
-  return 'failed'
+  return taskLifecycleTone(task.status)
 }
 
 function taskDetail(task: TrackedTask): string {
-  const pct = task.progressPct
-  if (task.message) return task.message
-  if (task.phase && typeof pct === 'number' && Number.isFinite(pct)) return `${task.phase} (${pct.toFixed(1)}%)`
-  if (task.phase) return task.phase
-  if (task.error) return task.error
-  return 'No details.'
+  return describeTrackedTask(task)
 }
 
 function absoluteTime(unixMs: number): string {

@@ -122,6 +122,7 @@ fn bench_vcc_gpu_kernel(c: &mut Criterion) {
                     "expected no fallback reason for VCC bench, got {:?}",
                     res.backend_fallback_reason
                 );
+                assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
             })
         });
     }

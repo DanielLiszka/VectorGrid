@@ -1,15 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useStorage } from '@vueuse/core'
 import { useShellMount } from '../composables/useShellMount'
+import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDataStore } from '../stores/dataStore'
+import { useRuntimeStore } from '../stores/runtimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { dismissToast, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  describeRuntimePhase,
+  runtimePhaseLabel as formatRuntimePhaseLabel,
+  taskLifecycleLabel,
+} from '../utils/statusPresentation'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const settingsStore = useSettingsStore()
 const dataStore = useDataStore()
+const runtimeStore = useRuntimeStore()
+const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 const {
   theme,
@@ -34,7 +45,16 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(settingsStore)
 const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore)
+const { bootElapsedMs, bootError, bootErrorDetail, bootPhase, bootStage } = storeToRefs(runtimeStore)
+const { timeline, toasts } = storeToRefs(taskStore)
 const { workspace } = storeToRefs(workflowStore)
+const taskCenterOpen = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
+const {
+  activeTaskCount,
+  centerStatusLabel,
+  latestTask,
+  overallProgressLabel: progressLabel,
+} = useTaskLifecycleSummary()
 
 const { mountReady } = useShellMount('#settingsVueShellMount', {
   paneSelector: '#settingsShellGrid',
@@ -56,8 +76,36 @@ const settingsSummaryChips = computed(() => [
   controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
   marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
 ])
+const diagnosticsSummaryChips = computed(() => [
+  `Runtime ${runtimePhaseLabel.value}`,
+  `Task center ${centerStatusLabel.value}`,
+  `${activeTaskCount.value} active`,
+  progressLabel.value,
+])
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+const runtimeStamp = computed(() => {
+  return formatRuntimePhaseLabel(bootPhase.value)
+})
+const runtimePhaseLabel = computed(() => {
+  return formatRuntimePhaseLabel(bootPhase.value)
+})
+const runtimeDetail = computed(() => {
+  return describeRuntimePhase({
+    phase: bootPhase.value,
+    stage: bootStage.value,
+    elapsedMs: bootElapsedMs.value,
+    error: bootError.value,
+  })
+})
+const runtimeErrorBody = computed(() => String(bootErrorDetail.value || '').trim())
+const recentTimeline = computed(() => timeline.value.slice(0, 6))
+const recentAlerts = computed(() => toasts.value.slice(0, 4))
+const latestTaskLabel = computed(() => {
+  const task = latestTask.value
+  if (!task) return ''
+  return `${task.label} · ${taskLifecycleLabel(task.status)}`
+})
 
 watch(
   () => [
@@ -97,6 +145,14 @@ function setSelectValue(id: string, nextValue: string): void {
 
 function setInputValue(id: string, nextValue: string): void {
   settingsStore.setInputField(id, nextValue)
+}
+
+function openTaskCenter(): void {
+  taskCenterOpen.value = true
+}
+
+function clearRecentAlerts(): void {
+  for (const toast of recentAlerts.value) dismissToast(toast.id)
 }
 
 const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
@@ -298,6 +354,97 @@ onBeforeUnmount(() => {
             <div>Browse CSV file</div>
           </div>
         </section>
+
+        <section class="pane diagnosticsPane">
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Diagnostics</div>
+              <h3 class="panelPaneTitle">Runtime and task center</h3>
+              <div class="panelSectionLead">
+                Review startup state, current task posture, and recent operator-facing alerts from one place before you need external logs.
+              </div>
+            </div>
+          </div>
+          <div class="panelSummaryChips" aria-label="Diagnostics summary">
+            <span v-for="chip in diagnosticsSummaryChips" :key="`settings_diagnostics_${chip}`" class="panelSummaryChip mono">
+              {{ chip }}
+            </span>
+          </div>
+          <div class="actions">
+            <button type="button" @click="openTaskCenter">Open task center</button>
+            <button type="button" :disabled="recentAlerts.length === 0" @click="clearRecentAlerts">Clear recent alerts</button>
+          </div>
+          <div class="diagnosticsGrid">
+            <section class="diagnosticsCard">
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Runtime</div>
+                <div class="mono diagnosticsStamp">{{ runtimeStamp }}</div>
+              </header>
+              <div class="diagnosticsPrimary">{{ runtimeDetail }}</div>
+              <details v-if="runtimeErrorBody" class="panelDetails">
+                <summary>Runtime error detail</summary>
+                <div class="panelDetailsBody">
+                  <pre class="mono diagnosticsPre">{{ runtimeErrorBody }}</pre>
+                </div>
+              </details>
+            </section>
+
+            <section class="diagnosticsCard">
+              <header class="diagnosticsHead">
+              <div class="diagnosticsLabel">Latest task</div>
+              <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
+            </header>
+            <div class="diagnosticsPrimary" v-if="latestTask">
+                {{ latestTaskLabel }}
+              </div>
+              <div class="panelMuted" v-else>No completed or cancelled tasks yet.</div>
+              <div class="panelMuted">
+                {{ progressLabel }}
+              </div>
+            </section>
+
+            <section class="diagnosticsCard diagnosticsCardWide">
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Recent timeline</div>
+                <div class="mono diagnosticsStamp">{{ recentTimeline.length }} items</div>
+              </header>
+              <div v-if="recentTimeline.length === 0" class="panelMuted">No timeline entries yet.</div>
+              <ul v-else class="diagnosticsList">
+                <li v-for="entry in recentTimeline" :key="entry.id" class="diagnosticsEntry">
+                  <div class="diagnosticsEntryMeta">
+                    <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
+                    <span class="mono diagnosticsBadge">{{ entry.level }}</span>
+                    <span class="mono diagnosticsBadge">{{ entry.phase }}</span>
+                  </div>
+                  <div class="diagnosticsEntryBody">
+                    <strong>{{ entry.source }}</strong>
+                    <span>{{ entry.message }}</span>
+                  </div>
+                </li>
+              </ul>
+            </section>
+
+            <section class="diagnosticsCard diagnosticsCardWide">
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Recent alerts</div>
+                <div class="mono diagnosticsStamp">{{ recentAlerts.length }} items</div>
+              </header>
+              <div v-if="recentAlerts.length === 0" class="panelMuted">No recent alerts.</div>
+              <ul v-else class="diagnosticsList">
+                <li v-for="toast in recentAlerts" :key="toast.id" class="diagnosticsEntry">
+                  <div class="diagnosticsEntryMeta">
+                    <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(toast.atUnixMs) }}</span>
+                    <span class="mono diagnosticsBadge">{{ toast.level }}</span>
+                  </div>
+                  <div class="diagnosticsEntryBody">
+                    <strong>{{ toast.source }}</strong>
+                    <span>{{ toast.message }}</span>
+                  </div>
+                </li>
+              </ul>
+            </section>
+          </div>
+        </section>
       </div>
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
@@ -381,6 +528,107 @@ onBeforeUnmount(() => {
   gap: 0.35rem 0.8rem;
 }
 
+.diagnosticsPane {
+  grid-column: 1 / -1;
+}
+
+.diagnosticsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.diagnosticsCard {
+  border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-working));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface-inline) 76%, var(--panel-footer));
+  padding: 0.7rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.diagnosticsCardWide {
+  grid-column: span 2;
+}
+
+.diagnosticsHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.diagnosticsLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--panelEyebrow, var(--muted));
+}
+
+.diagnosticsStamp {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.diagnosticsPrimary {
+  font-size: 0.84rem;
+  color: var(--text);
+}
+
+.diagnosticsList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.diagnosticsEntry {
+  display: grid;
+  gap: 0.2rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+}
+
+.diagnosticsEntry:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.diagnosticsEntryMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.diagnosticsEntryBody {
+  display: grid;
+  gap: 0.14rem;
+  font-size: 0.78rem;
+}
+
+.diagnosticsTime,
+.diagnosticsBadge {
+  font-size: 0.7rem;
+}
+
+.diagnosticsBadge {
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  background: color-mix(in oklab, var(--surface-sunken) 76%, var(--panel-footer));
+}
+
+.diagnosticsPre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .mono {
   font-family: var(--mono);
 }
@@ -392,6 +640,14 @@ onBeforeUnmount(() => {
 
   .rowTwo {
     grid-template-columns: 1fr;
+  }
+
+  .diagnosticsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnosticsCardWide {
+    grid-column: auto;
   }
 
   .inputWithActions {

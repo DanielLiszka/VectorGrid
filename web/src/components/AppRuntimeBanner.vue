@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRuntimeStore } from '../stores/runtimeStore'
+import { describeRuntimePhase, runtimePhaseLabel } from '../utils/statusPresentation'
 
 const runtime = useRuntimeStore()
 const { bootPhase, bootStage, bootError, bootErrorDetail, bootElapsedMs } = storeToRefs(runtime)
@@ -10,16 +11,16 @@ const visible = computed(() => bootPhase.value === 'booting' || bootPhase.value 
 
 const phaseLabel = computed(() => {
   if (bootPhase.value === 'error') return 'Runtime Error'
-  if (bootPhase.value === 'booting') return 'Initializing'
-  return 'Ready'
+  return runtimePhaseLabel(bootPhase.value)
 })
 
 const detail = computed(() => {
-  if (bootPhase.value === 'error') return bootError.value || 'Unknown startup error'
-  const elapsed = Math.max(0, Math.floor(Number(bootElapsedMs.value || 0)))
-  const suffix = elapsed > 0 ? ` (${elapsed}ms)` : ''
-  const stage = String(bootStage.value || '').trim() || 'Loading'
-  return `${stage}${suffix}`
+  return describeRuntimePhase({
+    phase: bootPhase.value,
+    stage: bootStage.value,
+    elapsedMs: bootElapsedMs.value,
+    error: bootError.value,
+  })
 })
 
 const errorDetail = computed(() => {

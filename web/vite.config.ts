@@ -32,6 +32,28 @@ export default defineConfig(({ mode }) => ({
         manualChunks(id) {
           const normalized = id.replace(/\\/g, '/')
           if (normalized.includes('lightweight-charts.production')) return 'vendor-charts'
+          if (
+            normalized.includes('/node_modules/vue/')
+            || normalized.includes('/node_modules/@vue/')
+            || normalized.includes('/node_modules/pinia/')
+          ) {
+            return 'vendor-framework'
+          }
+          if (
+            normalized.includes('/node_modules/reka-ui/')
+            || normalized.includes('/node_modules/@floating-ui/')
+            || normalized.includes('/node_modules/aria-hidden/')
+          ) {
+            return 'vendor-ui'
+          }
+          if (
+            normalized.includes('/node_modules/@vueuse/')
+            || normalized.includes('/node_modules/fuse.js/')
+            || normalized.includes('/node_modules/lucide-vue-next/')
+            || normalized.includes('/node_modules/zod/')
+          ) {
+            return 'vendor-utilities'
+          }
           return undefined
         },
       },

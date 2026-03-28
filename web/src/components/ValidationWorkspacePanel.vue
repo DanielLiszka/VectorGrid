@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { type Cell, type Header } from '@tanstack/vue-table'
+import {
+  useHeadlessMatrixTable,
+  type MatrixColumnMeta,
+} from '../composables/useHeadlessMatrixTable'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
@@ -159,6 +164,10 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'valida
 const showValidationResults = computed(() => validationStage.value === 'ready')
 const renderedColumns = computed<ValidationColumn[]>(() => validationColumns.value as ValidationColumn[])
 const renderedRows = computed<ValidationRow[]>(() => validationRows.value as ValidationRow[])
+const { headerGroups, rowModelRows } = useHeadlessMatrixTable(
+  renderedColumns,
+  renderedRows,
+)
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
 const {
   scrollElementRef: tableScrollElementRef,
@@ -166,7 +175,7 @@ const {
   topSpacerPx: virtualTopSpacerPx,
   bottomSpacerPx: virtualBottomSpacerPx,
   scrollToTop,
-} = useVirtualTableRows(renderedRows)
+} = useVirtualTableRows(rowModelRows)
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
@@ -380,6 +389,14 @@ function crossDatasetInputId(index: number): string {
 
 function crossDatasetDescriptionId(index: number): string {
   return `validation_cross_dataset_meta_${index}`
+}
+
+function headerMeta(header: Header<ValidationRow, unknown>): MatrixColumnMeta {
+  return header.column.columnDef.meta as MatrixColumnMeta
+}
+
+function validationCellPayload(cell: Cell<ValidationRow, unknown>): ValidationCell {
+  return cell.getValue() as ValidationCell
 }
 
 onMounted(async () => {
@@ -1029,14 +1046,14 @@ onBeforeUnmount(() => {
               Validation metrics for the current shortlist, including route, category, and cross-ticker results.
             </caption>
             <thead>
-              <tr>
+              <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
                 <th
-                  v-for="(column, columnIndex) in renderedColumns"
-                  :key="`val_col_${columnIndex}_${column.label}`"
-                  :class="{ left: column.alignLeft }"
+                  v-for="header in headerGroup.headers"
+                  :key="header.id"
+                  :class="{ left: headerMeta(header).alignLeft }"
                   scope="col"
                 >
-                  {{ column.label }}
+                  {{ headerMeta(header).columnLabel }}
                 </th>
               </tr>
             </thead>
@@ -1044,14 +1061,14 @@ onBeforeUnmount(() => {
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
                 <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
-              <tr v-for="virtualRow in virtualRows" :key="`val_row_${virtualRow.index}`">
-                <template v-for="cell in virtualRow.row.cells" :key="`val_row_${virtualRow.index}_${cell.text}_${cell.className}`">
+              <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
+                <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                   <td
-                    :class="cell.className"
-                    :title="cell.title || undefined"
-                    :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    :class="validationCellPayload(cell).className"
+                    :title="validationCellPayload(cell).title || undefined"
+                    :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
-                    {{ cell.text }}
+                    {{ validationCellPayload(cell).text }}
                   </td>
                 </template>
               </tr>

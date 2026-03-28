@@ -8,13 +8,13 @@ use crate::dynamic_indicator_adapter::{
     PreparedCudaIndicatorInputs,
 };
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
 };
 #[cfg(feature = "cuda")]
 use cust::memory::DeviceBuffer;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "cuda")]
 use std::sync::Arc;
+use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::moving_averages::alma_wrapper::DeviceArrayF32;
@@ -115,6 +115,19 @@ pub struct VcetChandelierSignals {
     pub long_stop: Vec<f64>,
     pub short_stop: Vec<f64>,
     pub first_valid: usize,
+}
+
+struct VcetIndicatorIds {
+    vidya_short_key: String,
+    vidya_long_key: String,
+    vidya_alpha_key: String,
+    vidya_output: String,
+    vidya_input_kind: IndicatorInputKind,
+    chandelier_period_key: String,
+    chandelier_mult_key: String,
+    chandelier_use_close_key: String,
+    chandelier_long_output: String,
+    chandelier_short_output: String,
 }
 
 #[cfg(feature = "cuda")]
@@ -360,6 +373,39 @@ fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     ))
 }
 
+fn vcet_indicator_ids() -> Result<&'static VcetIndicatorIds, String> {
+    static IDS: OnceLock<Result<VcetIndicatorIds, String>> = OnceLock::new();
+
+    IDS.get_or_init(|| {
+        let vidya_descriptor = find_dynamic_indicator_descriptor("vidya").ok_or_else(|| {
+            "VCET indicator 'vidya' is not registered for dynamic dispatch".to_string()
+        })?;
+        Ok(VcetIndicatorIds {
+            vidya_short_key: resolve_param_key("vidya", &["short_period", "short", "fast"])?,
+            vidya_long_key: resolve_param_key("vidya", &["long_period", "long", "slow"])?,
+            vidya_alpha_key: resolve_param_key("vidya", &["alpha"])?,
+            vidya_output: resolve_output_id("vidya", &["values", "value", "vidya"])?,
+            vidya_input_kind: vidya_descriptor.input_kind,
+            chandelier_period_key: resolve_param_key(
+                "chandelier_exit",
+                &["period", "length", "timeperiod"],
+            )?,
+            chandelier_mult_key: resolve_param_key("chandelier_exit", &["mult", "multiplier"])?,
+            chandelier_use_close_key: resolve_param_key(
+                "chandelier_exit",
+                &["use_close", "close"],
+            )?,
+            chandelier_long_output: resolve_output_id("chandelier_exit", &["long_stop", "long"])?,
+            chandelier_short_output: resolve_output_id(
+                "chandelier_exit",
+                &["short_stop", "short"],
+            )?,
+        })
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
 fn compute_indicator_f64(
     candles: &Candles,
     ma_source: &str,
@@ -434,21 +480,18 @@ pub fn compute_vcet_vidya_signals(
     alpha: f64,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<VcetVidyaSignals, String> {
-    let short_key = resolve_param_key("vidya", &["short_period", "short", "fast"])?;
-    let long_key = resolve_param_key("vidya", &["long_period", "long", "slow"])?;
-    let alpha_key = resolve_param_key("vidya", &["alpha"])?;
-    let output_id = resolve_output_id("vidya", &["values", "value", "vidya"])?;
+    let ids = vcet_indicator_ids()?;
     let params = vec![
         IndicatorParamKV {
-            key: short_key,
+            key: ids.vidya_short_key.clone(),
             value: IndicatorParamValue::Int(i64::from(periods.vidya_short)),
         },
         IndicatorParamKV {
-            key: long_key,
+            key: ids.vidya_long_key.clone(),
             value: IndicatorParamValue::Int(i64::from(periods.vidya_long)),
         },
         IndicatorParamKV {
-            key: alpha_key,
+            key: ids.vidya_alpha_key.clone(),
             value: IndicatorParamValue::Float(alpha),
         },
     ];
@@ -457,7 +500,7 @@ pub fn compute_vcet_vidya_signals(
         ma_source,
         backend,
         "vidya",
-        output_id.as_str(),
+        ids.vidya_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -478,22 +521,18 @@ pub fn compute_vcet_chandelier_signals(
     use_close: bool,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<VcetChandelierSignals, String> {
-    let period_key = resolve_param_key("chandelier_exit", &["period", "length", "timeperiod"])?;
-    let mult_key = resolve_param_key("chandelier_exit", &["mult", "multiplier"])?;
-    let use_close_key = resolve_param_key("chandelier_exit", &["use_close", "close"])?;
-    let long_output = resolve_output_id("chandelier_exit", &["long_stop", "long"])?;
-    let short_output = resolve_output_id("chandelier_exit", &["short_stop", "short"])?;
+    let ids = vcet_indicator_ids()?;
     let params = vec![
         IndicatorParamKV {
-            key: period_key,
+            key: ids.chandelier_period_key.clone(),
             value: IndicatorParamValue::Int(i64::from(period)),
         },
         IndicatorParamKV {
-            key: mult_key,
+            key: ids.chandelier_mult_key.clone(),
             value: IndicatorParamValue::Float(mult),
         },
         IndicatorParamKV {
-            key: use_close_key,
+            key: ids.chandelier_use_close_key.clone(),
             value: IndicatorParamValue::Bool(use_close),
         },
     ];
@@ -502,7 +541,7 @@ pub fn compute_vcet_chandelier_signals(
         "close",
         backend,
         "chandelier_exit",
-        long_output.as_str(),
+        ids.chandelier_long_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -512,7 +551,7 @@ pub fn compute_vcet_chandelier_signals(
         "close",
         backend,
         "chandelier_exit",
-        short_output.as_str(),
+        ids.chandelier_short_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -539,32 +578,26 @@ pub fn compute_vcet_vidya_signal_cuda_device(
     periods: VcetResolvedPeriods,
     alpha: f64,
 ) -> Result<VcetOwnedDeviceMatrix, String> {
-    let short_key = resolve_param_key("vidya", &["short_period", "short", "fast"])?;
-    let long_key = resolve_param_key("vidya", &["long_period", "long", "slow"])?;
-    let alpha_key = resolve_param_key("vidya", &["alpha"])?;
-    let output_id = resolve_output_id("vidya", &["values", "value", "vidya"])?;
+    let ids = vcet_indicator_ids()?;
     let params = vec![
         IndicatorParamKV {
-            key: short_key,
+            key: ids.vidya_short_key.clone(),
             value: IndicatorParamValue::Int(i64::from(periods.vidya_short)),
         },
         IndicatorParamKV {
-            key: long_key,
+            key: ids.vidya_long_key.clone(),
             value: IndicatorParamValue::Int(i64::from(periods.vidya_long)),
         },
         IndicatorParamKV {
-            key: alpha_key,
+            key: ids.vidya_alpha_key.clone(),
             value: IndicatorParamValue::Float(alpha),
         },
     ];
-    let descriptor = find_dynamic_indicator_descriptor("vidya").ok_or_else(|| {
-        "VCET indicator 'vidya' is not registered for dynamic dispatch".to_string()
-    })?;
     let out = compute_dynamic_indicator_cuda_direct_with_inputs(
         prepared_inputs,
         "vidya",
-        Some(output_id.as_str()),
-        descriptor.input_kind,
+        Some(ids.vidya_output.as_str()),
+        ids.vidya_input_kind,
         params.as_slice(),
         Kernel::Auto,
         vector_ta::indicators::dispatch::CudaOutputTarget::DeviceF32,
@@ -575,8 +608,8 @@ pub fn compute_vcet_vidya_signal_cuda_device(
             let host_out = compute_dynamic_indicator_cuda_direct_with_inputs(
                 prepared_inputs,
                 "vidya",
-                Some(output_id.as_str()),
-                descriptor.input_kind,
+                Some(ids.vidya_output.as_str()),
+                ids.vidya_input_kind,
                 params.as_slice(),
                 Kernel::Auto,
                 vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,

@@ -1,0 +1,95 @@
+import { describe, expect, it } from 'vitest'
+import {
+  describeRuntimePhase,
+  describeTaskActivity,
+  describeTrackedTask,
+  formatOverallProgressLabel,
+  runtimePhaseLabel,
+  taskLifecycleLabel,
+} from './statusPresentation'
+
+describe('statusPresentation', () => {
+  it('normalizes task lifecycle labels across shell surfaces', () => {
+    expect(taskLifecycleLabel('running')).toBe('Running')
+    expect(taskLifecycleLabel('success')).toBe('Completed')
+    expect(taskLifecycleLabel('cancelled')).toBe('Cancelled')
+    expect(taskLifecycleLabel('unknown')).toBe('Idle')
+  })
+
+  it('builds tracked task detail from the best available fields', () => {
+    expect(
+      describeTrackedTask({
+        id: 'task_1',
+        command: 'run_double_ma_optimization',
+        label: 'Optimization',
+        status: 'running',
+        startedAt: 1_700_000_000_000,
+        phase: 'Evaluate',
+        progressPct: 42.35,
+      }),
+    ).toBe('Evaluate (42.4%)')
+  })
+
+  it('summarizes active work before toast or history fallback', () => {
+    expect(
+      describeTaskActivity({
+        activeTasks: [
+          {
+            id: 'task_1',
+            command: 'run_double_ma_validation',
+            label: 'Validation',
+            status: 'running',
+            startedAt: 1_700_000_000_000,
+            message: 'Running validation 4/16',
+          },
+        ],
+        latestToast: {
+          id: 'toast_1',
+          atUnixMs: 1_700_000_000_500,
+          source: 'run_double_ma_validation',
+          message: 'Validation failed.',
+          level: 'error',
+        },
+      }),
+    ).toBe('Running validation 4/16')
+
+    expect(
+      describeTaskActivity({
+        activeTasks: [],
+        latestToast: {
+          id: 'toast_1',
+          atUnixMs: 1_700_000_000_500,
+          source: 'run_double_ma_validation',
+          message: 'Validation failed.',
+          level: 'error',
+        },
+      }),
+    ).toBe('Validation failed.')
+  })
+
+  it('formats progress and runtime summaries consistently', () => {
+    expect(
+      formatOverallProgressLabel({
+        pct: 42,
+        label: 'Optimize 42/100',
+        source: 'double_ma_progress',
+        atUnixMs: 1_700_000_000_000,
+      }),
+    ).toContain('Optimize 42/100')
+
+    expect(runtimePhaseLabel('booting')).toBe('Booting')
+    expect(
+      describeRuntimePhase({
+        phase: 'booting',
+        stage: 'Hydrating stores',
+        elapsedMs: 52,
+      }),
+    ).toBe('Hydrating stores (52ms)')
+    expect(
+      describeRuntimePhase({
+        phase: 'error',
+        error: 'Renderer boot failed',
+      }),
+    ).toBe('Renderer boot failed')
+  })
+})
