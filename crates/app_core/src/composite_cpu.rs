@@ -30,7 +30,9 @@ use crate::carm::{
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::carm::{
-    compute_carm_mixed_signals_f32, compute_carm_otto_signals_f32, compute_carm_rocr_signal_f32,
+    compute_carm_mixed_signals_f32_with_attempt_state,
+    compute_carm_otto_signals_f32_with_attempt_state,
+    compute_carm_rocr_signal_f32_with_attempt_state, CarmGpuAttemptState,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::carm_gpu_kernel::{
@@ -7584,6 +7586,7 @@ fn run_carm_optimization_gpu(
 
     let prepared_cuda_inputs =
         prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
+    let mut gpu_attempt_state = CarmGpuAttemptState::default();
 
     let fast_rows = fast_periods.len();
     let row_major_len_fast = fast_rows
@@ -7596,12 +7599,13 @@ fn run_carm_optimization_gpu(
         .ok_or_else(|| "CARM slow period range is empty".to_string())?;
     for &fast_len in &fast_periods {
         let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_seed);
-        let rocr = compute_carm_rocr_signal_f32(
+        let rocr = compute_carm_rocr_signal_f32_with_attempt_state(
             candles,
             &req.ma_source,
             &req.backend,
             periods,
             Some(&prepared_cuda_inputs),
+            &mut gpu_attempt_state,
         )?;
         rocr_first_valid.push(rocr.iter().position(|v| v.is_finite()).unwrap_or(n));
         rocr_row_major.extend_from_slice(&rocr);
@@ -7635,23 +7639,25 @@ fn run_carm_optimization_gpu(
                 periods.coppock_short.max(2),
                 periods.ao_slow.max(periods.otto),
             );
-            let mixed = compute_carm_mixed_signals_f32(
+            let mixed = compute_carm_mixed_signals_f32_with_attempt_state(
                 candles,
                 &req.ma_source,
                 &req.backend,
                 periods,
                 Some(&prepared_cuda_inputs),
+                &mut gpu_attempt_state,
             )?;
             let otto_row = if let Some(&row) = otto_row_lookup.get(&otto_key) {
                 row
             } else {
-                let otto = compute_carm_otto_signals_f32(
+                let otto = compute_carm_otto_signals_f32_with_attempt_state(
                     candles,
                     &req.ma_source,
                     &req.backend,
                     periods,
                     &carm_cfg,
                     Some(&prepared_cuda_inputs),
+                    &mut gpu_attempt_state,
                 )?;
                 let row = i32::try_from(otto_first_valid_by_row.len())
                     .map_err(|_| "CARM OTTO row index exceeds i32 range".to_string())?;
@@ -7727,6 +7733,11 @@ fn run_carm_optimization_gpu(
 
     let signals = CarmGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         mixed_rows: signal_rows,
         mixed_stride: n,
@@ -7819,12 +7830,13 @@ fn run_carm_optimization_gpu(
             .get(usize::try_from(otto_row).unwrap_or(usize::MAX))
             .copied()
             .unwrap_or(n);
-        let mixed = compute_carm_mixed_signals_f32(
+        let mixed = compute_carm_mixed_signals_f32_with_attempt_state(
             candles,
             &req.ma_source,
             &req.backend,
             periods,
             Some(&prepared_cuda_inputs),
+            &mut gpu_attempt_state,
         )?;
         let signals_first_valid = mixed
             .first_valid

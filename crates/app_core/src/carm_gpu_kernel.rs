@@ -6,11 +6,16 @@ use crate::composite_gpu_metric_decode::{
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
-    load_double_crossover_module,
+    load_double_crossover_module, DeviceLaunchCaps, KernelLaunchCaps,
+};
+use crate::standalone_gpu_runtime::{
+    checked_i32, ensure_device_buffer_len, ensure_host_f32_len, slice_signature, CloseSeriesKey,
+    ResidentCloseReturns, UploadSignature,
 };
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
-use cust::memory::CopyDestination;
+use cust::function::Function;
+use cust::memory::{CopyDestination, DeviceCopy};
 use cust::stream::{Stream, StreamFlags};
 use cust::{memory::DeviceBuffer, module::Module, CudaFlags};
 use std::cell::RefCell;
@@ -20,9 +25,14 @@ use std::sync::Arc;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 
 const CARM_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
+const CARM_FLAG_LONG_ONLY: u32 = 1u32 << 0;
+const CARM_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
+const CARM_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
+const CARM_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
 pub struct CarmGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
+    pub close_device_ptr: u64,
     pub cols: usize,
     pub mixed_rows: usize,
     pub mixed_stride: usize,
@@ -45,36 +55,114 @@ pub struct CarmGpuComboBatch<'a> {
     pub end_t: &'a [i32],
 }
 
+#[derive(Default)]
+struct CarmKernelScratch {
+    d_combo_fast: Option<DeviceBuffer<i32>>,
+    d_combo_otto: Option<DeviceBuffer<i32>>,
+    d_combo_start: Option<DeviceBuffer<i32>>,
+    d_combo_end: Option<DeviceBuffer<i32>>,
+    d_out: Option<DeviceBuffer<f32>>,
+    host_metrics: Vec<f32>,
+    combo_fast_sig: Option<UploadSignature>,
+    combo_otto_sig: Option<UploadSignature>,
+    combo_start_sig: Option<UploadSignature>,
+    combo_end_sig: Option<UploadSignature>,
+}
+
+impl CarmKernelScratch {
+    fn ensure_len_i32(
+        slot: &mut Option<DeviceBuffer<i32>>,
+        required: usize,
+        stream: &Stream,
+    ) -> Result<(), String> {
+        ensure_device_buffer_len(slot, required, stream)
+    }
+
+    fn ensure_len_f32(
+        slot: &mut Option<DeviceBuffer<f32>>,
+        required: usize,
+        stream: &Stream,
+    ) -> Result<(), String> {
+        ensure_device_buffer_len(slot, required, stream)
+    }
+
+    fn ensure_host_metrics(&mut self, required: usize) {
+        ensure_host_f32_len(&mut self.host_metrics, required);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum CarmKernelKey {
+    ComputeReturns,
+    Backtest,
+}
+
 struct CarmCudaRuntime {
     context: Arc<Context>,
     module: Module,
     stream: Stream,
+    launch_caps: DeviceLaunchCaps,
+    resident_series: Option<ResidentCloseReturns>,
+    scratch: CarmKernelScratch,
+    kernel_caps: RefCell<HashMap<CarmKernelKey, KernelLaunchCaps>>,
 }
 
 impl CarmCudaRuntime {
     fn new(device_id: u32) -> Result<Self, String> {
         cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
+        let launch_caps = detect_device_launch_caps(device);
         let context = Arc::new(Context::new(device).map_err(|e| e.to_string())?);
-
         let module = load_double_crossover_module(device)?;
-
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
 
         Ok(Self {
             context,
             module,
             stream,
+            launch_caps,
+            resident_series: None,
+            scratch: CarmKernelScratch::default(),
+            kernel_caps: RefCell::new(HashMap::new()),
         })
     }
 
     fn set_current(&self) -> Result<(), String> {
         CurrentContext::set_current(self.context.as_ref()).map_err(|e| e.to_string())
     }
+
+    fn launch_caps_for(&self, key: CarmKernelKey, func: &Function) -> KernelLaunchCaps {
+        if let Some(cached) = self.kernel_caps.borrow().get(&key) {
+            return *cached;
+        }
+        let caps = detect_kernel_launch_caps(func, self.launch_caps);
+        self.kernel_caps.borrow_mut().insert(key, caps);
+        caps
+    }
 }
 
 thread_local! {
     static CARM_GPU_RUNTIME: RefCell<HashMap<u32, CarmCudaRuntime>> = RefCell::new(HashMap::new());
+}
+
+fn ensure_uploaded_slice<T: DeviceCopy + std::hash::Hash>(
+    slot: &mut Option<DeviceBuffer<T>>,
+    sig_slot: &mut Option<UploadSignature>,
+    values: &[T],
+    stream: &Stream,
+    label: &str,
+) -> Result<UploadSignature, String> {
+    ensure_device_buffer_len(slot, values.len(), stream)?;
+    let sig = slice_signature(values);
+    if *sig_slot != Some(sig) {
+        let mut prefix = slot
+            .as_mut()
+            .ok_or_else(|| format!("CARM GPU {label} scratch missing"))?
+            .index(..values.len());
+        prefix.copy_from(values).map_err(|e| e.to_string())?;
+        *sig_slot = Some(sig);
+    }
+    Ok(sig)
 }
 
 fn validate_inputs(
@@ -85,17 +173,21 @@ fn validate_inputs(
     if n == 0 {
         return Err("CARM GPU kernel requires non-empty series".to_string());
     }
+    let n_i32 = checked_i32("CARM GPU cols", n)?;
     if signals.close_f32.len() != n {
         return Err("CARM GPU close length mismatch".to_string());
     }
     if signals.mixed_rows == 0
-        || signals.mixed_stride == 0
         || signals.fast_rows == 0
-        || signals.fast_stride == 0
         || signals.otto_rows == 0
+        || signals.mixed_stride == 0
+        || signals.fast_stride == 0
         || signals.otto_stride == 0
     {
         return Err("CARM GPU signal matrix shape is invalid".to_string());
+    }
+    if signals.mixed_stride < n || signals.fast_stride < n || signals.otto_stride < n {
+        return Err("CARM GPU stride is smaller than cols".to_string());
     }
     if signals.coppock_row_major_ptr == 0
         || signals.ao_row_major_ptr == 0
@@ -107,20 +199,65 @@ fn validate_inputs(
         return Err("CARM GPU signal pointer is null".to_string());
     }
 
+    checked_i32("CARM GPU mixed row count", signals.mixed_rows)?;
+    checked_i32("CARM GPU mixed stride", signals.mixed_stride)?;
+    checked_i32("CARM GPU fast row count", signals.fast_rows)?;
+    checked_i32("CARM GPU fast stride", signals.fast_stride)?;
+    checked_i32("CARM GPU otto row count", signals.otto_rows)?;
+    checked_i32("CARM GPU otto stride", signals.otto_stride)?;
+
     let combos_len = combos.fast_row_index.len();
+    checked_i32("CARM GPU combo count", combos_len)?;
     if combos.otto_row_index.len() != combos_len
         || combos.start_t.len() != combos_len
         || combos.end_t.len() != combos_len
     {
         return Err("CARM GPU combo vector length mismatch".to_string());
     }
+    for (idx, ((&fast_row, &otto_row), (&start_t, &end_t))) in combos
+        .fast_row_index
+        .iter()
+        .zip(combos.otto_row_index.iter())
+        .zip(combos.start_t.iter().zip(combos.end_t.iter()))
+        .enumerate()
+    {
+        if fast_row < 0 || fast_row >= signals.fast_rows as i32 {
+            return Err(format!(
+                "CARM GPU fast_row_index[{idx}] out of bounds: {fast_row} not in [0, {})",
+                signals.fast_rows
+            ));
+        }
+        if otto_row < 0 || otto_row >= signals.otto_rows as i32 {
+            return Err(format!(
+                "CARM GPU otto_row_index[{idx}] out of bounds: {otto_row} not in [0, {})",
+                signals.otto_rows
+            ));
+        }
+        if start_t < 0 || end_t < 0 {
+            return Err(format!("CARM GPU time window[{idx}] must be non-negative"));
+        }
+        if start_t >= end_t {
+            return Err(format!(
+                "CARM GPU time window[{idx}] requires start_t < end_t but got {start_t} >= {end_t}"
+            ));
+        }
+        if start_t >= n_i32 {
+            return Err(format!(
+                "CARM GPU time window[{idx}] start_t {start_t} exceeds cols {n_i32}"
+            ));
+        }
+        if end_t > n_i32 {
+            return Err(format!(
+                "CARM GPU time window[{idx}] end_t {end_t} exceeds cols {n_i32}"
+            ));
+        }
+    }
     Ok(())
 }
 
 fn launch_compute_log_returns_f32(
     rt: &mut CarmCudaRuntime,
-    device_id: u32,
-    d_close: &DeviceBuffer<f32>,
+    close_ptr: u64,
     d_lr: &mut DeviceBuffer<f32>,
     len: usize,
 ) -> Result<(), String> {
@@ -132,18 +269,15 @@ fn launch_compute_log_returns_f32(
         .module
         .get_function("compute_log_returns_f32")
         .map_err(|e| e.to_string())?;
-    let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
-    let device_caps = detect_device_launch_caps(device);
     let launch = choose_launch_shape_1d_from_candidates(
         len,
-        device_caps,
-        detect_kernel_launch_caps(&kernel, device_caps),
+        rt.launch_caps,
+        rt.launch_caps_for(CarmKernelKey::ComputeReturns, &kernel),
         &[64u32, 128, 256, 512],
     );
 
-    let mut close_ptr = d_close.as_device_ptr().as_raw();
-    let mut len_i =
-        i32::try_from(len).map_err(|_| "CARM GPU close length exceeds i32 range".to_string())?;
+    let mut close_ptr = close_ptr;
+    let mut len_i = checked_i32("CARM GPU close length", len)?;
     let mut lr_ptr = d_lr.as_device_ptr().as_raw();
 
     unsafe {
@@ -164,6 +298,57 @@ fn launch_compute_log_returns_f32(
     }
 
     Ok(())
+}
+
+fn ensure_resident_close_lr<'a>(
+    rt: &'a mut CarmCudaRuntime,
+    close_f32: &[f32],
+    close_device_ptr: u64,
+) -> Result<&'a ResidentCloseReturns, String> {
+    let key = CloseSeriesKey::from_host_and_device(close_f32, close_device_ptr);
+    let needs_refresh = rt
+        .resident_series
+        .as_ref()
+        .map(|resident| resident.key != key)
+        .unwrap_or(true);
+
+    if needs_refresh {
+        let (close_ptr, d_close_owner) = if close_device_ptr != 0 {
+            (close_device_ptr, None)
+        } else {
+            let d_close = DeviceBuffer::from_slice(close_f32).map_err(|e| e.to_string())?;
+            let close_ptr = d_close.as_device_ptr().as_raw();
+            (close_ptr, Some(d_close))
+        };
+        let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(close_f32.len()) }
+            .map_err(|e| e.to_string())?;
+        launch_compute_log_returns_f32(rt, close_ptr, &mut d_lr, close_f32.len())?;
+        rt.resident_series = Some(ResidentCloseReturns {
+            key,
+            close_ptr,
+            d_close_owner,
+            d_lr,
+        });
+    }
+
+    rt.resident_series
+        .as_ref()
+        .ok_or_else(|| "CARM resident close/lr cache missing".to_string())
+}
+
+#[inline]
+fn carm_kernel_flags(strategy: &StrategyConfig) -> u32 {
+    let mut flags = CARM_FLAG_SIGNED_EXPOSURE;
+    if strategy.long_only {
+        flags |= CARM_FLAG_LONG_ONLY;
+    }
+    if !strategy.allow_flip {
+        flags |= CARM_FLAG_DISABLE_FLIP;
+    }
+    if strategy.trade_on_next_bar {
+        flags |= CARM_FLAG_TRADE_NEXT_BAR;
+    }
+    flags
 }
 
 fn decode_metrics_row(row: &[f32]) -> Metrics {
@@ -206,73 +391,114 @@ pub fn eval_carm_metrics_gpu_kernel_device_rows(
             .ok_or_else(|| "CARM GPU runtime missing".to_string())?;
         rt.set_current()?;
 
-        let d_close = DeviceBuffer::from_slice(signals.close_f32).map_err(|e| e.to_string())?;
-        let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(signals.cols) }
-            .map_err(|e| e.to_string())?;
-        launch_compute_log_returns_f32(rt, device_id, &d_close, &mut d_lr, signals.cols)?;
+        let (close_ptr_raw, lr_ptr_raw) = {
+            let resident =
+                ensure_resident_close_lr(rt, signals.close_f32, signals.close_device_ptr)?;
+            let _keepalive = resident.d_close_owner.as_ref();
+            (resident.close_ptr, resident.d_lr.as_device_ptr().as_raw())
+        };
 
-        let d_combo_fast =
-            DeviceBuffer::from_slice(combos.fast_row_index).map_err(|e| e.to_string())?;
-        let d_combo_otto =
-            DeviceBuffer::from_slice(combos.otto_row_index).map_err(|e| e.to_string())?;
-        let d_combo_start = DeviceBuffer::from_slice(combos.start_t).map_err(|e| e.to_string())?;
-        let d_combo_end = DeviceBuffer::from_slice(combos.end_t).map_err(|e| e.to_string())?;
-        let d_out =
-            unsafe { DeviceBuffer::<f32>::uninitialized(out_len) }.map_err(|e| e.to_string())?;
+        CarmKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_fast, combo_count, &rt.stream)?;
+        CarmKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_otto, combo_count, &rt.stream)?;
+        CarmKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_start, combo_count, &rt.stream)?;
+        CarmKernelScratch::ensure_len_i32(&mut rt.scratch.d_combo_end, combo_count, &rt.stream)?;
+        CarmKernelScratch::ensure_len_f32(&mut rt.scratch.d_out, out_len, &rt.stream)?;
+
+        ensure_uploaded_slice(
+            &mut rt.scratch.d_combo_fast,
+            &mut rt.scratch.combo_fast_sig,
+            combos.fast_row_index,
+            &rt.stream,
+            "combo fast",
+        )?;
+        ensure_uploaded_slice(
+            &mut rt.scratch.d_combo_otto,
+            &mut rt.scratch.combo_otto_sig,
+            combos.otto_row_index,
+            &rt.stream,
+            "combo otto",
+        )?;
+        ensure_uploaded_slice(
+            &mut rt.scratch.d_combo_start,
+            &mut rt.scratch.combo_start_sig,
+            combos.start_t,
+            &rt.stream,
+            "combo start",
+        )?;
+        ensure_uploaded_slice(
+            &mut rt.scratch.d_combo_end,
+            &mut rt.scratch.combo_end_sig,
+            combos.end_t,
+            &rt.stream,
+            "combo end",
+        )?;
 
         let kernel = rt
             .module
             .get_function("carm_backtest_metrics_f32")
             .map_err(|e| e.to_string())?;
-        let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
-        let device_caps = detect_device_launch_caps(device);
         let launch = choose_launch_shape_1d_from_candidates(
             combo_count,
-            device_caps,
-            detect_kernel_launch_caps(&kernel, device_caps),
+            rt.launch_caps,
+            rt.launch_caps_for(CarmKernelKey::Backtest, &kernel),
             &[32u32, 64, 128, 256],
         );
 
-        let mut flags: u32 = 0;
-        if strategy.long_only {
-            flags |= 1u32 << 0;
-        }
-        if !strategy.allow_flip {
-            flags |= 1u32 << 1;
-        }
-        if strategy.trade_on_next_bar {
-            flags |= 1u32 << 2;
-        }
-        flags |= 1u32 << 4;
-
-        let commission = strategy.effective_commission().clamp(0.0, 0.95) as f32;
-        let otto_threshold = carm.otto_threshold.abs() as f32;
-
-        let mut close_ptr = d_close.as_device_ptr().as_raw();
-        let mut lr_ptr = d_lr.as_device_ptr().as_raw();
-        let mut t_i = signals.cols as i32;
-        let mut mixed_rows_i = signals.mixed_rows as i32;
-        let mut mixed_stride_i = signals.mixed_stride as i32;
+        let mut close_ptr = close_ptr_raw;
+        let mut lr_ptr = lr_ptr_raw;
+        let mut t_i = checked_i32("CARM GPU cols", signals.cols)?;
+        let mut mixed_rows_i = checked_i32("CARM GPU mixed row count", signals.mixed_rows)?;
+        let mut mixed_stride_i = checked_i32("CARM GPU mixed stride", signals.mixed_stride)?;
         let mut coppock_ptr = signals.coppock_row_major_ptr;
         let mut ao_ptr = signals.ao_row_major_ptr;
         let mut rocr_ptr = signals.rocr_row_major_ptr;
-        let mut fast_rows_i = signals.fast_rows as i32;
-        let mut fast_stride_i = signals.fast_stride as i32;
+        let mut fast_rows_i = checked_i32("CARM GPU fast row count", signals.fast_rows)?;
+        let mut fast_stride_i = checked_i32("CARM GPU fast stride", signals.fast_stride)?;
         let mut apo_ptr = signals.apo_row_major_ptr;
         let mut hott_ptr = signals.otto_hott_row_major_ptr;
         let mut lott_ptr = signals.otto_lott_row_major_ptr;
-        let mut otto_rows_i = signals.otto_rows as i32;
-        let mut otto_stride_i = signals.otto_stride as i32;
-        let mut combo_fast_ptr = d_combo_fast.as_device_ptr().as_raw();
-        let mut combo_otto_ptr = d_combo_otto.as_device_ptr().as_raw();
-        let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
-        let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
-        let mut combo_count_i = combo_count as i32;
-        let mut flags_u = flags;
-        let mut commission_f = commission;
-        let mut otto_threshold_f = otto_threshold;
-        let mut out_stride_i = CARM_METRICS_STRIDE as i32;
-        let mut out_ptr = d_out.as_device_ptr().as_raw();
+        let mut otto_rows_i = checked_i32("CARM GPU otto row count", signals.otto_rows)?;
+        let mut otto_stride_i = checked_i32("CARM GPU otto stride", signals.otto_stride)?;
+        let mut combo_fast_ptr = rt
+            .scratch
+            .d_combo_fast
+            .as_ref()
+            .ok_or_else(|| "CARM combo fast scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_otto_ptr = rt
+            .scratch
+            .d_combo_otto
+            .as_ref()
+            .ok_or_else(|| "CARM combo otto scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_start_ptr = rt
+            .scratch
+            .d_combo_start
+            .as_ref()
+            .ok_or_else(|| "CARM combo start scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_end_ptr = rt
+            .scratch
+            .d_combo_end
+            .as_ref()
+            .ok_or_else(|| "CARM combo end scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut combo_count_i = checked_i32("CARM GPU combo count", combo_count)?;
+        let mut flags_u = carm_kernel_flags(strategy);
+        let mut commission_f = strategy.effective_commission().clamp(0.0, 0.95) as f32;
+        let mut otto_threshold_f = carm.otto_threshold.abs() as f32;
+        let mut out_stride_i = checked_i32("CARM GPU metrics stride", CARM_METRICS_STRIDE)?;
+        let mut out_ptr = rt
+            .scratch
+            .d_out
+            .as_ref()
+            .ok_or_else(|| "CARM output scratch missing".to_string())?
+            .as_device_ptr()
+            .as_raw();
 
         unsafe {
             let args: &mut [*mut c_void] = &mut [
@@ -314,15 +540,107 @@ pub fn eval_carm_metrics_gpu_kernel_device_rows(
         }
 
         rt.stream.synchronize().map_err(|e| e.to_string())?;
-        let mut host_metrics = vec![0.0f32; out_len];
-        d_out
-            .copy_to(host_metrics.as_mut_slice())
+        rt.scratch.ensure_host_metrics(out_len);
+        let out_slice = rt
+            .scratch
+            .d_out
+            .as_ref()
+            .ok_or_else(|| "CARM output scratch missing".to_string())?
+            .index(..out_len);
+        out_slice
+            .copy_to(rt.scratch.host_metrics.as_mut_slice())
             .map_err(|e| e.to_string())?;
 
-        let mut out: Vec<Metrics> = Vec::with_capacity(combo_count);
-        for row in host_metrics.chunks_exact(CARM_METRICS_STRIDE) {
+        let mut out = Vec::with_capacity(combo_count);
+        for row in rt.scratch.host_metrics[..out_len].chunks_exact(CARM_METRICS_STRIDE) {
             out.push(decode_metrics_row(row));
         }
         Ok(out)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_signals(close_f32: &[f32]) -> CarmGpuDeviceSignalMatrices<'_> {
+        CarmGpuDeviceSignalMatrices {
+            close_f32,
+            close_device_ptr: 1,
+            cols: close_f32.len(),
+            mixed_rows: 2,
+            mixed_stride: close_f32.len(),
+            coppock_row_major_ptr: 11,
+            ao_row_major_ptr: 12,
+            rocr_row_major_ptr: 13,
+            fast_rows: 2,
+            fast_stride: close_f32.len(),
+            apo_row_major_ptr: 14,
+            otto_hott_row_major_ptr: 15,
+            otto_lott_row_major_ptr: 16,
+            otto_rows: 2,
+            otto_stride: close_f32.len(),
+        }
+    }
+
+    #[test]
+    fn validate_inputs_rejects_stride_smaller_than_cols() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let mut signals = sample_signals(&close);
+        signals.fast_stride = 3;
+        let combos = CarmGpuComboBatch {
+            fast_row_index: &[0],
+            otto_row_index: &[0],
+            start_t: &[1],
+            end_t: &[4],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("stride bounds");
+        assert!(err.contains("stride is smaller than cols"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_out_of_range_combo_rows() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+        let combos = CarmGpuComboBatch {
+            fast_row_index: &[2],
+            otto_row_index: &[0],
+            start_t: &[1],
+            end_t: &[4],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("fast row bounds");
+        assert!(err.contains("fast_row_index[0]"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_invalid_windows() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+
+        let negative = CarmGpuComboBatch {
+            fast_row_index: &[0],
+            otto_row_index: &[0],
+            start_t: &[-1],
+            end_t: &[4],
+        };
+        let err = validate_inputs(&signals, &negative).expect_err("negative bounds");
+        assert!(err.contains("must be non-negative"));
+
+        let empty = CarmGpuComboBatch {
+            fast_row_index: &[0],
+            otto_row_index: &[0],
+            start_t: &[3],
+            end_t: &[3],
+        };
+        let err = validate_inputs(&signals, &empty).expect_err("empty window");
+        assert!(err.contains("requires start_t < end_t"));
+    }
+
+    #[test]
+    fn checked_i32_rejects_overflow() {
+        let err = checked_i32("CARM GPU test value", usize::MAX).expect_err("overflow");
+        assert!(err.contains("exceeds i32 range"));
+    }
 }

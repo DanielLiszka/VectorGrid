@@ -63,6 +63,18 @@ pub struct CarmSignals {
     pub first_valid: usize,
 }
 
+#[cfg(feature = "cuda")]
+#[derive(Clone, Debug)]
+pub struct CarmSignalsF32 {
+    pub coppock: Vec<f32>,
+    pub ao: Vec<f32>,
+    pub rocr: Vec<f32>,
+    pub apo: Vec<f32>,
+    pub otto_hott: Vec<f32>,
+    pub otto_lott: Vec<f32>,
+    pub first_valid: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct CarmMixedSignals {
     pub coppock: Vec<f64>,
@@ -93,6 +105,12 @@ pub struct CarmOttoSignalsF32 {
     pub hott: Vec<f32>,
     pub lott: Vec<f32>,
     pub first_valid: usize,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Default)]
+pub(crate) struct CarmGpuAttemptState {
+    cuda_failed: bool,
 }
 
 fn default_carm_coppock_long_period() -> u16 {
@@ -228,6 +246,17 @@ fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
 }
 
 #[cfg(feature = "cuda")]
+fn series_to_f32(out: DynamicIndicatorComputeOutput) -> Vec<f32> {
+    match out.series {
+        DynamicIndicatorSeries::F64(v) => v.into_iter().map(|x| x as f32).collect(),
+        DynamicIndicatorSeries::I32(v) => v.into_iter().map(|x| x as f32).collect(),
+        DynamicIndicatorSeries::Bool(v) => {
+            v.into_iter().map(|x| if x { 1.0 } else { 0.0 }).collect()
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
 fn cuda_series_to_f64(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f64>, String> {
     match out.series {
         DynamicIndicatorCudaSeries::HostF32(v) => Ok(v.into_iter().map(|x| x as f64).collect()),
@@ -298,6 +327,7 @@ fn compute_indicator_f64(
     output_id: &str,
     params: &[IndicatorParamKV],
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    #[cfg(feature = "cuda")] attempt_state: Option<&mut CarmGpuAttemptState>,
 ) -> Result<Vec<f64>, String> {
     #[cfg(not(feature = "cuda"))]
     let _ = backend;
@@ -309,9 +339,14 @@ fn compute_indicator_f64(
 
     #[cfg(feature = "cuda")]
     {
+        let mut attempt_state = attempt_state;
         let prefer_gpu = backend_prefers_gpu(backend)
             && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
-        if prefer_gpu {
+        let can_try_cuda = attempt_state
+            .as_ref()
+            .map(|state| !state.cuda_failed)
+            .unwrap_or(true);
+        if prefer_gpu && can_try_cuda {
             if let Some(prepared) = prepared_cuda_inputs {
                 let out = compute_dynamic_indicator_cuda_with_inputs(
                     prepared,
@@ -321,8 +356,13 @@ fn compute_indicator_f64(
                     Kernel::Auto,
                     vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
                 );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                match out {
+                    Ok(values) => return cuda_series_to_f64(values),
+                    Err(_) => {
+                        if let Some(state) = attempt_state.as_mut() {
+                            state.cuda_failed = true;
+                        }
+                    }
                 }
             }
         }
@@ -349,14 +389,20 @@ fn compute_indicator_host_f32(
     output_id: &str,
     params: &[IndicatorParamKV],
     prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    attempt_state: Option<&mut CarmGpuAttemptState>,
 ) -> Result<Vec<f32>, String> {
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         format!("CARM indicator '{indicator_id}' is not registered for dynamic dispatch")
     })?;
 
+    let mut attempt_state = attempt_state;
     let prefer_gpu = backend_prefers_gpu(backend)
         && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
-    if prefer_gpu {
+    let can_try_cuda = attempt_state
+        .as_ref()
+        .map(|state| !state.cuda_failed)
+        .unwrap_or(true);
+    if prefer_gpu && can_try_cuda {
         if let Some(prepared) = prepared_cuda_inputs {
             let out = compute_dynamic_indicator_cuda_with_inputs(
                 prepared,
@@ -366,22 +412,27 @@ fn compute_indicator_host_f32(
                 Kernel::Auto,
                 vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
             );
-            if let Ok(values) = out {
-                return cuda_series_to_host_f32(values);
+            match out {
+                Ok(values) => return cuda_series_to_host_f32(values),
+                Err(_) => {
+                    if let Some(state) = attempt_state.as_mut() {
+                        state.cuda_failed = true;
+                    }
+                }
             }
         }
     }
 
-    compute_indicator_f64(
+    let out = compute_dynamic_indicator_cpu(
         candles,
         ma_source,
-        backend,
         indicator_id,
-        output_id,
+        Some(output_id),
         params,
-        prepared_cuda_inputs,
+        Kernel::Auto,
     )
-    .map(|values| values.into_iter().map(|v| v as f32).collect())
+    .map_err(|e| e.to_string())?;
+    Ok(series_to_f32(out))
 }
 
 pub fn compute_carm_mixed_signals(
@@ -390,6 +441,28 @@ pub fn compute_carm_mixed_signals(
     backend: &Backend,
     periods: CarmResolvedPeriods,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CarmMixedSignals, String> {
+    #[cfg(feature = "cuda")]
+    let mut attempt_state = CarmGpuAttemptState::default();
+    compute_carm_mixed_signals_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        &mut attempt_state,
+    )
+}
+
+fn compute_carm_mixed_signals_with_attempt_state(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    #[cfg(feature = "cuda")] attempt_state: &mut CarmGpuAttemptState,
 ) -> Result<CarmMixedSignals, String> {
     let coppock_output = resolve_output_id("coppock", &["value"])?;
     let ao_output = resolve_output_id("ao", &["value"])?;
@@ -439,6 +512,8 @@ pub fn compute_carm_mixed_signals(
         coppock_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        Some(&mut *attempt_state),
     )?;
     let ao = compute_indicator_f64(
         candles,
@@ -449,6 +524,8 @@ pub fn compute_carm_mixed_signals(
         ao_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        Some(&mut *attempt_state),
     )?;
     let apo = compute_indicator_f64(
         candles,
@@ -459,6 +536,8 @@ pub fn compute_carm_mixed_signals(
         apo_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        Some(&mut *attempt_state),
     )?;
 
     let first_valid = first_finite_idx_local(&coppock)
@@ -482,6 +561,26 @@ pub fn compute_carm_mixed_signals_f32(
     backend: &Backend,
     periods: CarmResolvedPeriods,
     prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CarmMixedSignalsF32, String> {
+    let mut attempt_state = CarmGpuAttemptState::default();
+    compute_carm_mixed_signals_f32_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        prepared_cuda_inputs,
+        &mut attempt_state,
+    )
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn compute_carm_mixed_signals_f32_with_attempt_state(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    attempt_state: &mut CarmGpuAttemptState,
 ) -> Result<CarmMixedSignalsF32, String> {
     let coppock_output = resolve_output_id("coppock", &["value"])?;
     let ao_output = resolve_output_id("ao", &["value"])?;
@@ -530,6 +629,7 @@ pub fn compute_carm_mixed_signals_f32(
         coppock_output.as_str(),
         coppock_params.as_slice(),
         prepared_cuda_inputs,
+        Some(&mut *attempt_state),
     )?;
     let ao = compute_indicator_host_f32(
         candles,
@@ -539,6 +639,7 @@ pub fn compute_carm_mixed_signals_f32(
         ao_output.as_str(),
         ao_params.as_slice(),
         prepared_cuda_inputs,
+        Some(&mut *attempt_state),
     )?;
     let apo = compute_indicator_host_f32(
         candles,
@@ -548,6 +649,7 @@ pub fn compute_carm_mixed_signals_f32(
         apo_output.as_str(),
         apo_params.as_slice(),
         prepared_cuda_inputs,
+        Some(&mut *attempt_state),
     )?;
 
     let first_valid = first_finite_idx_local_f32(&coppock)
@@ -571,6 +673,28 @@ pub fn compute_carm_rocr_signal(
     periods: CarmResolvedPeriods,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<Vec<f64>, String> {
+    #[cfg(feature = "cuda")]
+    let mut attempt_state = CarmGpuAttemptState::default();
+    compute_carm_rocr_signal_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        &mut attempt_state,
+    )
+}
+
+fn compute_carm_rocr_signal_with_attempt_state(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    #[cfg(feature = "cuda")] attempt_state: &mut CarmGpuAttemptState,
+) -> Result<Vec<f64>, String> {
     let rocr_output = resolve_output_id("rocr", &["value"])?;
     let rocr_params = vec![IndicatorParamKV {
         key: "period".to_string(),
@@ -585,6 +709,8 @@ pub fn compute_carm_rocr_signal(
         rocr_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        Some(&mut *attempt_state),
     )
 }
 
@@ -595,6 +721,26 @@ pub fn compute_carm_rocr_signal_f32(
     backend: &Backend,
     periods: CarmResolvedPeriods,
     prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<Vec<f32>, String> {
+    let mut attempt_state = CarmGpuAttemptState::default();
+    compute_carm_rocr_signal_f32_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        prepared_cuda_inputs,
+        &mut attempt_state,
+    )
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn compute_carm_rocr_signal_f32_with_attempt_state(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    attempt_state: &mut CarmGpuAttemptState,
 ) -> Result<Vec<f32>, String> {
     let rocr_output = resolve_output_id("rocr", &["value"])?;
     let rocr_params = vec![IndicatorParamKV {
@@ -609,6 +755,7 @@ pub fn compute_carm_rocr_signal_f32(
         rocr_output.as_str(),
         rocr_params.as_slice(),
         prepared_cuda_inputs,
+        Some(&mut *attempt_state),
     )
 }
 
@@ -619,6 +766,30 @@ pub fn compute_carm_otto_signals(
     periods: CarmResolvedPeriods,
     cfg: &CarmStrategyParams,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CarmOttoSignals, String> {
+    #[cfg(feature = "cuda")]
+    let mut attempt_state = CarmGpuAttemptState::default();
+    compute_carm_otto_signals_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        cfg,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        &mut attempt_state,
+    )
+}
+
+fn compute_carm_otto_signals_with_attempt_state(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    cfg: &CarmStrategyParams,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    #[cfg(feature = "cuda")] attempt_state: &mut CarmGpuAttemptState,
 ) -> Result<CarmOttoSignals, String> {
     let otto_hott_output = resolve_output_id("otto", &["hott"])?;
     let otto_lott_output = resolve_output_id("otto", &["lott"])?;
@@ -658,6 +829,8 @@ pub fn compute_carm_otto_signals(
         otto_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        Some(&mut *attempt_state),
     )?;
     let lott = compute_indicator_f64(
         candles,
@@ -668,6 +841,8 @@ pub fn compute_carm_otto_signals(
         otto_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        Some(&mut *attempt_state),
     )?;
     let first_valid = first_finite_idx_local(&hott)
         .zip(first_finite_idx_local(&lott))
@@ -689,6 +864,28 @@ pub fn compute_carm_otto_signals_f32(
     periods: CarmResolvedPeriods,
     cfg: &CarmStrategyParams,
     prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CarmOttoSignalsF32, String> {
+    let mut attempt_state = CarmGpuAttemptState::default();
+    compute_carm_otto_signals_f32_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        cfg,
+        prepared_cuda_inputs,
+        &mut attempt_state,
+    )
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn compute_carm_otto_signals_f32_with_attempt_state(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    cfg: &CarmStrategyParams,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    attempt_state: &mut CarmGpuAttemptState,
 ) -> Result<CarmOttoSignalsF32, String> {
     let otto_hott_output = resolve_output_id("otto", &["hott"])?;
     let otto_lott_output = resolve_output_id("otto", &["lott"])?;
@@ -727,6 +924,7 @@ pub fn compute_carm_otto_signals_f32(
         otto_hott_output.as_str(),
         otto_params.as_slice(),
         prepared_cuda_inputs,
+        Some(&mut *attempt_state),
     )?;
     let lott = compute_indicator_host_f32(
         candles,
@@ -736,6 +934,7 @@ pub fn compute_carm_otto_signals_f32(
         otto_lott_output.as_str(),
         otto_params.as_slice(),
         prepared_cuda_inputs,
+        Some(&mut *attempt_state),
     )?;
     let first_valid = first_finite_idx_local_f32(&hott)
         .zip(first_finite_idx_local_f32(&lott))
@@ -749,6 +948,59 @@ pub fn compute_carm_otto_signals_f32(
     })
 }
 
+#[cfg(feature = "cuda")]
+pub fn compute_carm_signals_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: CarmResolvedPeriods,
+    cfg: &CarmStrategyParams,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<CarmSignalsF32, String> {
+    let mut attempt_state = CarmGpuAttemptState::default();
+    let mixed = compute_carm_mixed_signals_f32_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        prepared_cuda_inputs,
+        &mut attempt_state,
+    )?;
+    let rocr = compute_carm_rocr_signal_f32_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        prepared_cuda_inputs,
+        &mut attempt_state,
+    )?;
+    let otto = compute_carm_otto_signals_f32_with_attempt_state(
+        candles,
+        ma_source,
+        backend,
+        periods,
+        cfg,
+        prepared_cuda_inputs,
+        &mut attempt_state,
+    )?;
+    let rocr_first_valid = first_finite_idx_local_f32(&rocr)
+        .ok_or_else(|| "CARM ROCR signal is all non-finite".to_string())?;
+    let first_valid = mixed
+        .first_valid
+        .max(rocr_first_valid)
+        .max(otto.first_valid);
+
+    Ok(CarmSignalsF32 {
+        coppock: mixed.coppock,
+        ao: mixed.ao,
+        rocr,
+        apo: mixed.apo,
+        otto_hott: otto.hott,
+        otto_lott: otto.lott,
+        first_valid,
+    })
+}
+
 pub fn compute_carm_signals(
     candles: &Candles,
     ma_source: &str,
@@ -757,23 +1009,29 @@ pub fn compute_carm_signals(
     cfg: &CarmStrategyParams,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<CarmSignals, String> {
-    let mixed = compute_carm_mixed_signals(
+    #[cfg(feature = "cuda")]
+    let mut attempt_state = CarmGpuAttemptState::default();
+    let mixed = compute_carm_mixed_signals_with_attempt_state(
         candles,
         ma_source,
         backend,
         periods,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        &mut attempt_state,
     )?;
-    let rocr = compute_carm_rocr_signal(
+    let rocr = compute_carm_rocr_signal_with_attempt_state(
         candles,
         ma_source,
         backend,
         periods,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        &mut attempt_state,
     )?;
-    let otto = compute_carm_otto_signals(
+    let otto = compute_carm_otto_signals_with_attempt_state(
         candles,
         ma_source,
         backend,
@@ -781,6 +1039,8 @@ pub fn compute_carm_signals(
         cfg,
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+        #[cfg(feature = "cuda")]
+        &mut attempt_state,
     )?;
     let rocr_first_valid = first_finite_idx_local(&rocr)
         .ok_or_else(|| "CARM ROCR signal is all non-finite".to_string())?;

@@ -7375,6 +7375,11 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
 
     let signals = CarmGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         mixed_rows: total,
         mixed_stride: n,
@@ -7694,6 +7699,11 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = CarmGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs
+            .close_device()
+            .buffer()
+            .as_device_ptr()
+            .as_raw(),
         cols: n,
         mixed_rows: total,
         mixed_stride: n,
