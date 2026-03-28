@@ -220,6 +220,17 @@ fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
 }
 
 #[cfg(feature = "cuda")]
+fn series_to_f32(out: DynamicIndicatorComputeOutput) -> Vec<f32> {
+    match out.series {
+        DynamicIndicatorSeries::F64(v) => v.into_iter().map(|x| x as f32).collect(),
+        DynamicIndicatorSeries::I32(v) => v.into_iter().map(|x| x as f32).collect(),
+        DynamicIndicatorSeries::Bool(v) => {
+            v.into_iter().map(|x| if x { 1.0 } else { 0.0 }).collect()
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
 fn cuda_series_to_f64(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f64>, String> {
     match out.series {
         DynamicIndicatorCudaSeries::HostF32(v) => Ok(v.into_iter().map(|x| x as f64).collect()),
@@ -364,18 +375,16 @@ fn compute_indicator_f32(
         }
     }
 
-    Ok(compute_indicator_f64(
+    let out = compute_dynamic_indicator_cpu(
         candles,
         ma_source,
-        backend,
         indicator_id,
-        output_id,
+        Some(output_id),
         params,
-        prepared_cuda_inputs,
-    )?
-    .into_iter()
-    .map(|v| v as f32)
-    .collect())
+        Kernel::Auto,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(series_to_f32(out))
 }
 
 pub fn compute_kqsr_signals(
@@ -1118,5 +1127,95 @@ mod tests {
         assert!(signals.first_valid < candles.close.len());
         assert!(signals.qqe_fast.iter().any(|v| v.is_finite()));
         assert!(signals.qqe_slow.iter().any(|v| v.is_finite()));
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn compute_kqsr_fast_signals_f32_cpu_fallback_matches_f64() {
+        let candles = make_trending_candles(512);
+        let cfg = KqsrStrategyParams::default();
+        let periods = resolve_kqsr_periods(&cfg, 12, 34);
+
+        let cpu_f64 =
+            compute_kqsr_fast_signals(&candles, "close", &Backend::CpuOnly, periods, &cfg, None)
+                .expect("cpu f64 fast signals");
+        let cpu_f32 = compute_kqsr_fast_signals_f32(
+            &candles,
+            "close",
+            &Backend::CpuOnly,
+            periods,
+            &cfg,
+            None,
+        )
+        .expect("cpu f32 fast signals");
+
+        assert_eq!(cpu_f64.first_valid, cpu_f32.first_valid);
+        assert_eq!(cpu_f64.j.len(), cpu_f32.j.len());
+        for (lhs, rhs) in cpu_f64.j.iter().zip(cpu_f32.j.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+        for (lhs, rhs) in cpu_f64.srsi_k.iter().zip(cpu_f32.srsi_k.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+        for (lhs, rhs) in cpu_f64.srsi_d.iter().zip(cpu_f32.srsi_d.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+        for (lhs, rhs) in cpu_f64.ift_rsi.iter().zip(cpu_f32.ift_rsi.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn compute_kqsr_slow_signals_f32_cpu_fallback_matches_f64() {
+        let candles = make_trending_candles(512);
+        let cfg = KqsrStrategyParams::default();
+        let periods = resolve_kqsr_periods(&cfg, 12, 34);
+
+        let cpu_f64 =
+            compute_kqsr_slow_signals(&candles, "close", &Backend::CpuOnly, periods, None)
+                .expect("cpu f64 slow signals");
+        let cpu_f32 =
+            compute_kqsr_slow_signals_f32(&candles, "close", &Backend::CpuOnly, periods, None)
+                .expect("cpu f32 slow signals");
+
+        assert_eq!(cpu_f64.first_valid, cpu_f32.first_valid);
+        assert_eq!(cpu_f64.qqe_fast.len(), cpu_f32.qqe_fast.len());
+        for (lhs, rhs) in cpu_f64.qqe_fast.iter().zip(cpu_f32.qqe_fast.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+        for (lhs, rhs) in cpu_f64.qqe_slow.iter().zip(cpu_f32.qqe_slow.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+        for (lhs, rhs) in cpu_f64.prb_upper.iter().zip(cpu_f32.prb_upper.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
+        for (lhs, rhs) in cpu_f64.prb_lower.iter().zip(cpu_f32.prb_lower.iter()) {
+            assert_eq!(lhs.is_finite(), rhs.is_finite());
+            if lhs.is_finite() {
+                assert!(((*lhs as f32) - *rhs).abs() <= 1.0e-5);
+            }
+        }
     }
 }

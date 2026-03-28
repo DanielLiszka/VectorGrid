@@ -222,15 +222,16 @@ fn make_cdmc_req(
     req
 }
 
-fn bench_cpu_cases<F>(c: &mut Criterion, group_name: &str, candles: &Candles, build_req: F)
-where
+fn bench_cpu_cases_with_cases<F>(
+    c: &mut Criterion,
+    group_name: &str,
+    candles: &Candles,
+    build_req: F,
+    cases: &[(&str, (u32, u32, u32), (u32, u32, u32))],
+) where
     F: Fn(Backend, (u32, u32, u32), (u32, u32, u32)) -> CompositeCpuRequest,
 {
     let cancel = AtomicBool::new(false);
-    let cases: &[(&str, (u32, u32, u32), (u32, u32, u32))] = &[
-        ("small", (5, 20, 1), (20, 80, 1)),
-        ("medium", (5, 30, 1), (30, 120, 1)),
-    ];
 
     let mut group = c.benchmark_group(group_name);
     group.measurement_time(Duration::from_secs(8));
@@ -252,6 +253,17 @@ where
     }
 
     group.finish();
+}
+
+fn bench_cpu_cases<F>(c: &mut Criterion, group_name: &str, candles: &Candles, build_req: F)
+where
+    F: Fn(Backend, (u32, u32, u32), (u32, u32, u32)) -> CompositeCpuRequest,
+{
+    let cases: &[(&str, (u32, u32, u32), (u32, u32, u32))] = &[
+        ("small", (5, 20, 1), (20, 80, 1)),
+        ("medium", (5, 30, 1), (30, 120, 1)),
+    ];
+    bench_cpu_cases_with_cases(c, group_name, candles, build_req, cases);
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -303,6 +315,13 @@ fn bench_gpu_cases<F>(
         route_label,
         probe.backend_fallback_reason
     );
+    assert_eq!(
+        probe.backend_route.as_deref(),
+        Some("GpuKernel"),
+        "expected exact GpuKernel route for {} probe, got route={:?}",
+        route_label,
+        probe.backend_route
+    );
 
     let mut group = c.benchmark_group(group_name);
     group.measurement_time(Duration::from_secs(8));
@@ -333,6 +352,13 @@ fn bench_gpu_cases<F>(
                     route_label,
                     res.backend_fallback_reason
                 );
+                assert_eq!(
+                    res.backend_route.as_deref(),
+                    Some("GpuKernel"),
+                    "expected exact GpuKernel route for {}, got route={:?}",
+                    route_label,
+                    res.backend_route
+                );
             })
         });
     }
@@ -357,7 +383,12 @@ fn bench_kqsr_cpu(c: &mut Criterion) {
         return;
     }
     let candles = make_kqsr_oscillating_candles(200_000);
-    bench_cpu_cases(c, "kqsr/cpu/200k", &candles, make_kqsr_req);
+    let cases: &[(&str, (u32, u32, u32), (u32, u32, u32))] = &[
+        ("small/975pairs", (5, 20, 1), (20, 80, 1)),
+        ("medium/2365pairs", (5, 30, 1), (30, 120, 1)),
+        ("large/13385pairs", (5, 80, 1), (20, 220, 1)),
+    ];
+    bench_cpu_cases_with_cases(c, "kqsr/cpu/200k", &candles, make_kqsr_req, cases);
 }
 
 fn bench_carm_cpu(c: &mut Criterion) {

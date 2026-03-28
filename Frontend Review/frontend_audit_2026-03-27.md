@@ -555,15 +555,17 @@ Use this as the implementation checklist for a full frontend remediation pass.
 
 ## Recommended Implementation Order
 
-1. build/test health
-2. shell and selection accessibility
-3. execution safety
-4. history/library destructive-action UX
-5. token cleanup and visual hierarchy
-6. dense page restructuring
-7. chart/status accessibility
-8. panel architecture/perf cleanup
-9. design system/Figma formalization
+1. establish the frontend functional-coverage / backend exposure matrix
+2. build/test health
+3. shell and selection accessibility
+4. execution safety
+5. history/library destructive-action UX
+6. token cleanup, depth utilities, and visual hierarchy
+7. dense page restructuring with redundancy consolidation but no capability loss
+8. chart/status accessibility
+9. panel architecture/perf cleanup
+10. design system/Figma formalization
+11. desktop productization track
 
 ## Optional Follow-up Package / UX Backlog
 
@@ -572,6 +574,14 @@ These items are intentionally outside the completed remediation checklist above.
 ### Tooltip / Guided Help System
 
 - [ ] Introduce a restrained depth model only where it improves comprehension; do not force additional raised surfaces or faux-3D styling where the workflow does not benefit.
+- [ ] Make the depth model token-driven and explicit rather than only pattern-driven.
+- [ ] Add first-class elevation/depth utilities mapped to the four-layer model:
+  - [ ] sunken
+  - [ ] default
+  - [ ] raised
+  - [ ] overlay
+- [ ] Add shared overflow-shadow utilities for dense scrollers and horizontally clipped tables.
+- [ ] Migrate shared overlays and dialogs away from raw hardcoded colors toward token-only styling.
 - [ ] Add a delayed contextual tooltip/help system for dense controls and advanced parameters.
 - [ ] Default delayed help to a long-hover threshold in the `3` to `5` second range so routine hovering does not create noise.
 - [ ] Distinguish short explanatory tooltips from longer "how this works" tutorial callouts.
@@ -583,10 +593,57 @@ These items are intentionally outside the completed remediation checklist above.
 ### Package Adoption Candidates
 
 - [ ] Expand `reka-ui` usage across tabs, tooltips, comboboxes, roving-focus toolbars, and other headless accessibility primitives already aligned with the current custom shell.
-- [ ] Evaluate `@tanstack/vue-table` for Top Results, Validation, Meta, and Run Library surfaces that need richer sorting, filtering, column control, and selection state.
+- [ ] Evaluate `@tanstack/vue-table` as a high-priority candidate for Top Results, Validation, Meta, and Run Library surfaces that need richer sorting, filtering, column control, and selection state.
+- [ ] If `@tanstack/vue-table` is adopted, keep `@tanstack/vue-virtual` and integrate the two rather than replacing virtualization.
 - [ ] Evaluate `ag-grid-vue3` only as an alternative to `@tanstack/vue-table` if the product needs a full spreadsheet-grade datagrid rather than a headless table engine.
 - [ ] Evaluate `vee-validate` with `@vee-validate/zod` for Strategy, Advanced, Data, and Validation forms to improve schema-driven validation and field-state UX.
 - [ ] Evaluate `notivue` as the default async notification system for run lifecycle, save/export status, validation completion, and error reporting.
 - [ ] Keep `vue-sonner` as the lighter fallback if `notivue` feels too feature-heavy for the app's notification needs.
 - [ ] Evaluate `splitpanes` for resizable desktop controls/results layouts where users benefit from trading table width against chart or form width.
 - [ ] Evaluate `vue-echarts` plus `echarts` only as a complementary stack for non-price analytical charts such as heatmaps, Pareto/frontier views, and richer meta-analysis visuals while keeping `lightweight-charts` for its current price/timeline role.
+- [ ] Evaluate a single lightweight tree-shakable icon system if compact action/status affordances need better scan quality than the current text-glyph approach.
+
+### Keyboard-First Regression Gates
+
+- [ ] Keep an explicit keyboard-first acceptance checklist for primary interaction surfaces:
+  - [ ] shell workspace tabs
+  - [ ] shell workflow-step tabs
+  - [ ] Top Results table
+  - [ ] Validation results path
+  - [ ] Run Library browsing
+- [ ] Re-run keyboard-only completion of the core workflow after any major shell/table refactor.
+
+### Frontend Functional Coverage / Backend Exposure Audit
+
+- [ ] Add an explicit frontend functional-coverage guardrail: UX cleanup may consolidate controls, but may not silently remove backend-backed functionality from user reach.
+- [ ] Build a backend-functionality exposure matrix for the current frontend.
+- [ ] Inventory user-meaningful backend-backed capabilities across:
+  - [ ] data import / cache / repair
+  - [ ] optimization start / cancel / save / export
+  - [ ] validation run / export / review
+  - [ ] analysis / drilldown / shortlist review
+  - [ ] artifact load / reveal / report / rerun
+  - [ ] execution connection / start / stop / review
+- [ ] For each capability, record:
+  - [ ] current frontend location
+  - [ ] primary entry point
+  - [ ] secondary or redundant entry points
+  - [ ] whether it is routine, advanced, or high-stakes
+- [ ] Identify truly redundant controls/options that can be consolidated without reducing capability exposure.
+- [ ] Document intentional consolidations so they are distinguishable from accidental removals.
+- [ ] After any major shell/page/control-surface refactor, re-run the exposure audit and verify every inventoried backend-backed capability still has at least one clear supported frontend path.
+- [ ] Treat loss of frontend access to an existing backend-backed capability as a regression unless explicitly approved.
+
+### Desktop Productization Track
+
+These are valid product-quality opportunities, but they should remain a separate track from the frontend-only depth pass.
+
+- [ ] Review Tauri capability scoping and document the current window/webview access model.
+- [ ] Review CSP posture in `src-tauri/tauri.conf.json` and tighten it where feasible.
+- [ ] Evaluate official Tauri plugins for:
+  - [ ] updater
+  - [ ] notifications
+  - [ ] tray / menu
+  - [ ] window-state
+- [ ] Decide which long-running workflow events should surface as OS-native notifications rather than only in-app status.
+- [ ] Decide whether desktop-native quick actions belong in a tray/menu surface for cancel/open/reveal/update tasks.

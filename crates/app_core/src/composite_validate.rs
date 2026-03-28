@@ -6498,6 +6498,7 @@ fn try_prepare_kqsr_gpu_fixed_candidate_validation(
 
     let signals = KqsrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().as_device_ptr().as_raw() as u64,
         cols: n,
         j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
         fast_rows,
@@ -6838,6 +6839,7 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = KqsrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().as_device_ptr().as_raw() as u64,
         cols: n,
         j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
         fast_rows,

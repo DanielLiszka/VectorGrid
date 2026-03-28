@@ -12,6 +12,7 @@ Improve perceived depth, hierarchy, and information density without:
 
 - forcing a stylized faux-3D theme
 - increasing modal/overlay usage
+- removing existing backend-backed user capability from the frontend surface
 - replacing `lightweight-charts` for its current price/timeline role
 
 This brief treats "more 3D" as a hierarchy problem, not a decoration problem.
@@ -27,6 +28,26 @@ Instead:
 - use surface contrast, selected-state emphasis, sticky context, and progressive disclosure before introducing new chrome
 
 In practice, the app should feel more layered and easier to scan, not more ornamental.
+
+## Functional-Coverage Guardrail
+
+Frontend UX cleanup may:
+
+- regroup controls
+- collapse redundant actions
+- move secondary actions behind clearer disclosure or menus
+- promote safer/default paths
+
+Frontend UX cleanup may not:
+
+- silently remove backend-backed functionality from user reach
+- require console/manual work for functionality that was previously exposed in the UI
+- hide high-stakes capability so deeply that it is no longer realistically discoverable
+
+Rule:
+
+- if multiple buttons/options currently trigger the same backend capability, consolidation is allowed
+- if a backend-backed capability is distinct, at least one clear supported frontend path must remain unless the product owner explicitly approves removal
 
 ## Product-Level UX Thesis
 
@@ -113,6 +134,12 @@ Behavior:
 
 Add or refine a small set of semantic tokens instead of introducing component-local styling.
 
+Implementation rule:
+
+- shared shells, overlays, dialogs, list states, and table states should consume semantic tokens only
+- avoid new raw hex or raw `rgba(...)` values in shared UI primitives
+- existing hardcoded overlay colors are migration targets, not acceptable endpoints
+
 ### Surface / Depth Tokens
 
 - `--surface-sunken`
@@ -138,6 +165,12 @@ Add or refine a small set of semantic tokens instead of introducing component-lo
 - `--selection-fill-strong`
 - `--selection-text`
 
+### State Refinements
+
+- `--warning-hover`
+- `--danger-hover`
+- `--ok-hover`
+
 ### Motion Tokens
 
 - `--motion-fast`
@@ -150,6 +183,8 @@ Rules:
 - use shadows sparingly; tonal depth should do most of the work
 - focus surfaces should feel intentional, not floating
 - selection rails should read more strongly than generic borders
+- dark mode depth should rely primarily on surface separation and contrast, not stronger shadows
+- overlay surfaces, selected rows, and status colors require explicit contrast validation in both light and dark themes
 
 ## Shared Utility Additions For `app.css`
 
@@ -161,9 +196,17 @@ Add utilities that make layered information cheap to apply.
 - `.surfaceWorking`
 - `.surfaceFocus`
 - `.surfaceSticky`
+- `.elevSunken`
+- `.elevDefault`
+- `.elevRaised`
+- `.elevOverlay`
 - `.selectionRail`
 - `.overflowShadowX`
 - `.overflowShadowY`
+- `.overflowShadowTop`
+- `.overflowShadowBottom`
+- `.overflowShadowLeft`
+- `.overflowShadowRight`
 - `.inlineDisclosure`
 - `.inlineDisclosureSummary`
 - `.inlineDisclosureBody`
@@ -176,6 +219,7 @@ Add utilities that make layered information cheap to apply.
 - `surfaceSunken`: de-emphasize support regions without hiding them
 - `surfaceFocus`: make the current decision area feel forward
 - `overflowShadowX/Y`: imply hidden continuation in dense scrollers
+- `elev*`: make the four-layer depth model first-class and measurable in component usage
 - `stickySelectionSummary`: keep local context visible without opening another panel
 - `inlineDisclosure*`: reveal depth inside the current pane rather than outside it
 
@@ -190,10 +234,12 @@ Primary job:
 Specific changes:
 
 - add depth tokens listed above
+- add first-class elevation utilities mapped to the four-layer model
 - introduce restrained overflow shadows for scrollable wrappers
 - strengthen selected-row and selected-chip visual language
 - add sticky local-context utility styles
 - add short transition tokens for underline, row-state, disclosure, and focus-surface emphasis
+- migrate shared overlays and dialogs away from raw colors toward token-only styling
 
 ### `web/src/components/VueWorkspaceShell.vue`
 
@@ -207,6 +253,7 @@ Specific changes:
 - let the active workspace and active workflow step use a stronger underline plus subtle focus field, not pill chrome
 - convert the shell context strip into a slightly recessed support band
 - ensure the controls/results tab row reads as a working-plane switch, not a second header
+- make local tab rows sticky within scroll columns where long controls/results panes would otherwise lose context
 - add subtle active-state transition so the shell feels physically coherent when context changes
 
 Do not:
@@ -228,6 +275,7 @@ Specific changes:
 - add overflow shadows to the table wrapper so lateral/vertical continuation is legible
 - ensure the active drill surface becomes the focus plane when a candidate is selected
 - keep non-selected charts and passive text on the working plane
+- treat the shortlist table as a candidate pilot surface for a future `@tanstack/vue-table` migration if manual table logic continues to grow
 
 ### `web/src/components/StrategyWorkspacePanel.vue`
 
@@ -279,6 +327,7 @@ Specific changes:
 - recess filter/search support regions
 - use a stronger selected-state rail for the chosen run
 - add a sticky selected-run summary for long details views
+- keep list metadata and filters visible while long run lists scroll
 - keep delete/clear affordances isolated inside their own action plane
 
 ### `web/src/components\ExecutionWorkspacePanel.vue`
@@ -371,6 +420,56 @@ Suggested implementation anchors:
 - setting persisted in `settingsStore`
 - central provider/composable that all tooltip/help primitives read from
 - components do not decide globally on their own whether tutorials are enabled
+- tooltip/help behavior must stay keyboard-accessible and reduced-motion compatible
+
+## Backend Functionality Exposure Audit
+
+This should run alongside major frontend restructuring work.
+
+### Required deliverables
+
+1. capability inventory
+2. frontend entry-point map
+3. redundancy/consolidation recommendations
+4. post-refactor exposure verification
+
+### Capability inventory
+
+Track user-meaningful backend-backed capabilities, not only raw commands.
+
+Examples:
+
+- data import/load/repair/cache actions
+- optimization start/cancel/save/export flows
+- validation run/export/review flows
+- result drilldown and artifact loading
+- execution connection/start/stop/review actions
+- report/reveal/open artifact actions
+
+### Frontend entry-point map
+
+For each backend-backed capability, record:
+
+- current frontend location
+- primary entry point
+- any secondary or redundant entry points
+- whether the capability is high-stakes, advanced, or routine
+
+### Consolidation rule
+
+When simplifying the UI:
+
+- remove redundant buttons only after confirming they map to the same underlying capability
+- prefer one primary path plus optional advanced/disclosure placement over many parallel buttons
+- preserve discoverability for high-stakes and advanced capabilities
+
+### Verification rule
+
+After each major shell/page refactor:
+
+- verify every inventoried backend-backed capability still has at least one supported frontend path
+- verify the remaining path is visible, understandable, and not blocked by unrelated prerequisites
+- document intentional consolidations so they are not mistaken for accidental removals
 
 ## Package Guidance
 
@@ -405,6 +504,11 @@ Value:
 - selection logic
 - cleaner separation between table model and visual shell
 
+Adoption note:
+
+- keep `@tanstack/vue-virtual`
+- integrate the two together rather than replacing virtualization with a heavier table implementation
+
 #### `vee-validate` + `@vee-validate/zod`
 
 Use for:
@@ -432,6 +536,22 @@ Use for:
 Value:
 
 - central async feedback system instead of one-off status placements
+
+### Optional UI Primitive Upgrade
+
+#### Tree-shakable icon system
+
+Use for:
+
+- action rows
+- status badges
+- report/reveal/open affordances
+- compact tool surfaces where glyph consistency improves scan speed
+
+Constraint:
+
+- choose one lightweight tree-shakable icon set only if the current text-glyph approach becomes a real clarity limit
+- do not adopt multiple icon packs
 
 #### `splitpanes`
 
@@ -462,6 +582,11 @@ Good additive use cases:
 - categorical regime comparisons
 - richer annotated metric dashboards
 
+Implementation note:
+
+- if adopted, load it dynamically on the specific analytical surfaces that need it
+- keep `aria` support enabled and documented for those charts
+
 Do not use it to replace:
 
 - current price-oriented chart surfaces already served well by `lightweight-charts`
@@ -471,9 +596,11 @@ Do not use it to replace:
 ### Phase A: Low-Risk Depth Improvements
 
 - add depth tokens and shared utilities in `app.css`
+- add first-class elevation utility classes mapped to the four-layer model
 - improve selected-state treatment
 - add overflow shadows to dense scrollers
 - add sticky local-context summaries where the workflow benefits
+- migrate shared overlays away from hardcoded colors where practical
 
 ### Phase B: Dense Page Restructuring
 
@@ -488,6 +615,7 @@ Focus:
 - one focus plane per screen
 - single-open inline disclosures
 - support regions recede instead of competing
+- capability grouping improves clarity without reducing functional coverage
 
 ### Phase C: Tooltip / Help System
 
@@ -501,6 +629,25 @@ Focus:
 - pilot `vue-echarts` only on one non-price analytical surface
 - keep `lightweight-charts` unchanged elsewhere
 
+### Separate Desktop Productization Track
+
+These items are valid product-quality work, but they should remain separate from the frontend-only depth pass:
+
+- Tauri capability scoping review
+- CSP hardening review
+- updater flow
+- OS notifications for long-run lifecycle
+- tray/menu quick actions
+- window-state persistence
+
+Treat these as a desktop platform track, not as blockers for the current web/UI hierarchy work.
+
+### Cross-Cutting Functional Coverage Track
+
+- build a backend-functionality exposure matrix before large control-surface refactors
+- use that matrix to drive redundancy cleanup and consolidation
+- re-run the exposure audit after each major workflow/page rewrite
+
 ## Success Criteria
 
 This work is successful if:
@@ -511,6 +658,42 @@ This work is successful if:
 - scrollable tables/charts imply continuation without adding clutter
 - help content becomes more available but less noisy
 - the UI feels clearer and deeper without becoming visually busier
+
+## Acceptance / Definition Of Done
+
+### Depth-System Acceptance
+
+- shared depth/elevation utilities exist and are token-driven
+- no new shared overlay or dialog styling lands with raw colors
+- at least the shell, Top Results, and Run Library visibly use the depth model
+
+### Keyboard-First Acceptance
+
+- shell workspace tabs remain keyboard complete
+- shell workflow-step tabs remain keyboard complete
+- Top Results remains keyboard complete
+- Validation table path remains keyboard complete
+- Run Library list browsing remains keyboard complete
+
+### Visual/Contrast Acceptance
+
+- selected rows remain obvious in light and dark themes
+- warning/danger/success surfaces remain visually distinct and readable
+- overlay and sticky surfaces pass a contrast sanity check in both themes
+
+### Regression Acceptance
+
+- `npm run typecheck` passes
+- `npm run test` passes
+- `npm run build` passes
+- `npm run baseline:ui` passes
+
+### Functional Coverage Acceptance
+
+- no previously exposed backend-backed user capability is removed without explicit approval
+- any removed duplicate control is documented as a consolidation, not an accidental loss
+- every high-stakes backend-backed capability still has at least one clear frontend path
+- the frontend entry-point map is updated after major UX restructuring
 
 ## Source Notes
 

@@ -719,6 +719,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     bench_cpu_profile("carm", 50_000, make_carm_candidates(8));
     bench_cpu_profile("kvdf", 50_000, make_kvdf_candidates(8));
     bench_cpu_profile("cdmc", 50_000, make_cdmc_candidates(8));
+    bench_cpu_profile("kqsr", 100_000, make_kqsr_candidates(32));
     bench_cpu_profile("carm", 100_000, make_carm_candidates(32));
     bench_cpu_profile("cdmc", 100_000, make_cdmc_candidates(32));
 }
@@ -979,6 +980,7 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
     bench_profile("carm", 50_000, make_carm_candidates(8));
     bench_profile("kvdf", 50_000, make_kvdf_candidates(8));
     bench_profile("cdmc", 50_000, make_cdmc_candidates(8));
+    bench_profile("kqsr", 100_000, make_kqsr_candidates(32));
     bench_profile("vemr", 100_000, make_vemr_candidates(64));
     bench_profile("rocb", 100_000, make_rocb_candidates(64));
     bench_profile("vcet", 100_000, make_vcet_candidates(64));

@@ -7090,6 +7090,7 @@ fn run_kqsr_optimization_gpu(
 
     let signals = KqsrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr().as_raw() as u64,
         cols: n,
         j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
         fast_rows,
